@@ -17,6 +17,8 @@ type internal ResolvedMemberToken =
         concretized : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
         fromMetadata : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>
     | Field of declaringType : ConcreteTypeHandle * field : FieldDefinitionHandle
+    /// A field reference that binds nothing, and why: binding it throws into the guest.
+    | BindingFails of FieldReferenceFailure
 
 /// What an `ldtoken` operand names: the three things a `Runtime*Handle` can stand for.
 ///
@@ -144,7 +146,8 @@ module internal UnaryMetadataTokenOps =
                     state
 
             state, ResolvedMemberToken.Method (concretized, method)
-        | Choice2Of2 field ->
+        | Choice2Of2 (FieldReferenceBinding.Fails failure) -> state, ResolvedMemberToken.BindingFails failure
+        | Choice2Of2 (FieldReferenceBinding.Bound field) ->
             refuseTypicalDeclaringType
                 "ldtoken"
                 extractedTypeArgs
@@ -327,7 +330,8 @@ module internal UnaryMetadataTokenOps =
             | MetadataToken.MemberReference h ->
                 match resolveMemberReferenceToken ctx h state with
                 | state, ResolvedMemberToken.Method (concretized, method) -> state, concretized, method
-                | _, ResolvedMemberToken.Field _ -> failwith $"tried to %s{opName} a field"
+                | _, ResolvedMemberToken.Field _
+                | _, ResolvedMemberToken.BindingFails _ -> failwith $"tried to %s{opName} a field"
             | MetadataToken.MethodSpecification h -> resolveMethodSpecificationToken opName ctx h state
             | t -> failwith $"Unexpectedly asked to %s{opName} a non-method: {t}"
 
@@ -665,7 +669,8 @@ module internal UnaryMetadataTokenOps =
 
         // Classify first, push second. Every refusal below is stated once, and the pushes that
         // follow cannot ask a question this has not answered.
-        let state, target: IlMachineState * LdtokenTarget =
+        // `Error` is a field MemberRef that binds nothing, and why.
+        let state, (target : Result<LdtokenTarget, FieldReferenceFailure>) =
             match operand with
             | ResolvedLdtokenOperand.FromScope target ->
                 // Nothing to resolve and nothing to narrow. The entry *is* a `RuntimeTypeHandle`
@@ -673,7 +678,7 @@ module internal UnaryMetadataTokenOps =
                 // look up, no generic context to substitute, and no closedness question: `ldtoken`
                 // of an open definition, of a bare generic parameter and of `System.Void` are all
                 // measured to run on real .NET, where the eleven consuming opcodes refuse all three.
-                state, LdtokenTarget.Type target
+                state, Ok (LdtokenTarget.Type target)
             | ResolvedLdtokenOperand.FromMetadata (activeAssy, metadataToken) ->
 
             match metadataToken with
@@ -712,7 +717,7 @@ module internal UnaryMetadataTokenOps =
                             }
                     }
 
-                state, LdtokenTarget.Field (RuntimeTypeHandleTarget.Closed closedDeclaringHandle, h)
+                state, Ok (LdtokenTarget.Field (RuntimeTypeHandleTarget.Closed closedDeclaringHandle, h))
             | MetadataToken.MethodDef h ->
                 let method =
                     activeAssy.Methods.[h]
@@ -739,38 +744,43 @@ module internal UnaryMetadataTokenOps =
                         None
                         state
 
-                state, LdtokenTarget.Method concretizedMethod
+                state, Ok (LdtokenTarget.Method concretizedMethod)
             | MetadataToken.MemberReference h ->
                 // The one token kind that may name either a method or a field, so it is resolved
                 // and *then* branched on. CoreCLR resolves it against the enclosing frame's
                 // `SigTypeContext`, which is what `resolveMemberReferenceToken` threads.
                 match resolveMemberReferenceToken ctx h state with
-                | state, ResolvedMemberToken.Method (concretized, _) -> state, LdtokenTarget.Method concretized
+                | state, ResolvedMemberToken.Method (concretized, _) -> state, Ok (LdtokenTarget.Method concretized)
                 | state, ResolvedMemberToken.Field (declaringType, fieldHandle) ->
-                    state, LdtokenTarget.Field (RuntimeTypeHandleTarget.Closed declaringType, fieldHandle)
+                    state, Ok (LdtokenTarget.Field (RuntimeTypeHandleTarget.Closed declaringType, fieldHandle))
+                | state, ResolvedMemberToken.BindingFails failure -> state, Error failure
             | MetadataToken.MethodSpecification h ->
                 let state, concretized, _ = resolveMethodSpecificationToken "Ldtoken" ctx h state
-                state, LdtokenTarget.Method concretized
+                state, Ok (LdtokenTarget.Method concretized)
             | MetadataToken.TypeSpecification h ->
                 // Use the raw TypeSpec signature directly, bypassing the lossy
                 // resolveTypeFromDefn → TypeInfo → typeInfoToTypeDefn round-trip.
                 // TypeInfo cannot represent array/pointer/byref wrappers, so the
                 // round-trip would collapse e.g. typeof(X[]) to typeof(X).
                 let sign = activeAssy.TypeSpecs.[h].Signature
-                targetForTypeToken activeAssy false sign state
+                targetForTypeToken activeAssy false sign state |> Tuple.rmap Ok
             | MetadataToken.TypeReference h ->
                 let state, typeDefn, assy =
                     IlMachineState.lookupTypeRef loggerFactory baseClassTypes state activeAssy h
 
-                targetForTypeToken assy true typeDefn state
+                targetForTypeToken assy true typeDefn state |> Tuple.rmap Ok
             | MetadataToken.TypeDefinition h ->
                 let state, typeDefn =
                     IlMachineState.lookupTypeDefn baseClassTypes state activeAssy h
 
-                targetForTypeToken activeAssy true typeDefn state
+                targetForTypeToken activeAssy true typeDefn state |> Tuple.rmap Ok
             | _ ->
                 // ECMA-335 III.4.17 admits exactly the kinds handled above.
                 failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
+
+        match target with
+        | Error failure -> UnaryMetadataFieldOps.throwBindingFailure ctx failure state
+        | Ok target ->
 
         // `typeof(X).IsValueType` is folded to its answer here, at the `ldtoken`, as the JIT folds
         // it; see `TypeofIntrinsicFold`. Only a metadata token names a closed type the two calls

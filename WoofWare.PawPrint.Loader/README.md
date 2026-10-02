@@ -33,6 +33,9 @@ What lives here:
   `WoofWare.PawPrint.TypeSystem`'s method resolver reads too, and decides whether CoreCLR could load
   the parent at all: it walks the load CoreCLR performs before looking for the member, level by
   level, and reports the first type reference that names nothing (a `TypeLoadException`).
+  `ParentLoadVouching` says whether every type that load reaches is one PawPrint knows to load
+  (CoreLib's own, combined so that none of the loader's other failures can arise), which a caller
+  needs before it can say which exception binding a reference throws.
 
 The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
 a method without running it. Such a thing must resolve a call's target in another assembly exactly as
