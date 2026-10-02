@@ -288,6 +288,7 @@ module TestUnixSystemInitial =
             Gen.oneof
                 [
                     Gen.constant LaunchDescriptor.Drained
+                    Gen.constant LaunchDescriptor.Gone
                     Gen.elements [ 0 ; 1 ; 100 ; 65535 ; 65536 ; 65537 ; 100000 ]
                     |> Gen.map (fun length ->
                         LaunchDescriptor.Supplied (ImmutableArray.Create<byte> (Array.init length byte))
@@ -327,7 +328,8 @@ module TestUnixSystemInitial =
                     | LaunchDescriptor.Supplied bytes ->
                         let held = min bytes.Length 65536
                         PipeEnd.Read, FileAccessMode.ReadOnly, held, bytes.Length - held
-                    | LaunchDescriptor.Drained -> PipeEnd.Write, FileAccessMode.WriteOnly, 0, 0
+                    | LaunchDescriptor.Drained
+                    | LaunchDescriptor.Gone -> PipeEnd.Write, FileAccessMode.WriteOnly, 0, 0
 
                 description.AccessMode |> shouldEqual expectedMode
                 description.NonBlocking |> shouldEqual false
@@ -341,6 +343,7 @@ module TestUnixSystemInitial =
 
                     match pipe.Origin, entry with
                     | PipeOrigin.Launched (endpoint, ClientEnd.Draining), LaunchDescriptor.Drained
+                    | PipeOrigin.Launched (endpoint, ClientEnd.ReadEndClosed), LaunchDescriptor.Gone
                     | PipeOrigin.Launched (endpoint, ClientEnd.WriteEndClosed), LaunchDescriptor.Supplied _ ->
                         endpoint |> shouldEqual (ExternalEndpoint fd)
                         expectedUnwritten |> shouldEqual 0

@@ -667,7 +667,9 @@ module UnixPoll =
         // there too: reads of a pipe whose writer had closed woke nothing). A
         // drained pipe's read end is the client's, and its write end is woken
         // only by the client's drain of a write that filled it, which
-        // `UnixReadWrite.write` signals (measured, drained-pipe-epoll.c).
+        // `UnixReadWrite.write` signals (measured, drained-pipe-epoll.c). A
+        // pipe whose reader was gone before the process started never changes:
+        // nothing is ever taken into it or out of it.
         let targetIsPipe =
             match targetDescription.Target with
             | OpenFileTarget.Pipe (pipeId, _) ->

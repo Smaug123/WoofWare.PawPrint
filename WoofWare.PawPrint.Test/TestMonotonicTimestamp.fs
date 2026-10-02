@@ -44,7 +44,7 @@ module TestMonotonicTimestamp =
     /// A kernel on `platform` whose virtual clock has advanced to `clockTicks`
     /// 100 ns ticks, through the setter the driver loop uses.
     let private kernelOn (platform : SimulatedUnixPlatform) (clockTicks : int64) : EmulatedKernel =
-        EmulatedKernel.create platform ImmutableArray.Empty
+        EmulatedKernel.create platform StandardStreamsConfig.piped
         |> EmulatedKernel.withVirtualClockTicks clockTicks
 
     let private machineOn (platform : SimulatedUnixPlatform) (clockTicks : int64) : UnixMachineState =
@@ -173,7 +173,7 @@ module TestMonotonicTimestamp =
             platforms
             |> List.forall (fun platform ->
                 let shifted =
-                    (EmulatedKernel.create platform ImmutableArray.Empty
+                    (EmulatedKernel.create platform StandardStreamsConfig.piped
                      |> EmulatedKernel.withWallClockEpochMs epochMs
                      |> EmulatedKernel.withVirtualClockTicks clockMs)
                         .Machine

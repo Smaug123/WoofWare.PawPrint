@@ -353,6 +353,59 @@ module TestNativeLibc =
             |> SignalState.disposition Signal.SIGPIPE
             |> shouldEqual SignalDisposition.Ignore
 
+    /// A write into a pipe with no reader raises SIGPIPE at the writer on
+    /// Linux and at the process on Darwin. What stays pending on a thread other
+    /// than the main thread is never delivered, so it is refused; a signal
+    /// discarded as it was raised, or pending on the process or the main
+    /// thread, is not.
+    [<Test>]
+    let ``a raised signal left pending on a thread other than the main thread is refused`` () : unit =
+        let worker = 1
+
+        let dispositions : SignalDisposition<NativeSignalHandler> list =
+            [
+                SignalDisposition.Ignore
+                SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative)
+            ]
+
+        for platform in everyPlatform do
+            let numbering = SimulatedUnixPlatform.signalNumbering platform
+
+            for disposition in dispositions do
+                for sender in [ leader ; worker ] do
+                    let before =
+                        initial numbering |> SignalState.setDisposition Signal.SIGPIPE disposition
+
+                    let raised : PendingSignal<int> =
+                        {
+                            Signal = Signal.SIGPIPE
+                            Target =
+                                match SimulatedUnixPlatform.flavour platform with
+                                | SimulatedUnixFlavour.Linux -> ValueSome sender
+                                | SimulatedUnixFlavour.Darwin -> ValueNone
+                        }
+
+                    let after =
+                        match
+                            SignalState.generate
+                                CoreDumps.Suppressed
+                                leader
+                                (Set.ofList [ leader ; worker ])
+                                raised
+                                before
+                        with
+                        | Ok (SignalGeneration.ProcessContinues after) -> after
+                        | other -> failwith $"%O{platform}: generating %A{raised}: %A{other}"
+
+                    let expected =
+                        match disposition, raised.Target with
+                        | SignalDisposition.Catch _, ValueSome target when target <> leader ->
+                            Some (UnmodelledSelfSignal.PendingOnOtherThread Signal.SIGPIPE)
+                        | _ -> None
+
+                    NativeLibc.screenRaisedSignal platform sender leader PosixSignalShim.initial before raised after
+                    |> shouldEqual expected
+
     [<Test>]
     let ``System.Native installs its handler once until it restores it, whatever the disposition does meanwhile``
         ()
