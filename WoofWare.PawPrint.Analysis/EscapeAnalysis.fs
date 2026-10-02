@@ -1866,11 +1866,9 @@ module EscapeAnalysis =
 
                 state, instanceOf state callee.Callee calleeTypeArguments calleeMethodArguments
 
-    /// Whether everything dispatch reads of a receiver of the type `identity` binds: the signature
-    /// and locals of every method of the type, of its base types, and of the interfaces any of
-    /// them implements. Dispatch instantiates the method a call lands on, locals and all, which a
-    /// type its assembly no longer has makes impossible; the JIT throws `TypeLoadException`
-    /// compiling that method instead.
+    /// Whether everything dispatch reads of a receiver of the type `identity` binds: its base types,
+    /// the interfaces any of them implements, and the signature of every method of each, which
+    /// dispatch compares to find what implements a method. It reads no method's locals.
     let rec private dispatchBinds
         (state : EscapeAnalysisState)
         (identity : ResolvedTypeIdentity)
@@ -1906,12 +1904,7 @@ module EscapeAnalysis =
             (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
             : EscapeAnalysisState * bool
             =
-            let locals =
-                match method.Body with
-                | MethodBody.Il body -> body.LocalVars |> Option.map List.ofSeq |> Option.defaultValue []
-                | _ -> []
-
-            ((state, true), signatureTypes method.Signature @ locals)
+            ((state, true), signatureTypes method.Signature)
             ||> List.fold (fun (state, soFar) spelling ->
                 if soFar then
                     concretizable state assembly spelling
@@ -1991,6 +1984,13 @@ module EscapeAnalysis =
 
         let _, definition = methodOf state named.Definition
 
+        // Instantiating the method the call names reads its locals, which the JIT does not unless
+        // that method runs.
+        let namedLocals =
+            match definition.Body with
+            | MethodBody.Il body -> body.LocalVars |> Option.map List.ofSeq |> Option.defaultValue []
+            | _ -> []
+
         let state, binds =
             match TypeSystemState.tryGetConcreteTypeInfo state.TypeSystem receiver with
             | None -> state, true
@@ -1998,6 +1998,20 @@ module EscapeAnalysis =
                 match dispatchBinds state receiverType.Identity with
                 | state, true -> dispatchBinds state definition.RequiredDeclaringType.Identity
                 | state, false -> state, false
+
+        let state, binds =
+            if binds then
+                let definitionAssembly = assemblyOf state definition.DeclaringAssemblyFullName
+
+                ((state, true), namedLocals)
+                ||> List.fold (fun (state, soFar) spelling ->
+                    if soFar then
+                        concretizable state definitionAssembly spelling
+                    else
+                        state, false
+                )
+            else
+                state, false
 
         if not binds then
             state, ConstrainedOutcome.Undecided
@@ -2028,7 +2042,15 @@ module EscapeAnalysis =
         // the method the call names.
         let dispatchedOn (typeSystem : TypeSystemState) : TypeSystemState * VirtualImplementation =
             match implementationOn true typeSystem with
-            | typeSystem, VirtualImplementation.NotOverridden -> typeSystem, VirtualImplementation.Found concretized
+            | typeSystem, VirtualImplementation.NotOverridden ->
+                let named : DispatchedMethod =
+                    {
+                        Definition = definition
+                        TypeGenerics = ImmutableArray.CreateRange namedTypeArguments
+                        MethodGenerics = ImmutableArray.CreateRange namedMethodArguments
+                    }
+
+                typeSystem, VirtualImplementation.Found named
             | decided -> decided
 
         // A type that is not one the method's declaring type admits leaves what runs to the
@@ -2083,15 +2105,15 @@ module EscapeAnalysis =
                 ThrownType.Exactly (corelibType state "System.Runtime" "AmbiguousImplementationException")
             )
         | Some (VirtualImplementation.Found runs) ->
-            match runs.TryMetadata with
+            match runs.Definition.TryMetadata with
             | None -> state, ConstrainedOutcome.Undecided
             | Some facts ->
                 let key =
-                    MethodKey.make (assemblyOf state runs.DeclaringAssemblyFullName) facts.Handle
+                    MethodKey.make (assemblyOf state runs.Definition.DeclaringAssemblyFullName) facts.Handle
 
                 state,
                 ConstrainedOutcome.Reaches (
-                    instanceOf state key (List.ofSeq runs.DeclaringTypeGenerics) (List.ofSeq runs.Generics)
+                    instanceOf state key (List.ofSeq runs.TypeGenerics) (List.ofSeq runs.MethodGenerics)
                 )
 
     /// What `instance` calls, from the facts of its definition.

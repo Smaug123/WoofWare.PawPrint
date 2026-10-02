@@ -1196,11 +1196,35 @@ public static class Uses
             return f == null ? 0 : 1;
         }
     }
+    // Only a method nothing calls names `GoneType`, so the JIT never reads it.
+    public struct HelperUsesGone : IRuns
+    {
+        public int Run() => 0;
+        static bool Helper()
+        {
+            Provider.GoneType x = null;
+            return x == null;
+        }
+    }
+    // The method the call names has a default body using `GoneType`, but the receiver implements
+    // the method itself, so that body never runs.
+    public interface INamesGone
+    {
+        int Go()
+        {
+            Provider.GoneType x = null;
+            return x == null ? 0 : 1;
+        }
+    }
+    public struct OverridesGone : INamesGone { public int Go() => 0; }
+    static int ThroughNamesGone<T>(T x) where T : INamesGone => x.Go();
     static void Generic<T>() { }
     public static void InstantiateWithGone() { Generic<Provider.GoneType>(); }
     static int Through<T>(T x) where T : IRuns => x.Run();
     public static int ConstrainedReachesGoneLocal() => Through(new UsesGone());
     public static int ConstrainedReachesGonePointer() => Through(new UsesGonePointer());
+    public static int ConstrainedBesideGoneHelper() => Through(new HelperUsesGone());
+    public static int ConstrainedPastGoneOverridden() => ThroughNamesGone(new OverridesGone());
     public static int ConstrainedOnGone()
     {
         var x = new Provider.GoneStruct();
@@ -1279,18 +1303,82 @@ public static class Uses
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
 
         // A `constrained.` call reaching a method whose local's type is gone: the JIT throws
-        // compiling that method, which the analysis reports, or it does not decide the call. One
-        // reaching a method that names the type only in a function pointer's signature runs, which
-        // the analysis may not decide either.
+        // compiling that method, out of the call, where the caller's handlers see it.
         match against2 "ConstrainedReachesGoneLocal" with
-        | _, true -> ()
         | shown, false when shown.Contains "=System.TypeLoadException" -> ()
-        | shown, false ->
+        | shown, unknown ->
             failwith
-                $"ConstrainedReachesGoneLocal against the provider lacking its local's type: %A{Set.toList shown}, unknown false"
+                $"ConstrainedReachesGoneLocal against the provider lacking its local's type: %A{Set.toList shown}, unknown %b{unknown}"
+
+        // A method the call does not reach names the type, so nothing fails.
+        match against2 "ConstrainedBesideGoneHelper" with
+        | shown, false when not (shown.Contains "=System.TypeLoadException") -> ()
+        | shown, unknown ->
+            failwith
+                $"ConstrainedBesideGoneHelper against the provider lacking its helper's local's type: %A{Set.toList shown}, unknown %b{unknown}"
+
+        // The method the call names is not the one that runs, so nothing fails; the analysis may
+        // not decide the call, but must not say it fails.
+        match against2 "ConstrainedPastGoneOverridden" with
+        | shown, _ when not (shown.Contains "=System.TypeLoadException") -> ()
+        | shown, unknown ->
+            failwith
+                $"ConstrainedPastGoneOverridden against the provider lacking the named method's local's type: %A{Set.toList shown}, unknown %b{unknown}"
 
         // Answering at all is the claim: it is a summary rather than a crash.
         against2 "ConstrainedReachesGonePointer" |> ignore<Set<string> * bool>
+
+    /// A client whose struct has a method, called by nothing, using a type from an assembly that is
+    /// not present at all. The JIT never reads that method, so a call on the struct runs.
+    [<Test>]
+    let ``a constrained call is resolved beside a method using an assembly that is missing`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let optional = "namespace Optional; public class X { }"
+
+        let client =
+            """
+namespace Client;
+
+public interface IRuns { int Run(int n); }
+
+public struct UsesOptional : IRuns
+{
+    public int Run(int n) => 1 / n;
+    static bool Helper()
+    {
+        Optional.X x = null;
+        return x == null;
+    }
+}
+
+public static class Uses
+{
+    static int Through<T>(T x, int n) where T : IRuns => x.Run(n);
+    public static int Go(int n) => Through(new UsesOptional(), n);
+}
+"""
+
+        let optionalImage =
+            Roslyn.compileAssembly "Optional" OutputKind.DynamicallyLinkedLibrary [] [ optional ]
+
+        let clientAssembly =
+            Roslyn.compileAssembly
+                "Client"
+                OutputKind.DynamicallyLinkedLibrary
+                [ MetadataReference.CreateFromImage (ImmutableArray.CreateRange optionalImage) ]
+                [ client ]
+            |> fun image -> Assembly.read loggerFactory (Some "Client.dll") (new MemoryStream (image))
+
+        let analysis = analysisOver [ clientAssembly ] id
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Uses" "Go")
+
+        let shown = render analysis escapes
+
+        if escapes.Unknown || not (shown.Contains "=System.DivideByZeroException") then
+            failwith $"Go: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
 
     [<Test>]
     let ``a catch absorbs an exception however deep its base chain`` () : unit =
