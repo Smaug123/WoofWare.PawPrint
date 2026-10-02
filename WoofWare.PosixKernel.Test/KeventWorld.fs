@@ -173,15 +173,14 @@ module KeventWorld =
     // ------------------------------------------------------------------
 
     /// One entry of an eventlist as the probe printed it: the name it gave the ident,
-    /// the filter's name, flags, fflags, data (`None` for a send buffer's free space,
-    /// which this kernel does not model) and udata.
+    /// the filter's name, flags, fflags, data and udata.
     type Entry =
         {
             Name : string
             Filter : string
             Flags : uint16
             FilterFlags : uint32
-            Data : int64 option
+            Data : int64
             UserData : uint64
         }
 
@@ -238,7 +237,7 @@ module KeventWorld =
                     Filter = m.Groups.["filter"].Value
                     Flags = Convert.ToUInt16 (m.Groups.["flags"].Value, 16)
                     FilterFlags = UInt32.Parse m.Groups.["fflags"].Value
-                    Data = Some (Int64.Parse m.Groups.["data"].Value)
+                    Data = Int64.Parse m.Groups.["data"].Value
                     UserData = Convert.ToUInt64 (m.Groups.["udata"].Value, 16)
                 }
             )
@@ -316,10 +315,7 @@ module KeventWorld =
                             Filter = filterName event.Filter
                             Flags = event.Flags
                             FilterFlags = event.FilterFlags
-                            Data =
-                                match event.Data with
-                                | KqueueEventData.Exactly data -> Some data
-                                | KqueueEventData.SendBufferSpace -> None
+                            Data = event.Data
                             UserData = event.UserData
                         }
                     )
@@ -336,31 +332,13 @@ module KeventWorld =
                             Filter = filterName change.Filter
                             Flags = change.Flags
                             FilterFlags = change.FilterFlags
-                            Data = Some change.Data
+                            Data = change.Data
                             UserData = change.UserData
                         }
                     )
             }
         | KeventOutcome.WouldBlock _ -> failwith "a probe row never waited"
 
-    /// Whether `modelled` agrees with what the probe printed: everything exactly, but a
-    /// send buffer's free space, which the probe printed as a positive number.
-    let agrees (measured : Observed) (modelled : Observed) : bool =
-        measured.Result = modelled.Result
-        && measured.Errno = modelled.Errno
-        && List.length measured.Entries = List.length modelled.Entries
-        && List.forall2
-            (fun (m : Entry) (o : Entry) ->
-                m.Name = o.Name
-                && m.Filter = o.Filter
-                && m.Flags = o.Flags
-                && m.FilterFlags = o.FilterFlags
-                && m.UserData = o.UserData
-                && (
-                    match o.Data with
-                    | Some data -> m.Data = Some data
-                    | None -> m.Data |> Option.exists (fun data -> data > 0L)
-                )
-            )
-            measured.Entries
-            modelled.Entries
+    /// Whether `modelled` agrees with what the probe printed, entry for entry and
+    /// field for field.
+    let agrees (measured : Observed) (modelled : Observed) : bool = measured = modelled

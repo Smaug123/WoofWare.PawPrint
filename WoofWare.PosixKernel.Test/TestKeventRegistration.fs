@@ -54,14 +54,14 @@ module TestKeventRegistration =
         | Some (OpenFileTarget.Socket socketId) -> Some socketId
         | _ -> None
 
-    /// What the filter reports of a stream socket, as measured, with the send buffer's
-    /// free space as `None`: `(data, end of file, raw pending error)`, or `None` when it
-    /// is not ready.
+    /// What the filter reports of a stream socket, as measured on a machine with the
+    /// default `net.inet.tcp.sendspace`: `(data, end of file, raw pending error)`, or
+    /// `None` when it is not ready.
     let private measuredReadiness
         (filter : KqueueFilter)
         (socketId : SocketId)
         (system : UnixSystem<int, string>)
-        : (int64 option * bool * uint32) option
+        : (int64 * bool * uint32) option
         =
         let phase = (UnixMachineState.socket socketId system.Machine).Phase
 
@@ -79,10 +79,11 @@ module TestKeventRegistration =
 
         match phase, filter with
         | SocketPhase.Listening listenState, KqueueFilter.Read when not (List.isEmpty listenState.Queue) ->
-            Some (Some (int64 (List.length listenState.Queue)), false, 0u)
-        | SocketPhase.Established connection, KqueueFilter.Read when not (peerOpen connection) ->
-            Some (Some 0L, true, 0u)
-        | SocketPhase.Established _, KqueueFilter.Write -> Some (None, false, 0u)
+            Some (int64 (List.length listenState.Queue), false, 0u)
+        | SocketPhase.Established connection, KqueueFilter.Read when not (peerOpen connection) -> Some (0L, true, 0u)
+        // The send buffer's free space, measured over IPv4 loopback
+        // (`kevent-write-data.c`), at either end.
+        | SocketPhase.Established _, KqueueFilter.Write -> Some (146988L, false, 0u)
         | SocketPhase.Refused error, _ ->
             let errno =
                 match error with
@@ -91,8 +92,9 @@ module TestKeventRegistration =
 
             let data =
                 match filter with
-                | KqueueFilter.Read -> Some 0L
-                | KqueueFilter.Write -> None
+                | KqueueFilter.Read -> 0L
+                // A refused socket's send buffer, measured.
+                | KqueueFilter.Write -> 2048L
 
             Some (data, true, errno)
         | _ -> None
@@ -265,7 +267,7 @@ module TestKeventRegistration =
         (kq : int)
         (room : int)
         (model : Model)
-        : (int * KqueueFilter * ModelRegistration * (int64 option * bool * uint32)) list * Model
+        : (int * KqueueFilter * ModelRegistration * (int64 * bool * uint32)) list * Model
         =
         let state = model.Kqueues.[kq]
 
@@ -301,8 +303,8 @@ module TestKeventRegistration =
 
     /// The model's events as the kernel reports them.
     let private asEvents
-        (reported : (int * KqueueFilter * ModelRegistration * (int64 option * bool * uint32)) list)
-        : KeventEvent list
+        (reported : (int * KqueueFilter * ModelRegistration * (int64 * bool * uint32)) list)
+        : Kevent list
         =
         reported
         |> List.map (fun (fd, filter, registration, (data, eof, errno)) ->
@@ -318,10 +320,7 @@ module TestKeventRegistration =
                     ||| (if registration.Receipt then 0x40us else 0us)
                     ||| (if eof then 0x8000us else 0us)
                 FilterFlags = errno
-                Data =
-                    match data with
-                    | Some data -> KqueueEventData.Exactly data
-                    | None -> KqueueEventData.SendBufferSpace
+                Data = data
                 UserData = registration.UserData
             }
         )
@@ -830,7 +829,7 @@ module TestKeventRegistration =
                     Filter = KeventFilter.Read
                     Flags = flags
                     FilterFlags = 0u
-                    Data = KqueueEventData.Exactly 1L
+                    Data = 1L
                     UserData = 9UL
                 }
 

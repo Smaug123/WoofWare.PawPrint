@@ -22,8 +22,14 @@ using System.Runtime.InteropServices;
 //   * each event carries the data its registration was given;
 //   * past the converted SocketEvents, the buffer holds what kevent wrote there
 //     (the shim converts each 32-byte struct kevent in place into a 16-byte
-//     SocketEvent), apart from an EVFILT_WRITE event's data, the send buffer's
-//     free space, which is not asserted;
+//     SocketEvent), an EVFILT_WRITE event's data included: the send buffer's free
+//     space, which with nothing sent is the whole buffer. That is 146988 at either
+//     end of a connection (kevent-write-data.c: the default net.inet.tcp.sendspace,
+//     131072, rounded up to nine of loopback's 16332-byte segments), and 2048 for a
+//     refused socket, whose buffer a connect that never completed leaves capped at
+//     2048. The guest cannot ask for the first (PawPrint refuses SO_SNDBUF), so it
+//     is written here, and a macOS host with a changed sendspace or lo0 MTU would
+//     disagree;
 //   * removing a registration that is not there is ENOENT, and a change that fails
 //     leaves the one before it in the same call applied.
 //
@@ -114,6 +120,9 @@ class Program
         if (Wait(port, buffer, data, events) != 1) return check;
         check = 7;
         if (data[0] != 8 || events[0] != SA_WRITE) return check;
+        // Past the one SocketEvent, the WRITE's data: the whole send buffer.
+        check = 28;
+        if (*(long*)(buffer + 16) != 146988) return check;
 
         // ---- A refused socket reports READ, then WRITE, both at end of file.
         int closedPort;
@@ -145,11 +154,14 @@ class Program
         // The two SocketEvents cover the first struct kevent, and the second, the
         // WRITE's, survives whole: its filter, its flags (EV_ADD|EV_CLEAR|
         // EV_RECEIPT with EV_EOF), no pending error (the blocking connect took it),
-        // and its udata. Its data, the send buffer's free space, is not asserted.
+        // its data, the 2048 a refused socket's send buffer is capped at, and its
+        // udata.
         check = 26;
         if (*(short*)(buffer + 40) != -2 || *(ushort*)(buffer + 42) != 0x8061) return check;
         check = 27;
         if (*(uint*)(buffer + 44) != 0 || *(long*)(buffer + 56) != 9) return check;
+        check = 29;
+        if (*(long*)(buffer + 48) != 2048) return check;
 
         // ---- Removing a registration, and then removing it again.
         check = 13;
@@ -179,6 +191,9 @@ class Program
         if (Wait(port, buffer, data, events) != 1) return check;
         check = 22;
         if (data[0] != 10 || events[0] != SA_WRITE) return check;
+        // The accepted end's send buffer is the connecting end's size.
+        check = 30;
+        if (*(long*)(buffer + 16) != 146988) return check;
 
         client.Dispose();
 

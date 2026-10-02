@@ -267,25 +267,19 @@ module SocketEventPort =
                 }
         }
 
-/// What the `data` field of an event a kqueue reports holds.
-[<RequireQualifiedAccess>]
-type KqueueEventData =
-    /// Exactly this value.
-    | Exactly of int64
-    /// The free space in the socket's send buffer, in bytes: what
-    /// `EVFILT_WRITE` reports of a socket. This library models no send buffer,
-    /// so it cannot say how much.
-    | SendBufferSpace
-
-/// What a kqueue filter reports of a descriptor on which it is ready.
+/// What a kqueue filter reports of a descriptor on which it is ready. `data`
+/// is what the event's `data` field holds: for `EVFILT_READ` of a listener
+/// the connections queued, of any other socket the bytes waiting, and for
+/// `EVFILT_WRITE` the free space in the socket's send buffer
+/// (`DarwinReadiness.sendBufferSpace`).
 [<RequireQualifiedAccess>]
 type KqueueFilterReport =
     /// The filter is ready, and reports `data`.
-    | Ready of data : KqueueEventData
+    | Ready of data : int64
     /// The filter is ready and reports `EV_EOF`: the socket can receive no
     /// more, or (for `EVFILT_WRITE`) send no more. Its `fflags` hold the
     /// socket's pending error, or 0 when there is none.
-    | EndOfFile of data : KqueueEventData * pendingError : UnixError option
+    | EndOfFile of data : int64 * pendingError : UnixError option
 
 /// The readiness a Darwin-flavoured socket presents to a kqueue filter.
 ///
@@ -308,6 +302,81 @@ module DarwinReadiness =
         | SocketDomain.Unix, _
         | _, SocketKind.Datagram
         | _, SocketKind.SeqPacket -> false
+
+    // The send buffer's cap on a TCP socket that has never connected:
+    // `tcp_attach` sets `sb_preconn_hiwat` to this constant, and only a
+    // completed connect clears it.
+    let private preconnectSendSpace : int64 = 2048L
+
+    // A TCP segment's payload over Darwin's loopback, in bytes: the interface's
+    // MTU of 16384, less the IP and TCP headers and the 12-byte timestamp
+    // option both ends use. Measured as `TCP_MAXSEG` (`kevent-write-data.c`).
+    let private loopbackSegment (domain : SocketDomain) : int64 =
+        match domain with
+        | SocketDomain.Inet -> 16384L - 40L - 12L
+        | SocketDomain.Inet6 -> 16384L - 60L - 12L
+        | SocketDomain.Unix ->
+            failwith
+                "DarwinReadiness.loopbackSegment: a Unix-domain socket has no TCP segments (this is a bug in this library: modelsSocket admits no Unix-domain socket)."
+
+    /// The free space in the send buffer of the TCP socket `socket`, in bytes:
+    /// what `EVFILT_WRITE` reports as its event's `data`.
+    ///
+    /// This kernel has no send path, so nothing is ever queued and the space
+    /// is the buffer's whole size; and `SO_SNDBUF` is refused, so only the
+    /// socket's creation and its handshake set that size. A connected
+    /// socket's buffer, at either end, is the machine's `TcpSendSpace` rounded
+    /// up on the handshake to whole loopback segments, and capped at
+    /// `kern.ipc.maxsockbuf`: 146988 over IPv4 and 146808 over IPv6 at the
+    /// default 131072. A refused socket's is capped at 2048 until a connect
+    /// completes, which on Darwin none ever will. Measured on Darwin 27.0.0,
+    /// and explained from XNU's source, in `kevent-write-data.c`.
+    ///
+    /// Loudly partial: the machine must be Darwin-flavoured, with a
+    /// `TcpSendSpace` that `UnixMachineState.withTcpSendSpace` admits, and the
+    /// socket one `modelsSocket` admits, connected or refused, which are the
+    /// states in which its WRITE filter is ready.
+    let sendBufferSpace (socket : SocketDescription) (machine : UnixMachineState) : int64 =
+        match SimulatedUnixPlatform.flavour machine.UnixPlatform with
+        | SimulatedUnixFlavour.Linux ->
+            failwith
+                "DarwinReadiness.sendBufferSpace: the machine is Linux-flavoured, and this is Darwin's send buffer (this is a bug in the caller: a kqueue exists only on Darwin)."
+        | SimulatedUnixFlavour.Darwin -> ()
+
+        let sendSpace = machine.TcpSendSpace
+
+        if
+            sendSpace < UnixMachineState.darwinLoopbackSendPipe
+            || sendSpace > UnixMachineState.darwinSocketBufferMax
+        then
+            failwith
+                $"DarwinReadiness.sendBufferSpace: the machine's TcpSendSpace is %d{sendSpace}, which UnixMachineState.withTcpSendSpace refuses on Darwin (this is a bug in a caller that assembled the machine by hand)."
+
+        if not (modelsSocket socket) then
+            failwith
+                $"DarwinReadiness.sendBufferSpace: the socket is %O{socket.Kind} in %O{socket.Domain}, whose send buffer this kernel does not model (this is a bug in the caller)."
+
+        match socket.Phase with
+        | SocketPhase.Established _ ->
+            // The handshake rounds the buffer up to whole segments. The route to
+            // 127.0.0.1 would first raise it to its send pipe, but
+            // `withTcpSendSpace` admits nothing below that.
+            let segment = loopbackSegment socket.Domain
+            let rounded = (int64 sendSpace + segment - 1L) / segment * segment
+            min rounded (int64 UnixMachineState.darwinSocketBufferMax)
+        // Darwin's rule is the lesser of the two, though the cap always wins
+        // while `withTcpSendSpace` admits nothing below 49152.
+        | SocketPhase.Refused _ -> min (int64 sendSpace) preconnectSendSpace
+        | SocketPhase.Idle
+        | SocketPhase.Listening _ ->
+            failwith
+                $"DarwinReadiness.sendBufferSpace: the socket is %A{socket.Phase}, whose WRITE filter is never ready, so nothing reports its send buffer (this is a bug in the caller)."
+        | SocketPhase.EstablishedPendingReport _ ->
+            failwith
+                "DarwinReadiness.sendBufferSpace: the socket is in EstablishedPendingReport, which only a Linux-flavoured connect enters (this is a bug in the caller's state construction)."
+        | SocketPhase.DatagramPeer _ ->
+            failwith
+                "DarwinReadiness.sendBufferSpace: a stream socket holds a datagram peer, which this kernel's socket invariants forbid (this is a bug in the caller's state construction)."
 
     /// What the kqueue filter `filter` reports of the socket `socketId` right
     /// now, or `None` when the filter is not ready.
@@ -339,7 +408,7 @@ module DarwinReadiness =
             // Ready while a connection is queued, reporting how many are.
             match listenState.Queue with
             | [] -> None
-            | queue -> Some (KqueueFilterReport.Ready (KqueueEventData.Exactly (int64 (List.length queue))))
+            | queue -> Some (KqueueFilterReport.Ready (int64 (List.length queue)))
         | SocketPhase.Listening _, KqueueFilter.Write -> None
         // Bound or not: a socket that is not connected can neither be read nor
         // written.
@@ -349,18 +418,16 @@ module DarwinReadiness =
                 None
             else
                 // The peer's FIN: EV_EOF, no error, and nothing waiting.
-                Some (KqueueFilterReport.EndOfFile (KqueueEventData.Exactly 0L, None))
+                Some (KqueueFilterReport.EndOfFile (0L, None))
         // Writable whether or not the peer has gone, and without EV_EOF.
         | SocketPhase.Established _, KqueueFilter.Write ->
-            Some (KqueueFilterReport.Ready KqueueEventData.SendBufferSpace)
+            Some (KqueueFilterReport.Ready (sendBufferSpace socket machine))
         // Both filters report EV_EOF once a connect is refused, with the error
         // in `fflags` until an `SO_ERROR` read takes it (measured: ECONNREFUSED,
-        // then 0). The WRITE filter's data is still the send buffer's free space
-        // (2048 measured, where a connected socket's is its SO_SNDBUF).
-        | SocketPhase.Refused error, KqueueFilter.Read ->
-            Some (KqueueFilterReport.EndOfFile (KqueueEventData.Exactly 0L, pendingError error))
+        // then 0). The WRITE filter's data is still the send buffer's free space.
+        | SocketPhase.Refused error, KqueueFilter.Read -> Some (KqueueFilterReport.EndOfFile (0L, pendingError error))
         | SocketPhase.Refused error, KqueueFilter.Write ->
-            Some (KqueueFilterReport.EndOfFile (KqueueEventData.SendBufferSpace, pendingError error))
+            Some (KqueueFilterReport.EndOfFile (sendBufferSpace socket machine, pendingError error))
         | SocketPhase.EstablishedPendingReport _, _ ->
             failwith
                 $"DarwinReadiness.ofSocket: socket %O{socketId} is in EstablishedPendingReport, which only a Linux-flavoured connect enters (this is a bug in the caller's state construction)."

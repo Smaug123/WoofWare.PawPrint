@@ -1950,6 +1950,12 @@ type KernelConfig =
         /// default (4096 on Linux, 128 on Darwin): the ceiling `listen(2)`
         /// clamps its backlog to. See `UnixMachineState.withSoMaxConn`.
         SoMaxConn : int option
+        /// Darwin's `net.inet.tcp.sendspace` sysctl, the send buffer a new TCP
+        /// socket starts with, or `None` for the flavour's measured default
+        /// (131072 on Darwin). A kqueue's `EVFILT_WRITE` reports the buffer's
+        /// free space. Only `None` is admitted on Linux, which reads nothing
+        /// of it. See `UnixMachineState.withTcpSendSpace`.
+        TcpSendSpace : int option
         /// Linux's `fs.protected_symlinks`, `fs.protected_regular` and
         /// `fs.protected_fifos` sysctls, which forbid following another user's
         /// symbolic link, or opening another user's file with `O_CREAT`, in a
@@ -2033,6 +2039,7 @@ type KernelConfig =
             Mount = None
             EphemeralPortRange = None
             SoMaxConn = None
+            TcpSendSpace = None
             ProtectedFiles = ProtectedFiles.off
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
@@ -2073,7 +2080,7 @@ module KernelConfig =
     /// configuration path.
     ///
     /// The platform is the constructor's argument rather than a setter's,
-    /// because the fields it fixes (`SoMaxConn`'s and `Mount`'s
+    /// because the fields it fixes (`SoMaxConn`'s, `TcpSendSpace`'s and `Mount`'s
     /// defaults, the limits the current directory is admitted under) would
     /// otherwise be stale for whichever platform was set last.
     let toKernel (config : KernelConfig) : EmulatedKernel =
@@ -2132,6 +2139,7 @@ module KernelConfig =
             )
         )
         |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.SoMaxConn)
+        |> EmulatedKernel.mapMachine (UnixMachineState.withTcpSendSpace config.TcpSendSpace)
         |> EmulatedKernel.mapMachine (
             UnixMachineState.withProtectedFiles "KernelConfig.ProtectedFiles" config.ProtectedFiles
         )

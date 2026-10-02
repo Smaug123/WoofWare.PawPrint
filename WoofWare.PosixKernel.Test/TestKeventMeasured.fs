@@ -11,9 +11,7 @@ open WoofWare.PosixKernel
 /// `docs/plans/2026-08-23-posix-kernel-extraction/kevent-register.c` through the
 /// syscalls, and every `kevent` it makes is compared with the line the probe printed
 /// for the same call on Darwin 27.0.0 arm64 (2026-10-02), embedded: its result, its
-/// errno, and every entry it wrote, field by field. The one field compared loosely is
-/// an `EVFILT_WRITE` event's `data`, the send buffer's free space, which this kernel
-/// does not model; the probe's must be positive.
+/// errno, and every entry it wrote, field by field.
 ///
 /// The sections the kernel cannot re-enact are left out: anything that writes data
 /// onto a connection (P4, P7, P8), `shutdown` (P5), a datagram or IPv6 socket (P9,

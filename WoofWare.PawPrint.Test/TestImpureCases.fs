@@ -2384,7 +2384,9 @@ module TestImpureCases =
                     }
                 AppContext = AppContextProperties.empty
                 // Compared: it asserts no descriptor number or port, only results,
-                // counts, data and SocketEvents.
+                // counts, data and SocketEvents. Its send-buffer sizes are the
+                // defaults of a macOS host's net.inet.tcp.sendspace and lo0 MTU,
+                // which a host that changed either would not report.
                 Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None

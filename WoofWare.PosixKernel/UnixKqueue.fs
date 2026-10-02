@@ -1,8 +1,7 @@
 namespace WoofWare.PosixKernel
 
 /// One Darwin `struct kevent`: an entry of the changelist `kevent(2)` reads, or
-/// one it echoes back into the eventlist (`KeventOutcome.Echoed`), each field in
-/// Darwin's own numbering. An event the eventlist reports is a `KeventEvent`.
+/// of the eventlist it fills, each field in Darwin's own numbering.
 type Kevent =
     {
         /// `ident`: what the filter watches. For `KeventFilter.Read` and
@@ -92,27 +91,6 @@ module KqueueRefusal =
         | KqueueRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and kqueue exists on Darwin only."
 
-/// One event `kevent(2)` reports in its eventlist: a Darwin `struct kevent`
-/// whose `data` this library may not be able to state (see `KqueueEventData`).
-type KeventEvent =
-    {
-        /// `ident`: the descriptor the registration was made through.
-        Ident : uint64
-        /// `filter`, such as `KeventFilter.Read`.
-        Filter : int16
-        /// `flags`: the registration's own, as its first `EV_ADD` gave them,
-        /// with `KeventFlags.Eof` added when the filter reports end of file.
-        Flags : uint16
-        /// `fflags`: with `KeventFlags.Eof`, the socket's pending error as a
-        /// raw Darwin errno, or 0 when there is none; otherwise 0.
-        FilterFlags : uint32
-        /// `data`: what the filter reports, such as how many connections a
-        /// listener holds.
-        Data : KqueueEventData
-        /// `udata`: the caller's value from the registration's latest `EV_ADD`.
-        UserData : uint64
-    }
-
 /// What became of a `kevent(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
 type KeventOutcome =
@@ -143,7 +121,7 @@ type KeventOutcome =
     ///
     /// Empty for a wait that timed out, for a timeout of zero with nothing to
     /// report, and for an `nevents` of zero or less.
-    | Answered of events : KeventEvent list
+    | Answered of events : Kevent list
     /// `kevent` did not return. The calling task is parked, and sleeps until
     /// `WakeCondition.satisfied` of this condition is non-empty and
     /// `UnixWait.wakes` wakes it; then `UnixKqueue.finishKevent` finishes the
@@ -316,7 +294,7 @@ module UnixKqueue =
         | KqueueFilter.Write -> KeventFilter.Write
 
     /// The event `report` is, in Darwin's numbering.
-    let private eventOf (platform : SimulatedUnixPlatform) (report : KqueueReport) : KeventEvent =
+    let private eventOf (platform : SimulatedUnixPlatform) (report : KqueueReport) : Kevent =
         let registration = report.Registration
 
         // Measured on 27.0.0 (`kevent-register.c`): an event carries the
