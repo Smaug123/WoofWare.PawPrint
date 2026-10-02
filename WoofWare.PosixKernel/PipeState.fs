@@ -70,7 +70,7 @@ type ExternalEndpoint =
         | ExternalEndpoint fd -> $"the client's end of launch descriptor %d{fd}"
 
 /// What one descriptor of a launch table is: a pipe end the launcher made
-/// before the process started, whose other end the client holds.
+/// before the process started, whose other end is the client's.
 ///
 /// Each entry makes a pipe of its own, with a description of its own, so no two
 /// launch descriptors share a description or a pipe.
@@ -91,6 +91,10 @@ type LaunchDescriptor =
     /// never short and never waits. What the client read is in
     /// `UnixMachineState.Delivered`.
     | Drained
+    /// The write end of a pipe, opened `O_WRONLY`, whose read end the client
+    /// closed before the process started. Nothing will ever read it, so a write
+    /// answers `EPIPE` and raises `SIGPIPE`, as `UnixReadWrite.write` describes.
+    | Gone
 
 /// The bytes a client has still to write into a pipe, oldest first. Never
 /// none: a client with nothing left to write has closed its end.
@@ -140,6 +144,9 @@ type ClientEnd =
     /// Nothing: the client has closed the write end, either because every byte
     /// it supplied went in, or because no reader was left to take the rest.
     | WriteEndClosed
+    /// Nothing: the client closed the read end before the process started, so
+    /// the pipe has no reader outside the process.
+    | ReadEndClosed
 
 /// Where a pipe came from, and so what is known about it besides its bytes.
 [<RequireQualifiedAccess>]
@@ -196,6 +203,7 @@ module PipeState =
         | PipeOrigin.Launched (_, ClientEnd.Draining), PipeEnd.Write
         | PipeOrigin.Launched (_, ClientEnd.Supplying _), PipeEnd.Read
         | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed), _
+        | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed), _
         | PipeOrigin.Made _, _ -> false
 
     /// The client that reads `pipe` as fast as it is written, if one does.
@@ -204,6 +212,7 @@ module PipeState =
         | PipeOrigin.Launched (endpoint, ClientEnd.Draining) -> Some endpoint
         | PipeOrigin.Launched (_, ClientEnd.Supplying _)
         | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed)
+        | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed)
         | PipeOrigin.Made _ -> None
 
     /// The pipe `descriptor` makes for launch descriptor `fd` on a machine of
@@ -226,6 +235,12 @@ module PipeState =
             {
                 Buffer = empty
                 Origin = PipeOrigin.Launched (endpoint, ClientEnd.Draining)
+            },
+            PipeEnd.Write
+        | LaunchDescriptor.Gone ->
+            {
+                Buffer = empty
+                Origin = PipeOrigin.Launched (endpoint, ClientEnd.ReadEndClosed)
             },
             PipeEnd.Write
         | LaunchDescriptor.Supplied bytes ->
@@ -270,7 +285,8 @@ module PipeState =
         match pipe.Origin with
         | PipeOrigin.Made _
         | PipeOrigin.Launched (_, ClientEnd.Draining)
-        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) ->
+        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed)
+        | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed) ->
             pipe,
             {
                 WroteIntoEmpty = false
@@ -310,7 +326,8 @@ module PipeState =
             }
         | PipeOrigin.Made _
         | PipeOrigin.Launched (_, ClientEnd.Draining)
-        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) -> pipe
+        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed)
+        | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed) -> pipe
 
     /// Whether a client asleep in a write into `pipe` could write now: if so,
     /// it would not be asleep. False for a pipe with no such client.
@@ -320,7 +337,8 @@ module PipeState =
             fst (PipeBuffer.resume unwritten.All unwritten.Written pipe.Buffer) > 0
         | PipeOrigin.Made _
         | PipeOrigin.Launched (_, ClientEnd.Draining)
-        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) -> false
+        | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed)
+        | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed) -> false
 
 /// The bytes one `write(2)` delivered to a client that drains a pipe: what the
 /// client read, in the order the process wrote it.

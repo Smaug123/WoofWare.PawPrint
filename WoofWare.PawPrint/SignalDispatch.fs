@@ -47,8 +47,11 @@ type SignalPoll =
 /// System.Native's native handler passes it on to the dispatcher, which runs
 /// the managed handler: so the leader is the task asked, and the dispatcher,
 /// which is never the leader, never receives a signal itself. Only the leader
-/// is asked, because nothing PawPrint answers aims a signal at any other
-/// thread: its one generator is `kill(2)`, which aims at the whole process.
+/// is asked, because nothing PawPrint answers leaves a signal pending on any
+/// other thread: `kill(2)` aims at the whole process, and the SIGPIPE a write
+/// into a pipe with no reader raises, which Linux aims at the writing thread,
+/// is refused by `SystemNative_Write` when it would stay pending on a thread
+/// other than the leader.
 ///
 /// The `SignalDelivery.Default*` cases are refused loudly: a default that
 /// terminates or stops is applied when the signal is generated (see
@@ -242,16 +245,25 @@ module SignalDispatch =
             failwith
                 $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which the guest has replaced with %O{other}; PawPrint models the handler writing only to a pipe."
 
-        match UnixReadWrite.admitWrite pipe.WriteEnd UserBuffer.Mapped 1UL system with
-        | Error refusal -> refuse (WriteRefusal.describe refusal)
-        | Ok (WriteAdmission.Answered answer, _) -> refuse $"the kernel answers %O{answer} without taking the byte"
-        | Ok (WriteAdmission.Transfer _, system) ->
+        // The handler runs on the leader, so the leader makes the write.
+        let leader = state.Kernel.Leader
 
-        match UnixReadWrite.write pipe.WriteEnd bytes system with
+        let describe (outcome : WriteOutcome<'Answer, ThreadId, NativeSignalHandler>) : string =
+            match outcome with
+            | WriteOutcome.Returns (answer, _) -> $"%O{answer}"
+            | WriteOutcome.ReturnsRaising (answer, raised, _) -> $"%O{answer}, raising %O{raised.Signal}"
+            | WriteOutcome.ProcessEnded ended -> $"the end of the process (%O{ended.Termination})"
+
+        match UnixReadWrite.admitWrite leader pipe.WriteEnd UserBuffer.Mapped 1UL system with
         | Error refusal -> refuse (WriteRefusal.describe refusal)
-        | Ok (WriteAnswer.Completed 1L, system) ->
-            state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
-        | Ok (answer, _) -> refuse $"the kernel answers %O{answer}"
+        | Ok (WriteOutcome.Returns (WriteAdmission.Transfer _, system)) ->
+
+            match UnixReadWrite.write leader pipe.WriteEnd bytes system with
+            | Error refusal -> refuse (WriteRefusal.describe refusal)
+            | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, system)) ->
+                state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
+            | Ok outcome -> refuse $"the kernel answers %s{describe outcome}"
+        | Ok outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
 
     /// The leader's return to user mode: whatever the kernel delivers to it now,
     /// each through its disposition. A handler frame's handler runs, innermost

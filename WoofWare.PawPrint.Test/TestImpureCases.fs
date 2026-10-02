@@ -1171,6 +1171,39 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of `PipeBrokenRaw.cs` under `platform`, whose
+    /// exit code is the flavour's answer to a zero-length write with no reader:
+    /// 0 on Linux, 100 (EPIPE) on Darwin. The assertion here is that none of
+    /// the SIGPIPEs its writes raised was left pending, the runtime ignoring
+    /// it, and that the pipe was freed.
+    let private pipeBrokenRawCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "PipeBrokenRaw.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                    (EmulatedKernel.unix state.Kernel).Machine.Pipes
+                    |> Map.forall (fun _ pipe ->
+                        match pipe.Origin with
+                        | PipeOrigin.Launched _ -> true
+                        | PipeOrigin.Made _ -> false
+                    )
+                    |> shouldEqual true
+                )
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1320,6 +1353,8 @@ module TestImpureCases =
             stdioNonBlockingCase SimulatedUnixPlatform.macOsArm64
             pipeRawCase SimulatedUnixPlatform.linuxX64
             pipeRawCase SimulatedUnixPlatform.macOsArm64
+            pipeBrokenRawCase SimulatedUnixPlatform.linuxX64
+            pipeBrokenRawCase SimulatedUnixPlatform.macOsArm64
             processIdCase None
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.
@@ -4016,17 +4051,17 @@ module TestImpureCases =
             // that is not compared starts no second run at all.
             let realResult, pawPrintResult =
                 if comparesHere then
-                    // The case's own seed, environment overlay and standard input drive
-                    // the oracle too, exactly as they do for a `sourcesPure` case, so
-                    // both runtimes see one description of a filesystem, of the
-                    // variables the case names, and of the bytes on standard input.
+                    // The case's own seed, environment overlay and standard streams
+                    // drive the oracle too, exactly as they do for a `sourcesPure`
+                    // case, so both runtimes see one description of a filesystem, of
+                    // the variables the case names, and of the standard streams.
                     let realResult, pawPrintResult =
                         DifferentialOracle.alongsideInterpreted
                             (fun () ->
                                 RealRuntime.executeWithSeed
                                     case.KernelConfig.FileSystem
                                     case.KernelConfig.Environment
-                                    case.KernelConfig.StandardInput
+                                    case.KernelConfig.StandardStreams
                                     [||]
                                     image
                             )

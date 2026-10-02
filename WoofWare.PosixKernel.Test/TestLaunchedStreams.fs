@@ -113,18 +113,21 @@ module TestLaunchedStreams =
         |> List.ofSeq
 
     /// One write as a client issues it: admitted, and then given the bytes the
-    /// admission asked for.
+    /// admission asked for. A pipe the process made can lose its reader, and a
+    /// write into it then raises SIGPIPE, which the process ignores here
+    /// (`initialSystem`), so the write answers EPIPE.
     let private write
         (fd : int)
         (bytes : ImmutableArray<byte>)
         (system : UnixSystem<int, string>)
         : Result<WriteAnswer * UnixSystem<int, string>, WriteRefusal>
         =
-        match UnixReadWrite.admitWrite fd UserBuffer.Mapped (uint64 bytes.Length) system with
+        match WriteOutcomes.admitThenWrite system.Leader fd UserBuffer.Mapped bytes system with
         | Error refusal -> Error refusal
-        | Ok (WriteAdmission.Answered answer, system) -> Ok (answer, system)
-        | Ok (WriteAdmission.Transfer count, system) ->
-            UnixReadWrite.write fd (ImmutableArray.Create (bytes, 0, count)) system
+        | Ok (WriteOutcome.Returns (answer, after))
+        | Ok (WriteOutcome.ReturnsRaising (answer, _, after)) -> Ok (answer, after)
+        | Ok (WriteOutcome.ProcessEnded _ as outcome) ->
+            failwith $"a write ended the process, whose SIGPIPE is ignored: %A{outcome}"
 
     /// What the earlier standard streams answered, if the descriptor named one
     /// (`None` for a descriptor the reference does not model), and the
@@ -262,6 +265,18 @@ module TestLaunchedStreams =
                 }
             )
 
+    /// A process launched with `UnixSystem.pipedStandardStreams`, ignoring
+    /// SIGPIPE.
+    let private initialSystem (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        let system = UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+        { system with
+            Process =
+                { system.Process with
+                    Signals = SignalState.setDisposition Signal.SIGPIPE SignalDisposition.Ignore system.Process.Signals
+                }
+        }
+
     /// What the launched streams answer, or `None` where the system refused, and
     /// the system afterwards.
     let private systemStep
@@ -369,7 +384,7 @@ module TestLaunchedStreams =
                     | Some _
                     | None -> run (index + 1) rest reference after
 
-            run 0 ops initialReference (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0))
+            run 0 ops initialReference (initialSystem platform)
 
         let gen =
             Gen.zip (Gen.elements platforms) (Gen.listOf opGen |> Gen.map (List.truncate 60))

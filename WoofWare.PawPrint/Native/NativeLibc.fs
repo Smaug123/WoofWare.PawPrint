@@ -28,6 +28,11 @@ type UnmodelledSelfSignal =
     /// has no stopped state for it to resume, and would leave it pending for a
     /// dispatcher that refuses it.
     | ContinueWithoutHandler of Signal
+    /// A signal a syscall raised at the thread that made it, which is not the
+    /// main thread, and which stays pending there because the process catches
+    /// it: Linux sends the SIGPIPE of a write into a pipe with no reader to the
+    /// writer. PawPrint delivers signals to the main thread only.
+    | PendingOnOtherThread of Signal
 
 [<RequireQualifiedAccess>]
 module UnmodelledSelfSignal =
@@ -50,6 +55,8 @@ module UnmodelledSelfSignal =
             $"a real CoreCLR process's handler for %O{signal} would restore the default, and on this platform that handler is also how a later hardware fault in managed code becomes a managed exception; afterwards such a fault kills the process, and PawPrint cannot tell which faults the JIT leaves to the hardware."
         | UnmodelledSelfSignal.ContinueWithoutHandler signal ->
             $"%O{signal} with no handler registered continues a stopped process, and a running one carries on regardless; PawPrint has no stopped state, and would leave the signal pending for a dispatcher that refuses it."
+        | UnmodelledSelfSignal.PendingOnOtherThread signal ->
+            $"%O{signal} was raised at the thread that made the call, which is not the main thread, and the process catches it, so it is pending there; PawPrint delivers signals to the main thread only (SignalDispatch)."
 
 /// The C library's signal entry points, which a guest reaches only through a
 /// P/Invoke of its own naming the library `libc`: the BCL calls none of them
@@ -149,6 +156,34 @@ module NativeLibc =
             Some (UnmodelledSelfSignal.ContinueWithoutHandler signal)
         | SignalDisposition.Default
         | SignalDisposition.Ignore -> None
+
+    /// Whether PawPrint's kernel model can carry on after a syscall made by
+    /// `sender` raised `raised`, given the signal state and System.Native's
+    /// state before the call, and `after`, the signal state once the kernel
+    /// generated it. `None` if it can. `leader` is the process's main thread.
+    ///
+    /// The signal is delivered as one the process sent itself is, so what
+    /// `screenSelfSignal` refuses is refused here too; and so is one left
+    /// pending on a thread other than `leader`, which nothing delivers.
+    let screenRaisedSignal<'Task when 'Task : comparison>
+        (platform : SimulatedUnixPlatform)
+        (sender : 'Task)
+        (leader : 'Task)
+        (shim : PosixSignalShim)
+        (signals : SignalState<'Task, NativeSignalHandler>)
+        (raised : PendingSignal<'Task>)
+        (after : SignalState<'Task, NativeSignalHandler>)
+        : UnmodelledSelfSignal option
+        =
+        match screenSelfSignal platform sender leader shim signals raised.Signal with
+        | Some refusal -> Some refusal
+        | None ->
+
+        match raised.Target with
+        | ValueSome target when target <> leader && List.contains raised (SignalState.pending after) ->
+            Some (UnmodelledSelfSignal.PendingOnOtherThread raised.Signal)
+        | ValueSome _
+        | ValueNone -> None
 
     /// `kill(2)`, issued by the thread `ctx` is executing, pushing its `int`
     /// result: 0, or -1 with errno set.

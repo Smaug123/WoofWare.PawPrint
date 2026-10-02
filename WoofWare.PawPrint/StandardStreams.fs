@@ -39,20 +39,79 @@ module OutputLogEntry =
 
         builder.ToImmutable ()
 
+/// What the launcher does with the read end of one of a guest's output
+/// streams.
+[<RequireQualifiedAccess>]
+type OutputStreamReader =
+    /// PawPrint reads every byte the moment the guest writes it, so a write is
+    /// never short and never waits.
+    | Drained
+    /// The launcher closed the read end before the guest started, as when the
+    /// reader of a shell pipeline has already exited. Nothing will ever read
+    /// the stream: every write to it answers EPIPE and raises SIGPIPE, which
+    /// the runtime ignores (`StartupSignalDispositions`).
+    | Gone
+
+/// How a guest's standard streams are launched: each on a pipe of its own,
+/// whose far end the launcher holds.
+///
+/// There is no `Gone` for standard input: a writer that closed before the
+/// guest started, having written nothing, is `Input` empty.
+type StandardStreamsConfig =
+    {
+        /// The bytes the launcher writes into standard input, a pipe, with one
+        /// blocking write before closing its end, as `cmd < file` or a harness
+        /// feeding a child does. Empty: the guest reads end of file at once.
+        ///
+        /// What the pipe cannot hold yet goes in as the guest reads, so a
+        /// guest never waits for input and sees end of file only after the last
+        /// byte. More than one `write(2)` moves on the platform (0x7FFFF000
+        /// bytes on Linux) is refused.
+        Input : ImmutableArray<byte>
+        /// What the launcher does with the read end of standard output.
+        Output : OutputStreamReader
+        /// What the launcher does with the read end of standard error.
+        Error : OutputStreamReader
+    }
+
+[<RequireQualifiedAccess>]
+module StandardStreamsConfig =
+    /// Nothing on standard input, and both output streams drained: how the
+    /// oracle `RealRuntime` starts a guest by default.
+    let piped : StandardStreamsConfig =
+        {
+            Input = ImmutableArray.Empty
+            Output = OutputStreamReader.Drained
+            Error = OutputStreamReader.Drained
+        }
+
 /// How PawPrint launches a guest, and how it reads back what the guest wrote.
 ///
 /// Every guest starts as the oracle `RealRuntime` starts one: each standard
 /// stream on a pipe of its own, standard input supplying the bytes the host
-/// gave it (`KernelConfig.StandardInput`) and the two output streams drained
-/// by PawPrint as fast as the guest writes. The kernel knows those pipes only
-/// by the descriptor each was launched on; the roles are PawPrint's.
+/// gave it and each output stream drained by PawPrint as fast as the guest
+/// writes, or with no reader at all, as `KernelConfig.StandardStreams` says.
+/// The kernel knows those pipes only by the descriptor each was launched on;
+/// the roles are PawPrint's.
 [<RequireQualifiedAccess>]
 module StandardStreams =
-    /// The launch table every guest starts with: descriptors 0, 1 and 2, as
-    /// `UnixSystem.pipedStandardStreams` describes, with `standardInput` the
-    /// bytes PawPrint writes into descriptor 0's pipe before closing it.
-    let launch (standardInput : ImmutableArray<byte>) : Map<int, LaunchDescriptor> =
-        Map.add 0 (LaunchDescriptor.Supplied standardInput) UnixSystem.pipedStandardStreams
+    /// The launch table a guest starts with: descriptors 0, 1 and 2, as
+    /// `UnixSystem.pipedStandardStreams` describes, with what `config` says
+    /// each pipe's far end does.
+    let launch (config : StandardStreamsConfig) : Map<int, LaunchDescriptor> =
+        let output (reader : OutputStreamReader) : LaunchDescriptor =
+            match reader with
+            | OutputStreamReader.Drained -> LaunchDescriptor.Drained
+            | OutputStreamReader.Gone -> LaunchDescriptor.Gone
+
+        if config.Input.IsDefault then
+            failwith
+                "StandardStreams.launch: Input is the default ImmutableArray, whose underlying array is null. To supply nothing, pass ImmutableArray<byte>.Empty."
+
+        UnixSystem.pipedStandardStreams
+        |> Map.add 0 (LaunchDescriptor.Supplied config.Input)
+        |> Map.add 1 (output config.Output)
+        |> Map.add 2 (output config.Error)
 
     /// The standard stream whose pipe the client's `endpoint` is the far end of.
     ///

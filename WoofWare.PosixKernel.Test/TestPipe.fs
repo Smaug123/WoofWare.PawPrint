@@ -101,14 +101,14 @@ module TestPipe =
         (system : UnixSystem<int, string>)
         : WriteAnswer * UnixSystem<int, string>
         =
-        match UnixReadWrite.admitWrite fd UserBuffer.Mapped (uint64 bytes.Length) system with
+        match WriteOutcomes.admitWrite fd UserBuffer.Mapped (uint64 bytes.Length) system with
         | Error refusal -> failwith $"admitWrite refused: %A{refusal}"
         | Ok (WriteAdmission.Answered answer, system) -> answer, system
         | Ok (WriteAdmission.Transfer count, admitted) ->
             if count > bytes.Length then
                 failwith $"admitWrite asked for %d{count} of %d{bytes.Length} bytes"
 
-            match UnixReadWrite.write fd (ImmutableArray.Create (bytes, 0, count)) admitted with
+            match WriteOutcomes.write fd (ImmutableArray.Create (bytes, 0, count)) admitted with
             | Error refusal -> failwith $"write refused: %A{refusal}"
             | Ok result -> result
 
@@ -233,9 +233,61 @@ module TestPipe =
                 1, Gen.map PipeOp.FStat fd
             ]
 
+    /// `system` with `SIGPIPE`'s disposition `disposition`.
+    let private withSigPipe
+        (disposition : SignalDisposition<string>)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        { system with
+            Process =
+                { system.Process with
+                    Signals = SignalState.setDisposition Signal.SIGPIPE disposition system.Process.Signals
+                }
+        }
+
+    /// `system` with `signals` in place of its own.
+    let private withSignals
+        (signals : SignalState<int, string>)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        { system with
+            Process =
+                { system.Process with
+                    Signals = signals
+                }
+        }
+
+    /// The `SIGPIPE` a write by `task` into a pipe with no reader raises: the
+    /// writing task's own on Linux, and the process's on Darwin.
+    let private sigPipeFrom (flavour : SimulatedUnixFlavour) (task : int) : PendingSignal<int> =
+        {
+            Signal = Signal.SIGPIPE
+            Target =
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> ValueSome task
+                | SimulatedUnixFlavour.Darwin -> ValueNone
+        }
+
+    let private sigPipeDispositions : SignalDisposition<string> list =
+        [
+            SignalDisposition.Default
+            SignalDisposition.Ignore
+            SignalDisposition.Catch (SignalCatch.ofHandler "on SIGPIPE")
+        ]
+
     [<Test>]
     let ``every call on a pipe answers as the reference says`` () : unit =
-        let property (platform : SimulatedUnixPlatform, startNonBlocking : bool, ops : PipeOp list) : unit =
+        let property
+            (
+                platform : SimulatedUnixPlatform,
+                startNonBlocking : bool,
+                sigPipe : SignalDisposition<string>,
+                ops : PipeOp list
+            )
+            : unit
+            =
             let flavour = SimulatedUnixPlatform.flavour platform
             let darwin = flavour = SimulatedUnixFlavour.Darwin
 
@@ -250,11 +302,15 @@ module TestPipe =
                     | Ok (_, system) -> system
                     | Error refusal -> failwith $"%A{refusal}"
                 )
+                |> withSigPipe sigPipe
 
             let (readFd, writeFd), system = pipeOrFail flags bare
             let created = UnixMachineState.realtime system.Machine
             let mutable system = system
             let mutable nextGroup = 2
+            // Set once a write's SIGPIPE has ended the process, after which
+            // there is nothing left to call.
+            let mutable ended = false
 
             let mutable reference =
                 {
@@ -267,7 +323,7 @@ module TestPipe =
                     Created = created
                 }
 
-            for i, op in List.indexed ops do
+            for i, op in List.indexed ops |> Seq.takeWhile (fun _ -> not ended) do
                 // Each call at its own instant, so that a timestamp that moves is
                 // seen to.
                 system <-
@@ -291,27 +347,62 @@ module TestPipe =
 
                     let mutable transferred = None
 
-                    let actual =
-                        match UnixReadWrite.admitWrite fd buffer (uint64 count) system with
+                    let actual : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal> =
+                        match UnixReadWrite.admitWrite system.Leader fd buffer (uint64 count) system with
                         | Error refusal -> Error refusal
-                        | Ok (WriteAdmission.Answered answer, after) -> Ok (answer, after)
-                        | Ok (WriteAdmission.Transfer n, admitted) ->
+                        | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) ->
+                            Ok (WriteOutcome.Returns (answer, after))
+                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
+                            Ok (WriteOutcome.ReturnsRaising (answer, signal, after))
+                        | Ok (WriteOutcome.ProcessEnded endedProcess) -> Ok (WriteOutcome.ProcessEnded endedProcess)
+                        | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
                             transferred <- Some n
-                            UnixReadWrite.write fd (payload reference.Offered n) admitted
+                            UnixReadWrite.write system.Leader fd (payload reference.Offered n) admitted
+                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer _, _, _)) as other ->
+                            failwith $"%s{where}: an admission that raised a signal asked for bytes: %A{other}"
 
                     match Map.tryFind fd reference.Fds with
                     | None ->
                         match actual with
-                        | Ok (WriteAnswer.Failed UnixError.EBADF, after) -> after |> shouldEqual system
+                        | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EBADF, after)) ->
+                            after |> shouldEqual system
                         | other -> failwith $"%s{where}: expected EBADF, got %A{other}"
                     | Some (PipeEnd.Read, _) ->
                         match actual with
-                        | Ok (WriteAnswer.Failed UnixError.EBADF, after) -> after |> shouldEqual system
+                        | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EBADF, after)) ->
+                            after |> shouldEqual system
                         | other -> failwith $"%s{where}: expected EBADF on the read end, got %A{other}"
                     | Some (PipeEnd.Write, _) ->
 
                     let nonBlocking = nonBlockingOf fd
                     let readerOpen = endOpen PipeEnd.Read reference
+
+                    // A write with no reader answers EPIPE and raises SIGPIPE,
+                    // except Linux's zero-length one; it takes nothing and moves
+                    // no timestamp, so all it changes is the signal state.
+                    if not readerOpen && not (flavour = SimulatedUnixFlavour.Linux && count = 0) then
+                        let raised = sigPipeFrom flavour system.Leader
+
+                        match sigPipe, actual with
+                        | SignalDisposition.Default, Ok (WriteOutcome.ProcessEnded endedProcess) ->
+                            endedProcess.Termination
+                            |> shouldEqual (ProcessTermination.Signaled (Signal.SIGPIPE, false))
+
+                            endedProcess.Machine |> shouldEqual system.Machine
+                            ended <- true
+                        | SignalDisposition.Ignore,
+                          Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
+                            signal |> shouldEqual raised
+                            after |> shouldEqual system
+                        | SignalDisposition.Catch _,
+                          Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->
+                            signal |> shouldEqual raised
+                            // Pending once, however many writes raised it.
+                            SignalState.pending after.Process.Signals |> shouldEqual [ raised ]
+                            withSignals system.Process.Signals after |> shouldEqual system
+                            system <- after
+                        | _ -> failwith $"%s{where}: expected EPIPE and SIGPIPE under %A{sigPipe}, got %A{actual}"
+                    else
 
                     let takes, grown =
                         modelWrite (List.ofSeq (payload reference.Offered count)) reference.Buffer
@@ -321,8 +412,6 @@ module TestPipe =
                     let expected : Result<WriteAnswer * bool, unit> =
                         if flavour = SimulatedUnixFlavour.Linux && count = 0 then
                             Ok (WriteAnswer.Completed 0L, false)
-                        elif not readerOpen then
-                            Error ()
                         elif count = 0 then
                             Ok (WriteAnswer.Completed 0L, true)
                         elif takes = 0 then
@@ -338,10 +427,9 @@ module TestPipe =
                             Ok (WriteAnswer.Completed (int64 takes), true)
 
                     match expected, actual with
-                    | Error (), Error (WriteRefusal.BrokenPipe _) when not readerOpen -> ()
                     | Error (), Error (WriteRefusal.PipeWouldBlock (_, c, t)) when readerOpen ->
                         (c, t) |> shouldEqual (count, takes)
-                    | Ok (answer, _), Ok (actualAnswer, after) when answer = actualAnswer ->
+                    | Ok (answer, _), Ok (WriteOutcome.Returns (actualAnswer, after)) when answer = actualAnswer ->
                         match answer with
                         | WriteAnswer.Completed n when n > 0L ->
                             // The caller extracts only what the pipe takes.
@@ -534,10 +622,13 @@ module TestPipe =
                 |> shouldEqual (if Map.isEmpty reference.Fds then 0 else 1)
 
         let gen =
-            Gen.zip3
-                (Gen.elements platforms)
-                (Gen.elements [ true ; false ])
-                (Gen.listOf opGen |> Gen.map (List.truncate 50))
+            gen {
+                let! platform = Gen.elements platforms
+                let! startNonBlocking = Gen.elements [ true ; false ]
+                let! sigPipe = Gen.elements sigPipeDispositions
+                let! ops = Gen.listOf opGen |> Gen.map (List.truncate 50)
+                return platform, startNonBlocking, sigPipe, ops
+            }
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 400, Prop.forAll (Arb.fromGen gen) property)
 
@@ -763,7 +854,7 @@ module TestPipe =
         let system = tick system
         let t3 = UnixMachineState.realtime system.Machine
 
-        match UnixReadWrite.admitWrite w (UserBuffer.Unmapped 8UL) 5UL system with
+        match WriteOutcomes.admitWrite w (UserBuffer.Unmapped 8UL) 5UL system with
         | Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT), after) ->
             times w after |> shouldEqual (start, t3, t3)
             (fstatOrFail r after).Size |> shouldEqual 0L
@@ -792,30 +883,84 @@ module TestPipe =
 
     // --- EPIPE, blocking, and what else a transfer answers ---
 
+    /// Every row of `pipe-epipe-sweep.c` the model can be asked: a write into a
+    /// pipe whose reader has closed, from the leader, for each fill, flag,
+    /// count, buffer and disposition the probe swept.
     [<Test>]
-    let ``a write with no reader is refused, except Linux's zero-length write, which answers 0`` () : unit =
+    let ``a write with no reader answers EPIPE and raises SIGPIPE, except Linux's zero-length write`` () : unit =
         for platform in platforms do
-            let (r, w), system = pipeOrFail 0 (systemOn platform)
+            let flavour = SimulatedUnixPlatform.flavour platform
+            let pipeBuf = PipeBuffer.atomicWriteLimit (PipeBuffer.empty platform)
 
-            let system =
-                match UnixDescriptor.close r system with
-                | Ok (_, system) -> system
-                | Error refusal -> failwith $"%A{refusal}"
+            for fill in [ 0 ; 1000 ; -1 ] do
+                for nonBlocking in [ false ; true ] do
+                    for count in [ 0 ; 1 ; pipeBuf ; pipeBuf + 1 ; 65536 ; 100000 ] do
+                        for buffer in [ UserBuffer.Mapped ; UserBuffer.Unmapped 0UL ; UserBuffer.Unmapped 8UL ] do
+                            for disposition in sigPipeDispositions do
+                                let where =
+                                    $"%O{platform}, fill %d{fill}, O_NONBLOCK %b{nonBlocking}, count %d{count}, %A{buffer}, %A{disposition}"
 
-            match UnixReadWrite.admitWrite w UserBuffer.Mapped 5UL system with
-            | Error (WriteRefusal.BrokenPipe _) -> ()
-            | other -> failwith $"%O{platform}: %A{other}"
+                                let (r, w), system = pipeOrFail (nonBlockFlag flavour) (systemOn platform)
 
-            // EPIPE wins over EFAULT, measured.
-            match UnixReadWrite.admitWrite w (UserBuffer.Unmapped 8UL) 5UL system with
-            | Error (WriteRefusal.BrokenPipe _) -> ()
-            | other -> failwith $"%O{platform}: %A{other}"
+                                // Filled through the non-blocking write end, then
+                                // the flag set as the row asks.
+                                let system =
+                                    match fill with
+                                    | 0 -> system
+                                    | -1 ->
+                                        let rec fillUp (system : UnixSystem<int, string>) =
+                                            match writeOrFail w (payload 0 4096) system with
+                                            | WriteAnswer.Completed _, system -> fillUp system
+                                            | WriteAnswer.Failed UnixError.EAGAIN, system ->
+                                                match writeOrFail w (payload 0 1) system with
+                                                | WriteAnswer.Completed _, system -> fillUp system
+                                                | _, system -> system
+                                            | other -> failwith $"%s{where}: filling: %A{other}"
 
-            match SimulatedUnixPlatform.flavour platform, UnixReadWrite.admitWrite w UserBuffer.Mapped 0UL system with
-            | SimulatedUnixFlavour.Linux, Ok (WriteAdmission.Answered (WriteAnswer.Completed 0L), after) ->
-                after |> shouldEqual system
-            | SimulatedUnixFlavour.Darwin, Error (WriteRefusal.BrokenPipe _) -> ()
-            | flavour, other -> failwith $"%O{flavour}: %A{other}"
+                                        fillUp system
+                                    | n -> writeOrFail w (payload 0 n) system |> snd
+
+                                let system = UnixSocket.setNonBlocking w nonBlocking system |> snd
+
+                                let system =
+                                    match UnixDescriptor.close r system with
+                                    | Ok (_, system) -> system
+                                    | Error refusal -> failwith $"%A{refusal}"
+                                    |> withSigPipe disposition
+                                    |> fun system ->
+                                        { system with
+                                            Machine = UnixMachineState.advanceClock 1000L system.Machine
+                                        }
+
+                                let actual =
+                                    WriteOutcomes.admitThenWrite system.Leader w buffer (payload 0 count) system
+
+                                let raised = sigPipeFrom flavour system.Leader
+
+                                // Every row but Linux's zero-length one raises.
+                                let raises = not (flavour = SimulatedUnixFlavour.Linux && count = 0)
+
+                                match raises, disposition, actual with
+                                | false, _, Ok (WriteOutcome.Returns (answer, after)) ->
+                                    // Nothing raised, nothing changed.
+                                    answer |> shouldEqual (WriteAnswer.Completed 0L)
+                                    after |> shouldEqual system
+                                | true, SignalDisposition.Default, Ok (WriteOutcome.ProcessEnded endedProcess) ->
+                                    endedProcess.Termination
+                                    |> shouldEqual (ProcessTermination.Signaled (Signal.SIGPIPE, false))
+                                | true,
+                                  SignalDisposition.Ignore,
+                                  Ok (WriteOutcome.ReturnsRaising (answer, signal, after)) ->
+                                    (answer, signal) |> shouldEqual (WriteAnswer.Failed UnixError.EPIPE, raised)
+                                    // No timestamp moves, even on Darwin.
+                                    after |> shouldEqual system
+                                | true,
+                                  SignalDisposition.Catch _,
+                                  Ok (WriteOutcome.ReturnsRaising (answer, signal, after)) ->
+                                    (answer, signal) |> shouldEqual (WriteAnswer.Failed UnixError.EPIPE, raised)
+                                    SignalState.pending after.Process.Signals |> shouldEqual [ raised ]
+                                    withSignals system.Process.Signals after |> shouldEqual system
+                                | _ -> failwith $"%s{where}: %A{actual}"
 
     [<Test>]
     let ``a blocking read of an empty pipe with a writer is refused; with no writer it is end of file`` () : unit =
@@ -845,7 +990,7 @@ module TestPipe =
         for platform in platforms do
             let (_, w), system = pipeOrFail 0 (systemOn platform)
 
-            match UnixReadWrite.admitWrite w UserBuffer.Mapped 70000UL system with
+            match WriteOutcomes.admitWrite w UserBuffer.Mapped 70000UL system with
             | Error (WriteRefusal.PipeWouldBlock (_, 70000, 65536)) -> ()
             | other -> failwith $"%O{platform}: %A{other}"
 
@@ -1381,7 +1526,7 @@ module TestPipe =
 
         let system =
             if faultFirst then
-                match UnixReadWrite.admitWrite w (UserBuffer.Unmapped 8UL) (uint64 fault) system with
+                match WriteOutcomes.admitWrite w (UserBuffer.Unmapped 8UL) (uint64 fault) system with
                 | Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT), after) -> after
                 | other -> failwith $"%A{other}"
             else

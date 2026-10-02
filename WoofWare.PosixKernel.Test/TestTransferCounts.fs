@@ -598,7 +598,7 @@ module TestTransferCounts =
                 let bytes = ImmutableArray.CreateRange (contentOf length)
                 let fd, system = withFile ImmutableArray.Empty nearTop (systemOn machine)
 
-                (machine, length, "write", outcome (UnixReadWrite.write fd bytes system))
+                (machine, length, "write", outcome (WriteOutcomes.write fd bytes system))
                 |> shouldEqual (machine, length, "write", expected)
 
                 (machine, length, "pwrite", outcome (UnixReadWrite.pwrite fd bytes nearTop system))
@@ -614,7 +614,7 @@ module TestTransferCounts =
             let bytes = ImmutableArray.CreateRange (contentOf length)
             let fd, system = withFile ImmutableArray.Empty Int64.MaxValue (systemOn machine)
 
-            (machine, length, "write", outcome (UnixReadWrite.write fd bytes system))
+            (machine, length, "write", outcome (WriteOutcomes.write fd bytes system))
             |> shouldEqual (machine, length, "write", expected)
 
             (machine, length, "pwrite", outcome (UnixReadWrite.pwrite fd bytes Int64.MaxValue system))
@@ -1104,7 +1104,7 @@ module TestTransferCountsLarge =
                 (TestTransferCounts.systemOn (SimulatedUnixPlatform.linuxX64, None))
 
         let exn =
-            Assert.Throws<Exception> (fun () -> UnixReadWrite.write fd bytes system |> ignore)
+            Assert.Throws<Exception> (fun () -> WriteOutcomes.write fd bytes system |> ignore)
 
         exn.Message |> shouldContainText "one call moves"
 
@@ -1115,7 +1115,7 @@ module TestTransferCountsLarge =
 
         // The same bytes are one call's worth on Darwin, whose limit is INT_MAX,
         // and move.
-        match UnixReadWrite.write 1 bytes (TestTransferCounts.systemOn (SimulatedUnixPlatform.macOsArm64, None)) with
+        match WriteOutcomes.write 1 bytes (TestTransferCounts.systemOn (SimulatedUnixPlatform.macOsArm64, None)) with
         | Ok (WriteAnswer.Completed written, _) -> written |> shouldEqual (int64 bytes.Length)
         | other -> failwith $"expected a completed write, got %A{other}"
 
