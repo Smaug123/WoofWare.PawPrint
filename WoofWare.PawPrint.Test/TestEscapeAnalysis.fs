@@ -1187,10 +1187,20 @@ public static class Uses
             return x == null ? 0 : 1;
         }
     }
+    // The JIT binds no function pointer's signature, so this runs without `GoneType`.
+    public unsafe struct UsesGonePointer : IRuns
+    {
+        public int Run()
+        {
+            delegate*<Provider.GoneType> f = null;
+            return f == null ? 0 : 1;
+        }
+    }
     static void Generic<T>() { }
     public static void InstantiateWithGone() { Generic<Provider.GoneType>(); }
     static int Through<T>(T x) where T : IRuns => x.Run();
     public static int ConstrainedReachesGoneLocal() => Through(new UsesGone());
+    public static int ConstrainedReachesGonePointer() => Through(new UsesGonePointer());
     public static int ConstrainedOnGone()
     {
         var x = new Provider.GoneStruct();
@@ -1269,13 +1279,18 @@ public static class Uses
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
 
         // A `constrained.` call reaching a method whose local's type is gone: the JIT throws
-        // compiling that method, which the analysis reports, or it does not decide the call.
+        // compiling that method, which the analysis reports, or it does not decide the call. One
+        // reaching a method that names the type only in a function pointer's signature runs, which
+        // the analysis may not decide either.
         match against2 "ConstrainedReachesGoneLocal" with
         | _, true -> ()
         | shown, false when shown.Contains "=System.TypeLoadException" -> ()
         | shown, false ->
             failwith
                 $"ConstrainedReachesGoneLocal against the provider lacking its local's type: %A{Set.toList shown}, unknown false"
+
+        // Answering at all is the claim: it is a summary rather than a crash.
+        against2 "ConstrainedReachesGonePointer" |> ignore<Set<string> * bool>
 
     [<Test>]
     let ``a catch absorbs an exception however deep its base chain`` () : unit =

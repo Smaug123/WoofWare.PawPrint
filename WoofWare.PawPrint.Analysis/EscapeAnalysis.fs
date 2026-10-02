@@ -824,6 +824,40 @@ module EscapeAnalysis =
         | MethodReturnType.Void -> signature.ParameterTypes
         | MethodReturnType.Returns ty -> ty :: signature.ParameterTypes
 
+    /// Does every type reference that instantiating a spelling reads name a type? As `spellingBinds`,
+    /// and through a function pointer's signature as well, whose types TypeSystem instantiates
+    /// although the JIT binds none of them.
+    let rec private concretizable
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (spelling : TypeDefn)
+        : EscapeAnalysisState * bool
+        =
+        let all (state : EscapeAnalysisState) (spellings : TypeDefn seq) =
+            ((state, true), spellings)
+            ||> Seq.fold (fun (state, soFar) spelling ->
+                if soFar then
+                    concretizable state assembly spelling
+                else
+                    state, false
+            )
+
+        match spelling with
+        | TypeDefn.FunctionPointer signature -> all state (signatureTypes signature)
+        | TypeDefn.GenericInstantiation (root, arguments) -> all state (Seq.append [ root ] arguments)
+        | TypeDefn.Array (element, _)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.Pinned element -> concretizable state assembly element
+        | TypeDefn.Modified modified -> concretizable state assembly modified.Unmodified
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.Void -> spellingBinds state assembly spelling
+
     /// The type definitions a spelling names that resolve, arguments included.
     let rec private namedIdentities
         (state : EscapeAnalysisState)
@@ -1850,7 +1884,7 @@ module EscapeAnalysis =
 
         // A type a spelling names, if the spelling binds.
         let named (state : EscapeAnalysisState) (spelling : TypeDefn) : EscapeAnalysisState * bool =
-            match spellingBinds state assembly spelling with
+            match concretizable state assembly spelling with
             | state, false -> state, false
             | state, true ->
                 match nominalIdentity state assembly spelling with
@@ -1877,7 +1911,13 @@ module EscapeAnalysis =
                 | MethodBody.Il body -> body.LocalVars |> Option.map List.ofSeq |> Option.defaultValue []
                 | _ -> []
 
-            allBind state assembly (signatureTypes method.Signature @ locals)
+            ((state, true), signatureTypes method.Signature @ locals)
+            ||> List.fold (fun (state, soFar) spelling ->
+                if soFar then
+                    concretizable state assembly spelling
+                else
+                    state, false
+            )
 
         let checks : (EscapeAnalysisState -> EscapeAnalysisState * bool) list =
             [
