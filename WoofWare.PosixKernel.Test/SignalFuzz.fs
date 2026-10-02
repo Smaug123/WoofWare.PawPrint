@@ -179,10 +179,7 @@ module SignalFuzz =
         | SignalNumbering.Linux -> [ 9 ; 19 ; 32 ; 33 ]
         | SignalNumbering.Darwin -> [ 9 ; 17 ]
 
-    /// A random sequence. `Raise` is generated only under Linux numbering: a
-    /// one-thread Darwin process delivers a process-directed and a
-    /// thread-directed instance of one signal once, which this library does not
-    /// model (see `SignalState.enqueue`).
+    /// A random sequence.
     let generate (numbering : SignalNumbering) (rng : Random) : SignalFuzzSequence =
         let letters = alphabet numbering
         let pick (xs : 'a list) : 'a = xs.[rng.Next xs.Length]
@@ -225,7 +222,7 @@ module SignalFuzz =
                     | _ -> SignalFuzzDisposition.Catch
 
                 SignalFuzzOp.Act (pick letters, disposition, randomMask (), rng.Next 4 = 0, rng.Next 5 = 0)
-            | n when n < 17 || numbering = SignalNumbering.Darwin -> SignalFuzzOp.Kill (sent ())
+            | n when n < 17 -> SignalFuzzOp.Kill (sent ())
             | _ -> SignalFuzzOp.Raise (sent ())
 
         {
@@ -334,19 +331,17 @@ module SignalFuzz =
                     | other -> failwith $"kill ended the process with %O{other}"
                 | Ok (Ok (KillOutcome.ProcessStopped _)) -> raise (Refusal "a stop signal was sent")
             | SignalFuzzOp.Raise s ->
-                let entry =
-                    {
-                        Signal = signal s
-                        Target = ValueSome leader
-                    }
-
-                match
-                    SignalState.generate system.Process.CoreDumps leader (Set.singleton leader) entry (signals ())
-                with
+                match UnixSignal.pthreadKill leader s system with
                 | Error refusal -> raise (Refusal $"raise refused: %O{refusal}")
-                | Ok (SignalGeneration.ProcessContinues after) -> withSignals after
-                | Ok (SignalGeneration.ProcessTerminated (killedBy, _)) -> raise (Died (signo killedBy))
-                | Ok (SignalGeneration.ProcessStopped _) -> raise (Refusal "a stop signal was raised")
+                | Ok (Error errno) ->
+                    events.Add
+                        $"f%d{UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) errno}"
+                | Ok (Ok (KillOutcome.ProcessContinues after)) -> system <- after
+                | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
+                    match ended.Termination with
+                    | ProcessTermination.Signaled (killedBy, _) -> raise (Died (signo killedBy))
+                    | other -> failwith $"raise ended the process with %O{other}"
+                | Ok (Ok (KillOutcome.ProcessStopped _)) -> raise (Refusal "a stop signal was raised")
 
             returnToUser ()
 

@@ -7,6 +7,18 @@ open System.Reflection.Metadata
 open System.Runtime.CompilerServices
 open Microsoft.Extensions.Logging
 
+/// The body a virtual or interface call lands on, given the receiver's runtime type.
+[<RequireQualifiedAccess>]
+type VirtualImplementation =
+    /// This method.
+    | Found of WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+    /// Nothing overrides the method the call names, which for a `callvirt` means that method runs.
+    | NotOverridden
+    /// More than one default interface body is most specific for the method, so the call throws
+    /// `AmbiguousImplementationException` (`MethodTable::FindDefaultInterfaceImplementation`,
+    /// methodtable.cpp, through `ThrowAmbiguousResolutionException`). These are the candidates.
+    | Ambiguous of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
 /// CoreCLR's `MethodTable::FindDispatchImpl` decides it: the receiver's dispatch table and
 /// MethodImpls, its dispatch map, default interface bodies, variance, and the SZ-array carve-out;
@@ -182,8 +194,7 @@ module ConcreteVirtualDispatch =
         (dispatchTypeHandle : ConcreteTypeHandle)
         (walkBaseTypes : bool)
         (state : TypeSystemState)
-        : TypeSystemState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        : TypeSystemState * VirtualImplementation
         =
         let logger = loggerFactory.CreateLogger "CallMethod"
 
@@ -223,7 +234,7 @@ module ConcreteVirtualDispatch =
                 methodToCall.Name
             )
 
-            state, Some impl
+            state, VirtualImplementation.Found impl
         | None ->
 
         let declaringAssy =
@@ -963,8 +974,8 @@ module ConcreteVirtualDispatch =
         | Some (implementationTypeHandle, impl, logMessage) ->
             logger.LogDebug logMessage
             let state, impl = concretizeImplementation implementationTypeHandle impl state
-            state, Some impl
-        | None when not walkBaseTypes -> state, None
+            state, VirtualImplementation.Found impl
+        | None when not walkBaseTypes -> state, VirtualImplementation.NotOverridden
         | None ->
 
         logger.LogDebug "No concrete implementation found; scanning interfaces"
@@ -1191,7 +1202,7 @@ module ConcreteVirtualDispatch =
         match mostSpecificInterfaceMethods with
         | [] ->
             logger.LogDebug "No interface implementation found either"
-            state, None
+            state, VirtualImplementation.NotOverridden
         | [ implementationTypeHandle, meth ] ->
             logger.LogDebug (
                 "Exactly one interface implementation found {DeclaringTypeNamespace}.{DeclaringTypeName}.{MethodName} ({MethodGenerics})",
@@ -1202,13 +1213,8 @@ module ConcreteVirtualDispatch =
             )
 
             let state, meth = concretizeImplementation implementationTypeHandle meth state
-            state, Some meth
-        | _ ->
-            mostSpecificInterfaceMethods
-            |> List.map (fun (_, m) -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
-            |> String.concat ", "
-            // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
-            |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
+            state, VirtualImplementation.Found meth
+        | _ -> state, VirtualImplementation.Ambiguous (mostSpecificInterfaceMethods |> List.map snd)
 
     /// One entry of a receiver's interface map, as the search for a variance-compatible default
     /// body visits it.
@@ -1550,8 +1556,9 @@ module ConcreteVirtualDispatch =
     /// `walkBaseTypes` false means "exact-type dispatch": the `constrained.` value-type probe,
     /// which asks whether `T` itself supplies the method rather than inheriting it.
     ///
-    /// Returns `None` when no override exists, which for a `callvirt` means the call site's own
-    /// method is the answer.
+    /// Refuses where the search for a variance-compatible default body finds more than one most
+    /// specific: CoreCLR's variance pass takes the first candidate in an order that is not
+    /// modelled.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1561,8 +1568,7 @@ module ConcreteVirtualDispatch =
         (dispatchTypeHandle : ConcreteTypeHandle)
         (walkBaseTypes : bool)
         (state : TypeSystemState)
-        : TypeSystemState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
+        : TypeSystemState * VirtualImplementation
         =
         let state, primary =
             tryResolveVirtualImplementationForSlot
@@ -1576,8 +1582,9 @@ module ConcreteVirtualDispatch =
                 state
 
         match primary with
-        | Some _ -> state, primary
-        | None ->
+        | VirtualImplementation.Found _
+        | VirtualImplementation.Ambiguous _ -> state, primary
+        | VirtualImplementation.NotOverridden ->
 
         // Nothing implements the call site's own instantiation, not even a default body. A
         // variance-compatible entry's default body is what is left: `FindDispatchImpl` tries the
@@ -1607,7 +1614,7 @@ module ConcreteVirtualDispatch =
             (retargets : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
             =
             match retargets with
-            | [] -> state, None
+            | [] -> state, VirtualImplementation.NotOverridden
             | retargeted :: rest ->
                 let state, resolved =
                     tryResolveVirtualImplementationForSlot
@@ -1621,8 +1628,16 @@ module ConcreteVirtualDispatch =
                         state
 
                 match resolved with
-                | None -> firstResolved state rest
-                | Some resolved when isDefaultInterfaceBody state resolved ->
+                | VirtualImplementation.NotOverridden -> firstResolved state rest
+                | VirtualImplementation.Ambiguous candidates ->
+                    candidates
+                    |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
+                    |> String.concat ", "
+                    |> failwithf
+                        "variant interface dispatch of %s: retargeting onto %O found more than one most-specific default body, of which CoreCLR's variance pass takes the first in an order that is not modelled: %s"
+                        methodToCall.Name
+                        retargeted.DeclaringTypeGenerics
+                | VirtualImplementation.Found resolved when isDefaultInterfaceBody state resolved ->
                     let logger = loggerFactory.CreateLogger "CallMethod"
 
                     logger.LogDebug (
@@ -1632,8 +1647,8 @@ module ConcreteVirtualDispatch =
                         retargeted.DeclaringTypeGenerics
                     )
 
-                    state, Some resolved
-                | Some resolved ->
+                    state, VirtualImplementation.Found resolved
+                | VirtualImplementation.Found resolved ->
                     // The dispatch map's variance pass already considered every entry this could
                     // have come from, so a class implementation here means the two disagree.
                     failwith
@@ -1710,15 +1725,24 @@ module ConcreteVirtualDispatch =
                 state
 
         match implementation with
-        | None ->
+        | VirtualImplementation.NotOverridden ->
             let constrained =
                 AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes constrainedTypeHandle
 
             failwith $"%s{opName}: could not find static implementation of %s{methodToCall.Name} on %s{constrained}"
-        | Some implementation when not implementation.IsStatic ->
+        | VirtualImplementation.Ambiguous candidates ->
+            candidates
+            |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
+            |> String.concat ", "
+            // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
+            |> failwithf
+                "%s: multiple most-specific default interface implementations of %s: %s"
+                opName
+                methodToCall.Name
+        | VirtualImplementation.Found implementation when not implementation.IsStatic ->
             failwith
                 $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Owner}::%s{implementation.Name}"
-        | Some implementation ->
+        | VirtualImplementation.Found implementation ->
             let declaringTypeHandle =
                 AllConcreteTypes.findExistingConcreteType
                     state.ConcreteTypes

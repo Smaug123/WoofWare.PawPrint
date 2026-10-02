@@ -48,16 +48,20 @@ asserted*. `ELOOP` agrees as an errno but not as a number (40 against 62).
 
 Two walls worth knowing before writing a row:
 
-- **`EEXIST` is unreachable *through the BCL*, not unreachable.** The BCL's
-  `EEXIST` arm goes through `GetIOException`, which needs
-  `SystemNative_ConvertErrorPalToPlatform` and `StrErrorR`, so a guest that
-  catches the exception aborts while *constructing* it — the same wall that stops
-  `OpenMissingFile.cs`'s `EACCES` row. A hand-rolled `[DllImport]` of
-  `SystemNative_Open` sidesteps it entirely, and `sourcesPure/SystemNativeOpen.cs`
-  is the working pattern: read `Marshal.GetLastSystemError` (a hand-rolled
-  `DllImport` gets no generated last-error plumbing) and normalise it through
-  `SystemNative_ConvertErrorPlatformToPal`, which is implemented. That keeps the
-  row differential, because the PAL value is what both runtimes agree on.
+- **An exception's message is the C library's text, and that is flavour-specific.**
+  Errno-built messages come from `SystemNative_StrErrorR`, which answers in
+  glibc's words under the Linux flavour and Darwin libc's under Darwin
+  (`CLibrary`, `StrErrorR`). A `sourcesPure` guest may assert a message only
+  where the two libraries agree ("Permission denied" for `EACCES`, as
+  `OpenMissingFile.cs` does); a flavour-specific text goes in a
+  `sourcesImpure` pair compared on its own flavour's host, as
+  `StrError{Linux,Darwin}.cs` do. To assert an errno rather than an exception
+  type several errnos share, a hand-rolled `[DllImport]` of the shim is the
+  working pattern (`sourcesPure/SystemNativeOpen.cs`): read
+  `Marshal.GetLastSystemError` (a hand-rolled `DllImport` gets no generated
+  last-error plumbing) and normalise it through
+  `SystemNative_ConvertErrorPlatformToPal`, which keeps the row differential,
+  because the PAL value is what both runtimes agree on.
 - **A seeded guest sees two different filesystems.** PawPrint puts the seed at
   `/` with cwd `/`; `RealRuntime` materialises it into a scratch directory that
   is the oracle's cwd. Relative names agree, absolute ones do not — and an

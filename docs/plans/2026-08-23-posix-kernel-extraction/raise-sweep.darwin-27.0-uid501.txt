@@ -1,0 +1,374 @@
+# Darwin 27.0.0 arm64, uid 501
+# flavour darwin NSIG 32
+args a=-1 b=0 call=raise sig=-1 ret=-1 errno=22 pending=-1 end=exit0
+args a=-1 b=1 call=pthread_kill sig=-1 ret=22 errno=22 pending=-1 end=exit0
+args a=0 b=0 call=raise sig=0 ret=0 errno=0 pending=-1 end=exit0
+args a=0 b=1 call=pthread_kill sig=0 ret=0 errno=0 pending=-1 end=exit0
+args a=1 b=0 call=raise sig=1 ret=0 errno=0 pending=1 end=exit0
+args a=1 b=1 call=pthread_kill sig=1 ret=0 errno=0 pending=1 end=exit0
+args a=2 b=0 call=raise sig=2 ret=0 errno=0 pending=1 end=exit0
+args a=2 b=1 call=pthread_kill sig=2 ret=0 errno=0 pending=1 end=exit0
+args a=3 b=0 call=raise sig=3 ret=0 errno=0 pending=1 end=exit0
+args a=3 b=1 call=pthread_kill sig=3 ret=0 errno=0 pending=1 end=exit0
+args a=4 b=0 call=raise sig=4 ret=0 errno=0 pending=1 end=exit0
+args a=4 b=1 call=pthread_kill sig=4 ret=0 errno=0 pending=1 end=exit0
+args a=5 b=0 call=raise sig=5 ret=0 errno=0 pending=1 end=exit0
+args a=5 b=1 call=pthread_kill sig=5 ret=0 errno=0 pending=1 end=exit0
+args a=6 b=0 call=raise sig=6 ret=0 errno=0 pending=1 end=exit0
+args a=6 b=1 call=pthread_kill sig=6 ret=0 errno=0 pending=1 end=exit0
+args a=7 b=0 call=raise sig=7 ret=0 errno=0 pending=1 end=exit0
+args a=7 b=1 call=pthread_kill sig=7 ret=0 errno=0 pending=1 end=exit0
+args a=8 b=0 call=raise sig=8 ret=0 errno=0 pending=1 end=exit0
+args a=8 b=1 call=pthread_kill sig=8 ret=0 errno=0 pending=1 end=exit0
+args a=9 b=0 (no row) end=killed9
+args a=9 b=1 (no row) end=killed9
+args a=10 b=0 call=raise sig=10 ret=0 errno=0 pending=1 end=exit0
+args a=10 b=1 call=pthread_kill sig=10 ret=0 errno=0 pending=1 end=exit0
+args a=11 b=0 call=raise sig=11 ret=0 errno=0 pending=1 end=exit0
+args a=11 b=1 call=pthread_kill sig=11 ret=0 errno=0 pending=1 end=exit0
+args a=12 b=0 call=raise sig=12 ret=0 errno=0 pending=1 end=exit0
+args a=12 b=1 call=pthread_kill sig=12 ret=0 errno=0 pending=1 end=exit0
+args a=13 b=0 call=raise sig=13 ret=0 errno=0 pending=1 end=exit0
+args a=13 b=1 call=pthread_kill sig=13 ret=0 errno=0 pending=1 end=exit0
+args a=14 b=0 call=raise sig=14 ret=0 errno=0 pending=1 end=exit0
+args a=14 b=1 call=pthread_kill sig=14 ret=0 errno=0 pending=1 end=exit0
+args a=15 b=0 call=raise sig=15 ret=0 errno=0 pending=1 end=exit0
+args a=15 b=1 call=pthread_kill sig=15 ret=0 errno=0 pending=1 end=exit0
+args a=16 b=0 call=raise sig=16 ret=0 errno=0 pending=0 end=exit0
+args a=16 b=1 call=pthread_kill sig=16 ret=0 errno=0 pending=0 end=exit0
+args a=17 b=0 (no row) end=stopped17
+args a=17 b=1 (no row) end=stopped17
+args a=18 b=0 call=raise sig=18 ret=0 errno=0 pending=1 end=exit0
+args a=18 b=1 call=pthread_kill sig=18 ret=0 errno=0 pending=1 end=exit0
+args a=19 b=0 call=raise sig=19 ret=0 errno=0 pending=1 end=exit0
+args a=19 b=1 call=pthread_kill sig=19 ret=0 errno=0 pending=1 end=exit0
+args a=20 b=0 call=raise sig=20 ret=0 errno=0 pending=0 end=exit0
+args a=20 b=1 call=pthread_kill sig=20 ret=0 errno=0 pending=0 end=exit0
+args a=21 b=0 call=raise sig=21 ret=0 errno=0 pending=1 end=exit0
+args a=21 b=1 call=pthread_kill sig=21 ret=0 errno=0 pending=1 end=exit0
+args a=22 b=0 call=raise sig=22 ret=0 errno=0 pending=1 end=exit0
+args a=22 b=1 call=pthread_kill sig=22 ret=0 errno=0 pending=1 end=exit0
+args a=23 b=0 call=raise sig=23 ret=0 errno=0 pending=0 end=exit0
+args a=23 b=1 call=pthread_kill sig=23 ret=0 errno=0 pending=0 end=exit0
+args a=24 b=0 call=raise sig=24 ret=0 errno=0 pending=1 end=exit0
+args a=24 b=1 call=pthread_kill sig=24 ret=0 errno=0 pending=1 end=exit0
+args a=25 b=0 call=raise sig=25 ret=0 errno=0 pending=1 end=exit0
+args a=25 b=1 call=pthread_kill sig=25 ret=0 errno=0 pending=1 end=exit0
+args a=26 b=0 call=raise sig=26 ret=0 errno=0 pending=1 end=exit0
+args a=26 b=1 call=pthread_kill sig=26 ret=0 errno=0 pending=1 end=exit0
+args a=27 b=0 call=raise sig=27 ret=0 errno=0 pending=1 end=exit0
+args a=27 b=1 call=pthread_kill sig=27 ret=0 errno=0 pending=1 end=exit0
+args a=28 b=0 call=raise sig=28 ret=0 errno=0 pending=0 end=exit0
+args a=28 b=1 call=pthread_kill sig=28 ret=0 errno=0 pending=0 end=exit0
+args a=29 b=0 call=raise sig=29 ret=0 errno=0 pending=0 end=exit0
+args a=29 b=1 call=pthread_kill sig=29 ret=0 errno=0 pending=0 end=exit0
+args a=30 b=0 call=raise sig=30 ret=0 errno=0 pending=1 end=exit0
+args a=30 b=1 call=pthread_kill sig=30 ret=0 errno=0 pending=1 end=exit0
+args a=31 b=0 call=raise sig=31 ret=0 errno=0 pending=1 end=exit0
+args a=31 b=1 call=pthread_kill sig=31 ret=0 errno=0 pending=1 end=exit0
+args a=32 b=0 call=raise sig=32 ret=-1 errno=22 pending=-1 end=exit0
+args a=32 b=1 call=pthread_kill sig=32 ret=22 errno=22 pending=-1 end=exit0
+args a=33 b=0 call=raise sig=33 ret=-1 errno=22 pending=-1 end=exit0
+args a=33 b=1 call=pthread_kill sig=33 ret=22 errno=22 pending=-1 end=exit0
+args a=65 b=0 call=raise sig=65 ret=-1 errno=22 pending=-1 end=exit0
+args a=65 b=1 call=pthread_kill sig=65 ret=22 errno=22 pending=-1 end=exit0
+args a=66 b=0 call=raise sig=66 ret=-1 errno=22 pending=-1 end=exit0
+args a=66 b=1 call=pthread_kill sig=66 ret=22 errno=22 pending=-1 end=exit0
+args a=128 b=0 call=raise sig=128 ret=-1 errno=22 pending=-1 end=exit0
+args a=128 b=1 call=pthread_kill sig=128 ret=22 errno=22 pending=-1 end=exit0
+args a=1000 b=0 call=raise sig=1000 ret=-1 errno=22 pending=-1 end=exit0
+args a=1000 b=1 call=pthread_kill sig=1000 ret=22 errno=22 pending=-1 end=exit0
+args a=-2147483648 b=0 call=raise sig=-2147483648 ret=-1 errno=22 pending=-1 end=exit0
+args a=-2147483648 b=1 call=pthread_kill sig=-2147483648 ret=22 errno=22 pending=-1 end=exit0
+args a=2147483647 b=0 call=raise sig=2147483647 ret=-1 errno=22 pending=-1 end=exit0
+args a=2147483647 b=1 call=pthread_kill sig=2147483647 ret=22 errno=22 pending=-1 end=exit0
+handler a=1 b=0 raiser=main sig=1 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=1 b=1 raiser=worker sig=1 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=2 b=0 raiser=main sig=2 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=2 b=1 raiser=worker sig=2 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=3 b=0 raiser=main sig=3 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=3 b=1 raiser=worker sig=3 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=4 b=0 raiser=main sig=4 ret=0 ran_before_return=1 main=1 worker=0 si_code=2 end=exit0
+handler a=4 b=1 raiser=worker sig=4 ret=0 ran_before_return=1 main=0 worker=1 si_code=2 end=exit0
+handler a=5 b=0 raiser=main sig=5 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=5 b=1 raiser=worker sig=5 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=6 b=0 raiser=main sig=6 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=6 b=1 raiser=worker sig=6 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=7 b=0 raiser=main sig=7 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=7 b=1 raiser=worker sig=7 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=8 b=0 raiser=main sig=8 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=8 b=1 raiser=worker sig=8 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=10 b=0 raiser=main sig=10 ret=0 ran_before_return=1 main=1 worker=0 si_code=1 end=exit0
+handler a=10 b=1 raiser=worker sig=10 ret=0 ran_before_return=1 main=0 worker=1 si_code=1 end=exit0
+handler a=11 b=0 raiser=main sig=11 ret=0 ran_before_return=1 main=1 worker=0 si_code=2 end=exit0
+handler a=11 b=1 raiser=worker sig=11 ret=0 ran_before_return=1 main=0 worker=1 si_code=2 end=exit0
+handler a=12 b=0 raiser=main sig=12 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=12 b=1 raiser=worker sig=12 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=13 b=0 raiser=main sig=13 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=13 b=1 raiser=worker sig=13 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=14 b=0 raiser=main sig=14 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=14 b=1 raiser=worker sig=14 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=15 b=0 raiser=main sig=15 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=15 b=1 raiser=worker sig=15 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=16 b=0 raiser=main sig=16 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=16 b=1 raiser=worker sig=16 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=18 b=0 raiser=main sig=18 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=18 b=1 raiser=worker sig=18 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=19 b=0 raiser=main sig=19 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=19 b=1 raiser=worker sig=19 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=20 b=0 raiser=main sig=20 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=20 b=1 raiser=worker sig=20 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=21 b=0 raiser=main sig=21 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=21 b=1 raiser=worker sig=21 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=22 b=0 raiser=main sig=22 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=22 b=1 raiser=worker sig=22 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=23 b=0 raiser=main sig=23 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=23 b=1 raiser=worker sig=23 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=24 b=0 raiser=main sig=24 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=24 b=1 raiser=worker sig=24 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=25 b=0 raiser=main sig=25 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=25 b=1 raiser=worker sig=25 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=26 b=0 raiser=main sig=26 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=26 b=1 raiser=worker sig=26 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=27 b=0 raiser=main sig=27 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=27 b=1 raiser=worker sig=27 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=28 b=0 raiser=main sig=28 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=28 b=1 raiser=worker sig=28 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=29 b=0 raiser=main sig=29 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=29 b=1 raiser=worker sig=29 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=30 b=0 raiser=main sig=30 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=30 b=1 raiser=worker sig=30 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+handler a=31 b=0 raiser=main sig=31 ret=0 ran_before_return=1 main=1 worker=0 si_code=0 end=exit0
+handler a=31 b=1 raiser=worker sig=31 ret=0 ran_before_return=1 main=0 worker=1 si_code=0 end=exit0
+blocked a=1 b=0 raiser=main sig=1 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=1 b=1 raiser=worker sig=1 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=2 b=0 raiser=main sig=2 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=2 b=1 raiser=worker sig=2 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=3 b=0 raiser=main sig=3 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=3 b=1 raiser=worker sig=3 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=4 b=0 raiser=main sig=4 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=4 b=1 raiser=worker sig=4 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=5 b=0 raiser=main sig=5 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=5 b=1 raiser=worker sig=5 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=6 b=0 raiser=main sig=6 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=6 b=1 raiser=worker sig=6 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=7 b=0 raiser=main sig=7 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=7 b=1 raiser=worker sig=7 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=8 b=0 raiser=main sig=8 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=8 b=1 raiser=worker sig=8 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=10 b=0 raiser=main sig=10 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=10 b=1 raiser=worker sig=10 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=11 b=0 raiser=main sig=11 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=11 b=1 raiser=worker sig=11 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=12 b=0 raiser=main sig=12 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=12 b=1 raiser=worker sig=12 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=13 b=0 raiser=main sig=13 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=13 b=1 raiser=worker sig=13 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=14 b=0 raiser=main sig=14 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=14 b=1 raiser=worker sig=14 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=15 b=0 raiser=main sig=15 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=15 b=1 raiser=worker sig=15 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=16 b=0 raiser=main sig=16 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=16 b=1 raiser=worker sig=16 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=18 b=0 raiser=main sig=18 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=18 b=1 raiser=worker sig=18 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=19 b=0 raiser=main sig=19 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=19 b=1 raiser=worker sig=19 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=20 b=0 raiser=main sig=20 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=20 b=1 raiser=worker sig=20 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=21 b=0 raiser=main sig=21 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=21 b=1 raiser=worker sig=21 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=22 b=0 raiser=main sig=22 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=22 b=1 raiser=worker sig=22 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=23 b=0 raiser=main sig=23 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=23 b=1 raiser=worker sig=23 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=24 b=0 raiser=main sig=24 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=24 b=1 raiser=worker sig=24 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=25 b=0 raiser=main sig=25 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=25 b=1 raiser=worker sig=25 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=26 b=0 raiser=main sig=26 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=26 b=1 raiser=worker sig=26 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=27 b=0 raiser=main sig=27 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=27 b=1 raiser=worker sig=27 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=28 b=0 raiser=main sig=28 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=28 b=1 raiser=worker sig=28 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=29 b=0 raiser=main sig=29 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=29 b=1 raiser=worker sig=29 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=30 b=0 raiser=main sig=30 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=30 b=1 raiser=worker sig=30 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+blocked a=31 b=0 raiser=main sig=31 ret=0 taken_while_blocked=0 pending=1 main=1 worker=0 end=exit0
+blocked a=31 b=1 raiser=worker sig=31 ret=0 taken_while_blocked=0 pending=1 main=0 worker=1 end=exit0
+pair a=1 b=0 shape=1thread.kill,raise sig=1 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=1 b=1 shape=1thread.raise,kill sig=1 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=1 b=2 shape=2thread.kill,raise sig=1 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=1 b=3 shape=2thread.kill,pthread_kill(worker) sig=1 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=1 b=4 shape=2thread.worker_kill,raise sig=1 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=1 b=5 shape=2thread.worker_kill,worker_raise sig=1 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=2 b=0 shape=1thread.kill,raise sig=2 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=2 b=1 shape=1thread.raise,kill sig=2 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=2 b=2 shape=2thread.kill,raise sig=2 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=2 b=3 shape=2thread.kill,pthread_kill(worker) sig=2 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=2 b=4 shape=2thread.worker_kill,raise sig=2 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=2 b=5 shape=2thread.worker_kill,worker_raise sig=2 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=3 b=0 shape=1thread.kill,raise sig=3 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=3 b=1 shape=1thread.raise,kill sig=3 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=3 b=2 shape=2thread.kill,raise sig=3 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=3 b=3 shape=2thread.kill,pthread_kill(worker) sig=3 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=3 b=4 shape=2thread.worker_kill,raise sig=3 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=3 b=5 shape=2thread.worker_kill,worker_raise sig=3 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=4 b=0 shape=1thread.kill,raise sig=4 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=4 b=1 shape=1thread.raise,kill sig=4 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=4 b=2 shape=2thread.kill,raise sig=4 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=4 b=3 shape=2thread.kill,pthread_kill(worker) sig=4 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=4 b=4 shape=2thread.worker_kill,raise sig=4 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=4 b=5 shape=2thread.worker_kill,worker_raise sig=4 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=5 b=0 shape=1thread.kill,raise sig=5 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=5 b=1 shape=1thread.raise,kill sig=5 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=5 b=2 shape=2thread.kill,raise sig=5 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=5 b=3 shape=2thread.kill,pthread_kill(worker) sig=5 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=5 b=4 shape=2thread.worker_kill,raise sig=5 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=5 b=5 shape=2thread.worker_kill,worker_raise sig=5 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=6 b=0 shape=1thread.kill,raise sig=6 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=6 b=1 shape=1thread.raise,kill sig=6 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=6 b=2 shape=2thread.kill,raise sig=6 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=6 b=3 shape=2thread.kill,pthread_kill(worker) sig=6 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=6 b=4 shape=2thread.worker_kill,raise sig=6 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=6 b=5 shape=2thread.worker_kill,worker_raise sig=6 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=7 b=0 shape=1thread.kill,raise sig=7 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=7 b=1 shape=1thread.raise,kill sig=7 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=7 b=2 shape=2thread.kill,raise sig=7 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=7 b=3 shape=2thread.kill,pthread_kill(worker) sig=7 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=7 b=4 shape=2thread.worker_kill,raise sig=7 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=7 b=5 shape=2thread.worker_kill,worker_raise sig=7 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=8 b=0 shape=1thread.kill,raise sig=8 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=8 b=1 shape=1thread.raise,kill sig=8 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=8 b=2 shape=2thread.kill,raise sig=8 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=8 b=3 shape=2thread.kill,pthread_kill(worker) sig=8 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=8 b=4 shape=2thread.worker_kill,raise sig=8 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=8 b=5 shape=2thread.worker_kill,worker_raise sig=8 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=10 b=0 shape=1thread.kill,raise sig=10 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=10 b=1 shape=1thread.raise,kill sig=10 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=10 b=2 shape=2thread.kill,raise sig=10 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=10 b=3 shape=2thread.kill,pthread_kill(worker) sig=10 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=10 b=4 shape=2thread.worker_kill,raise sig=10 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=10 b=5 shape=2thread.worker_kill,worker_raise sig=10 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=11 b=0 shape=1thread.kill,raise sig=11 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=11 b=1 shape=1thread.raise,kill sig=11 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=11 b=2 shape=2thread.kill,raise sig=11 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=11 b=3 shape=2thread.kill,pthread_kill(worker) sig=11 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=11 b=4 shape=2thread.worker_kill,raise sig=11 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=11 b=5 shape=2thread.worker_kill,worker_raise sig=11 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=12 b=0 shape=1thread.kill,raise sig=12 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=12 b=1 shape=1thread.raise,kill sig=12 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=12 b=2 shape=2thread.kill,raise sig=12 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=12 b=3 shape=2thread.kill,pthread_kill(worker) sig=12 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=12 b=4 shape=2thread.worker_kill,raise sig=12 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=12 b=5 shape=2thread.worker_kill,worker_raise sig=12 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=13 b=0 shape=1thread.kill,raise sig=13 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=13 b=1 shape=1thread.raise,kill sig=13 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=13 b=2 shape=2thread.kill,raise sig=13 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=13 b=3 shape=2thread.kill,pthread_kill(worker) sig=13 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=13 b=4 shape=2thread.worker_kill,raise sig=13 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=13 b=5 shape=2thread.worker_kill,worker_raise sig=13 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=14 b=0 shape=1thread.kill,raise sig=14 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=14 b=1 shape=1thread.raise,kill sig=14 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=14 b=2 shape=2thread.kill,raise sig=14 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=14 b=3 shape=2thread.kill,pthread_kill(worker) sig=14 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=14 b=4 shape=2thread.worker_kill,raise sig=14 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=14 b=5 shape=2thread.worker_kill,worker_raise sig=14 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=15 b=0 shape=1thread.kill,raise sig=15 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=15 b=1 shape=1thread.raise,kill sig=15 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=15 b=2 shape=2thread.kill,raise sig=15 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=15 b=3 shape=2thread.kill,pthread_kill(worker) sig=15 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=15 b=4 shape=2thread.worker_kill,raise sig=15 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=15 b=5 shape=2thread.worker_kill,worker_raise sig=15 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=16 b=0 shape=1thread.kill,raise sig=16 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=16 b=1 shape=1thread.raise,kill sig=16 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=16 b=2 shape=2thread.kill,raise sig=16 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=16 b=3 shape=2thread.kill,pthread_kill(worker) sig=16 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=16 b=4 shape=2thread.worker_kill,raise sig=16 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=16 b=5 shape=2thread.worker_kill,worker_raise sig=16 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=18 b=0 shape=1thread.kill,raise sig=18 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=18 b=1 shape=1thread.raise,kill sig=18 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=18 b=2 shape=2thread.kill,raise sig=18 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=18 b=3 shape=2thread.kill,pthread_kill(worker) sig=18 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=18 b=4 shape=2thread.worker_kill,raise sig=18 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=18 b=5 shape=2thread.worker_kill,worker_raise sig=18 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=19 b=0 shape=1thread.kill,raise sig=19 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=19 b=1 shape=1thread.raise,kill sig=19 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=19 b=2 shape=2thread.kill,raise sig=19 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=19 b=3 shape=2thread.kill,pthread_kill(worker) sig=19 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=19 b=4 shape=2thread.worker_kill,raise sig=19 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=19 b=5 shape=2thread.worker_kill,worker_raise sig=19 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=20 b=0 shape=1thread.kill,raise sig=20 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=20 b=1 shape=1thread.raise,kill sig=20 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=20 b=2 shape=2thread.kill,raise sig=20 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=20 b=3 shape=2thread.kill,pthread_kill(worker) sig=20 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=20 b=4 shape=2thread.worker_kill,raise sig=20 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=20 b=5 shape=2thread.worker_kill,worker_raise sig=20 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=21 b=0 shape=1thread.kill,raise sig=21 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=21 b=1 shape=1thread.raise,kill sig=21 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=21 b=2 shape=2thread.kill,raise sig=21 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=21 b=3 shape=2thread.kill,pthread_kill(worker) sig=21 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=21 b=4 shape=2thread.worker_kill,raise sig=21 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=21 b=5 shape=2thread.worker_kill,worker_raise sig=21 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=22 b=0 shape=1thread.kill,raise sig=22 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=22 b=1 shape=1thread.raise,kill sig=22 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=22 b=2 shape=2thread.kill,raise sig=22 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=22 b=3 shape=2thread.kill,pthread_kill(worker) sig=22 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=22 b=4 shape=2thread.worker_kill,raise sig=22 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=22 b=5 shape=2thread.worker_kill,worker_raise sig=22 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=23 b=0 shape=1thread.kill,raise sig=23 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=23 b=1 shape=1thread.raise,kill sig=23 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=23 b=2 shape=2thread.kill,raise sig=23 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=23 b=3 shape=2thread.kill,pthread_kill(worker) sig=23 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=23 b=4 shape=2thread.worker_kill,raise sig=23 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=23 b=5 shape=2thread.worker_kill,worker_raise sig=23 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=24 b=0 shape=1thread.kill,raise sig=24 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=24 b=1 shape=1thread.raise,kill sig=24 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=24 b=2 shape=2thread.kill,raise sig=24 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=24 b=3 shape=2thread.kill,pthread_kill(worker) sig=24 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=24 b=4 shape=2thread.worker_kill,raise sig=24 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=24 b=5 shape=2thread.worker_kill,worker_raise sig=24 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=25 b=0 shape=1thread.kill,raise sig=25 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=25 b=1 shape=1thread.raise,kill sig=25 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=25 b=2 shape=2thread.kill,raise sig=25 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=25 b=3 shape=2thread.kill,pthread_kill(worker) sig=25 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=25 b=4 shape=2thread.worker_kill,raise sig=25 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=25 b=5 shape=2thread.worker_kill,worker_raise sig=25 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=26 b=0 shape=1thread.kill,raise sig=26 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=26 b=1 shape=1thread.raise,kill sig=26 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=26 b=2 shape=2thread.kill,raise sig=26 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=26 b=3 shape=2thread.kill,pthread_kill(worker) sig=26 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=26 b=4 shape=2thread.worker_kill,raise sig=26 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=26 b=5 shape=2thread.worker_kill,worker_raise sig=26 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=27 b=0 shape=1thread.kill,raise sig=27 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=27 b=1 shape=1thread.raise,kill sig=27 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=27 b=2 shape=2thread.kill,raise sig=27 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=27 b=3 shape=2thread.kill,pthread_kill(worker) sig=27 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=27 b=4 shape=2thread.worker_kill,raise sig=27 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=27 b=5 shape=2thread.worker_kill,worker_raise sig=27 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=28 b=0 shape=1thread.kill,raise sig=28 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=28 b=1 shape=1thread.raise,kill sig=28 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=28 b=2 shape=2thread.kill,raise sig=28 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=28 b=3 shape=2thread.kill,pthread_kill(worker) sig=28 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=28 b=4 shape=2thread.worker_kill,raise sig=28 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=28 b=5 shape=2thread.worker_kill,worker_raise sig=28 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=29 b=0 shape=1thread.kill,raise sig=29 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=29 b=1 shape=1thread.raise,kill sig=29 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=29 b=2 shape=2thread.kill,raise sig=29 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=29 b=3 shape=2thread.kill,pthread_kill(worker) sig=29 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=29 b=4 shape=2thread.worker_kill,raise sig=29 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=29 b=5 shape=2thread.worker_kill,worker_raise sig=29 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=30 b=0 shape=1thread.kill,raise sig=30 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=30 b=1 shape=1thread.raise,kill sig=30 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=30 b=2 shape=2thread.kill,raise sig=30 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=30 b=3 shape=2thread.kill,pthread_kill(worker) sig=30 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=30 b=4 shape=2thread.worker_kill,raise sig=30 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=30 b=5 shape=2thread.worker_kill,worker_raise sig=30 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=31 b=0 shape=1thread.kill,raise sig=31 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=31 b=1 shape=1thread.raise,kill sig=31 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=31 b=2 shape=2thread.kill,raise sig=31 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=31 b=3 shape=2thread.kill,pthread_kill(worker) sig=31 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0
+pair a=31 b=4 shape=2thread.worker_kill,raise sig=31 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/0 end=exit0
+pair a=31 b=5 shape=2thread.worker_kill,worker_raise sig=31 ret=0,0 after_main_unblock=1/0 after_worker_unblock=1/1 end=exit0

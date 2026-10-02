@@ -1343,8 +1343,8 @@ module internal UnaryMetadataCallOps =
 
         // Apply a pending `constrained.` prefix (ECMA III.2.1). The prefix transforms the
         // receiver on the stack so the rest of the callvirt logic is unchanged: for a
-        // reference-type T the byref is dereferenced, for a value-type T with a method
-        // inherited from Object/ValueType/Enum the byref is dereferenced and boxed.
+        // reference-type T the byref is dereferenced, for a value-type T with a method it
+        // does not implement itself the byref is dereferenced and boxed.
         //
         // The receiver lives beneath the N method arguments. Temporarily lift the args
         // off so the transformation always sees the receiver on top of the stack, then
@@ -1419,19 +1419,10 @@ module internal UnaryMetadataCallOps =
                 else
                     // Value-type T. If T has its own implementation of the method, invoke it
                     // non-virtually with the managed pointer still serving as `this` (ECMA
-                    // case 2). Otherwise, if the method belongs to Object/ValueType/Enum, box
-                    // and let ordinary virtual dispatch handle the boxed receiver (case 3).
-                    let methodDeclAssyName = methodToCall.DeclaringAssemblyFullName
-                    let methodDeclTypeName = methodToCall.RequiredDeclaringType.Name
-                    let methodDeclNamespace = methodToCall.RequiredDeclaringType.Namespace
-
-                    let isBaseMethodType =
-                        methodDeclAssyName = baseClassTypes.Corelib.DefinitionFullName
-                        && methodDeclNamespace = "System"
-                        && (methodDeclTypeName = "Object"
-                            || methodDeclTypeName = "ValueType"
-                            || methodDeclTypeName = "Enum")
-
+                    // case 2). Otherwise box and let ordinary virtual dispatch handle the boxed
+                    // receiver (case 3): the method is then one T inherits from
+                    // Object/ValueType/Enum, or a default interface body, and either runs on the
+                    // box, a copy of `*ptr`.
                     let state, directImplementation =
                         IlMachineStateExecution.tryResolveVirtualImplementation
                             loggerFactory
@@ -1454,7 +1445,27 @@ module internal UnaryMetadataCallOps =
                             failwith
                                 $"constrained.callvirt case 2: expected ManagedPointer receiver on the eval stack, got %O{other}"
                         | None -> failwith "constrained.callvirt case 2: expected a receiver on the eval stack"
-                    | None when isBaseMethodType ->
+                    | None ->
+                        // The box runs whatever ordinary dispatch finds on T, so if that were T's
+                        // own method, the exact-type probe above missed it, and the body would
+                        // run on a copy where it should run on `*ptr`.
+                        let state, dispatched =
+                            IlMachineStateExecution.tryResolveVirtualImplementation
+                                loggerFactory
+                                baseClassTypes
+                                thread
+                                concretizedMethod.Generics
+                                concretizedMethod
+                                tHandle
+                                true
+                                state
+
+                        match dispatched |> Option.map (fun m -> m.Owner) with
+                        | Some (MethodOwner.DeclaredOn owner) when owner.Identity = tConcrete.Identity ->
+                            failwith
+                                $"constrained.callvirt: %s{methodToCall.Name} dispatches to value type %s{tConcrete.Namespace}.%s{tConcrete.Name}'s own method, but the exact-type probe found no implementation on it"
+                        | _ -> ()
+
                         let ptr, state = IlMachineState.popEvalStack thread state
 
                         let src =
@@ -1465,7 +1476,10 @@ module internal UnaryMetadataCallOps =
                                     $"constrained.callvirt (box case): expected ManagedPointer receiver on the eval stack, got %O{other}"
 
                         match src with
-                        | ManagedPointerSource.Null when methodDeclTypeName = "Object" && methodToCall.Name = "GetType" ->
+                        | ManagedPointerSource.Null when
+                            methodToCall.RequiredDeclaringType.Identity = baseClassTypes.Object.Identity
+                            && methodToCall.Name = "GetType"
+                            ->
                             // Measured on .NET 10: the optimising JIT folds `box T; GetType` into
                             // T's type handle and answers `typeof(T)` without loading through the
                             // byref, while the unoptimised JIT boxes and faults. Which one a guest
@@ -1497,9 +1511,6 @@ module internal UnaryMetadataCallOps =
                             concretizedMethod,
                             true
                         )
-                    | None ->
-                        failwith
-                            $"constrained.callvirt case 2: non-base method %s{methodToCall.Name} had no direct value-type implementation for type %s{tConcrete.Namespace}.%s{tConcrete.Name}"
 
             match transformed with
             | ConstrainedReceiver.NullDereference _ -> transformed
@@ -1555,8 +1566,8 @@ module internal UnaryMetadataCallOps =
 
         // ECMA III.2.1: record the constrained type and advance PC; the next instruction
         // (guaranteed by ECMA to be callvirt) consumes the prefix and branches on the
-        // three cases (reference type / value type with direct impl / value type falling
-        // through to a method on Object/ValueType/Enum).
+        // three cases (reference type / value type with direct impl / value type boxed for
+        // a method it does not implement itself).
         let state, ty, assy =
             match metadataToken with
             | MetadataToken.TypeDefinition h ->

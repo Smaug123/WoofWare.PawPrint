@@ -111,6 +111,7 @@ module TestPipe =
             match WriteOutcomes.write fd (ImmutableArray.Create (bytes, 0, count)) admitted with
             | Error refusal -> failwith $"write refused: %A{refusal}"
             | Ok result -> result
+        | Ok (WriteAdmission.TransferThenSleep _ as admission, _) -> failwith $"the write would sleep: %A{admission}"
 
     let private readOrFail
         (fd : int)
@@ -118,7 +119,7 @@ module TestPipe =
         (system : UnixSystem<int, string>)
         : ReadAnswer * UnixSystem<int, string>
         =
-        match UnixReadWrite.read fd UserBuffer.Mapped (uint64 count) system with
+        match ReadOutcomes.read fd UserBuffer.Mapped (uint64 count) system with
         | Error refusal -> failwith $"read refused: %A{refusal}"
         | Ok result -> result
 
@@ -311,6 +312,8 @@ module TestPipe =
             // Set once a write's SIGPIPE has ended the process, after which
             // there is nothing left to call.
             let mutable ended = false
+            // How many reads have taken bytes from the pipe.
+            let mutable reads = 0L
 
             let mutable reference =
                 {
@@ -355,10 +358,20 @@ module TestPipe =
                         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
                             Ok (WriteOutcome.ReturnsRaising (answer, signal, after))
                         | Ok (WriteOutcome.ProcessEnded endedProcess) -> Ok (WriteOutcome.ProcessEnded endedProcess)
+                        | Ok (WriteOutcome.WouldBlock (condition, after)) ->
+                            Ok (WriteOutcome.WouldBlock (condition, after))
+                        | Ok (WriteOutcome.Restarts _) as other ->
+                            failwith $"%s{where}: a write that never slept restarted: %A{other}"
                         | Ok (WriteOutcome.Returns (WriteAdmission.Transfer n, admitted)) ->
                             transferred <- Some n
                             UnixReadWrite.write system.Leader fd (payload reference.Offered n) admitted
-                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer _, _, _)) as other ->
+                        | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (n, total), admitted)) ->
+                            transferred <- Some n
+                            total |> shouldEqual count
+
+                            UnixReadWrite.writeThenSleep system.Leader fd total (payload reference.Offered n) admitted
+                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer _, _, _))
+                        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep _, _, _)) as other ->
                             failwith $"%s{where}: an admission that raised a signal asked for bytes: %A{other}"
 
                     match Map.tryFind fd reference.Fds with
@@ -427,8 +440,33 @@ module TestPipe =
                             Ok (WriteAnswer.Completed (int64 takes), true)
 
                     match expected, actual with
-                    | Error (), Error (WriteRefusal.PipeWouldBlock (_, c, t)) when readerOpen ->
-                        (c, t) |> shouldEqual (count, takes)
+                    | Error (), Ok (WriteOutcome.WouldBlock (condition, after)) when readerOpen ->
+                        // The write sleeps, having put in what fits. The
+                        // property's one task is then asleep, so the call is
+                        // checked here and not kept: the sequence carries on
+                        // from the system it was made in.
+                        let writer =
+                            FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+
+                        let parked =
+                            {
+                                Writer = writer
+                                Buffer = buffer
+                                Count = count
+                                Written = takes
+                                ReadsSeen = reads
+                            }
+
+                        UnixTaskTable.parkedFor system.Leader after.Tasks
+                        |> shouldEqual (Some (ParkedSyscall.PipeWrite parked))
+
+                        condition |> shouldEqual (WakeCondition.ofPark (ParkedSyscall.PipeWrite parked))
+
+                        let pipe = UnixMachineState.pipe (pipeOf fd system) after.Machine
+                        PipeBuffer.held pipe.Buffer |> shouldEqual (modelHeld reference.Buffer + takes)
+                        // A write that sleeps reads only the bytes it puts in,
+                        // and the rest only once it can put them in.
+                        transferred |> shouldEqual (if takes = 0 then None else Some takes)
                     | Ok (answer, _), Ok (WriteOutcome.Returns (actualAnswer, after)) when answer = actualAnswer ->
                         match answer with
                         | WriteAnswer.Completed n when n > 0L ->
@@ -465,13 +503,14 @@ module TestPipe =
                         else
                             UserBuffer.Unmapped 8UL
 
-                    let actual = UnixReadWrite.read fd buffer (uint64 count) system
+                    let actual = UnixReadWrite.read system.Leader fd buffer (uint64 count) system
 
                     match Map.tryFind fd reference.Fds with
                     | None
                     | Some (PipeEnd.Write, _) ->
                         match actual with
-                        | Ok (ReadAnswer.Failed UnixError.EBADF, after) -> after |> shouldEqual system
+                        | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EBADF), after) ->
+                            after |> shouldEqual system
                         | other -> failwith $"%s{where}: expected EBADF, got %A{other}"
                     | Some (PipeEnd.Read, _) ->
 
@@ -494,10 +533,32 @@ module TestPipe =
                             Ok (ReadAnswer.Completed (ImmutableArray.CreateRange bytes))
 
                     match expected, actual with
-                    | Error (), Error (ReadRefusal.PipeWouldBlock _) -> ()
-                    | Ok (ReadAnswer.Completed expectedBytes), Ok (ReadAnswer.Completed bytes, after) ->
+                    | Error (), Ok (ReadOutcome.WouldBlock condition, after) ->
+                        // The read sleeps, having touched nothing but the
+                        // timestamps it moves on Darwin. Checked here and not
+                        // kept, as a sleeping write is.
+                        let parked =
+                            {
+                                Reader =
+                                    FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                                Buffer = buffer
+                                Count = count
+                            }
+
+                        UnixTaskTable.parkedFor system.Leader after.Tasks
+                        |> shouldEqual (Some (ParkedSyscall.PipeRead parked))
+
+                        condition |> shouldEqual (WakeCondition.ofPark (ParkedSyscall.PipeRead parked))
+
+                        let pipe = UnixMachineState.pipe (pipeOf fd system) after.Machine
+                        PipeBuffer.held pipe.Buffer |> shouldEqual 0
+                    | Ok (ReadAnswer.Completed expectedBytes),
+                      Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
                         List.ofSeq bytes |> shouldEqual (List.ofSeq expectedBytes)
                         let _, drained = modelRead bytes.Length reference.Buffer
+
+                        if not bytes.IsEmpty then
+                            reads <- reads + 1L
 
                         reference <-
                             { reference with
@@ -506,7 +567,9 @@ module TestPipe =
                             }
 
                         system <- after
-                    | Ok (ReadAnswer.Failed error), Ok (ReadAnswer.Failed actualError, after) when error = actualError ->
+                    | Ok (ReadAnswer.Failed error), Ok (ReadOutcome.Answered (ReadAnswer.Failed actualError), after) when
+                        error = actualError
+                        ->
                         reference <-
                             { reference with
                                 ReadAccess = if darwin then now else reference.ReadAccess
@@ -963,17 +1026,17 @@ module TestPipe =
                                 | _ -> failwith $"%s{where}: %A{actual}"
 
     [<Test>]
-    let ``a blocking read of an empty pipe with a writer is refused; with no writer it is end of file`` () : unit =
+    let ``a blocking read of an empty pipe with a writer sleeps; with no writer it is end of file`` () : unit =
         for platform in platforms do
             let (r, w), system = pipeOrFail 0 (systemOn platform)
 
-            match UnixReadWrite.read r UserBuffer.Mapped 10UL system with
-            | Error (ReadRefusal.PipeWouldBlock _) -> ()
+            match UnixReadWrite.read system.Leader r UserBuffer.Mapped 10UL system with
+            | Ok (ReadOutcome.WouldBlock _, _) -> ()
             | other -> failwith $"%O{platform}: %A{other}"
 
-            // A NULL buffer is not consulted when nothing moves.
-            match UnixReadWrite.read r (UserBuffer.Unmapped 0UL) 10UL system with
-            | Error (ReadRefusal.PipeWouldBlock _) -> ()
+            // A NULL buffer is not consulted before the read sleeps.
+            match UnixReadWrite.read system.Leader r (UserBuffer.Unmapped 0UL) 10UL system with
+            | Ok (ReadOutcome.WouldBlock _, _) -> ()
             | other -> failwith $"%O{platform}: %A{other}"
 
             let system =
@@ -981,17 +1044,20 @@ module TestPipe =
                 | Ok (_, system) -> system
                 | Error refusal -> failwith $"%A{refusal}"
 
-            match UnixReadWrite.read r (UserBuffer.Unmapped 0UL) 10UL system with
+            match ReadOutcomes.read r (UserBuffer.Unmapped 0UL) 10UL system with
             | Ok (ReadAnswer.Completed bytes, _) -> bytes.Length |> shouldEqual 0
             | other -> failwith $"%O{platform}: %A{other}"
 
     [<Test>]
-    let ``a blocking write that would not fit is refused, and one that fits completes`` () : unit =
+    let ``a blocking write that would not fit sleeps having put in what fits, and one that fits completes`` () : unit =
         for platform in platforms do
             let (_, w), system = pipeOrFail 0 (systemOn platform)
 
-            match WriteOutcomes.admitWrite w UserBuffer.Mapped 70000UL system with
-            | Error (WriteRefusal.PipeWouldBlock (_, 70000, 65536)) -> ()
+            match WriteOutcomes.admitThenWrite system.Leader w UserBuffer.Mapped (payload 0 70000) system with
+            | Ok (WriteOutcome.WouldBlock (_, after)) ->
+                match UnixTaskTable.parkedFor system.Leader after.Tasks with
+                | Some (ParkedSyscall.PipeWrite parked) -> (parked.Count, parked.Written) |> shouldEqual (70000, 65536)
+                | other -> failwith $"%O{platform}: %A{other}"
             | other -> failwith $"%O{platform}: %A{other}"
 
             let answer, _ = writeOrFail w (payload 0 65536) system
@@ -1047,7 +1113,7 @@ module TestPipe =
             |> shouldEqual (Ok (ReadAnswer.Failed tie))
 
             match UnixReadWrite.admitPWrite r UserBuffer.Mapped 1UL 0L system with
-            | Ok (WriteAdmission.Answered (WriteAnswer.Failed error)) -> error |> shouldEqual tie
+            | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) -> error |> shouldEqual tie
             | other -> failwith $"%O{platform}: %A{other}"
 
             match flavour with
@@ -1248,8 +1314,8 @@ module TestPipe =
             let system = closeOrFail w system
 
             // The dup holds the write end open: an empty read is not end of file.
-            match UnixReadWrite.read r UserBuffer.Mapped 1UL system with
-            | Error (ReadRefusal.PipeWouldBlock _) -> ()
+            match UnixReadWrite.read system.Leader r UserBuffer.Mapped 1UL system with
+            | Ok (ReadOutcome.WouldBlock _, _) -> ()
             | other -> failwith $"%A{other}"
 
             let system = closeOrFail r system

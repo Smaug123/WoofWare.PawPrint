@@ -250,9 +250,16 @@ module TestSignalDispatch =
     let private pipeContents (state : IlMachineState) : byte list =
         let pipe = pipeOf state
 
-        match UnixReadWrite.read pipe.ReadEnd UserBuffer.Mapped 4096UL (EmulatedKernel.unix state.Kernel) with
-        | Ok (ReadAnswer.Completed bytes, _) -> List.ofSeq bytes
-        | Error (ReadRefusal.PipeWouldBlock _) -> []
+        match
+            UnixReadWrite.read
+                state.Kernel.Leader
+                pipe.ReadEnd
+                UserBuffer.Mapped
+                4096UL
+                (EmulatedKernel.unix state.Kernel)
+        with
+        | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), _) -> List.ofSeq bytes
+        | Ok (ReadOutcome.WouldBlock _, _) -> []
         | other -> failwith $"reading the signal pipe answered %O{other}"
 
     /// The arguments of the frame the dispatcher is running.
@@ -901,7 +908,8 @@ module TestSignalDispatch =
                 with
                 | Ok (WriteOutcome.Returns (WriteAnswer.Completed _, system)) -> fill system
                 | other -> failwith $"filling the pipe answered %O{other}"
-            | Error (WriteRefusal.PipeWouldBlock _) -> system
+            // Full: the write would sleep, and the pipe is kept as it was.
+            | Ok (WriteOutcome.WouldBlock _) -> system
             | other -> failwith $"filling the pipe was admitted as %O{other}"
 
         let full =

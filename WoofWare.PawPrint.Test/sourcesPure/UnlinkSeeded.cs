@@ -19,9 +19,8 @@ using System.Runtime.InteropServices;
 //
 // Everything is hand-rolled `DllImport`. `File.Delete` swallows every failure
 // it can (a missing file is not an error there), and the failures it does not
-// swallow are built through `SystemNative_StrErrorR`, which PawPrint does not
-// implement — so a managed row that threw would abort the run rather than fail
-// it.
+// swallow reach a guest as an exception type several errnos share, where the
+// raw shim reports the errno itself.
 //
 // No permission row here, and deliberately: a run as root would answer
 // differently on the two sides, since PawPrint's uid is `KernelConfig`'s 1000

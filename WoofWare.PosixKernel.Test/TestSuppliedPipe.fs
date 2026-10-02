@@ -39,7 +39,7 @@ module TestSuppliedPipe =
 
     /// A read of `count` from descriptor 0, which must be answered.
     let private read (count : int) (system : UnixSystem<int, string>) : ReadAnswer * UnixSystem<int, string> =
-        match UnixReadWrite.read 0 UserBuffer.Mapped (uint64 count) system with
+        match ReadOutcomes.read 0 UserBuffer.Mapped (uint64 count) system with
         | Ok (answer, system) -> answer, system
         | Error refusal -> failwith $"read(0, %d{count}) was refused: %s{ReadRefusal.describe refusal}"
 

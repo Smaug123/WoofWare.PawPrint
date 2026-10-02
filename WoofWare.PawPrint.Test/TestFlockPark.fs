@@ -118,6 +118,8 @@ class Program
                 | Some (ParkedSyscall.SocketWait _)
                 | Some (ParkedSyscall.Poll _)
                 | Some (ParkedSyscall.Accept _)
+                | Some (ParkedSyscall.PipeRead _)
+                | Some (ParkedSyscall.PipeWrite _)
                 | None -> None
         )
 

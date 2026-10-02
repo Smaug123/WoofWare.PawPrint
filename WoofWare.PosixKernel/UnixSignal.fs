@@ -19,7 +19,19 @@ type KillRefusal =
     /// receive it is not modelled.
     | Receiver of SignalReceiverRefusal
 
-/// What a `kill(2)` the kernel answered did to the calling process.
+/// Why this library will not answer a `pthread_kill(3)`: something it does not
+/// model, rather than an error a kernel would report.
+[<RequireQualifiedAccess>]
+type ThreadKillRefusal =
+    /// The calling process is process ID 1. An init process ignores, from
+    /// inside its own PID namespace, every signal it has not installed a
+    /// handler for, SIGKILL included, and this library does not model that.
+    | InitProcess
+    /// What the signal would do to the process is not modelled.
+    | Receiver of SignalReceiverRefusal
+
+/// What a `kill(2)` or `pthread_kill(3)` the kernel answered did to the
+/// calling process.
 [<RequireQualifiedAccess>]
 type KillOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     /// The process carries on, as this system: the signal is pending, or was
@@ -159,3 +171,80 @@ module UnixSignal =
         : UnixSystem<'Task, 'Handler>
         =
         withSignals (SignalState.sigreturn task frame system.Process.Signals) system
+
+    /// `pthread_kill(3)`, sent by the calling process to `target`, one of its
+    /// own tasks, with `signo` read under the process's own signal numbering.
+    /// `raise(3)` is this, aimed at the calling task.
+    ///
+    /// The signal is pending on `target` alone: no other task takes it, even
+    /// while `target` blocks it and another task does not. See
+    /// `SignalState.generate` for what the signal then does: a caught one that
+    /// `target` does not block is delivered as `target` next returns to user
+    /// mode, which for `raise(3)` is before the call returns. A signal that
+    /// kills the process ends it, and the answer is then the ended process
+    /// rather than a system to make another call in.
+    ///
+    /// Signal number 0 sends nothing, and a number that is neither 0 nor a
+    /// signal is `EINVAL`. So, under Linux's numbering, are 32 and 33, which
+    /// the C library keeps for its own threads and will not send this way,
+    /// though `kill(2)` sends them.
+    ///
+    /// Fails loudly if `target` is not one of the process's tasks, which is a
+    /// bug in the client.
+    let pthreadKill<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (target : 'Task)
+        (signo : int32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<Result<KillOutcome<'Task, 'Handler>, UnixError>, ThreadKillRefusal>
+        =
+        if not (Map.containsKey target system.Tasks) then
+            failwith
+                $"UnixSignal.pthreadKill: task %O{target} is not one of the process's tasks (this is a bug in the client)."
+
+        let numbering = SignalState.numbering system.Process.Signals
+
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/raise-sweep.c`
+        // on Linux 6.18.5 (glibc 2.41) and Darwin 27.0.0, from -1 to two past the
+        // highest signal and at 65, 66, 128, 1000, INT_MIN and INT_MAX, through
+        // `raise` and through `pthread_kill(pthread_self())`, which agreed on
+        // every row: 0 sends nothing; every signal but Linux's 32 and 33 is sent;
+        // every other number is EINVAL. glibc refuses 32 and 33 before the
+        // kernel sees them: `kill(2)` sends both (`kill-arguments.c`).
+        let reservedByCLibrary =
+            match numbering with
+            | SignalNumbering.Linux -> signo = 32 || signo = 33
+            | SignalNumbering.Darwin -> false
+
+        if ProcessId.toInt32 (UnixSystem.processId system) = 1 then
+            Error ThreadKillRefusal.InitProcess
+        elif signo = 0 then
+            Ok (Ok (KillOutcome.ProcessContinues system))
+        elif reservedByCLibrary then
+            Ok (Error UnixError.EINVAL)
+        else
+
+        match Signal.ofRawSignoUnder numbering signo with
+        | ValueNone -> Ok (Error UnixError.EINVAL)
+        | ValueSome signal ->
+            let generation =
+                SignalState.generate
+                    system.Process.CoreDumps
+                    system.Leader
+                    (tasksOf system)
+                    {
+                        Signal = signal
+                        Target = ValueSome target
+                    }
+                    system.Process.Signals
+
+            match generation with
+            | Error refusal -> Error (ThreadKillRefusal.Receiver refusal)
+            | Ok (SignalGeneration.ProcessContinues signals) ->
+                Ok (Ok (KillOutcome.ProcessContinues (withSignals signals system)))
+            | Ok (SignalGeneration.ProcessStopped (signal, signals)) ->
+                Ok (Ok (KillOutcome.ProcessStopped (signal, withSignals signals system)))
+            | Ok (SignalGeneration.ProcessTerminated (signal, coreDumped)) ->
+                let ended =
+                    UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) system
+
+                Ok (Ok (KillOutcome.ProcessEnded ended))

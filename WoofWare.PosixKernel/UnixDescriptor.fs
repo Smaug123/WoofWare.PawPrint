@@ -186,6 +186,12 @@ type CloseRefusal<'Task> =
     /// Any descriptor onto a listening socket that `task` is parked in an
     /// `accept(2)` on, under the Darwin flavour.
     | DarwinListenerDescriptorWithAccepter of listener : OpenFileDescriptionId * task : 'Task
+    /// The last descriptor onto a pipe end that `task` is asleep in a `read` or
+    /// `write` through, under the Linux flavour.
+    | LinuxLastPipeDescriptorWithTransfer of description : OpenFileDescriptionId * task : 'Task
+    /// Any descriptor onto a pipe end that `task` is asleep in a `read` or
+    /// `write` through, under the Darwin flavour.
+    | DarwinPipeDescriptorWithTransfer of description : OpenFileDescriptionId * task : 'Task
 
 [<RequireQualifiedAccess>]
 module CloseRefusal =
@@ -206,6 +212,10 @@ module CloseRefusal =
             $"it is the last descriptor onto the listening socket of open file description %O{listener}, and task %O{task} is parked in an accept on it. Measured on Linux (blocking-accept.c), the sleeping accept holds the file: the close does not wake it, the socket goes on listening, and a later connect completes and wakes it with a new descriptor. Representing that needs the listener to outlive its last descriptor, which this kernel's descriptor table cannot express."
         | CloseRefusal.DarwinListenerDescriptorWithAccepter (listener, task) ->
             $"the descriptor names the listening socket of open file description %O{listener}, and task %O{task} is parked in an accept on it. Measured on Darwin (blocking-accept.c), closing the descriptor the accept was entered through ends it at once with ECONNABORTED, even while a dup keeps the listener open, and closing another descriptor onto it does not; this kernel models neither a close ending a sleeping call nor which descriptor a call was entered through."
+        | CloseRefusal.LinuxLastPipeDescriptorWithTransfer (description, task) ->
+            $"it is the last descriptor onto the pipe end of open file description %O{description}, and task %O{task} is asleep in a read or write through it. Measured on Linux (pipe-blocking.c section K), the sleeping call holds the file: the close does not wake it, the end stays open, and the call completes when given data or room. Representing that needs the description to outlive its last descriptor, which this kernel's descriptor table cannot express."
+        | CloseRefusal.DarwinPipeDescriptorWithTransfer (description, task) ->
+            $"the descriptor names the pipe end of open file description %O{description}, and task %O{task} is asleep in a read or write through it. Measured on Darwin (pipe-blocking.c section K), closing the descriptor the call sleeps through ends it at once, a read with end of file and a write with EPIPE, while closing a dup of it does not; this kernel models neither a close ending a sleeping call nor which descriptor a call was entered through."
         | CloseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
             $"the close destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
 
@@ -1157,6 +1167,10 @@ module UnixDescriptor =
             | Some (ParkedSyscall.Accept accept) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in an accept on %O{accept.Listener}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
+            | Some (ParkedSyscall.PipeRead _ as other)
+            | Some (ParkedSyscall.PipeWrite _ as other) ->
+                failwith
+                    $"UnixDescriptor.flockAcquire: task %O{task} is parked in %A{other}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
             | None ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is not parked, so there is no acquisition to finish. A blocked `flock` records the park; only a task it answered `WouldBlock` finishes here (this is a bug in the client)."
@@ -1498,6 +1512,43 @@ module UnixDescriptor =
         | Some refusal -> Error refusal
         | None ->
 
+        // The same question for a pipe end with a task asleep in a transfer
+        // through it, measured (`pipe-blocking.c`, section K) to part the
+        // flavours as accept does: Linux's sleeping call holds the file, so a
+        // close that leaves another descriptor changes nothing and the last
+        // close leaves the end open under the call, which this table cannot
+        // represent; Darwin's ends at once when the descriptor it sleeps
+        // through closes, which it models no way to deliver.
+        let transferRefusal : CloseRefusal<'Task> option =
+            match closing with
+            | None -> None
+            | Some (closingId, _) ->
+
+            let sleeper =
+                system.Tasks
+                |> Map.tryPick (fun task state ->
+                    match state.Parked |> Option.map (fun park -> park.Syscall) with
+                    | Some (ParkedSyscall.PipeRead read) when read.Reader = closingId -> Some task
+                    | Some (ParkedSyscall.PipeWrite write) when write.Writer = closingId -> Some task
+                    | Some _
+                    | None -> None
+                )
+
+            match sleeper with
+            | None -> None
+            | Some task ->
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux ->
+                    if destroyed.IsSome then
+                        Some (CloseRefusal.LinuxLastPipeDescriptorWithTransfer (closingId, task))
+                    else
+                        None
+                | SimulatedUnixFlavour.Darwin -> Some (CloseRefusal.DarwinPipeDescriptorWithTransfer (closingId, task))
+
+        match transferRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
         // The same question for a lock rather than a port, and the reason
         // `WakeCondition.satisfied` may treat a vanished description as a
         // broken precondition rather than as something to answer.
@@ -1556,6 +1607,8 @@ module UnixDescriptor =
                 | Some (ParkedSyscall.Flock _)
                 | Some (ParkedSyscall.SocketWait _)
                 | Some (ParkedSyscall.Accept _)
+                | Some (ParkedSyscall.PipeRead _)
+                | Some (ParkedSyscall.PipeWrite _)
                 | None -> None
             )
 

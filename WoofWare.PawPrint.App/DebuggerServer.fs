@@ -234,6 +234,17 @@ module DebuggerServer =
                 writer.WriteString ("kind", "blockedInAccept")
                 let (OpenFileDescriptionId listener) = parked.Listener
                 writer.WriteNumber ("listener", listener)
+            | Some (ParkedSyscall.PipeRead parked) ->
+                writer.WriteString ("kind", "blockedInPipeRead")
+                let (OpenFileDescriptionId reader) = parked.Reader
+                writer.WriteNumber ("description", reader)
+                writer.WriteNumber ("count", parked.Count)
+            | Some (ParkedSyscall.PipeWrite parked) ->
+                writer.WriteString ("kind", "blockedInPipeWrite")
+                let (OpenFileDescriptionId writerDescription) = parked.Writer
+                writer.WriteNumber ("description", writerDescription)
+                writer.WriteNumber ("count", parked.Count)
+                writer.WriteNumber ("written", parked.Written)
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

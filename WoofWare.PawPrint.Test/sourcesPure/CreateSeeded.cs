@@ -30,16 +30,11 @@ using System.Text;
 // PawPrint's default Linux kernel against the host's, so any assertion that saw
 // the number would flip between a Mac and CI.
 //
-// **Every EEXIST row is absent, and not by choice.** `O_EXCL` on an existing
-// name is the headline behaviour of this slice, but observing it from managed
-// code means catching the IOException the BCL builds for EEXIST, and that arm of
-// `Interop.GetExceptionForIoErrno` goes through `GetIOException`, which needs
-// `SystemNative_ConvertErrorPalToPlatform` and `SystemNative_StrErrorR`. Neither
-// is implemented, so such a guest aborts *while constructing the exception*
-// rather than failing an assertion -- the same wall `OpenMissingFile.cs` records
-// for its own deliberately-absent EACCES row. The EEXIST rows therefore live in
-// TestVirtualFileSystemAgainstHost.fs, where they are compared against real
-// `open(2)` at the errno level and need no exception at all.
+// The EEXIST rows assert only that `O_EXCL` refused and left the name alone:
+// the exception is IOException on both, and its message names the path, which
+// differs between PawPrint's filesystem and the oracle's scratch directory.
+// TestVirtualFileSystemAgainstHost.fs compares them against real `open(2)` at
+// the errno level too.
 //
 // FileShare.None throughout, deliberately: it takes LOCK_EX, where a shared lock
 // taken with write access would first consult SystemNative_GetFileSystemType.
@@ -55,6 +50,19 @@ using System.Text;
 class Program
 {
     static byte[] Bytes(string s) => Encoding.UTF8.GetBytes(s);
+
+    static bool ThrowsExactlyIOException(string path)
+    {
+        try
+        {
+            using (new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+            return false;
+        }
+        catch (IOException e)
+        {
+            return e.GetType() == typeof(IOException);
+        }
+    }
 
     static int Main(string[] args)
     {
@@ -77,6 +85,22 @@ class Program
         check = 3;
         using (new FileStream("made2", FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
         if (File.ReadAllBytes("made2").Length != 0) return check;
+
+        // O_EXCL on a name that exists is EEXIST, which CoreLib reports as a
+        // plain IOException, and the file is untouched.
+        check = 4;
+        if (!ThrowsExactlyIOException("f")) return check;
+        check = 5;
+        if (Encoding.UTF8.GetString(File.ReadAllBytes("f")) != "hello") return check;
+
+        // O_EXCL does not follow a final symlink: a link to a file, and a
+        // dangling one, are names that exist.
+        check = 6;
+        if (!ThrowsExactlyIOException("lf")) return check;
+        check = 7;
+        if (!ThrowsExactlyIOException("dang")) return check;
+        check = 8;
+        if (File.Exists("nx")) return check;
 
         // Without O_EXCL a dangling link *is* followed, and the file appears at
         // the link's target rather than replacing the link. This is the row that

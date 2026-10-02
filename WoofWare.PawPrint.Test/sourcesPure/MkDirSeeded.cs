@@ -18,9 +18,8 @@ using System.Runtime.InteropServices;
 // and macOS number identically, and ENAMETOOLONG (36 against 63) is outside it.
 //
 // The BCL rows are creations only. `Directory.CreateDirectory`'s failure paths
-// build an exception through `SystemNative_StrErrorR`, which PawPrint does not
-// implement, so a managed row that throws aborts the run rather than failing it.
-// The raw shim reports the same errnos without constructing anything.
+// report an exception type several errnos share; the raw shim reports the
+// errnos themselves.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.

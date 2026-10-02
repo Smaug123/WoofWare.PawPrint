@@ -6,12 +6,9 @@
 // first probes whether `T` itself supplies the method (ECMA-335 III.2.1 case 2), and that probe
 // resolves with `walkBaseTypes = false`. Without the variant-interface-map retarget, the
 // probe misses for exactly the same reason the reference-type case does, and the interpreter
-// fails with
+// falls through to the box-and-dispatch case (III.2.1 case 3).
 //
-//   constrained.callvirt case 2: non-base method Accept had no direct value-type
-//   implementation for type .StructSink
-//
-// The value type must also stay unboxed: the ECMA case-2 path calls the body with the managed
+// The value type must stay unboxed: the ECMA case-2 path calls the body with the managed
 // pointer still serving as `this`, so mutations made by the callee are visible to the caller's
 // local. `MutationsVisible` below fails if we fell through to the box-and-dispatch case instead.
 

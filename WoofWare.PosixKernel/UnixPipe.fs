@@ -202,6 +202,7 @@ module UnixPipe =
         let pipe =
             {
                 Buffer = PipeBuffer.empty platform
+                Reads = 0L
                 Origin =
                     PipeOrigin.Made
                         {

@@ -141,6 +141,7 @@
     <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestElementOffsetOverflow.fs" />
     <Compile Include="TestSzArrayInterfaceDispatch.fs" />
+    <Compile Include="TestAmbiguousDefaultInterfaceDispatch.fs" />
     <Compile Include="TestArrayInterfaceMap.fs" />
     <Compile Include="TestCrossAssemblyTypeInitialisation.fs" />
     <Compile Include="TestCrossAssemblyAssemblyLoadEvent.fs" />
@@ -226,6 +227,7 @@
     <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
     <Compile Include="TestUnixErrorPal.fs" />
+    <Compile Include="TestStrErrorR.fs" />
     <Compile Include="TestPosixSignalPal.fs" />
     <Compile Include="TestKillSignalPal.fs" />
     <Compile Include="TestNativeLibc.fs" />
@@ -363,6 +365,7 @@
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestSignalTerminatedCases.fs" />
     <Compile Include="TestLibcKillRefusals.fs" />
+    <Compile Include="TestLibcRaise.fs" />
     <Compile Include="TestProcessTerminationWiring.fs" />
     <Compile Include="TestAppExitCode.fs" />
     <Compile Include="TestEmulatedKernelAbort.fs" />
@@ -420,6 +423,11 @@
          holds the composition to it; the kernel's own sweep, in raw numbers,
          is WoofWare.PosixKernel.Test/socketSyscall. -->
     <EmbeddedResource Include="socketMatrix\*.tsv" />
+    <!-- What System.Native's `SystemNative_StrErrorR` answered for every number
+         and buffer size its probe sweeps, against glibc and Darwin's libc.
+         `TestStrErrorR` regenerates every row from the model. -->
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\strerror-r.linux-6.18.5-glibc-2.41.txt" LogicalName="WoofWare.PawPrint.Test.strerrorR.glibc.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\strerror-r.darwin-27.0.txt" LogicalName="WoofWare.PawPrint.Test.strerrorR.darwin.txt" />
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
     <EmbeddedResource Include="sourcesSignalTerminated\*.cs" />
