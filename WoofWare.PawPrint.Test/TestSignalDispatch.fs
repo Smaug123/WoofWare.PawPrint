@@ -774,6 +774,61 @@ module TestSignalDispatch =
         exn.Message |> shouldContainText "which the guest has replaced"
 
     [<Test>]
+    let ``the native handler writes into a file the guest put in place of the write end`` () : unit =
+        // The real handler writes its byte to whatever the descriptor now
+        // names, and a regular file takes it.
+        let state, dispatcher, _ = preparedState ()
+        let writeEnd = (pipeOf state).WriteEnd
+        let sink = UnixPath.parseOrFail "TestSignalDispatch" "/signal-sink"
+
+        let sinkBytes = PathArgumentBytes.Bytes (UnixPath.toByteString sink)
+
+        // `open(2)`'s flag word in the platform's own numbering, by way of the
+        // shim's, as `SystemNative_Open` passes it.
+        let flagWord (palFlags : int) : int =
+            match OpenFlagsPal.decode state.Kernel.UnixPlatform palFlags with
+            | Some word -> word
+            | None -> failwith $"the shim refuses PAL flags 0x%x{palFlags}"
+
+        let state =
+            state.MapKernel (fun kernel ->
+                let system =
+                    match UnixDescriptor.close writeEnd (EmulatedKernel.unix kernel) with
+                    | Ok (SyscallAnswer.Completed _, system) -> system
+                    | other -> failwith $"closing the write end answered %O{other}"
+
+                match
+                    UnixNamespace.openPath
+                        (flagWord (OpenFlagsPal.WriteOnly ||| OpenFlagsPal.Create))
+                        sinkBytes
+                        0o644
+                        system
+                with
+                | Ok (SyscallAnswer.Completed fd, system) when fd = int64 writeEnd ->
+                    EmulatedKernel.withUnix system kernel
+                | other -> failwith $"opening the sink answered %A{other}"
+            )
+
+        let state =
+            state
+            |> withStatus dispatcher ThreadStatus.Runnable
+            |> register Signal.SIGINT
+            |> sendToProcess Signal.SIGINT
+            |> poll
+
+        let contents =
+            let system = EmulatedKernel.unix state.Kernel
+
+            match UnixNamespace.openPath (flagWord OpenFlagsPal.ReadOnly) sinkBytes 0 system with
+            | Ok (SyscallAnswer.Completed fd, system) ->
+                match UnixReadWrite.read system.Leader (int fd) UserBuffer.Mapped 16UL system with
+                | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), _) -> List.ofSeq bytes
+                | other -> failwith $"reading the sink answered %O{other}"
+            | other -> failwith $"reopening the sink answered %O{other}"
+
+        contents |> shouldEqual [ 2uy ]
+
+    [<Test>]
     let ``the dispatcher refuses an empty read end the guest has made non-blocking`` () : unit =
         // Its read then fails with EAGAIN rather than sleeping, and the real
         // SignalHandlerLoop closes the descriptor and exits.
@@ -790,7 +845,10 @@ module TestSignalDispatch =
         exn.Message |> shouldContainText "EAGAIN"
 
     [<Test>]
-    let ``the dispatcher refuses a read end the guest has replaced`` () : unit =
+    let ``the dispatcher refuses a read end the guest replaced before it first read`` () : unit =
+        // The loop reads the number it was given, which now names the write end
+        // of standard output's pipe: the read fails with EBADF, and the real
+        // SignalHandlerLoop closes the descriptor and exits.
         let state, _dispatcher, _ = preparedState ()
 
         let exn =
@@ -801,7 +859,171 @@ module TestSignalDispatch =
                 |> ignore<IlMachineState>
             )
 
-        exn.Message |> shouldContainText "the guest has replaced it"
+        exn.Message |> shouldContainText "EBADF"
+
+    /// The read the dispatcher's task sleeps in, if it sleeps in one.
+    let private dispatcherRead (dispatcher : ThreadId) (state : IlMachineState) : ParkedPipeRead option =
+        match UnixTaskTable.parkedFor dispatcher state.Kernel.Tasks with
+        | Some (ParkedSyscall.PipeRead read) -> Some read
+        | None -> None
+        | Some other -> failwith $"the dispatcher is parked in %A{other}"
+
+    /// Every way the machine's threads and the kernel's tasks disagree.
+    let private defects (state : IlMachineState) : EmulatedKernelDefect list =
+        // This fixture's leader has a task and no thread of its own.
+        let threads =
+            state.ThreadState
+            |> Map.map (fun _ ts -> ts.Status)
+            |> Map.add state.Kernel.Leader ThreadStatus.Runnable
+
+        EmulatedKernel.checkInvariants state.Kernel
+        @ EmulatedKernel.checkTaskInvariants threads state.Kernel
+
+    [<Test>]
+    let ``an idle dispatcher sleeps in the kernel in its read of the pipe`` () : unit =
+        // The loop's `read(pipeFd, &signalCode, 1)` of an empty pipe sleeps, and
+        // the kernel holds the dispatcher's task asleep in it, on the read end's
+        // description, for one byte.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let state, dispatcher, _ = preparedStateOn platform
+            dispatcherRead dispatcher state |> shouldEqual None
+
+            let state = poll state
+
+            let read =
+                dispatcherRead dispatcher state
+                |> Option.defaultWith (fun () -> failwith "the dispatcher is not asleep in its read")
+
+            Some read.Reader
+            |> shouldEqual (
+                FileDescriptorRegistry.tryFindId (pipeOf state).ReadEnd state.Kernel.Process.FileDescriptors
+            )
+
+            read.Count |> shouldEqual 1
+
+            (state.ThreadState |> Map.find dispatcher).Status
+            |> shouldEqual ThreadStatus.Parked
+
+            Scheduler.asleepInSyscall state |> shouldEqual (Set.singleton dispatcher)
+            defects state |> shouldEqual []
+
+            // A later poll with nothing to read leaves it asleep in the same read.
+            dispatcherRead dispatcher (poll state) |> shouldEqual (Some read)
+
+    [<Test>]
+    let ``a sleeping dispatcher finishes its read when the native handler writes, and leaves the kernel`` () : unit =
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let state, dispatcher, _ = preparedStateOn platform
+            let state = state |> register Signal.SIGINT |> poll
+            dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
+
+            let state = state |> sendToProcess Signal.SIGINT |> poll
+
+            dispatcherRead dispatcher state |> shouldEqual None
+
+            (state.ThreadState |> Map.find dispatcher).Status
+            |> shouldEqual ThreadStatus.Runnable
+
+            callbackArguments dispatcher state |> List.head |> shouldEqual (int32Arg 2)
+            pipeContents state |> shouldEqual []
+            Scheduler.asleepInSyscall state |> shouldEqual Set.empty
+            defects state |> shouldEqual []
+
+    [<Test>]
+    let ``a sleeping dispatcher sleeps on when the guest makes its read end non-blocking`` () : unit =
+        // Measured (pipe-blocking.c, section I): setting O_NONBLOCK wakes no
+        // sleeping reader, which completes normally when given data.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let state, dispatcher, _ = preparedStateOn platform
+            let state = state |> register Signal.SIGINT |> poll
+
+            let state =
+                state.MapKernel (fun kernel ->
+                    match UnixSocket.setNonBlocking (pipeOf state).ReadEnd true (EmulatedKernel.unix kernel) with
+                    | SetNonBlockingAnswer.Set, system -> EmulatedKernel.withUnix system kernel
+                    | other -> failwith $"setting O_NONBLOCK answered %O{other}"
+                )
+                |> poll
+
+            dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
+
+            let state = state |> sendToProcess Signal.SIGINT |> poll
+
+            (state.ThreadState |> Map.find dispatcher).Status
+            |> shouldEqual ThreadStatus.Runnable
+
+            callbackArguments dispatcher state |> List.head |> shouldEqual (int32Arg 2)
+
+    [<Test>]
+    let ``a sleeping dispatcher holds its read end open against a close`` () : unit =
+        // The sleeping read holds the description, and this kernel refuses the
+        // close that would take it away underneath it.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let state, _dispatcher, _ = preparedStateOn platform
+            let state = poll state
+
+            match UnixDescriptor.close (pipeOf state).ReadEnd (EmulatedKernel.unix state.Kernel) with
+            | Error (CloseRefusal.LinuxLastPipeDescriptorWithTransfer _)
+            | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer _) -> ()
+            | other -> failwith $"closing the read end under the sleeping dispatcher answered %O{other}"
+
+    /// A second task, `reader`, asleep in a blocking read of the signal pipe,
+    /// as a guest thread reading the shim's pipe itself would be.
+    let private withReaderAsleepOnPipe (state : IlMachineState) : IlMachineState * ThreadId =
+        let state, reader = IlMachineState.allocateParkedThread state.Kernel.Leader state
+
+        match
+            UnixReadWrite.read reader (pipeOf state).ReadEnd UserBuffer.Mapped 1UL (EmulatedKernel.unix state.Kernel)
+        with
+        | Ok (ReadOutcome.WouldBlock _, system) ->
+            state.MapKernel (EmulatedKernel.withUnix system)
+            |> withStatus reader ThreadStatus.BlockedInSyscall,
+            reader
+        | other -> failwith $"the second reader's read answered %O{other}"
+
+    [<Test>]
+    let ``under Linux the dispatcher, asleep first, takes the byte ahead of a reader asleep after it`` () : unit =
+        // Measured (pipe-blocking.c, section A): each byte wakes the reader that
+        // went to sleep first.
+        let state, dispatcher, _ = preparedState ()
+        let state = state |> register Signal.SIGINT |> poll
+        let state, reader = withReaderAsleepOnPipe state
+
+        Scheduler.asleepInSyscall state
+        |> shouldEqual (Set.ofList [ dispatcher ; reader ])
+
+        let state = state |> sendToProcess Signal.SIGINT |> poll
+
+        (state.ThreadState |> Map.find dispatcher).Status
+        |> shouldEqual ThreadStatus.Runnable
+
+        UnixTaskTable.parkedFor reader state.Kernel.Tasks
+        |> Option.isSome
+        |> shouldEqual true
+
+        pipeContents state |> shouldEqual []
+
+    [<Test>]
+    let ``under Linux a reader asleep before the dispatcher takes the byte, and the dispatcher sleeps on`` () : unit =
+        let state, dispatcher, _ = preparedState ()
+        let state = register Signal.SIGINT state
+        let state, reader = withReaderAsleepOnPipe state
+        let state = poll state
+        dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
+
+        let state = state |> sendToProcess Signal.SIGINT |> poll
+
+        (state.ThreadState |> Map.find dispatcher).Status
+        |> shouldEqual ThreadStatus.Parked
+
+        dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
+        pipeContents state |> shouldEqual [ 2uy ]
+
+        // The scheduler's sweep, told who is asleep, wakes the reader and not
+        // the dispatcher.
+        UnixWait.wakes (Scheduler.asleepInSyscall state) (EmulatedKernel.unix state.Kernel)
+        |> List.map fst
+        |> shouldEqual [ reader ]
 
     [<Test>]
     let ``a terminating signal read after its registration went kills the process`` () : unit =

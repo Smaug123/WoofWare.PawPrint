@@ -5078,15 +5078,14 @@ module NativeSystemNative =
                 // (pal_networking.c:1733). Applied on every flavour rather than
                 // under a platform test, because on Linux the kernel never set the
                 // flag and clearing it is a no-op. The shim closes the accepted
-                // socket if the `fcntl` fails; nothing here can fail.
+                // socket if the `fcntl` fails, which it cannot on a socket the
+                // kernel has just made.
                 let unix =
-                    { unix with
-                        Process =
-                            { unix.Process with
-                                FileDescriptors =
-                                    FileDescriptorRegistry.setNonBlocking acceptedFd false unix.Process.FileDescriptors
-                            }
-                    }
+                    match UnixSocket.setNonBlocking acceptedFd false unix with
+                    | SetNonBlockingAnswer.Set, unix -> unix
+                    | SetNonBlockingAnswer.Failed error, _ ->
+                        failwith
+                            $"%s{operation}: clearing O_NONBLOCK on the accepted socket, fd %d{acceptedFd}, failed with %O{error}; fcntl(F_SETFL) fails on no socket (this is an interpreter bug)."
 
                 let state = state.MapKernel (EmulatedKernel.withUnix unix)
 
@@ -5617,7 +5616,7 @@ module NativeSystemNative =
                     // `kqueue()`, which the kernel does not yet answer as a call of
                     // its own: the allocation it makes is exactly the port's.
                     let fd, registry =
-                        FileDescriptorRegistry.createSocketEventPort state.Kernel.FileDescriptors
+                        FileDescriptorRegistry.createSocketEventPort state.Kernel.Process.FileDescriptors
 
                     fd,
                     state.MapKernel (fun kernel ->

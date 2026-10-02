@@ -765,7 +765,6 @@ type EmulatedKernel =
     // Forwarding members for everything `Process` now holds, so that this split
     // costs no read site. They go when stage 6 moves the state to the library and
     // call sites learn to say `kernel.Process.X`.
-    member this.FileDescriptors : FileDescriptorRegistry = this.Process.FileDescriptors
     member this.Environment : UnixByteString list = this.Process.Environment
     member this.CurrentDirectoryInode : InodeNumber = this.Process.CurrentDirectoryInode
     member this.ProcessPath : AbsoluteUnixPath option = this.Process.ProcessPath
@@ -853,7 +852,8 @@ type EmulatedKernelDefect =
     /// finish. Such a thread sleeps for the rest of the run.
     | SyscallWaiterWithoutRecord of thread : ThreadId
     /// A task records a park while its thread is in a status that cannot be
-    /// holding a syscall open.
+    /// holding a syscall open. The idle signal dispatcher, `Parked`, can be
+    /// holding its read of the signal pipe open, and only that.
     ///
     /// `Runnable` is legitimate and not slack: between a sweep waking a waiter
     /// and the woken thread re-entering its handler, the thread is `Runnable`
@@ -1706,6 +1706,12 @@ module EmulatedKernel =
                 | ThreadStatus.BlockedInSyscall, Some _
                 | ThreadStatus.Runnable, _
                 | _, None -> []
+                // The signal dispatcher, idle, asleep in its read of the signal
+                // pipe; `SignalDispatch` finishes that read.
+                | ThreadStatus.Parked,
+                  Some {
+                           Syscall = ParkedSyscall.PipeRead _
+                       } when PosixSignalShim.signalThread kernel.PosixSignalShim = Some thread -> []
                 | status, Some _ -> [ EmulatedKernelDefect.SyscallRecordWithoutWaiter (thread, status) ]
             )
 

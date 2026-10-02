@@ -77,7 +77,7 @@ module TestDirectoryStreamFds =
     let private positionOf (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryPosition =
         let fd = EmulatedKernel.directoryStreamFd block kernel
 
-        match FileDescriptorRegistry.tryFindTarget fd kernel.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd kernel.Process.FileDescriptors with
         | Some (OpenFileTarget.Directory (_, position)) -> position
         | other -> failwith $"the stream's fd %d{fd} names %O{other}, not a directory"
 
@@ -129,8 +129,8 @@ module TestDirectoryStreamFds =
 
         kernel.DirectoryStreamFds |> shouldBeEmpty
 
-        FileDescriptorRegistry.tryFindTarget fd kernel.FileDescriptors
-        |> shouldEqual None
+        // `fcntl(F_GETFL)` of a closed descriptor is EBADF.
+        UnixSocket.isNonBlocking fd (EmulatedKernel.unix kernel) |> shouldEqual None
 
     [<Test>]
     let ``a DIR* this kernel never issued is refused loudly`` () : unit =
