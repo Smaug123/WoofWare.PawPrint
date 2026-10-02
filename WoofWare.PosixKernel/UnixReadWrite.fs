@@ -161,6 +161,15 @@ type WriteRefusal =
     /// depends on the size of the socket's send buffer, which is not modelled
     /// (see `UnconnectedSocketWrite.DependsOnSendBuffer`).
     | SendBuffer of socket : SocketId
+    /// An unbound IPv6 datagram socket with no peer, on Linux, which a write
+    /// binds to an ephemeral port before it fails
+    /// (`UnconnectedSocketRules.writeBindsFirst`): this kernel binds only IPv4
+    /// sockets, so it cannot record the binding.
+    | Inet6Binding of socket : SocketId
+    /// An unbound datagram socket with no peer, on Linux, which a write binds
+    /// to an ephemeral port before it fails, when every port in the ephemeral
+    /// range is taken. What the kernel answers then is not measured.
+    | EphemeralPortsExhausted of socket : SocketId * low : uint16 * high : uint16
     /// The write would leave the file longer than this kernel can represent.
     | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
     /// What writing to the file at `inode` would do to its set-ID bits has not
@@ -197,6 +206,10 @@ module WriteRefusal =
         | WriteRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | WriteRefusal.UnmodelledSocketPhase (socket, domain, kind, phase) ->
             $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}), in phase %A{phase}. This kernel answers `write(2)` on a socket with no peer, but models no transfer of bytes between sockets, nor what a write reports of a refused connection's error, so it has no answer for a socket that has a peer or such an error."
+        | WriteRefusal.Inet6Binding socket ->
+            $"the descriptor is socket %O{socket}, an unbound IPv6 datagram socket with no peer. Linux binds it to an ephemeral port before it answers the write, and this kernel binds only IPv4 sockets, so it cannot record that binding."
+        | WriteRefusal.EphemeralPortsExhausted (socket, low, high) ->
+            $"the descriptor is socket %O{socket}, an unbound datagram socket with no peer, which Linux binds to an ephemeral port before it answers the write; but every port in the ephemeral range %d{low}-%d{high} is taken, and what the kernel answers then is not measured."
         | WriteRefusal.SendBuffer socket ->
             $"the descriptor is socket %O{socket}, a Unix-domain datagram socket with no peer. Linux answers EMSGSIZE for a write larger than the socket's send buffer less 32 bytes, ahead of the ENOTCONN it gives otherwise, and the send buffer's size (SO_SNDBUF, and before that the net.core.wmem_default sysctl) is not modelled."
         | WriteRefusal.ExceedsRepresentableLength (inode, offset, count) ->
@@ -824,7 +837,61 @@ module UnixReadWrite =
         match socket.Phase with
         | SocketPhase.Idle
         | SocketPhase.Listening _ ->
-            match UnconnectedSocketRules.write flavour socket.Domain socket.Kind count with
+            // The binding a write makes before it answers, if any: to the
+            // wildcard and an ephemeral port, with nothing locked, as
+            // `listen(2)`'s implicit bind is.
+            let bound : Result<UnixSystem<'Task, 'Handler>, WriteRefusal> =
+                match socket.Binding with
+                | Some _ -> Ok system
+                | None when not (UnconnectedSocketRules.writeBindsFirst flavour socket.Domain socket.Kind) -> Ok system
+                | None ->
+
+                match socket.Domain with
+                | SocketDomain.Inet6 -> Error (WriteRefusal.Inet6Binding socketId)
+                | SocketDomain.Unix ->
+                    failwith
+                        $"UnixReadWrite: a write on Unix-domain socket %O{socketId} binds it first, which no flavour does (this is a bug in this library)."
+                | SocketDomain.Inet ->
+
+                let candidate (port : uint16) : SocketBinding =
+                    {
+                        Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                        LockedAddress = None
+                        LockedPort = false
+                    }
+
+                match
+                    UnixMachineState.allocateEphemeralPort
+                        EphemeralPortUse.Reserve
+                        socketId
+                        socket
+                        candidate
+                        system.Machine
+                with
+                | None ->
+                    let low, high = system.Machine.EphemeralPortRange
+                    Error (WriteRefusal.EphemeralPortsExhausted (socketId, low, high))
+                | Some (binding, machine) ->
+                    Ok
+                        { system with
+                            Machine =
+                                { machine with
+                                    Sockets =
+                                        Map.add
+                                            socketId
+                                            { socket with
+                                                Binding = Some binding
+                                            }
+                                            machine.Sockets
+                                }
+                        }
+
+            match UnconnectedSocketRules.write flavour socket.Domain socket.Kind count, bound with
+            | UnconnectedSocketWrite.DependsOnSendBuffer, _ -> Error (WriteRefusal.SendBuffer socketId)
+            | _, Error refusal -> Error refusal
+            | answer, Ok system ->
+
+            match answer with
             | UnconnectedSocketWrite.Fails error -> Ok (WriteOutcome.Returns (wrap (WriteAnswer.Failed error), system))
             | UnconnectedSocketWrite.Breaks ->
                 broken (wrap (WriteAnswer.Failed UnixError.EPIPE)) task (BrokenWriteTarget.Socket socketId) system

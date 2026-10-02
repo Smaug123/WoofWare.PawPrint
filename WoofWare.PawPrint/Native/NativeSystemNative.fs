@@ -6611,7 +6611,9 @@ module NativeSystemNative =
                 let reachability =
                     match refusal with
                     | WriteRefusal.UnmodelledSocketPhase _
-                    | WriteRefusal.SendBuffer _ ->
+                    | WriteRefusal.SendBuffer _
+                    | WriteRefusal.Inet6Binding _
+                    | WriteRefusal.EphemeralPortsExhausted _ ->
                         "Nothing in the BCL reaches this: CoreLib writes to a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke."
                     | WriteRefusal.ExceedsRepresentableLength _ ->
                         "Write less, or raise the model's file-length limit (issue #956)."

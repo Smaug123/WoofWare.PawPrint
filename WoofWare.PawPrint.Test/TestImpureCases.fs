@@ -1171,11 +1171,6 @@ module TestImpureCases =
                 )
         }
 
-    /// Build one registration of `PipeBrokenRaw.cs` under `platform`, whose
-    /// exit code is the flavour's answer to a zero-length write with no reader:
-    /// 0 on Linux, 100 (EPIPE) on Darwin. The assertion here is that none of
-    /// the SIGPIPEs its writes raised was left pending, the runtime ignoring
-    /// it, and that the pipe was freed.
     /// `SocketUnconnectedTransfer.cs` under `platform`: 0 for Linux's answers
     /// and 100 for Darwin's. Compared against the real runtime on a host of the
     /// same flavour, since the guest asserts nothing but errnos.
@@ -1198,6 +1193,11 @@ module TestImpureCases =
             AssertTerminalState = Some (fun state -> SignalState.pending state.Kernel.Signals |> shouldEqual [])
         }
 
+    /// Build one registration of `PipeBrokenRaw.cs` under `platform`, whose
+    /// exit code is the flavour's answer to a zero-length write with no reader:
+    /// 0 on Linux, 100 (EPIPE) on Darwin. The assertion here is that none of
+    /// the SIGPIPEs its writes raised was left pending, the runtime ignoring
+    /// it, and that the pipe was freed.
     let private pipeBrokenRawCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
         {
             FileName = "PipeBrokenRaw.cs"

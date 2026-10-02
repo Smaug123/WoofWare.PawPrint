@@ -251,6 +251,31 @@ module TestUnconnectedSocketTransfer =
         UnconnectedSocketRules.write SimulatedUnixFlavour.Darwin SocketDomain.Inet SocketKind.Datagram 65536UL
         |> shouldEqual (UnconnectedSocketWrite.Fails UnixError.EDESTADDRREQ)
 
+    /// Which sockets a failed write left bound, measured by
+    /// socket-unconnected-autobind.c: getsockname(2) reported port 0 before a
+    /// write of 0, 1 or 65536 bytes and an ephemeral port after it, for these
+    /// and no others.
+    [<Test>]
+    let ``a write binds first exactly where the probe saw a port appear`` () : unit =
+        let measured =
+            [
+                for flavour in [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ] do
+                    for domain in [ SocketDomain.Inet ; SocketDomain.Inet6 ; SocketDomain.Unix ] do
+                        for kind in [ SocketKind.Stream ; SocketKind.Datagram ] do
+                            let bound =
+                                flavour = SimulatedUnixFlavour.Linux
+                                && kind = SocketKind.Datagram
+                                && domain <> SocketDomain.Unix
+
+                            yield (flavour, domain, kind), bound
+            ]
+
+        measured
+        |> List.filter (fun ((flavour, domain, kind), bound) ->
+            UnconnectedSocketRules.writeBindsFirst flavour domain kind <> bound
+        )
+        |> shouldEqual []
+
     /// The process the kernel-side rows run in: a leader, 0, and a worker, 1,
     /// which makes every call, as the probe made its writes on a worker; with
     /// `SIGPIPE` caught, so that a write raising it returns.
@@ -325,9 +350,51 @@ module TestUnconnectedSocketTransfer =
             Target = ValueSome 1
         }
 
+    /// Whether `after` is `before` with nothing changed but what a write that
+    /// binds first changes: the socket on `fd` bound, if it was not, to the
+    /// wildcard and a port from the ephemeral range, locking nothing.
+    let private boundAsTheRulesSay
+        (row : Row)
+        (fd : int)
+        (before : UnixSystem<int, string>)
+        (after : UnixSystem<int, string>)
+        : bool
+        =
+        let socketId =
+            match FileDescriptorRegistry.tryFindTarget fd before.Process.FileDescriptors with
+            | Some (OpenFileTarget.Socket socketId) -> socketId
+            | other -> failwith $"fd %d{fd} is not a socket: %A{other}"
+
+        let socketBefore = before.Machine.Sockets.[socketId]
+        let socketAfter = after.Machine.Sockets.[socketId]
+
+        if
+            socketBefore.Binding.IsNone
+            && UnconnectedSocketRules.writeBindsFirst row.Flavour row.Domain row.Kind
+        then
+            let low, high = before.Machine.EphemeralPortRange
+
+            match socketAfter.Binding with
+            | Some binding ->
+                binding.Endpoint.Address = InternetEndpoint.WildcardAddress
+                && binding.Endpoint.Port >= low
+                && binding.Endpoint.Port <= high
+                && binding.LockedAddress = None
+                && not binding.LockedPort
+                && { after with
+                       Machine =
+                           { after.Machine with
+                               NextEphemeralPort = before.Machine.NextEphemeralPort
+                               Sockets = before.Machine.Sockets
+                           }
+                   } = before
+            | None -> false
+        else
+            after = before
+
     /// Whether the kernel's answer for `row`'s call on `fd` is the one the probe
-    /// saw, or the refusal the rules call for where the answer is a sleep or
-    /// depends on the send buffer.
+    /// saw, or the refusal the rules call for where the answer is a sleep, a
+    /// binding the kernel cannot record, or depends on the send buffer.
     let private kernelAgrees (row : Row) (fd : int) (system : UnixSystem<int, string>) : bool =
         match row.Call with
         | Call.Read count ->
@@ -353,7 +420,11 @@ module TestUnconnectedSocketTransfer =
             let admissionAgrees =
                 match admitted, row.Seen with
                 | Ok (WriteOutcome.Returns (WriteAdmission.Answered (WriteAnswer.Failed error), after)),
-                  Seen.Failed seen -> error = seen && after = system
+                  Seen.Failed seen -> error = seen && boundAsTheRulesSay row fd system after
+                | Error (WriteRefusal.Inet6Binding _), Seen.Failed _ ->
+                    row.Domain = SocketDomain.Inet6
+                    && row.Phase = Phase.Idle
+                    && UnconnectedSocketRules.writeBindsFirst row.Flavour row.Domain row.Kind
                 | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered (WriteAnswer.Failed error), signal, after)),
                   Seen.FailedRaisingSigPipe seen ->
                     error = seen
@@ -446,6 +517,45 @@ module TestUnconnectedSocketTransfer =
 
     [<DllImport("libc", EntryPoint = "close")>]
     extern int private hostClose(int fd)
+
+    [<DllImport("libc", EntryPoint = "getsockname", SetLastError = true)>]
+    extern int private hostGetSockName(int fd, byte[] address, uint32& length)
+
+    [<Test>]
+    let ``this host's failed write binds an unbound socket exactly when the rules say`` () : unit =
+        HostPlatform.onUnixHost (fun flavour ->
+            let platform = HostPlatform.platformOf flavour
+
+            let disagreeing =
+                [
+                    for domain in [ SocketDomain.Inet ; SocketDomain.Inet6 ] do
+                        for kind in [ SocketKind.Stream ; SocketKind.Datagram ] do
+                            let rawDomain, rawKind, protocol =
+                                NewSocket.arguments platform domain kind SocketProtocol.Default
+
+                            let fd = hostSocket (rawDomain, rawKind, protocol)
+
+                            if fd >= 0 then
+                                try
+                                    hostWrite (fd, [| 0uy |], 1un) |> ignore<nativeint>
+                                    // sin_port and sin6_port are both at offset 2, in
+                                    // network order, on both flavours.
+                                    let name = Array.zeroCreate<byte> 128
+                                    let mutable length = 128u
+
+                                    if hostGetSockName (fd, name, &length) <> 0 then
+                                        failwith $"getsockname failed with errno %d{Marshal.GetLastPInvokeError ()}"
+
+                                    let bound = name.[2] <> 0uy || name.[3] <> 0uy
+
+                                    if bound <> UnconnectedSocketRules.writeBindsFirst flavour domain kind then
+                                        yield $"%O{domain} %O{kind}: this host bound it %b{bound}"
+                                finally
+                                    hostClose fd |> ignore<int>
+                ]
+
+            disagreeing |> shouldEqual []
+        )
 
     /// What the host answered: the return value, and the errno if it was -1;
     /// or `None` for an IPv6 row on a host with no IPv6, which is a fact about

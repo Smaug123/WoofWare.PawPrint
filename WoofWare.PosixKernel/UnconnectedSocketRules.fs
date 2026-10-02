@@ -125,3 +125,20 @@ module UnconnectedSocketRules =
         | SimulatedUnixFlavour.Darwin, SocketKind.Datagram, _ -> UnconnectedSocketWrite.Fails UnixError.EDESTADDRREQ
         | SimulatedUnixFlavour.Darwin, SocketKind.SeqPacket, _ ->
             failwith "UnconnectedSocketRules.write: no Darwin socket is SOCK_SEQPACKET"
+
+    /// Whether `write(2)` on an unbound socket of this domain and kind with no
+    /// peer first binds it to the wildcard address and an ephemeral port, and
+    /// keeps that binding whatever the write then answers. Reading binds
+    /// nothing.
+    let writeBindsFirst (flavour : SimulatedUnixFlavour) (domain : SocketDomain) (kind : SocketKind) : bool =
+        // Measured by socket-unconnected-autobind.c: getsockname(2) after a
+        // failed write of 0, 1 or 65536 bytes reports an ephemeral port for a
+        // Linux INET or INET6 datagram socket, EMSGSIZE included, because
+        // Linux binds before it hands the write to the protocol. Linux's
+        // stream and Unix-domain sockets, and every Darwin socket, are left as
+        // they were.
+        match flavour, kind, domain with
+        | SimulatedUnixFlavour.Linux, SocketKind.Datagram, SocketDomain.Inet
+        | SimulatedUnixFlavour.Linux, SocketKind.Datagram, SocketDomain.Inet6 -> true
+        | SimulatedUnixFlavour.Linux, _, _
+        | SimulatedUnixFlavour.Darwin, _, _ -> false

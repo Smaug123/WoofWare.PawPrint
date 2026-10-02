@@ -1,0 +1,25 @@
+Darwin 27.0.0
+INET  STREAM write 0         -> -1 Socket is not connected      before 0.0.0.0:0            after 0.0.0.0:0
+INET  STREAM write 1         -> -1 Socket is not connected      before 0.0.0.0:0            after 0.0.0.0:0
+INET  STREAM write 65536     -> -1 Socket is not connected      before 0.0.0.0:0            after 0.0.0.0:0
+INET  STREAM read 1 nonblock -> -1 Socket is not connected      before 0.0.0.0:0            after 0.0.0.0:0
+INET  DGRAM  write 0         -> -1 Destination address required before 0.0.0.0:0            after 0.0.0.0:0
+INET  DGRAM  write 1         -> -1 Destination address required before 0.0.0.0:0            after 0.0.0.0:0
+INET  DGRAM  write 65536     -> -1 Destination address required before 0.0.0.0:0            after 0.0.0.0:0
+INET  DGRAM  read 1 nonblock -> -1 Resource temporarily unavailable before 0.0.0.0:0            after 0.0.0.0:0
+INET6 STREAM write 0         -> -1 Socket is not connected      before [::]:0               after [::]:0
+INET6 STREAM write 1         -> -1 Socket is not connected      before [::]:0               after [::]:0
+INET6 STREAM write 65536     -> -1 Socket is not connected      before [::]:0               after [::]:0
+INET6 STREAM read 1 nonblock -> -1 Socket is not connected      before [::]:0               after [::]:0
+INET6 DGRAM  write 0         -> -1 Destination address required before [::]:0               after [::]:0
+INET6 DGRAM  write 1         -> -1 Destination address required before [::]:0               after [::]:0
+INET6 DGRAM  write 65536     -> -1 Destination address required before [::]:0               after [::]:0
+INET6 DGRAM  read 1 nonblock -> -1 Resource temporarily unavailable before [::]:0               after [::]:0
+UNIX  STREAM write 0         -> -1 Socket is not connected      before unix len 16          after unix len 16
+UNIX  STREAM write 1         -> -1 Socket is not connected      before unix len 16          after unix len 16
+UNIX  STREAM write 65536     -> -1 Socket is not connected      before unix len 16          after unix len 16
+UNIX  STREAM read 1 nonblock -> -1 Socket is not connected      before unix len 16          after unix len 16
+UNIX  DGRAM  write 0         -> -1 Destination address required before unix len 16          after unix len 16
+UNIX  DGRAM  write 1         -> -1 Destination address required before unix len 16          after unix len 16
+UNIX  DGRAM  write 65536     -> -1 Destination address required before unix len 16          after unix len 16
+UNIX  DGRAM  read 1 nonblock -> -1 Resource temporarily unavailable before unix len 16          after unix len 16
