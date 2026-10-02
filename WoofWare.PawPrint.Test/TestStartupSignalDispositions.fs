@@ -111,8 +111,13 @@ class Program
                 | ValueSome signal -> signal
                 | ValueNone -> failwith $"%d{signo} is not a signal under %O{numbering}"
 
-            let startup : SignalState<int, NativeSignalHandler> =
-                StartupSignalDispositions.initial numbering Set.empty
+            let startup : Map<Signal, SignalDisposition<NativeSignalHandler>> =
+                UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> StartupSignalDispositions.install "test" numbering Set.empty
+                |> KernelSignals.dispositions
+
+            let startupDisposition (signal : Signal) : SignalDisposition<NativeSignalHandler> =
+                Map.tryFind signal startup |> Option.defaultValue SignalDisposition.Default
 
             // A stop signal would stop the child until the oracle's timeout
             // kills it, so those are left out; the model refuses them anyway.
@@ -126,10 +131,10 @@ class Program
             let claimOf (signo : int) : Claim =
                 let signal = signalOf signo
 
-                let overridden = SignalState.disposition signal startup <> SignalDisposition.Default
+                let overridden = startupDisposition signal <> SignalDisposition.Default
 
                 let restored =
-                    match SignalState.disposition signal startup with
+                    match startupDisposition signal with
                     | SignalDisposition.Catch {
                                                   Handler = NativeSignalHandler.CoreClrPalFault _
                                               } -> true

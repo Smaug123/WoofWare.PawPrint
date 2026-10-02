@@ -119,13 +119,14 @@ type ParkedAccept =
         /// classified it when the call was entered.
         Destination : UserBuffer
         /// How many bytes of the peer address the caller's length cell allows
-        /// to be written.
+        /// to be written: the 32-bit word in the cell, which Linux reads as an
+        /// `int` and Darwin as a `socklen_t` (see `UnixConnection.accept`).
         ///
         /// This is the length the call was entered with. Darwin reads the
         /// caller's cell then; Linux reads it only when it copies the address
         /// out, after the wait, so under Linux this is right for a caller whose
         /// cell nothing writes while the call sleeps.
-        DeclaredLength : int
+        DeclaredLength : uint32
     }
 
 /// One task's in-flight blocking `read(2)` of a pipe that held nothing while a

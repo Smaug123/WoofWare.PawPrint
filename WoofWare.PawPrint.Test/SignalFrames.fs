@@ -19,7 +19,8 @@ module SignalFrames =
     /// Fails the test unless the return to user mode delivers the carrier
     /// alone.
     let enter (thread : ThreadId) (mask : Set<Signal>) (kernel : EmulatedKernel) : EmulatedKernel =
-        let before = SignalState.disposition carrier kernel.Process.Signals
+        let system = EmulatedKernel.unix kernel
+        let before = KernelSignals.disposition carrier system
 
         let action =
             // A handler the poll refuses to run, so a test that lets the
@@ -29,34 +30,20 @@ module SignalFrames =
                 NoDefer = true
             }
 
+        let caught =
+            KernelSignals.setDisposition carrier (SignalDisposition.Catch action) system
+
         let sent =
-            kernel.Process.Signals
-            |> SignalState.setDisposition carrier (SignalDisposition.Catch action)
-            |> SignalState.enqueue
-                {
-                    Signal = carrier
-                    Target = ValueSome thread
-                }
+            match
+                UnixSignal.pthreadKill
+                    thread
+                    (Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform) carrier)
+                    caught
+            with
+            | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+            | other -> failwith $"expected the carrier to be left pending on %O{thread}, got %A{other}"
 
-        let system =
-            EmulatedKernel.unix kernel
-            |> fun system ->
-                { system with
-                    Process =
-                        { system.Process with
-                            Signals = sent
-                        }
-                }
-
-        match UnixSignal.onReturnToUser thread system with
+        match UnixSignal.onReturnToUser thread sent with
         | Ok (Some (SignalDelivery.RunHandlers [ frame ]), system) when frame.Entry.Signal = carrier ->
-            let system =
-                { system with
-                    Process =
-                        { system.Process with
-                            Signals = SignalState.setDisposition carrier before system.Process.Signals
-                        }
-                }
-
-            EmulatedKernel.withUnix system kernel
+            EmulatedKernel.withUnix (KernelSignals.setDisposition carrier before system) kernel
         | other -> failwith $"expected the carrier alone to be delivered to %O{thread}, got %A{other}"

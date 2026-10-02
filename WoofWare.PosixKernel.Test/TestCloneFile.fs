@@ -40,7 +40,7 @@ module TestCloneFile =
         DirectoryEntryName.parseOrFail context text
 
     let private argument (text : string) : PathArgumentBytes =
-        PathArgumentBytes.Bytes (Text.Encoding.Latin1.GetBytes text |> ImmutableArray.CreateRange)
+        PathArg.ofBytes (Text.Encoding.Latin1.GetBytes text)
 
     /// uid 501 in groups 20 and 12: the probe's caller.
     let private u501 : Credentials =
@@ -465,7 +465,7 @@ module TestCloneFile =
             }
 
         let system =
-            match UnixNamespace.rmdir (UnixPath.parseOrFail context "/orph") system with
+            match UnixNamespace.rmdir (PathArg.ofPath (UnixPath.parseOrFail context "/orph")) system with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"rmdir: %A{other}"
 

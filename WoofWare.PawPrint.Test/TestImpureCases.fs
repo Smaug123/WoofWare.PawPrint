@@ -458,7 +458,7 @@ module TestImpureCases =
 
     /// The signals whose disposition is System.Native's handler.
     let private caughtBySystemNative (state : IlMachineState) : Set<Signal> =
-        SignalState.dispositions state.Kernel.Signals
+        KernelSignals.dispositions (EmulatedKernel.unix state.Kernel)
         |> Map.filter (fun _ disposition ->
             match disposition with
             | SignalDisposition.Catch action -> action.Handler = NativeSignalHandler.SystemNative
@@ -1985,8 +1985,10 @@ module TestImpureCases =
                 // delivered once then a reset after refusal), the
                 // bound-not-listening RST, AF_UNSPEC as no-op and UDP
                 // dissolve, the oversized-sockaddr prefix read, the raw errno
-                // numbers, and the backlog+1 queue capacity. Expectations
-                // confirmed on real Linux .NET before the handler existed;
+                // numbers, the backlog+1 queue capacity, and connect's
+                // length check ahead of ENOTSOCK. Expectations confirmed on
+                // real Linux .NET before the handler existed (the last on
+                // Linux 6.18.5 aarch64, 2026-10-02);
                 // the agreement rows live differentially in
                 // sourcesPure/SocketConnect.cs.
                 FileName = "SocketConnectLinux.cs"
@@ -3443,6 +3445,32 @@ module TestImpureCases =
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
+            }
+            {
+                // A dynamic module's version ID is the runtime's own draw of sixteen
+                // secure random bytes, which must move the kernel's pool on, or the
+                // next `Guid.NewGuid` would repeat bytes a version ID already used.
+                // Nothing else in the guest asks for random bytes.
+                FileName = "DynamicModuleVersionIdEntropy.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                // The pool is PawPrint's; a real runtime has no pool to compare.
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        let _, expected =
+                            MinipalRandom.secureRandomBytes "test" 16 (KernelConfig.toKernel KernelConfig.Default)
+
+                        state.Kernel.Machine.EntropyPool |> shouldEqual expected.Machine.EntropyPool
+                    )
             }
             {
                 // `AppDomain_CreateDynamicAssembly`: the assembly that anonymously hosts every

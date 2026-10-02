@@ -18,6 +18,7 @@
     <Compile Include="TestFrameworkLocatorRatchet.fs" />
     <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />
+    <Compile Include="KernelSignals.fs" />
     <Compile Include="SignalFrames.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />
     <Compile Include="TestSequencePoints.fs" />
@@ -128,7 +129,6 @@
     <Compile Include="TestSeedForOracle.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
     <Compile Include="TestRealRuntimeStandardInput.fs" />
-    <Compile Include="TestGuestPathBytes.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />
     <Compile Include="TestSwitchIlOp.fs" />
@@ -254,6 +254,7 @@
     <Compile Include="TestPlatformSocketSupport.fs" />
     <Compile Include="TestBufferRangeFit.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />
+    <Compile Include="TestMinipalRandom.fs" />
     <Compile Include="TestDeterministicMath.fs" />
     <Compile Include="TestFloatToInteger.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />

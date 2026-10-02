@@ -59,7 +59,7 @@ module TestDirectoryStreamFds =
             match
                 UnixNamespace.openPath
                     directoryFlags
-                    (UnixPath.parseOrFail "test" "/dir")
+                    (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" "/dir")))
                     0
                     (EmulatedKernel.unix kernel)
             with

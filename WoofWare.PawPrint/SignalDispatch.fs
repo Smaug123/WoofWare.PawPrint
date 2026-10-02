@@ -158,15 +158,18 @@ module SignalDispatch =
             // one-shot shutdown notification, which cleans up the debugger
             // transport, and writes a crash dump if one is configured; PawPrint
             // models neither, and the guest sees neither.
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals = SignalState.setDisposition signal SignalDisposition.Default kernel.Signals
-                        }
-                }
-            )
-            |> SignalPoll.Continues
+            let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+
+            match
+                UnixSignal.sigaction
+                    (Signal.toRawSignoUnder numbering signal)
+                    (Some SignalDisposition.Default)
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Ok (_, system) -> state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
+            | Error errno ->
+                failwith
+                    $"SignalDispatch.poll: the PAL's restore of %O{signal}'s default was refused (%O{errno}), but the PAL catches only signals sigaction accepts."
         | PalReplacedDisposition.Ignore ->
             // `abort` unblocks SIGABRT before raising it, which `frame`'s mask
             // holds if `frame` is SIGABRT's own; returning through the frame

@@ -119,6 +119,15 @@ module UnixSignal =
 
                 Ok (Ok (KillOutcome.ProcessEnded ended))
 
+    /// The numbers the C library keeps for its own threads and screens out of
+    /// the signal calls it wraps, before the kernel sees them: Linux's 32 and
+    /// 33, which glibc uses as SIGCANCEL and SIGSETXID. Darwin's C library
+    /// keeps none.
+    let private reservedByCLibrary (numbering : SignalNumbering) (signo : int32) : bool =
+        match numbering with
+        | SignalNumbering.Linux -> signo = 32 || signo = 33
+        | SignalNumbering.Darwin -> false
+
     let private withSignals<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (signals : SignalState<'Task, 'Handler>)
         (system : UnixSystem<'Task, 'Handler>)
@@ -210,16 +219,11 @@ module UnixSignal =
         // every row: 0 sends nothing; every signal but Linux's 32 and 33 is sent;
         // every other number is EINVAL. glibc refuses 32 and 33 before the
         // kernel sees them: `kill(2)` sends both (`kill-arguments.c`).
-        let reservedByCLibrary =
-            match numbering with
-            | SignalNumbering.Linux -> signo = 32 || signo = 33
-            | SignalNumbering.Darwin -> false
-
         if ProcessId.toInt32 (UnixSystem.processId system) = 1 then
             Error ThreadKillRefusal.InitProcess
         elif signo = 0 then
             Ok (Ok (KillOutcome.ProcessContinues system))
-        elif reservedByCLibrary then
+        elif reservedByCLibrary numbering signo then
             Ok (Error UnixError.EINVAL)
         else
 
@@ -248,3 +252,81 @@ module UnixSignal =
                     UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) system
 
                 Ok (Ok (KillOutcome.ProcessEnded ended))
+
+    /// `sigaction(2)` as the kernel answers it, with `signo` read under the
+    /// process's own signal numbering. `newAction` is `None` to ask for the
+    /// signal's disposition without changing it, and the answer is the
+    /// disposition the signal had before the call.
+    let private sigactionUnder<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (cLibrary : bool)
+        (signo : int32)
+        (newAction : SignalDisposition<'Handler> option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SignalDisposition<'Handler> * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        let numbering = SignalState.numbering system.Process.Signals
+
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/sigaction-sweep.c`
+        // on Linux 6.18.5 (aarch64, glibc 2.41) and Darwin 27.0.0, from -1 to two
+        // past the highest signal and at 65, 66, 128, 1000, INT_MIN and INT_MAX:
+        // a query, a handler, SIG_IGN and SIG_DFL in turn, through the C library
+        // and through the raw system call. Every number that is not a signal was
+        // EINVAL for each. Linux reported SIGKILL and SIGSTOP as SIG_DFL and
+        // refused to install anything for them; Darwin refused even to report
+        // them, through either route. glibc refused 32 and 33 for every call,
+        // the query included, where the raw `rt_sigaction` treated them as any
+        // other signal.
+        if cLibrary && reservedByCLibrary numbering signo then
+            Error UnixError.EINVAL
+        else
+
+        match Signal.ofRawSignoUnder numbering signo with
+        | ValueNone -> Error UnixError.EINVAL
+        | ValueSome signal ->
+
+        let onlyDefault = SignalState.kernelHoldsOnlyDefault numbering signal
+
+        match numbering, newAction with
+        | SignalNumbering.Darwin, _ when onlyDefault -> Error UnixError.EINVAL
+        | SignalNumbering.Linux, Some _ when onlyDefault -> Error UnixError.EINVAL
+        | _, None -> Ok (SignalState.disposition signal system.Process.Signals, system)
+        | _, Some action ->
+            let old = SignalState.disposition signal system.Process.Signals
+
+            Ok (old, withSignals (SignalState.setDisposition signal action system.Process.Signals) system)
+
+    /// `sigaction(3)` as a program calls it, through its C library, which on
+    /// Linux refuses glibc's own 32 and 33 before the kernel sees them: see
+    /// `sigactionSyscall` for the rest of the answer.
+    let sigaction<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (signo : int32)
+        (newAction : SignalDisposition<'Handler> option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SignalDisposition<'Handler> * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        sigactionUnder true signo newAction system
+
+    /// `sigaction(2)`, made as a system call rather than through the C
+    /// library, with `signo` read under the process's own signal numbering:
+    /// Linux's `rt_sigaction`, and on Darwin the same call `sigaction` makes.
+    /// `newAction` is `None` to ask for the signal's disposition without
+    /// changing it, and `Some action` to install `action`. Either way the
+    /// answer is the disposition the signal had before the call, with the
+    /// system as the call leaves it.
+    ///
+    /// Installing a disposition that ignores the signal discards every pending
+    /// instance of it, on every task and on the process: `SIG_IGN`, and
+    /// `SIG_DFL` for a signal whose default is to discard it or to continue the
+    /// process. A handler's mask is stored without SIGKILL and SIGSTOP, which
+    /// nothing can block.
+    ///
+    /// A number that is not a signal is `EINVAL`, and so is installing
+    /// anything for SIGKILL or SIGSTOP. Darwin refuses even to report those
+    /// two, where Linux reports them as `SIG_DFL`.
+    let sigactionSyscall<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (signo : int32)
+        (newAction : SignalDisposition<'Handler> option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SignalDisposition<'Handler> * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        sigactionUnder false signo newAction system

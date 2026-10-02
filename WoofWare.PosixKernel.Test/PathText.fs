@@ -29,3 +29,20 @@ module PathText =
 
     /// The bytes of `text`'s UTF-8 encoding, as the kernel stores a name built from it.
     let bytes (text : string) : byte[] = UnixPathText.utf8.GetBytes text
+
+/// A pathname argument as a test hands it to a syscall.
+[<RequireQualifiedAccess>]
+module PathArg =
+    /// These bytes, which must hold no NUL, as a path argument.
+    let ofBytes (bytes : byte seq) : PathArgumentBytes =
+        match UnixByteString.ofBytes (System.Collections.Immutable.ImmutableArray.CreateRange bytes) with
+        | Ok bytes -> PathArgumentBytes.Bytes bytes
+        | Error defect -> failwith $"PathArg.ofBytes: %s{UnixByteString.describe defect}"
+
+    /// `text`'s UTF-8 encoding as a path argument.
+    let ofText (text : string) : PathArgumentBytes =
+        ofBytes (UnixPathText.utf8.GetBytes text)
+
+    /// The bytes of `path` as a path argument.
+    let ofPath (path : UnixPath) : PathArgumentBytes =
+        PathArgumentBytes.Bytes (UnixPath.toByteString path)

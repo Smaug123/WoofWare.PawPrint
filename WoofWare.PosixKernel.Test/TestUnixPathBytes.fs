@@ -54,9 +54,9 @@ module TestUnixPathBytes =
 
         let system =
             linux
-            |> UnixNamespace.mkdir (pathOf directory) 0o777
+            |> UnixNamespace.mkdir (PathArg.ofPath (pathOf directory)) 0o777
             |> completed
-            |> UnixPathResolution.chdir (pathOf directory)
+            |> UnixPathResolution.chdir (PathArg.ofPath (pathOf directory))
             |> completed
 
         match UnixPathResolution.getcwd UserBuffer.Mapped 4096UL system with
@@ -74,10 +74,10 @@ module TestUnixPathBytes =
             names
             |> List.fold
                 (fun system name ->
-                    UnixNamespace.mkdir (pathOf (parent @ [ slash ] @ name)) 0o777 system
+                    UnixNamespace.mkdir (PathArg.ofPath (pathOf (parent @ [ slash ] @ name))) 0o777 system
                     |> completed
                 )
-                (UnixNamespace.mkdir (pathOf parent) 0o777 linux |> completed)
+                (UnixNamespace.mkdir (PathArg.ofPath (pathOf parent)) 0o777 linux |> completed)
 
         let fd, system =
             match DirectoryReading.openDirectory (pathOf parent) system with
@@ -207,9 +207,9 @@ module TestUnixPathBytes =
         // cannot give its own process.
         let orphaned =
             seeded (Map.toList BindingProbes.tree) darwin
-            |> UnixNamespace.mkdir (pathOf (text "/gone")) 0o777
+            |> UnixNamespace.mkdir (PathArg.ofPath (pathOf (text "/gone"))) 0o777
             |> completed
-            |> UnixPathResolution.chdir (pathOf (text "/gone"))
+            |> UnixPathResolution.chdir (PathArg.ofPath (pathOf (text "/gone")))
             |> completed
             |> Answered.rmdir (pathOf (text "../gone"))
             |> completed
@@ -227,18 +227,13 @@ module TestUnixPathBytes =
             }
 
         for name in [ text "g" ; [ 0xFFuy ] ] do
-            fst (UnixNamespace.mkdir (pathOf name) 0o777 orphaned)
+            fst (UnixNamespace.mkdir (PathArg.ofPath (pathOf name)) 0o777 orphaned)
             |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
 
             fst (Answered.openPath creating (pathOf name) 0o666 orphaned)
             |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
 
-            match
-                UnixNamespace.rename
-                    (PathArgumentBytes.Bytes (ImmutableArray.CreateRange (text "/d/f")))
-                    (PathArgumentBytes.Bytes (ImmutableArray.CreateRange name))
-                    orphaned
-            with
+            match UnixNamespace.rename (PathArg.ofBytes (text "/d/f")) (PathArg.ofBytes name) orphaned with
             | Ok (answer, _) -> answer |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
             | Error refusal -> failwith $"rename refused its arguments: %A{refusal}"
 
@@ -355,11 +350,18 @@ module TestUnixPathBytes =
                 let system =
                     seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf bytes, None) ] system
 
-                match UnixNamespace.readlink (pathOf [ slash ; byte 'l' ]) UserBuffer.Mapped 8192 system with
+                match
+                    UnixNamespace.readlink (PathArg.ofPath (pathOf [ slash ; byte 'l' ])) UserBuffer.Mapped 8192 system
+                with
                 | Ok (ReadLinkAnswer.Reported reported) -> List.ofSeq reported |> shouldEqual bytes
                 | other -> failwith $"expected a target, got %A{other}"
 
-                match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (pathOf [ slash ; byte 'l' ]) system with
+                match
+                    UnixPathResolution.stat
+                        SymlinkPolicy.NoFollowFinal
+                        (PathArg.ofPath (pathOf [ slash ; byte 'l' ]))
+                        system
+                with
                 | Ok (FileStatusAnswer.Reported status) -> status.Size |> shouldEqual (int64 bytes.Length)
                 | other -> failwith $"expected a status, got %A{other}"
 
@@ -377,7 +379,12 @@ module TestUnixPathBytes =
                 ]
                 linux
 
-        match UnixPathResolution.stat SymlinkPolicy.Follow (pathOf [ slash ; byte 'l' ; slash ; byte '.' ]) system with
+        match
+            UnixPathResolution.stat
+                SymlinkPolicy.Follow
+                (PathArg.ofPath (pathOf [ slash ; byte 'l' ; slash ; byte '.' ]))
+                system
+        with
         | Ok (FileStatusAnswer.Reported status) -> status.Mode &&& 0o170000 |> shouldEqual 0o040000
         | other -> failwith $"expected the directory, got %A{other}"
 
@@ -396,7 +403,10 @@ module TestUnixPathBytes =
             let system =
                 seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf (target length), None) ] darwin
 
-            UnixPathResolution.stat SymlinkPolicy.Follow (pathOf [ slash ; byte 'l' ; slash ; byte 'a' ]) system
+            UnixPathResolution.stat
+                SymlinkPolicy.Follow
+                (PathArg.ofPath (pathOf [ slash ; byte 'l' ; slash ; byte 'a' ]))
+                system
 
         // Fits, so the walk proceeds into the target, whose first component
         // does not exist.
@@ -503,7 +513,7 @@ module TestUnixPathBytes =
         |> List.ofArray
 
     [<Test>]
-    let ``PathArgument.parse agrees with the table recorded before paths were bytes`` () : unit =
+    let ``PathArgument.copyIn agrees with the table recorded before paths were bytes`` () : unit =
         // Every input is valid UTF-8, the domain the old decoding parse could
         // answer; there, nothing should have changed.
         recorded.Length |> shouldBeGreaterThan 500
@@ -518,16 +528,22 @@ module TestUnixPathBytes =
             let bytes = UTF8Encoding(false, true).GetBytes input
 
             let actual =
+                // Bytes holding a NUL are no longer a path argument at all: the
+                // refusal the table records moved to the byte string's
+                // construction, which names the same offset.
+                match UnixByteString.ofBytes (ImmutableArray.CreateRange bytes) with
+                | Error (UnixByteStringDefect.ContainsNul offset) -> $"InteriorNul %d{offset}"
+                | Ok argument ->
+
                 match
-                    PathArgument.parse (SimulatedUnixPlatform.pathLimits platform) (ImmutableArray.CreateRange bytes)
+                    PathArgument.copyIn (SimulatedUnixPlatform.pathLimits platform) (PathArgumentBytes.Bytes argument)
                 with
-                | Ok (PathArgument.Parsed path) ->
+                | PathArgument.Parsed path ->
                     if Seq.toArray (UnixByteString.toBytes (UnixPath.toByteString path)) = bytes then
                         "Parsed"
                     else
                         "Parsed, but not verbatim"
-                | Ok (PathArgument.Failed error) -> $"Failed %A{error}"
-                | Error (PathArgumentRefusal.InteriorNul offset) -> $"InteriorNul %d{offset}"
+                | PathArgument.Failed error -> $"Failed %A{error}"
 
             if actual <> expected then
                 failwith $"%s{flavour}, %d{bytes.Length} bytes: recorded %s{expected}, now %s{actual}"
