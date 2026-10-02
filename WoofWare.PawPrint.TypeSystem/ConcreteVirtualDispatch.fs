@@ -9,7 +9,8 @@ open Microsoft.Extensions.Logging
 
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
 /// CoreCLR's `MethodTable::FindDispatchImpl` decides it: the receiver's dispatch table and
-/// MethodImpls, its dispatch map, default interface bodies, variance, and the SZ-array carve-out.
+/// MethodImpls, its dispatch map, default interface bodies, variance, and the SZ-array carve-out;
+/// and which implementation of a static abstract interface member a `constrained.` type supplies.
 /// Whatever loads an assembly or registers a concrete type on the way returns the state it leaves
 /// behind; `dotnetRuntimeDirs` is where the loader looks for an assembly not yet loaded.
 [<RequireQualifiedAccess>]
@@ -1639,3 +1640,93 @@ module ConcreteVirtualDispatch =
                         $"variant interface dispatch of %s{methodToCall.Name}: the dispatch map found no class implementation through any variance-compatible entry, but retargeting onto %O{retargeted.DeclaringTypeGenerics} found %s{MethodOwner.describe resolved.Owner}::%s{resolved.Name}"
 
         firstResolved state retargets
+
+    /// Resolve a `constrained.`-prefixed reference to a static abstract interface member down to
+    /// the implementation the constrained type supplies, returning it alongside its declaring
+    /// type's handle.
+    ///
+    /// Shared by `constrained. call` and `constrained. ldftn`, which pick their target the same
+    /// way: CoreCLR routes both through `getCallInfo` with the constrained token, and the switch
+    /// there is `pConstrainedResolvedToken != NULL && pMD->IsInterface() && pMD->IsStatic()`
+    /// (`jitinterface.cpp`, `getCallInfo`). That test is computed before anything branches on
+    /// `CORINFO_CALLINFO_LDFTN`, so the *method chosen* cannot differ between the two opcodes;
+    /// what differs afterwards is only what the caller does with it.
+    ///
+    /// `opName` names the prefixed instruction (`constrained.call` / `Ldftn`), so a failure says
+    /// which one hit it rather than always blaming `call`.
+    ///
+    /// The instance-receiver forms of the prefix (`CORINFO_DEREF_THIS` / `CORINFO_BOX_THIS`) are
+    /// not implemented: Roslyn emits `constrained.` before `ldftn` only for static
+    /// abstract interface members, and before `call`/`callvirt` the instance cases are handled by
+    /// `executeCallvirt`'s own transformation. Anything else fails loudly here rather than being
+    /// guessed at.
+    let resolveConstrainedStaticInterfaceMethod
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (opName : string)
+        (constrainedTypeHandle : ConcreteTypeHandle)
+        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
+        (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : TypeSystemState)
+        : TypeSystemState *
+          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+          ConcreteTypeHandle
+        =
+        let methodDeclAssy =
+            state._LoadedAssemblies.ByDefinitionName methodToCall.DeclaringAssemblyFullName
+
+        let methodDeclType =
+            methodDeclAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
+
+        if not methodToCall.IsStatic || not methodDeclType.IsInterface then
+            failwith
+                $"%s{opName}: expected a static interface method, got %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}"
+
+        match constrainedTypeHandle with
+        | ConcreteTypeHandle.Concrete _ ->
+            // Registration is checked eagerly, and separately from rendering: an unregistered
+            // handle would otherwise surface as a confusing resolution failure below rather than
+            // as the bookkeeping error it is.
+            if (AllConcreteTypes.lookup constrainedTypeHandle state.ConcreteTypes).IsNone then
+                failwith $"%s{opName}: constrained type handle %O{constrainedTypeHandle} is not registered"
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"%s{opName}: static interface dispatch for non-concrete constrained type %O{constrainedTypeHandle} is not implemented"
+
+        let state, implementation =
+            tryResolveVirtualImplementation
+                loggerFactory
+                dotnetRuntimeDirs
+                baseClassTypes
+                concretizedMethod.Generics
+                concretizedMethod
+                constrainedTypeHandle
+                true
+                state
+
+        match implementation with
+        | None ->
+            let constrained =
+                AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes constrainedTypeHandle
+
+            failwith $"%s{opName}: could not find static implementation of %s{methodToCall.Name} on %s{constrained}"
+        | Some implementation when not implementation.IsStatic ->
+            failwith
+                $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Owner}::%s{implementation.Name}"
+        | Some implementation ->
+            let declaringTypeHandle =
+                AllConcreteTypes.findExistingConcreteType
+                    state.ConcreteTypes
+                    implementation.RequiredDeclaringType.Identity
+                    implementation.DeclaringTypeGenerics
+                |> Option.defaultWith (fun () ->
+                    failwith
+                        $"%s{opName}: resolved implementation declaring type %s{MethodOwner.describe implementation.Owner} is not registered"
+                )
+
+            state, implementation, declaringTypeHandle
