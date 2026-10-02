@@ -775,7 +775,7 @@ module TestSocketTable =
         (kernel : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        match UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel with
+        match UnixConnection.connectSocket client nonBlocking 16u inetFamily (Some dest) kernel with
         | Ok answer -> answer
         | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
@@ -787,7 +787,7 @@ module TestSocketTable =
         (kernel : UnixSystem<int, string>)
         : ConnectRefusal
         =
-        match UnixConnection.connectSocket client false 16 inetFamily (Some dest) kernel with
+        match UnixConnection.connectSocket client false 16u inetFamily (Some dest) kernel with
         | Error refusal -> refusal
         | Ok answer -> failwith $"expected a refusal, got %A{answer}"
 
@@ -1261,7 +1261,7 @@ module TestSocketTable =
         // AF_UNSPEC dissolves on Linux, and — measured, unlike TCP's reset —
         // drops the implicit binding entirely, port included.
         let outcome, kernel =
-            match UnixConnection.connectSocket (SocketId 0L) false 16 (Some 0) None kernel with
+            match UnixConnection.connectSocket (SocketId 0L) false 16u (Some 0) None kernel with
             | Ok answer -> answer
             | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
@@ -1288,7 +1288,7 @@ module TestSocketTable =
             }
 
         let outcome, _ =
-            match UnixConnection.connectSocket (SocketId 0L) false 16 (Some 0) None darwin with
+            match UnixConnection.connectSocket (SocketId 0L) false 16u (Some 0) None darwin with
             | Ok answer -> answer
             | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 

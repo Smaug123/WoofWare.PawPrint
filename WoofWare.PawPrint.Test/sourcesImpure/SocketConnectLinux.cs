@@ -30,7 +30,11 @@ using System.Threading;
 //     UDP socket dissolves the peer filter (Darwin refuses both);
 //   * an oversized sockaddr is fine: the kernel reads the prefix it needs
 //     (Darwin: EINVAL);
-//   * the accept queue admits backlog + 1 connections (Darwin: backlog).
+//   * the accept queue admits backlog + 1 connections (Darwin: backlog);
+//   * connect judges the sockaddr's length before it asks whether the
+//     descriptor is a socket, so a length over 128 is EINVAL on an epoll
+//     descriptor where bind answers ENOTSOCK (Darwin: ENOTSOCK for both;
+//     `docs/plans/2026-08-23-posix-kernel-extraction/socket-address-length.c`).
 //
 // The Thread.Sleep calls exist for the real-.NET confirmation run: on a real
 // kernel the loopback RST or handshake completion lands microseconds after
@@ -380,6 +384,19 @@ class SocketConnectLinux
         IntPtr a3;
         if (AcceptReportingErrno(lst2, outAddr, &len, &a3) != PAL_EAGAIN) return 118;
         if (Marshal.GetLastSystemError() != EAGAIN) return 119;
+
+        // --- connect copies the sockaddr in before it looks at the descriptor ---
+        // So a length past sizeof(struct sockaddr_storage) is EINVAL even on a
+        // descriptor that is not a socket, where bind answers ENOTSOCK.
+        IntPtr port2;
+        if (CreateSocketEventPort(&port2) != PAL_SUCCESS) return 120;
+        byte* wide = stackalloc byte[256];
+        if (!Address(wide, 256, Loopback, listenPort)) return 121;
+        if (ConnectReportingErrno(port2, wide, 129) != PAL_EINVAL) return 122;
+        if (Marshal.GetLastSystemError() != EINVAL) return 123;
+        if (ConnectReportingErrno(port2, wide, V4Size) != PAL_ENOTSOCK) return 124;
+        if (Bind(port2, PT_UDP, wide, 129) != PAL_ENOTSOCK) return 125;
+        if (Close(port2) != 0) return 126;
 
         return 0;
     }

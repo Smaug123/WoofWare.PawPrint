@@ -458,7 +458,7 @@ module TestImpureCases =
 
     /// The signals whose disposition is System.Native's handler.
     let private caughtBySystemNative (state : IlMachineState) : Set<Signal> =
-        SignalState.dispositions state.Kernel.Signals
+        KernelSignals.dispositions (EmulatedKernel.unix state.Kernel)
         |> Map.filter (fun _ disposition ->
             match disposition with
             | SignalDisposition.Catch action -> action.Handler = NativeSignalHandler.SystemNative
@@ -1985,8 +1985,10 @@ module TestImpureCases =
                 // delivered once then a reset after refusal), the
                 // bound-not-listening RST, AF_UNSPEC as no-op and UDP
                 // dissolve, the oversized-sockaddr prefix read, the raw errno
-                // numbers, and the backlog+1 queue capacity. Expectations
-                // confirmed on real Linux .NET before the handler existed;
+                // numbers, the backlog+1 queue capacity, and connect's
+                // length check ahead of ENOTSOCK. Expectations confirmed on
+                // real Linux .NET before the handler existed (the last on
+                // Linux 6.18.5 aarch64, 2026-10-02);
                 // the agreement rows live differentially in
                 // sourcesPure/SocketConnect.cs.
                 FileName = "SocketConnectLinux.cs"

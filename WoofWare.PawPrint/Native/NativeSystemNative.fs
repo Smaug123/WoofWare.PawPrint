@@ -372,31 +372,35 @@ module NativeSystemNative =
             //
             // `sigaction` refuses the restore for SIGKILL, SIGSTOP and glibc's
             // 32 and 33, which the shim does not check: it re-raises the signal
-            // under whatever disposition it has.
+            // under whatever disposition it has. The errno the refusal leaves
+            // is never read: of those, SIGKILL and Linux's 32 kill the process
+            // below, the stop signals were refused above, and glibc's 33 is
+            // refused below.
             let restored =
-                if Signal.isUncatchableUnder numbering signal then
-                    state
-                else
-                    state.MapKernel (fun kernel ->
-                        let signals, shim =
-                            PosixSignalShim.restoreHandler numbering signal kernel.Signals kernel.PosixSignalShim
+                state.MapKernel (fun kernel ->
+                    let system, shim, _ =
+                        PosixSignalShim.restoreHandler
+                            numbering
+                            signal
+                            (EmulatedKernel.unix kernel)
+                            kernel.PosixSignalShim
 
-                        { kernel with
-                            Process =
-                                { kernel.Process with
-                                    Signals = signals
-                                }
-                            PosixSignalShim = shim
-                        }
-                    )
+                    { EmulatedKernel.withUnix system kernel with
+                        PosixSignalShim = shim
+                    }
+                )
 
-            match SignalState.disposition signal restored.Kernel.Signals with
-            | SignalDisposition.Catch action ->
+            // Asked of the kernel rather than through the C library, which will
+            // not report Linux's 33.
+            match UnixSignal.sigactionSyscall signo None (EmulatedKernel.unix restored.Kernel) with
+            | Ok (SignalDisposition.Catch action, _) ->
                 // Linux's 33, whose handler is glibc's own.
                 failwith
                     $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering would run its handler (%O{action.Handler}), native code PawPrint does not model."
-            | SignalDisposition.Default
-            | SignalDisposition.Ignore -> ()
+            | Ok (SignalDisposition.Default, _)
+            | Ok (SignalDisposition.Ignore, _)
+            // Darwin will not report SIGKILL, which nothing can catch.
+            | Error _ -> ()
 
             let system = EmulatedKernel.unix restored.Kernel
 
@@ -466,7 +470,7 @@ module NativeSystemNative =
             { kernel with
                 PosixSignalShim =
                     kernel.PosixSignalShim
-                    |> PosixSignalShim.saveConsoleSignals numbering kernel.Signals
+                    |> PosixSignalShim.saveConsoleSignals numbering (EmulatedKernel.unix kernel)
                     |> PosixSignalShim.markInitialized
                         dispatcher
                         {
@@ -4850,9 +4854,10 @@ module NativeSystemNative =
             // wrapper itself dereferences and `requireStorage` refuses for.
             match
                 UnixSocket.admitSockaddrCopy
+                    SockaddrCopySyscall.Bind
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error refusal -> refuse (BindRefusal.Copy refusal)
@@ -4923,7 +4928,7 @@ module NativeSystemNative =
                 UnixSocket.bind
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     family
                     endpoint
                     (EmulatedKernel.unix state.Kernel)
@@ -5042,6 +5047,7 @@ module NativeSystemNative =
                 | Ok (AcceptOutcome.Restarts, _)
                 | Ok (AcceptOutcome.Failed UnixError.EINTR, _) -> ()
                 | Ok (AcceptOutcome.Failed _, _)
+                | Ok (AcceptOutcome.DroppedConnection _, _)
                 | Ok (AcceptOutcome.Accepted _, _)
                 | Error _ -> acceptedCell.Force () |> ignore<ManagedPointerSource>
 
@@ -5108,6 +5114,13 @@ module NativeSystemNative =
                     // accept changes nothing, so writing one would be a no-op that
                     // hid a future change to that contract.
                     failFromSyscall error state
+                | Ok (AcceptOutcome.DroppedConnection error, system) ->
+                    // Only a negative length drops a connection, and the shim
+                    // answers that itself before calling `accept4`, so no
+                    // guest reaches this. Answered as the kernel answers all
+                    // the same: the connection has gone, which the system
+                    // records.
+                    state.MapKernel (EmulatedKernel.withUnix system) |> failFromSyscall error
                 | Ok (AcceptOutcome.WouldBlock _, system) ->
                     // Park re-entrantly, as `SystemNative_Poll` does: the native
                     // frame stays and the caller's program counter still names the
@@ -5191,7 +5204,7 @@ module NativeSystemNative =
 
                 settle
                     fd
-                    parked.DeclaredLength
+                    (int parked.DeclaredLength)
                     (UnixConnection.finishAccept ctx.Thread (EmulatedKernel.unix state.Kernel))
             | Some (ParkedSyscall.SocketWait _)
             | Some (ParkedSyscall.Flock _)
@@ -5232,9 +5245,10 @@ module NativeSystemNative =
                         (readBytesThrough ctx operation lengthCell 4 state).AsSpan ()
                     )
 
-            // The shim's own screen, before the cast to `socklen_t` that would
-            // otherwise make the bound SIZE_MAX. No kernel is ever asked, which
-            // is why the library refuses one instead.
+            // The shim's own screen, which answers a negative length before it
+            // calls `accept4`. The kernel never sees one from here: Linux would
+            // have taken the connection and answered EINVAL, and Darwin read
+            // the word as a length of more than two gigabytes.
             if declaredLength < 0 then
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
@@ -5245,7 +5259,7 @@ module NativeSystemNative =
                 ctx.Thread
                 fd
                 (BufferPointer.toUserBuffer addressArgument)
-                declaredLength
+                (uint32 declaredLength)
                 (EmulatedKernel.unix state.Kernel)
             |> settle fd declaredLength
         // `int32_t SystemNative_Connect(intptr_t socket, uint8_t* socketAddress,
@@ -5326,9 +5340,10 @@ module NativeSystemNative =
             // dereference is only a problem when bytes actually move.
             match
                 UnixSocket.admitSockaddrCopy
+                    SockaddrCopySyscall.Connect
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error refusal -> refuse refusal
@@ -5394,7 +5409,7 @@ module NativeSystemNative =
                 UnixConnection.connect
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     family
                     destination
                     (EmulatedKernel.unix state.Kernel)
@@ -5445,9 +5460,10 @@ module NativeSystemNative =
             let declaredLength =
                 BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
 
-            // The shim's own screen (`pal_networking.c:1873`), before the cast to
-            // `socklen_t` that would otherwise make the bound SIZE_MAX. No kernel
-            // is ever asked, which is why the library refuses one instead.
+            // The shim's own screen (`pal_networking.c:1873`), which answers a
+            // negative length before it calls `getsockname(2)`. The kernel never
+            // sees one from here: Linux would answer EINVAL, and Darwin read the
+            // word as a length of more than two gigabytes.
             if declaredLength < 0 then
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
@@ -5468,7 +5484,7 @@ module NativeSystemNative =
                 UnixSocket.getsockname
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
-                    declaredLength
+                    (uint32 declaredLength)
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error (GetSockNameRefusal.Buffer refusal) ->
@@ -6690,9 +6706,9 @@ module NativeSystemNative =
                         ctx.Thread
                         state.Kernel.Leader
                         state.Kernel.PosixSignalShim
-                        state.Kernel.Signals
+                        (EmulatedKernel.unix state.Kernel)
                         raised
-                        after.Process.Signals
+                        after
                 with
                 | Some refusal ->
                     failwith
@@ -7036,31 +7052,38 @@ module NativeSystemNative =
             // for SIGKILL and SIGSTOP, and — in glibc's wrapper rather than
             // the kernel — for the 32 and 33 glibc reserves for itself.
             // `InstallSignalHandler` then returns false and the shim
-            // propagates 0 with `errno = EINVAL`, which
+            // propagates 0 with that errno, which
             // `PosixSignalRegistration.Register` reads via
             // `Marshal.GetLastSystemError` to throw an `IOException`. We
             // mirror exactly that: leave the disposition alone, set errno,
             // push 0. Not a loud failure — this is a documented
             // BCL-observable failure mode, not a simulator bug.
-            let refused () : NativeHandlerResult option =
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EINVAL))
+            let refused (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+                withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
 
             match signalWithinShimRange operation numbering signo with
-            | ValueNone -> refused ()
-            | ValueSome signal when Signal.isUncatchableUnder numbering signal -> refused ()
+            // Darwin's 32, which `sigaction` refuses as it refuses any number
+            // that is no signal.
+            | ValueNone -> refused UnixError.EINVAL state
             | ValueSome signal ->
-                state.MapKernel (fun kernel ->
-                    let signals, shim =
-                        PosixSignalShim.enable numbering signal kernel.Signals kernel.PosixSignalShim
 
+            let installed, shim =
+                PosixSignalShim.enable numbering signal (EmulatedKernel.unix state.Kernel) state.Kernel.PosixSignalShim
+
+            match installed with
+            | Error error ->
+                state.MapKernel (fun kernel ->
                     { kernel with
-                        Process =
-                            { kernel.Process with
-                                Signals = signals
-                            }
+                        PosixSignalShim = shim
+                    }
+                )
+                |> refused error
+            | Ok system ->
+                state.MapKernel (fun kernel ->
+                    { EmulatedKernel.withUnix system kernel with
                         PosixSignalShim = shim
                     }
                 )
@@ -7139,26 +7162,24 @@ module NativeSystemNative =
                 withErrnoOnly ctx UnixError.EINVAL state
                 |> NativeHandlerResult.completed
                 |> Some
-            | ValueSome signal when Signal.isUncatchableUnder numbering signal ->
-                // SIGKILL and SIGSTOP, and glibc's reserved 32 and 33: the
-                // same refusals `EnablePosixSignalHandling` met, so nothing
-                // can have enabled these either.
-                withErrnoOnly ctx UnixError.EINVAL state
-                |> NativeHandlerResult.completed
-                |> Some
             | ValueSome signal ->
-                state.MapKernel (fun kernel ->
-                    let signals, shim =
-                        PosixSignalShim.disable numbering signal kernel.Signals kernel.PosixSignalShim
+                let system, shim, refused =
+                    PosixSignalShim.disable
+                        numbering
+                        signal
+                        (EmulatedKernel.unix state.Kernel)
+                        state.Kernel.PosixSignalShim
 
-                    { kernel with
-                        Process =
-                            { kernel.Process with
-                                Signals = signals
-                            }
-                        PosixSignalShim = shim
-                    }
-                )
+                let state =
+                    state.MapKernel (fun kernel ->
+                        { EmulatedKernel.withUnix system kernel with
+                            PosixSignalShim = shim
+                        }
+                    )
+
+                match refused with
+                | None -> state
+                | Some error -> withErrnoOnly ctx error state
                 |> NativeHandlerResult.completed
                 |> Some
         | _ -> None

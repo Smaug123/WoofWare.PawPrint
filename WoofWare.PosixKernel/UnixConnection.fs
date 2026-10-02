@@ -25,6 +25,15 @@ type AcceptOutcome =
     /// what is reported: a call declaring 8 writes eight bytes of the encoded
     /// address and still reports 16.
     | Accepted of fd : int * peer : InternetEndpoint * reportedLength : int
+    /// The call failed with this errno after it had taken the oldest connection
+    /// off the accept queue, and the connection is gone: its server end is
+    /// closed as `close` closes an accepted socket, so the client sees an
+    /// orderly shutdown and its registrations are signalled. No descriptor is
+    /// allocated. The system that rides with this records all of that.
+    ///
+    /// Linux's answer, `EINVAL`, for a negative declared length, which it reads
+    /// only once it holds the connection.
+    | DroppedConnection of error : UnixError
     /// The call did not return: the listener is blocking and its accept queue
     /// is empty. The calling task is parked, and sleeps until
     /// `WakeCondition.satisfied` of this condition is non-empty and
@@ -69,9 +78,14 @@ type AcceptRefusal =
     ///
     /// `getsockname` answers EFAULT for this and `accept` cannot, which is the
     /// whole reason the case exists: by the time the fault happens a connection
-    /// has been taken off the queue, and whether a real kernel loses it or
-    /// leaves it queued is unmeasured. Neither answer is available, so there is
-    /// none to give.
+    /// has been taken off the queue. Measured, Linux stores the untruncated
+    /// length in the caller's cell, answers EFAULT and loses the connection,
+    /// while Darwin ignores the fault and succeeds; neither is an outcome this
+    /// library can return, since neither a failure that writes the cell nor a
+    /// success whose address the caller must not write is one. A NULL
+    /// destination (`Unmapped 0UL`) is refused here too, although no kernel
+    /// faults on it: both skip the copy and the length cell, which this
+    /// library has no outcome for either.
     | UnmeasuredCopyOutFault of listener : SocketId
     /// The accept was asleep and a signal is pending for the task, and this
     /// library will not say how the signal ends it.
@@ -90,7 +104,7 @@ module AcceptRefusal =
             $"the descriptor is socket %O{socket}, which is a %O{kind} socket, and what `accept(2)` answers for one is unmeasured. Measure it rather than guessing: SOCK_SEQPACKET does accept connections, so a guess of EOPNOTSUPP there would be a wrong answer rather than an approximate one."
         | AcceptRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | AcceptRefusal.UnmeasuredCopyOutFault listener ->
-            $"socket %O{listener} has a connection to hand over, so this call succeeds and copies the peer address out -- but the destination is unmapped, so that copy faults. Whether a real kernel loses the connection when it faults, having already taken it off the queue, is unmeasured, so EFAULT is not available here as it is for `getsockname`."
+            $"socket %O{listener} has a connection to hand over, so this call takes it off the queue and copies the peer address out -- but the destination is unmapped, so that copy faults. Measured, Linux stores the untruncated length in the caller's length cell, answers EFAULT and loses the connection, while Darwin ignores the fault and succeeds; this kernel's accept has no outcome for either. (A NULL destination is not copied to at all, and neither is the length cell; that has no outcome here either.)"
         | AcceptRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
 /// Why this kernel will not answer a `connect(2)` at all: the call reached an
@@ -247,7 +261,7 @@ module UnixConnection =
     let connectSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (nonBlocking : bool)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (family : int option)
         (destination : InternetEndpoint option)
         (system : UnixSystem<'Task, 'Handler>)
@@ -266,6 +280,8 @@ module UnixConnection =
         // is shared.
         let lengthVerdict =
             SimulatedUnixPlatform.bindAddressLength platform exactSize declaredLength
+
+        let declaredLength = int declaredLength
 
         let fail (error : UnixError) : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> =
             Ok (ConnectOutcome.Failed error, system)
@@ -1072,13 +1088,13 @@ module UnixConnection =
     let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (family : int option)
         (endpoint : InternetEndpoint option)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
-        match UnixSocket.admitSockaddrCopy fd destination declaredLength system with
+        match UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd destination declaredLength system with
         | Error refusal -> Error (ConnectRefusal.Copy refusal)
         | Ok (SockaddrCopyAdmission.Answered error) -> Ok (ConnectOutcome.Failed error, system)
         | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
@@ -1201,6 +1217,72 @@ module UnixConnection =
             failwith
                 $"UnixConnection.acceptConnection: socket %O{socketId} is in %A{phase}, not listening; `accept` screens this (this is a bug in the caller)."
 
+    /// Take the oldest connection off `socketId`'s accept queue and close its
+    /// server end at once, without a descriptor: the state `acceptConnection`
+    /// followed by `close` of the accepted descriptor would leave, bar the
+    /// identities those would spend.
+    let private dropConnection<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let listener = UnixMachineState.socket socketId system.Machine
+
+        let connectionId, listenState =
+            match listener.Phase with
+            | SocketPhase.Listening ({
+                                         Queue = connectionId :: rest
+                                     } as listenState) ->
+                connectionId,
+                { listenState with
+                    Queue = rest
+                }
+            | phase ->
+                failwith
+                    $"UnixConnection.dropConnection: socket %O{socketId} is in %A{phase}, not listening with a connection queued; `accept` screens this (this is a bug in this library)."
+
+        let sockets =
+            Map.add
+                socketId
+                { listener with
+                    Phase = SocketPhase.Listening listenState
+                }
+                system.Machine.Sockets
+
+        // The client end, if the client has not closed it, is the only socket
+        // left referencing the connection: an accept queue holds a connection
+        // once, and only this one held it. Closing the server end leaves the
+        // client half-closed, and the connection lives while the client does.
+        let clients =
+            sockets
+            |> Map.toList
+            |> List.choose (fun (survivorId, survivor) ->
+                match survivor.Phase with
+                | SocketPhase.Established c
+                | SocketPhase.EstablishedPendingReport c when c = connectionId -> Some survivorId
+                | _ -> None
+            )
+
+        let connections =
+            if List.isEmpty clients then
+                Map.remove connectionId system.Machine.Connections
+            else
+                system.Machine.Connections
+
+        let system =
+            { system with
+                Machine =
+                    { system.Machine with
+                        Sockets = sockets
+                        Connections = connections
+                    }
+            }
+
+        // The FIN's edge, raised once the tables reflect the close, as `close`
+        // raises it.
+        (system, clients)
+        ||> List.fold (fun system client -> mapProcess (UnixProcessState.signalSocketStateChange client) system)
+
     /// Hand the oldest connection on `socketId`'s queue over to the caller: the
     /// half of `accept(2)` that follows the choice of a connection, shared by a
     /// call that finds one at once and a parked call that finds one on waking.
@@ -1213,18 +1295,40 @@ module UnixConnection =
         (socketId : SocketId)
         (nonBlocking : bool)
         (destination : UserBuffer)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
         =
         let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
+
+        // Measured (`socket-address-length.c`): Linux reads the length cell as
+        // an `int` only once it holds the connection, and answers EINVAL for a
+        // negative one without touching the destination -- so the connection
+        // is lost. Unless the destination is NULL, when it reads no length at
+        // all; that is refused below, as for any other length.
+        let linuxNegative =
+            SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
+            && int declaredLength < 0
+
+        match linuxNegative, destination with
+        | true, UserBuffer.Addressless ->
+            // Whether the kernel reads the length at all turns on whether the
+            // address is NULL, which a client with no number for it cannot say.
+            Error (AcceptRefusal.Buffer BufferRefusal.AddresslessAtScreen)
+        | true, UserBuffer.Mapped
+        | true, UserBuffer.Opaque ->
+            Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
+        | true, UserBuffer.Unmapped address when address <> 0UL ->
+            Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
+        | true, UserBuffer.Unmapped _
+        | false, _ ->
 
         // The destination is screened after the queue and before the dequeue,
         // which is the only place it can go: there is nothing to copy out until
         // a connection has been selected. A call that writes nothing never looks
         // at it at all.
         let destinationRefusal =
-            if declaredLength = 0 then
+            if declaredLength = 0u then
                 None
             else
                 match destination with
@@ -1270,17 +1374,19 @@ module UnixConnection =
     /// `destination` is where the peer address would be copied out, and
     /// `declaredLength` how much of it may be written. As for `getsockname`, the
     /// declared length **does not bound what is reported**: a call declaring 8
-    /// writes eight bytes and still reports 16. It must not be negative -- a
-    /// kernel never sees one, because a foreign-function layer that casts it to
-    /// `socklen_t` would make the bound `SIZE_MAX` rather than passing it on --
-    /// so a caller that has not screened it is asking a question no kernel this
-    /// library models was ever asked.
+    /// writes eight bytes and still reports 16.
+    ///
+    /// `declaredLength` is the 32-bit word the caller read out of its length
+    /// cell. Linux reads it as an `int`, and only once it holds a connection:
+    /// a negative one fails with `EINVAL` after the connection has been taken
+    /// off the queue, which loses it (`AcceptOutcome.DroppedConnection`).
+    /// Darwin reads it as the `socklen_t` it is, so no length is an error there.
     ///
     /// A call that writes nothing never looks at `destination`: at a declared
     /// length of zero every buffer succeeds, including one naming no storage.
     ///
-    /// Every failure leaves the listener exactly as it was, the queue included,
-    /// which is why the failing arms hand back the system they were given.
+    /// Every `AcceptOutcome.Failed` leaves the listener exactly as it was, the
+    /// queue included.
     ///
     /// A listener whose description is blocking and whose queue is empty parks
     /// `task` until a connection is queued, and the call is finished with
@@ -1300,7 +1406,7 @@ module UnixConnection =
         (task : 'Task)
         (fd : int)
         (destination : UserBuffer)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
         =
@@ -1309,10 +1415,6 @@ module UnixConnection =
             failwith
                 $"UnixConnection.accept: task %O{task} is parked in %A{parked}, and is issuing an accept. A task blocks in one syscall at a time; a parked accept is finished with `finishAccept` (this is a bug in the client)."
         | None ->
-
-        if declaredLength < 0 then
-            failwith
-                $"UnixConnection.accept: declared length %d{declaredLength} is negative, which no kernel is ever asked -- a shim that casts it to `socklen_t` makes the bound SIZE_MAX rather than passing it on. Screen this in the client (this is a bug in the caller)."
 
         // The descriptor is classified before the destination is looked at, and
         // before the accept queue is: measured on both flavours, a closed

@@ -85,6 +85,7 @@
     <Compile Include="TestSignalDispositions.fs" />
     <Compile Include="TestUnixSignal.fs" />
     <Compile Include="TestPthreadKill.fs" />
+    <Compile Include="TestSigaction.fs" />
     <Compile Include="TestSignalPickOrder.fs" />
     <Compile Include="TestSignalReceiver.fs" />
     <Compile Include="SignalFuzz.fs" />
@@ -121,6 +122,7 @@
     <Compile Include="TestListen.fs" />
     <Compile Include="TestNonBlocking.fs" />
     <Compile Include="TestConnect.fs" />
+    <Compile Include="TestSocketAddressLength.fs" />
     <Compile Include="TestPoll.fs" />
     <Compile Include="TestPollTimeout.fs" />
     <Compile Include="TestSocketWait.fs" />

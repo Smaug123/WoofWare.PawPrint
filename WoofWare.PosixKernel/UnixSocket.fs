@@ -45,6 +45,14 @@ module SockaddrCopyFields =
             failwith
                 $"%s{operation}: the copy of this sockaddr reaches %O{fields}, but the caller supplied family=%b{Option.isSome family} endpoint=%b{Option.isSome endpoint}. A field this kernel could not read and a field the caller did not read have different measured answers, so they must not be conflated (this is a bug in the caller)."
 
+/// Which syscall is copying a `struct sockaddr` in.
+[<RequireQualifiedAccess>]
+type SockaddrCopySyscall =
+    /// `bind(2)`.
+    | Bind
+    /// `connect(2)`.
+    | Connect
+
 /// Whether a syscall taking a `struct sockaddr` reaches the point at which the
 /// kernel copies it in.
 ///
@@ -56,10 +64,12 @@ module SockaddrCopyFields =
 /// too short to reach `sa_family`, and Linux's `move_addr_to_kernel` reads at
 /// any positive length.
 ///
-/// Shared by `bind(2)` and `connect(2)`, whose screens up to this point are the
-/// same ones in the same order -- which is measurement rather than convenience:
-/// `SimulatedUnixPlatform.bindAddressLength` is named for the first and used by
-/// the second because the two were measured to agree exactly.
+/// Shared by `bind(2)` and `connect(2)`, which judge the length and the copy
+/// alike -- `SimulatedUnixPlatform.bindAddressLength` is named for the first and
+/// used by the second because the two were measured to agree exactly -- but not
+/// always in the same place: Linux's `connect` copies the sockaddr in before it
+/// asks whether the descriptor is a socket, where its `bind` and both of
+/// Darwin's ask first.
 [<RequireQualifiedAccess>]
 type SockaddrCopyAdmission =
     /// Answered without the sockaddr being read at all -- a bad descriptor, a
@@ -384,6 +394,18 @@ type private SocketDecoding =
     | Fails of UnixError
     | Refused of SocketRefusal
 
+/// What the copy-in of a `struct sockaddr` does, judged before anyone needs its
+/// bytes.
+[<RequireQualifiedAccess>]
+type private SockaddrCopyStep =
+    /// The length or the copy has an errno of its own.
+    | Answered of error : UnixError
+    /// The copy has no answer for this buffer.
+    | Refused of BufferRefusal
+    /// The copy takes `length` bytes without fault, of which `fields` are worth
+    /// decoding. `bytesAvailable` is whether the caller can produce them.
+    | Copies of length : int * fields : SockaddrCopyFields * bytesAvailable : bool
+
 /// What a Darwin protocol switch entry does when `socket(2)` selects it.
 [<RequireQualifiedAccess>]
 type private DarwinAttach =
@@ -402,36 +424,109 @@ module UnixSocket =
     let private internetEndpointExtent : int =
         InternetSockaddr.address.Offset + InternetSockaddr.address.Width
 
-    /// Everything `connect(2)` decides before the kernel copies the caller's
-    /// sockaddr in, which is where a client that cannot always produce those
-    /// bytes needs to be let off. See `SockaddrCopyAdmission`.
+    /// What the copy-in of `declaredLength` bytes of a `struct sockaddr_in`
+    /// from `destination` does, on `platform`. Knows nothing of the descriptor,
+    /// as the kernels' copy helpers do not.
+    let private sockaddrCopyStep
+        (platform : SimulatedUnixPlatform)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        : SockaddrCopyStep
+        =
+        let exactSize = SimulatedUnixPlatform.internetSocketAddressSize
+
+        // The oversized-length rejection happens in the copy helper before any
+        // byte moves, so it precedes every buffer answer below.
+        match SimulatedUnixPlatform.bindAddressLength platform exactSize declaredLength with
+        | BindLengthVerdict.RejectedBeforeCopy error -> SockaddrCopyStep.Answered error
+        | BindLengthVerdict.Accepted
+        | BindLengthVerdict.Invalid ->
+
+        // Past that verdict the length is at most 255 on either flavour.
+        let length = int declaredLength
+        let familyField = SimulatedUnixPlatform.sockaddrFamilyField platform
+        let reachesFamily = SockaddrFamilyField.reachedBy familyField length
+
+        // Whether the kernel touches the caller's buffer at all. Linux's
+        // `move_addr_to_kernel` copies at any positive length; Darwin's
+        // `getsockaddr` reads nothing at a length that does not reach
+        // `sa_family`, which is why a stray pointer is answerable there and not
+        // here.
+        let copies =
+            length > 0
+            && match SimulatedUnixPlatform.flavour platform with
+               | SimulatedUnixFlavour.Linux -> true
+               | SimulatedUnixFlavour.Darwin -> reachesFamily
+
+        if not copies then
+            SockaddrCopyStep.Copies (0, SockaddrCopyFields.Nothing, true)
+        else
+
+        let fields =
+            if length >= internetEndpointExtent then
+                SockaddrCopyFields.FamilyAndEndpoint
+            elif reachesFamily then
+                SockaddrCopyFields.Family
+            else
+                SockaddrCopyFields.Nothing
+
+        match destination with
+        | UserBuffer.Unmapped _ -> SockaddrCopyStep.Answered UnixError.EFAULT
+        | UserBuffer.Addressless -> SockaddrCopyStep.Refused BufferRefusal.AddresslessAtTransfer
+        | UserBuffer.Opaque -> SockaddrCopyStep.Copies (length, fields, false)
+        | UserBuffer.Mapped -> SockaddrCopyStep.Copies (length, fields, true)
+
+    /// Everything `bind(2)` or `connect(2)` decides before the kernel copies the
+    /// caller's sockaddr in, which is where a client that cannot always produce
+    /// those bytes needs to be let off. See `SockaddrCopyAdmission`.
     ///
-    /// `declaredLength` must not be negative: a caller that casts it to
-    /// `socklen_t` makes the copy enormous rather than negative, so a kernel is
-    /// never asked one, and a caller that has not screened it is asking a
-    /// question this library has no answer for.
+    /// `declaredLength` is the caller's 32-bit length exactly as passed: Linux
+    /// reads it as an `int` and Darwin as a `socklen_t`, so the platforms
+    /// disagree about whether one at or above 2^31 is negative.
     ///
-    /// Changes nothing: everything a connect does before the copy is a question.
+    /// Changes nothing: everything a bind or connect does before the copy is a
+    /// question.
     let admitSockaddrCopy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (syscall : SockaddrCopySyscall)
         (fd : int)
         (destination : UserBuffer)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SockaddrCopyAdmission, SockaddrCopyRefusal>
         =
-        if declaredLength < 0 then
-            failwith
-                $"UnixSocket.admitSockaddrCopy: declared length %d{declaredLength} is negative, which no kernel is ever asked -- a caller that casts it to `socklen_t` makes the copy SIZE_MAX bytes rather than passing it on. Screen this in the client (this is a bug in the caller)."
-
         let answered (error : UnixError) : Result<SockaddrCopyAdmission, SockaddrCopyRefusal> =
             Ok (SockaddrCopyAdmission.Answered error)
 
-        // The descriptor is classified first, before the length and before the
-        // buffer: measured on both flavours, a closed descriptor answers EBADF
-        // and a non-socket ENOTSOCK at every length and through every buffer.
+        let platform = system.Machine.UnixPlatform
+        let copy = lazy (sockaddrCopyStep platform destination declaredLength)
+
+        // Measured (`socket-address-length.c`): Linux's `connect` copies the
+        // sockaddr in straight after it has looked the descriptor up, before it
+        // asks whether it names a socket, so on a pipe, a file or an epoll
+        // descriptor the length's EINVAL and the copy's EFAULT come before
+        // ENOTSOCK -- and before anything about a socket's domain. Its `bind`,
+        // and Darwin's `bind` and `connect`, answer ENOTSOCK at every length.
+        let copiesBeforeTheSocket =
+            syscall = SockaddrCopySyscall.Connect
+            && SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
+
+        // An errno or a refusal the copy has of its own, for a call that judges
+        // the copy here.
+        let copyFailure () : Result<SockaddrCopyAdmission, SockaddrCopyRefusal> option =
+            match copy.Force () with
+            | SockaddrCopyStep.Answered error -> Some (answered error)
+            | SockaddrCopyStep.Refused refusal -> Some (Error (SockaddrCopyRefusal.Buffer refusal))
+            | SockaddrCopyStep.Copies _ -> None
+
+        // The descriptor is looked up first: measured on both flavours, a closed
+        // descriptor answers EBADF at every length and through every buffer.
         match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
         | None -> answered (UnixError.EBADF)
         | Some description ->
+
+        match (if copiesBeforeTheSocket then copyFailure () else None) with
+        | Some failure -> failure
+        | None ->
 
         match description.Target with
         | OpenFileTarget.File _
@@ -447,51 +542,12 @@ module UnixSocket =
         | SocketDomain.Unix -> Error (SockaddrCopyRefusal.UnmodelledDomain (socketId, socket.Domain))
         | SocketDomain.Inet ->
 
-        let platform = system.Machine.UnixPlatform
-        let exactSize = SimulatedUnixPlatform.internetSocketAddressSize
-
-        // The oversized-length rejection happens in the copy helper before any
-        // byte moves, so it precedes every buffer answer below.
-        // `connectSocket` documents why `bind(2)`'s verdict function is the
-        // right one: the measured lengths agree exactly.
-        match SimulatedUnixPlatform.bindAddressLength platform exactSize declaredLength with
-        | BindLengthVerdict.RejectedBeforeCopy error -> answered (error)
-        | BindLengthVerdict.Accepted
-        | BindLengthVerdict.Invalid ->
-
-        let familyField = SimulatedUnixPlatform.sockaddrFamilyField platform
-        let reachesFamily = SockaddrFamilyField.reachedBy familyField declaredLength
-
-        // Whether the kernel touches the caller's buffer at all. Linux's
-        // `move_addr_to_kernel` copies at any positive length; Darwin's
-        // `getsockaddr` reads nothing at a length that does not reach
-        // `sa_family`, which is why a stray pointer is answerable there and not
-        // here.
-        let copies =
-            declaredLength > 0
-            && match SimulatedUnixPlatform.flavour platform with
-               | SimulatedUnixFlavour.Linux -> true
-               | SimulatedUnixFlavour.Darwin -> reachesFamily
-
-        if not copies then
-            Ok (SockaddrCopyAdmission.Transfer (0, SockaddrCopyFields.Nothing))
-        else
-
-        match destination with
-        | UserBuffer.Unmapped _ -> answered (UnixError.EFAULT)
-        | UserBuffer.Opaque -> Error (SockaddrCopyRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
-        | UserBuffer.Addressless -> Error (SockaddrCopyRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
-        | UserBuffer.Mapped ->
-
-        let fields =
-            if declaredLength >= internetEndpointExtent then
-                SockaddrCopyFields.FamilyAndEndpoint
-            elif reachesFamily then
-                SockaddrCopyFields.Family
-            else
-                SockaddrCopyFields.Nothing
-
-        Ok (SockaddrCopyAdmission.Transfer (declaredLength, fields))
+        match copy.Force () with
+        | SockaddrCopyStep.Answered error -> answered error
+        | SockaddrCopyStep.Refused refusal -> Error (SockaddrCopyRefusal.Buffer refusal)
+        | SockaddrCopyStep.Copies (length, _, false) when length > 0 ->
+            Error (SockaddrCopyRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | SockaddrCopyStep.Copies (length, fields, _) -> Ok (SockaddrCopyAdmission.Transfer (length, fields))
 
     // `<sys/socket.h>` and `<netinet/in.h>`: these numbers are the same on both
     // flavours. `AF_INET6` is not, and is `SimulatedUnixPlatform`'s.
@@ -975,13 +1031,13 @@ module UnixSocket =
     let bind<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (family : int option)
         (endpoint : InternetEndpoint option)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
         =
-        match admitSockaddrCopy fd destination declaredLength system with
+        match admitSockaddrCopy SockaddrCopySyscall.Bind fd destination declaredLength system with
         | Error refusal -> Error (BindRefusal.Copy refusal)
         | Ok (SockaddrCopyAdmission.Answered error) -> Ok (BindAnswer.Failed error, system)
         | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
@@ -1295,30 +1351,22 @@ module UnixSocket =
     /// `declaredLength` is how much of the caller's buffer may be written, and
     /// **does not bound what is reported**. Measured on both flavours: a call
     /// declaring 8 writes eight bytes and reports 16, and one declaring 128
-    /// writes 16 and still reports 16. The shim asserts the opposite
-    /// (`assert(addrLen <= *socketAddressLen)`, `pal_networking.c:1887`) and is
-    /// wrong on both platforms; the assertion is compiled out of the shipped
-    /// build, which is why nobody has noticed. A client writes
+    /// writes 16 and still reports 16. A client writes
     /// `min declaredLength reportedLength` bytes of the address it encodes.
     ///
-    /// `declaredLength` must not be negative. A kernel never sees one -- the
-    /// shim screens `*socketAddressLen < 0` before it converts to `socklen_t`,
-    /// where the cast would otherwise make the bound `SIZE_MAX` -- so a caller
-    /// that has not screened it is asking a question no kernel this library
-    /// models was ever asked.
+    /// `declaredLength` is the 32-bit word the caller read out of its length
+    /// cell. Linux reads it as an `int` and answers `EINVAL` for a negative one,
+    /// before it touches the destination or the cell; Darwin reads it as the
+    /// `socklen_t` it is, so no length is an error there.
     ///
     /// Changes nothing and returns no system: a `getsockname` reads.
     let getsockname<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<GetSockNameAnswer, GetSockNameRefusal>
         =
-        if declaredLength < 0 then
-            failwith
-                $"UnixSocket.getsockname: declared length %d{declaredLength} is negative, which no kernel is ever asked -- a shim that casts it to `socklen_t` makes the bound SIZE_MAX rather than passing it on. Screen this in the client (this is a bug in the caller)."
-
         // The descriptor is classified before the destination is looked at, and
         // that ordering is measured rather than assumed: with a closed
         // descriptor or a non-socket one, an unmapped, read-only or null
@@ -1343,6 +1391,16 @@ module UnixSocket =
         | SocketDomain.Unix -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
         | SocketDomain.Inet ->
 
+        // Measured (`socket-address-length.c`): Linux's `move_addr_to_user`
+        // reads the cell as an `int` and answers EINVAL for a negative one,
+        // whatever the destination, and stores nothing in the cell.
+        if
+            SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
+            && int declaredLength < 0
+        then
+            Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
+        else
+
         let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
 
         // An unbound socket reports its family and nothing else: the wildcard
@@ -1360,7 +1418,7 @@ module UnixSocket =
         // full 16. There is no up-front address screen to fail either: that is
         // why an `Addressless` destination is refused at the transfer below and
         // not here.
-        if declaredLength = 0 then
+        if declaredLength = 0u then
             Ok (GetSockNameAnswer.Reported (endpoint, reportedLength))
         else
 

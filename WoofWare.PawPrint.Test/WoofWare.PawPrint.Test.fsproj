@@ -18,6 +18,7 @@
     <Compile Include="TestFrameworkLocatorRatchet.fs" />
     <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />
+    <Compile Include="KernelSignals.fs" />
     <Compile Include="SignalFrames.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />
     <Compile Include="TestSequencePoints.fs" />
@@ -201,6 +202,7 @@
     <Compile Include="TestMethodReferenceResolutionGenerated.fs" />
     <Compile Include="TestFieldReferenceResolution.fs" />
     <Compile Include="TestMemberReferenceParentLoad.fs" />
+    <Compile Include="TestFieldBindingFailure.fs" />
     <Compile Include="TestEscapeAnalysis.fs" />
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />

@@ -4622,7 +4622,7 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let fd, system = withSocket flavour
 
-            UnixSocket.getsockname fd UserBuffer.Mapped 16 system
+            UnixSocket.getsockname fd UserBuffer.Mapped 16u system
             |> sockNameReported
             |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us, 16)
 
@@ -4633,7 +4633,7 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let fd, system = withBoundSocket flavour
 
-            UnixSocket.getsockname fd UserBuffer.Mapped 16 system
+            UnixSocket.getsockname fd UserBuffer.Mapped 16u system
             |> sockNameReported
             |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us, 16)
 
@@ -4647,7 +4647,7 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let fd, system = withBoundSocket flavour
 
-            for declared in [ 1 ; 2 ; 4 ; 8 ; 15 ; 16 ; 17 ; 128 ] do
+            for declared in [ 1u ; 2u ; 4u ; 8u ; 15u ; 16u ; 17u ; 128u ] do
                 UnixSocket.getsockname fd UserBuffer.Mapped declared system
                 |> sockNameReported
                 |> snd
@@ -4661,24 +4661,24 @@ module TestUnixSystemStep =
         // fault, which is what makes this an ordering row rather than a
         // restatement of the two errnos.
         for flavour in [ linux ; darwin ] do
-            UnixSocket.getsockname 7 (UserBuffer.Unmapped 8UL) 16 flavour
+            UnixSocket.getsockname 7 (UserBuffer.Unmapped 8UL) 16u flavour
             |> sockNameFailed
             |> shouldEqual (UnixError.EBADF, None)
 
             let fileFd, fileSystem = withOpenFile flavour
 
-            UnixSocket.getsockname fileFd (UserBuffer.Unmapped 8UL) 16 fileSystem
+            UnixSocket.getsockname fileFd (UserBuffer.Unmapped 8UL) 16u fileSystem
             |> sockNameFailed
             |> shouldEqual (UnixError.ENOTSOCK, None)
 
             let portFd, portSystem = withSocketEventPort flavour
 
-            UnixSocket.getsockname portFd (UserBuffer.Unmapped 8UL) 16 portSystem
+            UnixSocket.getsockname portFd (UserBuffer.Unmapped 8UL) 16u portSystem
             |> sockNameFailed
             |> shouldEqual (UnixError.ENOTSOCK, None)
 
             // Standard input is a pipe end here, and a pipe is ENOTSOCK on both.
-            UnixSocket.getsockname 0 (UserBuffer.Unmapped 8UL) 16 flavour
+            UnixSocket.getsockname 0 (UserBuffer.Unmapped 8UL) 16u flavour
             |> sockNameFailed
             |> shouldEqual (UnixError.ENOTSOCK, None)
 
@@ -4698,7 +4698,7 @@ module TestUnixSystemStep =
                     UserBuffer.Addressless
                     UserBuffer.Mapped
                 ] do
-                UnixSocket.getsockname fd destination 0 system
+                UnixSocket.getsockname fd destination 0u system
                 |> sockNameReported
                 |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us, 16)
 
@@ -4710,17 +4710,17 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let fd, system = withBoundSocket flavour
 
-            UnixSocket.getsockname fd (UserBuffer.Unmapped 8UL) 1 system
+            UnixSocket.getsockname fd (UserBuffer.Unmapped 8UL) 1u system
             |> sockNameFailed
             |> fst
             |> shouldEqual UnixError.EFAULT
 
-            UnixSocket.getsockname fd UserBuffer.Opaque 1 system
+            UnixSocket.getsockname fd UserBuffer.Opaque 1u system
             |> shouldEqual (Error (GetSockNameRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
             // At the transfer rather than at a screen: neither flavour checks
             // the destination's address before deciding it has bytes to move.
-            UnixSocket.getsockname fd UserBuffer.Addressless 1 system
+            UnixSocket.getsockname fd UserBuffer.Addressless 1u system
             |> shouldEqual (Error (GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
 
     [<Test>]
@@ -4732,13 +4732,13 @@ module TestUnixSystemStep =
         // that then faults, macOS 26.6 reports it only once the copy succeeded.
         let linuxFd, linuxSystem = withBoundSocket linux
 
-        UnixSocket.getsockname linuxFd (UserBuffer.Unmapped 8UL) 13 linuxSystem
+        UnixSocket.getsockname linuxFd (UserBuffer.Unmapped 8UL) 13u linuxSystem
         |> sockNameFailed
         |> shouldEqual (UnixError.EFAULT, Some 16)
 
         let darwinFd, darwinSystem = withBoundSocket darwin
 
-        UnixSocket.getsockname darwinFd (UserBuffer.Unmapped 8UL) 13 darwinSystem
+        UnixSocket.getsockname darwinFd (UserBuffer.Unmapped 8UL) 13u darwinSystem
         |> sockNameFailed
         |> shouldEqual (UnixError.EFAULT, None)
 
@@ -4766,7 +4766,7 @@ module TestUnixSystemStep =
                         }
                 }
 
-            UnixSocket.getsockname fd UserBuffer.Mapped 16 system
+            UnixSocket.getsockname fd UserBuffer.Mapped 16u system
             |> shouldEqual (Error (GetSockNameRefusal.UnmodelledDomain (socketZero, domain)))
 
     [<Test>]
@@ -4785,21 +4785,6 @@ module TestUnixSystemStep =
                 GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer
             ] do
             GetSockNameRefusal.describe refusal |> shouldNotContainText "PawPrint"
-
-    [<Test>]
-    let ``getsockname refuses a declared length no kernel it models was ever asked`` () : unit =
-        // The shim screens `*socketAddressLen < 0` before the cast to
-        // `socklen_t` that would otherwise make the bound SIZE_MAX, so no kernel
-        // is ever asked one.
-        let fd, system = withBoundSocket linux
-
-        let exn =
-            Assert.Throws<exn> (fun () ->
-                UnixSocket.getsockname fd UserBuffer.Mapped -1 system
-                |> ignore<Result<GetSockNameAnswer, GetSockNameRefusal>>
-            )
-
-        exn.Message |> shouldContainText "negative"
 
     // ------------------------------------------------------------- rename
 

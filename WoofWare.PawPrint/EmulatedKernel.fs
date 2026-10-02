@@ -1032,10 +1032,13 @@ module EmulatedKernel =
 
     /// A freshly-minted simulated process on a machine of the given platform,
     /// as PawPrint starts one, with its standard streams launched as
-    /// `standardStreams` says (see `StandardStreams.launch`). The platform and
-    /// the launch are fixed here for the kernel's life: every field derived
-    /// from the platform is derived once, by this constructor and the setters
-    /// that read it back.
+    /// `standardStreams` says (see `StandardStreams.launch`), and started as
+    /// though its launcher had left `inheritedIgnores` ignored (read under the
+    /// platform's numbering), as `nohup` leaves SIGHUP. The platform, the launch
+    /// and the inherited ignores are fixed here for the kernel's life: every
+    /// field derived from the platform is derived once, by this constructor and
+    /// the setters that read it back, and a process's inherited ignores are
+    /// fixed before any of its own code runs.
     ///
     /// Its one task is the thread `Main` will run on, `ThreadId 0`, on processor 0:
     /// `IlMachineState.addThread` gives that thread its first frame, and every
@@ -1044,22 +1047,30 @@ module EmulatedKernel =
     /// The POSIX half is `UnixSystem.initial`'s, entropy pool included; what is
     /// added here is the CoreCLR-shaped state no POSIX kernel has, the signal
     /// dispositions a CoreCLR process has installed by Main
-    /// (`StartupSignalDispositions`, with no inherited ignores; see
-    /// `withInheritedSignalIgnores`), and the environment, which PawPrint pins
+    /// (`StartupSignalDispositions.install`, which says which inherited ignores
+    /// the runtime keeps, which it replaces, and which it refuses; `context`
+    /// prefixes that refusal), and the environment, which PawPrint pins
     /// rather than inherits. The environment is
     /// stated rather than left to the library because it is part of PawPrint's
     /// replay contract: a change to the library's default must not silently
     /// change what a recorded trace observes. The entropy pool's seed,
     /// `UnixSystem.defaultEntropySeed`, is part of the same contract, and
     /// PawPrint's tests pin it rather than a second copy of the value.
-    let create (platform : SimulatedUnixPlatform) (standardStreams : StandardStreamsConfig) : EmulatedKernel =
+    let createInheritingSignalIgnores
+        (context : string)
+        (inheritedIgnores : Set<Signal>)
+        (platform : SimulatedUnixPlatform)
+        (standardStreams : StandardStreamsConfig)
+        : EmulatedKernel
+        =
         // Processor 0 is where the CPU rotation puts the first thread it places
         // (`cpuForRotation 0`), which is this one.
         let system : UnixSystem<ThreadId, NativeSignalHandler> =
             UnixSystem.initial platform (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0)
-
-        let signals =
-            StartupSignalDispositions.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
+            |> StartupSignalDispositions.install
+                context
+                (SimulatedUnixPlatform.signalNumbering platform)
+                inheritedIgnores
 
         {
             InstructionCostTicks = defaultInstructionCostTicks
@@ -1086,9 +1097,13 @@ module EmulatedKernel =
             Process =
                 { system.Process with
                     Environment = encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment
-                    Signals = signals
                 }
         }
+
+    /// `createInheritingSignalIgnores` for a process whose launcher left no
+    /// signal ignored.
+    let create (platform : SimulatedUnixPlatform) (standardStreams : StandardStreamsConfig) : EmulatedKernel =
+        createInheritingSignalIgnores "EmulatedKernel.create" Set.empty platform standardStreams
 
 
     /// `create` on `UnixSystem.defaultUnixPlatform`, the platform a host that
@@ -1112,42 +1127,6 @@ module EmulatedKernel =
         =
         { kernel with
             Process = f kernel.Process
-        }
-
-    /// Start the process as though its launcher had left `ignored` ignored
-    /// (read under the platform's numbering), as `nohup` leaves SIGHUP: the
-    /// startup dispositions `create` installs, over those ignores. See
-    /// `StartupSignalDispositions.initial` for which ignores the runtime keeps
-    /// and which it replaces, and which it refuses.
-    ///
-    /// `context` prefixes the rejection a refused set earns. Fails too if
-    /// anything has touched the process's signal state since `create`,
-    /// because a process's inherited ignores are fixed before any of its own
-    /// code runs.
-    let withInheritedSignalIgnores
-        (context : string)
-        (ignored : Set<Signal>)
-        (kernel : EmulatedKernel)
-        : EmulatedKernel
-        =
-        let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
-
-        match StartupSignalDispositions.refusal numbering ignored with
-        | Some reason -> failwith $"%s{context}: cannot start a process with %s{reason}."
-        | None ->
-
-        if
-            kernel.Process.Signals <> StartupSignalDispositions.initial numbering Set.empty
-            || kernel.PosixSignalShim <> PosixSignalShim.initial
-        then
-            failwith
-                $"%s{context}: the process's signal state has changed since it was created; inherited ignores can only be set on a fresh process."
-
-        { kernel with
-            Process =
-                { kernel.Process with
-                    Signals = StartupSignalDispositions.initial numbering ignored
-                }
         }
 
     /// Set the environment the simulated process was started with: every
@@ -1175,8 +1154,6 @@ module EmulatedKernel =
             |> List.filter (fun entry -> not (Set.contains (EnvironmentPal.entryName entry) supplied))
 
         mapProcess (UnixProcessState.withEnvironment context (defaults @ entries)) kernel
-
-
 
     /// Set the filesystem the guest sees, and the directory the simulated
     /// process starts in, together: see
@@ -1590,7 +1567,7 @@ module EmulatedKernel =
     let connectSocket
         (socketId : SocketId)
         (nonBlocking : bool)
-        (declaredLength : int)
+        (declaredLength : uint32)
         (family : int option)
         (destination : InternetEndpoint option)
         (kernel : EmulatedKernel)
@@ -1656,19 +1633,13 @@ module EmulatedKernel =
         // disposition, which is where this starts. The unblocking has nothing to
         // do here: a thread's mask is its handler frames', and a PawPrint thread
         // has none between instructions (`EmulatedKernel.checkInvariants`).
-        let signals =
-            system.Process.Signals
-            |> SignalState.setDisposition Signal.SIGABRT SignalDisposition.Default
+        let signo =
+            Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform) Signal.SIGABRT
 
         let system =
-            { system with
-                Process =
-                    { system.Process with
-                        Signals = signals
-                    }
-            }
-
-        let signo = Signal.toRawSignoUnder (SignalState.numbering signals) Signal.SIGABRT
+            match UnixSignal.sigaction signo (Some SignalDisposition.Default) system with
+            | Ok (_, system) -> system
+            | Error errno -> failwith $"EmulatedKernel.abort: restoring SIGABRT's default was refused (%O{errno})"
 
         match UnixSignal.pthreadKill thread signo system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
@@ -2121,8 +2092,11 @@ module KernelConfig =
                 (config.SupplementaryGroups
                  |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups"))
 
-        EmulatedKernel.create platform config.StandardStreams
-        |> EmulatedKernel.withInheritedSignalIgnores "KernelConfig.InheritedSignalIgnores" config.InheritedSignalIgnores
+        EmulatedKernel.createInheritingSignalIgnores
+            "KernelConfig.InheritedSignalIgnores"
+            config.InheritedSignalIgnores
+            platform
+            config.StandardStreams
         |> EmulatedKernel.mapProcess (UnixProcessState.withCoreDumps config.CoreDumps)
         |> EmulatedKernel.withEnvironment "KernelConfig.Environment" config.Environment
         |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount config.ProcessorCount)
