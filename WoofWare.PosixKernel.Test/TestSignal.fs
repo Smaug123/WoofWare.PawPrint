@@ -1,5 +1,7 @@
 namespace WoofWare.PosixKernel.Test
 
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open Microsoft.FSharp.Reflection
 open NUnit.Framework
@@ -30,45 +32,78 @@ module TestSignal =
     let private everyNumbering : SignalNumbering list =
         [ SignalNumbering.Linux ; SignalNumbering.Darwin ]
 
-    /// The 15 modelled signals paired with their Linux signo, measured on Linux
-    /// 6.18.5 / glibc 2.41 with a C probe that printed each `SIG*` macro.
+    /// Every standard signal Linux's `<signal.h>` defines, with its number:
+    /// `docs/plans/2026-08-23-posix-kernel-extraction/signal-names.c`, run
+    /// 2026-10-02 on Linux 6.18.5 with glibc 2.41 for aarch64 and for x86-64,
+    /// which agreed on every row (`signal-names.linux-*.txt`).
     let private linuxColumn : (Signal * int) list =
         [
             Signal.SIGHUP, 1
             Signal.SIGINT, 2
             Signal.SIGQUIT, 3
+            Signal.SIGILL, 4
+            Signal.SIGTRAP, 5
             Signal.SIGABRT, 6
+            Signal.SIGBUS, 7
+            Signal.SIGFPE, 8
+            Signal.SIGKILL, 9
             Signal.SIGUSR1, 10
+            Signal.SIGSEGV, 11
             Signal.SIGUSR2, 12
             Signal.SIGPIPE, 13
+            Signal.SIGALRM, 14
             Signal.SIGTERM, 15
+            Signal.SIGSTKFLT, 16
             Signal.SIGCHLD, 17
             Signal.SIGCONT, 18
+            Signal.SIGSTOP, 19
             Signal.SIGTSTP, 20
             Signal.SIGTTIN, 21
             Signal.SIGTTOU, 22
             Signal.SIGURG, 23
+            Signal.SIGXCPU, 24
+            Signal.SIGXFSZ, 25
+            Signal.SIGVTALRM, 26
+            Signal.SIGPROF, 27
             Signal.SIGWINCH, 28
+            Signal.SIGIO, 29
+            Signal.SIGPWR, 30
+            Signal.SIGSYS, 31
         ]
 
-    /// The same 15 with their Darwin signo, measured the same way on Darwin
-    /// 25.6.0. Six rows differ from the Linux column: SIGUSR1, SIGUSR2,
-    /// SIGCHLD, SIGCONT, SIGTSTP and SIGURG.
+    /// The same for Darwin's `<signal.h>`, from the same probe on Darwin 27.0.0
+    /// arm64 (`signal-names.darwin-27.0-arm64.txt`).
     let private darwinColumn : (Signal * int) list =
         [
             Signal.SIGHUP, 1
             Signal.SIGINT, 2
             Signal.SIGQUIT, 3
+            Signal.SIGILL, 4
+            Signal.SIGTRAP, 5
             Signal.SIGABRT, 6
+            Signal.SIGEMT, 7
+            Signal.SIGFPE, 8
+            Signal.SIGKILL, 9
+            Signal.SIGBUS, 10
+            Signal.SIGSEGV, 11
+            Signal.SIGSYS, 12
             Signal.SIGPIPE, 13
+            Signal.SIGALRM, 14
             Signal.SIGTERM, 15
             Signal.SIGURG, 16
+            Signal.SIGSTOP, 17
             Signal.SIGTSTP, 18
             Signal.SIGCONT, 19
             Signal.SIGCHLD, 20
             Signal.SIGTTIN, 21
             Signal.SIGTTOU, 22
+            Signal.SIGIO, 23
+            Signal.SIGXCPU, 24
+            Signal.SIGXFSZ, 25
+            Signal.SIGVTALRM, 26
+            Signal.SIGPROF, 27
             Signal.SIGWINCH, 28
+            Signal.SIGINFO, 29
             Signal.SIGUSR1, 30
             Signal.SIGUSR2, 31
         ]
@@ -78,21 +113,54 @@ module TestSignal =
         | SignalNumbering.Linux -> linuxColumn
         | SignalNumbering.Darwin -> darwinColumn
 
+    /// Every signal the numbering has: its column, and on Linux the 33
+    /// real-time signals, 32 to 64.
+    let private everySignalUnder (numbering : SignalNumbering) : (Signal * int) list =
+        match numbering with
+        | SignalNumbering.Linux -> linuxColumn @ [ for signo in 32..64 -> Signal.RealTime (signo - 32), signo ]
+        | SignalNumbering.Darwin -> darwinColumn
+
+    /// The flavour-specific rows, by name: a signal one platform lacks has no
+    /// number there at all.
+    let private onlyUnder (numbering : SignalNumbering) : Signal list =
+        match numbering with
+        | SignalNumbering.Linux -> [ Signal.SIGSTKFLT ; Signal.SIGPWR ]
+        | SignalNumbering.Darwin -> [ Signal.SIGEMT ; Signal.SIGINFO ]
+
     /// A new named case reaches `toRawSignoUnder` through the compiler's
-    /// exhaustiveness check, but nothing forces it into the two tables above
-    /// or into `ofRawSignoUnder`'s search list; this does.
+    /// exhaustiveness check, but nothing forces it into the two tables above;
+    /// this does.
     [<Test>]
-    let ``both columns name every case but Other`` () : unit =
-        let cases = FSharpType.GetUnionCases typeof<Signal> |> Array.length
+    let ``between them the columns name every case but RealTime, each once`` () : unit =
+        let named =
+            FSharpType.GetUnionCases typeof<Signal>
+            |> Array.filter (fun case -> case.Name <> "RealTime")
+            |> Array.map (fun case -> case.Name)
+            |> Set.ofArray
+
+        let inColumns =
+            linuxColumn @ darwinColumn
+            |> List.map (fun (signal, _) -> $"%O{signal}")
+            |> Set.ofList
+
+        inColumns |> shouldEqual named
 
         for numbering in everyNumbering do
-            column numbering |> List.length |> shouldEqual (cases - 1)
+            let signals = column numbering |> List.map fst
+            signals |> List.distinct |> List.length |> shouldEqual (List.length signals)
 
-            column numbering
-            |> List.map fst
-            |> List.distinct
-            |> List.length
-            |> shouldEqual (cases - 1)
+            let numbers = column numbering |> List.map snd
+            numbers |> shouldEqual [ 1..31 ]
+
+        // The cases one column lacks are exactly the other flavour's own.
+        let linux = linuxColumn |> List.map fst |> Set.ofList
+        let darwin = darwinColumn |> List.map fst |> Set.ofList
+
+        Set.difference linux darwin
+        |> shouldEqual (Set.ofList (onlyUnder SignalNumbering.Linux))
+
+        Set.difference darwin linux
+        |> shouldEqual (Set.ofList (onlyUnder SignalNumbering.Darwin))
 
     /// The ceilings' *values*, which nothing else pins: every other test here
     /// names `highestSignoUnder` symbolically, so all of them move with it and
@@ -109,72 +177,135 @@ module TestSignal =
         Signal.highestSignoUnder SignalNumbering.Darwin |> shouldEqual 31
 
     [<Test>]
-    let ``toRawSignoUnder produces the measured signo for every named case under each numbering`` () : unit =
+    let ``toRawSignoUnder produces the measured signo for every signal under each numbering`` () : unit =
         for numbering in everyNumbering do
-            for signal, signo in column numbering do
-                Signal.toRawSignoUnder numbering signal |> shouldEqual signo
+            for signal, signo in everySignalUnder numbering do
+                (signal, Signal.toRawSignoUnder numbering signal) |> shouldEqual (signal, signo)
 
-    /// The six rows that differ are the whole reason the numbering exists,
-    /// so they are asserted by name as well as through the tables.
+    /// The rows that differ between the platforms are the reason the
+    /// numbering exists, so they are asserted by name as well as through the
+    /// tables.
     [<Test>]
-    let ``the six divergent rows are the ones measured`` () : unit =
+    let ``the divergent rows are the ones measured`` () : unit =
         let divergent : (Signal * int * int) list =
             [
+                Signal.SIGBUS, 7, 10
                 Signal.SIGUSR1, 10, 30
                 Signal.SIGUSR2, 12, 31
                 Signal.SIGCHLD, 17, 20
                 Signal.SIGCONT, 18, 19
+                Signal.SIGSTOP, 19, 17
                 Signal.SIGTSTP, 20, 18
                 Signal.SIGURG, 23, 16
+                Signal.SIGIO, 29, 23
+                Signal.SIGSYS, 31, 12
             ]
 
         for signal, linux, darwin in divergent do
             Signal.toRawSignoUnder SignalNumbering.Linux signal |> shouldEqual linux
             Signal.toRawSignoUnder SignalNumbering.Darwin signal |> shouldEqual darwin
 
-        // And nothing else does.
+        // And nothing else that both platforms have does.
         for signal, _ in linuxColumn do
-            if not (divergent |> List.exists (fun (s, _, _) -> s = signal)) then
+            if
+                Signal.existsUnder SignalNumbering.Darwin signal
+                && not (divergent |> List.exists (fun (s, _, _) -> s = signal))
+            then
                 Signal.toRawSignoUnder SignalNumbering.Linux signal
                 |> shouldEqual (Signal.toRawSignoUnder SignalNumbering.Darwin signal)
 
     [<Test>]
-    let ``toRawSignoUnder on Other returns the raw value unchanged`` () : unit =
-        // The `Other` constructor carries raw identity so callers that
-        // produced a positive native signo can round-trip it through the
-        // Signal type without losing the value. The out-of-range values below
-        // are not built by anything here — `ofRawSignoUnder` produces only
-        // signos in `(0, highestSignoUnder]` — but the case is public and
-        // enforces nothing, and this pins that `toRawSignoUnder` stays a
-        // projection rather than acquiring an opinion about its payload.
+    let ``ofRawSignoUnder is the inverse of toRawSignoUnder on every signal`` () : unit =
         for numbering in everyNumbering do
-            Signal.toRawSignoUnder numbering (Signal.Other 42) |> shouldEqual 42
-            Signal.toRawSignoUnder numbering (Signal.Other 999) |> shouldEqual 999
-            Signal.toRawSignoUnder numbering (Signal.Other -77) |> shouldEqual -77
-            Signal.toRawSignoUnder numbering (Signal.Other 0) |> shouldEqual 0
-
-    [<Test>]
-    let ``ofRawSignoUnder is the inverse of toRawSignoUnder on every named signal`` () : unit =
-        for numbering in everyNumbering do
-            for signal, signo in column numbering do
-                Signal.ofRawSignoUnder numbering signo |> shouldEqual (ValueSome signal)
+            for signal, signo in everySignalUnder numbering do
+                (signo, Signal.ofRawSignoUnder numbering signo)
+                |> shouldEqual (signo, ValueSome signal)
 
     /// The round trip in the other direction, over every number the kernel
-    /// has: a signo that names no case comes back as `Other` carrying itself,
-    /// so the enable/disable arms can key on it and hand it back unchanged.
+    /// has and a margin either side: a number is a signal exactly when it is
+    /// in range, and then it names the case the measured table says.
     [<Test>]
-    let ``every signo the kernel has round-trips through ofRawSignoUnder`` () : unit =
+    let ``every signo the kernel has round-trips through ofRawSignoUnder, and nothing else parses`` () : unit =
         for numbering in everyNumbering do
-            for signo in 1 .. Signal.highestSignoUnder numbering do
-                match Signal.ofRawSignoUnder numbering signo with
-                | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within the kernel's range but was refused"
-                | ValueSome signal ->
-                    Signal.toRawSignoUnder numbering signal |> shouldEqual signo
+            let table = everySignalUnder numbering
 
-                    // Named iff the column says so.
-                    match column numbering |> List.tryFind (fun (_, n) -> n = signo) with
+            for signo in -200 .. 200 do
+                match Signal.ofRawSignoUnder numbering signo with
+                | ValueNone ->
+                    if signo >= 1 && signo <= Signal.highestSignoUnder numbering then
+                        failwith $"%O{numbering}: signo %d{signo} is within the kernel's range but was refused"
+                | ValueSome signal ->
+                    (signo, Signal.toRawSignoUnder numbering signal) |> shouldEqual (signo, signo)
+                    Signal.existsUnder numbering signal |> shouldEqual true
+
+                    match table |> List.tryFind (fun (_, n) -> n = signo) with
                     | Some (named, _) -> signal |> shouldEqual named
-                    | None -> signal |> shouldEqual (Signal.Other signo)
+                    | None ->
+                        failwith $"%O{numbering}: signo %d{signo} parsed as %O{signal}, but no measured row has it"
+
+    /// Arbitrary signals, `RealTime` with any offset included, against both
+    /// numberings: a signal the numbering has renders to a number that parses
+    /// back to it, and one it lacks has no number at all.
+    [<Test>]
+    let ``a signal round-trips through its number exactly when the numbering has it`` () : unit =
+        let realTimeOffsets =
+            Gen.oneof [ Gen.choose (-3, 36) ; ArbMap.defaults |> ArbMap.generate<int> ]
+
+        let signalGen : Gen<Signal> =
+            let named =
+                FSharpType.GetUnionCases typeof<Signal>
+                |> Array.filter (fun case -> case.Name <> "RealTime")
+                |> Array.map (fun case -> FSharpValue.MakeUnion (case, [||]) :?> Signal)
+
+            Gen.oneof [ Gen.elements named ; realTimeOffsets |> Gen.map Signal.RealTime ]
+
+        let property (numbering : SignalNumbering) (signal : Signal) : unit =
+            let expected = everySignalUnder numbering |> List.tryFind (fun (s, _) -> s = signal)
+
+            Signal.existsUnder numbering signal |> shouldEqual expected.IsSome
+
+            match expected with
+            | Some (_, signo) ->
+                Signal.toRawSignoUnder numbering signal |> shouldEqual signo
+                Signal.ofRawSignoUnder numbering signo |> shouldEqual (ValueSome signal)
+            | None ->
+                Assert.Throws<exn> (fun () -> Signal.toRawSignoUnder numbering signal |> ignore)
+                |> ignore
+
+        let config = Config.QuickThrowOnFailure.WithMaxTest 2000
+
+        Check.One (
+            config,
+            Prop.forAll
+                (Arb.fromGen (Gen.zip (Gen.elements everyNumbering) signalGen))
+                (fun (numbering, signal) -> property numbering signal)
+        )
+
+    [<Test>]
+    let ``existsUnder admits each flavour's own signals and real-time offsets 0 to 32 only`` () : unit =
+        for numbering in everyNumbering do
+            for signal in onlyUnder numbering do
+                Signal.existsUnder numbering signal |> shouldEqual true
+
+        for signal in onlyUnder SignalNumbering.Linux do
+            Signal.existsUnder SignalNumbering.Darwin signal |> shouldEqual false
+
+        for signal in onlyUnder SignalNumbering.Darwin do
+            Signal.existsUnder SignalNumbering.Linux signal |> shouldEqual false
+
+        Signal.existsUnder SignalNumbering.Linux (Signal.RealTime 0) |> shouldEqual true
+
+        Signal.existsUnder SignalNumbering.Linux (Signal.RealTime 32)
+        |> shouldEqual true
+
+        Signal.existsUnder SignalNumbering.Linux (Signal.RealTime -1)
+        |> shouldEqual false
+
+        Signal.existsUnder SignalNumbering.Linux (Signal.RealTime 33)
+        |> shouldEqual false
+
+        Signal.existsUnder SignalNumbering.Darwin (Signal.RealTime 0)
+        |> shouldEqual false
 
     [<Test>]
     let ``ofRawSignoUnder refuses numbers that are not signals on that platform`` () : unit =
@@ -185,12 +316,13 @@ module TestSignal =
             Signal.ofRawSignoUnder numbering (highest + 1) |> shouldEqual ValueNone
             Signal.ofRawSignoUnder numbering 100 |> shouldEqual ValueNone
             Signal.ofRawSignoUnder numbering System.Int32.MaxValue |> shouldEqual ValueNone
+            Signal.ofRawSignoUnder numbering System.Int32.MinValue |> shouldEqual ValueNone
 
         // The Darwin ceiling is the one that bites: 32 is a real-time signal
         // on Linux and nothing at all on Darwin, even though CoreCLR's shim
         // admits it there.
         Signal.ofRawSignoUnder SignalNumbering.Linux 32
-        |> shouldEqual (ValueSome (Signal.Other 32))
+        |> shouldEqual (ValueSome (Signal.RealTime 0))
 
         Signal.ofRawSignoUnder SignalNumbering.Darwin 32 |> shouldEqual ValueNone
 
@@ -203,16 +335,16 @@ module TestSignal =
         |> shouldEqual (ValueSome Signal.SIGCHLD)
 
         Signal.ofRawSignoUnder SignalNumbering.Darwin 17
-        |> shouldEqual (ValueSome (Signal.Other 17)) // SIGSTOP
+        |> shouldEqual (ValueSome Signal.SIGSTOP)
 
         Signal.ofRawSignoUnder SignalNumbering.Linux 19
-        |> shouldEqual (ValueSome (Signal.Other 19)) // SIGSTOP
+        |> shouldEqual (ValueSome Signal.SIGSTOP)
 
         Signal.ofRawSignoUnder SignalNumbering.Darwin 19
         |> shouldEqual (ValueSome Signal.SIGCONT)
 
         Signal.ofRawSignoUnder SignalNumbering.Linux 30
-        |> shouldEqual (ValueSome (Signal.Other 30)) // SIGPWR
+        |> shouldEqual (ValueSome Signal.SIGPWR)
 
         Signal.ofRawSignoUnder SignalNumbering.Darwin 30
         |> shouldEqual (ValueSome Signal.SIGUSR1)
@@ -221,64 +353,48 @@ module TestSignal =
         |> shouldEqual (ValueSome Signal.SIGURG)
 
         Signal.ofRawSignoUnder SignalNumbering.Darwin 23
-        |> shouldEqual (ValueSome (Signal.Other 23)) // SIGIO
+        |> shouldEqual (ValueSome Signal.SIGIO)
 
-    [<Test>]
-    let ``canonicalUnder names an Other carrying a named signal's number and leaves the rest alone`` () : unit =
-        for numbering in everyNumbering do
-            for signal, signo in column numbering do
-                Signal.canonicalUnder numbering (Signal.Other signo) |> shouldEqual signal
-                Signal.canonicalUnder numbering signal |> shouldEqual signal
-
-            Signal.canonicalUnder numbering (Signal.Other 9) |> shouldEqual (Signal.Other 9) // SIGKILL
-
-            Signal.canonicalUnder numbering (Signal.Other 0) |> shouldEqual (Signal.Other 0)
-
-            Signal.canonicalUnder numbering (Signal.Other 999)
-            |> shouldEqual (Signal.Other 999)
+    /// Every number the kernel has under `numbering`, with the signal it names.
+    let private everySigno (numbering : SignalNumbering) : (int * Signal) list =
+        [
+            for signo in 1 .. Signal.highestSignoUnder numbering do
+                match Signal.ofRawSignoUnder numbering signo with
+                | ValueSome signal -> signo, signal
+                | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
+        ]
 
     [<Test>]
     let ``isUncatchableUnder flags exactly the signos sigaction refuses`` () : unit =
         // Measured by installing SIG_DFL for every number up to NSIG + 1:
         // SIGKILL and SIGSTOP on both (POSIX), plus glibc's reserved 32 and
-        // 33 on Linux. Neither SIGKILL nor SIGSTOP is a named case, so they
-        // only ever arrive as `Signal.Other n`.
+        // 33 on Linux.
         let refused (numbering : SignalNumbering) : int list =
             match numbering with
             | SignalNumbering.Linux -> [ 9 ; 19 ; 32 ; 33 ]
             | SignalNumbering.Darwin -> [ 9 ; 17 ]
 
         for numbering in everyNumbering do
-            for signo in 1 .. Signal.highestSignoUnder numbering do
-                let signal =
-                    match Signal.ofRawSignoUnder numbering signo with
-                    | ValueSome signal -> signal
-                    | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
+            for signo, signal in everySigno numbering do
+                (signo, Signal.isUncatchableUnder numbering signal)
+                |> shouldEqual (signo, List.contains signo (refused numbering))
 
-                Signal.isUncatchableUnder numbering signal
-                |> shouldEqual (List.contains signo (refused numbering))
-
-            // Every named case can be caught — that's the whole point of
-            // installing a handler.
-            for signal, _ in column numbering do
-                Signal.isUncatchableUnder numbering signal |> shouldEqual false
-
-    /// SIGSTOP is 17 on Darwin and 19 on Linux, so each of those numbers is
-    /// uncatchable under exactly one numbering. A classifier that read the
-    /// payload under the wrong table would refuse a Darwin guest's SIGCONT.
+    /// SIGSTOP is 17 on Darwin and 19 on Linux; the classifier answers for the
+    /// signal, so neither number's other reading is refused.
     [<Test>]
-    let ``SIGSTOP's number is uncatchable under its own numbering only`` () : unit =
-        Signal.isUncatchableUnder SignalNumbering.Darwin (Signal.Other 17)
-        |> shouldEqual true
+    let ``SIGKILL and SIGSTOP are uncatchable under both numberings, and their numbers only under their own``
+        ()
+        : unit
+        =
+        for numbering in everyNumbering do
+            Signal.isUncatchableUnder numbering Signal.SIGKILL |> shouldEqual true
+            Signal.isUncatchableUnder numbering Signal.SIGSTOP |> shouldEqual true
 
-        Signal.isUncatchableUnder SignalNumbering.Linux (Signal.Other 17)
-        |> shouldEqual false
+        Signal.isUncatchableUnder SignalNumbering.Linux Signal.SIGCHLD
+        |> shouldEqual false // 17
 
-        Signal.isUncatchableUnder SignalNumbering.Linux (Signal.Other 19)
-        |> shouldEqual true
-
-        Signal.isUncatchableUnder SignalNumbering.Darwin (Signal.Other 19)
-        |> shouldEqual false
+        Signal.isUncatchableUnder SignalNumbering.Darwin Signal.SIGCONT
+        |> shouldEqual false // 19
 
     [<Test>]
     let ``isUnblockableUnder flags exactly the signos the mask calls silently drop`` () : unit =
@@ -295,43 +411,9 @@ module TestSignal =
             | SignalNumbering.Darwin -> [ 9 ; 17 ]
 
         for numbering in everyNumbering do
-            for signo in 1 .. Signal.highestSignoUnder numbering do
-                let signal =
-                    match Signal.ofRawSignoUnder numbering signo with
-                    | ValueSome signal -> signal
-                    | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
-
-                Signal.isUnblockableUnder numbering signal
-                |> shouldEqual (List.contains signo (dropped numbering))
-
-            // Every named case can be blocked: none of them is SIGKILL or
-            // SIGSTOP, whose numbers name no case.
-            for signal, _ in column numbering do
-                Signal.isUnblockableUnder numbering signal |> shouldEqual false
-
-    /// SIGSTOP is 17 on Darwin and 19 on Linux, so each of those numbers is
-    /// unblockable under exactly one numbering — the same divergence as
-    /// `isUncatchableUnder`'s, but a separately-measured fact.
-    [<Test>]
-    let ``SIGSTOP's number is unblockable under its own numbering only`` () : unit =
-        Signal.isUnblockableUnder SignalNumbering.Darwin (Signal.Other 17)
-        |> shouldEqual true
-
-        Signal.isUnblockableUnder SignalNumbering.Linux (Signal.Other 17)
-        |> shouldEqual false
-
-        Signal.isUnblockableUnder SignalNumbering.Linux (Signal.Other 19)
-        |> shouldEqual true
-
-        Signal.isUnblockableUnder SignalNumbering.Darwin (Signal.Other 19)
-        |> shouldEqual false
-
-    [<Test>]
-    let ``isUnblockableUnder reads an Other carrying a named signal's number as that signal`` () : unit =
-        for numbering in everyNumbering do
-            for signal, signo in column numbering do
-                Signal.isUnblockableUnder numbering (Signal.Other signo)
-                |> shouldEqual (Signal.isUnblockableUnder numbering signal)
+            for signo, signal in everySigno numbering do
+                (signo, Signal.isUnblockableUnder numbering signal)
+                |> shouldEqual (signo, List.contains signo (dropped numbering))
 
     [<Test>]
     let ``isRealTimeUnder flags exactly Linux's 32 to 64`` () : unit =
@@ -340,39 +422,20 @@ module TestSignal =
         // The threshold is the kernel's own 32 (glibc makes 32 and 33
         // unobservable, so those two rows follow the kernel's rule); the
         // ceiling is the kernel's 64. Darwin has no real-time signals.
-        for signo in 1..31 do
-            match Signal.ofRawSignoUnder SignalNumbering.Linux signo with
-            | ValueSome signal -> Signal.isRealTimeUnder SignalNumbering.Linux signal |> shouldEqual false
-            | ValueNone -> failwith $"Linux: signo %d{signo} is within range"
+        for numbering in everyNumbering do
+            for signo, signal in everySigno numbering do
+                (signo, Signal.isRealTimeUnder numbering signal)
+                |> shouldEqual (signo, numbering = SignalNumbering.Linux && signo >= 32)
 
-        for signo in 32..64 do
-            Signal.isRealTimeUnder SignalNumbering.Linux (Signal.Other signo)
-            |> shouldEqual true
-
-        // A number that is not a signal at all is not a real-time signal
-        // either: this classifier is public in a standalone package, so a
-        // client can reach it without going through ofRawSignoUnder first.
-        for signo in [ 65 ; 100 ; System.Int32.MaxValue ; 0 ; -1 ] do
-            Signal.isRealTimeUnder SignalNumbering.Linux (Signal.Other signo)
+        // A signal the numbering lacks is not a real-time signal either: this
+        // classifier is public in a standalone package, so a client can reach
+        // it without going through ofRawSignoUnder first.
+        for offset in [ -1 ; 33 ; 100 ; System.Int32.MaxValue ; System.Int32.MinValue ] do
+            Signal.isRealTimeUnder SignalNumbering.Linux (Signal.RealTime offset)
             |> shouldEqual false
 
-        for signo in 1 .. Signal.highestSignoUnder SignalNumbering.Darwin do
-            match Signal.ofRawSignoUnder SignalNumbering.Darwin signo with
-            | ValueSome signal -> Signal.isRealTimeUnder SignalNumbering.Darwin signal |> shouldEqual false
-            | ValueNone -> failwith $"Darwin: signo %d{signo} is within range"
-
-    [<Test>]
-    let ``isRealTimeUnder reads an Other carrying a named signal's number as that signal`` () : unit =
-        // No named case is a real-time signal, so the canonicalisation only
-        // matters in that every named number answers false however spelt —
-        // including 30 and 31, which sit just under Linux's threshold under
-        // one numbering and name SIGUSR1/SIGUSR2 under the other.
-        for numbering in everyNumbering do
-            for signal, signo in column numbering do
-                Signal.isRealTimeUnder numbering (Signal.Other signo)
-                |> shouldEqual (Signal.isRealTimeUnder numbering signal)
-
-                Signal.isRealTimeUnder numbering signal |> shouldEqual false
+        Signal.isRealTimeUnder SignalNumbering.Darwin (Signal.RealTime 0)
+        |> shouldEqual false
 
     [<Test>]
     let ``a blocked ignored signal stays pending under Linux numbering, and only SIGCONT does under Darwin`` () : unit =
@@ -385,12 +448,7 @@ module TestSignal =
         // to a handler installed before the unblock; on Darwin 27.0.0 none
         // was pending but SIGCONT (19), which was.
         for numbering in everyNumbering do
-            for signo in 1 .. Signal.highestSignoUnder numbering do
-                let signal =
-                    match Signal.ofRawSignoUnder numbering signo with
-                    | ValueSome signal -> signal
-                    | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
-
+            for signo, signal in everySigno numbering do
                 let expected =
                     match numbering with
                     | SignalNumbering.Linux -> true
@@ -398,9 +456,6 @@ module TestSignal =
 
                 (signo, Signal.blockedIgnoredSignalStaysPendingUnder numbering signal)
                 |> shouldEqual (signo, expected)
-
-                Signal.blockedIgnoredSignalStaysPendingUnder numbering (Signal.Other signo)
-                |> shouldEqual expected
 
     [<Test>]
     let ``dumpsCoreUnder answers the measured core class`` () : unit =
@@ -417,130 +472,50 @@ module TestSignal =
             | SignalNumbering.Darwin -> Set.ofList [ 3 ; 4 ; 5 ; 6 ; 7 ; 8 ; 10 ; 11 ; 12 ]
 
         for numbering in everyNumbering do
-            for signo in 1 .. Signal.highestSignoUnder numbering do
-                let signal =
-                    match Signal.ofRawSignoUnder numbering signo with
-                    | ValueSome signal -> signal
-                    | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
-
+            for signo, signal in everySigno numbering do
                 (signo, Signal.dumpsCoreUnder numbering signal)
                 |> shouldEqual (signo, Set.contains signo (expected numbering))
 
-                Signal.dumpsCoreUnder numbering (Signal.Other signo)
-                |> shouldEqual (Set.contains signo (expected numbering))
-
+    /// Every number's default, measured by having a forked child raise each
+    /// signal on itself under SIG_DFL on Linux 6.18.5 and Darwin 25.6.0, and
+    /// re-swept on 2026-09-26 by `signal-disposition-table.c`. Keyed by number,
+    /// so that it pins the table independently of how `Signal.fs` names the
+    /// rows. SIGTSTP, SIGTTIN and SIGTTOU, which both kernels discarded in the
+    /// probe's orphaned process group, take POSIX's Stop.
     [<Test>]
-    let ``defaultDispositionUnder classifies every named signal the same way everywhere`` () : unit =
-        // POSIX default for these signals is Terminate (some with a core
-        // dump, but PawPrint collapses both into a single Terminate case
-        // since we don't model core dumps). Drives the catch-all branch
-        // in `pal_signal.c`'s `SystemNative_HandleNonCanceledPosixSignal`.
-        let expected : (Signal * DefaultDisposition) list =
-            [
-                Signal.SIGHUP, DefaultDisposition.Terminate
-                Signal.SIGINT, DefaultDisposition.Terminate
-                Signal.SIGQUIT, DefaultDisposition.Terminate
-                Signal.SIGABRT, DefaultDisposition.Terminate
-                Signal.SIGUSR1, DefaultDisposition.Terminate
-                Signal.SIGUSR2, DefaultDisposition.Terminate
-                Signal.SIGPIPE, DefaultDisposition.Terminate
-                Signal.SIGTERM, DefaultDisposition.Terminate
-                Signal.SIGCHLD, DefaultDisposition.Ignore
-                Signal.SIGWINCH, DefaultDisposition.Ignore
-                Signal.SIGURG, DefaultDisposition.Ignore
-                Signal.SIGCONT, DefaultDisposition.Continue
-                Signal.SIGTSTP, DefaultDisposition.Stop
-                Signal.SIGTTIN, DefaultDisposition.Stop
-                Signal.SIGTTOU, DefaultDisposition.Stop
-            ]
-
-        expected |> List.length |> shouldEqual (List.length linuxColumn)
+    let ``defaultDispositionUnder classifies every signo under its own numbering`` () : unit =
+        let expected (numbering : SignalNumbering) (signo : int) : DefaultDisposition =
+            match numbering, signo with
+            // SIGCHLD, SIGURG, SIGWINCH
+            | SignalNumbering.Linux, (17 | 23 | 28) -> DefaultDisposition.Ignore
+            // SIGCONT
+            | SignalNumbering.Linux, 18 -> DefaultDisposition.Continue
+            // SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU
+            | SignalNumbering.Linux, (19 | 20 | 21 | 22) -> DefaultDisposition.Stop
+            // SIGURG, SIGCHLD, SIGIO, SIGWINCH, SIGINFO
+            | SignalNumbering.Darwin, (16 | 20 | 23 | 28 | 29) -> DefaultDisposition.Ignore
+            // SIGCONT
+            | SignalNumbering.Darwin, 19 -> DefaultDisposition.Continue
+            // SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU
+            | SignalNumbering.Darwin, (17 | 18 | 21 | 22) -> DefaultDisposition.Stop
+            | _, _ -> DefaultDisposition.Terminate
 
         for numbering in everyNumbering do
-            for signal, disposition in expected do
-                Signal.defaultDispositionUnder numbering signal |> shouldEqual disposition
+            for signo, signal in everySigno numbering do
+                (signo, Signal.defaultDispositionUnder numbering signal)
+                |> shouldEqual (signo, expected numbering signo)
 
-    /// The unnamed signals whose kernel default is not Terminate, measured by
-    /// having a forked child raise each signal on itself under SIG_DFL: SIGIO
-    /// (29 on Linux terminates; 23 on Darwin is discarded), SIGINFO (Darwin's
-    /// 29, discarded), and SIGSTOP (which stops). The dispatcher must not fall
-    /// through to Terminate for these just because the case is unnamed — and
-    /// must not discard Linux's 29 because Darwin's is discarded.
+    /// SIGIO is the one named signal whose default differs between the
+    /// platforms: Linux's 29 terminates, and Darwin's 23 is discarded.
     [<Test>]
-    let ``defaultDispositionUnder classifies unnamed signos under their own numbering`` () : unit =
-        let expected (numbering : SignalNumbering) : (int * DefaultDisposition) list =
-            match numbering with
-            | SignalNumbering.Linux ->
-                [
-                    19, DefaultDisposition.Stop // SIGSTOP
-                    23, DefaultDisposition.Ignore // SIGURG, named: reached via ofRawSignoUnder below
-                    29, DefaultDisposition.Terminate // SIGIO
-                    16, DefaultDisposition.Terminate // SIGSTKFLT
-                ]
-            | SignalNumbering.Darwin ->
-                [
-                    17, DefaultDisposition.Stop // SIGSTOP
-                    16, DefaultDisposition.Ignore // SIGURG, named: reached via ofRawSignoUnder below
-                    23, DefaultDisposition.Ignore // SIGIO
-                    29, DefaultDisposition.Ignore // SIGINFO
-                    19, DefaultDisposition.Continue // SIGCONT, named: reached via ofRawSignoUnder below
-                ]
+    let ``SIGIO's default is the only one that depends on the numbering`` () : unit =
+        Signal.defaultDispositionUnder SignalNumbering.Linux Signal.SIGIO
+        |> shouldEqual DefaultDisposition.Terminate
 
-        for numbering in everyNumbering do
-            for signo, disposition in expected numbering do
-                let signal =
-                    match Signal.ofRawSignoUnder numbering signo with
-                    | ValueSome signal -> signal
-                    | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
+        Signal.defaultDispositionUnder SignalNumbering.Darwin Signal.SIGIO
+        |> shouldEqual DefaultDisposition.Ignore
 
-                Signal.defaultDispositionUnder numbering signal |> shouldEqual disposition
-
-    /// `Other` is public, so a client can spell a named signal as `Other`
-    /// carrying its number; both classifiers must answer for the signal that
-    /// number is under the numbering, not for "some unnamed signal".
-    [<Test>]
-    let ``classifiers read an Other carrying a named signal's number as that signal`` () : unit =
-        for numbering in everyNumbering do
-            for signal, signo in column numbering do
-                Signal.defaultDispositionUnder numbering (Signal.Other signo)
-                |> shouldEqual (Signal.defaultDispositionUnder numbering signal)
-
-                Signal.isUncatchableUnder numbering (Signal.Other signo)
-                |> shouldEqual (Signal.isUncatchableUnder numbering signal)
-
-        // The rows a Terminate fallback would get wrong.
-        Signal.defaultDispositionUnder SignalNumbering.Linux (Signal.Other 17)
-        |> shouldEqual DefaultDisposition.Ignore // SIGCHLD
-
-        Signal.defaultDispositionUnder SignalNumbering.Darwin (Signal.Other 20)
-        |> shouldEqual DefaultDisposition.Ignore // SIGCHLD
-
-        Signal.defaultDispositionUnder SignalNumbering.Linux (Signal.Other 18)
-        |> shouldEqual DefaultDisposition.Continue // SIGCONT
-
-        Signal.defaultDispositionUnder SignalNumbering.Darwin (Signal.Other 19)
-        |> shouldEqual DefaultDisposition.Continue // SIGCONT
-
-        Signal.defaultDispositionUnder SignalNumbering.Darwin (Signal.Other 18)
-        |> shouldEqual DefaultDisposition.Stop // SIGTSTP
-
-    [<Test>]
-    let ``defaultDispositionUnder routes every other unnamed signo to Terminate`` () : unit =
-        // The POSIX default for an unrecognised signal is Terminate, and
-        // `SystemNative_HandleNonCanceledPosixSignal`'s `default:` branch
-        // is the catch-all. SIGILL (4), SIGFPE (8), SIGSEGV (11) and the
-        // real-time signals all terminate by default and are not in the
-        // modelled set; the measured exceptions are the ones in the test
-        // above, and everything else in range must classify as Terminate.
-        let exceptions (numbering : SignalNumbering) : int list =
-            match numbering with
-            | SignalNumbering.Linux -> [ 19 ]
-            | SignalNumbering.Darwin -> [ 17 ; 23 ; 29 ]
-
-        for numbering in everyNumbering do
-            for signo in 1 .. Signal.highestSignoUnder numbering do
-                match Signal.ofRawSignoUnder numbering signo with
-                | ValueSome (Signal.Other _ as signal) when not (List.contains signo (exceptions numbering)) ->
-                    Signal.defaultDispositionUnder numbering signal
-                    |> shouldEqual DefaultDisposition.Terminate
-                | _ -> ()
+        for signal, _ in linuxColumn do
+            if signal <> Signal.SIGIO && Signal.existsUnder SignalNumbering.Darwin signal then
+                Signal.defaultDispositionUnder SignalNumbering.Linux signal
+                |> shouldEqual (Signal.defaultDispositionUnder SignalNumbering.Darwin signal)

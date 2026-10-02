@@ -314,7 +314,7 @@ module NativeSystemNative =
             // refuses both with EINVAL, the shim checks neither, and the
             // process carries on with that errno.
             NonCanceledPosixSignal.ContinuesWithErrno (state, UnixError.EINVAL)
-        | ValueSome signal when PosixSignalPal.handledWithoutRestoring numbering signal ->
+        | ValueSome signal when PosixSignalPal.handledWithoutRestoring signal ->
             // An explicit no-op arm (SIGCONT, SIGTSTP, SIGTTIN, SIGTTOU,
             // SIGCHLD, SIGURG, SIGWINCH): the runtime cannot stop or continue
             // itself, and the ignored ones are literally no-ops. What the
@@ -331,8 +331,8 @@ module NativeSystemNative =
         // re-raises the signal with `kill(2)`, so the process gets the
         // kernel's default: this sends it through the kernel model as a
         // signal the process sends itself.
-        match PosixSignalShim.original numbering signal state.Kernel.PosixSignalShim with
-        | SignalDisposition.Catch _ when not (PosixSignalShim.isCancelableTermination numbering signal) ->
+        match PosixSignalShim.original signal state.Kernel.PosixSignalShim with
+        | SignalDisposition.Catch _ when not (PosixSignalShim.isCancelableTermination signal) ->
             NonCanceledPosixSignal.Continues state
         | SignalDisposition.Catch saved ->
             // SIGINT, SIGQUIT or SIGTERM, restored to a handler the shim did

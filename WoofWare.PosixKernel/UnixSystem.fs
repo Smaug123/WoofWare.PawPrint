@@ -222,8 +222,8 @@ type UnixSystemDefect<'Task> =
     /// can never be delivered and sits in the queue for the rest of the run.
     | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
     /// The process's signal state reads signals under a numbering other than
-    /// its machine's platform assigns, so the same `Signal.Other` payload
-    /// means one signal to the kernel and another to the signal tables.
+    /// its machine's platform assigns, so a signal in the signal tables may
+    /// have a different number, or none, under the kernel's numbering.
     /// `initial` derives the one from the other, so this is a state assembled
     /// some other way.
     | SignalNumberingMismatch of signals : SignalNumbering * platform : SignalNumbering
@@ -885,9 +885,9 @@ module UnixSystem =
 
         // The signal state against the task table: every task it names must
         // be one, or the delivery that reads it has nowhere to go. And against
-        // the machine's platform: the state canonicalises every signal under
+        // the machine's platform: the state checks every signal against
         // the numbering it was built with, so a state built under the wrong
-        // one holds tables the kernel would read as different signals.
+        // one holds signals the kernel would number differently, or not at all.
         let signals =
             let signals = system.Process.Signals
 

@@ -119,14 +119,15 @@ module UnixSignal =
 
                 Ok (Ok (KillOutcome.ProcessEnded ended))
 
-    /// The numbers the C library keeps for its own threads and screens out of
+    /// The signals the C library keeps for its own threads and screens out of
     /// the signal calls it wraps, before the kernel sees them: Linux's 32 and
-    /// 33, which glibc uses as SIGCANCEL and SIGSETXID. Darwin's C library
-    /// keeps none.
-    let private reservedByCLibrary (numbering : SignalNumbering) (signo : int32) : bool =
-        match numbering with
-        | SignalNumbering.Linux -> signo = 32 || signo = 33
-        | SignalNumbering.Darwin -> false
+    /// 33, the first two real-time signals, which glibc uses as SIGCANCEL and
+    /// SIGSETXID. Darwin's C library keeps none.
+    let private reservedByCLibrary (numbering : SignalNumbering) (signal : Signal) : bool =
+        match numbering, signal with
+        | SignalNumbering.Linux, Signal.RealTime 0
+        | SignalNumbering.Linux, Signal.RealTime 1 -> true
+        | _, _ -> false
 
     let private withSignals<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (signals : SignalState<'Task, 'Handler>)
@@ -223,12 +224,11 @@ module UnixSignal =
             Error ThreadKillRefusal.InitProcess
         elif signo = 0 then
             Ok (Ok (KillOutcome.ProcessContinues system))
-        elif reservedByCLibrary numbering signo then
-            Ok (Error UnixError.EINVAL)
         else
 
         match Signal.ofRawSignoUnder numbering signo with
         | ValueNone -> Ok (Error UnixError.EINVAL)
+        | ValueSome signal when reservedByCLibrary numbering signal -> Ok (Error UnixError.EINVAL)
         | ValueSome signal ->
             let generation =
                 SignalState.generate
@@ -276,15 +276,12 @@ module UnixSignal =
         // them, through either route. glibc refused 32 and 33 for every call,
         // the query included, where the raw `rt_sigaction` treated them as any
         // other signal.
-        if cLibrary && reservedByCLibrary numbering signo then
-            Error UnixError.EINVAL
-        else
-
         match Signal.ofRawSignoUnder numbering signo with
         | ValueNone -> Error UnixError.EINVAL
+        | ValueSome signal when cLibrary && reservedByCLibrary numbering signal -> Error UnixError.EINVAL
         | ValueSome signal ->
 
-        let onlyDefault = SignalState.kernelHoldsOnlyDefault numbering signal
+        let onlyDefault = SignalState.kernelHoldsOnlyDefault signal
 
         match numbering, newAction with
         | SignalNumbering.Darwin, _ when onlyDefault -> Error UnixError.EINVAL

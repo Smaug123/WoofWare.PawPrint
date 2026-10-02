@@ -19,8 +19,12 @@ type SignalNumbering =
 /// A POSIX signal recognised by the simulator.
 /// </summary>
 /// <remarks>
-/// The named cases cover some specific signals we've had reason to handle explicitly.
-/// Use the <c>Other</c> case for anything we've missed.
+/// The named cases cover every standard signal either platform's <c>&lt;signal.h&gt;</c> defines, and
+/// <c>RealTime</c> covers Linux's real-time signals, so every signal number either kernel has names a case.
+/// Some exist on one platform only (<c>SIGSTKFLT</c> and <c>SIGPWR</c> on Linux, <c>SIGEMT</c> and <c>SIGINFO</c>
+/// on Darwin); <c>Signal.existsUnder</c> says which.
+/// An alias is not a case of its own: <c>SIGIOT</c> is <c>SIGABRT</c>, <c>SIGCLD</c> is <c>SIGCHLD</c>, and Linux's
+/// <c>SIGPOLL</c> is <c>SIGIO</c>.
 ///
 /// This type intentionally does not model an assignment of signals to numbers, which are platform-specific.
 /// Use <c>Signal.toRawSignoUnder</c> to render a number under a given <c>SignalNumbering</c>.
@@ -29,29 +33,47 @@ type Signal =
     | SIGHUP
     | SIGINT
     | SIGQUIT
+    | SIGILL
+    | SIGTRAP
+    | SIGABRT
+    | SIGBUS
+    | SIGFPE
+    | SIGKILL
+    | SIGUSR1
+    | SIGSEGV
+    | SIGUSR2
+    | SIGPIPE
+    | SIGALRM
     | SIGTERM
+    /// Linux only.
+    | SIGSTKFLT
     | SIGCHLD
     | SIGCONT
-    | SIGWINCH
+    | SIGSTOP
     | SIGTSTP
     | SIGTTIN
     | SIGTTOU
-    | SIGPIPE
-    | SIGUSR1
-    | SIGUSR2
-    | SIGABRT
     | SIGURG
-    /// Catch-all for signals the simulator doesn't model semantically yet.
-    /// Carries a raw signo, read under the numbering of whichever platform the
-    /// process simulates: `Other 17` is `SIGSTOP` in a Darwin process and
-    /// `SIGCHLD` in a Linux one, so a value must not cross between processes
-    /// of different flavours. `ofRawSignoUnder` is the only thing here that
-    /// builds one, and it produces only signos in `(0, highestSignoUnder]`
-    /// that name no other case — but the case is public and enforces nothing,
-    /// so a client can put any number in it and `toRawSignoUnder` will hand
-    /// that number straight back. Two `Other` values are equal iff their raw
-    /// values match.
-    | Other of rawSignal : int
+    | SIGXCPU
+    | SIGXFSZ
+    | SIGVTALRM
+    | SIGPROF
+    | SIGWINCH
+    /// Linux's `<signal.h>` also calls this `SIGPOLL`. Darwin's gives that
+    /// name to `SIGEMT`'s number instead, and only under strict POSIX.
+    | SIGIO
+    /// Linux only.
+    | SIGPWR
+    | SIGSYS
+    /// Darwin only.
+    | SIGEMT
+    /// Darwin only.
+    | SIGINFO
+    /// One of Linux's real-time signals, `offset` above the kernel's lowest,
+    /// which is signal 32: `RealTime 0` is 32 and `RealTime 32` is 64. glibc
+    /// keeps `RealTime 0` and `RealTime 1` for its own threads, so the
+    /// `SIGRTMIN` a program reads from it is `RealTime 2`. Darwin has none.
+    | RealTime of offset : int
 
 /// <summary>
 /// The kernel-level default action for a POSIX signal when no handler claims
@@ -102,85 +124,132 @@ module Signal =
         | SignalNumbering.Linux -> 64
         | SignalNumbering.Darwin -> 31
 
+    /// The kernel's lowest real-time signal on Linux, which is `RealTime 0`.
+    let private lowestRealTimeSigno : int = 32
+
+    /// The highest real-time signal's `offset`: Linux's 64 is `RealTime 32`.
+    let private highestRealTimeOffset : int =
+        highestSignoUnder SignalNumbering.Linux - lowestRealTimeSigno
+
+    // Measured 2026-10-02 by
+    // `docs/plans/2026-08-23-posix-kernel-extraction/signal-names.c`, which
+    // prints every candidate name's macro and the C library's own name for
+    // every number below NSIG: on Linux 6.18.5 with glibc 2.41, for aarch64
+    // and for x86-64 (identical), and on Darwin 27.0.0 arm64. Its outputs are
+    // committed beside it. Earlier columns were measured the same way on
+    // Linux 6.18.5 / glibc 2.41 and Darwin 25.6.0.
+    let private tryRawSignoUnder (numbering : SignalNumbering) (signal : Signal) : int voption =
+        match numbering with
+        | SignalNumbering.Linux ->
+            match signal with
+            | Signal.SIGHUP -> ValueSome 1
+            | Signal.SIGINT -> ValueSome 2
+            | Signal.SIGQUIT -> ValueSome 3
+            | Signal.SIGILL -> ValueSome 4
+            | Signal.SIGTRAP -> ValueSome 5
+            | Signal.SIGABRT -> ValueSome 6
+            | Signal.SIGBUS -> ValueSome 7
+            | Signal.SIGFPE -> ValueSome 8
+            | Signal.SIGKILL -> ValueSome 9
+            | Signal.SIGUSR1 -> ValueSome 10
+            | Signal.SIGSEGV -> ValueSome 11
+            | Signal.SIGUSR2 -> ValueSome 12
+            | Signal.SIGPIPE -> ValueSome 13
+            | Signal.SIGALRM -> ValueSome 14
+            | Signal.SIGTERM -> ValueSome 15
+            | Signal.SIGSTKFLT -> ValueSome 16
+            | Signal.SIGCHLD -> ValueSome 17
+            | Signal.SIGCONT -> ValueSome 18
+            | Signal.SIGSTOP -> ValueSome 19
+            | Signal.SIGTSTP -> ValueSome 20
+            | Signal.SIGTTIN -> ValueSome 21
+            | Signal.SIGTTOU -> ValueSome 22
+            | Signal.SIGURG -> ValueSome 23
+            | Signal.SIGXCPU -> ValueSome 24
+            | Signal.SIGXFSZ -> ValueSome 25
+            | Signal.SIGVTALRM -> ValueSome 26
+            | Signal.SIGPROF -> ValueSome 27
+            | Signal.SIGWINCH -> ValueSome 28
+            | Signal.SIGIO -> ValueSome 29
+            | Signal.SIGPWR -> ValueSome 30
+            | Signal.SIGSYS -> ValueSome 31
+            | Signal.RealTime offset ->
+                if offset >= 0 && offset <= highestRealTimeOffset then
+                    ValueSome (lowestRealTimeSigno + offset)
+                else
+                    ValueNone
+            | Signal.SIGEMT
+            | Signal.SIGINFO -> ValueNone
+        | SignalNumbering.Darwin ->
+            match signal with
+            | Signal.SIGHUP -> ValueSome 1
+            | Signal.SIGINT -> ValueSome 2
+            | Signal.SIGQUIT -> ValueSome 3
+            | Signal.SIGILL -> ValueSome 4
+            | Signal.SIGTRAP -> ValueSome 5
+            | Signal.SIGABRT -> ValueSome 6
+            | Signal.SIGEMT -> ValueSome 7
+            | Signal.SIGFPE -> ValueSome 8
+            | Signal.SIGKILL -> ValueSome 9
+            | Signal.SIGBUS -> ValueSome 10
+            | Signal.SIGSEGV -> ValueSome 11
+            | Signal.SIGSYS -> ValueSome 12
+            | Signal.SIGPIPE -> ValueSome 13
+            | Signal.SIGALRM -> ValueSome 14
+            | Signal.SIGTERM -> ValueSome 15
+            | Signal.SIGURG -> ValueSome 16
+            | Signal.SIGSTOP -> ValueSome 17
+            | Signal.SIGTSTP -> ValueSome 18
+            | Signal.SIGCONT -> ValueSome 19
+            | Signal.SIGCHLD -> ValueSome 20
+            | Signal.SIGTTIN -> ValueSome 21
+            | Signal.SIGTTOU -> ValueSome 22
+            | Signal.SIGIO -> ValueSome 23
+            | Signal.SIGXCPU -> ValueSome 24
+            | Signal.SIGXFSZ -> ValueSome 25
+            | Signal.SIGVTALRM -> ValueSome 26
+            | Signal.SIGPROF -> ValueSome 27
+            | Signal.SIGWINCH -> ValueSome 28
+            | Signal.SIGINFO -> ValueSome 29
+            | Signal.SIGUSR1 -> ValueSome 30
+            | Signal.SIGUSR2 -> ValueSome 31
+            | Signal.SIGSTKFLT
+            | Signal.SIGPWR
+            | Signal.RealTime _ -> ValueNone
+
+    /// Whether the chosen platform has this signal at all: `SIGPWR` is not a
+    /// signal on Darwin, nor `SIGINFO` on Linux, nor a `RealTime` whose offset
+    /// is outside 0 to 32 anywhere.
+    let existsUnder (numbering : SignalNumbering) (signal : Signal) : bool =
+        (tryRawSignoUnder numbering signal).IsSome
+
     /// <summary>
     /// The raw <c>&lt;signal.h&gt;</c> number for this signal on the chosen platform.
     /// </summary>
     /// <remarks>
-    /// Nine of the named signals have the same number on both; <c>SIGUSR1</c>,
-    /// <c>SIGUSR2</c>, <c>SIGCHLD</c>, <c>SIGCONT</c>, <c>SIGTSTP</c> and
-    /// <c>SIGURG</c> do not.
+    /// Most signals have the same number on both; <c>SIGBUS</c>, <c>SIGUSR1</c>,
+    /// <c>SIGUSR2</c>, <c>SIGCHLD</c>, <c>SIGCONT</c>, <c>SIGSTOP</c>, <c>SIGTSTP</c>,
+    /// <c>SIGURG</c>, <c>SIGIO</c> and <c>SIGSYS</c> do not.
     /// Both columns were measured with a C probe rather than transcribed, on
-    /// Linux 6.18.5 / glibc 2.41 and Darwin 25.6.0.
+    /// Linux 6.18.5 / glibc 2.41 and Darwin 27.0.0.
     ///
-    /// An <c>Other</c> value's payload is handed back unchanged: it was a raw
-    /// signo under this numbering to begin with.
+    /// Throws for a signal the platform does not have (see <c>existsUnder</c>),
+    /// which no number under its numbering could stand for.
     /// </remarks>
     let toRawSignoUnder (numbering : SignalNumbering) (signal : Signal) : int =
-        match signal with
-        | Signal.SIGHUP -> 1
-        | Signal.SIGINT -> 2
-        | Signal.SIGQUIT -> 3
-        | Signal.SIGABRT -> 6
-        | Signal.SIGPIPE -> 13
-        | Signal.SIGTERM -> 15
-        | Signal.SIGTTIN -> 21
-        | Signal.SIGTTOU -> 22
-        | Signal.SIGWINCH -> 28
-        | Signal.SIGUSR1 ->
-            match numbering with
-            | SignalNumbering.Linux -> 10
-            | SignalNumbering.Darwin -> 30
-        | Signal.SIGUSR2 ->
-            match numbering with
-            | SignalNumbering.Linux -> 12
-            | SignalNumbering.Darwin -> 31
-        | Signal.SIGCHLD ->
-            match numbering with
-            | SignalNumbering.Linux -> 17
-            | SignalNumbering.Darwin -> 20
-        | Signal.SIGCONT ->
-            match numbering with
-            | SignalNumbering.Linux -> 18
-            | SignalNumbering.Darwin -> 19
-        | Signal.SIGTSTP ->
-            match numbering with
-            | SignalNumbering.Linux -> 20
-            | SignalNumbering.Darwin -> 18
-        | Signal.SIGURG ->
-            match numbering with
-            | SignalNumbering.Linux -> 23
-            | SignalNumbering.Darwin -> 16
-        | Signal.Other rawSignal -> rawSignal
-
-    /// Every case but `Other`, which is the search space for `ofRawSignoUnder`.
-    let private named : Signal list =
-        [
-            Signal.SIGHUP
-            Signal.SIGINT
-            Signal.SIGQUIT
-            Signal.SIGTERM
-            Signal.SIGCHLD
-            Signal.SIGCONT
-            Signal.SIGWINCH
-            Signal.SIGTSTP
-            Signal.SIGTTIN
-            Signal.SIGTTOU
-            Signal.SIGPIPE
-            Signal.SIGUSR1
-            Signal.SIGUSR2
-            Signal.SIGABRT
-            Signal.SIGURG
-        ]
+        match tryRawSignoUnder numbering signal with
+        | ValueSome signo -> signo
+        | ValueNone ->
+            failwith
+                $"Signal.toRawSignoUnder: %O{signal} is not a signal under the %O{numbering} numbering, so it has no number there."
 
     /// <summary>
     /// Convert a raw signo, read under the chosen platform's numbering, to a
     /// signal.
     /// </summary>
     /// <remarks>
-    /// The inverse of <c>toRawSignoUnder</c>: a number naming one of the
-    /// named cases produces that case, and any other number the kernel has —
-    /// positive and at most <c>highestSignoUnder</c> — round-trips through
-    /// <c>Signal.Other</c> so that its identity survives.
+    /// The inverse of <c>toRawSignoUnder</c>: every number the kernel has —
+    /// positive and at most <c>highestSignoUnder</c> — names a case.
     /// </remarks>
     /// <returns>
     /// <c>ValueNone</c> for a number that is not a signal on this platform:
@@ -188,33 +257,82 @@ module Signal =
     /// 32 is such a number, even though CoreCLR's shim admits it.
     /// </returns>
     let ofRawSignoUnder (numbering : SignalNumbering) (signo : int) : Signal voption =
-        match named |> List.tryFind (fun signal -> toRawSignoUnder numbering signal = signo) with
-        | Some signal -> ValueSome signal
-        | None ->
-            if signo > 0 && signo <= highestSignoUnder numbering then
-                ValueSome (Signal.Other signo)
-            else
-                ValueNone
-
-    /// <summary>
-    /// The named spelling of a signal that may have arrived as <c>Other</c>
-    /// carrying a named signal's number.
-    /// </summary>
-    /// <remarks>
-    /// <c>Other</c> is public and enforces nothing, so a client can spell
-    /// <c>SIGCHLD</c> as <c>Other 17</c> under Linux. The classifiers here
-    /// answer for the signal a value <i>is</i> under the numbering, so they
-    /// ask for this spelling first; a client keying its own tables on the
-    /// case should do the same. A number naming no case, or none at all, is
-    /// handed back unchanged.
-    /// </remarks>
-    let canonicalUnder (numbering : SignalNumbering) (signal : Signal) : Signal =
-        match signal with
-        | Signal.Other rawSignal ->
-            match ofRawSignoUnder numbering rawSignal with
-            | ValueSome named -> named
-            | ValueNone -> signal
-        | _ -> signal
+        // Written out rather than searched for through `toRawSignoUnder`, so
+        // that the round trip between the two is a check on each table rather
+        // than true by construction.
+        match numbering with
+        | SignalNumbering.Linux ->
+            match signo with
+            | 1 -> ValueSome Signal.SIGHUP
+            | 2 -> ValueSome Signal.SIGINT
+            | 3 -> ValueSome Signal.SIGQUIT
+            | 4 -> ValueSome Signal.SIGILL
+            | 5 -> ValueSome Signal.SIGTRAP
+            | 6 -> ValueSome Signal.SIGABRT
+            | 7 -> ValueSome Signal.SIGBUS
+            | 8 -> ValueSome Signal.SIGFPE
+            | 9 -> ValueSome Signal.SIGKILL
+            | 10 -> ValueSome Signal.SIGUSR1
+            | 11 -> ValueSome Signal.SIGSEGV
+            | 12 -> ValueSome Signal.SIGUSR2
+            | 13 -> ValueSome Signal.SIGPIPE
+            | 14 -> ValueSome Signal.SIGALRM
+            | 15 -> ValueSome Signal.SIGTERM
+            | 16 -> ValueSome Signal.SIGSTKFLT
+            | 17 -> ValueSome Signal.SIGCHLD
+            | 18 -> ValueSome Signal.SIGCONT
+            | 19 -> ValueSome Signal.SIGSTOP
+            | 20 -> ValueSome Signal.SIGTSTP
+            | 21 -> ValueSome Signal.SIGTTIN
+            | 22 -> ValueSome Signal.SIGTTOU
+            | 23 -> ValueSome Signal.SIGURG
+            | 24 -> ValueSome Signal.SIGXCPU
+            | 25 -> ValueSome Signal.SIGXFSZ
+            | 26 -> ValueSome Signal.SIGVTALRM
+            | 27 -> ValueSome Signal.SIGPROF
+            | 28 -> ValueSome Signal.SIGWINCH
+            | 29 -> ValueSome Signal.SIGIO
+            | 30 -> ValueSome Signal.SIGPWR
+            | 31 -> ValueSome Signal.SIGSYS
+            | _ ->
+                if signo >= lowestRealTimeSigno && signo <= highestSignoUnder numbering then
+                    ValueSome (Signal.RealTime (signo - lowestRealTimeSigno))
+                else
+                    ValueNone
+        | SignalNumbering.Darwin ->
+            match signo with
+            | 1 -> ValueSome Signal.SIGHUP
+            | 2 -> ValueSome Signal.SIGINT
+            | 3 -> ValueSome Signal.SIGQUIT
+            | 4 -> ValueSome Signal.SIGILL
+            | 5 -> ValueSome Signal.SIGTRAP
+            | 6 -> ValueSome Signal.SIGABRT
+            | 7 -> ValueSome Signal.SIGEMT
+            | 8 -> ValueSome Signal.SIGFPE
+            | 9 -> ValueSome Signal.SIGKILL
+            | 10 -> ValueSome Signal.SIGBUS
+            | 11 -> ValueSome Signal.SIGSEGV
+            | 12 -> ValueSome Signal.SIGSYS
+            | 13 -> ValueSome Signal.SIGPIPE
+            | 14 -> ValueSome Signal.SIGALRM
+            | 15 -> ValueSome Signal.SIGTERM
+            | 16 -> ValueSome Signal.SIGURG
+            | 17 -> ValueSome Signal.SIGSTOP
+            | 18 -> ValueSome Signal.SIGTSTP
+            | 19 -> ValueSome Signal.SIGCONT
+            | 20 -> ValueSome Signal.SIGCHLD
+            | 21 -> ValueSome Signal.SIGTTIN
+            | 22 -> ValueSome Signal.SIGTTOU
+            | 23 -> ValueSome Signal.SIGIO
+            | 24 -> ValueSome Signal.SIGXCPU
+            | 25 -> ValueSome Signal.SIGXFSZ
+            | 26 -> ValueSome Signal.SIGVTALRM
+            | 27 -> ValueSome Signal.SIGPROF
+            | 28 -> ValueSome Signal.SIGWINCH
+            | 29 -> ValueSome Signal.SIGINFO
+            | 30 -> ValueSome Signal.SIGUSR1
+            | 31 -> ValueSome Signal.SIGUSR2
+            | _ -> ValueNone
 
     /// <summary>
     /// Whether <c>sigaction(2)</c> refuses to install a handler for this
@@ -222,38 +340,54 @@ module Signal =
     /// </summary>
     /// <remarks>
     /// <c>SIGKILL</c> and <c>SIGSTOP</c> on both, as POSIX requires: 9 and 19
-    /// on Linux, 9 and 17 on Darwin. Linux additionally refuses 32 and 33,
+    /// on Linux, 9 and 17 on Darwin. Linux additionally refuses 32 and 33
+    /// (<c>RealTime 0</c> and <c>RealTime 1</c>),
     /// which are not the kernel's doing but glibc's: its <c>sigaction</c>
     /// wrapper screens out <c>SIGCANCEL</c> and <c>SIGSETXID</c>, which it
     /// reserves for its own thread machinery. Measured on Linux 6.18.5 /
     /// glibc 2.41 and Darwin 25.6.0 by installing <c>SIG_DFL</c> for every
     /// number up to <c>NSIG + 1</c>; these were the only refusals below the
-    /// ceiling. Neither <c>SIGKILL</c> nor <c>SIGSTOP</c> is a named case, so
-    /// they only ever arrive as <c>Signal.Other</c>, and every named case is
-    /// catchable — including one spelled as <c>Other</c> carrying its number,
-    /// which classifies as the signal it is.
+    /// ceiling.
     /// </remarks>
     let isUncatchableUnder (numbering : SignalNumbering) (signal : Signal) : bool =
-        match canonicalUnder numbering signal with
-        | Signal.Other rawSignal ->
+        match signal with
+        | Signal.SIGKILL
+        | Signal.SIGSTOP -> true
+        | Signal.RealTime offset ->
             match numbering with
-            | SignalNumbering.Linux -> rawSignal = 9 || rawSignal = 19 || rawSignal = 32 || rawSignal = 33
-            | SignalNumbering.Darwin -> rawSignal = 9 || rawSignal = 17
+            | SignalNumbering.Linux -> offset = 0 || offset = 1
+            | SignalNumbering.Darwin -> false
         | Signal.SIGHUP
         | Signal.SIGINT
         | Signal.SIGQUIT
+        | Signal.SIGILL
+        | Signal.SIGTRAP
+        | Signal.SIGABRT
+        | Signal.SIGBUS
+        | Signal.SIGFPE
+        | Signal.SIGUSR1
+        | Signal.SIGSEGV
+        | Signal.SIGUSR2
+        | Signal.SIGPIPE
+        | Signal.SIGALRM
         | Signal.SIGTERM
+        | Signal.SIGSTKFLT
         | Signal.SIGCHLD
         | Signal.SIGCONT
-        | Signal.SIGWINCH
         | Signal.SIGTSTP
         | Signal.SIGTTIN
         | Signal.SIGTTOU
-        | Signal.SIGPIPE
-        | Signal.SIGUSR1
-        | Signal.SIGUSR2
-        | Signal.SIGABRT
-        | Signal.SIGURG -> false
+        | Signal.SIGURG
+        | Signal.SIGXCPU
+        | Signal.SIGXFSZ
+        | Signal.SIGVTALRM
+        | Signal.SIGPROF
+        | Signal.SIGWINCH
+        | Signal.SIGIO
+        | Signal.SIGPWR
+        | Signal.SIGSYS
+        | Signal.SIGEMT
+        | Signal.SIGINFO -> false
 
     /// Whether a thread's attempt to add this signal to its own signal mask is
     /// silently ignored: `sigprocmask(2)` and `pthread_sigmask(3)` succeed but
@@ -271,39 +405,56 @@ module Signal =
         // blocking, and reading the mask back, for every number up to past the
         // ceiling, through pthread_sigmask, sigprocmask and (Linux) the raw
         // rt_sigprocmask syscall. The raw syscall accepts 32 and 33 and
-        // refuses only 9 and 19, so that pair is glibc's screening, not the
-        // kernel's. The same sets as `isUncatchableUnder`, as it happens — but
-        // those are different facts (what sigaction refuses loudly, and what
-        // the mask calls drop silently), separately measured, with no reason
-        // they must stay in step.
-        match canonicalUnder numbering signal with
-        | Signal.Other rawSignal ->
+        // refuses only SIGKILL and SIGSTOP, so that pair is glibc's screening,
+        // not the kernel's. The same sets as `isUncatchableUnder`, as it
+        // happens — but those are different facts (what sigaction refuses
+        // loudly, and what the mask calls drop silently), separately measured,
+        // with no reason they must stay in step.
+        match signal with
+        | Signal.SIGKILL
+        | Signal.SIGSTOP -> true
+        | Signal.RealTime offset ->
             match numbering with
-            | SignalNumbering.Linux -> rawSignal = 9 || rawSignal = 19 || rawSignal = 32 || rawSignal = 33
-            | SignalNumbering.Darwin -> rawSignal = 9 || rawSignal = 17
+            | SignalNumbering.Linux -> offset = 0 || offset = 1
+            | SignalNumbering.Darwin -> false
         | Signal.SIGHUP
         | Signal.SIGINT
         | Signal.SIGQUIT
+        | Signal.SIGILL
+        | Signal.SIGTRAP
+        | Signal.SIGABRT
+        | Signal.SIGBUS
+        | Signal.SIGFPE
+        | Signal.SIGUSR1
+        | Signal.SIGSEGV
+        | Signal.SIGUSR2
+        | Signal.SIGPIPE
+        | Signal.SIGALRM
         | Signal.SIGTERM
+        | Signal.SIGSTKFLT
         | Signal.SIGCHLD
         | Signal.SIGCONT
-        | Signal.SIGWINCH
         | Signal.SIGTSTP
         | Signal.SIGTTIN
         | Signal.SIGTTOU
-        | Signal.SIGPIPE
-        | Signal.SIGUSR1
-        | Signal.SIGUSR2
-        | Signal.SIGABRT
-        | Signal.SIGURG -> false
+        | Signal.SIGURG
+        | Signal.SIGXCPU
+        | Signal.SIGXFSZ
+        | Signal.SIGVTALRM
+        | Signal.SIGPROF
+        | Signal.SIGWINCH
+        | Signal.SIGIO
+        | Signal.SIGPWR
+        | Signal.SIGSYS
+        | Signal.SIGEMT
+        | Signal.SIGINFO -> false
 
     /// Whether repeated generation of this signal queues multiple pending
     /// instances (a real-time signal), rather than coalescing into at most one
     /// per pending set (a standard signal).
     ///
     /// Linux's real-time signals are signos 32 to 64; Darwin has none at all.
-    /// A number that is not a signal under the numbering is not a real-time
-    /// signal either.
+    /// A signal the numbering does not have is not a real-time signal either.
     let isRealTimeUnder (numbering : SignalNumbering) (signal : Signal) : bool =
         // Measured on Linux 6.18.5 / glibc 2.41: three generations of
         // SIGRTMIN+2 (glibc's 34+2 = 36) while blocked deliver three times,
@@ -315,26 +466,41 @@ module Signal =
         // wrappers screen 32 and 33 — its reserved pair — out of every mask
         // and sigaction, so those two rows follow the kernel's rule rather
         // than a measurement.
-        match canonicalUnder numbering signal with
-        | Signal.Other rawSignal ->
-            match numbering with
-            | SignalNumbering.Linux -> rawSignal >= 32 && rawSignal <= highestSignoUnder numbering
-            | SignalNumbering.Darwin -> false
+        match signal with
+        | Signal.RealTime _ -> existsUnder numbering signal
         | Signal.SIGHUP
         | Signal.SIGINT
         | Signal.SIGQUIT
+        | Signal.SIGILL
+        | Signal.SIGTRAP
+        | Signal.SIGABRT
+        | Signal.SIGBUS
+        | Signal.SIGFPE
+        | Signal.SIGKILL
+        | Signal.SIGUSR1
+        | Signal.SIGSEGV
+        | Signal.SIGUSR2
+        | Signal.SIGPIPE
+        | Signal.SIGALRM
         | Signal.SIGTERM
+        | Signal.SIGSTKFLT
         | Signal.SIGCHLD
         | Signal.SIGCONT
-        | Signal.SIGWINCH
+        | Signal.SIGSTOP
         | Signal.SIGTSTP
         | Signal.SIGTTIN
         | Signal.SIGTTOU
-        | Signal.SIGPIPE
-        | Signal.SIGUSR1
-        | Signal.SIGUSR2
-        | Signal.SIGABRT
-        | Signal.SIGURG -> false
+        | Signal.SIGURG
+        | Signal.SIGXCPU
+        | Signal.SIGXFSZ
+        | Signal.SIGVTALRM
+        | Signal.SIGPROF
+        | Signal.SIGWINCH
+        | Signal.SIGIO
+        | Signal.SIGPWR
+        | Signal.SIGSYS
+        | Signal.SIGEMT
+        | Signal.SIGINFO -> false
 
     /// Whether a signal generated while its disposition is "ignore" (SIG_IGN,
     /// or SIG_DFL with a default of Ignore) survives as pending when the
@@ -363,7 +529,7 @@ module Signal =
         // TestSignalAgainstHost's header).
         match numbering with
         | SignalNumbering.Linux -> true
-        | SignalNumbering.Darwin -> canonicalUnder numbering signal = Signal.SIGCONT
+        | SignalNumbering.Darwin -> signal = Signal.SIGCONT
 
     /// Whether the kernel's default action for `signal` dumps core as well as
     /// terminating the process. The dump is written only if the process's
@@ -383,39 +549,52 @@ module Signal =
         // these deaths raised EXC_CRASH on the child's task exception port,
         // which xnu does for a death by a signal whose properties include
         // SA_CORE, the property its core dump is gated on.
-        match canonicalUnder numbering signal with
+        match signal with
         | Signal.SIGQUIT
-        | Signal.SIGABRT -> true
+        | Signal.SIGILL
+        | Signal.SIGTRAP
+        | Signal.SIGABRT
+        | Signal.SIGBUS
+        | Signal.SIGFPE
+        | Signal.SIGSEGV
+        | Signal.SIGSYS
+        | Signal.SIGEMT -> true
+        | Signal.SIGXCPU
+        | Signal.SIGXFSZ ->
+            match numbering with
+            | SignalNumbering.Linux -> true
+            | SignalNumbering.Darwin -> false
         | Signal.SIGHUP
         | Signal.SIGINT
+        | Signal.SIGKILL
+        | Signal.SIGUSR1
+        | Signal.SIGUSR2
+        | Signal.SIGPIPE
+        | Signal.SIGALRM
         | Signal.SIGTERM
+        | Signal.SIGSTKFLT
         | Signal.SIGCHLD
         | Signal.SIGCONT
-        | Signal.SIGWINCH
+        | Signal.SIGSTOP
         | Signal.SIGTSTP
         | Signal.SIGTTIN
         | Signal.SIGTTOU
-        | Signal.SIGPIPE
-        | Signal.SIGUSR1
-        | Signal.SIGUSR2
-        | Signal.SIGURG -> false
-        | Signal.Other rawSignal ->
-            match numbering with
-            // SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV, SIGXCPU, SIGXFSZ, SIGSYS
-            | SignalNumbering.Linux -> List.contains rawSignal [ 4 ; 5 ; 7 ; 8 ; 11 ; 24 ; 25 ; 31 ]
-            // SIGILL, SIGTRAP, SIGEMT, SIGFPE, SIGBUS, SIGSEGV, SIGSYS
-            | SignalNumbering.Darwin -> List.contains rawSignal [ 4 ; 5 ; 7 ; 8 ; 10 ; 11 ; 12 ]
+        | Signal.SIGURG
+        | Signal.SIGVTALRM
+        | Signal.SIGPROF
+        | Signal.SIGWINCH
+        | Signal.SIGIO
+        | Signal.SIGPWR
+        | Signal.SIGINFO
+        | Signal.RealTime _ -> false
 
     /// <summary>
     /// The kernel-level default disposition for <c>signal</c>, read under the
     /// chosen platform's numbering.
     /// </summary>
     /// <remarks>
-    /// The named cases have the same disposition everywhere. Only a
-    /// <c>Signal.Other</c> needs the numbering, because its payload's identity
-    /// does: Darwin's 29 is <c>SIGINFO</c> (discarded) where Linux's 29 is
-    /// <c>SIGIO</c> (terminates), and <c>SIGIO</c> itself — Darwin's 23 — is
-    /// discarded there where Linux's 23 is <c>SIGURG</c>. Measured on Linux
+    /// Only <c>SIGIO</c>'s differs between the platforms: Linux's terminates,
+    /// and Darwin's is discarded. Measured on Linux
     /// 6.18.5 and Darwin 25.6.0 by having a forked child raise each signal on
     /// itself under <c>SIG_DFL</c>.
     ///
@@ -424,39 +603,43 @@ module Signal =
     /// than stop on when the process group is orphaned, as the probe's was —
     /// take POSIX's <c>Stop</c>. Anything else terminates, which is the POSIX
     /// default for a signal not otherwise specified.
-    ///
-    /// An <c>Other</c> carrying a named signal's number classifies as that
-    /// signal: <c>Other 17</c> under Linux is <c>SIGCHLD</c>, and is ignored.
     /// </remarks>
     let defaultDispositionUnder (numbering : SignalNumbering) (signal : Signal) : DefaultDisposition =
-        match canonicalUnder numbering signal with
+        match signal with
         | Signal.SIGCHLD
         | Signal.SIGWINCH
-        | Signal.SIGURG -> DefaultDisposition.Ignore
+        | Signal.SIGURG
+        | Signal.SIGINFO -> DefaultDisposition.Ignore
+        | Signal.SIGIO ->
+            match numbering with
+            | SignalNumbering.Linux -> DefaultDisposition.Terminate
+            | SignalNumbering.Darwin -> DefaultDisposition.Ignore
         | Signal.SIGCONT -> DefaultDisposition.Continue
+        | Signal.SIGSTOP
         | Signal.SIGTSTP
         | Signal.SIGTTIN
         | Signal.SIGTTOU -> DefaultDisposition.Stop
         | Signal.SIGHUP
         | Signal.SIGINT
         | Signal.SIGQUIT
-        | Signal.SIGTERM
-        | Signal.SIGPIPE
+        | Signal.SIGILL
+        | Signal.SIGTRAP
+        | Signal.SIGABRT
+        | Signal.SIGBUS
+        | Signal.SIGFPE
+        | Signal.SIGKILL
         | Signal.SIGUSR1
+        | Signal.SIGSEGV
         | Signal.SIGUSR2
-        | Signal.SIGABRT -> DefaultDisposition.Terminate
-        | Signal.Other rawSignal ->
-            match numbering with
-            | SignalNumbering.Linux ->
-                match rawSignal with
-                // SIGSTOP
-                | 19 -> DefaultDisposition.Stop
-                | _ -> DefaultDisposition.Terminate
-            | SignalNumbering.Darwin ->
-                match rawSignal with
-                // SIGSTOP
-                | 17 -> DefaultDisposition.Stop
-                // SIGIO and SIGINFO
-                | 23
-                | 29 -> DefaultDisposition.Ignore
-                | _ -> DefaultDisposition.Terminate
+        | Signal.SIGPIPE
+        | Signal.SIGALRM
+        | Signal.SIGTERM
+        | Signal.SIGSTKFLT
+        | Signal.SIGXCPU
+        | Signal.SIGXFSZ
+        | Signal.SIGVTALRM
+        | Signal.SIGPROF
+        | Signal.SIGPWR
+        | Signal.SIGSYS
+        | Signal.SIGEMT
+        | Signal.RealTime _ -> DefaultDisposition.Terminate
