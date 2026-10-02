@@ -153,3 +153,41 @@ module HostFileSystemType =
         match statisticsFor flavour fd with
         | FileSystemStatisticsAnswer.Reported statistics -> Ok (FileSystemStatistics.typeFields statistics)
         | FileSystemStatisticsAnswer.Failed error -> Error error
+
+    [<DllImport("libc", EntryPoint = "open", SetLastError = true)>]
+    extern int private hostOpen(string path, int flags, int mode)
+
+    [<DllImport("libc", EntryPoint = "close")>]
+    extern int private hostClose(int fd)
+
+    /// A directory on this host whose filesystem is the one the library
+    /// defaults to for `flavour`, or `None` if this host has none: `/dev/shm`
+    /// for tmpfs on Linux, and the temporary directory for APFS on macOS.
+    let directoryOfDefaultType (flavour : SimulatedUnixFlavour) : string option =
+        let candidate =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> "/dev/shm"
+            | SimulatedUnixFlavour.Darwin -> System.IO.Path.GetTempPath ()
+
+        let wanted =
+            EmulatedFileSystemType.defaultFor flavour
+            |> EmulatedFileSystemType.fieldsFor flavour
+            |> Ok
+
+        if not (System.IO.Directory.Exists candidate) then
+            None
+        else
+
+        let fd = hostOpen (candidate, 0, 0)
+
+        if fd < 0 then
+            None
+        else
+
+        try
+            if typeFieldsFor flavour fd = wanted then
+                Some candidate
+            else
+                None
+        finally
+            hostClose fd |> ignore<int>

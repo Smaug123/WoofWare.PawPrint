@@ -52,6 +52,9 @@ module internal SortedEntryNames =
 
     let isEmpty (names : SortedEntryNames) : bool = names.Names.IsEmpty
 
+    /// How many names there are, in constant time.
+    let count (names : SortedEntryNames) : int = names.Names.Count
+
     let contains (name : DirectoryEntryName) (names : SortedEntryNames) : bool = names.Names.Contains name
 
     let toList (names : SortedEntryNames) : DirectoryEntryName list = List.ofSeq names.Names
@@ -119,6 +122,14 @@ type VirtualFileSystem =
             /// is what makes the map a function of the entries alone, so that
             /// two filesystems with the same graph compare equal.
             SortedNames : Map<InodeNumber, SortedEntryNames>
+            /// How many of each directory's entries name a directory, holding
+            /// only the non-zero counts: a directory absent from the map holds
+            /// no subdirectory. Kept so that asking the count is not a walk of
+            /// the directory; `checkInvariants` holds it to the entries.
+            /// Holding no zeros is what makes the map a function of the
+            /// entries alone, so that two filesystems with the same graph
+            /// compare equal.
+            SubdirectoryCounts : Map<InodeNumber, int>
         }
 
 /// A way in which a `VirtualFileSystem` fails to describe a filesystem any
@@ -179,6 +190,14 @@ type VirtualFileSystemDefect =
         directory : InodeNumber *
         stored : DirectoryEntryName list option *
         bound : DirectoryEntryName list
+    /// The count `VirtualFileSystem.subdirectoryCount` answers for
+    /// `directory` disagrees with the number of its entries that name a
+    /// directory.
+    ///
+    /// `stored` is `None` where no count is stored, which the filesystem
+    /// reads as zero. A stored `Some 0` is reported even though it agrees in
+    /// value, because only non-zero counts are stored.
+    | SubdirectoryCountMismatch of directory : InodeNumber * stored : int option * counted : int
 
 /// What losing a name does to the inode that had it, which is not the same for
 /// every caller of `unbind`.
@@ -427,6 +446,7 @@ module VirtualFileSystem =
             NextInode = InodeNumber 2L
             BindingCounts = Map.empty
             SortedNames = Map.empty
+            SubdirectoryCounts = Map.empty
         }
 
     let root (vfs : VirtualFileSystem) : InodeNumber = vfs.Root
@@ -737,6 +757,34 @@ module VirtualFileSystem =
         else
             Map.add inode updated counts
 
+    /// `counts` with the number of subdirectories `directory` holds moved by
+    /// `delta`, dropping it from the map when it reaches zero.
+    let private adjustSubdirectoryCount
+        (directory : InodeNumber)
+        (delta : int)
+        (counts : Map<InodeNumber, int>)
+        : Map<InodeNumber, int>
+        =
+        let current = Map.tryFind directory counts |> Option.defaultValue 0
+        let updated = current + delta
+
+        if updated < 0 then
+            failwith
+                $"VirtualFileSystem: directory inode %O{directory} held %d{current} subdirectories, and removing %d{-delta} would leave a negative count. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+        elif updated = 0 then
+            Map.remove directory counts
+        else
+            Map.add directory updated counts
+
+    /// Whether `inode` is a directory in `inodes`.
+    let private isDirectoryIn (inodes : Map<InodeNumber, Inode>) (inode : InodeNumber) : bool =
+        match Map.tryFind inode inodes with
+        | Some {
+                   Content = InodeContent.Directory _
+               } -> true
+        | Some _
+        | None -> false
+
     /// `sortedNames` with `name` added to the names stored for `directory`,
     /// which must not already hold it.
     let private addSortedName
@@ -857,6 +905,11 @@ module VirtualFileSystem =
                     Inodes = Map.add directory updated vfs.Inodes
                     BindingCounts = adjustBindingCount inode 1 vfs.BindingCounts
                     SortedNames = addSortedName directory name vfs.SortedNames
+                    SubdirectoryCounts =
+                        if isDirectoryIn vfs.Inodes inode then
+                            adjustSubdirectoryCount directory 1 vfs.SubdirectoryCounts
+                        else
+                            vfs.SubdirectoryCounts
                 }
 
     /// Create an empty subdirectory owned by `owner`. Mirrors `mkdir(2)`: EEXIST
@@ -1142,16 +1195,20 @@ module VirtualFileSystem =
                 Inodes = inodes
                 BindingCounts = adjustBindingCount target -1 vfs.BindingCounts
                 SortedNames = removeSortedName directory name vfs.SortedNames
+                SubdirectoryCounts =
+                    if isDirectoryIn inodes target then
+                        adjustSubdirectoryCount directory -1 vfs.SubdirectoryCounts
+                    else
+                        vfs.SubdirectoryCounts
             }
         )
 
     /// How many directory entries name `inode`.
     ///
-    /// This is `st_nlink` as a *file* reports it. It is not what a directory
-    /// reports, which also counts its own "." and each child's ".."; those are
-    /// derived here rather than stored (see `DirectoryContent.Entries`), so
-    /// counting them would mean re-deriving them, and no syscall this library models
-    /// reports the number anyway — `FileStatus` has no `nlink` field.
+    /// This is `st_nlink` as a regular file or a symbolic link reports it. A
+    /// directory's `st_nlink` is a rule of the filesystem it is on, which
+    /// counts some of its entries rather than the one that names it: see
+    /// `EmulatedFileSystemType.directoryLinkCount`.
     ///
     /// Zero means the inode has no name: either it is the root, or its last link
     /// has gone and only a descriptor is keeping it alive. Zero too for an inode
@@ -1161,6 +1218,25 @@ module VirtualFileSystem =
     /// costs a lookup rather than a scan of every directory.
     let bindingCount (inode : InodeNumber) (vfs : VirtualFileSystem) : int =
         Map.tryFind inode vfs.BindingCounts |> Option.defaultValue 0
+
+    /// How many names the directory at `inode` binds, besides "." and "..".
+    /// Zero for anything that is not a directory this filesystem contains.
+    ///
+    /// Answered from the names the filesystem keeps sorted, so it costs a
+    /// lookup rather than a walk of the directory.
+    let entryCount (inode : InodeNumber) (vfs : VirtualFileSystem) : int =
+        match Map.tryFind inode vfs.SortedNames with
+        | Some names -> SortedEntryNames.count names
+        | None -> 0
+
+    /// How many of the directory at `inode`'s entries name a directory. A
+    /// symbolic link to a directory is not one. Zero for anything that is not
+    /// a directory this filesystem contains.
+    ///
+    /// Answered from a count the filesystem keeps as names come and go, so it
+    /// costs a lookup rather than a walk of the directory.
+    let subdirectoryCount (inode : InodeNumber) (vfs : VirtualFileSystem) : int =
+        Map.tryFind inode vfs.SubdirectoryCounts |> Option.defaultValue 0
 
     /// Whether `inode` is a directory that no path from the root can reach: its
     /// last name has gone, and only a descriptor or the current directory is
@@ -1466,6 +1542,24 @@ module VirtualFileSystem =
             | None -> addSortedName destinationDirectory destinationName withoutSource
             | Some _ -> withoutSource
 
+        // A moved directory leaves the source's subdirectories for the
+        // destination's (one directory's both, when they are the same), and a
+        // displaced directory leaves the destination's.
+        let subdirectoryCounts =
+            let afterMove =
+                if isDirectoryIn inodes moved then
+                    vfs.SubdirectoryCounts
+                    |> adjustSubdirectoryCount sourceDirectory -1
+                    |> adjustSubdirectoryCount destinationDirectory 1
+                else
+                    vfs.SubdirectoryCounts
+
+            match displaced with
+            | Some displaced when isDirectoryIn inodes displaced ->
+                adjustSubdirectoryCount destinationDirectory -1 afterMove
+            | Some _
+            | None -> afterMove
+
         Ok (
             {
                 Displaced = displaced
@@ -1474,6 +1568,7 @@ module VirtualFileSystem =
                 Inodes = inodes
                 BindingCounts = counts
                 SortedNames = sortedNames
+                SubdirectoryCounts = subdirectoryCounts
             }
         )
 
@@ -1925,6 +2020,24 @@ module VirtualFileSystem =
         bindings
         |> List.fold (fun counts (_, _, target) -> adjustBindingCount target 1 counts) Map.empty
 
+    /// How many of `bindings` in each directory name a directory in `inodes`,
+    /// holding only non-zero counts, which is the form
+    /// `VirtualFileSystem.SubdirectoryCounts` is kept in.
+    let private countSubdirectories
+        (inodes : Map<InodeNumber, Inode>)
+        (bindings : (InodeNumber * DirectoryEntryName * InodeNumber) list)
+        : Map<InodeNumber, int>
+        =
+        bindings
+        |> List.fold
+            (fun counts (directory, _, target) ->
+                if isDirectoryIn inodes target then
+                    adjustSubdirectoryCount directory 1 counts
+                else
+                    counts
+            )
+            Map.empty
+
     /// The absolute path of a directory, by walking `Parent` links to the root.
     ///
     /// Directories only: a regular file may be hard-linked under several names,
@@ -2171,6 +2284,21 @@ module VirtualFileSystem =
                     Some (VirtualFileSystemDefect.SortedNamesMismatch (inode, stored, bound |> Option.defaultValue []))
             )
 
+        let subdirectoryCounts =
+            let counted = countSubdirectories vfs.Inodes bindings
+
+            Set.union (Map.keys counted |> Set.ofSeq) (Map.keys vfs.SubdirectoryCounts |> Set.ofSeq)
+            |> Set.toList
+            |> List.choose (fun directory ->
+                let stored = Map.tryFind directory vfs.SubdirectoryCounts
+                let counted = Map.tryFind directory counted |> Option.defaultValue 0
+
+                if stored = (if counted = 0 then None else Some counted) then
+                    None
+                else
+                    Some (VirtualFileSystemDefect.SubdirectoryCountMismatch (directory, stored, counted))
+            )
+
         rootDefects
         @ rootLinks
         @ danglingEntries
@@ -2179,6 +2307,7 @@ module VirtualFileSystem =
         @ freshness
         @ bindingCounts
         @ sortedNames
+        @ subdirectoryCounts
 
     /// Fail loudly if `vfs` is not sound, naming `context`. For the operations
     /// that build a filesystem from host configuration, where a defect is a
@@ -2267,10 +2396,11 @@ module VirtualFileSystem =
     /// in review — nothing outside tests should.
     [<RequireQualifiedAccess>]
     module Unchecked =
-        /// The filesystem with exactly these parts. The binding counts and the
-        /// sorted names are computed from the entries, so a graph forged to
-        /// exhibit some other defect does not also exhibit
-        /// `BindingCountMismatch` or `SortedNamesMismatch`.
+        /// The filesystem with exactly these parts. The binding counts, the
+        /// sorted names and the subdirectory counts are computed from the
+        /// entries, so a graph forged to exhibit some other defect does not
+        /// also exhibit `BindingCountMismatch`, `SortedNamesMismatch` or
+        /// `SubdirectoryCountMismatch`.
         let ofParts
             (inodes : Map<InodeNumber, Inode>)
             (root : InodeNumber)
@@ -2284,10 +2414,14 @@ module VirtualFileSystem =
                     NextInode = nextInode
                     BindingCounts = Map.empty
                     SortedNames = boundNames inodes |> Map.map (fun _ names -> SortedEntryNames.ofSeq names)
+                    SubdirectoryCounts = Map.empty
                 }
 
+            let bindings = allBindings vfs
+
             { vfs with
-                BindingCounts = countBindings (allBindings vfs)
+                BindingCounts = countBindings bindings
+                SubdirectoryCounts = countSubdirectories inodes bindings
             }
 
         /// `vfs` with the count `bindingCount` answers for `inode` replaced by
@@ -2298,6 +2432,22 @@ module VirtualFileSystem =
                     match count with
                     | None -> Map.remove inode vfs.BindingCounts
                     | Some count -> Map.add inode count vfs.BindingCounts
+            }
+
+        /// `vfs` with the count `subdirectoryCount` answers for `directory`
+        /// replaced by `count` verbatim, `None` storing nothing, and the graph
+        /// untouched.
+        let setSubdirectoryCount
+            (directory : InodeNumber)
+            (count : int option)
+            (vfs : VirtualFileSystem)
+            : VirtualFileSystem
+            =
+            { vfs with
+                SubdirectoryCounts =
+                    match count with
+                    | None -> Map.remove directory vfs.SubdirectoryCounts
+                    | Some count -> Map.add directory count vfs.SubdirectoryCounts
             }
 
         /// `vfs` with the names `nextDirectoryEntry` seeks in for `directory`

@@ -129,6 +129,55 @@ module EmulatedFileSystemType =
         // ext4, and would be the rule above on an exported tmpfs.
         | EmulatedFileSystemType.Nfs -> None
 
+    /// A directory's `st_nlink` on a mount of this type, or `None` where the
+    /// mount's type does not determine it.
+    ///
+    /// Not the number of names the directory has: each filesystem counts some
+    /// of the directory's own entries instead. tmpfs counts "." and each
+    /// subdirectory's "..", so a directory holds 2 plus its subdirectories,
+    /// and 0 once it has been removed. APFS counts 2 plus every name the
+    /// directory binds, whatever it names; a removed directory is empty, so
+    /// it holds 2.
+    ///
+    /// NFS is the `None`, as for `directorySize`: the server's own filesystem
+    /// decides.
+    ///
+    /// Partial in `directory`, which must be a directory `vfs` contains.
+    let directoryLinkCount
+        (fsType : EmulatedFileSystemType)
+        (directory : InodeNumber)
+        (vfs : VirtualFileSystem)
+        : int64 option
+        =
+        match VirtualFileSystem.tryGetContent directory vfs with
+        | Some (InodeContent.Directory _) -> ()
+        | Some _
+        | None ->
+            failwith
+                $"EmulatedFileSystemType.directoryLinkCount: inode %O{directory} is not a directory this filesystem contains (this is a bug in the caller)."
+
+        // Measured 2026-10-02 by `stat-fields.c`, over 4000 steps of a seeded
+        // random history (creat, mkdir, symlink, link, mkfifo, unlink, rmdir,
+        // and rename within, into, out of and over the directory), each read
+        // through `stat` and through a held descriptor, and a fresh mount's
+        // root; and by `stat-nlink-limit.c` out to 70000 names.
+        match fsType with
+        // Linux 6.18.5 on `/dev/shm` and on a freshly mounted tmpfs: 2 plus
+        // the subdirectories at every step, a symbolic link to a directory not
+        // counting. A directory removed by `rmdir`, displaced by `rename`, or
+        // removed while it was the current directory reports 0.
+        | EmulatedFileSystemType.Tmpfs ->
+            if VirtualFileSystem.isOrphanedDirectory directory vfs then
+                Some 0L
+            else
+                Some (2L + int64 (VirtualFileSystem.subdirectoryCount directory vfs))
+        // macOS (Darwin 27.0) on the APFS volume holding `/tmp` and on a fresh
+        // APFS disk image: 2 plus the names at every step, a removed or
+        // displaced directory included.
+        | EmulatedFileSystemType.Apfs -> Some (2L + int64 (VirtualFileSystem.entryCount directory vfs))
+        // Not measured: no NFS server or mount was available.
+        | EmulatedFileSystemType.Nfs -> None
+
     /// The type a mount reports when a host expresses no preference.
     ///
     /// `Tmpfs` under Linux because this library's filesystem really is in

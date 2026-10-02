@@ -16,6 +16,7 @@
     <Compile Include="TestDarwinReleaseAgainstHost.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
     <Compile Include="HostFileSystemType.fs" />
+    <Compile Include="HostStat.fs" />
     <Compile Include="ReuseAddress.fs" />
     <Compile Include="PathText.fs" />
     <Compile Include="OpenFlagWords.fs" />
@@ -69,6 +70,7 @@
     <Compile Include="TestEntropyAgainstHost.fs" />
     <Compile Include="TestFileSystemType.fs" />
     <Compile Include="TestDirectorySize.fs" />
+    <Compile Include="TestLinkCount.fs" />
     <Compile Include="TestWithFileSystemAndCurrentDirectory.fs" />
     <Compile Include="TestInodeLifetime.fs" />
     <Compile Include="ErrnoHeaders.fs" />
