@@ -120,12 +120,15 @@ module LinuxReadiness =
                      0u
                  else
                      EpollEvents.Err)
-        | OpenFileTarget.SocketEventPort _ ->
+        | OpenFileTarget.Epoll _ ->
             failwith
-                $"LinuxReadiness.ofDescription: %O{targetId} is a socket event port, and what a waiter reports for one is not modelled. `poll` refuses such an entry and `epoll_ctl` refuses to nest one, both before reaching here (this is a bug in this library)."
+                $"LinuxReadiness.ofDescription: %O{targetId} is an epoll instance, and what a waiter reports for one is not modelled. `poll` refuses such an entry and `epoll_ctl` refuses to nest one, both before reaching here (this is a bug in this library)."
+        | OpenFileTarget.Kqueue _ ->
+            failwith
+                $"LinuxReadiness.ofDescription: %O{targetId} is a kqueue, which only Darwin has, and Linux's readiness is asked only of a Linux-flavoured kernel (this is a bug in the caller's state construction)."
 
-/// What a socket event port -- an `epoll` instance, or a `kqueue` -- would
-/// report if a wait on it were re-polled now, and what draining one does.
+/// What an `epoll` instance would report if a wait on it were re-polled now,
+/// and what draining one does.
 ///
 /// The *consumer* half of the port model. The producer half -- seeding the
 /// pending list when a registration is added or modified, and signalling a
@@ -183,10 +186,11 @@ module SocketEventPort =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
-        | OpenFileTarget.Pipe _ ->
+        | OpenFileTarget.Pipe _
+        | OpenFileTarget.Kqueue _ ->
             failwith
-                $"SocketEventPort.hasDeliverableEvent: %O{portId} is not a socket event port, so no wait can be parked on it (this is a bug in the caller of SocketEventPort.hasDeliverableEvent)."
-        | OpenFileTarget.SocketEventPort portState ->
+                $"SocketEventPort.hasDeliverableEvent: %O{portId} is not an epoll instance, so no wait can be parked on it (this is a bug in the caller of SocketEventPort.hasDeliverableEvent)."
+        | OpenFileTarget.Epoll portState ->
             annotatedReady portState system
             |> List.exists (fun (_, _, reported) -> reported <> 0u)
 
@@ -224,10 +228,11 @@ module SocketEventPort =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
-        | OpenFileTarget.Pipe _ ->
+        | OpenFileTarget.Pipe _
+        | OpenFileTarget.Kqueue _ ->
             failwith
-                $"SocketEventPort.drain: %O{portId} is not a socket event port (this is a bug in the caller of SocketEventPort.drain)."
-        | OpenFileTarget.SocketEventPort portState ->
+                $"SocketEventPort.drain: %O{portId} is not an epoll instance (this is a bug in the caller of SocketEventPort.drain)."
+        | OpenFileTarget.Epoll portState ->
 
         let rec walk
             (delivered : (uint64 * uint32) list)

@@ -56,8 +56,7 @@ module TestEpollCtl =
         }
 
     let private withPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        let fd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+        let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         fd, withRegistry registry system
 
@@ -118,7 +117,7 @@ module TestEpollCtl =
 
     let private portOf (portFd : int) (system : UnixSystem<int, string>) : SocketEventPortState =
         match FileDescriptorRegistry.tryFindTarget portFd system.Process.FileDescriptors with
-        | Some (OpenFileTarget.SocketEventPort portState) -> portState
+        | Some (OpenFileTarget.Epoll portState) -> portState
         | other -> failwith $"expected an event port, got %A{other}"
 
     let private ready (portFd : int) (system : UnixSystem<int, string>) : (int * OpenFileDescriptionId) list =

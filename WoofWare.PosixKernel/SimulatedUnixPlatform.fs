@@ -1129,25 +1129,6 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> SockaddrFamilyField.TwoBytesAtOffsetZero
         | SimulatedUnixFlavour.Darwin -> SockaddrFamilyField.OneByteAtOffsetOne
 
-    /// What `fcntl(F_SETFL)` answers on a socket event port — `None` for
-    /// success — the `O_NONBLOCK` bit having changed *either way*.
-    ///
-    /// Measured, not derived: on Linux 6.18.5 the call succeeds and the flag
-    /// round-trips; on Darwin (through the real shim's
-    /// `SystemNative_FcntlSetIsNonBlocking`, macOS 26) it returns -1 with
-    /// ENOTTY and a subsequent `F_GETFL` nevertheless reports the toggled bit,
-    /// in both directions. So the caller must store the flag first and then
-    /// report this answer.
-    ///
-    /// The stored bit changes no modelled wait: both `epoll_wait` and `kevent`
-    /// take their blocking behaviour from their own timeout argument rather
-    /// than from the descriptor's status flags, so a modelled wait rightly never
-    /// consults it.
-    let eventPortSetStatusFlagsError (platform : SimulatedUnixPlatform) : UnixError option =
-        match flavour platform with
-        | SimulatedUnixFlavour.Linux -> None
-        | SimulatedUnixFlavour.Darwin -> Some UnixError.ENOTTY
-
     /// `AF_INET`, in the platform's own numbering. 2 on both, and on essentially
     /// every Unix — it is one of the handful of `AF_*` values that predate the
     /// BSD/Linux split and never moved.

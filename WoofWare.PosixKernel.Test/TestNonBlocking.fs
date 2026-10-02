@@ -444,59 +444,38 @@ module TestNonBlocking =
     // The event port, where store and answer come apart
     // ------------------------------------------------------------------
 
-    /// Measured: the platforms agree that the bit toggles and disagree on the
-    /// answer — Linux succeeds where Darwin reports a failure **with the bit
-    /// toggled anyway**. That is why the answer and the stored flag are checked
-    /// separately, and why the failing arm still hands back a system.
+    /// The flavour's event port: an epoll instance or a kqueue, and the
+    /// descriptor onto it.
+    let private withPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Linux ->
+            match UnixPoll.epollCreate1 0 system with
+            | Ok (Ok (fd, system)) -> fd, system
+            | other -> failwith $"expected an epoll instance, got %A{other}"
+        | SimulatedUnixFlavour.Darwin ->
+            match UnixKqueue.kqueue system with
+            | Ok (fd, system) -> fd, system
+            | Error refusal -> failwith $"expected a kqueue, got %A{refusal}"
+
+    /// Measured: the bit toggles on both an epoll instance and a kqueue, and the
+    /// answers differ — Linux succeeds where Darwin reports ENOTTY **with the bit
+    /// toggled anyway**, in both directions. That is why the answer and the
+    /// stored flag are checked separately, and why the failing arm still hands
+    /// back a system. Literals, so that the rows cannot agree with any rule at
+    /// all.
     [<Test>]
     let ``an event port stores the flag whatever it answers`` () : unit =
-        for platform in platforms do
-            let system = systemOn platform
+        let rows =
+            [
+                SimulatedUnixPlatform.linuxX64, SetNonBlockingAnswer.Set
+                SimulatedUnixPlatform.linuxArm64, SetNonBlockingAnswer.Set
+                SimulatedUnixPlatform.macOsArm64, SetNonBlockingAnswer.Failed UnixError.ENOTTY
+            ]
 
-            let portFd, registry =
-                FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+        for platform, expected in rows do
+            let portFd, system = withPort (systemOn platform)
 
-            let system =
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
-
-            let answer, after = setOrFail portFd true system
-
-            // The bit toggled on both.
-            UnixSocket.isNonBlocking portFd after |> shouldEqual (Some true)
-
-            let expected =
-                match SimulatedUnixPlatform.eventPortSetStatusFlagsError platform with
-                | None -> SetNonBlockingAnswer.Set
-                | Some error -> SetNonBlockingAnswer.Failed error
-
-            answer |> shouldEqual expected
-
-    /// ...and the two flavours really do differ here, stated as literals so that
-    /// the row above cannot agree with any rule at all.
-    [<Test>]
-    let ``the event port answer splits by flavour`` () : unit =
-        let answerOn (platform : SimulatedUnixPlatform) =
-            let system = systemOn platform
-
-            let portFd, registry =
-                FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
-
-            let system =
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
-
-            setOrFail portFd true system |> fst
-
-        answerOn SimulatedUnixPlatform.linuxX64 |> shouldEqual SetNonBlockingAnswer.Set
-
-        answerOn SimulatedUnixPlatform.macOsArm64
-        |> shouldEqual (SetNonBlockingAnswer.Failed UnixError.ENOTTY)
+            for value in [ true ; false ; true ] do
+                let answer, after = setOrFail portFd value system
+                UnixSocket.isNonBlocking portFd after |> shouldEqual (Some value)
+                answer |> shouldEqual expected

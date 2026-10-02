@@ -490,8 +490,6 @@ module NativeSystemNative =
     let private closeRefusalMessage (operation : string) (fd : int) (refusal : CloseRefusal<ThreadId>) : string =
         let remedy =
             match refusal with
-            | CloseRefusal.DarwinPortDescriptorWithWaiter _ ->
-                "Measure what the woken wait reports before closing a kqueue out from under a waiter, or configure a Linux platform."
             | CloseRefusal.DarwinFlockedDescriptorWithWaiter _ ->
                 "Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
             | CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _) ->
@@ -3776,7 +3774,7 @@ module NativeSystemNative =
                 | FLockRefusal.Interruption _ -> failwith $"%s{operation}: fd %d{fd}: %s{FLockRefusal.describe refusal}"
                 | FLockRefusal.DarwinMalformedOperation _
                 | FLockRefusal.DarwinPipe _
-                | FLockRefusal.DarwinSocketEventPort
+                | FLockRefusal.DarwinKqueue
                 | FLockRefusal.DarwinSocket _
                 | FLockRefusal.DarwinConversion ->
                     failwith
@@ -3789,7 +3787,8 @@ module NativeSystemNative =
             // numbers are reused as soon as they are freed and another thread
             // may have closed and reopened this one while this call slept.
             match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
-            | Some (ParkedSyscall.SocketWait _) ->
+            | Some (ParkedSyscall.SocketWait _)
+            | Some (ParkedSyscall.Kevent _) ->
                 // Unreachable: a task parked in a socket wait is not running IL,
                 // and a woken one re-enters its own handler before it can reach
                 // this one. Refused rather than treated as a first entry, which
@@ -5119,6 +5118,7 @@ module NativeSystemNative =
                     (int parked.DeclaredLength)
                     (UnixConnection.finishAccept ctx.Thread (EmulatedKernel.unix state.Kernel))
             | Some (ParkedSyscall.SocketWait _)
+            | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)
             | Some (ParkedSyscall.Poll _)
             | Some (ParkedSyscall.PipeRead _)
@@ -5583,20 +5583,9 @@ module NativeSystemNative =
                             $"%s{operation}: epoll_create1(EPOLL_CLOEXEC) answered %O{error}, which the kernel gives only for a flag other than EPOLL_CLOEXEC (this is an interpreter bug)."
                     | Error refusal -> failwith $"%s{operation}: %s{EpollCreateRefusal.describe refusal}"
                 | SimulatedUnixFlavour.Darwin ->
-                    // `kqueue()`, which the kernel does not yet answer as a call of
-                    // its own: the allocation it makes is exactly the port's.
-                    let fd, registry =
-                        FileDescriptorRegistry.createSocketEventPort state.Kernel.Process.FileDescriptors
-
-                    fd,
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            Process =
-                                { kernel.Process with
-                                    FileDescriptors = registry
-                                }
-                        }
-                    )
+                    match UnixKqueue.kqueue (EmulatedKernel.unix state.Kernel) with
+                    | Ok (fd, system) -> fd, state.MapKernel (EmulatedKernel.withUnix system)
+                    | Error refusal -> failwith $"%s{operation}: %s{KqueueRefusal.describe refusal}"
 
             // `*port = fd`, as an `intptr_t`: eight bytes on every platform
             // PawPrint models, little-endian on both x64 and arm64. The C
@@ -5893,6 +5882,45 @@ module NativeSystemNative =
                 | Ok value -> value
                 | Error _ -> 0UL
 
+            match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin ->
+                // `kevent(port, changes, n, NULL, 0, NULL)`, with the changelist
+                // `SocketEventsPal.keventChanges` transcribes; the shim's EINTR
+                // loop never turns, a call with no events to take never sleeping.
+                // The kernel answers its argument checks and refuses to apply a
+                // change, so the zero placeholder is never stored.
+                let changes =
+                    SocketEventsPal.keventChanges targetFd currentEvents newEvents placeholder
+
+                match
+                    UnixKqueue.kevent
+                        ctx.Thread
+                        portFd
+                        (List.length changes)
+                        changes
+                        0
+                        (UserBuffer.Unmapped 0UL)
+                        KeventTimeout.Null
+                        (EmulatedKernel.unix state.Kernel)
+                with
+                | Error refusal -> failwith $"%s{operation}: %s{KeventRefusal.describe refusal}"
+                | Ok (KeventOutcome.Failed error, _) ->
+                    let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
+                    )
+                    |> complete (UnixErrorPal.toPal error)
+                | Ok (KeventOutcome.Answered [], system) ->
+                    // Neither SA_READ nor SA_WRITE changed, so the shim made no
+                    // change at all, and a successful `kevent` leaves errno alone.
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> complete UnixErrorPal.palSuccess
+                | Ok (outcome, _) ->
+                    failwith
+                        $"%s{operation}: kevent with no room for events answered %A{outcome}, where it returns at once with none (this is an interpreter bug)."
+            | SimulatedUnixFlavour.Linux ->
+
             match
                 SocketEventsPal.tryChangeSocketEventRegistration
                     portFd
@@ -5904,12 +5932,10 @@ module NativeSystemNative =
             with
             | Error refusal ->
                 // The library says why no kernel answer exists; PawPrint says
-                // which entry point asked. `SystemNative_FLock` refuses the same
-                // flavour for the same shape of reason.
+                // which entry point asked.
                 failwith $"%s{operation}: %s{EpollCtlRefusal.describe refusal}"
             | Ok (EpollCtlAnswer.Failed reason, _) ->
-                // The syscall failed, so it set errno on the way past. Every
-                // number is portable, but only Linux reaches here anyway.
+                // The syscall failed, so it set errno on the way past.
                 let unixError = EpollCtlError.toErrno reason
 
                 withErrnoOnly ctx unixError state |> complete (UnixErrorPal.toPal unixError)
@@ -5957,12 +5983,9 @@ module NativeSystemNative =
             // type is not consulted.
             //
             // Five of the eight rows of this entry point's contract differ between
-            // the two flavours, so the ladder below is flavour-branching
-            // throughout rather than in one place. Each ordering is measured — on
-            // Linux 6.18.5 and Darwin 25.6.0 — rather than read off the kernel
-            // sources, because the widely-reproduced `do_epoll_wait` listing
-            // checks `maxevents` and `access_ok` *before* `fdget` and current
-            // kernels do not.
+            // the two flavours. Past the wrapper's own screens, each kernel's
+            // ladder is its library call's: `UnixPoll.epollWait` and
+            // `UnixKqueue.kevent`.
             let operation = "SystemNative_WaitForSocketEvents"
 
             // `port` is deliberately *not* decoded yet, and neither is `count`
@@ -6016,7 +6039,7 @@ module NativeSystemNative =
             // through `count`, and the syscall set `errno` on the way past — which
             // a guest declaring this entry point `SetLastError = true` can read
             // back, exactly as for `SystemNative_CloseSocketEventPort`.
-            let failFromSyscall (error : UnixError) : NativeHandlerResult option =
+            let failFromSyscallIn (state : IlMachineState) (error : UnixError) : NativeHandlerResult option =
                 let sentinel =
                     // `*count = 0` under epoll and `*count = -1` under kqueue,
                     // both unconditional in their own error branch.
@@ -6038,6 +6061,8 @@ module NativeSystemNative =
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+
+            let failFromSyscall (error : UnixError) : NativeHandlerResult option = failFromSyscallIn state error
 
             // What one `epoll_wait` returning does: write each event the kernel
             // delivered in the PAL's `SocketEvent` shape, which is
@@ -6120,20 +6145,73 @@ module NativeSystemNative =
                     |> NativeHandlerResult.blockedRetainingFrame
                     |> Some
 
+            let refuseKevent (refusal : KeventRefusal) : NativeHandlerResult option =
+                failwith $"%s{operation}: %s{KeventRefusal.describe refusal} The event buffer was %O{buffer}."
+
+            // What one `kevent` returning does, as `settle` is for `epoll_wait`.
+            let settleKevent
+                (outcome : KeventOutcome)
+                (system : UnixSystem<ThreadId, NativeSignalHandler>)
+                : NativeHandlerResult option
+                =
+                match outcome with
+                | KeventOutcome.Failed UnixError.EINTR ->
+                    callAgainAfterSignal
+                        ctx
+                        operation
+                        Interrupted.Eintr
+                        (Some NativeLocals.SocketEventWaitLoop)
+                        system
+                        state
+                // EBADF from a finishing call, whose system no longer holds the
+                // park, as well as from a first one, whose system is unchanged.
+                | KeventOutcome.Failed error ->
+                    failFromSyscallIn (state.MapKernel (EmulatedKernel.withUnix system)) error
+                | KeventOutcome.Answered [] ->
+                    // A count of zero or less, which `kevent` answers with no
+                    // events at once. The wrapper's "we should never see 0
+                    // events" assertion is compiled out of the shipped release
+                    // build, so it falls through, writes `*count = 0` and reports
+                    // success. `errno` is untouched, the syscall having not
+                    // failed.
+                    let bytes = Array.zeroCreate<byte> 4
+                    BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, 0)
+
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange bytes)
+                    |> IlMachineState.pushToEvalStack'
+                        (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
+                        ctx.Thread
+                    |> NativeHandlerResult.completed
+                    |> Some
+                | KeventOutcome.Answered events ->
+                    failwith
+                        $"%s{operation}: kevent delivered %d{List.length events} events, but the kernel accepts no kqueue registration, so it has none to deliver (this is an interpreter bug)."
+                | KeventOutcome.WouldBlock _ ->
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> Scheduler.parkInSyscall ctx.Thread
+                    |> NativeHandlerResult.blockedRetainingFrame
+                    |> Some
+
             // A woken thread re-enters this handler from the top, but the
             // syscall was already *entered*: the port identity and maxevents
             // it captured outlive anything the guest has done to the
             // arguments since — the count cell can be overwritten, and the
             // fd the wait was called through can be closed (the park holds the
             // description, so it outlives even its last descriptor until the
-            // wait returns). So a re-entry consults no
-            // screen and no descriptor table: the kernel finishes the call from
-            // the park.
+            // wait returns; under Darwin the close of the descriptor a kevent
+            // was entered through also drains the kqueue, which ends the wait).
+            // So a re-entry consults no screen and no descriptor table: the
+            // kernel finishes the call from the park.
             match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
             | Some (ParkedSyscall.SocketWait _) ->
                 match UnixPoll.finishSocketWait ctx.Thread (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> refuse refusal
                 | Ok (outcome, system) -> settle outcome system
+            | Some (ParkedSyscall.Kevent _) ->
+                match UnixKqueue.finishKevent ctx.Thread (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> refuseKevent refusal
+                | Ok (outcome, system) -> settleKevent outcome system
             | Some (ParkedSyscall.Flock _) ->
                 // Unreachable, and refused rather than treated as a first entry
                 // for the reason `SystemNative_FLock`'s mirror of this gives: a
@@ -6187,44 +6265,21 @@ module NativeSystemNative =
                 | Ok (outcome, system) -> settle outcome system
             | SimulatedUnixFlavour.Darwin ->
 
-            // `kevent(port, NULL, 0, events, *count, NULL)`, which the kernel
-            // does not yet answer as a call of its own: its screens are the
-            // kernel's, and the park is made here.
-            match UnixPoll.admitSocketWait fd requestedCount (BufferPointer.toUserBuffer buffer) system with
-            | Error (SocketWaitRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
-            | Ok (SocketWaitAdmission.Failed error) -> failFromSyscall error
-            | Ok SocketWaitAdmission.NoEvents ->
-                // Darwin's zero-event row. The wrapper's "we should never see 0
-                // events" assertion is compiled out of the shipped release build,
-                // so it falls through, writes `*count = 0` and reports success.
-                //
-                // `errno` is untouched, the syscall having not failed.
-                let bytes = Array.zeroCreate<byte> 4
-                BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, 0)
-
-                writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange bytes) state
-                |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
+            // `kevent(port, NULL, 0, events, *count, NULL)`: no changes, and the
+            // shim always waits for ever.
+            match
+                UnixKqueue.kevent
                     ctx.Thread
-                |> NativeHandlerResult.completed
-                |> Some
-            | Ok (SocketWaitAdmission.DeliverOrWait (port, maxEvents)) ->
-                // A Darwin port holds no registration (`admitSocketWait` asserts
-                // it, the registration arm refusing every change), so nothing is
-                // deliverable, and the wait sleeps with no deadline, as `kevent`
-                // with a NULL timeout does.
-                let parked =
-                    ParkedSyscall.SocketWait
-                        {
-                            ParkedSocketWait.Port = port
-                            MaxEvents = maxEvents
-                            Buffer = BufferPointer.toUserBuffer buffer
-                            Deadline = None
-                        }
-
-                settle
-                    (EpollWaitOutcome.WouldBlock (WakeCondition.ofPark parked))
-                    (UnixWait.park ctx.Thread parked system)
+                    fd
+                    0
+                    []
+                    requestedCount
+                    (BufferPointer.toUserBuffer buffer)
+                    KeventTimeout.Null
+                    system
+            with
+            | Error refusal -> refuseKevent refusal
+            | Ok (outcome, system) -> settleKevent outcome system
         | Some "SystemNative_Poll",
           [ ConcretePointer _
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32
@@ -6461,6 +6516,7 @@ module NativeSystemNative =
 
                 settle entries (PollEventsPal.finish ctx.Thread (EmulatedKernel.unix state.Kernel))
             | Some (ParkedSyscall.SocketWait _)
+            | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)
             | Some (ParkedSyscall.Accept _)
             | Some (ParkedSyscall.PipeRead _)

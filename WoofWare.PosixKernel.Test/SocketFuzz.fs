@@ -486,7 +486,7 @@ module SocketFuzz =
             | Error FileDescriptorDupError.BadFd -> "EBADF", state
         | FuzzOp.NewPort slot ->
             let fd, registry =
-                FileDescriptorRegistry.createSocketEventPort state.Kernel.Process.FileDescriptors
+                FileDescriptorRegistry.createEpoll state.Kernel.Process.FileDescriptors
 
             "ok",
             assignSlot

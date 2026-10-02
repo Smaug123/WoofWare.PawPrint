@@ -85,8 +85,7 @@ module TestSocketEventDelivery =
         SocketEventPort.hasDeliverableEvent portId kernel
 
     let private addPort (kernel : UnixSystem<int, string>) : int * OpenFileDescriptionId * UnixSystem<int, string> =
-        let fd, registry =
-            FileDescriptorRegistry.createSocketEventPort kernel.Process.FileDescriptors
+        let fd, registry = FileDescriptorRegistry.createEpoll kernel.Process.FileDescriptors
 
         let portId =
             match FileDescriptorRegistry.tryFindId fd registry with
@@ -187,7 +186,7 @@ module TestSocketEventDelivery =
         match Map.tryFind portId (FileDescriptorRegistry.descriptions kernel.Process.FileDescriptors) with
         | Some description ->
             match description.Target with
-            | OpenFileTarget.SocketEventPort portState -> portState.Ready
+            | OpenFileTarget.Epoll portState -> portState.Ready
             | other -> failwith $"not a port: %O{other}"
         | None -> failwith "port description not live"
 
@@ -987,14 +986,13 @@ module TestSocketEventDelivery =
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
         assertSound kernel
 
-    /// The close-time retention rule, flavour by flavour (both measured, see
+    /// The close-time retention rule (measured, see
     /// `SocketEventWaitSurvivesCloseLinux.cs` and `open-file-references.c`
-    /// section E): under Linux every close of an in-flight-waited port
-    /// proceeds, the last one included, because the wait holds the
-    /// description; under Darwin, where kevent ends the wait with an
-    /// unmeasured error, any such close refuses.
+    /// section E): every close of an in-flight-waited epoll instance proceeds,
+    /// the last one included, because the wait holds the description. Darwin's
+    /// kqueue has its own rule, in `TestKqueue`.
     [<Test>]
-    let ``closing a descriptor of an in-flight-waited port follows the measured flavour split`` () : unit =
+    let ``closing every descriptor of an in-flight-waited epoll instance proceeds, the last one included`` () : unit =
         let build () =
             let portFd, portId, kernel = addPort initialSystem
 
@@ -1047,21 +1045,6 @@ module TestSocketEventDelivery =
             assertSound closed
         | other -> failwith $"expected the last close to succeed, got %O{other}"
 
-        // Darwin: even the dup-survived close refuses.
-        let _, dupFd, kernel = build ()
-
-        let kernel =
-            { kernel with
-                Machine =
-                    { kernel.Machine with
-                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
-                    }
-            }
-
-        match UnixDescriptor.close dupFd kernel with
-        | Error (CloseRefusal.DarwinPortDescriptorWithWaiter (_, waiter)) -> waiter |> shouldEqual 1
-        | other -> failwith $"expected a Darwin kqueue refusal, got %O{other}"
-
     // --- forged invariants ---
 
     /// `checkInvariants` rejects an ordinal at or above the counter, and a
@@ -1081,7 +1064,7 @@ module TestSocketEventDelivery =
 
             let portState =
                 match (Map.find portId descriptions).Target with
-                | OpenFileTarget.SocketEventPort portState -> portState
+                | OpenFileTarget.Epoll portState -> portState
                 | other -> failwith $"not a port: %O{other}"
 
             let ordinals = [ first ; second ]
@@ -1111,7 +1094,7 @@ module TestSocketEventDelivery =
                                 (fun description ->
                                     { description with
                                         Target =
-                                            OpenFileTarget.SocketEventPort
+                                            OpenFileTarget.Epoll
                                                 { portState with
                                                     Registrations = rewritten
                                                 }

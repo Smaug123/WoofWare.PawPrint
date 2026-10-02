@@ -37,8 +37,12 @@ module TestUnixTaskLifecycle =
         let system =
             UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        let fd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+        let create =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
+            | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
+
+        let fd, registry = create system.Process.FileDescriptors
 
         let id =
             match FileDescriptorRegistry.tryFindWithId fd registry with

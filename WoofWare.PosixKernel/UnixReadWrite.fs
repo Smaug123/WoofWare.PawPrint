@@ -1126,23 +1126,21 @@ module UnixReadWrite =
             else
 
             match description.Target with
-            | OpenFileTarget.SocketEventPort _ ->
-                // A socket event port has no read operation, so the read is
-                // refused for the *kind* of object rather than for the access
-                // mode — which is why the port is `ReadWrite` and still gets
-                // here rather than being EBADF above. The two platforms name
-                // that refusal differently: measured, Linux answers EINVAL
-                // (`vfs_read`'s `FMODE_CAN_READ` test) and Darwin answers ENXIO.
-                //
-                // Placed in this classification rather than after the buffer
-                // screen because it precedes it on both: measured,
-                // `read(port, (void*)-1, 8)` is EINVAL on Linux and ENXIO on
-                // Darwin, not EFAULT. Length is irrelevant too —
-                // `read(port, buf, 0)` gives the same answer as a non-zero
-                // length, unlike a pipe's zero-return shortcut below.
-                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-                | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
-                | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
+            // An epoll instance and a kqueue have no read operation, so the
+            // read is refused for the *kind* of object rather than for the
+            // access mode — which is why each is `ReadWrite` and still gets
+            // here rather than being EBADF above. The two kernels name that
+            // refusal differently: measured, Linux answers EINVAL for an epoll
+            // instance (`vfs_read`'s `FMODE_CAN_READ` test) and Darwin answers
+            // ENXIO for a kqueue.
+            //
+            // Placed in this classification rather than after the buffer screen
+            // because it precedes it on both: measured, `read(port, (void*)-1,
+            // 8)` is EINVAL on Linux and ENXIO on Darwin, not EFAULT. Length is
+            // irrelevant too — `read(port, buf, 0)` gives the same answer as a
+            // non-zero length, unlike a pipe's zero-return shortcut below.
+            | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
+            | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
             | OpenFileTarget.Socket socketId -> Ok (ReadTarget.Socket (socketId, description.NonBlocking))
             | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
             | OpenFileTarget.Directory (inode, position) -> Ok (ReadTarget.Directory (inode, position))
@@ -1589,7 +1587,8 @@ module UnixReadWrite =
                 | SimulatedUnixFlavour.Darwin when not readable -> Error UnixError.EBADF
                 | SimulatedUnixFlavour.Darwin
                 | SimulatedUnixFlavour.Linux -> Error UnixError.ESPIPE
-            | OpenFileTarget.SocketEventPort _ ->
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _ ->
                 // Unseekable on both, with no tie to break: a port's description
                 // is `ReadWrite`, so the unreadability arm above cannot apply to
                 // it. Measured, `pread(port, buf, 8, 0)` and
@@ -1679,18 +1678,17 @@ module UnixReadWrite =
         else
 
         match description.Target with
-        | OpenFileTarget.SocketEventPort _ ->
-            // A socket event port has no write operation, so the refusal is for
-            // the *kind* of object rather than for the access mode — the port
-            // permits writing and so passes the EBADF arm above. Measured, Linux
-            // answers EINVAL and Darwin ENXIO.
-            //
-            // Ahead of the buffer screen and of the zero-size no-op, on both
-            // platforms: measured, `write(port, (void*)-1, 8)` is EINVAL/ENXIO
-            // rather than EFAULT, and no length is a no-op.
-            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-            | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
-            | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
+        // An epoll instance and a kqueue have no write operation, so the
+        // refusal is for the *kind* of object rather than for the access mode —
+        // each permits writing and so passes the EBADF arm above. Measured,
+        // Linux answers EINVAL for an epoll instance and Darwin ENXIO for a
+        // kqueue.
+        //
+        // Ahead of the buffer screen and of the zero-size no-op, on both
+        // platforms: measured, `write(port, (void*)-1, 8)` is EINVAL/ENXIO
+        // rather than EFAULT, and no length is a no-op.
+        | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
+        | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
         | OpenFileTarget.Socket socketId -> Ok (WriteTarget.Socket socketId)
         | OpenFileTarget.File (inode, offset) -> Ok (WriteTarget.File (inode, offset))
         | OpenFileTarget.Pipe (pipeId, PipeEnd.Write) ->
@@ -2470,7 +2468,8 @@ module UnixReadWrite =
             | SimulatedUnixFlavour.Darwin when not writable -> Error UnixError.EBADF
             | SimulatedUnixFlavour.Darwin
             | SimulatedUnixFlavour.Linux -> Error UnixError.ESPIPE
-        | OpenFileTarget.SocketEventPort _ ->
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _ ->
             // Unseekable on both, with no tie to break: a port's description is
             // `ReadWrite`, so the unwritability arm above cannot apply to it.
             // Measured ESPIPE at length 8, at length 0, and with an unscreenable
@@ -2721,7 +2720,8 @@ module UnixReadWrite =
             | OpenFileTarget.File _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
-            | OpenFileTarget.SocketEventPort _ -> false
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _ -> false
 
         if flags <> 0 then
             failed UnixError.EINVAL

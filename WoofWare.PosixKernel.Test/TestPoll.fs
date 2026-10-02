@@ -481,7 +481,7 @@ module TestPoll =
     [<Test>]
     let ``an entry naming a socket event port is refused`` () : unit =
         let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort linux.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
 
         let system =
             { linux with
@@ -506,9 +506,9 @@ module TestPoll =
     [<Test>]
     let ``the refusal names the first unmeasured entry in list order`` () : unit =
         let firstPort, registry =
-            FileDescriptorRegistry.createSocketEventPort linux.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
 
-        let secondPort, registry = FileDescriptorRegistry.createSocketEventPort registry
+        let secondPort, registry = FileDescriptorRegistry.createEpoll registry
 
         let system =
             { linux with

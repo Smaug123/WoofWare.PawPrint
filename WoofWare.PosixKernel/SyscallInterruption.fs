@@ -90,6 +90,7 @@ module SyscallInterruption =
         | ParkedSyscall.PipeRead _
         | ParkedSyscall.PipeWrite _ -> SignalRestartRule.RestartsUnderSaRestart
         | ParkedSyscall.SocketWait _
+        | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _ -> SignalRestartRule.FailsWithEintr
 
     /// The handler frames `task` would get, innermost first, were it to return

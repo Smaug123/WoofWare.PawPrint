@@ -79,7 +79,7 @@ module TestSockOpt =
             }
 
         let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         socketFd,
         portFd,

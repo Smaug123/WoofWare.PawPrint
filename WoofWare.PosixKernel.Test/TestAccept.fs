@@ -329,7 +329,7 @@ module TestAccept =
         let fileFd, registry =
             FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
 
-        let portFd, registry = FileDescriptorRegistry.createSocketEventPort registry
+        let portFd, registry = FileDescriptorRegistry.createEpoll registry
 
         let system =
             { system with

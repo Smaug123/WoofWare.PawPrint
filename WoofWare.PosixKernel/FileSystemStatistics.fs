@@ -412,6 +412,14 @@ module FileSystemStatistics =
         | OpenFileObject.File _ -> FileSystemStatisticsAnswer.Reported (ofMount platform mount)
         | OpenFileObject.Pipe _ -> pseudoFileSystem PseudoFileSystem.Pipe
         | OpenFileObject.Socket _ -> pseudoFileSystem PseudoFileSystem.Socket
-        // An epoll port. `OpenFileObject` folding every anonymous object into
-        // one case costs nothing here: they share one filesystem.
+        // An epoll instance. `OpenFileObject` folding every anonymous object
+        // into one case costs nothing here: they share one filesystem.
         | OpenFileObject.AnonymousInode -> pseudoFileSystem PseudoFileSystem.AnonymousInode
+        | OpenFileObject.Kqueue _ ->
+            match flavour with
+            // Measured (`statfs-fields.c`): EINVAL, as for every Darwin object
+            // not on a mount.
+            | SimulatedUnixFlavour.Darwin -> FileSystemStatisticsAnswer.Failed UnixError.EINVAL
+            | SimulatedUnixFlavour.Linux ->
+                failwith
+                    "FileSystemStatistics.ofObject: a Linux-flavoured kernel holds a kqueue, which only Darwin has (this is a bug in the caller's state construction)."

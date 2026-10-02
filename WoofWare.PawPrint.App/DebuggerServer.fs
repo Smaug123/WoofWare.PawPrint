@@ -193,6 +193,15 @@ module DebuggerServer =
                 writer.WriteString ("kind", "blockedOnSocketEvents")
                 let (OpenFileDescriptionId port) = wait.Port
                 writer.WriteNumber ("port", port)
+            | Some (ParkedSyscall.Kevent wait) ->
+                writer.WriteString ("kind", "blockedInKevent")
+                let (OpenFileDescriptionId kqueue) = wait.Kqueue
+                writer.WriteNumber ("kqueue", kqueue)
+                writer.WriteNumber ("fd", wait.Fd)
+
+                match wait.Deadline with
+                | None -> ()
+                | Some deadline -> writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
             | Some (ParkedSyscall.Flock parked) ->
                 writer.WriteString ("kind", "blockedOnFlock")
                 let (OpenFileDescriptionId description) = parked.Requester

@@ -106,6 +106,40 @@ module SocketEventsPal =
             (EpollEventArgument.Readable (events, data))
             system
 
+    /// `TryChangeSocketEventRegistrationInner`, the kqueue build's, past the
+    /// wrapper's two screens: the changelist the shim passes `kevent`. It
+    /// changes `EVFILT_READ` when `SA_READ` differs between the two masks, and
+    /// then `EVFILT_WRITE` when `SA_WRITE` does, each `EV_ADD|EV_CLEAR|EV_RECEIPT`
+    /// when the new mask has the bit and `EV_DELETE|EV_RECEIPT` when it does
+    /// not, naming the socket's descriptor and carrying `data`. Empty when
+    /// neither bit changed: the shim then calls `kevent` with no changes at all.
+    let keventChanges (socketFd : int) (currentEvents : int) (newEvents : int) (data : uint64) : Kevent list =
+        let saRead = 0x01
+        let saWrite = 0x02
+        let changes = currentEvents ^^^ newEvents
+
+        let change (filter : int16) (bit : int) : Kevent =
+            {
+                // `(uint64_t)socket`, from an `int32_t`: sign-extended.
+                Ident = uint64 (int64 socketFd)
+                Filter = filter
+                Flags =
+                    if newEvents &&& bit = 0 then
+                        KeventFlags.Delete ||| KeventFlags.Receipt
+                    else
+                        KeventFlags.Add ||| KeventFlags.Clear ||| KeventFlags.Receipt
+                FilterFlags = 0u
+                Data = 0L
+                UserData = data
+            }
+
+        [
+            if changes &&& saRead <> 0 then
+                change KeventFilter.Read saRead
+            if changes &&& saWrite <> 0 then
+                change KeventFilter.Write saWrite
+        ]
+
     /// The stride of the event buffer `SystemNative_CreateSocketEventBuffer`
     /// allocates and `SystemNative_WaitForSocketEvents` fills, in bytes.
     ///

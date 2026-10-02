@@ -36,6 +36,10 @@ type WakePrimitive =
     /// reason `FlockGrantable`'s requester is: the number can be closed and
     /// reused while the wait sleeps, and a `dup` of it waits on the same port.
     | SocketEventDeliverable of port : OpenFileDescriptionId
+    /// The kqueue the open file description `kqueue` names has been drained:
+    /// a `close(2)` of a descriptor a `kevent` wait on it was entered through
+    /// has ended every wait on it (see `KqueueState.Drained`).
+    | KqueueDrained of kqueue : OpenFileDescriptionId
     /// The open file description `description` presents at least one of
     /// `conditions`, in the numbering `<poll.h>` and `<sys/epoll.h>` share, as
     /// `LinuxReadiness.ofDescription` reads its level.
@@ -166,9 +170,31 @@ module WakeCondition =
                 failwith
                     $"WakeCondition.satisfied: open file description %O{requester} is not in the table, but a task is parked on an flock of it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
             | Some description ->
-                FileDescriptorRegistry.flockConflicts (OpenFileDescription.object description) requester mode registry
+                FileDescriptorRegistry.flockConflicts
+                    (OpenFileDescription.object requester description)
+                    requester
+                    mode
+                    registry
                 |> not
         | WakePrimitive.SocketEventDeliverable port -> SocketEventPort.hasDeliverableEvent port system
+        | WakePrimitive.KqueueDrained kqueue ->
+            match
+                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                |> Map.tryFind kqueue
+            with
+            | None ->
+                failwith
+                    $"WakeCondition.satisfied: open file description %O{kqueue} is not in the table, but a task waits in kevent on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
+            | Some description ->
+                match description.Target with
+                | OpenFileTarget.Kqueue state -> state.Drained
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _
+                | OpenFileTarget.Epoll _ ->
+                    failwith
+                        $"WakeCondition.satisfied: a task waits in kevent on open file description %O{kqueue}, which names %A{description.Target} rather than a kqueue (this is a bug in the caller that recorded the park)."
         | WakePrimitive.DescriptorReady (description, conditions) ->
             if
                 not (
@@ -200,7 +226,8 @@ module WakeCondition =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Pipe _
-            | OpenFileTarget.SocketEventPort _ ->
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _ ->
                 failwith
                     $"WakeCondition.satisfied: a task is parked in an accept on open file description %O{listener}, which names %A{description.Target} rather than a socket (this is a bug in the caller that recorded it)."
         | WakePrimitive.PipeHasBytes reader ->
@@ -276,6 +303,7 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) -> [ deadline ]
         | WakeCondition.Primitive (WakePrimitive.FlockGrantable _)
         | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _)
+        | WakeCondition.Primitive (WakePrimitive.KqueueDrained _)
         | WakeCondition.Primitive (WakePrimitive.DescriptorReady _)
         | WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty _)
         | WakeCondition.Primitive (WakePrimitive.PipeHasBytes _)
@@ -318,6 +346,14 @@ module WakeCondition =
                         deliverable
                         WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline)
                     ]
+            | ParkedSyscall.Kevent wait ->
+                // No event can end it: the kqueue holds no registration, since
+                // `kevent` refuses every change.
+                let drained = WakeCondition.Primitive (WakePrimitive.KqueueDrained wait.Kqueue)
+
+                match wait.Deadline with
+                | None -> [ drained ]
+                | Some deadline -> [ drained ; WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ]
             | ParkedSyscall.Poll poll ->
                 let watched =
                     poll.Entries

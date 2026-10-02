@@ -327,7 +327,8 @@ module TestPollEventsPal =
                     In = true
                     Out = true
                 }
-            | OpenFileTarget.SocketEventPort _ -> failwith "TestPollEventsPal: no row polls a socket event port."
+            | OpenFileTarget.Epoll _
+            | OpenFileTarget.Kqueue _ -> failwith "TestPollEventsPal: no row polls a socket event port."
             | OpenFileTarget.Pipe (pipeId, _) ->
                 // The standard streams of a process launched onto pipes: input
                 // whose writer has gone and supplied nothing, and output a

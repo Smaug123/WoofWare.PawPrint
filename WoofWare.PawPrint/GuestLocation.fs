@@ -327,6 +327,14 @@ module GuestLocation =
                         match task |> Option.bind UnixTaskState.park |> Option.map (fun park -> park.Syscall) with
                         | Some (ParkedSyscall.SocketWait wait) ->
                             Some $"for events on open file description %O{wait.Port}"
+                        | Some (ParkedSyscall.Kevent wait) ->
+                            let until =
+                                match wait.Deadline with
+                                | Some deadline -> $" until %d{deadline} ns since boot"
+                                | None -> ""
+
+                            Some
+                                $"in kevent on the kqueue of open file description %O{wait.Kqueue}, entered through fd %d{wait.Fd}%s{until}"
                         | Some (ParkedSyscall.Flock parked) ->
                             Some $"for a lock on open file description %O{parked.Requester}, %O{parked.Mode}"
                         | Some (ParkedSyscall.Accept parked) ->

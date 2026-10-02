@@ -89,8 +89,7 @@ module TestPosixFadvise =
         }
 
     let private eventPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        let fd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+        let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         fd,
         { system with

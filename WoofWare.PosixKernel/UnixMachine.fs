@@ -544,10 +544,9 @@ module UnixMachineState =
     /// (docs/probes/so-error) for a refusal an `SO_ERROR` read has taken.
     ///
     /// Darwin has no measured rows and needs none: both waiters refuse that
-    /// flavour before reaching here — epoll at registration
-    /// (`UnixPoll.epollCtl`; kqueue is structurally
-    /// different) and `UnixPoll.poll` — so neither asks a readiness question of
-    /// a Darwin-flavoured machine.
+    /// flavour before reaching here — epoll, which Darwin does not have, and
+    /// `UnixPoll.poll` — and `UnixKqueue.kevent` refuses every registration, so
+    /// none asks a readiness question of a Darwin-flavoured machine.
     let socketReadinessLevel (socketId : SocketId) (machine : UnixMachineState) : ReadinessLevel =
         let target = socket socketId machine
 

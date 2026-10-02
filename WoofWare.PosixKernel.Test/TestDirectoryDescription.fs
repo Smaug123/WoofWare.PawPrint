@@ -549,7 +549,7 @@ module TestDirectoryDescription =
                 NewSocket.create SocketDomain.Unix SocketKind.Stream SocketProtocol.Default system
 
             let port, registry =
-                FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+                FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
             let system =
                 { system with

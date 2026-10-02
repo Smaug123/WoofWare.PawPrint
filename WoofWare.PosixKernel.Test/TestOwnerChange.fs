@@ -1274,9 +1274,14 @@ module TestOwnerChange =
         let darwin =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
+        // The flavour's own event port: an epoll instance, or a kqueue.
         let port (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-            let fd, registry =
-                FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+            let create =
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
+                | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
+
+            let fd, registry = create system.Process.FileDescriptors
 
             fd, withDescriptors registry system
 

@@ -192,10 +192,9 @@ module TestFileDescriptorRegistry =
     /// would wake the wrong waiter.
     [<Test>]
     let ``two socket event ports are two descriptions but one flock object`` () : unit =
-        let a, registry =
-            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
+        let a, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
-        let b, registry = FileDescriptorRegistry.createSocketEventPort registry
+        let b, registry = FileDescriptorRegistry.createEpoll registry
 
         a |> shouldEqual 3
         b |> shouldEqual 4
@@ -213,7 +212,7 @@ module TestFileDescriptorRegistry =
         | Error e -> failwith $"expected dup to succeed, got %O{e}"
         | Ok (duplicate, registry) ->
             // `dup` shares the description, so it is the *same* port rather than
-            // an equal one — the distinction two `createSocketEventPort` calls
+            // an equal one — the distinction two `createEpoll` calls
             // draw in the other direction above.
             FileDescriptorRegistry.tryFindId duplicate registry
             |> shouldEqual (FileDescriptorRegistry.tryFindId a registry)
@@ -229,8 +228,7 @@ module TestFileDescriptorRegistry =
     /// "the description outlived its descriptors" would be a different bug.
     [<Test>]
     let ``a socket event port outlives a closed descriptor but not its last`` () : unit =
-        let a, registry =
-            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
+        let a, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let b, registry =
             match FileDescriptorRegistry.dup a registry with
@@ -1282,7 +1280,8 @@ module TestFileDescriptorRegistry =
     let private offsetOf (fd : int) (registry : FileDescriptorRegistry) : int64 option =
         match FileDescriptorRegistry.tryFindTarget fd registry with
         | None -> failwith $"fd %d{fd} is not live"
-        | Some (OpenFileTarget.SocketEventPort _)
+        | Some (OpenFileTarget.Epoll _)
+        | Some (OpenFileTarget.Kqueue _)
         | Some (OpenFileTarget.Socket _)
         | Some (OpenFileTarget.Pipe _) -> None
         | Some (OpenFileTarget.File (_, offset)) -> Some offset
@@ -1529,7 +1528,7 @@ module TestFileDescriptorRegistry =
 
                     registry <- registry'
                 | 6 ->
-                    let _, registry' = FileDescriptorRegistry.createSocketEventPort registry
+                    let _, registry' = FileDescriptorRegistry.createEpoll registry
                     registry <- registry'
                 | _ ->
                     // A different triple each time, so that a `createSocket`
@@ -1639,7 +1638,7 @@ module TestFileDescriptorRegistry =
         let fd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
         nonBlockingOf fd registry |> shouldEqual false
 
-        let fd, registry = FileDescriptorRegistry.createSocketEventPort registry
+        let fd, registry = FileDescriptorRegistry.createEpoll registry
         nonBlockingOf fd registry |> shouldEqual false
 
     [<Test>]
@@ -1722,13 +1721,11 @@ module TestFileDescriptorRegistry =
 
     /// The store is flavour-free: measured on both kernels, `F_SETFL` on an
     /// event port genuinely toggles the bit (on Darwin the call *also* reports
-    /// ENOTTY, which is the handler's business — the flavour split lives in
-    /// `SimulatedUnixPlatform.eventPortSetStatusFlagsError`, and the handler
-    /// stores before reporting).
+    /// ENOTTY, which is the caller's business — the flavour split lives in
+    /// `UnixSocket.setNonBlocking`, which stores before reporting).
     [<Test>]
     let ``setNonBlocking round-trips on a socket event port`` () : unit =
-        let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
+        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let registry = FileDescriptorRegistry.setNonBlocking portFd true registry
         nonBlockingOf portFd registry |> shouldEqual true
@@ -1746,12 +1743,12 @@ module TestFileDescriptorRegistry =
         : Map<int * OpenFileDescriptionId, EpollRegistration>
         =
         match FileDescriptorRegistry.tryFindTarget portFd registry with
-        | Some (OpenFileTarget.SocketEventPort portState) -> portState.Registrations
+        | Some (OpenFileTarget.Epoll portState) -> portState.Registrations
         | other -> failwith $"fd %d{portFd} is not a socket event port: %O{other}"
 
     let private readyOf (portFd : int) (registry : FileDescriptorRegistry) : (int * OpenFileDescriptionId) list =
         match FileDescriptorRegistry.tryFindTarget portFd registry with
-        | Some (OpenFileTarget.SocketEventPort portState) -> portState.Ready
+        | Some (OpenFileTarget.Epoll portState) -> portState.Ready
         | other -> failwith $"fd %d{portFd} is not a socket event port: %O{other}"
 
     let private idOf (fd : int) (registry : FileDescriptorRegistry) : OpenFileDescriptionId =
@@ -1797,8 +1794,7 @@ module TestFileDescriptorRegistry =
         ()
         : unit
         =
-        let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
+        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
         let portId = idOf portFd registry
@@ -1854,8 +1850,7 @@ module TestFileDescriptorRegistry =
     /// entry's place alone; a modification moves nothing.
     [<Test>]
     let ``Remove drops the pending entry and Modify keeps its place`` () : unit =
-        let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
+        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let aFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
         let bFd, registry = FileDescriptorRegistry.createSocket (SocketId 1L) registry
@@ -1884,8 +1879,7 @@ module TestFileDescriptorRegistry =
     /// the caller, reported loudly rather than answered.
     [<Test>]
     let ``the table primitives refuse a key in the wrong state`` () : unit =
-        let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
+        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
         let portId = idOf portFd registry
@@ -1921,8 +1915,7 @@ module TestFileDescriptorRegistry =
     /// readiness wake from delivering out of a corpse.
     [<Test>]
     let ``closing the target's last descriptor sweeps its registrations; a surviving dup keeps them`` () : unit =
-        let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
+        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
 
@@ -1966,7 +1959,7 @@ module TestFileDescriptorRegistry =
                         portId,
                         {
                             Target =
-                                OpenFileTarget.SocketEventPort
+                                OpenFileTarget.Epoll
                                     {
                                         Registrations =
                                             Map.ofList
@@ -1997,8 +1990,7 @@ module TestFileDescriptorRegistry =
     /// nothing registers, and one registered entry pending twice.
     [<Test>]
     let ``checkInvariants rejects unregistered and duplicated ready entries`` () : unit =
-        let portFd, registry =
-            FileDescriptorRegistry.createSocketEventPort LaunchedStreams.registry
+        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
 
@@ -2019,10 +2011,10 @@ module TestFileDescriptorRegistry =
                 portId
                 (fun description ->
                     match description.Target with
-                    | OpenFileTarget.SocketEventPort portState ->
+                    | OpenFileTarget.Epoll portState ->
                         { description with
                             Target =
-                                OpenFileTarget.SocketEventPort
+                                OpenFileTarget.Epoll
                                     { portState with
                                         Ready = ready
                                     }

@@ -79,48 +79,6 @@ module PollRefusal =
             $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
         | PollRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
 
-/// What a wait for socket events settles before it can either deliver or sleep:
-/// `epoll_wait(2)`'s screens under one flavour, `kevent(2)`'s under the other.
-///
-/// Five of the eight measured rows differ between the two, so this is a
-/// flavour-branching ladder throughout rather than in one place -- which is why
-/// it is a kernel answer rather than something a client can assemble from parts.
-[<RequireQualifiedAccess>]
-type SocketWaitAdmission =
-    /// The syscall was reached and failed. A client that keeps a last-error slot
-    /// records this errno, and one whose foreign-function layer writes a
-    /// sentinel through the caller's count does that too.
-    | Failed of error : UnixError
-    /// Answered with no events, having neither consulted the port nor slept.
-    ///
-    /// The one input on which the flavours disagree about whether the call
-    /// blocks at all: measured, `kevent(kq, NULL, 0, evs, 0, NULL)` returns 0
-    /// immediately, as it does for any negative count, where `epoll_wait` with
-    /// `maxevents <= 0` is EINVAL.
-    | NoEvents
-    /// The call reaches the port: take up to `maxEvents` events off it, and
-    /// sleep if that delivers nothing.
-    | DeliverOrWait of port : OpenFileDescriptionId * maxEvents : int
-
-/// Why this kernel will not answer a wait for socket events.
-[<RequireQualifiedAccess>]
-type SocketWaitRefusal =
-    /// The buffer reached this platform's up-front address screen and has no
-    /// address to screen.
-    ///
-    /// Only one flavour has such a screen -- Darwin's `kevent` checks no buffer
-    /// at all, and a wait that never delivers never copies -- so this is
-    /// reachable under Linux alone.
-    | Buffer of BufferRefusal
-
-[<RequireQualifiedAccess>]
-module SocketWaitRefusal =
-    /// What this kernel knows about why it cannot answer. The client supplies
-    /// its own half -- which entry point asked, and what it actually passed.
-    let describe (refusal : SocketWaitRefusal) : string =
-        match refusal with
-        | SocketWaitRefusal.Buffer refusal -> BufferRefusal.describe refusal
-
 /// The flags `epoll_create1(2)` accepts, in Linux's numbering.
 [<RequireQualifiedAccess>]
 module EpollCreateFlags =
@@ -142,7 +100,7 @@ module EpollCreateRefusal =
     let describe (refusal : EpollCreateRefusal) : string =
         match refusal with
         | EpollCreateRefusal.UnmodelledFlavour flavour ->
-            $"this kernel is %O{flavour}-flavoured, and epoll_create1 exists on Linux only. A socket event port on this flavour is a kqueue, which this library does not create through a call of its own."
+            $"this kernel is %O{flavour}-flavoured, and epoll_create1 exists on Linux only. This flavour's counterpart is kqueue (UnixKqueue.kqueue)."
 
 /// What became of an `epoll_wait(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -195,7 +153,7 @@ module EpollWaitRefusal =
     let describe (refusal : EpollWaitRefusal) : string =
         match refusal with
         | EpollWaitRefusal.UnmodelledFlavour flavour ->
-            $"this kernel is %O{flavour}-flavoured, and epoll_wait exists on Linux only. A wait on this flavour's socket event port is a kevent, which this library does not answer through a call of its own."
+            $"this kernel is %O{flavour}-flavoured, and epoll_wait exists on Linux only. This flavour's counterpart is kevent (UnixKqueue.kevent)."
         | EpollWaitRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | EpollWaitRefusal.UnmeasuredCopyOutFault port ->
             $"the socket event port %O{port} has events to deliver, so this call copies them out -- but the buffer is unmapped, so that copy faults. Which of the events the walk took stay pending after the fault, and whether the call answers EFAULT or the count copied before it, are unmeasured."
@@ -296,16 +254,7 @@ type EpollCtlAnswer =
 /// whatever it asks for.
 [<RequireQualifiedAccess>]
 type EpollCtlRefusal =
-    /// This kernel models `epoll_ctl` for one flavour only, and it is not this
-    /// one.
-    ///
-    /// kqueue's model is *structurally* different rather than differently
-    /// numbered: registration is per `(ident, filter)`, a re-`ADD` silently
-    /// replaces where epoll answers `EEXIST`, a regular file registers where
-    /// epoll answers `EPERM`, and a `DEL` of a dead target answers `ENOENT`
-    /// where epoll answers `EBADF`. Each of those is measured only far enough to
-    /// know that it diverges, which is not far enough to model the state a call
-    /// leaves behind.
+    /// This kernel is not Linux-flavoured, and only Linux has epoll.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// An `EPOLL_CTL_ADD` whose target is itself an epoll instance.
     ///
@@ -342,7 +291,7 @@ module EpollCtlRefusal =
     let describe (refusal : EpollCtlRefusal) : string =
         match refusal with
         | EpollCtlRefusal.UnmodelledFlavour flavour ->
-            $"this kernel is %O{flavour}-flavoured, and epoll_ctl is modelled here for Linux only. kqueue's semantics -- per-filter state, a silently-replacing ADD, file targets succeeding -- are unmeasured beyond the fact that they diverge from epoll's, and the return codes alone are not a model of the state a call leaves behind. Measure them before answering."
+            $"this kernel is %O{flavour}-flavoured, and epoll_ctl exists on Linux only. This flavour's counterpart is a kevent changelist (UnixKqueue.kevent)."
         | EpollCtlRefusal.NestedPort targetFd ->
             $"fd %d{targetFd} is itself an epoll instance. Linux would register it (subject to a loop check and a nesting depth of four, both ELOOP), but what a nested port reports and how a wake propagates through one are not modelled."
         | EpollCtlRefusal.Exclusive ->
@@ -359,132 +308,79 @@ module EpollCtlRefusal =
 [<RequireQualifiedAccess>]
 module UnixPoll =
 
-    /// Everything a wait for socket events settles before it consults the port:
-    /// `epoll_wait(2)`'s four screens or `kevent(2)`'s two, in the order each
-    /// kernel applies them. See `SocketWaitAdmission`.
+    /// `epoll_wait(2)`'s four screens, in Linux's order: the epoll instance to
+    /// wait on, an errno to fail with, or the buffer's refusal.
     ///
-    /// `epollWait` is the whole of `epoll_wait(2)`, these screens included; a
-    /// client needs this only for `kevent(2)`, whose wait this library does not
-    /// yet answer as a call of its own.
+    /// The order is measured on Linux 6.18.5 rather than read off the kernel
+    /// source: the widely-reproduced `do_epoll_wait` listing checks `maxevents`
+    /// and `access_ok` *before* `fdget`, and current kernels do not.
     ///
-    /// A negative `maxEvents` is answered as 0 is, by both kernels.
-    ///
-    /// Each ordering is measured, on Linux 6.18.5 and Darwin 25.6.0, rather than
-    /// read off the kernel sources: the widely-reproduced `do_epoll_wait` listing
-    /// checks `maxevents` and `access_ok` *before* `fdget`, and current kernels
-    /// do not.
-    ///
-    /// Changes nothing: everything a wait does before it reaches the port is a
-    /// question.
-    let admitSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Changes nothing: everything a wait does before it reaches the instance
+    /// is a question.
+    let private admitEpollWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (maxEvents : int)
         (buffer : UserBuffer)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SocketWaitAdmission, SocketWaitRefusal>
+        : Result<Result<OpenFileDescriptionId, UnixError>, BufferRefusal>
         =
-        let openFile =
-            FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors
+        // Measured on 6.18.5, each adjacent pair separated by an input that
+        // provokes exactly one of the two: descriptor, then `maxevents`, then
+        // the buffer, then is-it-an-epoll-instance.
+        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        | None -> Ok (Error UnixError.EBADF)
+        | Some (port, description) ->
 
-        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-        | SimulatedUnixFlavour.Linux ->
-            // Measured on 6.18.5, each adjacent pair separated by an input that
-            // provokes exactly one of the two: descriptor, then `maxevents`,
-            // then the buffer, then is-it-an-epoll-instance.
-            match openFile with
-            | None -> Ok (SocketWaitAdmission.Failed UnixError.EBADF)
-            | Some (port, description) ->
+        let architecture = SimulatedUnixPlatform.architecture system.Machine.UnixPlatform
 
-            let architecture = SimulatedUnixPlatform.architecture system.Machine.UnixPlatform
+        // The kernel's predicate is `maxevents <= 0 || maxevents > EP_MAX_EVENTS`.
+        // Measured (`epoll-wait.c`, section G): a negative maxevents is
+        // screened exactly as zero is.
+        if maxEvents <= 0 || maxEvents > LinuxEpollLimits.maxEvents architecture then
+            Ok (Error UnixError.EINVAL)
+        else
 
-            // The kernel's predicate is `maxevents <= 0 || maxevents > EP_MAX_EVENTS`.
-            // Measured (`epoll-wait.c`, section G): a negative maxevents is
-            // screened exactly as zero is.
-            if maxEvents <= 0 || maxEvents > LinuxEpollLimits.maxEvents architecture then
-                Ok (SocketWaitAdmission.Failed UnixError.EINVAL)
-            else
+        // The byte range `access_ok(events, maxevents * sizeof(struct
+        // epoll_event))` screens. This multiplication is safe only *below* the
+        // cap just applied, which is what `EP_MAX_EVENTS` exists for: it is
+        // `INT_MAX / eventSize`, so every count that reaches here has a product
+        // inside `int32`.
+        let bufferExtent =
+            uint64 maxEvents * uint64 (LinuxEpollLimits.eventSize architecture)
 
-            // The byte range `access_ok(events, maxevents * sizeof(struct
-            // epoll_event))` screens. This multiplication is safe only *below*
-            // the cap just applied, which is what `EP_MAX_EVENTS` exists for: it
-            // is `INT_MAX / eventSize`, so every count that reaches here has a
-            // product inside `int32`.
-            let bufferExtent =
-                uint64 maxEvents * uint64 (LinuxEpollLimits.eventSize architecture)
+        // Not a mappedness check. On 64-bit Linux `access_ok` only rejects
+        // ranges reaching into the kernel half, so a merely-unmapped userspace
+        // address passes and the wait then blocks, faulting at delivery --
+        // which is why this must not eagerly demand that the buffer be real
+        // before sleeping.
+        match
+            UserBufferCheck.faultsBeforeOperationFor
+                (UnixMachineState.userBufferCheck system.Machine)
+                buffer
+                bufferExtent
+        with
+        | Error refusal -> Error refusal
+        | Ok true -> Ok (Error UnixError.EFAULT)
+        | Ok false ->
 
-            // Not a mappedness check. On 64-bit Linux `access_ok` only rejects
-            // ranges reaching into the kernel half, so a merely-unmapped
-            // userspace address passes and the wait then blocks, faulting at
-            // delivery -- which is why this must not eagerly demand that the
-            // buffer be real before sleeping.
-            match
-                UserBufferCheck.faultsBeforeOperationFor
-                    (UnixMachineState.userBufferCheck system.Machine)
-                    buffer
-                    bufferExtent
-            with
-            | Error refusal -> Error (SocketWaitRefusal.Buffer refusal)
-            | Ok true -> Ok (SocketWaitAdmission.Failed UnixError.EFAULT)
-            | Ok false ->
-
-            match description.Target with
-            | OpenFileTarget.File _
-            | OpenFileTarget.Directory _
-            | OpenFileTarget.Socket _
-            | OpenFileTarget.Pipe _ ->
-                // A live descriptor onto the wrong kind of object. EINVAL is
-                // epoll's own answer for it, and it is the last of the four
-                // screens -- behind the buffer, which is why an unmappable
-                // buffer on a non-port descriptor is EFAULT rather than this.
-                //
-                // A socket is measured to be exactly like the other two here
-                // rather than assumed to be: `epoll_wait` on a socket fd is
-                // EINVAL, and EFAULT still wins ahead of it for an unmappable
-                // buffer.
-                Ok (SocketWaitAdmission.Failed UnixError.EINVAL)
-            | OpenFileTarget.SocketEventPort _ -> Ok (SocketWaitAdmission.DeliverOrWait (port, maxEvents))
-        | SimulatedUnixFlavour.Darwin ->
-            // Measured on 25.6.0, and flatter: `kevent` resolves the descriptor
-            // before its `nevents == 0` early return, has no "wrong kind of
-            // object" answer to give, and screens no buffer at all -- so the
-            // whole ladder is one question about the descriptor followed by one
-            // about the count.
-            match openFile with
-            | None -> Ok (SocketWaitAdmission.Failed UnixError.EBADF)
-            | Some (port, description) ->
-
-            match description.Target with
-            | OpenFileTarget.File _
-            | OpenFileTarget.Directory _
-            | OpenFileTarget.Socket _
-            | OpenFileTarget.Pipe _ ->
-                // EBADF, where epoll says EINVAL: kqueue folds "not a kqueue"
-                // into "bad descriptor". Measured on a socket too, and for both
-                // a zero and a non-zero event count.
-                Ok (SocketWaitAdmission.Failed UnixError.EBADF)
-            | OpenFileTarget.SocketEventPort portState ->
-
-            // Measured on 27.0.0 (`kevent-negative-count.c`): a negative
-            // `nevents` returns 0 at once, as zero does, whatever the port holds.
-            if maxEvents <= 0 then
-                Ok SocketWaitAdmission.NoEvents
-            else
-
-            // No buffer screen, so an unmappable buffer sleeps here rather than
-            // faulting: `UserBufferCheck.AtCopyTime` is Darwin's answer, and a
-            // wait that never delivers an event never copies anything.
+        match description.Target with
+        | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.Pipe _ ->
+            // A live descriptor onto the wrong kind of object. EINVAL is epoll's
+            // own answer for it, and it is the last of the four screens --
+            // behind the buffer, which is why an unmappable buffer on a
+            // non-epoll descriptor is EFAULT rather than this.
             //
-            // The port is empty by construction on this flavour -- the Darwin
-            // registration arm refuses every change, so nothing can ever become
-            // deliverable -- which is what makes it faithful to hand this to the
-            // same delivery walk epoll uses and have it sleep. The assertion ties
-            // those two facts together rather than leaving the second to be
-            // rediscovered.
-            if not (Map.isEmpty portState.Registrations) then
-                failwith
-                    $"UnixPoll.admitSocketWait: a Darwin-flavoured kernel holds %d{Map.count portState.Registrations} socket event registrations, but the Darwin registration arm refuses every change (this is a bug in the caller's state construction)."
-
-            Ok (SocketWaitAdmission.DeliverOrWait (port, maxEvents))
+            // A socket is measured to be exactly like the other two here rather
+            // than assumed to be: `epoll_wait` on a socket fd is EINVAL, and
+            // EFAULT still wins ahead of it for an unmappable buffer.
+            Ok (Error UnixError.EINVAL)
+        | OpenFileTarget.Kqueue _ ->
+            failwith
+                $"UnixPoll.epollWait: fd %d{fd} names a kqueue, which a Linux-flavoured kernel cannot hold (this is a bug in the caller's state construction)."
+        | OpenFileTarget.Epoll _ -> Ok (Ok port)
 
     /// `epoll_ctl(2)`: apply `op` to the interest table of the epoll instance
     /// `epfd` names, for the target `fd` names, with the `event` the caller
@@ -506,7 +402,7 @@ module UnixPoll =
     /// already pending leaves its place alone. An `ADD` or `MOD` that would
     /// succeed with one of the modes this library does not model, and an
     /// `ADD` of another epoll instance, are refused (see `EpollCtlRefusal`).
-    /// Under the Darwin flavour every call is refused: kqueue is not epoll.
+    /// Under the Darwin flavour every call is refused: Darwin has no epoll.
     let epollCtl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (epfd : int)
         (op : int)
@@ -558,7 +454,10 @@ module UnixPoll =
         match targetDescription.Target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _ -> failed EpollCtlError.TargetNotPollable
-        | OpenFileTarget.SocketEventPort _
+        | OpenFileTarget.Kqueue _ ->
+            failwith
+                $"UnixPoll.epollCtl: fd %d{fd} names a kqueue, which a Linux-flavoured kernel cannot hold (this is a bug in the caller's state construction)."
+        | OpenFileTarget.Epoll _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Pipe _ ->
 
@@ -566,8 +465,9 @@ module UnixPoll =
         // one answer: a `dup` of the port as target is this, not success.
         let portState =
             match portDescription.Target with
-            | OpenFileTarget.SocketEventPort portState when portId <> targetId -> Some portState
-            | OpenFileTarget.SocketEventPort _
+            | OpenFileTarget.Epoll portState when portId <> targetId -> Some portState
+            | OpenFileTarget.Epoll _
+            | OpenFileTarget.Kqueue _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
@@ -579,7 +479,8 @@ module UnixPoll =
 
         let targetIsPort =
             match targetDescription.Target with
-            | OpenFileTarget.SocketEventPort _ -> true
+            | OpenFileTarget.Epoll _ -> true
+            | OpenFileTarget.Kqueue _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
@@ -679,7 +580,8 @@ module UnixPoll =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
-            | OpenFileTarget.SocketEventPort _ -> false
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _ -> false
 
         if op = add then
             if registered then
@@ -791,7 +693,8 @@ module UnixPoll =
         // because the kernel computes that level by re-polling the ready
         // list, and whether the walk drops a stale entry, as `drain` does,
         // is unmeasured.
-        | OpenFileTarget.SocketEventPort _ -> Error (PollRefusal.UnmodelledTarget entry.Fd)
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _ -> Error (PollRefusal.UnmodelledTarget entry.Fd)
         | OpenFileTarget.Socket _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
@@ -1106,8 +1009,7 @@ module UnixPoll =
             Ok (Error UnixError.EINVAL)
         else
 
-        let fd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+        let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         Ok (
             Ok (
@@ -1211,13 +1113,10 @@ module UnixPoll =
         | SimulatedUnixFlavour.Darwin -> Error (EpollWaitRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
 
-        match admitSocketWait epfd maxEvents buffer system with
-        | Error (SocketWaitRefusal.Buffer refusal) -> Error (EpollWaitRefusal.Buffer refusal)
-        | Ok (SocketWaitAdmission.Failed error) -> Ok (EpollWaitOutcome.Failed error, system)
-        | Ok SocketWaitAdmission.NoEvents ->
-            failwith
-                "UnixPoll.epollWait: the socket wait admission answered NoEvents under the Linux flavour, which only kevent answers (this is a bug in this library)."
-        | Ok (SocketWaitAdmission.DeliverOrWait (port, maxEvents)) ->
+        match admitEpollWait epfd maxEvents buffer system with
+        | Error refusal -> Error (EpollWaitRefusal.Buffer refusal)
+        | Ok (Error error) -> Ok (EpollWaitOutcome.Failed error, system)
+        | Ok (Ok port) ->
 
         let delivered, system = SocketEventPort.drain port maxEvents system
 

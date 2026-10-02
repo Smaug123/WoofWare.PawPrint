@@ -46,9 +46,19 @@ module TestWakeCondition =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let lockerFd, registry =
-            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
-        let blockedFd, registry = FileDescriptorRegistry.createSocketEventPort registry
+        let blockedFd, registry = FileDescriptorRegistry.createEpoll registry
+
+        // Two kqueues, for `KqueueDrained`'s two live answers: fds 5 and 6. The world is
+        // Linux's, which has no kqueue; the primitive asks only of the description.
+        let _, registry = FileDescriptorRegistry.createKqueue registry
+        let drainedFd, registry = FileDescriptorRegistry.createKqueue registry
+
+        let registry =
+            match FileDescriptorRegistry.tryFindId drainedFd registry with
+            | Some id -> FileDescriptorRegistry.drainKqueue id registry
+            | None -> failwith "expected the kqueue's description"
 
         let registry =
             match FileDescriptorRegistry.flock lockerFd (FlockRequest.Acquire FlockMode.Exclusive) registry with
@@ -113,6 +123,8 @@ module TestWakeCondition =
             WakePrimitive.PipeReadEndClosed (idOf 1 system), false
             // Linux: never.
             WakePrimitive.PipeReadWhileNonBlocking (idOf 1 system, -1L), false
+            WakePrimitive.KqueueDrained (idOf 5 system), false
+            WakePrimitive.KqueueDrained (idOf 6 system), true
         ]
 
     let private at (clock : int64) : UnixSystem<int, string> =
@@ -129,6 +141,7 @@ module TestWakeCondition =
         | WakePrimitive.SignalDeliverable -> waiter = signalled
         | WakePrimitive.FlockGrantable _
         | WakePrimitive.SocketEventDeliverable _
+        | WakePrimitive.KqueueDrained _
         | WakePrimitive.DescriptorReady _
         | WakePrimitive.AcceptQueueNonEmpty _
         | WakePrimitive.PipeHasBytes _
@@ -207,6 +220,21 @@ module TestWakeCondition =
 
         WakeCondition.satisfied signalled (WakeCondition.Primitive signal) system
         |> shouldEqual (Set.singleton signal)
+
+    [<Test>]
+    let ``a kevent wait on a kqueue that has gone is a broken park, not an answer`` () : unit =
+        // A park holds the kqueue it waits on until the call returns, so the kqueue
+        // cannot have gone under a waiter.
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                WakeCondition.satisfied
+                    0
+                    (WakeCondition.Primitive (WakePrimitive.KqueueDrained (OpenFileDescriptionId 999L)))
+                    system
+                |> ignore<Set<WakePrimitive>>
+            )
+
+        exn.Message |> shouldContainText "is not in the table"
 
     [<Test>]
     let ``satisfied agrees with the flattening oracle`` () : unit =
@@ -322,6 +350,7 @@ module TestWakeCondition =
                         | WakePrimitive.DeadlinePassed deadline -> Some deadline
                         | WakePrimitive.FlockGrantable _
                         | WakePrimitive.SocketEventDeliverable _
+                        | WakePrimitive.KqueueDrained _
                         | WakePrimitive.DescriptorReady _
                         | WakePrimitive.AcceptQueueNonEmpty _
                         | WakePrimitive.PipeHasBytes _

@@ -156,7 +156,10 @@ module ObjectLifetime =
         : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>
         =
         match destroyed.Target with
-        | OpenFileTarget.SocketEventPort _ -> Ok system
+        // An epoll instance's registrations are its own state, and a kqueue
+        // holds none, so neither is the last reference to anything.
+        | OpenFileTarget.Epoll _
+        | OpenFileTarget.Kqueue _ -> Ok system
         | OpenFileTarget.File (inode, _)
         | OpenFileTarget.Directory (inode, _) ->
             // The description may have been the last reference to an inode whose
