@@ -171,7 +171,7 @@ module TestSocketEventDelivery =
         (kernel : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        match UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel with
+        match UnixConnection.connectSocket client nonBlocking 16u inetFamily (Some dest) kernel with
         | Ok answer -> answer
         | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 

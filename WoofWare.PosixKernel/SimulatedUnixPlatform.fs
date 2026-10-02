@@ -891,28 +891,36 @@ module SimulatedUnixPlatform =
     /// is `EINVAL` and 256 is `ENAMETOOLONG`. Linux has no such threshold.
     let maximumDarwinSocketAddressLength : int = 255
 
-    /// How long `bind(2)` insists a `struct sockaddr_in` argument is.
+    /// How long `bind(2)` and `connect(2)` insist a `struct sockaddr_in` argument is.
     ///
     /// Measured, and not the same shape on the two: Linux accepts any length from
     /// the family's own `sizeof` up to `sizeof(struct sockaddr_storage)` — 16
     /// through 128 inclusive for IPv4, with 129 the least rejected — while Darwin
-    /// insists on exactly 16 and answers `EINVAL` for every value from 17 to 32.
+    /// insists on exactly 16 and answers `EINVAL` for every value from 17 to 255.
     ///
-    /// Invisible through the managed API, which always passes
-    /// `SocketAddress.Size`; a hand-rolled `[DllImport]` sees it immediately.
-    let bindAddressLength (platform : SimulatedUnixPlatform) (exactSize : int) (declared : int) : BindLengthVerdict =
+    /// `declared` is the caller's 32-bit length exactly as passed. Linux reads it
+    /// as an `int`, so a word at or above 2^31 is a negative length, which it
+    /// rejects with `EINVAL` before the copy as it does an over-long one; Darwin
+    /// reads it as the `socklen_t` it is, so the same word is a length past its
+    /// threshold.
+    let bindAddressLength (platform : SimulatedUnixPlatform) (exactSize : int) (declared : uint32) : BindLengthVerdict =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
-            if declared > maximumSocketAddressSize then
+            // `move_addr_to_kernel`: `if (ulen < 0 || ulen > sizeof(struct
+            // sockaddr_storage)) return -EINVAL;`, measured at every word the
+            // probe swept (`socket-address-length.c`).
+            let declared = int declared
+
+            if declared < 0 || declared > maximumSocketAddressSize then
                 BindLengthVerdict.RejectedBeforeCopy UnixError.EINVAL
             elif declared >= exactSize then
                 BindLengthVerdict.Accepted
             else
                 BindLengthVerdict.Invalid
         | SimulatedUnixFlavour.Darwin ->
-            if declared > maximumDarwinSocketAddressLength then
+            if declared > uint32 maximumDarwinSocketAddressLength then
                 BindLengthVerdict.RejectedBeforeCopy UnixError.ENAMETOOLONG
-            elif declared = exactSize then
+            elif declared = uint32 exactSize then
                 BindLengthVerdict.Accepted
             else
                 BindLengthVerdict.Invalid

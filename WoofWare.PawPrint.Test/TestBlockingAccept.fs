@@ -203,7 +203,7 @@ class NeverConnected
                     {
                         Listener = OpenFileDescriptionId 3L
                         Destination = UserBuffer.Mapped
-                        DeclaredLength = 16
+                        DeclaredLength = 16u
                     }
             )
         )

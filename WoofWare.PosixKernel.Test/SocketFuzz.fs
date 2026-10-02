@@ -384,7 +384,7 @@ module SocketFuzz =
             let socketId = socketIdOfSlot client state
 
             let outcome, kernel =
-                match UnixConnection.connectSocket socketId true 16 inetFamily (Some endpoint) state.Kernel with
+                match UnixConnection.connectSocket socketId true 16u inetFamily (Some endpoint) state.Kernel with
                 | Ok answer -> answer
                 | Error refusal -> raise (ModelRefusal (ConnectRefusal.describe refusal))
 
@@ -407,7 +407,7 @@ module SocketFuzz =
                     UnixConnection.connectSocket
                         socketId
                         true
-                        16
+                        16u
                         inetFamily
                         (Some (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 1us))
                         state.Kernel

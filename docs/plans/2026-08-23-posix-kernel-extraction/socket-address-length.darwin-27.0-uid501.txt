@@ -1,0 +1,378 @@
+# Darwin 27.0.0 arm64
+# 736 words swept
+S bind        0x80000000..0xffffffff (-2147483648..-1, 368 samples): ENAMETOOLONG bound=no
+S bind        0x00000000..0x0000000f (0..15, 16 samples): EINVAL bound=no
+S bind        0x00000010..0x00000010 (16..16, 1 samples): OK bound=yes
+S bind        0x00000011..0x000000ff (17..255, 239 samples): EINVAL bound=no
+S bind        0x00000100..0x7fffffff (256..2147483647, 112 samples): ENAMETOOLONG bound=no
+S connect     0x80000000..0xffffffff (-2147483648..-1, 368 samples): ENAMETOOLONG
+S connect     0x00000000..0x0000000f (0..15, 16 samples): EINVAL
+S connect     0x00000010..0x00000010 (16..16, 1 samples): OK
+S connect     0x00000011..0x000000ff (17..255, 239 samples): EINVAL
+S connect     0x00000100..0x7fffffff (256..2147483647, 112 samples): ENAMETOOLONG
+S getsockname 0x80000000..0xffffffff (-2147483648..-1, 368 samples): OK cell=16 written=16
+S getsockname 0x00000000..0x00000000 (0..0, 1 samples): OK cell=16 written=0
+S getsockname 0x00000001..0x00000001 (1..1, 1 samples): OK cell=16 written=1
+S getsockname 0x00000002..0x00000002 (2..2, 1 samples): OK cell=16 written=2
+S getsockname 0x00000003..0x00000003 (3..3, 1 samples): OK cell=16 written=3
+S getsockname 0x00000004..0x00000004 (4..4, 1 samples): OK cell=16 written=4
+S getsockname 0x00000005..0x00000005 (5..5, 1 samples): OK cell=16 written=5
+S getsockname 0x00000006..0x00000006 (6..6, 1 samples): OK cell=16 written=6
+S getsockname 0x00000007..0x00000007 (7..7, 1 samples): OK cell=16 written=7
+S getsockname 0x00000008..0x00000008 (8..8, 1 samples): OK cell=16 written=8
+S getsockname 0x00000009..0x00000009 (9..9, 1 samples): OK cell=16 written=9
+S getsockname 0x0000000a..0x0000000a (10..10, 1 samples): OK cell=16 written=10
+S getsockname 0x0000000b..0x0000000b (11..11, 1 samples): OK cell=16 written=11
+S getsockname 0x0000000c..0x0000000c (12..12, 1 samples): OK cell=16 written=12
+S getsockname 0x0000000d..0x0000000d (13..13, 1 samples): OK cell=16 written=13
+S getsockname 0x0000000e..0x0000000e (14..14, 1 samples): OK cell=16 written=14
+S getsockname 0x0000000f..0x0000000f (15..15, 1 samples): OK cell=16 written=15
+S getsockname 0x00000010..0x00000010 (16..16, 1 samples): OK cell=kept written=16
+S getsockname 0x00000011..0x7fffffff (17..2147483647, 351 samples): OK cell=16 written=16
+S getpeername 0x80000000..0xffffffff (-2147483648..-1, 368 samples): OK cell=16 written=16
+S getpeername 0x00000000..0x00000000 (0..0, 1 samples): OK cell=16 written=0
+S getpeername 0x00000001..0x00000001 (1..1, 1 samples): OK cell=16 written=1
+S getpeername 0x00000002..0x00000002 (2..2, 1 samples): OK cell=16 written=2
+S getpeername 0x00000003..0x00000003 (3..3, 1 samples): OK cell=16 written=3
+S getpeername 0x00000004..0x00000004 (4..4, 1 samples): OK cell=16 written=4
+S getpeername 0x00000005..0x00000005 (5..5, 1 samples): OK cell=16 written=5
+S getpeername 0x00000006..0x00000006 (6..6, 1 samples): OK cell=16 written=6
+S getpeername 0x00000007..0x00000007 (7..7, 1 samples): OK cell=16 written=7
+S getpeername 0x00000008..0x00000008 (8..8, 1 samples): OK cell=16 written=8
+S getpeername 0x00000009..0x00000009 (9..9, 1 samples): OK cell=16 written=9
+S getpeername 0x0000000a..0x0000000a (10..10, 1 samples): OK cell=16 written=10
+S getpeername 0x0000000b..0x0000000b (11..11, 1 samples): OK cell=16 written=11
+S getpeername 0x0000000c..0x0000000c (12..12, 1 samples): OK cell=16 written=12
+S getpeername 0x0000000d..0x0000000d (13..13, 1 samples): OK cell=16 written=13
+S getpeername 0x0000000e..0x0000000e (14..14, 1 samples): OK cell=16 written=14
+S getpeername 0x0000000f..0x0000000f (15..15, 1 samples): OK cell=16 written=15
+S getpeername 0x00000010..0x00000010 (16..16, 1 samples): OK cell=kept written=16
+S getpeername 0x00000011..0x7fffffff (17..2147483647, 351 samples): OK cell=16 written=16
+S accept      0x80000000..0xffffffff (-2147483648..-1, 368 samples): OK cell=16 written=16 fd=lowest
+S accept      0x00000000..0x00000000 (0..0, 1 samples): OK cell=16 written=0 fd=lowest
+S accept      0x00000001..0x00000001 (1..1, 1 samples): OK cell=16 written=1 fd=lowest
+S accept      0x00000002..0x00000002 (2..2, 1 samples): OK cell=16 written=2 fd=lowest
+S accept      0x00000003..0x00000003 (3..3, 1 samples): OK cell=16 written=3 fd=lowest
+S accept      0x00000004..0x00000004 (4..4, 1 samples): OK cell=16 written=4 fd=lowest
+S accept      0x00000005..0x00000005 (5..5, 1 samples): OK cell=16 written=5 fd=lowest
+S accept      0x00000006..0x00000006 (6..6, 1 samples): OK cell=16 written=6 fd=lowest
+S accept      0x00000007..0x00000007 (7..7, 1 samples): OK cell=16 written=7 fd=lowest
+S accept      0x00000008..0x00000008 (8..8, 1 samples): OK cell=16 written=8 fd=lowest
+S accept      0x00000009..0x00000009 (9..9, 1 samples): OK cell=16 written=9 fd=lowest
+S accept      0x0000000a..0x0000000a (10..10, 1 samples): OK cell=16 written=10 fd=lowest
+S accept      0x0000000b..0x0000000b (11..11, 1 samples): OK cell=16 written=11 fd=lowest
+S accept      0x0000000c..0x0000000c (12..12, 1 samples): OK cell=16 written=12 fd=lowest
+S accept      0x0000000d..0x0000000d (13..13, 1 samples): OK cell=16 written=13 fd=lowest
+S accept      0x0000000e..0x0000000e (14..14, 1 samples): OK cell=16 written=14 fd=lowest
+S accept      0x0000000f..0x0000000f (15..15, 1 samples): OK cell=16 written=15 fd=lowest
+S accept      0x00000010..0x00000010 (16..16, 1 samples): OK cell=kept written=16 fd=lowest
+S accept      0x00000011..0x7fffffff (17..2147483647, 351 samples): OK cell=16 written=16 fd=lowest
+O O1 bind closed                               len=-1          EBADF
+O O1 connect closed                            len=-1          EBADF
+O O1 getsockname closed                        len=-1          EBADF cell=kept
+O O1 getpeername closed                        len=-1          EBADF cell=kept
+O O1 accept closed                             len=-1          EBADF cell=kept
+O O2 bind pipe                                 len=-1          ENOTSOCK
+O O2 connect pipe                              len=-1          ENOTSOCK
+O O2 getsockname pipe                          len=-1          ENOTSOCK cell=kept
+O O2 getpeername pipe                          len=-1          ENOTSOCK cell=kept
+O O2 accept pipe                               len=-1          ENOTSOCK cell=kept
+O O3 bind unmapped                             len=-1          ENAMETOOLONG
+O O3 connect unmapped                          len=-1          ENAMETOOLONG
+O O3 getsockname unmapped                      len=-1          EFAULT cell=kept
+O O3 getpeername unmapped                      len=-1          EFAULT cell=kept
+O O3 accept unmapped, one queued               len=-1          OK cell=written; then accept=EAGAIN
+O O4 bind NULL                                 len=-1          EDESTADDRREQ
+O O4 connect NULL                              len=-1          ENAMETOOLONG
+O O4 getsockname NULL                          len=-1          EFAULT cell=kept
+O O4 getpeername NULL                          len=-1          EFAULT cell=kept
+O O4 accept NULL, one queued                   len=-1          OK cell=kept; then accept=EAGAIN
+O O6 accept idle stream socket                 len=-1          EINVAL cell=kept
+O O6 accept datagram socket                    len=-1          EOPNOTSUPP cell=kept
+O O6 accept non-blocking, nothing queued       len=-1          EAGAIN cell=kept
+O O1 bind closed                               len=-2147483648 EBADF
+O O1 connect closed                            len=-2147483648 EBADF
+O O1 getsockname closed                        len=-2147483648 EBADF cell=kept
+O O1 getpeername closed                        len=-2147483648 EBADF cell=kept
+O O1 accept closed                             len=-2147483648 EBADF cell=kept
+O O2 bind pipe                                 len=-2147483648 ENOTSOCK
+O O2 connect pipe                              len=-2147483648 ENOTSOCK
+O O2 getsockname pipe                          len=-2147483648 ENOTSOCK cell=kept
+O O2 getpeername pipe                          len=-2147483648 ENOTSOCK cell=kept
+O O2 accept pipe                               len=-2147483648 ENOTSOCK cell=kept
+O O3 bind unmapped                             len=-2147483648 ENAMETOOLONG
+O O3 connect unmapped                          len=-2147483648 ENAMETOOLONG
+O O3 getsockname unmapped                      len=-2147483648 EFAULT cell=kept
+O O3 getpeername unmapped                      len=-2147483648 EFAULT cell=kept
+O O3 accept unmapped, one queued               len=-2147483648 OK cell=written; then accept=EAGAIN
+O O4 bind NULL                                 len=-2147483648 EDESTADDRREQ
+O O4 connect NULL                              len=-2147483648 ENAMETOOLONG
+O O4 getsockname NULL                          len=-2147483648 EFAULT cell=kept
+O O4 getpeername NULL                          len=-2147483648 EFAULT cell=kept
+O O4 accept NULL, one queued                   len=-2147483648 OK cell=kept; then accept=EAGAIN
+O O6 accept idle stream socket                 len=-2147483648 EINVAL cell=kept
+O O6 accept datagram socket                    len=-2147483648 EOPNOTSUPP cell=kept
+O O6 accept non-blocking, nothing queued       len=-2147483648 EAGAIN cell=kept
+O O1 bind closed                               len=0           EBADF
+O O1 connect closed                            len=0           EBADF
+O O1 getsockname closed                        len=0           EBADF cell=kept
+O O1 getpeername closed                        len=0           EBADF cell=kept
+O O1 accept closed                             len=0           EBADF cell=kept
+O O2 bind pipe                                 len=0           ENOTSOCK
+O O2 connect pipe                              len=0           ENOTSOCK
+O O2 getsockname pipe                          len=0           ENOTSOCK cell=kept
+O O2 getpeername pipe                          len=0           ENOTSOCK cell=kept
+O O2 accept pipe                               len=0           ENOTSOCK cell=kept
+O O3 bind unmapped                             len=0           EINVAL
+O O3 connect unmapped                          len=0           EINVAL
+O O3 getsockname unmapped                      len=0           OK cell=written
+O O3 getpeername unmapped                      len=0           OK cell=written
+O O3 accept unmapped, one queued               len=0           OK cell=written; then accept=EAGAIN
+O O4 bind NULL                                 len=0           EDESTADDRREQ
+O O4 connect NULL                              len=0           EINVAL
+O O4 getsockname NULL                          len=0           OK cell=written
+O O4 getpeername NULL                          len=0           OK cell=written
+O O4 accept NULL, one queued                   len=0           OK cell=kept; then accept=EAGAIN
+O O6 accept idle stream socket                 len=0           EINVAL cell=kept
+O O6 accept datagram socket                    len=0           EOPNOTSUPP cell=kept
+O O6 accept non-blocking, nothing queued       len=0           EAGAIN cell=kept
+O O1 bind closed                               len=16          EBADF
+O O1 connect closed                            len=16          EBADF
+O O1 getsockname closed                        len=16          EBADF cell=kept
+O O1 getpeername closed                        len=16          EBADF cell=kept
+O O1 accept closed                             len=16          EBADF cell=kept
+O O2 bind pipe                                 len=16          ENOTSOCK
+O O2 connect pipe                              len=16          ENOTSOCK
+O O2 getsockname pipe                          len=16          ENOTSOCK cell=kept
+O O2 getpeername pipe                          len=16          ENOTSOCK cell=kept
+O O2 accept pipe                               len=16          ENOTSOCK cell=kept
+O O3 bind unmapped                             len=16          EFAULT
+O O3 connect unmapped                          len=16          EFAULT
+O O3 getsockname unmapped                      len=16          EFAULT cell=kept
+O O3 getpeername unmapped                      len=16          EFAULT cell=kept
+O O3 accept unmapped, one queued               len=16          OK cell=kept; then accept=EAGAIN
+O O4 bind NULL                                 len=16          EDESTADDRREQ
+O O4 connect NULL                              len=16          EINVAL
+O O4 getsockname NULL                          len=16          EFAULT cell=kept
+O O4 getpeername NULL                          len=16          EFAULT cell=kept
+O O4 accept NULL, one queued                   len=16          OK cell=kept; then accept=EAGAIN
+O O6 accept idle stream socket                 len=16          EINVAL cell=kept
+O O6 accept datagram socket                    len=16          EOPNOTSUPP cell=kept
+O O6 accept non-blocking, nothing queued       len=16          EAGAIN cell=kept
+O O1 bind closed                               len=129         EBADF
+O O1 connect closed                            len=129         EBADF
+O O1 getsockname closed                        len=129         EBADF cell=kept
+O O1 getpeername closed                        len=129         EBADF cell=kept
+O O1 accept closed                             len=129         EBADF cell=kept
+O O2 bind pipe                                 len=129         ENOTSOCK
+O O2 connect pipe                              len=129         ENOTSOCK
+O O2 getsockname pipe                          len=129         ENOTSOCK cell=kept
+O O2 getpeername pipe                          len=129         ENOTSOCK cell=kept
+O O2 accept pipe                               len=129         ENOTSOCK cell=kept
+O O3 bind unmapped                             len=129         EFAULT
+O O3 connect unmapped                          len=129         EFAULT
+O O3 getsockname unmapped                      len=129         EFAULT cell=kept
+O O3 getpeername unmapped                      len=129         EFAULT cell=kept
+O O3 accept unmapped, one queued               len=129         OK cell=written; then accept=EAGAIN
+O O4 bind NULL                                 len=129         EDESTADDRREQ
+O O4 connect NULL                              len=129         EFAULT
+O O4 getsockname NULL                          len=129         EFAULT cell=kept
+O O4 getpeername NULL                          len=129         EFAULT cell=kept
+O O4 accept NULL, one queued                   len=129         OK cell=kept; then accept=EAGAIN
+O O6 accept idle stream socket                 len=129         EINVAL cell=kept
+O O6 accept datagram socket                    len=129         EOPNOTSUPP cell=kept
+O O6 accept non-blocking, nothing queued       len=129         EAGAIN cell=kept
+O O1 bind closed                               len=256         EBADF
+O O1 connect closed                            len=256         EBADF
+O O1 getsockname closed                        len=256         EBADF cell=kept
+O O1 getpeername closed                        len=256         EBADF cell=kept
+O O1 accept closed                             len=256         EBADF cell=kept
+O O2 bind pipe                                 len=256         ENOTSOCK
+O O2 connect pipe                              len=256         ENOTSOCK
+O O2 getsockname pipe                          len=256         ENOTSOCK cell=kept
+O O2 getpeername pipe                          len=256         ENOTSOCK cell=kept
+O O2 accept pipe                               len=256         ENOTSOCK cell=kept
+O O3 bind unmapped                             len=256         ENAMETOOLONG
+O O3 connect unmapped                          len=256         ENAMETOOLONG
+O O3 getsockname unmapped                      len=256         EFAULT cell=kept
+O O3 getpeername unmapped                      len=256         EFAULT cell=kept
+O O3 accept unmapped, one queued               len=256         OK cell=written; then accept=EAGAIN
+O O4 bind NULL                                 len=256         EDESTADDRREQ
+O O4 connect NULL                              len=256         ENAMETOOLONG
+O O4 getsockname NULL                          len=256         EFAULT cell=kept
+O O4 getpeername NULL                          len=256         EFAULT cell=kept
+O O4 accept NULL, one queued                   len=256         OK cell=kept; then accept=EAGAIN
+O O6 accept idle stream socket                 len=256         EINVAL cell=kept
+O O6 accept datagram socket                    len=256         EOPNOTSUPP cell=kept
+O O6 accept non-blocking, nothing queued       len=256         EAGAIN cell=kept
+O O5 getsockname, cell unmapped                len=0           EFAULT
+O O5 getsockname closed, cell unmapped         len=0           EBADF
+O O5 getpeername, cell unmapped                len=0           EFAULT
+O O5 getpeername closed, cell unmapped         len=0           EBADF
+O O5 accept closed, cell unmapped              len=0           EFAULT
+O O5 accept pipe, cell unmapped                len=0           EFAULT
+O O5 accept nothing queued, cell unmapped      len=0           EFAULT
+O O5 accept one queued, cell unmapped          len=0           EFAULT; then accept=OK
+O O7 bind pipe, mapped                         len=-1          ENOTSOCK
+O O7 connect pipe, mapped                      len=-1          ENOTSOCK
+O O7 bind pipe, unmapped                       len=-1          ENOTSOCK
+O O7 connect pipe, unmapped                    len=-1          ENOTSOCK
+O O7 bind pipe, mapped                         len=-2147483648 ENOTSOCK
+O O7 connect pipe, mapped                      len=-2147483648 ENOTSOCK
+O O7 bind pipe, unmapped                       len=-2147483648 ENOTSOCK
+O O7 connect pipe, unmapped                    len=-2147483648 ENOTSOCK
+O O7 bind pipe, mapped                         len=0           ENOTSOCK
+O O7 connect pipe, mapped                      len=0           ENOTSOCK
+O O7 bind pipe, unmapped                       len=0           ENOTSOCK
+O O7 connect pipe, unmapped                    len=0           ENOTSOCK
+O O7 bind pipe, mapped                         len=15          ENOTSOCK
+O O7 connect pipe, mapped                      len=15          ENOTSOCK
+O O7 bind pipe, unmapped                       len=15          ENOTSOCK
+O O7 connect pipe, unmapped                    len=15          ENOTSOCK
+O O7 bind pipe, mapped                         len=16          ENOTSOCK
+O O7 connect pipe, mapped                      len=16          ENOTSOCK
+O O7 bind pipe, unmapped                       len=16          ENOTSOCK
+O O7 connect pipe, unmapped                    len=16          ENOTSOCK
+O O7 bind pipe, mapped                         len=128         ENOTSOCK
+O O7 connect pipe, mapped                      len=128         ENOTSOCK
+O O7 bind pipe, unmapped                       len=128         ENOTSOCK
+O O7 connect pipe, unmapped                    len=128         ENOTSOCK
+O O7 bind pipe, mapped                         len=129         ENOTSOCK
+O O7 connect pipe, mapped                      len=129         ENOTSOCK
+O O7 bind pipe, unmapped                       len=129         ENOTSOCK
+O O7 connect pipe, unmapped                    len=129         ENOTSOCK
+O O7 bind pipe, mapped                         len=256         ENOTSOCK
+O O7 connect pipe, mapped                      len=256         ENOTSOCK
+O O7 bind pipe, unmapped                       len=256         ENOTSOCK
+O O7 connect pipe, unmapped                    len=256         ENOTSOCK
+O O7 bind file, mapped                         len=-1          ENOTSOCK
+O O7 connect file, mapped                      len=-1          ENOTSOCK
+O O7 bind file, unmapped                       len=-1          ENOTSOCK
+O O7 connect file, unmapped                    len=-1          ENOTSOCK
+O O7 bind file, mapped                         len=-2147483648 ENOTSOCK
+O O7 connect file, mapped                      len=-2147483648 ENOTSOCK
+O O7 bind file, unmapped                       len=-2147483648 ENOTSOCK
+O O7 connect file, unmapped                    len=-2147483648 ENOTSOCK
+O O7 bind file, mapped                         len=0           ENOTSOCK
+O O7 connect file, mapped                      len=0           ENOTSOCK
+O O7 bind file, unmapped                       len=0           ENOTSOCK
+O O7 connect file, unmapped                    len=0           ENOTSOCK
+O O7 bind file, mapped                         len=15          ENOTSOCK
+O O7 connect file, mapped                      len=15          ENOTSOCK
+O O7 bind file, unmapped                       len=15          ENOTSOCK
+O O7 connect file, unmapped                    len=15          ENOTSOCK
+O O7 bind file, mapped                         len=16          ENOTSOCK
+O O7 connect file, mapped                      len=16          ENOTSOCK
+O O7 bind file, unmapped                       len=16          ENOTSOCK
+O O7 connect file, unmapped                    len=16          ENOTSOCK
+O O7 bind file, mapped                         len=128         ENOTSOCK
+O O7 connect file, mapped                      len=128         ENOTSOCK
+O O7 bind file, unmapped                       len=128         ENOTSOCK
+O O7 connect file, unmapped                    len=128         ENOTSOCK
+O O7 bind file, mapped                         len=129         ENOTSOCK
+O O7 connect file, mapped                      len=129         ENOTSOCK
+O O7 bind file, unmapped                       len=129         ENOTSOCK
+O O7 connect file, unmapped                    len=129         ENOTSOCK
+O O7 bind file, mapped                         len=256         ENOTSOCK
+O O7 connect file, mapped                      len=256         ENOTSOCK
+O O7 bind file, unmapped                       len=256         ENOTSOCK
+O O7 connect file, unmapped                    len=256         ENOTSOCK
+O O7 bind kqueue, mapped                       len=-1          ENOTSOCK
+O O7 connect kqueue, mapped                    len=-1          ENOTSOCK
+O O7 bind kqueue, unmapped                     len=-1          ENOTSOCK
+O O7 connect kqueue, unmapped                  len=-1          ENOTSOCK
+O O7 bind kqueue, mapped                       len=-2147483648 ENOTSOCK
+O O7 connect kqueue, mapped                    len=-2147483648 ENOTSOCK
+O O7 bind kqueue, unmapped                     len=-2147483648 ENOTSOCK
+O O7 connect kqueue, unmapped                  len=-2147483648 ENOTSOCK
+O O7 bind kqueue, mapped                       len=0           ENOTSOCK
+O O7 connect kqueue, mapped                    len=0           ENOTSOCK
+O O7 bind kqueue, unmapped                     len=0           ENOTSOCK
+O O7 connect kqueue, unmapped                  len=0           ENOTSOCK
+O O7 bind kqueue, mapped                       len=15          ENOTSOCK
+O O7 connect kqueue, mapped                    len=15          ENOTSOCK
+O O7 bind kqueue, unmapped                     len=15          ENOTSOCK
+O O7 connect kqueue, unmapped                  len=15          ENOTSOCK
+O O7 bind kqueue, mapped                       len=16          ENOTSOCK
+O O7 connect kqueue, mapped                    len=16          ENOTSOCK
+O O7 bind kqueue, unmapped                     len=16          ENOTSOCK
+O O7 connect kqueue, unmapped                  len=16          ENOTSOCK
+O O7 bind kqueue, mapped                       len=128         ENOTSOCK
+O O7 connect kqueue, mapped                    len=128         ENOTSOCK
+O O7 bind kqueue, unmapped                     len=128         ENOTSOCK
+O O7 connect kqueue, unmapped                  len=128         ENOTSOCK
+O O7 bind kqueue, mapped                       len=129         ENOTSOCK
+O O7 connect kqueue, mapped                    len=129         ENOTSOCK
+O O7 bind kqueue, unmapped                     len=129         ENOTSOCK
+O O7 connect kqueue, unmapped                  len=129         ENOTSOCK
+O O7 bind kqueue, mapped                       len=256         ENOTSOCK
+O O7 connect kqueue, mapped                    len=256         ENOTSOCK
+O O7 bind kqueue, unmapped                     len=256         ENOTSOCK
+O O7 connect kqueue, unmapped                  len=256         ENOTSOCK
+O O7 bind AF_UNIX socket, mapped               len=-1          ENAMETOOLONG
+O O7 connect AF_UNIX socket, mapped            len=-1          ENAMETOOLONG
+O O7 bind AF_UNIX socket, unmapped             len=-1          ENAMETOOLONG
+O O7 connect AF_UNIX socket, unmapped          len=-1          ENAMETOOLONG
+O O7 bind AF_UNIX socket, mapped               len=-2147483648 ENAMETOOLONG
+O O7 connect AF_UNIX socket, mapped            len=-2147483648 ENAMETOOLONG
+O O7 bind AF_UNIX socket, unmapped             len=-2147483648 ENAMETOOLONG
+O O7 connect AF_UNIX socket, unmapped          len=-2147483648 ENAMETOOLONG
+O O7 bind AF_UNIX socket, mapped               len=0           EINVAL
+O O7 connect AF_UNIX socket, mapped            len=0           EINVAL
+O O7 bind AF_UNIX socket, unmapped             len=0           EINVAL
+O O7 connect AF_UNIX socket, unmapped          len=0           EINVAL
+O O7 bind AF_UNIX socket, mapped               len=15          EAFNOSUPPORT
+O O7 connect AF_UNIX socket, mapped            len=15          EAFNOSUPPORT
+O O7 bind AF_UNIX socket, unmapped             len=15          EFAULT
+O O7 connect AF_UNIX socket, unmapped          len=15          EFAULT
+O O7 bind AF_UNIX socket, mapped               len=16          EAFNOSUPPORT
+O O7 connect AF_UNIX socket, mapped            len=16          EAFNOSUPPORT
+O O7 bind AF_UNIX socket, unmapped             len=16          EFAULT
+O O7 connect AF_UNIX socket, unmapped          len=16          EFAULT
+O O7 bind AF_UNIX socket, mapped               len=128         EAFNOSUPPORT
+O O7 connect AF_UNIX socket, mapped            len=128         EAFNOSUPPORT
+O O7 bind AF_UNIX socket, unmapped             len=128         EFAULT
+O O7 connect AF_UNIX socket, unmapped          len=128         EFAULT
+O O7 bind AF_UNIX socket, mapped               len=129         EAFNOSUPPORT
+O O7 connect AF_UNIX socket, mapped            len=129         EAFNOSUPPORT
+O O7 bind AF_UNIX socket, unmapped             len=129         EFAULT
+O O7 connect AF_UNIX socket, unmapped          len=129         EFAULT
+O O7 bind AF_UNIX socket, mapped               len=256         ENAMETOOLONG
+O O7 connect AF_UNIX socket, mapped            len=256         ENAMETOOLONG
+O O7 bind AF_UNIX socket, unmapped             len=256         ENAMETOOLONG
+O O7 connect AF_UNIX socket, unmapped          len=256         ENAMETOOLONG
+O O7 bind AF_INET6 socket, mapped              len=-1          ENAMETOOLONG
+O O7 connect AF_INET6 socket, mapped           len=-1          ENAMETOOLONG
+O O7 bind AF_INET6 socket, unmapped            len=-1          ENAMETOOLONG
+O O7 connect AF_INET6 socket, unmapped         len=-1          ENAMETOOLONG
+O O7 bind AF_INET6 socket, mapped              len=-2147483648 ENAMETOOLONG
+O O7 connect AF_INET6 socket, mapped           len=-2147483648 ENAMETOOLONG
+O O7 bind AF_INET6 socket, unmapped            len=-2147483648 ENAMETOOLONG
+O O7 connect AF_INET6 socket, unmapped         len=-2147483648 ENAMETOOLONG
+O O7 bind AF_INET6 socket, mapped              len=0           EINVAL
+O O7 connect AF_INET6 socket, mapped           len=0           EINVAL
+O O7 bind AF_INET6 socket, unmapped            len=0           EINVAL
+O O7 connect AF_INET6 socket, unmapped         len=0           EINVAL
+O O7 bind AF_INET6 socket, mapped              len=15          EAFNOSUPPORT
+O O7 connect AF_INET6 socket, mapped           len=15          EAFNOSUPPORT
+O O7 bind AF_INET6 socket, unmapped            len=15          EFAULT
+O O7 connect AF_INET6 socket, unmapped         len=15          EFAULT
+O O7 bind AF_INET6 socket, mapped              len=16          EAFNOSUPPORT
+O O7 connect AF_INET6 socket, mapped           len=16          EAFNOSUPPORT
+O O7 bind AF_INET6 socket, unmapped            len=16          EFAULT
+O O7 connect AF_INET6 socket, unmapped         len=16          EFAULT
+O O7 bind AF_INET6 socket, mapped              len=128         EAFNOSUPPORT
+O O7 connect AF_INET6 socket, mapped           len=128         EAFNOSUPPORT
+O O7 bind AF_INET6 socket, unmapped            len=128         EFAULT
+O O7 connect AF_INET6 socket, unmapped         len=128         EFAULT
+O O7 bind AF_INET6 socket, mapped              len=129         EAFNOSUPPORT
+O O7 connect AF_INET6 socket, mapped           len=129         EAFNOSUPPORT
+O O7 bind AF_INET6 socket, unmapped            len=129         EFAULT
+O O7 connect AF_INET6 socket, unmapped         len=129         EFAULT
+O O7 bind AF_INET6 socket, mapped              len=256         ENAMETOOLONG
+O O7 connect AF_INET6 socket, mapped           len=256         ENAMETOOLONG
+O O7 bind AF_INET6 socket, unmapped            len=256         ENAMETOOLONG
+O O7 connect AF_INET6 socket, unmapped         len=256         ENAMETOOLONG
+B blocking accept len=-1          OK after ~200 ms; written=16; then accept=EAGAIN; client revents=0x11 recv=0
+B blocking accept len=-2147483648 OK after ~200 ms; written=16; then accept=EAGAIN; client revents=0x11 recv=0
+B blocking accept len=16          OK after ~200 ms; written=16; then accept=EAGAIN; client revents=0x11 recv=0
