@@ -1076,8 +1076,10 @@ module NativeSystemNative =
     /// This is the whole of PawPrint's half of `stat`. `UnixPathResolution.fstat`
     /// answers what a kernel knows; the layout it goes into is .NET's platform
     /// abstraction layer, which is PawPrint's business and not a POSIX
-    /// simulator's — so the offsets, the `FileStatusFlags` word and the fields
-    /// this kernel does not model are all decided here.
+    /// simulator's — so the offsets, the `FileStatusFlags` word and the
+    /// `UserFlags` encoding are decided here. The shim's struct carries no
+    /// `st_nlink`, `st_blksize` or `st_blocks`, so nothing here reads the
+    /// kernel's link count.
     ///
     /// The output struct is written as a **byte image at ABI offsets**, not by
     /// setting fields on the pointee type by name. That is what the C does — it
@@ -1144,21 +1146,14 @@ module NativeSystemNative =
              | None -> UnixTimestamp.epoch)
 
         putInt64 88 status.DeviceId
-        // `st_rdev`, non-zero only for device nodes, which the emulated
-        // filesystem cannot represent — so this kernel reports no such field and
-        // PawPrint writes what a real runtime would see for a file that is not
-        // one.
-        putInt64 96 0L
+        putInt64 96 status.SpecialFileDevice
 
         putInt64
             104
             (match status.Inode with
              | InodeNumber value -> value)
 
-        // macOS's `UF_HIDDEN`, gated on `HAVE_STAT_FLAGS`. The emulated kernel
-        // models no BSD file flags and nothing in its filesystem is hidden, so
-        // zero is the honest answer on either platform.
-        putUInt32 112 0u
+        putUInt32 112 (FileStatusPal.userFlags status.FileFlags)
 
         writeBytesThrough ctx operation output (ImmutableArray.CreateRange image) state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
@@ -2602,14 +2597,15 @@ module NativeSystemNative =
             // allocation pattern and its timer bucketing — depend on which
             // core the *interpreter* happened to be running on.
             //
-            // We report a real per-thread placement, not the `-1` "platform
-            // lacks sched_getcpu" sentinel (legitimate on macOS, and handled by
-            // CoreLib via a `Environment.CurrentManagedThreadId` fallback):
-            // PawPrint reports a Linux platform identity through
-            // `SystemNative_GetUnixRelease`, and on Linux the call works.
+            // The simulated flavour decides which build of the shim the guest
+            // is calling. Darwin's libc has no `sched_getcpu`, so its shim is
+            // built without HAVE_SCHED_GETCPU and answers -1 on every call (measured on
+            // Darwin 27.0.0 through the real libSystem.Native), which CoreLib
+            // reads as "not supported" and replaces with
+            // `Environment.CurrentManagedThreadId`.
             //
-            // The value is fixed at thread creation by
-            // `EmulatedKernel.cpuForRotation` and stored in
+            // Under Linux the value is the calling task's placement, fixed at
+            // thread creation by `EmulatedKernel.cpuForRotation` and stored in
             // `ThreadState.Cpu`; see there for why round-robin, and why
             // "pinned to" and "currently running on" coincide under a
             // scheduler that never migrates threads. It is returned verbatim
@@ -2617,11 +2613,11 @@ module NativeSystemNative =
             // kernel's env table live, so if environment mutation is ever
             // added, a re-derivation could silently turn a guest's shard index
             // into an out-of-range one.
-            let cpu = UnixTaskTable.cpuOf ctx.Thread state.Kernel.Tasks
-
-            let (CpuId.CpuId cpu) = cpu
-
-            pushInt32 cpu ctx |> Some
+            match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> pushInt32 (-1) ctx |> Some
+            | SimulatedUnixFlavour.Linux ->
+                let (CpuId.CpuId cpu) = UnixTaskTable.cpuOf ctx.Thread state.Kernel.Tasks
+                pushInt32 cpu ctx |> Some
         | Some "SystemNative_TryGetUInt32OSThreadId",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->

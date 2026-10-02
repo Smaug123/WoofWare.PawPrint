@@ -1,0 +1,113 @@
+KERNEL	Darwin 27.0.0 arm64	uid=501	fs_type=apfs	pagesize=16384
+NLINK	reg	names=1	via_a=1	via_fd=1
+NLINK	reg	names=2	via_a=2	via_b=2	via_fd=2
+NLINK	reg	names=3	via_a=3	via_b=3	via_c=3	via_fd=3
+NLINK	reg	after_rename_onto_own_link	via_a=3	via_fd=3
+NLINK	reg	names=2_after_unlink	via_b=2	via_fd=2
+NLINK	reg	names=1_after_displacement	via_b=1	via_fd=1
+NLINK	reg	names=0_held_open	via_fd=0
+ROW	reg_unlinked_held_open	kind=reg	nlink=0	rdev=0	size=0	blksize=4096	blocks=0	flags=0x0
+NLINK	lnk	names=1	via_l=1
+NLINK	lnk	names=2	via_l=2	via_l2=2	l2_kind=lnk
+DIR	empty	nlink=2
+DIR	1_file	nlink=3
+DIR	1_file_1_subdir	nlink=4
+DIR	1_file_1_subdir_with_contents	nlink=4	subdir_nlink=4
+DIR	+symlink_to_subdir	nlink=5
+DIR	+fifo	nlink=6
+DIR	+socket_node	nlink=7
+ORPHAN	rmdir	before=2	after=2
+ORPHAN	rmdir_after_child_removed	with_child=3	child_removed=2	after=2
+ORPHAN	rename_displaced	before=2	after=2	survivor=2
+ROW	dir_displaced_held_open	kind=dir	nlink=2	rdev=0	size=64	blksize=4096	blocks=0	flags=0x0
+ORPHAN	cwd_rmdir	stat_dot=2
+DIRHIST	seed=1	steps=500	max_names=169	max_subdirs=52	nlink==2+subdirs:3/500	nlink==2+names:500/500	fstat==stat:500/500
+DIRHIST	seed=2	steps=500	max_names=176	max_subdirs=61	nlink==2+subdirs:1/500	nlink==2+names:500/500	fstat==stat:500/500
+DIRHIST	seed=3	steps=500	max_names=172	max_subdirs=68	nlink==2+subdirs:4/500	nlink==2+names:500/500	fstat==stat:500/500
+DIRHIST	seed=4	steps=500	max_names=182	max_subdirs=62	nlink==2+subdirs:7/500	nlink==2+names:500/500	fstat==stat:500/500
+DIRHIST	seed=5	steps=500	max_names=156	max_subdirs=50	nlink==2+subdirs:6/500	nlink==2+names:500/500	fstat==stat:500/500
+DIRHIST	seed=6	steps=500	max_names=181	max_subdirs=66	nlink==2+subdirs:10/500	nlink==2+names:500/500	fstat==stat:500/500
+DIRHIST	seed=7	steps=500	max_names=165	max_subdirs=50	nlink==2+subdirs:2/500	nlink==2+names:500/500	fstat==stat:500/500
+DIRHIST	seed=8	steps=500	max_names=155	max_subdirs=56	nlink==2+subdirs:1/500	nlink==2+names:500/500	fstat==stat:500/500
+ROW	reg_fresh	kind=reg	nlink=1	rdev=0	size=0	blksize=4096	blocks=0	flags=0x0
+ROW	reg_dotfile_fresh	kind=reg	nlink=1	rdev=0	size=0	blksize=4096	blocks=0	flags=0x0
+ROW	dir_fresh_empty	kind=dir	nlink=4	rdev=0	size=128	blksize=4096	blocks=0	flags=0x0
+ROW	dir_fresh_sub	kind=dir	nlink=2	rdev=0	size=64	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_fresh	kind=lnk	nlink=1	rdev=0	size=4	blksize=4096	blocks=0	flags=0x0
+ROW	fifo_node_fresh	kind=fifo	nlink=1	rdev=0	size=0	blksize=4096	blocks=0	flags=0x0
+ROW	dev_null	kind=chr	nlink=1	rdev=50331650	size=0	blksize=65536	blocks=0	flags=0x0
+ROW	base	kind=dir	nlink=22	rdev=0	size=704	blksize=4096	blocks=0	flags=0x0
+ROW	reg_after_chflags_UF_HIDDEN	kind=reg	nlink=1	rdev=0	size=0	blksize=4096	blocks=0	flags=0x8000
+ROW	pipe_read_end	kind=fifo	nlink=0	rdev=0	size=0	blksize=16384	blocks=0	flags=0x0
+ROW	pipe_write_end	kind=fifo	nlink=0	rdev=0	size=0	blksize=16384	blocks=0	flags=0x0
+ROW	pipe_read_end_writer_closed	kind=fifo	nlink=0	rdev=0	size=0	blksize=16384	blocks=0	flags=0x0
+ROW	socket_inet_stream	kind=sock	nlink=0	rdev=0	size=0	blksize=131072	blocks=0	flags=0x0
+ROW	socket_inet_dgram	kind=sock	nlink=0	rdev=0	size=0	blksize=9216	blocks=0	flags=0x0
+ROW	socket_unix_stream	kind=sock	nlink=0	rdev=0	size=0	blksize=8192	blocks=0	flags=0x0
+ROW	kqueue	kind=fifo	nlink=0	rdev=0	size=0	blksize=32	blocks=0	flags=0x0
+BLOCKS	size=0	blksize=4096	blocks=0
+BLOCKS	size=1	blksize=4096	blocks=8
+BLOCKS	size=4097	blksize=4096	blocks=16
+BLOCKS	size=8193	blksize=4096	blocks=24
+BLOCKS	size=12289	blksize=4096	blocks=32
+BLOCKS	size=16385	blksize=4096	blocks=40
+BLOCKS	size=20481	blksize=4096	blocks=48
+BLOCKS	size=24577	blksize=4096	blocks=56
+BLOCKS	size=28673	blksize=4096	blocks=64
+BLOCKS	size=32769	blksize=4096	blocks=72
+BLOCKS	size=36865	blksize=4096	blocks=80
+BLOCKS	size=40961	blksize=4096	blocks=88
+BLOCKS	size=45057	blksize=4096	blocks=96
+BLOCKS	size=49153	blksize=4096	blocks=104
+BLOCKS	size=53249	blksize=4096	blocks=112
+BLOCKS	size=57345	blksize=4096	blocks=120
+BLOCKS	size=61441	blksize=4096	blocks=128
+BLOCKS	size=65537	blksize=4096	blocks=136
+BLOCKS	size=69633	blksize=4096	blocks=144
+BLOCKS	swept sizes 0..70000, one write(2) each, fstat before close
+ROW	reg_size_0_nosync	kind=reg	nlink=1	rdev=0	size=0	blksize=4096	blocks=0	flags=0x0
+ROW	reg_size_0_fsync	kind=reg	nlink=1	rdev=0	size=0	blksize=4096	blocks=0	flags=0x0
+ROW	reg_size_0_closed	kind=reg	nlink=1	rdev=0	size=0	blksize=4096	blocks=0	flags=0x0
+ROW	reg_size_1_nosync	kind=reg	nlink=1	rdev=0	size=1	blksize=4096	blocks=8	flags=0x0
+ROW	reg_size_1_fsync	kind=reg	nlink=1	rdev=0	size=1	blksize=4096	blocks=8	flags=0x0
+ROW	reg_size_1_closed	kind=reg	nlink=1	rdev=0	size=1	blksize=4096	blocks=8	flags=0x0
+ROW	reg_size_4095_nosync	kind=reg	nlink=1	rdev=0	size=4095	blksize=4096	blocks=8	flags=0x0
+ROW	reg_size_4095_fsync	kind=reg	nlink=1	rdev=0	size=4095	blksize=4096	blocks=8	flags=0x0
+ROW	reg_size_4095_closed	kind=reg	nlink=1	rdev=0	size=4095	blksize=4096	blocks=8	flags=0x0
+ROW	reg_size_4096_nosync	kind=reg	nlink=1	rdev=0	size=4096	blksize=4096	blocks=8	flags=0x0
+ROW	reg_size_4096_fsync	kind=reg	nlink=1	rdev=0	size=4096	blksize=4096	blocks=8	flags=0x0
+ROW	reg_size_4096_closed	kind=reg	nlink=1	rdev=0	size=4096	blksize=4096	blocks=8	flags=0x0
+ROW	reg_size_4097_nosync	kind=reg	nlink=1	rdev=0	size=4097	blksize=4096	blocks=16	flags=0x0
+ROW	reg_size_4097_fsync	kind=reg	nlink=1	rdev=0	size=4097	blksize=4096	blocks=16	flags=0x0
+ROW	reg_size_4097_closed	kind=reg	nlink=1	rdev=0	size=4097	blksize=4096	blocks=16	flags=0x0
+ROW	reg_size_1048576_nosync	kind=reg	nlink=1	rdev=0	size=1048576	blksize=4096	blocks=2048	flags=0x0
+ROW	reg_size_1048576_fsync	kind=reg	nlink=1	rdev=0	size=1048576	blksize=4096	blocks=2048	flags=0x0
+ROW	reg_size_1048576_closed	kind=reg	nlink=1	rdev=0	size=1048576	blksize=4096	blocks=2048	flags=0x0
+ROW	reg_ftruncate_to_1MiB	kind=reg	nlink=1	rdev=0	size=1048576	blksize=4096	blocks=0	flags=0x0
+ROW	reg_one_byte_at_1MiB	kind=reg	nlink=1	rdev=0	size=1048577	blksize=4096	blocks=8	flags=0x0
+ROW	reg_one_byte_at_1MiB_fsync	kind=reg	nlink=1	rdev=0	size=1048577	blksize=4096	blocks=2056	flags=0x0
+ROW	reg_1MiB_then_ftruncate_to_1	kind=reg	nlink=1	rdev=0	size=1	blksize=4096	blocks=8	flags=0x0
+ROW	reg_1MiB_then_ftruncate_to_1_fsync	kind=reg	nlink=1	rdev=0	size=1	blksize=4096	blocks=8	flags=0x0
+ROW	reg_8192_then_overwrite_first_byte	kind=reg	nlink=1	rdev=0	size=8192	blksize=4096	blocks=16	flags=0x0
+ROW	dir_0_names	kind=dir	nlink=2	rdev=0	size=64	blksize=4096	blocks=0	flags=0x0
+ROW	dir_100_names	kind=dir	nlink=102	rdev=0	size=3264	blksize=4096	blocks=0	flags=0x0
+ROW	dir_1000_names	kind=dir	nlink=1002	rdev=0	size=32064	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_1	kind=lnk	nlink=1	rdev=0	size=1	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_59	kind=lnk	nlink=1	rdev=0	size=59	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_60	kind=lnk	nlink=1	rdev=0	size=60	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_61	kind=lnk	nlink=1	rdev=0	size=61	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_127	kind=lnk	nlink=1	rdev=0	size=127	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_128	kind=lnk	nlink=1	rdev=0	size=128	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_255	kind=lnk	nlink=1	rdev=0	size=255	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_256	kind=lnk	nlink=1	rdev=0	size=256	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_1000	kind=lnk	nlink=1	rdev=0	size=1000	blksize=4096	blocks=0	flags=0x0
+ROW	lnk_target_4000	symlink=File name too long
+ROW	lnk_target_4095	symlink=File name too long
+ROOT	initial	names=1	subdirs=1	nlink=3
+ROOT	+dir	names=2	subdirs=2	nlink=4
+ROOT	+dir	names=3	subdirs=3	nlink=5
+ROOT	+dir	names=4	subdirs=4	nlink=6
+ROOT	+file	names=5	subdirs=4	nlink=7
+ROOT	+file	names=6	subdirs=4	nlink=8
+ROOT	+file	names=7	subdirs=4	nlink=9
+ROW	root	kind=dir	nlink=9	rdev=0	size=288	blksize=4096	blocks=0	flags=0x0

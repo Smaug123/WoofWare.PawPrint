@@ -7,9 +7,11 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `VirtualFileSystem.bindingCount` answers from a count the filesystem keeps
-/// beside its graph. These hold that count to the definition it replaces: a
-/// scan of every entry of every directory.
+/// `VirtualFileSystem.bindingCount` and `subdirectoryCount` answer from counts
+/// the filesystem keeps beside its graph, and `entryCount` from the names it
+/// keeps sorted. These hold each to its definition, a scan of the entries, and
+/// hold the `st_nlink` that `stat` reports from them to the rule measured on
+/// each filesystem.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestBindingCount =
@@ -67,6 +69,104 @@ module TestBindingCount =
             | None -> false
         )
 
+    let private isDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
+        match VirtualFileSystem.tryGetContent inode vfs with
+        | Some (InodeContent.Directory _) -> true
+        | Some _
+        | None -> false
+
+    /// The definition of `entryCount`: the names the directory at `inode`
+    /// binds.
+    let private scannedEntryCount (inode : InodeNumber) (vfs : VirtualFileSystem) : int =
+        match VirtualFileSystem.tryGetContent inode vfs with
+        | Some (InodeContent.Directory directory) -> Map.count directory.Entries
+        | Some _
+        | None -> 0
+
+    /// The definition of `subdirectoryCount`: the entries of the directory at
+    /// `inode` that name a directory.
+    let private scannedSubdirectoryCount (inode : InodeNumber) (vfs : VirtualFileSystem) : int =
+        match VirtualFileSystem.tryGetContent inode vfs with
+        | Some (InodeContent.Directory directory) ->
+            directory.Entries
+            |> Map.toSeq
+            |> Seq.filter (fun (_, target) -> isDirectory target vfs)
+            |> Seq.length
+        | Some _
+        | None -> 0
+
+    /// The `st_nlink` measured on each filesystem by `stat-fields.c`, from the
+    /// scans alone, or `None` where `stat` must refuse. Every directory here is
+    /// far below Darwin's 65535 ceiling.
+    let private measuredLinkCount
+        (fsType : EmulatedFileSystemType)
+        (inode : InodeNumber)
+        (vfs : VirtualFileSystem)
+        : int64 option
+        =
+        match VirtualFileSystem.tryGetContent inode vfs with
+        | None -> failwith $"test bug: inode %O{inode} is not in the graph"
+        | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.Symlink _) -> Some (int64 (scannedBindingCount inode vfs))
+        | Some (InodeContent.Directory _) ->
+            match fsType with
+            | EmulatedFileSystemType.Tmpfs ->
+                if scannedIsOrphanedDirectory inode vfs then
+                    Some 0L
+                else
+                    Some (2L + int64 (scannedSubdirectoryCount inode vfs))
+            | EmulatedFileSystemType.Apfs -> Some (2L + int64 (scannedEntryCount inode vfs))
+            | EmulatedFileSystemType.Nfs -> None
+
+    /// A system on each flavour's default filesystem and on NFS, whose
+    /// filesystem a check replaces with the graph under test. `statOf` reads
+    /// nothing of a system but its filesystem, its mount and its platform.
+    let private statSystems : (SimulatedUnixPlatform * EmulatedFileSystemType * UnixSystem<int, string>) list =
+        [
+            SimulatedUnixPlatform.linuxX64, EmulatedFileSystemType.Tmpfs
+            SimulatedUnixPlatform.macOsArm64, EmulatedFileSystemType.Apfs
+            SimulatedUnixPlatform.linuxX64, EmulatedFileSystemType.Nfs
+            SimulatedUnixPlatform.macOsArm64, EmulatedFileSystemType.Nfs
+        ]
+        |> List.map (fun (platform, fsType) ->
+            let system : UnixSystem<int, string> =
+                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+            platform,
+            fsType,
+            { system with
+                Machine = UnixMachineState.withMount (Some (EmulatedMount.defaultOf fsType)) system.Machine
+            }
+        )
+
+    /// What `stat` reports for every inode of `vfs` agrees with the rule
+    /// measured on each filesystem.
+    let private assertStatAgrees (context : string) (vfs : VirtualFileSystem) : unit =
+        for platform, fsType, system in statSystems do
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = vfs
+                        }
+                }
+
+            let darwin = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Darwin
+
+            for inode in VirtualFileSystem.inodes vfs |> Map.keys do
+                match UnixPathResolution.statOf inode system, measuredLinkCount fsType inode vfs with
+                | Some (Ok status), Some expected ->
+                    if status.LinkCount <> expected then
+                        failwith
+                            $"%s{context}: on %O{fsType}, stat of inode %O{inode} reports st_nlink %d{status.LinkCount}, but the measured rule says %d{expected}"
+
+                    status.SpecialFileDevice |> shouldEqual 0L
+                    status.FileFlags |> shouldEqual (if darwin then Some 0u else None)
+                | Some (Error (StatRefusal.NfsDirectorySize refused)), None -> refused |> shouldEqual inode
+                | answer, expected ->
+                    failwith
+                        $"%s{context}: on %O{fsType}, stat of inode %O{inode} answered %A{answer}, where the measured rule is %A{expected}"
+
     /// The stored count and the scan agree on every inode the graph holds, on
     /// the next inode it would allocate, and on one it never will; and
     /// everything that consults the count answers as it did over the scan.
@@ -93,6 +193,22 @@ module TestBindingCount =
             if orphaned <> scannedOrphaned then
                 failwith
                     $"%s{context}: isOrphanedDirectory of inode %O{inode} is %b{orphaned}, but over the scan it is %b{scannedOrphaned}"
+
+            let subdirectories = VirtualFileSystem.subdirectoryCount inode vfs
+            let scannedSubdirectories = scannedSubdirectoryCount inode vfs
+
+            if subdirectories <> scannedSubdirectories then
+                failwith
+                    $"%s{context}: subdirectoryCount of inode %O{inode} is %d{subdirectories}, but %d{scannedSubdirectories} of its entries name a directory"
+
+            let entries = VirtualFileSystem.entryCount inode vfs
+            let scannedEntries = scannedEntryCount inode vfs
+
+            if entries <> scannedEntries then
+                failwith
+                    $"%s{context}: entryCount of inode %O{inode} is %d{entries}, but it binds %d{scannedEntries} names"
+
+        assertStatAgrees context vfs
 
         match VirtualFileSystem.checkInvariants pinned vfs with
         | [] -> ()
@@ -166,6 +282,12 @@ module TestBindingCount =
         | RenameAcrossDirectories
         | RenameOverExisting
         | RenameDirectory
+        /// A rename displaced a directory, which leaves its parent with one
+        /// subdirectory fewer.
+        | RenameOverDirectory
+        /// A directory had lost its last name while something held it, so
+        /// `stat` reported an orphan.
+        | OrphanedDirectory
         | Forget
         | ForgetCascade
         | Chmod
@@ -454,6 +576,10 @@ module TestBindingCount =
                 | None -> vfs, pinned
                 | Some displaced ->
                     record Reached.RenameOverExisting
+
+                    if isDirectory displaced vfs then
+                        record Reached.RenameOverDirectory
+
                     reap record pinned displaced vfs, pinned
             | _ -> vfs, pinned
         | Op.Hold (i, directory) ->
@@ -505,6 +631,13 @@ module TestBindingCount =
             (fun state (index, op) ->
                 let vfs, pinned = apply record (tick (index + 1)) op state
                 assertAgrees $"after step %d{index}, %A{op}" (withAncestors pinned vfs) vfs
+
+                if
+                    VirtualFileSystem.inodes vfs
+                    |> Map.exists (fun inode _ -> scannedIsOrphanedDirectory inode vfs)
+                then
+                    record Reached.OrphanedDirectory
+
                 vfs, pinned
             )
             (vfs, Set.empty)
@@ -533,13 +666,15 @@ module TestBindingCount =
                 Reached.MakeDirectory
                 Reached.MakeDirectory
                 Reached.RemoveDirectory
+                Reached.OrphanedDirectory
                 Reached.RemoveDirectory
+                Reached.OrphanedDirectory
                 Reached.Forget
                 Reached.ForgetCascade
             ]
 
     [<Test>]
-    let ``the stored binding count is the scan, through any history`` () : unit =
+    let ``the stored counts are the scans, and stat's link count is the measured rule, through any history`` () : unit =
         let reached = System.Collections.Concurrent.ConcurrentDictionary<Reached, int> ()
 
         let record (r : Reached) : unit =
@@ -564,6 +699,8 @@ module TestBindingCount =
                 Reached.RenameAcrossDirectories
                 Reached.RenameOverExisting
                 Reached.RenameDirectory
+                Reached.RenameOverDirectory
+                Reached.OrphanedDirectory
                 Reached.Forget
                 Reached.ForgetCascade
                 Reached.Chmod
@@ -619,6 +756,59 @@ module TestBindingCount =
         |> shouldEqual [ VirtualFileSystemDefect.BindingCountMismatch (root, Some 0, 0) ]
 
     [<Test>]
+    let ``checkInvariants reports a stored subdirectory count that disagrees with the entries`` () : unit =
+        let vfs = VirtualFileSystem.empty buildTime Owners.linuxDefault
+        let root = VirtualFileSystem.root vfs
+
+        let directory, vfs =
+            VirtualFileSystem.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
+            |> ok "mkdir d"
+
+        let _, vfs =
+            VirtualFileSystem.createDirectory directory (name "e") dirPerms Owners.linuxDefault buildTime vfs
+            |> ok "mkdir d/e"
+
+        let _, vfs =
+            VirtualFileSystem.createFile
+                directory
+                (name "f")
+                filePerms
+                Owners.linuxDefault
+                buildTime
+                ImmutableArray.Empty
+                vfs
+            |> ok "create d/f"
+
+        VirtualFileSystem.checkInvariants Set.empty vfs |> shouldEqual []
+        VirtualFileSystem.subdirectoryCount root vfs |> shouldEqual 1
+        VirtualFileSystem.subdirectoryCount directory vfs |> shouldEqual 1
+
+        let forged (inode : InodeNumber) (count : int option) : VirtualFileSystemDefect list =
+            VirtualFileSystem.checkInvariants
+                Set.empty
+                (VirtualFileSystem.Unchecked.setSubdirectoryCount inode count vfs)
+
+        // Counting the file as well, and counting nothing.
+        forged directory (Some 2)
+        |> shouldEqual [ VirtualFileSystemDefect.SubdirectoryCountMismatch (directory, Some 2, 1) ]
+
+        forged directory None
+        |> shouldEqual [ VirtualFileSystemDefect.SubdirectoryCountMismatch (directory, None, 1) ]
+
+        // A count for a directory with no subdirectory.
+        let empty =
+            match VirtualFileSystem.tryGetContent directory vfs with
+            | Some (InodeContent.Directory content) -> content.Entries.[name "e"]
+            | other -> failwith $"test bug: %A{other}"
+
+        forged empty (Some 1)
+        |> shouldEqual [ VirtualFileSystemDefect.SubdirectoryCountMismatch (empty, Some 1, 0) ]
+
+        // A stored zero agrees in value, but only non-zero counts are stored.
+        forged empty (Some 0)
+        |> shouldEqual [ VirtualFileSystemDefect.SubdirectoryCountMismatch (empty, Some 0, 0) ]
+
+    [<Test>]
     let ``Unchecked.ofParts stores the counts its entries imply`` () : unit =
         // A test that forges a graph to exercise some other defect must not
         // also trip over the count, or every such test would report two.
@@ -646,6 +836,19 @@ module TestBindingCount =
 
         VirtualFileSystem.bindingCount file forged |> shouldEqual 2
         forged |> shouldEqual vfs
+
+        let _, withDirectory =
+            VirtualFileSystem.createDirectory root (name "d") dirPerms Owners.linuxDefault buildTime vfs
+            |> ok "mkdir"
+
+        let forged =
+            VirtualFileSystem.Unchecked.ofParts
+                (VirtualFileSystem.inodes withDirectory)
+                (VirtualFileSystem.root withDirectory)
+                (VirtualFileSystem.nextInode withDirectory)
+
+        VirtualFileSystem.subdirectoryCount root forged |> shouldEqual 1
+        forged |> shouldEqual withDirectory
 
     [<Test>]
     let ``forget refuses a directory that still holds entries`` () : unit =

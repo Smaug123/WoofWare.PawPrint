@@ -7,11 +7,24 @@ open System.Reflection.Metadata
 open System.Runtime.CompilerServices
 open Microsoft.Extensions.Logging
 
+/// A method a call runs, as its definition and the generic arguments it runs with, before
+/// `MethodConcretisation.concretizeMethodWithAllGenerics` instantiates it.
+type DispatchedMethod =
+    {
+        /// The method's definition.
+        Definition : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        /// Its declaring type's generic arguments.
+        TypeGenerics : ImmutableArray<ConcreteTypeHandle>
+        /// Its own generic arguments.
+        MethodGenerics : ImmutableArray<ConcreteTypeHandle>
+    }
+
 /// The body a virtual or interface call lands on, given the receiver's runtime type.
 [<RequireQualifiedAccess>]
 type VirtualImplementation =
-    /// This method.
-    | Found of WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+    /// This method, not yet instantiated: CoreCLR reads a method's locals only when it compiles
+    /// the method, so choosing it does not.
+    | Found of DispatchedMethod
     /// Nothing overrides the method the call names, which for a `callvirt` means that method runs.
     | NotOverridden
     /// More than one default interface body is most specific for the method, so the call throws
@@ -50,7 +63,7 @@ module ConcreteVirtualDispatch =
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (dispatchTypeHandle : ConcreteTypeHandle)
         (state : TypeSystemState)
-        : (TypeSystemState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>) option
+        : (TypeSystemState * DispatchedMethod) option
         =
         match dispatchTypeHandle with
         // Multi-dimensional arrays deliberately do *not* participate: CoreCLR's
@@ -177,17 +190,14 @@ module ConcreteVirtualDispatch =
         // `Array.CoreCLR.cs`). It survives our calling convention because `SZArrayHelper` is a
         // reference type, so `callMethod`'s `thisArgCoercionTarget` yields `CliType.ObjectRef`,
         // whose coercion passes the object reference through without a type check.
-        let state, meth, _ =
-            MethodConcretisation.concretizeMethodWithAllGenerics
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                ImmutableArray.Empty
-                implementation
-                (ImmutableArray.Create instantiation)
-                state
-
-        Some (state, meth)
+        Some (
+            state,
+            {
+                Definition = implementation
+                TypeGenerics = ImmutableArray.Empty
+                MethodGenerics = ImmutableArray.Create instantiation
+            }
+        )
 
     let private tryResolveVirtualImplementationForSlot
         (loggerFactory : ILoggerFactory)
@@ -641,31 +651,25 @@ module ConcreteVirtualDispatch =
                                 $"MethodImpl body for %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} was not a MethodDef: %O{other}"
             )
 
-        let concretizeImplementation
+        let dispatchedOn
             (implementationTypeHandle : ConcreteTypeHandle)
             (implementation : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
             (state : TypeSystemState)
-            : TypeSystemState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+            : DispatchedMethod
             =
             let typeGenerics =
                 AllConcreteTypes.lookup implementationTypeHandle state.ConcreteTypes
                 |> Option.defaultWith (fun () ->
                     failwith
-                        $"Implementation declaring type handle %O{implementationTypeHandle} was not registered while concretizing %s{MethodOwner.describe implementation.Owner}::%s{implementation.Name}"
+                        $"Implementation declaring type handle %O{implementationTypeHandle} was not registered while dispatching to %s{MethodOwner.describe implementation.Owner}::%s{implementation.Name}"
                 )
                 |> _.Generics
 
-            let state, meth, _ =
-                MethodConcretisation.concretizeMethodWithAllGenerics
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    baseClassTypes
-                    typeGenerics
-                    implementation
-                    methodGenerics
-                    state
-
-            state, meth
+            {
+                Definition = implementation
+                TypeGenerics = typeGenerics
+                MethodGenerics = methodGenerics
+            }
 
         /// The receiver's class chain, most-derived first, as `(handle, identity)`.
         ///
@@ -977,8 +981,7 @@ module ConcreteVirtualDispatch =
         match classImplementation with
         | Some (implementationTypeHandle, impl, logMessage) ->
             logger.LogDebug logMessage
-            let state, impl = concretizeImplementation implementationTypeHandle impl state
-            state, VirtualImplementation.Found impl
+            state, VirtualImplementation.Found (dispatchedOn implementationTypeHandle impl state)
         | None when not walkBaseTypes -> state, VirtualImplementation.NotOverridden
         | None ->
 
@@ -1216,8 +1219,7 @@ module ConcreteVirtualDispatch =
                 meth.Generics
             )
 
-            let state, meth = concretizeImplementation implementationTypeHandle meth state
-            state, VirtualImplementation.Found meth
+            state, VirtualImplementation.Found (dispatchedOn implementationTypeHandle meth state)
         | _ ->
             // Candidates are matched allowing variance, so through a variant interface they may
             // all be variance-compatible ones, among which CoreCLR's variance pass picks rather
@@ -1625,14 +1627,10 @@ module ConcreteVirtualDispatch =
                 walkBaseTypes
                 state
 
-        let isDefaultInterfaceBody
-            (state : TypeSystemState)
-            (meth : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-            : bool
-            =
+        let isDefaultInterfaceBody (state : TypeSystemState) (meth : DispatchedMethod) : bool =
             state
-                .LoadedAssembly(meth.DeclaringAssemblyFullName)
-                .Value.TypeDefs.[meth.RequiredDeclaringType.Definition.Get].IsInterface
+                .LoadedAssembly(meth.Definition.DeclaringAssemblyFullName)
+                .Value.TypeDefs.[meth.Definition.RequiredDeclaringType.Definition.Get].IsInterface
 
         let rec firstResolved
             (state : TypeSystemState)
@@ -1679,7 +1677,7 @@ module ConcreteVirtualDispatch =
                     // The dispatch map's variance pass already considered every entry this could
                     // have come from, so a class implementation here means the two disagree.
                     failwith
-                        $"variant interface dispatch of %s{methodToCall.Name}: the dispatch map found no class implementation through any variance-compatible entry, but retargeting onto %O{retargeted.DeclaringTypeGenerics} found %s{MethodOwner.describe resolved.Owner}::%s{resolved.Name}"
+                        $"variant interface dispatch of %s{methodToCall.Name}: the dispatch map found no class implementation through any variance-compatible entry, but retargeting onto %O{retargeted.DeclaringTypeGenerics} found %s{MethodOwner.describe resolved.Definition.Owner}::%s{resolved.Definition.Name}"
 
         firstResolved state retargets
 
@@ -1767,18 +1765,15 @@ module ConcreteVirtualDispatch =
                 opName
                 methodToCall.Name
         | VirtualImplementation.Unmodelled reason -> failwith $"%s{opName}: %s{reason}"
-        | VirtualImplementation.Found implementation when not implementation.IsStatic ->
+        | VirtualImplementation.Found implementation when not implementation.Definition.IsStatic ->
             failwith
-                $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Owner}::%s{implementation.Name}"
+                $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Definition.Owner}::%s{implementation.Definition.Name}"
         | VirtualImplementation.Found implementation ->
-            let declaringTypeHandle =
-                AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
-                    implementation.RequiredDeclaringType.Identity
-                    implementation.DeclaringTypeGenerics
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{opName}: resolved implementation declaring type %s{MethodOwner.describe implementation.Owner} is not registered"
-                )
-
-            state, implementation, declaringTypeHandle
+            MethodConcretisation.concretizeMethodWithAllGenerics
+                loggerFactory
+                dotnetRuntimeDirs
+                baseClassTypes
+                implementation.TypeGenerics
+                implementation.Definition
+                implementation.MethodGenerics
+                state
