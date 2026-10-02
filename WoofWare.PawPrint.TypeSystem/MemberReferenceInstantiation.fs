@@ -239,6 +239,9 @@ module MemberReferenceInstantiation =
 
                 let failure = FieldReferenceFailure.ParentTypeMissing (typeName, searchedIn)
                 state, assy.Name, Choice2Of2 (FieldReferenceBinding.Fails failure), ImmutableArray.Empty
+            | FieldReferenceTarget.ParentAssemblyUnavailable reference ->
+                refuse
+                    $"has a parent whose load needs %s{reference.FullName}, which no runtime directory supplies, so CoreCLR throws FileNotFoundException; that is not modelled"
             | FieldReferenceTarget.DependsOnInstantiation ->
                 refuse
                     "has a type variable for its parent, whose instantiation resolution does not yet take into account"
@@ -391,6 +394,9 @@ module MemberReferenceInstantiation =
             | MethodReferenceTarget.ParentTypeMissing miss ->
                 refuse
                     $"has a parent that names no type (%O{miss}), so CoreCLR throws TypeLoadException; that is not modelled"
+            | MethodReferenceTarget.ParentAssemblyUnavailable reference ->
+                refuse
+                    $"has a parent whose load needs %s{reference.FullName}, which no runtime directory supplies, so CoreCLR throws FileNotFoundException; that is not modelled"
             | MethodReferenceTarget.DependsOnInstantiation ->
                 refuse
                     "names a method that depends on how a type variable of the referencing context is instantiated, which resolution does not yet take into account"

@@ -1302,10 +1302,8 @@ public static class Uses
             if not (unbound.Contains failure) then
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
 
-        // With no provider at all, binding a token naming it fails to find the assembly, and the
-        // real runtime raises `FileNotFoundException`. A member reference whose parent is in the
-        // missing assembly (`Read`, `CallGone`, `CaughtCallGone`, `UseGoneType`, `ListOfGone`,
-        // `PassGoneAsVararg`) stops the analysis instead.
+        // With no provider at all, binding any token naming it fails to find the assembly, and the
+        // real runtime raises `FileNotFoundException`.
         let againstNone =
             let mutable analysis = analysisOver [ clientAssembly ] id
 
@@ -1318,11 +1316,17 @@ public static class Uses
 
         let unmet =
             [
+                "Read"
+                "CallGone"
+                "CaughtCallGone"
+                "UseGoneType"
                 "IsGone"
+                "ListOfGone"
                 "LocalOfGone"
                 "CaughtLocalOfGone"
                 "CatchGone"
                 "PassGone"
+                "PassGoneAsVararg"
                 "CallGoneIndirectly"
             ]
             |> List.choose (fun methodName ->
