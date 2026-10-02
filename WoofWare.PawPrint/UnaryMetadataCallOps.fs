@@ -806,7 +806,14 @@ module internal UnaryMetadataCallOps =
                     state, method, Some spec.Signature, None, None
                 | MetadataToken.MemberReference ref ->
                     let state, _, method, extractedTypeArgs =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy ref state
+                        IlMachineState.resolveMember
+                            (MemberReferenceUse.Other "call")
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ref
+                            state
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Call a field"
@@ -814,7 +821,14 @@ module internal UnaryMetadataCallOps =
                 | k -> failwith $"Unrecognised kind: %O{k}"
             | MetadataToken.MemberReference h ->
                 let state, _, method, extractedTypeArgs =
-                    IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy h state
+                    IlMachineState.resolveMember
+                        (MemberReferenceUse.Other "call")
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        activeAssy
+                        h
+                        state
 
                 match method with
                 | Choice2Of2 _field -> failwith "tried to Call a field"
@@ -1235,7 +1249,14 @@ module internal UnaryMetadataCallOps =
                         state, method, None, Some typeArgs, Some methodGenerics
                 | MetadataToken.MemberReference ref ->
                     let state, _, method, extractedTypeArgs =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy ref state
+                        IlMachineState.resolveMember
+                            (MemberReferenceUse.Other "callvirt")
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            ref
+                            state
 
                     match method with
                     | Choice2Of2 _field -> failwith "tried to Callvirt a field"
@@ -1243,7 +1264,14 @@ module internal UnaryMetadataCallOps =
                 | k -> failwith $"Unrecognised kind: %O{k}"
             | MetadataToken.MemberReference h ->
                 let state, _, method, extractedTypeArgs =
-                    IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy h state
+                    IlMachineState.resolveMember
+                        (MemberReferenceUse.Other "callvirt")
+                        loggerFactory
+                        baseClassTypes
+                        thread
+                        activeAssy
+                        h
+                        state
 
                 match method with
                 | Choice2Of2 _field -> failwith "tried to Callvirt a field"

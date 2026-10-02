@@ -136,7 +136,14 @@ module internal UnaryMetadataFieldOps =
                     state, field
             | MetadataToken.MemberReference mr ->
                 let state, _, resolved, _ =
-                    IlMachineState.resolveMember ctx.LoggerFactory ctx.BaseClassTypes ctx.Thread activeAssy mr state
+                    IlMachineState.resolveMember
+                        (MemberReferenceUse.Other opName)
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        ctx.Thread
+                        activeAssy
+                        mr
+                        state
 
                 match resolved with
                 | Choice1Of2 method ->

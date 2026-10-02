@@ -77,7 +77,14 @@ module internal TypeofIntrinsicFold =
                 match activeAssy.Members.TryGetValue h with
                 | true, row when row.PrettyName = name ->
                     let state, _, resolved, _ =
-                        IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy h state
+                        IlMachineState.resolveMember
+                            (MemberReferenceUse.Other "call")
+                            loggerFactory
+                            baseClassTypes
+                            thread
+                            activeAssy
+                            h
+                            state
 
                     match resolved with
                     | Choice1Of2 method -> state, isDeclaredOnCorelibSystemType baseClassTypes method
