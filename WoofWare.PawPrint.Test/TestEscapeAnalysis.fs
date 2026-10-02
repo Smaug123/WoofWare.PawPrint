@@ -3095,6 +3095,13 @@ public static class Holder<T> where T : IProbe
                 Claim = DispatchClaim.Precise
                 Raises = [ dividesByZero ; overflows ]
             }
+            // Implements `IStatic` through `IShadow`, whose `new static virtual Probe` is another
+            // method, so `IStatic`'s own default body runs.
+            {
+                Name = "ThroughShadow"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
         ]
 
     let private staticShapes : DispatchShape list =
@@ -3161,6 +3168,8 @@ public class ReimplementsQuiet : OpenAdds, IStatic { static int IStatic.Probe(in
 public class ShadowsQuiet : OpenAdds { public static new int Probe(int a, int b) => unchecked(a + b); }
 public abstract class AbstractAdds : IStatic { public static int Probe(int a, int b) => checked(a + b); }
 public class OpenUsesDefault : IStatic { }
+public interface IShadow : IStatic { static new virtual int Probe(int a, int b) => checked(a + b); }
+public class ThroughShadow : IShadow { }
 
 public struct Wrapper<T> : IStatic where T : IStatic
 {
@@ -3174,6 +3183,18 @@ public interface IVariant<in T>
 
 public class VariantBase : IVariant<string> { static int IVariant<string>.Probe(int a, int b) => checked(a + b); }
 public class VariantDerived : VariantBase, IVariant<object> { static int IVariant<object>.Probe(int a, int b) => a / b; }
+
+public interface IExact<in T> { static abstract int Probe(int a, int b); }
+public interface IExactString : IExact<string> { static int IExact<string>.Probe(int a, int b) => a / b; }
+public interface IExactObject : IExactString, IExact<object> { static int IExact<object>.Probe(int a, int b) => checked(a + b); }
+public class ExactDefault : IExactObject { }
+
+public class ExactBoth : IExact<string>, IExact<object>
+{
+    static int IExact<string>.Probe(int a, int b) => a / b;
+    static int IExact<object>.Probe(int a, int b) => checked(a + b);
+}
+
 
 public static class Shapes
 {
@@ -3194,6 +3215,7 @@ public static class Shapes
     }
 
     public static int Variant<T>(int a, int b) where T : IVariant<string> => T.Probe(a, b);
+    public static int Exact<T>(int a, int b) where T : IExact<string> => T.Probe(a, b);
 }
 
 public static class Holder<T> where T : IStatic
@@ -3213,6 +3235,8 @@ public static class Holder<T> where T : IStatic
                 yield "    public static int Variant_VariantBase(int a, int b) => Shapes.Variant<VariantBase>(a, b);"
                 yield
                     "    public static int Variant_VariantDerived(int a, int b) => Shapes.Variant<VariantDerived>(a, b);"
+                yield "    public static int Exact_ExactDefault(int a, int b) => Shapes.Exact<ExactDefault>(a, b);"
+                yield "    public static int Exact_ExactBoth(int a, int b) => Shapes.Exact<ExactBoth>(a, b);"
             ]
             |> String.concat "\n"
 
@@ -3244,6 +3268,10 @@ public static class Holder<T> where T : IStatic
                 // class's implementation through `IVariant<object>` runs, not the base class's
                 // through `IVariant<string>`.
                 yield "Variant_VariantDerived", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                // CoreCLR looks for exactly the call's instantiation before a variance-compatible
+                // one, for a default body and for a MethodImpl alike, so `IExact<string>`'s runs.
+                yield "Exact_ExactDefault", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                yield "Exact_ExactBoth", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
             ]
 
         let runtime =

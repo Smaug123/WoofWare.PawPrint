@@ -2109,8 +2109,16 @@ module EscapeAnalysis =
             | Some (_, receiverType) ->
                 if definition.IsStatic then
                     // No object receives the call, so the type decides it, however it is derived
-                    // from (`MethodTable::ResolveVirtualStaticMethod`).
-                    match dispatchedOn typeSystem with
+                    // from.
+                    match
+                        StaticVirtualDispatch.resolve
+                            state.LoggerFactory
+                            state.RuntimeDirs
+                            state.BaseTypes
+                            receiver
+                            concretized
+                            typeSystem
+                    with
                     | typeSystem, VirtualImplementation.Found runs when not runs.Definition.IsStatic -> typeSystem, None
                     | typeSystem, decided -> typeSystem, Some decided
                 elif LoadedTypeInfo.isValueType state.BaseTypes typeSystem._LoadedAssemblies receiverType then
