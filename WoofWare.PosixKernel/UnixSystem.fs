@@ -1441,7 +1441,7 @@ module UnixSystem =
                     Sockets = Map.empty
                     Pipes = launched |> List.map (fun (_, pipeId, _, pipe) -> pipeId, pipe) |> Map.ofList
                     NextPipeId = PipeId (int64 (List.length launched))
-                    Delivered = ImmutableArray.Empty
+                    Delivered = DeliveryLog.empty
                     // Any start would do; one, because no filesystem hands out
                     // inode 0.
                     NextPipeInode = InodeNumber 1L

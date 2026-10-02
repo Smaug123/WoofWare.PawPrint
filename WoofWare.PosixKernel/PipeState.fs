@@ -364,3 +364,53 @@ type Delivery =
         /// The bytes, every one of them that the write moved.
         Bytes : ImmutableArray<byte>
     }
+
+/// Every delivery a machine has made, oldest first: see `UnixMachineState.Delivered`.
+///
+/// Appending a delivery and counting the log each take constant time, so a
+/// process that writes n times costs time linear in n. `DeliveryLog.since` takes
+/// time linear in how many deliveries it returns, and `DeliveryLog.toList` time
+/// linear in the log's length.
+type DeliveryLog =
+    private
+        {
+            /// Newest first, so that appending is a cons.
+            NewestFirst : Delivery list
+            /// The length of `NewestFirst`.
+            Count : int
+        }
+
+/// Building and reading a `DeliveryLog`.
+[<RequireQualifiedAccess>]
+module DeliveryLog =
+
+    /// The log of a machine that has delivered nothing.
+    let empty : DeliveryLog =
+        {
+            NewestFirst = []
+            Count = 0
+        }
+
+    /// `log` with `delivery` after every delivery already in it.
+    let append (delivery : Delivery) (log : DeliveryLog) : DeliveryLog =
+        {
+            NewestFirst = delivery :: log.NewestFirst
+            Count = log.Count + 1
+        }
+
+    /// How many deliveries `log` holds.
+    let count (log : DeliveryLog) : int = log.Count
+
+    /// The deliveries appended to `log` after its first `count`, oldest first.
+    ///
+    /// Takes time linear in how many it returns. Fails if `count` is negative
+    /// or more than `log` holds.
+    let since (count : int) (log : DeliveryLog) : Delivery list =
+        if count < 0 || count > log.Count then
+            failwith
+                $"DeliveryLog.since: asked for the deliveries after the first %d{count} of a log holding %d{log.Count}"
+
+        List.truncate (log.Count - count) log.NewestFirst |> List.rev
+
+    /// Every delivery in `log`, oldest first.
+    let toList (log : DeliveryLog) : Delivery list = List.rev log.NewestFirst
