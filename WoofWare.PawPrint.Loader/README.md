@@ -30,7 +30,9 @@ What lives here:
 * `FieldReferenceResolution` — which field a `MemberRef` names: the parent's own fields only, never
   a literal one, matched by name and exact type, as CoreCLR's `FindField` binds it, or nothing (a
   `MissingFieldException`). `MemberReferenceParent` reads the parent token, which
-  `WoofWare.PawPrint.TypeSystem`'s method resolver reads too.
+  `WoofWare.PawPrint.TypeSystem`'s method resolver reads too, and decides whether CoreCLR could load
+  the parent at all: it walks the load CoreCLR performs before looking for the member, level by
+  level, and reports the first type reference that names nothing (a `TypeLoadException`).
 
 The motivating consumer, besides PawPrint's interpreter, is an analyser that answers questions about
 a method without running it. Such a thing must resolve a call's target in another assembly exactly as
