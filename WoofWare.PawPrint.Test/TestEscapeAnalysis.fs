@@ -1178,6 +1178,13 @@ public static class Uses
         }
         catch (System.TypeLoadException) { return false; }
     }
+    static void Generic<T>() { }
+    public static void InstantiateWithGone() { Generic<Provider.GoneType>(); }
+    public static int ConstrainedOnGone()
+    {
+        var x = new Provider.GoneStruct();
+        return x.GetHashCode();
+    }
 }
 """
 
@@ -1236,6 +1243,10 @@ public static class Uses
                 "PassGoneAsVararg", "=System.TypeLoadException"
                 // Named only by an indirect call's signature.
                 "CallGoneIndirectly", "=System.TypeLoadException"
+                // A type argument of a generic method called.
+                "InstantiateWithGone", "=System.TypeLoadException"
+                // The type a `constrained.` prefix names.
+                "ConstrainedOnGone", "=System.TypeLoadException"
             ] do
             let bound = against1 methodName
             let unbound = against2 methodName
@@ -2836,3 +2847,149 @@ public static class Holder<T> where T : IProbe
         match failures with
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// `Run.Call(int, int)`, a non-generic method whose `constrained. Dyn callvirt IProbe::Probe`
+    /// names a sealed class that does not implement `IProbe`, though `IProbe` gives `Probe` a
+    /// default body. `Dyn` implements `IDynamicInterfaceCastable`, whose `GetInterfaceImplementation`
+    /// divides by zero. C# writes a `constrained.` call only on a type that implements the method,
+    /// so the IL is emitted directly.
+    let private emitDynamicReceiver () : byte[] =
+        let builder =
+            System.Reflection.Emit.PersistedAssemblyBuilder (AssemblyName "Dynamic", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Dynamic"
+
+        let probeInterface =
+            modul.DefineType ("IProbe", TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract)
+
+        let probe =
+            probeInterface.DefineMethod (
+                "Probe",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.HideBySig
+                ||| MethodAttributes.NewSlot,
+                typeof<int>,
+                [| typeof<int> ; typeof<int> |]
+            )
+
+        do
+            // The default body: `a + b`, which raises nothing.
+            let il = probe.GetILGenerator ()
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_1
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_2
+            il.Emit System.Reflection.Emit.OpCodes.Add
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+        probeInterface.CreateType () |> ignore<Type>
+
+        let dyn =
+            modul.DefineType (
+                "Dyn",
+                TypeAttributes.Public ||| TypeAttributes.Sealed ||| TypeAttributes.Class,
+                typeof<obj>,
+                [| typeof<System.Runtime.InteropServices.IDynamicInterfaceCastable> |]
+            )
+
+        let constructor = dyn.DefineDefaultConstructor MethodAttributes.Public
+
+        let implementing =
+            MethodAttributes.Public
+            ||| MethodAttributes.Virtual
+            ||| MethodAttributes.Final
+            ||| MethodAttributes.HideBySig
+            ||| MethodAttributes.NewSlot
+
+        do
+            let isImplemented =
+                dyn.DefineMethod (
+                    "IsInterfaceImplemented",
+                    implementing,
+                    typeof<bool>,
+                    [| typeof<RuntimeTypeHandle> ; typeof<bool> |]
+                )
+
+            let il = isImplemented.GetILGenerator ()
+            il.Emit System.Reflection.Emit.OpCodes.Ldc_I4_1
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+            let getImplementation =
+                dyn.DefineMethod (
+                    "GetInterfaceImplementation",
+                    implementing,
+                    typeof<RuntimeTypeHandle>,
+                    [| typeof<RuntimeTypeHandle> |]
+                )
+
+            // `1 / 0`, then a value of the right type for the verifier's sake.
+            let il = getImplementation.GetILGenerator ()
+            il.Emit System.Reflection.Emit.OpCodes.Ldc_I4_1
+            il.Emit System.Reflection.Emit.OpCodes.Ldc_I4_0
+            il.Emit System.Reflection.Emit.OpCodes.Div
+            il.Emit System.Reflection.Emit.OpCodes.Pop
+            il.Emit (System.Reflection.Emit.OpCodes.Ldarg_1)
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+        dyn.CreateType () |> ignore<Type>
+
+        let run =
+            modul.DefineType ("Run", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        do
+            let call =
+                run.DefineMethod (
+                    "Call",
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<int>,
+                    [| typeof<int> ; typeof<int> |]
+                )
+
+            let il = call.GetILGenerator ()
+            let receiver = il.DeclareLocal dyn
+            il.Emit (System.Reflection.Emit.OpCodes.Newobj, constructor)
+            il.Emit (System.Reflection.Emit.OpCodes.Stloc, receiver)
+            il.Emit (System.Reflection.Emit.OpCodes.Ldloca, receiver)
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_0
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_1
+            il.Emit (System.Reflection.Emit.OpCodes.Constrained, dyn)
+            il.Emit (System.Reflection.Emit.OpCodes.Callvirt, probe)
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+        run.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    [<Test>]
+    let ``a constrained call on a class that does not implement the method is not resolved`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = emitDynamicReceiver ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Dynamic.dll") (new MemoryStream (image))
+
+        // The real runtime asks `Dyn` for an implementation, rather than running the default body.
+        let thrown =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("Dynamic", isCollectible = true)
+
+            try
+                let run = context.LoadFromStream(new MemoryStream (image)).GetType "Run"
+
+                try
+                    run.GetMethod("Call").Invoke ((null : obj), [| box 1 ; box 2 |]) |> ignore<obj>
+                    None
+                with :? TargetInvocationException as e ->
+                    Some (e.InnerException.GetType().FullName)
+            finally
+                context.Unload ()
+
+        thrown |> shouldEqual (Some "System.DivideByZeroException")
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Call")
+
+        if not escapes.Unknown then
+            failwith
+                $"Run.Call: %A{Set.toList (render analysis escapes)}, expected unknown: the receiver's class decides what runs"

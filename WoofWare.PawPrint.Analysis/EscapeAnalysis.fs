@@ -1229,15 +1229,39 @@ module EscapeAnalysis =
         // folds cuts that code off; it folds a branch a capability query decides, so for code
         // only such a branch reaches, this is an over-approximation.
         let bind
-            (state : EscapeAnalysisState, targets : Map<int, CallTarget>, bindingFailures : Set<OutsideBodyFact>)
+            (
+                state : EscapeAnalysisState,
+                targets : Map<int, CallTarget>,
+                unbound : Set<int>,
+                bindingFailures : Set<OutsideBodyFact>
+            )
             (index : int)
             =
             let op, _ = ops.[index]
 
-            let state, methodTarget, bindingFailures =
+            let state, methodTarget, unbound, bindingFailures =
                 match op with
                 | IlOp.UnaryMetadataToken (tokenOp, MetadataOperand.FromMetadata token) ->
                     let state, target, failures = bindToken state assembly token.Token
+
+                    // A token that fails to bind names nothing to instantiate: the JIT throws
+                    // before the body runs.
+                    let target, unbound =
+                        if failures.IsEmpty then
+                            target, unbound
+                        else
+                            let target =
+                                match target with
+                                | Some (CallTarget.Method callee) ->
+                                    Some (
+                                        CallTarget.Method
+                                            { callee with
+                                                Spelling = CalleeSpelling.Typical
+                                            }
+                                    )
+                                | other -> other
+
+                            target, Set.add index unbound
 
                     // Binding also runs the module initializer of every other module it activates;
                     // this module's has run, since its code is running.
@@ -1263,26 +1287,27 @@ module EscapeAnalysis =
                         else
                             failures
 
-                    state, target, Set.union bindingFailures (Set.ofList failures)
-                | _ -> state, None, bindingFailures
+                    state, target, unbound, Set.union bindingFailures (Set.ofList failures)
+                | _ -> state, None, unbound, bindingFailures
 
             let targets =
                 match methodTarget with
                 | Some target -> Map.add index target targets
                 | None -> targets
 
-            state, targets, bindingFailures
+            state, targets, unbound, bindingFailures
 
-        // The type a `constrained.` prefix on the instruction at `index` names. An instruction's
-        // prefixes immediately precede it, and none of them can be a branch target.
-        let constrainedPrefix (index : int) : MetadataToken option =
-            let rec back (at : int) : MetadataToken option =
+        // The `constrained.` prefix on the instruction at `index`: its own index, and the type it
+        // names. An instruction's prefixes immediately precede it, and none of them can be a
+        // branch target.
+        let constrainedPrefix (index : int) : (int * MetadataToken) option =
+            let rec back (at : int) : (int * MetadataToken) option =
                 if at < 0 then
                     None
                 else
                     match fst ops.[at] with
                     | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Constrained, MetadataOperand.FromMetadata token) ->
-                        Some token.Token
+                        Some (at, token.Token)
                     | IlOp.Nullary (NullaryIlOp.Tail | NullaryIlOp.Volatile | NullaryIlOp.Readonly)
                     | IlOp.UnaryConst (UnaryConstIlOp.Unaligned _) -> back (at - 1)
                     | _ -> None
@@ -1291,6 +1316,7 @@ module EscapeAnalysis =
 
         let folder
             (targets : Map<int, CallTarget>)
+            (unbound : Set<int>)
             (
                 state : EscapeAnalysisState,
                 raises : (int * ThrownType) list,
@@ -1448,9 +1474,9 @@ module EscapeAnalysis =
                             state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
                         elif call = UnaryMetadataTokenIlOp.Callvirt && isOverridable state callee.Callee then
                             match constrainedPrefix index with
-                            | Some constrainedType ->
+                            | Some (prefix, constrainedType) when not (unbound.Contains prefix) ->
                                 state, raises, opaque, (offset, CallSite.Constrained (constrainedType, callee)) :: calls
-                            | None -> state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
+                            | _ -> state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
                         else
                             state, raises, opaque, (offset, CallSite.Direct callee) :: calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)), _ ->
@@ -1517,8 +1543,9 @@ module EscapeAnalysis =
             else
                 localFailures
 
-        let state, targets, bindingFailures =
-            ((state, Map.empty, localFailures), [ 0 .. ops.Length - 1 ]) ||> List.fold bind
+        let state, targets, unbound, bindingFailures =
+            ((state, Map.empty, Set.empty, localFailures), [ 0 .. ops.Length - 1 ])
+            ||> List.fold bind
 
         // What each call to a capability query returns on this CPU, which decides a branch on it.
         let constants =
@@ -1542,7 +1569,7 @@ module EscapeAnalysis =
             ((state, [], [], []), [ 0 .. ops.Length - 1 ])
             ||> List.fold (fun acc index ->
                 if executed.Contains (snd ops.[index]) then
-                    folder targets acc index
+                    folder targets unbound acc index
                 else
                     acc
             )
@@ -1836,7 +1863,7 @@ module EscapeAnalysis =
 
         let _, definition = methodOf state named.Definition
 
-        let typeSystem, concretized, _ =
+        let typeSystem, concretized, declaringType =
             MethodConcretisation.concretizeMethodWithAllGenerics
                 state.LoggerFactory
                 state.RuntimeDirs
@@ -1864,8 +1891,20 @@ module EscapeAnalysis =
             | typeSystem, Some implementation -> typeSystem, Some implementation
             | typeSystem, None -> typeSystem, Some concretized
 
+        // A type that is not one the method's declaring type admits leaves what runs to the
+        // receiver's class: one implementing `IDynamicInterfaceCastable` is asked for it.
+        let typeSystem, admitted =
+            TypeAssignability.isConcreteTypeAssignableTo
+                state.LoggerFactory
+                state.RuntimeDirs
+                state.BaseTypes
+                typeSystem
+                receiver
+                declaringType
+
         let typeSystem, runs =
             match TypeSystemState.tryGetConcreteTypeInfo typeSystem receiver with
+            | _ when not admitted -> typeSystem, None
             // An array may be of a covariant derived element type.
             | None -> typeSystem, None
             | Some (_, receiverType) ->
