@@ -96,7 +96,14 @@ module TestClockAgainstHost =
                 |> UnixMachineState.withBootTime (UnixTimestamp.ofSeconds 1_000_000L)
                 |> UnixMachineState.advanceClock 1_000_000_123L
 
-            for clockId in [ 0..16 ] do
+            // Linux's CLOCK_REALTIME_COARSE carries sub-microsecond digits only
+            // once something has set the realtime clock to a time that has them
+            // (`coarse-realtime-digits.c`), which is how the host was set up
+            // rather than what the clock is, so the host cannot settle it.
+            let hostDependent (clockId : int) =
+                flavour = SimulatedUnixFlavour.Linux && clockId = 5
+
+            for clockId in [ 0..16 ] |> List.filter (hostDependent >> not) do
                 match UnixClock.clockGettime clockId machine with
                 | Ok (Ok reading) ->
                     let modelKeepsNanoseconds = UnixTimestamp.nanoseconds reading % 1000 <> 0

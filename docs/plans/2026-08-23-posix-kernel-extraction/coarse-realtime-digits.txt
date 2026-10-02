@@ -1,0 +1,5 @@
+before the step:
+  readings=11272052 with_submicrosecond_digits=0
+clock_settime(+1 s + 123 ns) = 0
+after the step:
+  readings=11029571 with_submicrosecond_digits=11029571

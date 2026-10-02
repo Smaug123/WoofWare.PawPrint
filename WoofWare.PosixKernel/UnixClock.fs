@@ -14,8 +14,8 @@ type ClockGettimeRefusal =
     /// kernel models neither.
     | EncodedClock of clockId : int
     /// A clock that reads an approximation of a finer one as of some earlier
-    /// moment: Linux's `CLOCK_REALTIME_COARSE`, Darwin's
-    /// `CLOCK_MONOTONIC_RAW_APPROX` and `CLOCK_UPTIME_RAW_APPROX`. Not modelled.
+    /// moment: Darwin's `CLOCK_MONOTONIC_RAW_APPROX` and
+    /// `CLOCK_UPTIME_RAW_APPROX`. Not modelled.
     | Coarse of clockId : int
     /// A clock whose reading depends on something this kernel's machine does not
     /// describe: Linux's `CLOCK_REALTIME_ALARM` and `CLOCK_BOOTTIME_ALARM`, which
@@ -98,13 +98,32 @@ module UnixClock =
             // CLOCK_MONOTONIC_RAW differs from CLOCK_MONOTONIC only by the NTP
             // frequency correction the latter receives, and this machine has none.
             | 4 -> ClockDecoding.Reads (ClockSource.SinceBoot full)
-            | 5 -> ClockDecoding.Refused (ClockGettimeRefusal.Coarse clockId)
-            // CLOCK_MONOTONIC_COARSE is the timekeeper's reading as of its last
-            // update, without consulting the clock hardware since. A real machine
-            // updates at every timer tick (measured: `clock_getres` 4 ms on a
-            // CONFIG_HZ=250 kernel), so the coarse clock trails the fine one by up
-            // to a tick. This machine's clock moves only when advanced, so its
-            // last update is the current reading, and the two read alike.
+            // CLOCK_REALTIME_COARSE and CLOCK_MONOTONIC_COARSE are the
+            // timekeeper's reading as of its last update, without consulting the
+            // clock hardware since. A real machine updates at its timer ticks, so
+            // a coarse clock trails its fine one. This machine's clock moves only
+            // when advanced, so its last update is the current reading, and each
+            // coarse clock reads the same as its fine one.
+            //
+            // Measured 2026-10-02 by `coarse-clock-linux.c` on Linux 6.18.5
+            // (aarch64, and x86-64 under Rosetta on the same kernel):
+            //   * `clock_getres` is 4 ms for ids 5 and 6, the tick of a
+            //     CONFIG_HZ=250 build. The tick is a choice made when the kernel
+            //     is built, and only `clock_getres` reports it; this kernel does
+            //     not answer `clock_getres`, and no reading here depends on it.
+            //   * Over 20 million back-to-back readings, no coarse reading was
+            //     ahead of a fine reading taken after it. Coarse readings trailed
+            //     by up to 8.4 ms, so more than one 4 ms tick.
+            //   * The two coarse clocks are one reading: read together, they
+            //     differ by exactly what CLOCK_REALTIME and CLOCK_MONOTONIC
+            //     differ by.
+            //   * Every CLOCK_MONOTONIC_COARSE reading carried sub-microsecond
+            //     digits, and no CLOCK_REALTIME_COARSE reading did, until
+            //     `coarse-realtime-digits.c` stepped the realtime clock forward by
+            //     1 s + 123 ns. After that, every one of 11 million did. Whether
+            //     they appear depends on how the clock was last set, so the
+            //     reading here keeps its nanoseconds, as the fine one does.
+            | 5 -> ClockDecoding.Reads (ClockSource.Realtime full)
             | 6 -> ClockDecoding.Reads (ClockSource.SinceBoot full)
             // CLOCK_BOOTTIME differs from CLOCK_MONOTONIC only by time spent
             // suspended, and this machine never suspends.
@@ -153,16 +172,17 @@ module UnixClock =
     /// on Darwin. An id that names no clock on the flavour is `EINVAL`, and an id
     /// that names a clock this kernel does not model is a `ClockGettimeRefusal`.
     ///
-    /// Every answered id reads one of two clocks. The realtime clock reads
-    /// `UnixMachineState.realtime`, since the Unix epoch; every other clock reads
-    /// `NanosecondsSinceBoot`, since boot. This machine never suspends and has no
+    /// Every answered id reads one of two clocks. `CLOCK_REALTIME`, and Linux's
+    /// `CLOCK_REALTIME_COARSE`, read `UnixMachineState.realtime`, since the Unix
+    /// epoch; every other clock reads `NanosecondsSinceBoot`, since boot. This machine never suspends and has no
     /// NTP correction, so two clocks that differ only by time spent suspended
     /// (Linux's `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC`, Darwin's
     /// `CLOCK_MONOTONIC_RAW` and `CLOCK_UPTIME_RAW`) or only by frequency
     /// correction (each `_RAW` clock and its corrected counterpart) read the same.
-    /// Linux's `CLOCK_MONOTONIC_COARSE` reads the same too: it is the clock as of
-    /// its last update, and this machine's clock is only ever updated by being
-    /// advanced.
+    /// Linux's `CLOCK_REALTIME_COARSE` and `CLOCK_MONOTONIC_COARSE` read the same
+    /// as `CLOCK_REALTIME` and `CLOCK_MONOTONIC`: a coarse clock is its fine
+    /// clock as of the last update, and this machine's clock is only ever updated
+    /// by being advanced.
     ///
     /// Darwin's `CLOCK_REALTIME` and `CLOCK_MONOTONIC` report whole microseconds,
     /// dropping the finer digits. Every other answered clock reports to the
