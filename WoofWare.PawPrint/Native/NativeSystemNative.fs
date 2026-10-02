@@ -7068,12 +7068,8 @@ module NativeSystemNative =
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
-            // The kernel's entropy pool. On Linux CoreCLR's shim `open`s and
-            // `read`s `/dev/urandom`; the emulated kernel has no device inodes,
-            // so this draws from the pool directly rather than through a
-            // descriptor. On macOS the shim calls `CCRandomGenerateBytes`, a
-            // userspace generator the kernel seeds; PawPrint draws from the pool
-            // for that flavour too rather than modelling a second generator.
+            // The shim is `minipal_get_cryptographically_secure_random_bytes`,
+            // which asks the kernel: see `MinipalRandom` for how, per flavour.
             //
             // The bytes are emphatically not cryptographically secure: anyone
             // who knows the seed knows them. Nothing inside a deterministic
@@ -7083,7 +7079,7 @@ module NativeSystemNative =
             // Unlike its non-crypto sibling this entry point reports status:
             // `Interop.GetCryptographicallySecureRandomBytes` branches on the
             // result with `brfalse` and throws `CryptographicException` for
-            // anything non-zero. The pool has no failure mode, so it always
+            // anything non-zero. `MinipalRandom` never fails, so this always
             // reports success. Malformed arguments abort loudly inside
             // `randomBytesDestination` rather than being reported as entropy
             // failure, because a negative length or a null destination is a
@@ -7095,18 +7091,9 @@ module NativeSystemNative =
                 match randomBytesDestination ctx operation with
                 | None -> state
                 | Some (buffer, length) ->
-                    let bytes, pool = EntropyPool.draw length state.Kernel.Machine.EntropyPool
-
-                    let state = writeBytesThrough ctx operation buffer bytes state
-
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            Machine =
-                                { kernel.Machine with
-                                    EntropyPool = pool
-                                }
-                        }
-                    )
+                    let bytes, kernel = MinipalRandom.secureRandomBytes operation length state.Kernel
+                    let state = state.MapKernel (fun _ -> kernel)
+                    writeBytesThrough ctx operation buffer bytes state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread

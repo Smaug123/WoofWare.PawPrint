@@ -3447,6 +3447,32 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A dynamic module's version ID is the runtime's own draw of sixteen
+                // secure random bytes, which must move the kernel's pool on, or the
+                // next `Guid.NewGuid` would repeat bytes a version ID already used.
+                // Nothing else in the guest asks for random bytes.
+                FileName = "DynamicModuleVersionIdEntropy.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                // The pool is PawPrint's; a real runtime has no pool to compare.
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        let _, expected =
+                            MinipalRandom.secureRandomBytes "test" 16 (KernelConfig.toKernel KernelConfig.Default)
+
+                        state.Kernel.Machine.EntropyPool |> shouldEqual expected.Machine.EntropyPool
+                    )
+            }
+            {
                 // `AppDomain_CreateDynamicAssembly`: the assembly that anonymously hosts every
                 // ownerless `DynamicMethod`, and one a guest defines by name. Dynamic-code switch
                 // overridden to true like its siblings; verified by hand to exit 0 on real .NET.

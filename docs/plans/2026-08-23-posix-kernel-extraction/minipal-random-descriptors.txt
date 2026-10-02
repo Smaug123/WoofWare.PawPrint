@@ -1,0 +1,27 @@
+# dotnet run minipal-random-descriptors.cs [nonsecure-first], 2026-10-02
+## Linux, mcr.microsoft.com/dotnet/sdk:10.0 under Apple's container
+secure first: before=22,22 afterFirst=23 afterSecond=23
+nonsecure first: before=22,22 afterFirst=23 afterSecond=23
+Linux 6.18.5 aarch64
+10.0.11
+
+## Linux, the same image: strace -f -e trace=openat of the built probe (secure first), excerpt
+19:226   openat(AT_FDCWD, "/usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.11/libcoreclr.so", O_RDONLY|O_CLOEXEC) = 3
+40:226   openat(AT_FDCWD, "/dev/urandom", O_RDONLY|O_CLOEXEC) = 9
+65:226   openat(AT_FDCWD, "/usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.11/libSystem.Native.so", O_RDONLY|O_CLOEXEC) = 14
+72:226   openat(AT_FDCWD, "/dev/null", O_RDONLY|O_CLOEXEC) = 22
+73:226   openat(AT_FDCWD, "/dev/null", O_RDONLY|O_CLOEXEC) = 22
+74:226   openat(AT_FDCWD, "/dev/urandom", O_RDONLY|O_CLOEXEC) = 22
+75:226   openat(AT_FDCWD, "/dev/null", O_RDONLY|O_CLOEXEC) = 23
+76:226   openat(AT_FDCWD, "/dev/null", O_RDONLY|O_CLOEXEC) = 23
+
+## Linux, mcr.microsoft.com/dotnet/runtime:10.0: grep -c of each name in the shipped native libraries
+/usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.12/libSystem.Native.so arc4random_buf=0 getrandom=0 lrand48=1 urandom=1
+/usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.12/libcoreclr.so arc4random_buf=0 getrandom=0 lrand48=1 urandom=1
+ldd (Ubuntu GLIBC 2.39-0ubuntu8.9) 2.39
+
+## Darwin, natively
+secure first: before=22,22 afterFirst=22 afterSecond=22
+nonsecure first: before=22,22 afterFirst=22 afterSecond=22
+Darwin 27.0.0 arm64
+Microsoft.NETCore.App 10.0.7 [/nix/store/ngvwp9ba5xg3a9wilmy3nasgjzkylrpb-dotnet-sdk-10.0.203/share/dotnet/shared/Microsoft.NETCore.App]
