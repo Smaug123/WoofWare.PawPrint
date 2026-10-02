@@ -86,6 +86,14 @@
 //      end closing under the two writes; the write end closing under a read.
 //      L3 a read and a 1-byte write restarted under SA_RESTART ~1200 ms in,
 //      fstat ~1450 ms in, then given data or room ~1700 ms in.
+//   N  O_NONBLOCK set on the description while a transfer sleeps. N1 a
+//      200000-byte write into a full pipe, N2 into an empty one (65536 in),
+//      then 4096 bytes read: rv. N3 (Linux; CAP_SYS_NICE, as H) a reader of
+//      an empty pipe or a 4096-byte writer into a full one, the hog giving
+//      it bytes or room and taking them back before it runs, 10 trials: what
+//      it answers. N4 the same through a stopped process (as J). N5 two
+//      sleepers, bytes or room for one, 10 trials: what each answers within
+//      100 ms, or that it still sleeps.
 //
 // Build and run, from this directory:
 //   Darwin: nix develop -c clang -Wall -pthread -o /tmp/pb pipe-blocking.c && /tmp/pb
@@ -95,7 +103,7 @@
 //
 // Measured 2026-10-02 on Linux 6.18.5 aarch64 (Apple `container`, gcc:14
 // image, glibc 2.41; sections A-I) and Darwin 27.0.0 arm64 (A-G, I, J), once
-// in full, G and J again on Darwin, K on both, and L on Darwin:
+// in full, G and J again on Darwin, K on both, L on Darwin, and N on both:
 //   A  Linux: each 1-byte write woke exactly one reader, the one that parked
 //      *first*, in all 60 trials; A3 all 20 returned 010101, so a reader that
 //      reads again goes to the back. Darwin: exactly one returned per write,
@@ -140,6 +148,19 @@
 //      answered EINTR or 65536. Controls: ready alone completed (J-partial
 //      slept on until its read end was closed, then answered EPIPE), the
 //      signal alone EINTR or 65536.
+//   N  both: N1 4096 and N2 69632: a write woken by room fills it and
+//      returns its count once the flag is set, rather than sleeping again.
+//      N3 Linux: every sleeper beaten to what woke it slept on and later
+//      took what the unsticking gave it (1 or 4096), never EAGAIN: it
+//      re-checks its condition before leaving its sleep. N5 Linux: one
+//      sleeper returned and the other slept on, every trial; Darwin: one
+//      returned and the other answered EAGAIN, every trial: every sleeper
+//      wakes, and one that finds nothing looks at the flag again. N4 Linux:
+//      EAGAIN every trial, because the stop itself interrupts the sleep and
+//      the call restarts afresh, now non-blocking (a stop, not a wake); on
+//      Darwin the stopped sleeper finished its transfer inside the kernel
+//      before the helper could take the room back, so N4 cannot make a
+//      beaten sleeper there, and N5 is the Darwin measurement.
 //   K  Linux (once): neither close woke the sleeper, which completed when
 //      given data (3) or room (1): the sleeping call holds its description.
 //      Darwin (once): closing a dup changed nothing, but closing the
@@ -1375,13 +1396,260 @@ static void section_l(void)
     }
 }
 
+// ---- N ------------------------------------------------------------------
+
+// N1/N2: O_NONBLOCK set on the write end's description while a 200000-byte
+// write sleeps, then 4096 bytes read: N1 into a full pipe (nothing in), N2
+// into an empty one (65536 in).
+static void section_n12(void)
+{
+    signal(SIGPIPE, SIG_IGN);
+    for (int full = 1; full >= 0; full--)
+    {
+        int fds[2];
+        pipe(fds);
+        if (full) fill(fds[0], fds[1]);
+        struct writer w;
+        memset(&w, 0, sizeof w);
+        w.fd = fds[1];
+        w.buf = big;
+        w.count = 200000;
+        pthread_t t;
+        pthread_create(&t, NULL, writer_main, &w);
+        sleep_ms(50);
+        int asleep = !atomic_load(&w.returned);
+        set_nonblock(fds[1], 1);
+        sleep_ms(50);
+        int woke_on_flag = atomic_load(&w.returned);
+        drain_bytes(fds[0], 4096);
+        sleep_ms(100);
+        int returned = atomic_load(&w.returned);
+        if (!returned) close(fds[0]);
+        pthread_join(t, NULL);
+        printf("N%d write of 200000 into %s pipe, O_NONBLOCK set asleep=%d woke-on-flag=%d, then 4096 read: returned=%d rv=%zd errno=%d\n",
+               full ? 1 : 2, full ? "a full" : "an empty", asleep, woke_on_flag, returned, w.rv, w.error);
+        if (returned) close(fds[0]);
+        close(fds[1]);
+    }
+}
+
+#ifdef __linux__
+// N3 (Linux; CAP_SYS_NICE): a sleeper woken with nothing to take, its
+// description non-blocking by then. Sleeper and hog share CPU 0 under
+// SCHED_FIFO, the hog higher: the hog makes room (or bytes) and takes it back
+// before the sleeper runs.
+static void section_n3(void)
+{
+    signal(SIGPIPE, SIG_IGN);
+    for (int reading = 0; reading <= 1; reading++)
+    {
+        char seen[10][16];
+        for (int trial = 0; trial < 10; trial++)
+        {
+            int fds[2];
+            pipe(fds);
+            if (!reading) fill(fds[0], fds[1]);
+            struct h_sleeper h;
+            memset(&h, 0, sizeof h);
+            h.reading = reading;
+            h.fd = reading ? fds[0] : fds[1];
+            h.count = reading ? 16 : 4096;
+            pthread_t t;
+            pthread_create(&t, NULL, h_main, &h);
+            while (!atomic_load(&h.started)) { }
+            sleep_ms(30);
+            set_nonblock(h.fd, 1);
+            int hog = pin_fifo(20);
+            if (hog != 0) { printf("N3 hog could not take SCHED_FIFO\n"); return; }
+            unsigned char b[4096];
+            if (reading)
+            {
+                write(fds[1], "z", 1);
+                read(fds[0], b, 1);
+            }
+            else
+            {
+                drain_bytes(fds[0], 4096);
+                write(fds[1], big, 4096);
+            }
+            struct sched_param sp = { .sched_priority = 0 };
+            pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+            sleep_ms(50);
+            // Unstick a sleeper the spurious wake left asleep.
+            if (reading) write(fds[1], "y", 1);
+            else drain_bytes(fds[0], 8192);
+            pthread_join(t, NULL);
+            if (h.rv < 0) snprintf(seen[trial], sizeof seen[trial], "e%d", h.error);
+            else snprintf(seen[trial], sizeof seen[trial], "%zd", h.rv);
+            close(fds[0]);
+            close(fds[1]);
+        }
+        printf("N3 %s woken with nothing to take, O_NONBLOCK set:", reading ? "a read" : "a 4096-byte write");
+        for (int i = 0; i < 10; i++) printf(" %s", seen[i]);
+        printf("\n");
+    }
+}
+#endif
+
+// N4: as N3 for a flavour with no SCHED_FIFO to hold the sleeper off the
+// CPU (as section J): a helper process holding the pipe stops the process,
+// makes room (or bytes) and takes it back through the same, now non-blocking,
+// description, and continues it.
+static void section_n4(void)
+{
+    signal(SIGPIPE, SIG_IGN);
+    for (int reading = 0; reading <= 1; reading++)
+    {
+        char seen[10][16];
+        for (int trial = 0; trial < 10; trial++)
+        {
+            int fds[2], go[2], ready[2];
+            if (pipe(fds) != 0 || pipe(go) != 0 || pipe(ready) != 0) { perror("pipe"); exit(1); }
+            if (!reading) fill(fds[0], fds[1]);
+            pid_t parent = getpid();
+            pid_t helper = fork();
+            if (helper == 0)
+            {
+                alarm(10);
+                char b = 1;
+                if (write(ready[1], &b, 1) != 1) _exit(3);
+                if (read(go[0], &b, 1) != 1) _exit(4);
+                kill(parent, SIGSTOP);
+                sleep_ms(50);
+                unsigned char buf[4096];
+                if (reading)
+                {
+                    write(fds[1], "z", 1);
+                    sleep_ms(20);
+                    read(fds[0], buf, 1);
+                }
+                else
+                {
+                    drain_bytes(fds[0], 4096);
+                    sleep_ms(20);
+                    write(fds[1], big, 4096);
+                }
+                sleep_ms(50);
+                kill(parent, SIGCONT);
+                _exit(0);
+            }
+            char b;
+            if (read(ready[0], &b, 1) != 1) { perror("read"); exit(1); }
+            struct reader r;
+            struct writer w;
+            memset(&r, 0, sizeof r);
+            memset(&w, 0, sizeof w);
+            pthread_t t;
+            if (reading)
+            {
+                r.fd = fds[0];
+                r.count = 16;
+                pthread_create(&t, NULL, reader_main, &r);
+            }
+            else
+            {
+                w.fd = fds[1];
+                w.buf = big;
+                w.count = 4096;
+                pthread_create(&t, NULL, writer_main, &w);
+            }
+            sleep_ms(50);
+            set_nonblock(reading ? fds[0] : fds[1], 1);
+            b = 1;
+            if (write(go[1], &b, 1) != 1) { perror("write"); exit(1); }
+            int status;
+            waitpid(helper, &status, 0);
+            sleep_ms(100);
+            int returned = reading ? atomic_load(&r.returned) : atomic_load(&w.returned);
+            if (!returned)
+            {
+                if (reading) write(fds[1], "y", 1);
+                else drain_bytes(fds[0], 8192);
+            }
+            pthread_join(t, NULL);
+            ssize_t rv = reading ? r.rv : w.rv;
+            int error = reading ? r.error : w.error;
+            if (rv < 0) snprintf(seen[trial], sizeof seen[trial], "%se%d", returned ? "" : "late:", error);
+            else snprintf(seen[trial], sizeof seen[trial], "%s%zd", returned ? "" : "late:", rv);
+            close(fds[0]); close(fds[1]);
+            close(go[0]); close(go[1]); close(ready[0]); close(ready[1]);
+        }
+        printf("N4 %s woken with nothing to take, O_NONBLOCK set:", reading ? "a read" : "a 4096-byte write");
+        for (int i = 0; i < 10; i++) printf(" %s", seen[i]);
+        printf("\n");
+    }
+}
+
+// N5: two sleepers, O_NONBLOCK set on their shared description, then room
+// (or bytes) for one: what the other answers within 100 ms, if anything.
+static void section_n5(void)
+{
+    signal(SIGPIPE, SIG_IGN);
+    for (int reading = 0; reading <= 1; reading++)
+    {
+        char seen[10][32];
+        for (int trial = 0; trial < 10; trial++)
+        {
+            int fds[2];
+            pipe(fds);
+            if (!reading) fill(fds[0], fds[1]);
+            struct reader rs[2];
+            struct writer ws[2];
+            pthread_t ts[2];
+            for (int i = 0; i < 2; i++)
+            {
+                memset(&rs[i], 0, sizeof rs[i]);
+                memset(&ws[i], 0, sizeof ws[i]);
+                if (reading)
+                {
+                    rs[i].fd = fds[0];
+                    rs[i].count = 1;
+                    pthread_create(&ts[i], NULL, reader_main, &rs[i]);
+                }
+                else
+                {
+                    ws[i].fd = fds[1];
+                    ws[i].buf = big;
+                    ws[i].count = 4096;
+                    pthread_create(&ts[i], NULL, writer_main, &ws[i]);
+                }
+                sleep_ms(30);
+            }
+            sleep_ms(50);
+            set_nonblock(reading ? fds[0] : fds[1], 1);
+            if (reading) write(fds[1], "z", 1);
+            else drain_bytes(fds[0], 4096);
+            sleep_ms(100);
+            char *p = seen[trial];
+            for (int i = 0; i < 2; i++)
+            {
+                int returned = reading ? atomic_load(&rs[i].returned) : atomic_load(&ws[i].returned);
+                ssize_t rv = reading ? rs[i].rv : ws[i].rv;
+                int error = reading ? rs[i].error : ws[i].error;
+                if (!returned) p += sprintf(p, "%sasleep", i ? "/" : "");
+                else if (rv < 0) p += sprintf(p, "%se%d", i ? "/" : "", error);
+                else p += sprintf(p, "%s%zd", i ? "/" : "", rv);
+            }
+            // Unstick whatever still sleeps.
+            if (reading) write(fds[1], "yy", 2);
+            else drain_bytes(fds[0], 8192);
+            for (int i = 0; i < 2; i++) pthread_join(ts[i], NULL);
+            close(fds[0]);
+            close(fds[1]);
+        }
+        printf("N5 two %s, O_NONBLOCK set, room for one:", reading ? "1-byte readers" : "4096-byte writers");
+        for (int i = 0; i < 10; i++) printf(" %s", seen[i]);
+        printf("\n");
+    }
+}
+
 int main(int argc, char **argv)
 {
     alarm(600);
     main_thread = pthread_self();
     signal(SIGPIPE, SIG_IGN);
     setvbuf(stdout, NULL, _IONBF, 0);
-    const char *only = argc > 1 ? argv[1] : "ABCDEFGHIJKL";
+    const char *only = argc > 1 ? argv[1] : "ABCDEFGHIJKLN";
     if (strchr(only, 'A')) section_a();
     if (strchr(only, 'B')) section_b();
     if (strchr(only, 'C')) section_c();
@@ -1396,5 +1664,11 @@ int main(int argc, char **argv)
     if (strchr(only, 'J')) section_j();
     if (strchr(only, 'K')) section_k();
     if (strchr(only, 'L')) section_l();
+    if (strchr(only, 'N')) section_n12();
+    if (strchr(only, 'N')) section_n4();
+    if (strchr(only, 'N')) section_n5();
+#ifdef __linux__
+    if (strchr(only, 'N')) section_n3();
+#endif
     return 0;
 }

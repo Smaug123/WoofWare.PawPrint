@@ -379,6 +379,10 @@ module TestBlockingPipe =
                 NextOrdinal = r.NextOrdinal + 1
             }
 
+        // Darwin wakes every sleeper, and one that finds nothing gives up if
+        // its description has become non-blocking; Linux's sleeps on.
+        let givesUp = not r.Linux && r.NonBlocking.[descriptionOf park.Call]
+
         match park.Call with
         | Call.Reading (_, count, mapped) ->
             if held r.Buffer > 0 || not (endOpen PipeEnd.Write r) then
@@ -399,6 +403,8 @@ module TestBlockingPipe =
                         }
             elif signalled then
                 interrupted r, answered task r
+            elif givesUp then
+                Seen.Failed UnixError.EAGAIN, answered task r
             else
                 Seen.Sleeps, reparked
         | Call.Writing (description, payload, written, mapped) ->
@@ -427,7 +433,7 @@ module TestBlockingPipe =
 
                     if written = count then
                         Seen.Wrote (int64 count), answered task r
-                    elif signalled then
+                    elif signalled || r.NonBlocking.[description] then
                         Seen.Wrote (int64 written), answered task r
                     else
                         Seen.Sleeps,
@@ -443,11 +449,13 @@ module TestBlockingPipe =
                                     r.Parks
                             NextOrdinal = r.NextOrdinal + 1
                         }
-            elif signalled then
+            elif signalled || (givesUp && written > 0) then
                 if written > 0 then
                     Seen.Wrote (int64 written), answered task r
                 else
                     interrupted r, answered task r
+            elif givesUp then
+                Seen.Failed UnixError.EAGAIN, answered task r
             else
                 Seen.Sleeps, reparked
 
@@ -1534,3 +1542,91 @@ module TestBlockingPipe =
             |> bothSignals
 
         finished (Some (payload 7 70000)) system |> shouldEqual (Seen.Wrote 69632L)
+
+    [<Test>]
+    let ``O_NONBLOCK set while a transfer sleeps ends it once it has made what progress it can`` () : unit =
+        // Sections N1 and N2, on both: a write woken by room fills it and
+        // returns its count, nothing in or part in.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            for prefill, expected in [ 65536, 4096L ; 0, 69632L ] do
+                let system = pipeHolding platform false prefill |> writerAsleep 200000
+                // Setting the flag wakes nothing (section I).
+                let _, system = UnixSocket.setNonBlocking 4 true system
+                UnixWait.wakes (Set.singleton sleeper) system |> shouldEqual []
+                let system = leaderReads 4096 system
+                finished (Some (payload 7 200000)) system |> shouldEqual (Seen.Wrote expected)
+
+        // Section N5: two sleepers, room or bytes for one. Linux wakes one and
+        // the other sleeps on; Darwin wakes both, and the one that finds
+        // nothing answers EAGAIN.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
+
+            for writing in [ false ; true ] do
+                let system =
+                    pipeHolding platform false (if writing then 65536 else 0) |> Tasks.spawn 2
+
+                let sleep (task : int) (system : UnixSystem<int, string>) =
+                    if writing then
+                        match libraryWrite task 4 (payload task 4096) true system with
+                        | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+                        | other -> failwith $"%A{other}"
+                    else
+                        match UnixReadWrite.read task 3 UserBuffer.Mapped 1UL system with
+                        | Ok (ReadOutcome.WouldBlock _, system) -> system
+                        | other -> failwith $"%A{other}"
+
+                let system = system |> sleep sleeper |> sleep 2
+                let _, system = UnixSocket.setNonBlocking (if writing then 4 else 3) true system
+
+                let system =
+                    if writing then
+                        leaderReads 4096 system
+                    else
+                        leaderWrites 1 system
+
+                let woken = UnixWait.wakes (Set.ofList [ sleeper ; 2 ]) system |> List.map fst
+                woken |> shouldEqual (if linux then [ sleeper ] else [ sleeper ; 2 ])
+
+                let finish (task : int) (system : UnixSystem<int, string>) =
+                    if writing then
+                        fromWrite (libraryFinishWrite task (payload task 4096) system)
+                    else
+                        fromRead (UnixReadWrite.finishRead task system)
+
+                let first, after = finish sleeper system
+
+                first
+                |> shouldEqual (
+                    if writing then
+                        Seen.Wrote 4096L
+                    else
+                        Seen.ReadBytes (payload 3 1)
+                )
+
+                if not linux then
+                    fst (finish 2 (Option.get after)) |> shouldEqual (Seen.Failed UnixError.EAGAIN)
+
+        // Section N3: on Linux a sleeper woken and beaten to what woke it
+        // sleeps on, whatever the flag says.
+        let system = pipeHolding SimulatedUnixPlatform.linuxX64 false 0 |> readerAsleep
+        let _, system = UnixSocket.setNonBlocking 3 true system
+        let system = leaderWrites 1 system
+
+        UnixWait.wakes (Set.singleton sleeper) system
+        |> List.map fst
+        |> shouldEqual [ sleeper ]
+
+        let system = leaderReads 1 system
+
+        fst (fromRead (UnixReadWrite.finishRead sleeper system))
+        |> shouldEqual Seen.Sleeps
+
+        let system =
+            pipeHolding SimulatedUnixPlatform.linuxX64 false 65536 |> writerAsleep 4096
+
+        let _, system = UnixSocket.setNonBlocking 4 true system
+        let system = leaderReads 4096 system |> leaderWrites 4096
+
+        fst (fromWrite (libraryFinishWrite sleeper (payload 7 4096) system))
+        |> shouldEqual Seen.Sleeps
