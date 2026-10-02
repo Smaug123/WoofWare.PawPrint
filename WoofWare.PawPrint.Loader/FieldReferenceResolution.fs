@@ -20,6 +20,9 @@ type FieldReferenceTarget =
     /// The parent names no type in the assembly it is scoped to, so binding the reference throws
     /// <c>TypeLoadException</c>.
     | ParentTypeMissing of TypeResolutionMiss
+    /// CoreCLR's load of the parent reaches a type reference to an assembly no runtime directory
+    /// supplies, so binding the reference throws <c>FileNotFoundException</c>.
+    | ParentAssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
 
 /// <summary>
 /// Which field a MemberRef names, answered at the level of generic definitions.
@@ -115,5 +118,7 @@ module FieldReferenceResolution =
         | assemblies, MemberReferenceParent.Array _ -> assemblies, FieldReferenceTarget.Missing
         | assemblies, MemberReferenceParent.TypeVariable -> assemblies, FieldReferenceTarget.DependsOnInstantiation
         | assemblies, MemberReferenceParent.Unresolved miss -> assemblies, FieldReferenceTarget.ParentTypeMissing miss
+        | assemblies, MemberReferenceParent.AssemblyUnavailable reference ->
+            assemblies, FieldReferenceTarget.ParentAssemblyUnavailable reference
         | _, MemberReferenceParent.VarArgDefinition _ ->
             failwith $"%s{operation}: a field reference's parent is a MethodDef, which ECMA-335 does not permit"

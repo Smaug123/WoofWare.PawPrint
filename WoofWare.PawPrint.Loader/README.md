@@ -34,7 +34,8 @@ What lives here:
   `MissingFieldException`). `MemberReferenceParent` reads the parent token, which
   `WoofWare.PawPrint.TypeSystem`'s method resolver reads too, and decides whether CoreCLR could load
   the parent at all: it walks the load CoreCLR performs before looking for the member, level by
-  level, and reports the first type reference that names nothing (a `TypeLoadException`).
+  level, and reports the first type reference that names nothing (a `TypeLoadException`) or that
+  needs an assembly no runtime directory supplies (a `FileNotFoundException`).
   `ParentLoadVouching` says whether every type that load reaches is one PawPrint knows to load
   (CoreLib's own, combined so that none of the loader's other failures can arise), which a caller
   needs before it can say which exception binding a reference throws.

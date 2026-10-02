@@ -18,7 +18,8 @@ What lives here:
 * `MethodReferenceResolution` — which method a `MemberRef` names, as CoreCLR binds it: the
   `MethodDef` of a generic definition, with the instantiation of the type that declares it (the
   parent or one of its ancestors), a method the runtime supplies on an array type, or nothing (a
-  `MissingMethodException`, or a `TypeLoadException` if the parent names no type). It lives here
+  `MissingMethodException`, or a `TypeLoadException` if the parent names no type, or a
+  `FileNotFoundException` if loading it needs an assembly that is not there). It lives here
   rather than beside the Loader's field resolver because CoreCLR binds a method reference by
   searching each type's method table, as `MethodTableLayout` lays it out, in the order CoreCLR does;
   it is checked against the real runtime's own answer.
