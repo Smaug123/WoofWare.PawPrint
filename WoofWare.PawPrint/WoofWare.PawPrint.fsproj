@@ -157,6 +157,7 @@
     <Compile Include="Native\FileAdvicePal.fs" />
     <Compile Include="Native\PipeFlagsPal.fs" />
     <Compile Include="Native\FileSystemTypePal.fs" />
+    <Compile Include="Native\FileStatusPal.fs" />
     <Compile Include="Native\DirectoryEntryPal.fs" />
     <Compile Include="Native\SocketShimPal.fs" />
     <Compile Include="Native\OsThreadIdPal.fs" />
