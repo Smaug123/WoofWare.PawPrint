@@ -163,21 +163,16 @@ module PosixSignalShim =
     /// handler for it, which is what it restores when it gives the signal up,
     /// and which its handler runs first (see `chainsToNativeHandler`). The
     /// default if it never has.
-    let original
-        (numbering : SignalNumbering)
-        (signal : Signal)
-        (state : PosixSignalShim)
-        : SignalDisposition<NativeSignalHandler>
-        =
-        match Map.tryFind (Signal.canonicalUnder numbering signal) state.Originals with
+    let original (signal : Signal) (state : PosixSignalShim) : SignalDisposition<NativeSignalHandler> =
+        match Map.tryFind signal state.Originals with
         | Some disposition -> disposition
         | None -> SignalDisposition.Default
 
     /// The signals whose default the shim treats as a termination a managed
     /// handler may cancel (`IsCancelableTerminationSignal`): its handler
     /// does not run the disposition it replaced for these.
-    let isCancelableTermination (numbering : SignalNumbering) (signal : Signal) : bool =
-        match Signal.canonicalUnder numbering signal with
+    let isCancelableTermination (signal : Signal) : bool =
+        match signal with
         | Signal.SIGINT
         | Signal.SIGQUIT
         | Signal.SIGTERM -> true
@@ -187,14 +182,9 @@ module PosixSignalShim =
     /// hands the signal to the dispatcher: the one it replaced, if that was a
     /// handler and `signal` is not a cancellable termination. `None` if it
     /// runs nothing first.
-    let chainsToNativeHandler
-        (numbering : SignalNumbering)
-        (signal : Signal)
-        (state : PosixSignalShim)
-        : NativeSignalHandler option
-        =
-        match original numbering signal state with
-        | SignalDisposition.Catch action when not (isCancelableTermination numbering signal) -> Some action.Handler
+    let chainsToNativeHandler (signal : Signal) (state : PosixSignalShim) : NativeSignalHandler option =
+        match original signal state with
+        | SignalDisposition.Catch action when not (isCancelableTermination signal) -> Some action.Handler
         | SignalDisposition.Catch _
         | SignalDisposition.Default
         | SignalDisposition.Ignore -> None
@@ -226,8 +216,6 @@ module PosixSignalShim =
         (state : PosixSignalShim)
         : Result<UnixSystem<'Task, NativeSignalHandler> * PosixSignalShim, UnixError>
         =
-        let signal = Signal.canonicalUnder numbering signal
-
         let save (disposition : SignalDisposition<NativeSignalHandler>) : PosixSignalShim =
             let installed = Set.add signal state.Installed
 
@@ -313,7 +301,7 @@ module PosixSignalShim =
             match disposition with
             | SignalDisposition.Default ->
                 { state with
-                    Originals = Map.remove (Signal.canonicalUnder numbering signal) state.Originals
+                    Originals = Map.remove signal state.Originals
                 }
             | SignalDisposition.Catch {
                                           Handler = NativeSignalHandler.SystemNative
@@ -323,7 +311,7 @@ module PosixSignalShim =
             | SignalDisposition.Ignore
             | SignalDisposition.Catch _ ->
                 { state with
-                    Originals = Map.add (Signal.canonicalUnder numbering signal) disposition state.Originals
+                    Originals = Map.add signal disposition state.Originals
                 }
         )
 
@@ -345,17 +333,16 @@ module PosixSignalShim =
         =
         let state =
             { state with
-                Installed = Set.remove (Signal.canonicalUnder numbering signal) state.Installed
+                Installed = Set.remove signal state.Installed
             }
 
-        match sigaction numbering signal (Some (original numbering signal state)) system with
+        match sigaction numbering signal (Some (original signal state)) system with
         | Ok (_, system) -> system, state, None
         | Error errno -> system, state, Some errno
 
     /// Whether `signal` has a managed registration: whether the dispatcher
     /// hands it to the callback (`g_hasPosixSignalRegistrations`).
-    let isRegistered (numbering : SignalNumbering) (signal : Signal) (state : PosixSignalShim) : bool =
-        Set.contains (Signal.canonicalUnder numbering signal) state.Registered
+    let isRegistered (signal : Signal) (state : PosixSignalShim) : bool = Set.contains signal state.Registered
 
     /// `SystemNative_EnablePosixSignalHandling`: `installHandler`, and then the
     /// registration, which is set if the handler was installed and cleared if
@@ -367,8 +354,6 @@ module PosixSignalShim =
         (state : PosixSignalShim)
         : Result<UnixSystem<'Task, NativeSignalHandler>, UnixError> * PosixSignalShim
         =
-        let signal = Signal.canonicalUnder numbering signal
-
         match installHandler numbering signal system state with
         | Ok (system, state) ->
             Ok system,
@@ -395,7 +380,7 @@ module PosixSignalShim =
             signal
             system
             { state with
-                Registered = Set.remove (Signal.canonicalUnder numbering signal) state.Registered
+                Registered = Set.remove signal state.Registered
             }
 
     /// Record that the dispatcher is calling the managed callback for

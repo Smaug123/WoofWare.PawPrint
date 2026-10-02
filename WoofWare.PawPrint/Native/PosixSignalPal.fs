@@ -84,11 +84,8 @@ module PosixSignalPal =
     /// by the kernel's disposition, because which signals have an arm is the
     /// shim's choice: SIGURG and SIGWINCH are ignored by default and have one,
     /// Darwin's SIGIO is ignored by default and has none.
-    ///
-    /// Answers for the signal the value *is* under the numbering, so an
-    /// `Other` carrying SIGURG's number counts.
-    let handledWithoutRestoring (numbering : SignalNumbering) (signal : Signal) : bool =
-        match Signal.canonicalUnder numbering signal with
+    let handledWithoutRestoring (signal : Signal) : bool =
+        match signal with
         | Signal.SIGCONT
         | Signal.SIGTSTP
         | Signal.SIGTTIN
@@ -104,7 +101,25 @@ module PosixSignalPal =
         | Signal.SIGUSR1
         | Signal.SIGUSR2
         | Signal.SIGABRT
-        | Signal.Other _ -> false
+        | Signal.SIGILL
+        | Signal.SIGTRAP
+        | Signal.SIGBUS
+        | Signal.SIGFPE
+        | Signal.SIGKILL
+        | Signal.SIGSEGV
+        | Signal.SIGALRM
+        | Signal.SIGSTKFLT
+        | Signal.SIGSTOP
+        | Signal.SIGXCPU
+        | Signal.SIGXFSZ
+        | Signal.SIGVTALRM
+        | Signal.SIGPROF
+        | Signal.SIGIO
+        | Signal.SIGPWR
+        | Signal.SIGSYS
+        | Signal.SIGEMT
+        | Signal.SIGINFO
+        | Signal.RealTime _ -> false
 
     /// The `PosixSignal` value the dispatcher hands a registered handler as its
     /// second argument.
@@ -116,13 +131,7 @@ module PosixSignalPal =
     /// `PosixSignalInvalid` before invoking the handler. The raw signo that
     /// conversion helper writes for unmapped codes is dropped by that
     /// overwrite; only the *first* argument carries the signal number.
-    ///
-    /// Answers for the signal the value *is* under the numbering, so an
-    /// `Other` carrying SIGCONT's number names `PosixSignal.SIGCONT`, as the
-    /// real conversion — which only ever sees the number — does.
-    let toEnum (numbering : SignalNumbering) (signal : Signal) : int =
-        let signal = Signal.canonicalUnder numbering signal
-
+    let toEnum (signal : Signal) : int =
         match List.tryFind (fun (_, candidate) -> candidate = signal) enumIdentities with
         | Some (value, _) -> value
         | None -> 0

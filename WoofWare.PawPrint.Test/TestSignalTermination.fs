@@ -146,7 +146,7 @@ class Program
 
         runImpureSource SimulatedUnixPlatform.linuxX64 "SystemNativeHandleNonCanceledPosixSignal30.cs"
         |> signalTerminatedBy
-        |> shouldEqual (Signal.Other 30)
+        |> shouldEqual Signal.SIGPWR
 
     [<Test>]
     let ``SignalTerminated maps to POSIX-conventional exit code 128 + signo`` () : unit =
@@ -205,7 +205,7 @@ class Program
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             match runSelfSignal platform CoreDumps.Written [ "9" ; "shim" ] with
             | RunOutcome.SignalTerminated (_, signal, coreDumped) ->
-                (signal, coreDumped) |> shouldEqual (Signal.Other 9, false)
+                (signal, coreDumped) |> shouldEqual (Signal.SIGKILL, false)
             | other -> failwith $"%O{platform}: expected death by SIGKILL, got %O{other}"
 
     [<Test>]

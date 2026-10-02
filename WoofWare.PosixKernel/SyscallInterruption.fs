@@ -121,6 +121,13 @@ module SyscallInterruption =
         (system : UnixSystem<'Task, 'Handler>)
         : bool
         =
+        // Nothing pending is no handler to run, and every sleeping task is
+        // asked this on every poll of its wake condition, so it answers without
+        // walking the signal state.
+        if List.isEmpty (SignalState.pending system.Process.Signals) then
+            false
+        else
+
         match framesOnReturn task system with
         | Ok [] -> false
         | Ok (_ :: _)

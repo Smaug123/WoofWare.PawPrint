@@ -808,7 +808,7 @@ module TestImpureCases =
     let private assertClosedFdLeftNoOrphan (state : IlMachineState) : unit =
         state.Kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
-        VirtualFileSystem.checkInvariants Set.empty state.Kernel.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty state.Kernel.Machine.FileSystem
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
@@ -894,7 +894,7 @@ module TestImpureCases =
     /// called `UnixDescriptor.forgetIfUnheld` would pass every other assertion
     /// in this slice.
     let private assertRmDirLeftNoOrphan (state : IlMachineState) : unit =
-        VirtualFileSystem.checkInvariants Set.empty state.Kernel.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty state.Kernel.Machine.FileSystem
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
@@ -913,7 +913,9 @@ module TestImpureCases =
         kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
         // The three inherited standard streams and nothing else.
-        FileDescriptorRegistry.fds kernel.FileDescriptors |> Map.count |> shouldEqual 3
+        FileDescriptorRegistry.fds kernel.Process.FileDescriptors
+        |> Map.count
+        |> shouldEqual 3
 
         // Bounded rather than exact: CoreLib's own startup holds a handful of
         // native blocks (four, as this suite stands) and this assertion is not
@@ -922,7 +924,9 @@ module TestImpureCases =
         NativeMemoryPool.liveBlockCount kernel.NativeMemoryPool
         |> shouldBeSmallerThan 20
 
-        VirtualFileSystem.checkInvariants Set.empty kernel.FileSystem |> shouldEqual []
+        VirtualFileSystem.checkInvariants Set.empty kernel.Machine.FileSystem
+        |> shouldEqual []
+
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
     /// Two nested directories, the inner of which the orphan guests stand in and
@@ -950,7 +954,7 @@ module TestImpureCases =
     /// `DirectoryContent.Parent` naming an inode the graph no longer contains.
     let private assertRmDirOrphanChainSurvives (state : IlMachineState) : unit =
         let kernel = state.Kernel
-        let filesystem = kernel.FileSystem
+        let filesystem = kernel.Machine.FileSystem
         let root = VirtualFileSystem.root filesystem
         let pinned = UnixDescriptor.pinnedInodes (EmulatedKernel.unix kernel)
 
@@ -971,7 +975,7 @@ module TestImpureCases =
             failwith
                 $"expected exactly two orphaned inodes to survive -- the removed current directory and its removed parent -- but %d{other.Length} did: %A{other}. Freeing the parent would leave the orphan's \"..\" dangling; freeing neither means the cascade never fires."
 
-        List.contains kernel.CurrentDirectoryInode orphaned |> shouldEqual true
+        List.contains kernel.Process.CurrentDirectoryInode orphaned |> shouldEqual true
 
         for inode in orphaned do
             Set.contains inode pinned |> shouldEqual true
@@ -1021,7 +1025,7 @@ module TestImpureCases =
     /// bound.
     let private assertUnlinkReapedExactlyOne (state : IlMachineState) : unit =
         let kernel = state.Kernel
-        let filesystem = kernel.FileSystem
+        let filesystem = kernel.Machine.FileSystem
         let pinned = UnixDescriptor.pinnedInodes (EmulatedKernel.unix kernel)
 
         let survivors =
@@ -1169,6 +1173,28 @@ module TestImpureCases =
                     // next is the sixth.
                     machine.NextPipeId |> shouldEqual (PipeId 5L)
                 )
+        }
+
+    /// `SocketUnconnectedTransfer.cs` under `platform`: 0 for Linux's answers
+    /// and 100 for Darwin's. Compared against the real runtime on a host of the
+    /// same flavour, since the guest asserts nothing but errnos.
+    let private socketUnconnectedTransferCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketUnconnectedTransfer.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            // Linux's TCP writes raised SIGPIPE, which the runtime's startup
+            // ignores, so none is left pending.
+            AssertTerminalState = Some (fun state -> SignalState.pending state.Kernel.Signals |> shouldEqual [])
         }
 
     /// Build one registration of `PipeBrokenRaw.cs` under `platform`, whose
@@ -1385,6 +1411,8 @@ module TestImpureCases =
             pipeRawCase SimulatedUnixPlatform.macOsArm64
             pipeBrokenRawCase SimulatedUnixPlatform.linuxX64
             pipeBrokenRawCase SimulatedUnixPlatform.macOsArm64
+            socketUnconnectedTransferCase SimulatedUnixPlatform.linuxX64
+            socketUnconnectedTransferCase SimulatedUnixPlatform.macOsArm64
             pipeReaderLeavesCase SimulatedUnixPlatform.linuxX64
             pipeReaderLeavesCase SimulatedUnixPlatform.macOsArm64
             processIdCase None
@@ -3447,6 +3475,32 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A dynamic module's version ID is the runtime's own draw of sixteen
+                // secure random bytes, which must move the kernel's pool on, or the
+                // next `Guid.NewGuid` would repeat bytes a version ID already used.
+                // Nothing else in the guest asks for random bytes.
+                FileName = "DynamicModuleVersionIdEntropy.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                // The pool is PawPrint's; a real runtime has no pool to compare.
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        let _, expected =
+                            MinipalRandom.secureRandomBytes "test" 16 (KernelConfig.toKernel KernelConfig.Default)
+
+                        state.Kernel.Machine.EntropyPool |> shouldEqual expected.Machine.EntropyPool
+                    )
+            }
+            {
                 // `AppDomain_CreateDynamicAssembly`: the assembly that anonymously hosts every
                 // ownerless `DynamicMethod`, and one a guest defines by name. Dynamic-code switch
                 // overridden to true like its siblings; verified by hand to exit 0 on real .NET.
@@ -3644,6 +3698,25 @@ module TestImpureCases =
                     }
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same entry point under the Darwin flavour, whose libc has
+                // no `sched_getcpu`: the shim answers -1, and CoreLib falls back
+                // to the managed thread id. Four processors, as above, so that a
+                // placement leaking through is a processor index the guest can
+                // tell apart from a managed thread id. Compared against the real
+                // runtime on a Darwin host, which asserts the fallback too.
+                FileName = "SchedGetCpuDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        ProcessorCount = 4
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }

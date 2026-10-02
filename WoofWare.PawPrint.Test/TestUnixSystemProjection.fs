@@ -105,7 +105,10 @@ module TestUnixSystemProjection =
             )
 
         changed.Machine.ProcessorCount |> shouldEqual 5
-        changed.Credentials.EffectiveUser |> shouldEqual (UserId.parseOrFail "test" 11u)
+
+        changed.Process.Credentials.EffectiveUser
+        |> shouldEqual (UserId.parseOrFail "test" 11u)
+
         changed.Tasks.ContainsKey (ThreadId 4) |> shouldEqual true
         changed.Leader |> shouldEqual (ThreadId 4)
 

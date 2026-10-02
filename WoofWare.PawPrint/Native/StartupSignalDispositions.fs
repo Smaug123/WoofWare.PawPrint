@@ -129,14 +129,9 @@ module StartupSignalDispositions =
     let refusal (numbering : SignalNumbering) (inheritedIgnores : Set<Signal>) : string option =
         inheritedIgnores
         |> Seq.tryPick (fun signal ->
-            match signal with
-            | Signal.Other raw when (Signal.ofRawSignoUnder numbering raw).IsNone ->
-                Some $"%d{raw} is not a signal under the %O{numbering} numbering"
-            | _ ->
-
-            let signal = Signal.canonicalUnder numbering signal
-
-            if Signal.isUncatchableUnder numbering signal then
+            if not (Signal.existsUnder numbering signal) then
+                Some $"%O{signal} is not a signal under the %O{numbering} numbering"
+            elif Signal.isUncatchableUnder numbering signal then
                 Some $"%O{signal} cannot be ignored through sigaction under the %O{numbering} numbering"
             elif signal = Signal.SIGTERM then
                 Some

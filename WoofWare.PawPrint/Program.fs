@@ -360,26 +360,6 @@ module Program =
             state
 
 
-    /// The threads parked in a syscall.
-    ///
-    /// Runs once per scheduler tick — that is, once per interpreted instruction —
-    /// so it accumulates only matches rather than materialising the thread map.
-    ///
-    /// A thread parked with no record at all could never be woken by anything, so
-    /// it is refused here rather than quietly skipped.
-    let private syscallWaiters (state : IlMachineState) : ThreadId list =
-        ((state.ThreadState, [])
-         ||> Map.foldBack (fun tid ts acc ->
-             match ts.Status with
-             | ThreadStatus.BlockedInSyscall ->
-                 match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
-                 | None ->
-                     failwith
-                         $"syscallWaiters: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. A park writes the record and the status together (this is an interpreter bug)."
-                 | Some _ -> tid :: acc
-             | _ -> acc
-         ))
-
     /// Wake every thread whose syscall could get further now.
     ///
     /// One sweep for every parking syscall rather than one each, because the
@@ -404,20 +384,30 @@ module Program =
     /// one of them get it; the loser re-enters, finds it taken, and parks again
     /// on the record it still holds. Of several threads waiting on one socket
     /// event port, the kernel wakes one per event.
-    let private fireSyscallWakes (asleep : ThreadId list) (state : IlMachineState) : IlMachineState =
+    ///
+    /// The signal dispatcher, asleep in its read of the signal pipe, is asked
+    /// about with the rest (see `Scheduler.asleepInSyscall`) but never flipped:
+    /// `SignalDispatch.poll` finishes its read at the next tick.
+    let private fireSyscallWakes (state : IlMachineState) : IlMachineState =
         // Before projecting the kernel, which allocates a `UnixSystem`: this runs
         // on every tick of every workload, and almost none of them ever park.
-        match asleep with
+        // With no thread in `BlockedInSyscall` there is nothing to flip, whatever
+        // the dispatcher is doing.
+        match Scheduler.syscallWaiters state with
         | [] -> state
-        | asleep ->
+        | _ ->
 
-        (state, UnixWait.wakes (Set.ofList asleep) (EmulatedKernel.unix state.Kernel))
-        ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSyscall tid s)
+        (state, UnixWait.wakes (Scheduler.asleepInSyscall state) (EmulatedKernel.unix state.Kernel))
+        ||> List.fold (fun s (tid, _) ->
+            match (Map.find tid s.ThreadState).Status with
+            | ThreadStatus.Parked -> s
+            | _ -> Scheduler.wakeFromSyscall tid s
+        )
 
     /// Every deadline a thread parked in a syscall is waiting for, as the first
     /// tick of the virtual clock at or after it.
     let private syscallDeadlines (state : IlMachineState) : int64 list =
-        match syscallWaiters state with
+        match Scheduler.syscallWaiters state with
         | [] -> []
         | asleep ->
             UnixWait.deadlines (Set.ofList asleep) (EmulatedKernel.unix state.Kernel)
@@ -630,7 +620,7 @@ module Program =
         // port that has become deliverable, a lock that has become available.
         // Before the jump-to-deadline fallback below, so neither is mistaken for
         // quiescence.
-        let state = fireSyscallWakes (syscallWaiters state) state
+        let state = fireSyscallWakes state
 
         // Jump-to-deadline fallback: if no thread is Runnable but at
         // least one is parked with a finite-timeout wait outstanding,
@@ -687,7 +677,7 @@ module Program =
                         )
 
                     let state = fireExpiredDeadlines state
-                    advanceUntilRunnableOrQuiescent (fireSyscallWakes (syscallWaiters state) state)
+                    advanceUntilRunnableOrQuiescent (fireSyscallWakes state)
 
         { prepared with
             State = advanceUntilRunnableOrQuiescent state

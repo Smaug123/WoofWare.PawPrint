@@ -1,0 +1,9 @@
+Linux 6.18.5 aarch64
+blocking connect -> -1 Connection refused
+TCP, blocking connect refused                    read -> -1 Transport endpoint is not connected; write -> -1 Broken pipe; SIGPIPE 1
+second connect -> -1 Connection refused
+TCP, non-blocking refusal reported by connect    read -> -1 Transport endpoint is not connected; write -> -1 Broken pipe; SIGPIPE 1
+SO_ERROR -> Connection refused
+TCP, non-blocking refusal reported by SO_ERROR   read -> 0 ; write -> -1 Broken pipe; SIGPIPE 1
+UDP connect -> 0, AF_UNSPEC connect -> 0 
+UDP, connected then dissolved                    read -> -1 Resource temporarily unavailable; write -> -1 Destination address required; SIGPIPE 0

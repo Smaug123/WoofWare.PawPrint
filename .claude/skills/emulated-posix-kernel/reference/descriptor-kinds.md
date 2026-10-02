@@ -7,7 +7,7 @@ are facts about *upstream source being misleading*.
 | descriptor kind | owned by |
 | --- | --- |
 | socket event port (`epoll_create1` / `kqueue`) | `TestLSeek` for the whence rows; `TestFileDescriptorRegistry`: `two socket event ports are two descriptions but one flock object`; `sourcesImpure/SocketEventPortDarwin.cs` and `sourcesImpure/SocketEventsWait{Linux,Darwin}.cs` for the guest-visible answers |
-| socket | `TestFileDescriptorRegistry`: `two sockets are two descriptions and two flock objects`, `dup of a socket names the same socket`; `sourcesImpure/SocketCreate{Linux,Darwin}.cs` |
+| socket | `TestFileDescriptorRegistry`: `two sockets are two descriptions and two flock objects`, `dup of a socket names the same socket`; `sourcesImpure/SocketCreate{Linux,Darwin}.cs`; `read`/`write` with no peer in `TestUnconnectedSocketTransfer` and `sourcesImpure/SocketUnconnectedTransfer.cs` |
 | the creatable socket triples | `TestSocketCreation` against `socketMatrix/{linux,darwin}.tsv` |
 | standard streams, regular files, directories | `TestVirtualFileSystem` and `TestVirtualFileSystemAgainstHost` |
 | pipe (`pipe2`) | `TestPipe` and `TestPipeAgainstHost`; `sourcesImpure/PipeRaw.cs` for the wiring |
@@ -35,11 +35,10 @@ is visible in a test's name.
 `O_NONBLOCK` says nothing about the same call on a blocking descriptor, which is
 what `socket(2)` and `epoll_create1` actually hand back. `read` on a fresh
 unconnected *datagram* socket is the sharp case: `EAGAIN` with the flag set, and
-a block with no wake source without it. That is why the handler refuses instead
-of answering — every available answer is a claim about connection state PawPrint
-does not model, and the answers differ by platform besides (`read` is `ENOTCONN`
-for TCP on both, `EINVAL` on Linux against `ENOTCONN` on Darwin for a
-Unix-domain stream socket).
+a block with no wake source without it. So `UnconnectedSocketRules.read` takes
+the flag, and the kernel answers the first and refuses the second
+(`ReadRefusal.DatagramSleep`): nothing in it sends a datagram, and a sleep only a
+signal could end is not modelled.
 
 **A measurement is about the creator named, not its filesystem as a class.**
 Epoll descriptors and an `eventfd` share one `anon_inodefs` inode, which is why

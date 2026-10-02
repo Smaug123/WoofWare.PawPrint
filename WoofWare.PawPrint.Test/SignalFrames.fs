@@ -10,9 +10,9 @@ open WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 module SignalFrames =
 
-    /// The signal delivered to put a thread in a handler: SIGPROF, 27 under
-    /// both numberings. A test using this does not use it otherwise.
-    let private carrier : Signal = Signal.Other 27
+    /// The signal delivered to put a thread in a handler: SIGPROF. A test
+    /// using this does not use it otherwise.
+    let private carrier : Signal = Signal.SIGPROF
 
     /// `kernel` with `thread` inside a handler whose `sa_mask` is `mask`, with
     /// `SA_NODEFER`, for `carrier`, whose disposition is put back as it was.

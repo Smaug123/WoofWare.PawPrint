@@ -570,6 +570,60 @@ module Scheduler =
 
         setThreadStatus thread ThreadStatus.Runnable state
 
+    /// The threads parked in `BlockedInSyscall`: those a wake flips back to
+    /// `Runnable` (`wakeFromSyscall`).
+    ///
+    /// Runs once per scheduler tick — that is, once per interpreted instruction —
+    /// so it accumulates only matches rather than materialising the thread map.
+    ///
+    /// A thread parked with no record at all could never be woken by anything, so
+    /// it is refused here rather than quietly skipped.
+    let syscallWaiters (state : IlMachineState) : ThreadId list =
+        ((state.ThreadState, [])
+         ||> Map.foldBack (fun tid ts acc ->
+             match ts.Status with
+             | ThreadStatus.BlockedInSyscall ->
+                 match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
+                 | None ->
+                     failwith
+                         $"syscallWaiters: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. A park writes the record and the status together (this is an interpreter bug)."
+                 | Some _ -> tid :: acc
+             | _ -> acc
+         ))
+
+    /// The signal dispatcher, if its task is asleep in the kernel in its read of
+    /// the signal pipe: it is `Parked`, idle between callbacks, and its task
+    /// records a park. `SignalDispatch.poll` finishes that read, rather than a
+    /// wake flipping the thread to `Runnable`, because no frame of the
+    /// dispatcher's made the call.
+    let private sleepingDispatcher (state : IlMachineState) : ThreadId option =
+        match PosixSignalShim.signalThread state.Kernel.PosixSignalShim with
+        | None -> None
+        | Some dispatcher ->
+            match Map.tryFind dispatcher state.ThreadState with
+            | Some {
+                       Status = ThreadStatus.Parked
+                   } when (UnixTaskTable.parkedFor dispatcher state.Kernel.Tasks).IsSome -> Some dispatcher
+            | Some _
+            | None -> None
+
+    /// Every thread whose task is asleep in a syscall in the kernel: the
+    /// `syscallWaiters`, and the signal dispatcher while it sleeps in its read
+    /// (`sleepingDispatcher`). What `UnixWait.wakes` must be told is asleep,
+    /// by whichever caller asks it.
+    ///
+    /// The whole set, and not just the threads a caller means to wake, because
+    /// `UnixWait.wakes` takes a task that records a park but is not in the set
+    /// for one already woken and still finishing its call, ahead of every other
+    /// waiter on an exclusive queue: a reader asleep on the signal pipe beside
+    /// the dispatcher would otherwise never be woken.
+    let asleepInSyscall (state : IlMachineState) : Set<ThreadId> =
+        let waiters = Set.ofList (syscallWaiters state)
+
+        match sleepingDispatcher state with
+        | None -> waiters
+        | Some dispatcher -> Set.add dispatcher waiters
+
     /// Fire a `Thread.Sleep` timeout: the deadline-firing path has
     /// observed that `thread` is parked in `BlockedOnSleep (Some _)` and
     /// the virtual clock has advanced past its deadline. Flip the status

@@ -1137,7 +1137,7 @@ module TestPermissionStanding =
                 Truncate = true
             }
 
-        match UnixNamespace.openPath truncating (PathArg.ofPath (path "/f")) 0 system with
+        match OpenFlagWords.openPath truncating (PathArg.ofPath (path "/f")) 0 system with
         | Error refusal -> refusal |> shouldEqual (OpenRefusal.UnmeasuredSetIdChange (inode, truncated))
         | Ok (answer, _) -> failwith $"open(O_TRUNC) answered %A{answer}"
 
@@ -1343,7 +1343,7 @@ module TestPermissionStanding =
             | Error refusal -> Some $"%A{refusal}"
 
         let throughDescriptor (p : string) : string option list =
-            match UnixNamespace.openPath readWrite (PathArg.ofPath (path p)) 0 system with
+            match OpenFlagWords.openPath readWrite (PathArg.ofPath (path p)) 0 system with
             | Ok (SyscallAnswer.Completed fd, opened) ->
                 let fd = int fd
 
@@ -1358,7 +1358,7 @@ module TestPermissionStanding =
 
         [
             for p in [ "/d/f" ; "/d/g" ] do
-                yield UnixNamespace.openPath truncating (PathArg.ofPath (path p)) 0 system |> refused
+                yield OpenFlagWords.openPath truncating (PathArg.ofPath (path p)) 0 system |> refused
                 yield! throughDescriptor p
             for p in [ "/d/f" ; "/d/e" ] do
                 yield UnixNamespace.unlink (PathArg.ofPath (path p)) system |> refused

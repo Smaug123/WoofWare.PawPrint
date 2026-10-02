@@ -293,7 +293,7 @@ class Program
     [<Test>]
     let ``30 is Linux's SIGPWR, which terminates a real process, and PawPrint's`` () : unit =
         match run SimulatedUnixPlatform.linuxX64 30 with
-        | RunOutcome.SignalTerminated (_, signal, _) -> signal |> shouldEqual (Signal.Other 30)
+        | RunOutcome.SignalTerminated (_, signal, _) -> signal |> shouldEqual Signal.SIGPWR
         | other -> failwith $"expected termination by signal 30, got %O{other}"
 
     [<Test>]
