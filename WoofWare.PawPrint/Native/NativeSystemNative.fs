@@ -6282,31 +6282,55 @@ module NativeSystemNative =
                     |> NativeHandlerResult.completed
                     |> Some
                 | KeventOutcome.Answered events ->
-                    // `kevent` wrote `struct kevent`s from the start of the
-                    // buffer, and the shim converts each in place into a
-                    // `SocketEvent`, whose stride is 16 bytes (the `udata`, then
-                    // the `SocketEvents` mask, then four bytes of padding the
-                    // shim's `memset` zeroes): `SocketEventsPal.ofKevent`. The
-                    // bytes past the converted events keep the tail of what
-                    // `kevent` wrote, which this does not write: no caller reads
-                    // past `*count`, and an `EVFILT_WRITE` event's `data` (the
-                    // send buffer's free space) is not modelled, so those bytes
-                    // could not be written faithfully anyway.
+                    // `kevent` writes a 32-byte `struct kevent` per event from the
+                    // start of the buffer, and the shim then converts each in place,
+                    // in order, into a 16-byte `SocketEvent`: the `udata`, the
+                    // `SocketEvents` mask (`SocketEventsPal.ofKevent`), and four
+                    // bytes of padding its `memset` zeroes. The conversions overwrite
+                    // the first half of what `kevent` wrote, and the second half
+                    // stays as `kevent` left it, which a caller can read past
+                    // `*count`. So both are written here, with one exception: an
+                    // `EVFILT_WRITE` event's `data`, the send buffer's free space,
+                    // is not modelled, and the bytes that would hold it are left as
+                    // they were.
+                    let keventSize = 32
                     let socketEventSize = 16
-                    let bytes = Array.zeroCreate<byte> (List.length events * socketEventSize)
+                    let length = List.length events * keventSize
+                    let image = Array.zeroCreate<byte> length
+                    let known = Array.zeroCreate<bool> length
+
+                    let put (offset : int) (bytes : byte[]) =
+                        Array.blit bytes 0 image offset bytes.Length
+
+                        for i = offset to offset + bytes.Length - 1 do
+                            known.[i] <- true
+
+                    events
+                    |> List.iteri (fun j event ->
+                        let at = j * keventSize
+                        put at (BitConverter.GetBytes event.Ident)
+                        put (at + 8) (BitConverter.GetBytes event.Filter)
+                        put (at + 10) (BitConverter.GetBytes event.Flags)
+                        put (at + 12) (BitConverter.GetBytes event.FilterFlags)
+
+                        match event.Data with
+                        | KqueueEventData.Exactly data -> put (at + 16) (BitConverter.GetBytes data)
+                        | KqueueEventData.SendBufferSpace -> ()
+
+                        put (at + 24) (BitConverter.GetBytes event.UserData)
+                    )
 
                     events
                     |> List.iteri (fun i event ->
-                        BinaryPrimitives.WriteUInt64LittleEndian (
-                            Span<byte> (bytes, i * socketEventSize, 8),
-                            event.UserData
-                        )
-
-                        BinaryPrimitives.WriteInt32LittleEndian (
-                            Span<byte> (bytes, i * socketEventSize + 8, 4),
-                            SocketEventsPal.ofKevent event.Filter event.Flags
-                        )
+                        let at = i * socketEventSize
+                        put at (BitConverter.GetBytes event.UserData)
+                        put (at + 8) (BitConverter.GetBytes (SocketEventsPal.ofKevent event.Filter event.Flags))
+                        put (at + 12) (Array.zeroCreate<byte> 4)
                     )
+
+                    if not BitConverter.IsLittleEndian then
+                        failwith
+                            $"%s{operation}: the host is big-endian, and the guest's struct kevent is laid out little-endian (this is an interpreter limitation)."
 
                     let bufferPointer =
                         match BufferPointer.dereferenceable buffer with
@@ -6315,12 +6339,36 @@ module NativeSystemNative =
                             failwith
                                 $"%s{operation}: the kernel delivered events to the event buffer %O{buffer}, which names no storage. The kernel refuses a delivery to any buffer but a mapped one, so this buffer's classification disagrees with its pointer (this is an interpreter bug)."
 
+                    // Each maximal run of known bytes, as (offset, bytes).
+                    let runs =
+                        let rec go (offset : int) (acc : (int * byte[]) list) =
+                            if offset >= length then
+                                List.rev acc
+                            elif not known.[offset] then
+                                go (offset + 1) acc
+                            else
+                                let mutable finish = offset
+
+                                while finish < length && known.[finish] do
+                                    finish <- finish + 1
+
+                                go finish ((offset, Array.sub image offset (finish - offset)) :: acc)
+
+                        go 0 []
+
                     let countBytes = Array.zeroCreate<byte> 4
                     BinaryPrimitives.WriteInt32LittleEndian (Span<byte> countBytes, List.length events)
 
                     // A successful wait leaves errno alone.
-                    state.MapKernel (EmulatedKernel.withUnix system)
-                    |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
+                    (state.MapKernel (EmulatedKernel.withUnix system), runs)
+                    ||> List.fold (fun state (offset, bytes) ->
+                        writeBytesThrough
+                            ctx
+                            operation
+                            (bufferFieldAt ctx operation bufferPointer offset state)
+                            (ImmutableArray.CreateRange bytes)
+                            state
+                    )
                     |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
                     |> IlMachineState.pushToEvalStack'
                         (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))

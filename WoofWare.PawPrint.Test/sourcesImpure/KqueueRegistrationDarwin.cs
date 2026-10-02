@@ -20,6 +20,10 @@ using System.Runtime.InteropServices;
 //     EV_EOF: SA_READ|SA_READCLOSE and SA_WRITE|SA_READ;
 //   * the peer closing makes READ report EV_EOF, SA_READ|SA_READCLOSE;
 //   * each event carries the data its registration was given;
+//   * past the converted SocketEvents, the buffer holds what kevent wrote there
+//     (the shim converts each 32-byte struct kevent in place into a 16-byte
+//     SocketEvent), apart from an EVFILT_WRITE event's data, the send buffer's
+//     free space, which is not asserted;
 //   * removing a registration that is not there is ENOENT, and a change that fails
 //     leaves the one before it in the same call applied.
 //
@@ -53,6 +57,9 @@ class Program
 
     static unsafe int Wait(IntPtr port, byte* buffer, long[] data, int[] events)
     {
+        // Filled first, so that what the call leaves alone is told apart from
+        // what it writes.
+        for (int i = 0; i < 4 * KeventSize; i++) buffer[i] = 0xEE;
         int count = 4;
         int result = WaitForSocketEvents(port, buffer, &count);
         if (result != PAL_SUCCESS) return -1000 - result;
@@ -94,6 +101,11 @@ class Program
         if (Wait(port, buffer, data, events) != 1) return check;
         check = 4;
         if (data[0] != 7 || events[0] != SA_READ) return check;
+        // Past the one SocketEvent is the second half of the struct kevent the
+        // conversion did not overwrite: its data (the one connection queued) and
+        // its udata.
+        check = 25;
+        if (*(long*)(buffer + 16) != 1 || *(long*)(buffer + 24) != 7) return check;
 
         // ---- A connected socket reports WRITE as soon as it is registered.
         check = 5;
@@ -130,6 +142,14 @@ class Program
         if (data[0] != 9 || events[0] != (SA_READ | SA_READCLOSE)) return check;
         check = 12;
         if (data[1] != 9 || events[1] != (SA_WRITE | SA_READ)) return check;
+        // The two SocketEvents cover the first struct kevent, and the second, the
+        // WRITE's, survives whole: its filter, its flags (EV_ADD|EV_CLEAR|
+        // EV_RECEIPT with EV_EOF), no pending error (the blocking connect took it),
+        // and its udata. Its data, the send buffer's free space, is not asserted.
+        check = 26;
+        if (*(short*)(buffer + 40) != -2 || *(ushort*)(buffer + 42) != 0x8061) return check;
+        check = 27;
+        if (*(uint*)(buffer + 44) != 0 || *(long*)(buffer + 56) != 9) return check;
 
         // ---- Removing a registration, and then removing it again.
         check = 13;
