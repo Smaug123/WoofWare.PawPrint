@@ -42,7 +42,9 @@ What lives here:
   runtime supplies for an SZ array's implicit interfaces, or that the call is ambiguous because
   more than one default body is most specific, or that it is not modelled, where default bodies
   conflict through a variant interface; and which implementation of a static abstract interface
-  member a `constrained.` type supplies.
+  member a `constrained.` type supplies. It names the method it chooses and the generic arguments it
+  runs with, and leaves instantiating that method to `MethodConcretisation`: CoreCLR reads a
+  method's locals only when it compiles the method.
 * `TypeAssignability` — whether a value of one closed type can be stored where another is
   expected, as CoreCLR's `CanCastTo` decides it: the base chain, interfaces, variance, and the
   array rules.
