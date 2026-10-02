@@ -73,13 +73,10 @@ module SignalDispatch =
     /// `PosixSignalInvalid` (0) for signals with no managed enum value
     /// (matching real CoreCLR `pal_signal.c`, which overwrites the
     /// out-parameter with `PosixSignalInvalid` when
-    /// `TryConvertSignalCodeToPosixSignal` returns `false`). Both are read
-    /// under the same numbering, so an entry spelled `Signal.Other 19` in a
-    /// Darwin process is handed to the handler as `(19, PosixSignal.SIGCONT)`,
-    /// exactly as the entry spelled `Signal.SIGCONT` is.
+    /// `TryConvertSignalCodeToPosixSignal` returns `false`).
     let private buildArgs (numbering : SignalNumbering) (signal : Signal) : ImmutableArray<CliType> =
         let signo = Signal.toRawSignoUnder numbering signal
-        let posixEnum = PosixSignalPal.toEnum numbering signal
+        let posixEnum = PosixSignalPal.toEnum signal
 
         ImmutableArray.CreateRange (
             [
@@ -207,7 +204,7 @@ module SignalDispatch =
         let shim = state.Kernel.PosixSignalShim
 
         let chained =
-            match PosixSignalShim.chainsToNativeHandler numbering signal shim with
+            match PosixSignalShim.chainsToNativeHandler signal shim with
             | None -> SignalPoll.Continues state
             | Some (NativeSignalHandler.CoreClrPalFault replaced) -> runPalFaultHandler replaced frame state
             | Some chained ->
@@ -566,7 +563,7 @@ module SignalDispatch =
         // `SystemNative_RegisterForSigChld`, so neither callback is set, and
         // it models no child process for a `waitpid` to find.
         match Signal.ofRawSignoUnder numbering signo with
-        | ValueSome signal when PosixSignalShim.isRegistered numbering signal state.Kernel.PosixSignalShim ->
+        | ValueSome signal when PosixSignalShim.isRegistered signal state.Kernel.PosixSignalShim ->
             SignalPoll.Continues (startCallback baseClassTypes dispatcher signal state)
         | ValueSome _
         | ValueNone ->

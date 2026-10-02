@@ -25,8 +25,7 @@ module KernelSignals =
         | Ok (disposition, _) -> disposition
         | Error errno -> failwith $"sigaction will not report %O{signal}'s disposition: %O{errno}"
 
-    /// Every signal whose disposition is not the default, keyed by its
-    /// canonical spelling.
+    /// Every signal whose disposition is not the default.
     let dispositions<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : Map<Signal, SignalDisposition<'Handler>>

@@ -64,8 +64,8 @@ module TestSignalDispositions =
     /// the sweep is not looking at.
     let private block (signal : Signal) (s : SignalState<Task, Handler>) : SignalState<Task, Handler> =
         let carrier =
-            if signal = Signal.canonicalUnder (SignalState.numbering s) HandlerFrames.carrier then
-                Signal.Other 26
+            if signal = HandlerFrames.carrier then
+                Signal.SIGVTALRM
             else
                 HandlerFrames.carrier
 
