@@ -138,7 +138,16 @@ module TestPathCopyIn =
         =
         let opened (flags : OpenFlags) =
             Some (fun path system ->
-                match UnixNamespace.openPath flags path 0o644 system with
+                match OpenFlagWords.openPath flags path 0o644 system with
+                | Ok (answer, _) -> ofAnswer answer
+                | Error refusal -> failwith $"open refused: %s{OpenRefusal.describe refusal}"
+            )
+
+        // A flag word no parsed request stands for, exactly as the probe
+        // passed it.
+        let openedRaw (word : int) =
+            Some (fun path system ->
+                match UnixNamespace.openPath word path 0o644 system with
                 | Ok (answer, _) -> ofAnswer answer
                 | Error refusal -> failwith $"open refused: %s{OpenRefusal.describe refusal}"
             )
@@ -198,6 +207,8 @@ module TestPathCopyIn =
                     Create = true
                     Directory = true
                 }
+        | "open", "O_ACCMODE" -> openedRaw 3
+        | "open", "all bits" -> openedRaw 0x7fffffff
         | "open", "O_RDONLY|O_TRUNC" ->
             opened
                 { ro with
@@ -245,14 +256,17 @@ module TestPathCopyIn =
                 }
         | _ -> None
 
-    /// The probe's rows this library cannot express, and why.
-    let private rowsNotModelled : Set<string * string> =
+    /// The probe's rows this library refuses outright, by flavour, and why.
+    let private refusedRows : Set<string * string * string> =
         Set.ofList
             [
-                // `OpenFlags` has no access mode 3 and no unknown bits; the
-                // flag word is parsed by the client.
-                "open", "O_ACCMODE"
-                "open", "all bits"
+                // Linux opens access mode 3 as a descriptor that can neither
+                // read nor write, which the library does not model.
+                "linux", "open", "O_ACCMODE"
+                // Every bit: each flavour defines flags among them that the
+                // library does not model.
+                "linux", "open", "all bits"
+                "darwin", "open", "all bits"
             ]
 
     /// Cells whose answer is the C library's rather than the kernel's: glibc's
@@ -298,9 +312,7 @@ module TestPathCopyIn =
             [
                 for call, arguments, cells in rows do
                     match modelled call arguments with
-                    | None ->
-                        if not (rowsNotModelled.Contains (call, arguments)) then
-                            yield $"%s{call} %s{arguments}: the probe measured this row and nothing replays it"
+                    | None -> yield $"%s{call} %s{arguments}: the probe measured this row and nothing replays it"
                     | Some run ->
                         for column, expected in cells do
                             if not (libcCells.Contains (flavour, call, arguments, column)) then
@@ -310,14 +322,13 @@ module TestPathCopyIn =
                                     with e ->
                                         $"refused (%s{e.Message})"
 
-                                // The library refuses an `O_DIRECTORY` combination it does not
-                                // model; the probe says the real kernel answers EINVAL there,
-                                // before the path is copied in, so the refusal must come first
-                                // too, whatever the path.
+                                // A refusal must come before the path is read, whatever
+                                // the path.
                                 let expected =
-                                    match call, arguments with
-                                    | "open", "O_RDONLY|O_CREAT|O_DIRECTORY" when expected = "EINVAL" -> "refused"
-                                    | _ -> expected
+                                    if refusedRows.Contains (flavour, call, arguments) then
+                                        "refused"
+                                    else
+                                        expected
 
                                 if not (actual = expected || (expected = "refused" && actual.StartsWith "refused")) then
                                     yield
@@ -506,7 +517,7 @@ module TestPathCopyIn =
             holds (
                 changing
                     $"open %A{openFlags}"
-                    (fun path -> UnixNamespace.openPath openFlags path 0o640)
+                    (fun path -> OpenFlagWords.openPath openFlags path 0o640)
                     (fun path -> UnixNamespace.openPathParsed openFlags path 0o640)
             )
 

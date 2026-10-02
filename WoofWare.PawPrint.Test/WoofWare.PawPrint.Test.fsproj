@@ -238,6 +238,7 @@
     <Compile Include="ThreadFixtures.fs" />
     <Compile Include="TestPollEventsPal.fs" />
     <Compile Include="TestFileAdvicePal.fs" />
+    <Compile Include="TestOpenFlagsPal.fs" />
     <Compile Include="TestFileSystemTypePal.fs" />
     <Compile Include="TestSocketShimPal.fs" />
     <Compile Include="KernelSyscall.fs" />
@@ -429,6 +430,9 @@
          `TestStrErrorR` regenerates every row from the model. -->
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\strerror-r.linux-6.18.5-glibc-2.41.txt" LogicalName="WoofWare.PawPrint.Test.strerrorR.glibc.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\strerror-r.darwin-27.0.txt" LogicalName="WoofWare.PawPrint.Test.strerrorR.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\open-flags.linux-6.12.111-x86_64-root.txt" LogicalName="WoofWare.PawPrint.Test.openFlags.linuxX64.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\open-flags.linux-6.18.5-aarch64-root.txt" LogicalName="WoofWare.PawPrint.Test.openFlags.linuxArm64.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\open-flags.darwin-27.0-uid501.txt" LogicalName="WoofWare.PawPrint.Test.openFlags.darwin.txt" />
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
     <EmbeddedResource Include="sourcesSignalTerminated\*.cs" />

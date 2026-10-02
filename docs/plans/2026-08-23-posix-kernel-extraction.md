@@ -2588,32 +2588,33 @@ Ordered so that each has an oracle before the next depends on it.
   is open. **This needs confirming before the code is written**, because it adds
   a public vocabulary type to a package that is about to be released.
 
-  **Decided: (B), a parsed `OpenFlags` record** — access mode, and a bool per
-  `O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_NOFOLLOW`/`O_CLOEXEC`/`O_SYNC`. PawPrint maps
-  the PAL bits onto it and the library never sees a numbering.
+  **Decided: (B), a parsed `OpenFlags` record, and reversed on 2026-10-02 to
+  the raw word, decoded per flavour in the library** (re-audit finding 4). The
+  record's argument was about what an `int` lets the *emulator* do: given a bit
+  pattern, a flag this kernel does not model is indistinguishable from one it
+  does, so it would silently do something the caller did not ask for. The
+  decoder keeps that property. Each flavour's numbering of every bit it
+  defines is a measured table (`open-flags.c`: each access mode with every bit
+  and every pair of bits, on Linux aarch64, Linux x86-64 under QEMU, and
+  Darwin), a defined bit the library does not model is a typed refusal naming
+  it (`OpenRefusal.UnmodelledFlags`), and a bit neither kernel defines is
+  ignored, because both kernels measurably ignore it (Darwin included).
 
-  The argument that settled it is stronger than the one this bullet originally
-  made, which was about where platform knowledge lives (`O_CREAT` is 0o100 on
-  Linux and 0x200 on Darwin, and `SimulatedUnixPlatform` is the library's).
-  Patrick's objection to (A) is about what an `int` lets the *emulator* do:
-  given a bit pattern, a flag this kernel does not model is indistinguishable
-  from one it does, so it would silently do something the caller did not ask
-  for — the caller believing the bits mean something, and the kernel guessing.
-  A record has exactly the fields the kernel acts on, so what is supported is
-  legible at the boundary. An `int -> OpenFlags` decoder can be added later if
-  something wants one; it cannot be taken away once the surface is a number.
-
-  This also keeps the two shim-level rejections where they belong — an
-  unrecognised *bit* is EINVAL and so is an access mode that is none of the
-  three, both being the C's own checks rather than any kernel's, and neither
-  expressible once the flags are parsed. The cost accepted is that a future
-  `fcntl(F_GETFL)` would have to invent a numbering, and that the library
-  cannot model a kernel that rejects a flag *combination* by its bits; if
-  either arrives it wants a per-flavour numbering *in the library*, which is
-  where (B) leaves room for it.
+  What reversed it were the two costs (B) had accepted, both of which arrived.
+  The record could not state a kernel that rejects a *combination* by its
+  bits, and both do: `O_CREAT|O_DIRECTORY` is EINVAL before the path is copied
+  in (`path-copyin-order.c`). And its prose claimed a real `open` rejects access
+  mode 3, which Linux opens, as a descriptor that can neither read nor write
+  (the library refuses it, `OpenRefusal.IoctlOnlyAccessMode`). Meanwhile
+  `pipe2` and `posix_fadvise` had moved to raw words with the PAL's half in
+  PawPrint, leaving `open` the one call whose second client had to hold each
+  flavour's `O_*` numbering and access-mode rule itself. The carve-out above
+  still holds: the word is the raw *kernel* ABI, and `OpenFlagsPal` in PawPrint
+  is the PAL's half, `ConvertOpenFlags`'s EINVAL screen and each PAL bit's
+  platform bit. The record survives as the library's internal decoded form.
 
   One rule the shape has to be careful about, and the tests pin it: `O_EXCL`
-  crosses **as the caller set it**, not pre-ANDed with `O_CREAT`. That it does
+  is read **as the caller set it**, not pre-ANDed with `O_CREAT`. That it does
   nothing on its own is a measured kernel fact the library owns, and a client
   that combined them first would leave the library with nothing to be right or
   wrong about.
