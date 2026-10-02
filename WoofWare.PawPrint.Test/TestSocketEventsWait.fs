@@ -601,14 +601,13 @@ class ClosesAParkedPort
 }
 """
 
-    /// A real `close(2)` does not end an in-flight `epoll_wait` — the syscall holds a
-    /// file reference, so the port and its registrations stay alive for it and a later
-    /// edge can still complete the wait. PawPrint's close sweeps the description away,
-    /// which would strand the waiter in a sleep a real kernel can end, so the close
-    /// refuses instead. A `dup` of the port would survive the close and needs no
-    /// refusal; this is only about the last descriptor.
+    /// A real `close(2)` does not end an in-flight `epoll_wait`: the syscall holds a file
+    /// reference, so the port and its registrations stay alive for it, and a later edge can
+    /// still complete the wait (`open-file-references.c` section E). So the last descriptor's
+    /// close is served, the waiter sleeps on in the port its park holds, and the guest exits
+    /// as it would on Linux, with its background waiter still asleep.
     [<Test>]
-    let ``closing the last descriptor of a parked-on port refuses`` () : unit =
+    let ``closing the last descriptor of a parked-on port leaves the waiter asleep on it`` () : unit =
         let image = Roslyn.compile [ closesParkedPortSource ]
 
         let _messages, loggerFactory =
@@ -620,19 +619,43 @@ class ClosesAParkedPort
 
         use peImage = new MemoryStream (image)
 
-        let exc =
-            Assert.Throws<GuestFailureException> (fun () ->
-                BoundedRun.runWith
-                    loggerFactory
-                    BoundedRun.defaultMaxSteps
-                    "ClosesAParkedPort.cs"
-                    (Some "ClosesAParkedPort.cs")
-                    peImage
-                    (HostConfig.Default dotnetRuntimes)
-                |> ignore<RunEnd>
-            )
+        let outcome =
+            BoundedRun.runWith
+                loggerFactory
+                BoundedRun.defaultMaxSteps
+                "ClosesAParkedPort.cs"
+                (Some "ClosesAParkedPort.cs")
+                peImage
+                (HostConfig.Default dotnetRuntimes)
 
-        exc.Message |> shouldContainText "Implement port retention"
+        match ExpectRun.ended outcome with
+        | RunOutcome.NormalExit (state, _, _) ->
+            state.LatchedExitCode |> shouldEqual 2
+
+            let unix = EmulatedKernel.unix state.Kernel
+
+            let ports =
+                unix.Tasks
+                |> Map.toList
+                |> List.choose (fun (_, task) ->
+                    match task.Parked with
+                    | Some {
+                               Syscall = ParkedSyscall.SocketWait wait
+                           } -> Some wait.Port
+                    | _ -> None
+                )
+
+            // The waiter is still parked, on a port no descriptor names and the park keeps.
+            List.length ports |> shouldEqual 1
+
+            FileDescriptorRegistry.descriptions unix.Process.FileDescriptors
+            |> Map.containsKey ports.Head
+            |> shouldEqual true
+
+            FileDescriptorRegistry.fds unix.Process.FileDescriptors
+            |> Map.exists (fun _ id -> id = ports.Head)
+            |> shouldEqual false
+        | other -> failwith $"expected the guest to exit, got %O{other}"
 
     /// A waiter parked on a registered-but-unready listener, and an entry thread whose
     /// 200 ms join resolves only through the jump-to-deadline fallback — which exists

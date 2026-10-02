@@ -2314,9 +2314,9 @@ module TestUnixSystemStep =
             | other -> failwith $"expected a file descriptor, got %O{other}"
 
         VirtualFileSystem.bindingCount inode unnamed.Machine.FileSystem |> shouldEqual 0
-        UnixDescriptor.pinnedInodes unnamed |> Set.contains inode |> shouldEqual true
+        ObjectLifetime.pinnedInodes unnamed |> Set.contains inode |> shouldEqual true
 
-        let attempted = UnixDescriptor.forgetIfUnheld inode unnamed
+        let attempted = ObjectLifetime.forgetIfUnheld inode unnamed
 
         (VirtualFileSystem.tryGet inode attempted.Machine.FileSystem).IsSome
         |> shouldEqual true
@@ -2346,7 +2346,7 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not unlink the file: %O{error}"
 
         let released =
-            match FileDescriptorRegistry.dropDescriptor fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dropDescriptor fd Set.empty system.Process.FileDescriptors with
             | Ok (registry, _) -> registry
             | Error error -> failwith $"could not close the descriptor: %O{error}"
 
@@ -2364,9 +2364,9 @@ module TestUnixSystemStep =
                 Leader = system.Leader
             }
 
-        UnixDescriptor.pinnedInodes orphaned |> Set.contains inode |> shouldEqual false
+        ObjectLifetime.pinnedInodes orphaned |> Set.contains inode |> shouldEqual false
 
-        let reaped = UnixDescriptor.forgetIfUnheld inode orphaned
+        let reaped = ObjectLifetime.forgetIfUnheld inode orphaned
 
         (VirtualFileSystem.tryGet inode reaped.Machine.FileSystem).IsSome
         |> shouldEqual false
@@ -2906,9 +2906,8 @@ module TestUnixSystemStep =
     [<Test>]
     let ``a condition whose description has gone gets no answer`` () : unit =
         // A real waiter holds a reference to the open file it waits on, so this
-        // cannot arise on a kernel; this table models no such reference, so
-        // `close` refuses to destroy a description a task is parked on. The
-        // description can therefore only go behind the syscall's back — a
+        // cannot arise on a kernel, and a park here holds its description too.
+        // The description can therefore only go behind the syscall's back — a
         // client editing the registry directly, as here — and this is the arm
         // that says so out loud rather than picking one of two wrong answers.
         let first, second, system = withTwoDescriptions linux
@@ -2917,7 +2916,7 @@ module TestUnixSystemStep =
         let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
 
         let closed =
-            match FileDescriptorRegistry.dropDescriptor second parkedIn.Process.FileDescriptors with
+            match FileDescriptorRegistry.dropDescriptor second Set.empty parkedIn.Process.FileDescriptors with
             | Ok (registry, Some _) ->
                 { parkedIn with
                     Process =
@@ -2929,7 +2928,7 @@ module TestUnixSystemStep =
 
         let exn = Assert.Throws<exn> (fun () -> holds waiterTask condition closed |> ignore)
 
-        exn.Message |> shouldContainText "closed underneath it"
+        exn.Message |> shouldContainText "a park holds what it waits on"
 
     [<Test>]
     let ``flock through step parks with the system the park advanced to`` () : unit =
@@ -3210,55 +3209,149 @@ module TestUnixSystemStep =
         exn.Message |> shouldContainText "is not parked"
 
     [<Test>]
-    let ``through step alone, a close cannot destroy a description a task waits on`` () : unit =
+    let ``through step alone, a close under a waiting flock leaves the condition answerable`` () : unit =
         // The blocking protocol through the one surface a client that only logs or replays
         // syscalls sees: `step` answers `WouldBlock` and the system it answers with carries the
-        // park, so the `close` that follows is refused rather than served.
-        let first, second, system = withTwoDescriptions linux
+        // park. Under Linux the `close` that follows is served and the park keeps the description
+        // alive; under Darwin, whose close does not return until the flock has, it is refused.
+        for system, linuxFlavour in [ linux, true ; darwin, false ] do
+            let first, second, system = withTwoDescriptions system
 
-        let held =
-            match UnixSystem.step holderTask (Syscall.FLock (first, 2)) system with
-            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), held) -> held
-            | other -> failwith $"expected the first lock to be granted, got %A{other}"
+            let held =
+                match UnixSystem.step holderTask (Syscall.FLock (first, 2)) system with
+                | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), held) -> held
+                | other -> failwith $"expected the first lock to be granted, got %A{other}"
 
-        let condition, parkedIn =
-            match UnixSystem.step waiterTask (Syscall.FLock (second, 2)) held with
-            | Ok (SyscallOutcome.WouldBlock condition, parkedIn) -> condition, parkedIn
-            | other -> failwith $"expected the second lock to park, got %A{other}"
+            let condition, parkedIn =
+                match UnixSystem.step waiterTask (Syscall.FLock (second, 2)) held with
+                | Ok (SyscallOutcome.WouldBlock condition, parkedIn) -> condition, parkedIn
+                | other -> failwith $"expected the second lock to park, got %A{other}"
 
-        UnixSystem.checkInvariants parkedIn |> shouldEqual []
+            UnixSystem.checkInvariants parkedIn |> shouldEqual []
 
-        match UnixSystem.step waiterTask (Syscall.Close second) parkedIn with
-        | Error (SyscallRefusal.Close (CloseRefusal.LastFlockedDescriptorWithWaiter (description, task))) ->
-            description |> shouldEqual (descriptionOf second parkedIn)
-            task |> shouldEqual waiterTask
-        | other -> failwith $"expected the close to be refused, got %A{other}"
+            match UnixSystem.step thirdTask (Syscall.Close second) parkedIn with
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), closed) when linuxFlavour ->
+                UnixSystem.checkInvariants closed |> shouldEqual []
+                holds waiterTask condition closed |> shouldEqual false
+            | Error (SyscallRefusal.Close (CloseRefusal.DarwinFlockedDescriptorWithWaiter (description, task))) when
+                not linuxFlavour
+                ->
+                description |> shouldEqual (descriptionOf second parkedIn)
+                task |> shouldEqual waiterTask
+                holds waiterTask condition parkedIn |> shouldEqual false
+            | other -> failwith $"linux %b{linuxFlavour}: unexpected close %A{other}"
 
-        // ...so the condition is still answerable.
-        holds waiterTask condition parkedIn |> shouldEqual false
+    /// `operation` by `task` through `fd`, which must be answered at once: the
+    /// answer.
+    let private flockAnswer (task : int) (fd : int) (operation : int) (system : UnixSystem<int, string>) =
+        match UnixDescriptor.flock task fd operation system with
+        | Ok (SyscallOutcome.Answered answer, system) -> answer, system
+        | other -> failwith $"expected flock %d{operation} on fd %d{fd} to be answered, got %A{other}"
 
+    /// `open-file-references.c` sections D and F on Linux: the last close under
+    /// a sleeping `flock` wakes nothing; the release then grants the waiter its
+    /// lock (D) or a signal ends the call with EINTR (F), and either way the
+    /// description, and so whatever lock it holds, goes as the call returns,
+    /// so a third description's `LOCK_EX|LOCK_NB` is granted. With a `dup`
+    /// kept, the granted lock stays and the third is EWOULDBLOCK (D2).
     [<Test>]
-    let ``closing the last descriptor onto a parked lock is refused`` () : unit =
-        // What makes `WakeCondition.satisfied`'s vanished-description arm unreachable, and what
-        // `flockAcquire` relies on to be total. A real kernel's blocked `flock` holds the file, so
-        // the description outlives every descriptor; this table has no such reference.
-        let first, second, system = withTwoDescriptions linux
+    let ``Linux: a sleeping flock holds its description past the last close, until it returns`` () : unit =
+        for dupKept, interrupted in [ false, false ; true, false ; false, true ] do
+            let where = $"dup kept %b{dupKept}, interrupted %b{interrupted}"
+            let first, second, system = withTwoDescriptions linux
+            let third, system = withAnotherDescription first system
+
+            let system =
+                if dupKept then
+                    match UnixDescriptor.dup second system with
+                    | SyscallAnswer.Completed _, system -> system
+                    | other -> failwith $"%A{other}"
+                else
+                    system
+
+            let held = UnixDescriptor.flock holderTask first 2 system |> granted
+            let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
+            let requester = descriptionOf second parkedIn
+
+            let closed =
+                match UnixDescriptor.close second parkedIn with
+                | Ok (SyscallAnswer.Completed 0L, closed) -> closed
+                | other -> failwith $"%s{where}: expected the close to succeed, got %A{other}"
+
+            UnixSystem.checkInvariants closed |> shouldEqual []
+            holds waiterTask condition closed |> shouldEqual false
+
+            let ended =
+                if interrupted then
+                    let signalled =
+                        { closed with
+                            Process =
+                                { closed.Process with
+                                    Signals =
+                                        closed.Process.Signals
+                                        |> SignalState.setDisposition
+                                            Signal.SIGUSR1
+                                            (SignalDisposition.Catch (SignalCatch.ofHandler "h"))
+                                        |> SignalState.enqueue
+                                            {
+                                                Signal = Signal.SIGUSR1
+                                                Target = ValueSome waiterTask
+                                            }
+                                }
+                        }
+
+                    match UnixDescriptor.flockAcquire waiterTask signalled with
+                    | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EINTR), ended) ->
+                        flockAnswer holderTask first 8 ended |> snd
+                    | other -> failwith $"%s{where}: expected EINTR, got %A{other}"
+                else
+                    let released = flockAnswer holderTask first 8 closed |> snd
+                    holds waiterTask condition released |> shouldEqual true
+                    UnixDescriptor.flockAcquire waiterTask released |> granted
+
+            FileDescriptorRegistry.descriptions ended.Process.FileDescriptors
+            |> Map.containsKey requester
+            |> shouldEqual dupKept
+
+            UnixSystem.checkInvariants ended |> shouldEqual []
+
+            flockAnswer thirdTask third (2 ||| 4) ended
+            |> fst
+            |> shouldEqual (
+                if dupKept then
+                    SyscallAnswer.Failed UnixError.EAGAIN
+                else
+                    SyscallAnswer.Completed 0L
+            )
+
+    /// `open-file-references.c` section D on Darwin: the close of a descriptor
+    /// onto a description a `flock` sleeps on does not return until the flock
+    /// has, which this kernel does not model; and the park does not record
+    /// which descriptor the call was entered through, so every close onto the
+    /// description is refused.
+    [<Test>]
+    let ``Darwin: closing any descriptor onto a description a flock sleeps on is refused`` () : unit =
+        let first, second, system = withTwoDescriptions darwin
+
+        let alias, system =
+            match UnixDescriptor.dup second system with
+            | SyscallAnswer.Completed fd, system -> int fd, system
+            | other -> failwith $"%A{other}"
 
         let held = UnixDescriptor.flock holderTask first 2 system |> granted
-        let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
+        let _, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
         let requester = descriptionOf second parkedIn
 
-        match UnixDescriptor.close second parkedIn with
-        | Error (CloseRefusal.LastFlockedDescriptorWithWaiter (description, task)) ->
-            description |> shouldEqual requester
-            task |> shouldEqual waiterTask
-        | other -> failwith $"expected the close to be refused, got %A{other}"
+        for fd in [ second ; alias ] do
+            match UnixDescriptor.close fd parkedIn with
+            | Error (CloseRefusal.DarwinFlockedDescriptorWithWaiter (description, task)) ->
+                description |> shouldEqual requester
+                task |> shouldEqual waiterTask
+            | other -> failwith $"closing fd %d{fd}: expected the close to be refused, got %A{other}"
 
     [<Test>]
-    let ``closing a descriptor that is not the last one onto a parked lock is served`` () : unit =
-        // The narrowness of that refusal: only destroying the description strands the waiter, and
-        // a `dup` alias keeps it alive. Without this the refusal could be "no descriptor onto a
-        // parked description may close", which would also pass the test above.
+    let ``closing a descriptor that is not the last one onto a parked lock is served on Linux`` () : unit =
+        // A `dup` alias keeps the description alive whether or not the waiter holds it.
         let first, second, system = withTwoDescriptions linux
 
         let alias, registry =
@@ -3279,8 +3372,6 @@ module TestUnixSystemStep =
 
         match UnixDescriptor.close second parkedIn with
         | Ok (SyscallAnswer.Completed 0L, closed) ->
-            // ...and the condition is still answerable afterwards, which is the whole point of
-            // refusing the other case.
             holds waiterTask condition closed |> shouldEqual false
 
             ignore<int> alias
@@ -3315,25 +3406,30 @@ module TestUnixSystemStep =
             system
 
     [<Test>]
-    let ``closing the last descriptor onto a parked-on port is refused under Linux`` () : unit =
+    let ``closing the last descriptor onto a parked-on port leaves the waiter on a live port under Linux`` () : unit =
         // A real `epoll_wait` holds a file reference, so the port and its registrations outlive
-        // every descriptor and a later edge still completes the wait. This table sweeps the
-        // description away, which would strand the waiter in a sleep a real kernel can end.
+        // every descriptor and a later edge still completes the wait (`open-file-references.c`
+        // section E). The park is that reference here.
         let fd, system = withPort linux
         let description = descriptionOf fd system
         let parked = parkedOnPort fd system
 
         match UnixDescriptor.close fd parked with
-        | Error (CloseRefusal.LinuxLastPortDescriptorWithWaiter (refused, task)) ->
-            refused |> shouldEqual description
-            task |> shouldEqual 7
-        | other -> failwith $"expected the close to be refused, got %A{other}"
+        | Ok (SyscallAnswer.Completed 0L, closed) ->
+            FileDescriptorRegistry.tryFindId fd closed.Process.FileDescriptors
+            |> shouldEqual None
+
+            FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
+            |> Map.containsKey description
+            |> shouldEqual true
+
+            UnixWait.wakes (Set.singleton 7) closed |> shouldEqual []
+            UnixSystem.checkInvariants closed |> shouldEqual []
+        | other -> failwith $"expected the close to succeed, got %A{other}"
 
     [<Test>]
     let ``closing an aliased descriptor onto a parked-on port is served under Linux`` () : unit =
-        // The narrowness of that refusal, and what separates it from Darwin's below: only
-        // destroying the description strands the waiter, and a `dup` alias keeps it alive. Without
-        // this row the refusal could be "no descriptor onto a waited-on port may close".
+        // What separates Linux from Darwin's row below: a `dup` alias names the same port.
         let fd, system = withPort linux
 
         let alias, registry =
@@ -3391,7 +3487,7 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``closing a port nothing waits on is served`` () : unit =
-        // Vacuity guard for all three rows above: the refusals are about the *waiter*, not about
+        // Vacuity guard for the Darwin row above: the refusal is about the *waiter*, not about
         // ports, so a port with no waiter closes on either flavour.
         for system in [ linux ; darwin ] do
             let fd, system = withPort system
@@ -3480,16 +3576,14 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``a port that has gone is refused rather than answered`` () : unit =
-        // The obligation `close`'s port refusal exists to keep. Answering would
-        // be wrong either way: `false` sleeps for ever, and `true` wakes the
-        // waiter into an `EBADF` no kernel produces. This library's table models
-        // no reference from a waiter to what it waits on, so only the client can
-        // keep the port alive, and it must be told when it has not.
+        // A port goes only behind the syscalls' back while a wait holds it, as
+        // here. Answering would be wrong either way: `false` sleeps for ever,
+        // and `true` wakes the waiter into an `EBADF` no kernel produces.
         let fd, system = withPendingPort linux
         let portId = descriptionOf fd system
 
         let closed =
-            match FileDescriptorRegistry.dropDescriptor fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dropDescriptor fd Set.empty system.Process.FileDescriptors with
             | Ok (registry, _) ->
                 { system with
                     Process =
@@ -3502,7 +3596,7 @@ module TestUnixSystemStep =
         let exn =
             Assert.Throws<exn> (fun () -> SocketEventPort.hasDeliverableEvent portId closed |> ignore)
 
-        exn.Message |> shouldContainText "closed underneath it"
+        exn.Message |> shouldContainText "a park holds what it waits on"
 
     [<Test>]
     let ``a description that is not a port is refused rather than answered`` () : unit =

@@ -1461,7 +1461,7 @@ module UnixPathResolution =
         // includes it — so leaving one is a reference-dropping operation, and the
         // directory a guest `rmdir`d before stepping out of it becomes free
         // exactly here. Without this it would be stranded for the run.
-        SyscallAnswer.Completed 0L, UnixDescriptor.forgetIfUnheld previous moved
+        SyscallAnswer.Completed 0L, ObjectLifetime.forgetIfUnheld previous moved
 
     /// <summary>
     /// <c>chdir(2)</c>: set the relative-path resolution base directory to <c>path</c>.

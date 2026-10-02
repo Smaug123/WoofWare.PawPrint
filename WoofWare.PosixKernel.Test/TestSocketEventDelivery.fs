@@ -774,7 +774,7 @@ module TestSocketEventDelivery =
         // library now says which measured gap it declined to answer across, and
         // a message match would pass for any of the three.
         match UnixDescriptor.close listenerFd kernel with
-        | Error (CloseRefusal.ListenerWouldResetUnacceptedClient _) -> ()
+        | Error (CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) -> ()
         | other -> failwith $"expected a listener-reset refusal, got %O{other}"
 
     /// The connect's two edges enter in the measured order (`order7.c`): the
@@ -988,11 +988,11 @@ module TestSocketEventDelivery =
         assertSound kernel
 
     /// The close-time retention rule, flavour by flavour (both measured, see
-    /// `SocketEventWaitSurvivesCloseLinux.cs`): under Linux a dup-survived
-    /// close of an in-flight-waited port proceeds — the wait holds the
-    /// description — and only destroying the description refuses; under
-    /// Darwin, where kevent ends the wait with an unmeasured error, any such
-    /// close refuses.
+    /// `SocketEventWaitSurvivesCloseLinux.cs` and `open-file-references.c`
+    /// section E): under Linux every close of an in-flight-waited port
+    /// proceeds, the last one included, because the wait holds the
+    /// description; under Darwin, where kevent ends the wait with an
+    /// unmeasured error, any such close refuses.
     [<Test>]
     let ``closing a descriptor of an in-flight-waited port follows the measured flavour split`` () : unit =
         let build () =
@@ -1033,10 +1033,19 @@ module TestSocketEventDelivery =
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
-        // ...and destroying the description refuses.
+        // ...and so does the last one, leaving the port to the wait.
         match UnixDescriptor.close portFd kernel with
-        | Error (CloseRefusal.LinuxLastPortDescriptorWithWaiter (_, waiter)) -> waiter |> shouldEqual 1
-        | other -> failwith $"expected a Linux port-retention refusal, got %O{other}"
+        | Ok (SyscallAnswer.Completed 0L, closed) ->
+            FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
+            |> Map.containsKey (
+                match UnixTaskTable.parkedFor 1 closed.Tasks with
+                | Some (ParkedSyscall.SocketWait wait) -> wait.Port
+                | other -> failwith $"expected the wait to stay parked, got %A{other}"
+            )
+            |> shouldEqual true
+
+            assertSound closed
+        | other -> failwith $"expected the last close to succeed, got %O{other}"
 
         // Darwin: even the dup-survived close refuses.
         let _, dupFd, kernel = build ()

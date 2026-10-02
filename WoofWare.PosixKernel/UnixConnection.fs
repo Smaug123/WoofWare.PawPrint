@@ -90,6 +90,10 @@ type AcceptRefusal =
     /// The accept was asleep and a signal is pending for the task, and this
     /// library will not say how the signal ends it.
     | Interruption of SyscallInterruptionRefusal
+    /// The accept slept on a listener whose last descriptor closed meanwhile,
+    /// so the listener goes as the call returns, and what that does to what is
+    /// left in its queue is unmeasured.
+    | Release of DescriptionReleaseRefusal
 
 [<RequireQualifiedAccess>]
 module AcceptRefusal =
@@ -106,6 +110,8 @@ module AcceptRefusal =
         | AcceptRefusal.UnmeasuredCopyOutFault listener ->
             $"socket %O{listener} has a connection to hand over, so this call takes it off the queue and copies the peer address out -- but the destination is unmapped, so that copy faults. Measured, Linux stores the untruncated length in the caller's length cell, answers EFAULT and loses the connection, while Darwin ignores the fault and succeeds; this kernel's accept has no outcome for either. (A NULL destination is not copied to at all, and neither is the length cell; that has no outcome here either.)"
         | AcceptRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
+        | AcceptRefusal.Release refusal ->
+            $"the accept slept on a listener no descriptor names any more, which goes as the call returns: %s{DescriptionReleaseRefusal.describe refusal}"
 
 /// Why this kernel will not answer a `connect(2)` at all: the call reached an
 /// input whose real answer is unmeasured, or a state this library does not
@@ -1483,29 +1489,7 @@ module UnixConnection =
                 Ok (AcceptOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
         | _ :: _ -> handOver socketId description.NonBlocking destination declaredLength system
 
-    /// Finish the `accept` `task` is parked in: look at the listener's queue
-    /// again, as a woken real accept does, and answer.
-    ///
-    /// Hands over the oldest connection on the queue, copying its peer address
-    /// out to the destination the call was entered with; see `accept` for the
-    /// destinations that refuses. A queue found empty again (another caller
-    /// took the connection) parks the task again, behind every other park,
-    /// which on a real kernel puts it at the back of the listener's queue of
-    /// accepters. So does a listener whose description has become non-blocking
-    /// while the call slept: measured on both flavours (`blocking-accept.c`
-    /// section F), a sleeping accept is not woken by that, and goes on waiting.
-    ///
-    /// On the flavours whose accepted socket inherits `O_NONBLOCK`, it inherits
-    /// the listening description's flag as it stands when the call finishes.
-    ///
-    /// With the queue empty, a signal with a handler pending for the task ends
-    /// the call: `Restarts` if every handler that runs was installed with
-    /// `SA_RESTART`, and `Failed EINTR` if none was. Either way the task leaves
-    /// the listener's queue of accepters, and issuing the call again puts it at
-    /// the back. An answer, `Restarts` included, clears the park.
-    ///
-    /// `task` must be parked in an accept.
-    let finishAccept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private finishAcceptHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
@@ -1528,7 +1512,7 @@ module UnixConnection =
             | Some description -> description
             | None ->
                 failwith
-                    $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{parked.Listener}, which is not in the table, so it was closed underneath the wait. `close` refuses such a close (this is a bug in this library, or in a caller that destroyed the description without UnixDescriptor.close)."
+                    $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{parked.Listener}, which is not in the table, but a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
 
         let socketId =
             match description.Target with
@@ -1572,3 +1556,51 @@ module UnixConnection =
         | phase ->
             failwith
                 $"UnixConnection.finishAccept: task %O{task}'s accept waits on socket %O{socketId}, which is in %A{phase} rather than listening. Nothing takes a live listener out of listening, so the park was recorded on a socket that was never one (this is a bug in the caller that recorded it)."
+
+    /// Finish the `accept` `task` is parked in: look at the listener's queue
+    /// again, as a woken real accept does, and answer.
+    ///
+    /// Hands over the oldest connection on the queue, copying its peer address
+    /// out to the destination the call was entered with; see `accept` for the
+    /// destinations that refuses. A queue found empty again (another caller
+    /// took the connection) parks the task again, behind every other park,
+    /// which on a real kernel puts it at the back of the listener's queue of
+    /// accepters. So does a listener whose description has become non-blocking
+    /// while the call slept: measured on both flavours (`blocking-accept.c`
+    /// section F), a sleeping accept is not woken by that, and goes on waiting.
+    ///
+    /// On the flavours whose accepted socket inherits `O_NONBLOCK`, it inherits
+    /// the listening description's flag as it stands when the call finishes.
+    ///
+    /// With the queue empty, a signal with a handler pending for the task ends
+    /// the call: `Restarts` if every handler that runs was installed with
+    /// `SA_RESTART`, and `Failed EINTR` if none was. Either way the task leaves
+    /// the listener's queue of accepters, and issuing the call again puts it at
+    /// the back. An answer, `Restarts` included, clears the park.
+    ///
+    /// The sleeping call holds the listener, so it outlives its last descriptor
+    /// until the call returns. A listener no descriptor names goes as the call
+    /// answers, and if a connection whose client is open is left in its queue,
+    /// what that does to the client is unmeasured and the finish refuses
+    /// (`AcceptRefusal.Release`).
+    ///
+    /// `task` must be parked in an accept.
+    let finishAccept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
+        =
+        let held =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some parked -> ParkedSyscall.descriptions parked
+            | None -> []
+
+        // The call's reference to the listener goes as it returns, and with it
+        // the listener, if no descriptor names it any more
+        // (`open-file-references.c` section A1).
+        match finishAcceptHolding task system with
+        | Error refusal -> Error refusal
+        | Ok (outcome, after) ->
+            match ObjectLifetime.releaseUnreferenced held after with
+            | Ok released -> Ok (outcome, released)
+            | Error refusal -> Error (AcceptRefusal.Release refusal)

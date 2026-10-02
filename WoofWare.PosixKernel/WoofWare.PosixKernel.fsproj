@@ -62,6 +62,7 @@
         <Compile Include="UnixMachine.fs" />
         <Compile Include="UnixClock.fs" />
         <Compile Include="UnixSystemState.fs" />
+        <Compile Include="ObjectLifetime.fs" />
         <Compile Include="UnixSocket.fs" />
         <Compile Include="Readiness.fs" />
         <Compile Include="SyscallInterruption.fs" />

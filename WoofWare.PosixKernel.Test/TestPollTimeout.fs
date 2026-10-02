@@ -441,7 +441,7 @@ module TestPollTimeout =
     /// going around `UnixDescriptor.close` could.
     let private forgeRebind (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         let registry =
-            match FileDescriptorRegistry.dropDescriptor fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dropDescriptor fd Set.empty system.Process.FileDescriptors with
             | Ok (registry, _) -> registry
             | Error error -> failwith $"drop failed: %O{error}"
 
@@ -494,7 +494,7 @@ module TestPollTimeout =
         let exn =
             Assert.Throws<exn> (fun () -> UnixPoll.finishPoll task destroyed |> ignore)
 
-        exn.Message |> shouldContainText "closed underneath the wait"
+        exn.Message |> shouldContainText "a park holds its descriptions"
 
     [<Test>]
     let ``a parked task cannot poll again, and only a parked poll can be finished`` () : unit =

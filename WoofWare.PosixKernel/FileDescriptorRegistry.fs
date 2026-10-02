@@ -502,9 +502,9 @@ type OpenFileTarget =
     /// on either kernel.
     | Directory of inode : InodeNumber * position : DirectoryPosition
     /// An epoll instance (Linux) or kqueue (Darwin), handed out by
-    /// `FileDescriptorRegistry.createSocketEventPort` and destroyed by
-    /// `close(2)`, which is why the port is a descriptor at all rather than a
-    /// separate kernel table.
+    /// `FileDescriptorRegistry.createSocketEventPort` and destroyed when its
+    /// last reference goes, as any open file is, which is why the port is a
+    /// descriptor at all rather than a separate kernel table.
     ///
     /// No offset, because neither kernel maintains one for it: measured,
     /// Linux's `lseek` on an epoll descriptor is `noop_llseek`, returning 0 for
@@ -677,9 +677,15 @@ type FileDescriptorRegistry =
             /// file descriptor names.
             Fds : Map<int, OpenFileDescriptionId>
             /// The open file descriptions themselves. A description is live
-            /// exactly while some descriptor in `Fds` names it; this library models
-            /// none of the references that would make liveness more than
-            /// reachability (`SCM_RIGHTS` descriptor passing, `mmap`).
+            /// exactly while some descriptor in `Fds` names it or something
+            /// outside this table holds it, as a real kernel keeps a file while
+            /// anything holds a reference to it. The holders outside the table
+            /// are not stored here: each names the description in its own
+            /// record, and every function that can destroy a description is
+            /// told which ones they hold (`heldOutsideTable`). Today the only
+            /// such holder is a syscall in flight (`ParkedSyscall.descriptions`);
+            /// `SCM_RIGHTS` messages, `mmap` and a forked process's table would
+            /// be more, and are not modelled.
             Descriptions : Map<OpenFileDescriptionId, OpenFileDescription>
             /// The identity the next `open` will allocate. Stored and
             /// monotonic rather than derived as one past the highest live id,
@@ -732,9 +738,6 @@ type FileDescriptorRegistryDefect =
     /// A live descriptor names a description that is not present. Every lookup
     /// through this descriptor would fail, which no kernel permits.
     | DanglingFd of fd : int * description : OpenFileDescriptionId
-    /// A description survives that no descriptor names. The kernel destroys a
-    /// description when its last descriptor closes, so this is a leak.
-    | UnreferencedDescription of description : OpenFileDescriptionId
     /// A live description's identity is at or above the next one to allocate,
     /// so some future `open` would collide with it — silently retargeting
     /// every descriptor that named it. "At or above" rather than "equal to":
@@ -919,8 +922,70 @@ module FileDescriptorRegistry =
                 }
             )
 
+    /// Remove `id` from the table, and from every socket event port's interest
+    /// table. `id` must be live and no descriptor may name it.
+    let private destroy (id : OpenFileDescriptionId) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
+        // A destroyed description also vanishes from every socket event
+        // port's interest table, which is what Linux does at file-release
+        // time (`eventpoll_release`). No syscall can tell the difference —
+        // the dead pair's key can never be probed again, since no fd names
+        // the description — but the readiness wake must not deliver from a
+        // corpse, so the tables stay truthful now and `checkInvariants`
+        // states it.
+        let descriptions =
+            Map.remove id registry.Descriptions
+            |> Map.map (fun _ description ->
+                match description.Target with
+                | OpenFileTarget.SocketEventPort portState ->
+                    { description with
+                        Target =
+                            OpenFileTarget.SocketEventPort
+                                {
+                                    Registrations =
+                                        portState.Registrations |> Map.filter (fun (_, target) _ -> target <> id)
+                                    Ready = portState.Ready |> List.filter (fun (_, target) -> target <> id)
+                                }
+                    }
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _ -> description
+            )
+
+        { registry with
+            Descriptions = descriptions
+        }
+
+    /// Destroy the description `id` if nothing references it any more: no
+    /// descriptor names it, and it is not in `heldOutsideTable`, the
+    /// descriptions something outside this table holds. Reports the
+    /// description it destroyed, if it did; a description already gone, or
+    /// still referenced, is left as it is and answers `None`.
+    ///
+    /// For a holder outside the table that has just let go of `id`: it calls
+    /// this with what is still held once it has gone. Like `dropDescriptor`, it
+    /// releases nothing the description referenced.
+    let destroyIfUnreferenced
+        (id : OpenFileDescriptionId)
+        (heldOutsideTable : Set<OpenFileDescriptionId>)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry * OpenFileDescription option
+        =
+        match Map.tryFind id registry.Descriptions with
+        | None -> registry, None
+        | Some description ->
+            let named =
+                registry.Fds |> Map.exists (fun _ (other : OpenFileDescriptionId) -> other = id)
+
+            if named || Set.contains id heldOutsideTable then
+                registry, None
+            else
+                destroy id registry, Some description
+
     /// Remove a descriptor from the table, destroying the description it named
-    /// if that was the last descriptor naming it. Mirrors `close(2)`: returns
+    /// if nothing references that description any more: no other descriptor
+    /// names it, and it is not in `heldOutsideTable`, the descriptions
+    /// something outside this table holds. Mirrors `close(2)`: returns
     /// `Error BadFd` (= `EBADF`) when `fd` is not currently live.
     ///
     /// Closing one descriptor of a `dup` pair leaves the other's description
@@ -928,79 +993,40 @@ module FileDescriptorRegistry =
     /// general (see the record-lock note on `FileDescriptorRegistry`).
     ///
     /// The descriptor-table half of `close(2)`, and only that half: it drops
-    /// the descriptor and, if it was the last one, the description, and it
-    /// releases nothing that description referenced. `UnixDescriptor.close` is
-    /// the syscall, and the one caller; a client that wants `close(2)` wants
+    /// the descriptor and, if it was the last reference, the description, and
+    /// it releases nothing that description referenced. `UnixDescriptor.close`
+    /// is the syscall, and the one caller; a client that wants `close(2)` wants
     /// that. The in-house property tests drive close+dup cycles directly
     /// against this function to exercise the `lowestFree` invariant against
     /// the gap structure that closing produces.
     ///
-    /// Reports the description it destroyed, if this was the last descriptor
-    /// naming one: closing a `dup(2)` of a live descriptor destroys nothing and
-    /// answers `None`. The caller needs this because a description can be the
-    /// last reference to a *kernel object* whose lifetime is decided elsewhere —
-    /// `UnixMachineState.Sockets` is the one that exists today — and this registry
-    /// cannot reach that state to clean it up itself.
+    /// Reports the description it destroyed, if it destroyed one: closing a
+    /// `dup(2)` of a live descriptor destroys nothing and answers `None`, and
+    /// so does closing the last descriptor onto a description something outside
+    /// the table still holds. The caller needs this because a description can
+    /// be the last reference to a *kernel object* whose lifetime is decided
+    /// elsewhere — `UnixMachineState.Sockets` is the one that exists today —
+    /// and this registry cannot reach that state to clean it up itself.
     let internal dropDescriptor
         (fd : int)
+        (heldOutsideTable : Set<OpenFileDescriptionId>)
         (registry : FileDescriptorRegistry)
         : Result<FileDescriptorRegistry * OpenFileDescription option, FileDescriptorCloseError>
         =
         match Map.tryFind fd registry.Fds with
         | None -> Error FileDescriptorCloseError.BadFd
         | Some id ->
-            let fds = Map.remove fd registry.Fds
-
-            let stillNamed =
-                fds |> Map.exists (fun _ (other : OpenFileDescriptionId) -> other = id)
-
-            if stillNamed then
-                Ok (
-                    { registry with
-                        Fds = fds
-                    },
-                    None
-                )
-            else
-
             // Present by `DanglingFd`: a live descriptor names a live
-            // description, so the lookup that found `id` above proves this one.
-            let destroyed = Map.find id registry.Descriptions
+            // description.
+            if not (Map.containsKey id registry.Descriptions) then
+                failwith
+                    $"FileDescriptorRegistry.dropDescriptor: file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
 
-            // A destroyed description also vanishes from every socket event
-            // port's interest table, which is what Linux does at file-release
-            // time (`eventpoll_release`). No syscall can tell the difference —
-            // the dead pair's key can never be probed again, since no fd names
-            // the description — but the readiness wake, when it lands, must
-            // not deliver from a corpse, so the tables stay truthful now and
-            // `checkInvariants` states it.
-            let descriptions =
-                Map.remove id registry.Descriptions
-                |> Map.map (fun _ description ->
-                    match description.Target with
-                    | OpenFileTarget.SocketEventPort portState ->
-                        { description with
-                            Target =
-                                OpenFileTarget.SocketEventPort
-                                    {
-                                        Registrations =
-                                            portState.Registrations |> Map.filter (fun (_, target) _ -> target <> id)
-                                        Ready = portState.Ready |> List.filter (fun (_, target) -> target <> id)
-                                    }
-                        }
-                    | OpenFileTarget.File _
-                    | OpenFileTarget.Directory _
-                    | OpenFileTarget.Socket _
-                    | OpenFileTarget.Pipe _ -> description
-                )
-
-            Ok (
-                { registry with
-                    Fds = fds
-                    Descriptions = descriptions
-                },
-                Some destroyed
-            )
+            { registry with
+                Fds = Map.remove fd registry.Fds
+            }
+            |> destroyIfUnreferenced id heldOutsideTable
+            |> Ok
 
     /// Mirrors the descriptor half of `open(2)`: allocate a *fresh* open file
     /// description naming `inode`, and the lowest non-negative descriptor not
@@ -1795,21 +1821,16 @@ module FileDescriptorRegistry =
     /// Every way in which `registry` fails to be a descriptor table a kernel
     /// could produce. Empty for any registry built out of `ofLaunchedPipes`,
     /// `dup` and `close`; the property tests assert exactly that.
+    ///
+    /// Whether a description is still referenced is not among them: what holds
+    /// one outside the table is not recorded here, so that is
+    /// `UnixSystem.checkInvariants`'s `UnreferencedDescription`.
     let checkInvariants (registry : FileDescriptorRegistry) : FileDescriptorRegistryDefect list =
         let dangling =
             registry.Fds
             |> Map.toList
             |> List.filter (fun (_, id) -> not (Map.containsKey id registry.Descriptions))
             |> List.map FileDescriptorRegistryDefect.DanglingFd
-
-        let named = registry.Fds |> Map.toList |> List.map snd |> Set.ofList
-
-        let unreferenced =
-            registry.Descriptions
-            |> Map.toList
-            |> List.map fst
-            |> List.filter (fun id -> not (Set.contains id named))
-            |> List.map FileDescriptorRegistryDefect.UnreferencedDescription
 
         let freshness =
             registry.Descriptions
@@ -1971,7 +1992,6 @@ module FileDescriptorRegistry =
             )
 
         dangling
-        @ unreferenced
         @ freshness
         @ negativeOffsets
         @ writableDirectories
