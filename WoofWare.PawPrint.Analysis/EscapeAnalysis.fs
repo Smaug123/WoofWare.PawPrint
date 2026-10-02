@@ -2186,11 +2186,16 @@ module EscapeAnalysis =
                     match constrainedInstance state assembly instance.Arguments constrainedType callee with
                     | state, ConstrainedOutcome.Reaches reached ->
                         // A static method's call runs its declaring type's initializer, which may
-                        // fail; the facts leave that to the type dispatch lands on.
+                        // fail; the facts leave that to the type dispatch lands on. And no token of
+                        // this body names the method dispatch lands on, so binding none of them
+                        // runs its module's initializer: that runs when the method first binds into
+                        // its own module, out of this call.
                         let raises =
                             if
-                                isStaticVirtual state callee.Callee
-                                && hasTypeInitializer state (declaringTypeOf state reached.Definition)
+                                (isStaticVirtual state callee.Callee
+                                 && hasTypeInitializer state (declaringTypeOf state reached.Definition))
+                                || (reached.Definition.AssemblyFullName <> instance.Definition.AssemblyFullName
+                                    && hasModuleInitializer state reached.Definition.AssemblyFullName)
                             then
                                 (offset, ThrownType.Exactly (corelibException state "TypeInitializationException"))
                                 :: raises

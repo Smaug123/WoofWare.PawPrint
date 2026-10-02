@@ -3499,6 +3499,153 @@ public static class Runners
         if not escapes.Unknown && not (shown.Contains ("=" + initialization)) then
             failwith $"Direct_FailsInit: %A{Set.toList shown}, unknown false; lacks %s{initialization}"
 
+    [<Test>]
+    let ``a constrained call landing in another module runs that module's initializer`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let contracts =
+            """
+namespace Contracts;
+
+public interface IStatic { static abstract int Probe(int a, int b); }
+public interface IProbe { int Probe(int a, int b); }
+"""
+
+        // The default bodies bind a token of their own module, which runs its initializer first.
+        let defaults =
+            """
+namespace Defaults;
+
+static class Init
+{
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Run() => throw new System.InvalidOperationException();
+}
+
+static class Helper
+{
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static int Add(int a, int b) => a + b;
+}
+
+public interface IStaticDefault : Contracts.IStatic { static int Contracts.IStatic.Probe(int a, int b) => Helper.Add(a, b); }
+public interface IInstanceDefault : Contracts.IProbe { int Contracts.IProbe.Probe(int a, int b) => Helper.Add(a, b); }
+"""
+
+        // Nothing here names Defaults' members; only dispatch reaches them.
+        let client =
+            """
+namespace Client;
+
+public struct StaticUser : Defaults.IStaticDefault { }
+public struct InstanceUser : Defaults.IInstanceDefault { }
+
+public static class Shapes
+{
+    public static int Static<T>(int a, int b) where T : Contracts.IStatic => T.Probe(a, b);
+    public static int Instance<T>(T x, int a, int b) where T : Contracts.IProbe => x.Probe(a, b);
+
+    public static int CaughtStatic<T>(int a, int b) where T : Contracts.IStatic
+    {
+        try { return T.Probe(a, b); }
+        catch (System.TypeInitializationException) { return -1; }
+    }
+}
+
+public static class Runners
+{
+    public static int Static() => Shapes.Static<StaticUser>(1, 2);
+    public static int Instance() => Shapes.Instance(new InstanceUser(), 1, 2);
+    public static int CaughtStatic() => Shapes.CaughtStatic<StaticUser>(1, 2);
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let contractsImage = compile "Contracts" [] contracts
+        let defaultsImage = compile "Defaults" [ contractsImage ] defaults
+        let clientImage = compile "Client" [ contractsImage ; defaultsImage ] client
+
+        let initialization = "System.TypeInitializationException"
+
+        // Each in a context of its own, since a module initializer that failed fails every later
+        // binding the same way.
+        let onRealRuntime (methodName : string) : string option =
+            let context =
+                new TestMethodReferenceResolution.ImagesContext (
+                    Map.ofList
+                        [
+                            "Contracts", contractsImage
+                            "Defaults", defaultsImage
+                            "Client", clientImage
+                        ]
+                )
+
+            try
+                let runners =
+                    context.LoadFromAssemblyName(AssemblyName "Client").GetType "Client.Runners"
+
+                try
+                    runners.GetMethod(methodName).Invoke ((null : obj), Array.empty<obj>)
+                    |> ignore<obj>
+
+                    None
+                with :? TargetInvocationException as e ->
+                    Some (e.InnerException.GetType().FullName)
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let assemblies =
+            [
+                read "Contracts" contractsImage
+                read "Defaults" defaultsImage
+                read "Client" clientImage
+            ]
+
+        let clientAssembly = List.last assemblies
+
+        let bind (loaded : LoadedAssemblies) : LoadedAssemblies =
+            (loaded, clientAssembly.AssemblyReferences.Values)
+            ||> Seq.fold (fun loaded reference ->
+                match assemblies |> List.tryFind (fun a -> a.Name.Name = reference.Name.Name) with
+                | Some target -> fst (loaded.WithBoundReference reference target)
+                | None -> loaded
+            )
+
+        let mutable analysis = analysisOver assemblies bind
+
+        let failures =
+            [
+                for methodName, escapes in [ "Static", true ; "Instance", true ; "CaughtStatic", false ] do
+                    let thrown = onRealRuntime methodName
+
+                    if thrown <> (if escapes then Some initialization else None) then
+                        yield $"%s{methodName} on the real runtime: %A{thrown}"
+
+                    let next, summary =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Runners" methodName)
+
+                    analysis <- next
+                    let shown = render analysis summary
+
+                    if summary.Unknown || shown.Contains ("=" + initialization) <> escapes then
+                        yield
+                            $"%s{methodName}: %A{Set.toList shown}, unknown %b{summary.Unknown}; expected %s{initialization} to escape: %b{escapes}, and nothing unknown"
+            ]
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
     /// `Run.Call(int, int)`, a non-generic method whose `constrained. Dyn callvirt IProbe::Probe`
     /// names a sealed class that does not implement `IProbe`, though `IProbe` gives `Probe` a
     /// default body. `Dyn` implements `IDynamicInterfaceCastable`, whose `GetInterfaceImplementation`

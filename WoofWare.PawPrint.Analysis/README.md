@@ -60,7 +60,8 @@ method) may add more:
   `TypeLoadException` the JIT would throw. A member of one of the method's type variables
   (`!!0::Value`) exists or not depending on the instantiation, so binding it is "unknown";
 * binding a token into another assembly that has a module initializer runs it, which may throw
-  `TypeInitializationException`;
+  `TypeInitializationException`, and so does a `constrained.` call that dispatch lands in another
+  assembly;
 * a synchronized method takes a monitor around its body, whose wait may throw
   `ThreadInterruptedException`, whose release throws `SynchronizationLockException` if the body
   has already released it, and which, for an instance method `call`ed on null, throws
