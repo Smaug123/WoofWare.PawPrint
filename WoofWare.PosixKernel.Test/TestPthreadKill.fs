@@ -493,6 +493,36 @@ module TestPthreadKill =
         | other -> failwith $"raise SIGTERM: %O{other}"
 
     [<Test>]
+    let ``Darwin's refusal covers SIGCONT at its default, which is left pending whoever can take it`` () : unit =
+        // A default SIGCONT is queued even when the leader does not block it,
+        // until the leader next returns to user mode, so a raise of it at the
+        // leader in between would be the second instance.
+        let darwin = systemOn SimulatedUnixFlavour.Darwin
+
+        let sigcont =
+            Signal.toRawSignoUnder (numberingOf SimulatedUnixFlavour.Darwin) Signal.SIGCONT
+
+        let sent = UnixSignal.kill (self darwin) sigcont darwin |> continues "kill SIGCONT"
+
+        UnixSignal.pthreadKill leader sigcont sent
+        |> shouldEqual (
+            Error (ThreadKillRefusal.Receiver (SignalReceiverRefusal.PendingForProcessAndLeader Signal.SIGCONT))
+        )
+
+        // Linux keeps the two apart, as Darwin does for another thread.
+        let linux = systemOn SimulatedUnixFlavour.Linux
+
+        let sigcont =
+            Signal.toRawSignoUnder (numberingOf SimulatedUnixFlavour.Linux) Signal.SIGCONT
+
+        let sent = UnixSignal.kill (self linux) sigcont linux |> continues "kill SIGCONT"
+
+        UnixSignal.pthreadKill leader sigcont sent
+        |> continues "raise SIGCONT"
+        |> fun system -> SignalState.pending system.Process.Signals |> List.length
+        |> shouldEqual 2
+
+    [<Test>]
     let ``pthread_kill by an init process is refused`` () : unit =
         for flavour in flavours do
             let init =
