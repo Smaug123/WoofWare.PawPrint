@@ -31,6 +31,7 @@
         <Compile Include="TypeAssignability.fs" />
         <Compile Include="ConcreteMethodTable.fs" />
         <Compile Include="ConcreteInterfaceDispatch.fs" />
+        <Compile Include="ConcreteVirtualDispatch.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 

@@ -453,8 +453,8 @@ type BaseClassTypes<'corelib> =
     /// single-dimensional zero-bound array implicitly implements: CoreCLR's
     /// `IsImplicitInterfaceOfSZArray` (`src/coreclr/vm/array.cpp`). This is the sole
     /// definition of that set; both the assignability carve-out
-    /// (`IlMachineRuntimeMetadata.isConcreteTypeAssignableTo`) and the dispatch carve-out
-    /// (`IlMachineStateExecution.tryResolveVirtualImplementation`) must agree on it, so
+    /// (`TypeAssignability.isConcreteTypeAssignableTo`) and the dispatch carve-out
+    /// (`ConcreteVirtualDispatch.tryResolveVirtualImplementation`) must agree on it, so
     /// neither should re-enumerate the interfaces itself.
     ///
     /// Note this asks only about the interface's *definition*; whether a particular array
