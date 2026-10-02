@@ -6791,9 +6791,9 @@ module NativeSystemNative =
             // what makes it appear on a console. One write delivers at most
             // once, and exactly the bytes it moved.
             let effectOf (system : UnixSystem<ThreadId, NativeSignalHandler>) : StepEffect =
-                let before = DeliveryLog.count admitted.Machine.Delivered
+                let before = DeliveryLog.count (UnixMachineState.delivered admitted.Machine)
 
-                match DeliveryLog.since before system.Machine.Delivered with
+                match DeliveryLog.since before (UnixMachineState.delivered system.Machine) with
                 | [] -> StepEffect.NoEffect
                 | [ delivery ] -> StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
                 | delivered ->

@@ -361,6 +361,13 @@ module UnixMachineState =
             NanosecondsSinceBoot = machine.NanosecondsSinceBoot + nanoseconds
         }
 
+    /// How long this machine has been up, to the nanosecond.
+    ///
+    /// For the client that decides when time passes, which reads this to know
+    /// how far to `advanceClock`. A process reads the same instant through
+    /// `UnixClock.clockGettime`, at the granularity its flavour reports.
+    let nanosecondsSinceBoot (machine : UnixMachineState) : int64 = machine.NanosecondsSinceBoot
+
     let withLocalAddresses
         (addresses : uint32 list)
         (routes : Ipv4Prefix list)
@@ -435,6 +442,26 @@ module UnixMachineState =
     /// Whether, and where, this machine's kernel screens a read or write buffer
     /// before performing the operation. See `UnixMachineState.UserBufferCheck`.
     let userBufferCheck (machine : UnixMachineState) : UserBufferCheck = machine.UserBufferCheck
+
+    /// The platform this machine impersonates, which `UnixSystem.initial` fixed
+    /// for the machine's life.
+    ///
+    /// A process knows its platform by having been built for it, and learns the
+    /// kernel's release through `uname(2)`. A client reads it here to speak to the
+    /// kernel in the platform's own numbering.
+    let platform (machine : UnixMachineState) : SimulatedUnixPlatform = machine.UnixPlatform
+
+    /// The number of logical processors this machine reports to a process. See
+    /// `UnixMachineState.ProcessorCount`.
+    let processorCount (machine : UnixMachineState) : int = machine.ProcessorCount
+
+    /// Every write that has reached a client draining one of this machine's
+    /// pipes, oldest first: what the outside world has received from the
+    /// process. See `UnixMachineState.Delivered`.
+    ///
+    /// For the client that drains those pipes. No process can read this back,
+    /// because the bytes have left the machine.
+    let delivered (machine : UnixMachineState) : DeliveryLog = machine.Delivered
 
     /// The socket `socketId` names.
     ///

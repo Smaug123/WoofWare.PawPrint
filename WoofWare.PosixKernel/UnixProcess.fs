@@ -186,6 +186,34 @@ module UnixProcessState =
             Environment = env |> List.map (UnixByteString.assertValid context)
         }
 
+    /// The environment the process was started with, entry by entry, in order.
+    /// See `UnixProcessState.Environment`.
+    let environment<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (proc : UnixProcessState<'Task, 'Handler>)
+        : UnixByteString list
+        =
+        proc.Environment
+
+    /// The path of the executable that started the process, or `None` if it has
+    /// none. See `UnixProcessState.ProcessPath`.
+    let processPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (proc : UnixProcessState<'Task, 'Handler>)
+        : AbsoluteUnixPath option
+        =
+        proc.ProcessPath
+
+    /// The process's signal state, which `SignalState`'s queries read.
+    ///
+    /// For a client that runs the process's signal handlers, or checks its
+    /// invariants. A process sees parts of this through `sigaction(2)` and the
+    /// handlers it runs; this is the whole of it, every task's handler frames
+    /// and every pending signal included.
+    let signals<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (proc : UnixProcessState<'Task, 'Handler>)
+        : SignalState<'Task, 'Handler>
+        =
+        proc.Signals
+
     /// Every live open file description naming `socketId`.
     let descriptionsNamingSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
