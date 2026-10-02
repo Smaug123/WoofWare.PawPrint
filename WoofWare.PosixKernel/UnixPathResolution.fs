@@ -670,8 +670,8 @@ module UnixPathResolution =
                     None
 
             // Measured 2026-10-02 by `stat-fields.c`: 1 through either end on
-            // Linux 6.18.5, 0 on Darwin 27.0, and the same once the other end
-            // has closed.
+            // Linux 6.18.5 and 0 on Darwin 27.0, and the same through the read
+            // end once the write end has closed.
             let links =
                 match flavour with
                 | SimulatedUnixFlavour.Linux -> 1L
