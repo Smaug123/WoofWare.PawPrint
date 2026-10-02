@@ -436,6 +436,38 @@ module TestPureCases =
     let environmentCaseNames : string list =
         environmentCases |> Map.toList |> List.map fst
 
+    /// Guests that read their standard input, with the bytes each is given
+    /// there. One description drives both sides: PawPrint's launcher writes
+    /// them into the guest's standard input pipe (`KernelConfig.StandardInput`),
+    /// and `RealRuntime.executeWithSeed` writes the same bytes into the oracle
+    /// process's, each then closing the pipe.
+    let standardInputCases : Map<string, ImmutableArray<byte>> =
+        let utf8 (text : string) : ImmutableArray<byte> =
+            ImmutableArray.Create<byte> (System.Text.UTF8Encoding(false).GetBytes text)
+
+        [
+            "StandardInputReadLine.cs",
+            utf8
+                "first line\nsecond line, after a CRLF\r\n\nafter an empty line\nafter a lone CR\rcaf\u00e9 \u2603 \U0001F600\nlast, with no newline"
+            "StandardInputReadToEnd.cs", utf8 "one\ntwo\r\nthree \u00e9\u00e8 \u20ac \U0001F600\n\nend"
+            // More than a pipe holds on either flavour, so the launcher's write
+            // is still going in while the guest reads; the guests regenerate
+            // the same bytes to check them.
+            "StandardInputFileStream.cs",
+            ImmutableArray.Create<byte> (
+                Array.init 100000 (fun i -> byte ((int64 i * 131L + (int64 i >>> 8) * 7L) &&& 0xffL))
+            )
+            "StandardInputReadLineLarge.cs",
+            [ 0..69 ]
+            |> List.map (fun i -> System.String (char (int 'a' + i % 26), 1000) + "\n")
+            |> String.concat ""
+            |> utf8
+        ]
+        |> Map.ofList
+
+    let standardInputCaseNames : string list =
+        standardInputCases |> Map.toList |> List.map fst
+
     let simpleCases : string list =
         allPure
         |> Seq.filter (fun s ->
@@ -443,7 +475,8 @@ module TestPureCases =
              || unimplemented.Contains s
              || expectsUnhandledException.Contains s
              || seededCases.ContainsKey s
-             || environmentCases.ContainsKey s)
+             || environmentCases.ContainsKey s
+             || standardInputCases.ContainsKey s)
             |> not
         )
         |> Seq.toList
@@ -562,7 +595,11 @@ module TestPureCases =
             // filesystem and of the variables the case names. An unseeded
             // case passes `FileSystemSeed.empty` and an empty overlay, which
             // materialise nothing and leave the oracle exactly as it was.
-            (RealRuntime.executeWithSeed case.KernelConfig.FileSystem case.KernelConfig.Environment [||])
+            (RealRuntime.executeWithSeed
+                case.KernelConfig.FileSystem
+                case.KernelConfig.Environment
+                case.KernelConfig.StandardInput
+                [||])
             (fun realResult pawPrintResult ->
                 DifferentialOracle.compareOutcomes
                     case.FileName
@@ -1384,6 +1421,22 @@ class Program
             KernelConfig =
                 { KernelConfig.Default with
                     Environment = environmentCases.[fileName]
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Always
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof standardInputCaseNames)>]
+    let ``Standard input tests`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    StandardInput = standardInputCases.[fileName]
                 }
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always

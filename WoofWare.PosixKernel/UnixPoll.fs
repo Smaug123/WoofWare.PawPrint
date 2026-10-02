@@ -658,12 +658,16 @@ module UnixPoll =
                 system
 
         // A pipe the process was launched with is answered: its far end is the
-        // client's, so every wake it can signal is one this kernel knows. A
-        // `SuppliedNothing` pipe has no writer and nothing in it, so nothing
-        // wakes it. A `Drained` pipe's read end is the client's, and its write
-        // end is woken only by the client's drain of a write that filled it,
-        // which `UnixReadWrite.write` signals (measured,
-        // drained-pipe-epoll.c).
+        // client's, so every wake it can signal is one this kernel knows. The
+        // read end of a pipe the client supplies is woken by the client's
+        // write into the pipe a read emptied, and by its close, which
+        // `UnixReadWrite.read` signals (measured, supplied-pipe-epoll.c);
+        // once the client has closed, nothing wakes it, since a read wakes the
+        // read end's waiters only after it slept, and none here does (measured
+        // there too: reads of a pipe whose writer had closed woke nothing). A
+        // drained pipe's read end is the client's, and its write end is woken
+        // only by the client's drain of a write that filled it, which
+        // `UnixReadWrite.write` signals (measured, drained-pipe-epoll.c).
         let targetIsPipe =
             match targetDescription.Target with
             | OpenFileTarget.Pipe (pipeId, _) ->

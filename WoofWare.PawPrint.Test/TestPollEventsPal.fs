@@ -333,14 +333,16 @@ module TestPollEventsPal =
                 // whose writer has gone and supplied nothing, and output a
                 // client drains.
                 match (UnixMachineState.pipe pipeId system.Machine).Origin with
-                | PipeOrigin.Launched (_, LaunchDescriptor.SuppliedNothing) ->
+                | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) ->
                     { ReadinessLevel.none with
                         Hup = true
                     }
-                | PipeOrigin.Launched (_, LaunchDescriptor.Drained) ->
+                | PipeOrigin.Launched (_, ClientEnd.Draining) ->
                     { ReadinessLevel.none with
                         Out = true
                     }
+                | PipeOrigin.Launched (_, ClientEnd.Supplying _) ->
+                    failwith "TestPollEventsPal: no row launches a guest with bytes on its standard input."
                 | PipeOrigin.Made _ -> failwith "TestPollEventsPal: no row polls a pipe the guest made."
 
         (if level.In && palEvents &&& pal.["PAL_POLLIN"] <> 0s then

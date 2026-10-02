@@ -119,7 +119,9 @@ module TestSignalDispatch =
         // untouched so far, is swapped for one of `platform`'s before anything
         // is made in it.
         let state =
-            state.MapKernel (EmulatedKernel.mapMachine (fun _ -> (EmulatedKernel.create platform).Machine))
+            state.MapKernel (
+                EmulatedKernel.mapMachine (fun _ -> (EmulatedKernel.create platform ImmutableArray.Empty).Machine)
+            )
 
         let state =
             match NativeSystemNative.initializeSignalHandling "test" state.Kernel.Leader state with

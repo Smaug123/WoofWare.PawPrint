@@ -799,10 +799,12 @@ module UnixReadWrite =
                 // Nothing held, so the buffer is not consulted: measured on
                 // both, `read(fd, NULL, 10)` of an empty pipe is EAGAIN while
                 // a writer is open and 0 once none is, never EFAULT.
-                // A process launched with this pipe as its standard input,
-                // the launcher having written nothing and closed its end, is
-                // here at once: measured on both flavours (stdio-nonblock.c),
-                // a read of that stdin is 0, `O_NONBLOCK` or not.
+                // A process launched with this pipe as its standard input is
+                // here once it has read every byte the launcher supplied, and
+                // the launcher has closed its end: measured on both flavours
+                // (stdio-nonblock.c), a read of a stdin supplied nothing is 0,
+                // `O_NONBLOCK` or not. A pipe whose launcher is still writing
+                // is never empty, so never here.
                 if not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write system.Process) then
                     Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
                 elif nonBlocking then
@@ -824,14 +826,54 @@ module UnixReadWrite =
             // read, and a read of 3 from 10 held leaves 7.
             let bytes, remaining = PipeBuffer.read count pipe.Buffer
 
-            Ok (
-                ReadAnswer.Completed bytes,
-                withPipe
-                    pipeId
+            // A client asleep in its write wakes into the room this read made,
+            // and has written before the process's next call: the fastest a
+            // real writer can be, and what a real one is measured to do given a
+            // moment (supplied-pipe-refill.c: a reader that waits 20 ms after
+            // each read finds the pipe exactly as full as this, on both
+            // flavours, over 120 runs each). A reader on Linux sees it so even
+            // without waiting; on Darwin, one that reads again at once can
+            // find less, which a slower reader never does.
+            let pipe, progress =
+                PipeState.afterRead
                     { pipe with
                         Buffer = remaining
                     }
-                    system
+
+            // Measured on Linux 6.18.5 (supplied-pipe-epoll.c): the client's
+            // write wakes an edge-triggered registration on the read end
+            // exactly when it writes into a pipe the read had emptied, with
+            // `EPOLLIN | EPOLLRDNORM`; and its close wakes the registration
+            // whatever it waits for, reporting `EPOLLHUP` even to an
+            // `EPOLLOUT`-only one, so the close's wake is unkeyed.
+            let registry =
+                let readers =
+                    UnixProcessState.descriptionsNamingPipeEnd pipeId PipeEnd.Read system.Process
+
+                let registry = system.Process.FileDescriptors
+
+                let registry =
+                    if progress.WroteIntoEmpty then
+                        FileDescriptorRegistry.signalSocketEventPorts
+                            readers
+                            (Some (EpollEvents.In ||| EpollEvents.RdNorm))
+                            registry
+                    else
+                        registry
+
+                if progress.Closed then
+                    FileDescriptorRegistry.signalSocketEventPorts readers None registry
+                else
+                    registry
+
+            Ok (
+                ReadAnswer.Completed bytes,
+                { withPipe pipeId pipe system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors = registry
+                        }
+                }
             )
         | ReadTarget.File (inode, offset) ->
 

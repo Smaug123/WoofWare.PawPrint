@@ -1,5 +1,6 @@
 namespace WoofWare.PosixKernel.Test
 
+open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -253,18 +254,18 @@ module TestUnixSystemInitial =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        for fd, pipeEnd, descriptor in
+        for fd, pipeEnd, client in
             [
-                0, PipeEnd.Read, LaunchDescriptor.SuppliedNothing
-                1, PipeEnd.Write, LaunchDescriptor.Drained
-                2, PipeEnd.Write, LaunchDescriptor.Drained
+                0, PipeEnd.Read, ClientEnd.WriteEndClosed
+                1, PipeEnd.Write, ClientEnd.Draining
+                2, PipeEnd.Write, ClientEnd.Draining
             ] do
             match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
             | Some (OpenFileTarget.Pipe (pipeId, actualEnd)) ->
                 actualEnd |> shouldEqual pipeEnd
 
                 (UnixMachineState.pipe pipeId system.Machine).Origin
-                |> shouldEqual (PipeOrigin.Launched (ExternalEndpoint fd, descriptor))
+                |> shouldEqual (PipeOrigin.Launched (ExternalEndpoint fd, client))
             | other -> failwith $"fd %d{fd} is %A{other}, not the %O{pipeEnd} end of a launched pipe"
 
         FileDescriptorRegistry.tryFind 3 system.Process.FileDescriptors
@@ -281,8 +282,17 @@ module TestUnixSystemInitial =
     /// process makes is the lowest the table left free.
     [<Test>]
     let ``initial launches exactly the table it is given`` () : unit =
+        // Supplied payloads either side of the 64 KiB both flavours' pipes
+        // take before the client's write sleeps.
         let descriptor =
-            Gen.elements [ LaunchDescriptor.SuppliedNothing ; LaunchDescriptor.Drained ]
+            Gen.oneof
+                [
+                    Gen.constant LaunchDescriptor.Drained
+                    Gen.elements [ 0 ; 1 ; 100 ; 65535 ; 65536 ; 65537 ; 100000 ]
+                    |> Gen.map (fun length ->
+                        LaunchDescriptor.Supplied (ImmutableArray.Create<byte> (Array.init length byte))
+                    )
+                ]
 
         let table =
             Gen.zip (Gen.choose (0, 12)) descriptor |> Gen.listOf |> Gen.map Map.ofList
@@ -310,10 +320,14 @@ module TestUnixSystemInitial =
                     | Some description -> description
                     | None -> failwith $"fd %d{fd} is not open"
 
-                let expectedEnd, expectedMode =
+                // What the client's write puts in before it sleeps: all of it,
+                // if it fits in the 64 KiB the pipe takes.
+                let expectedEnd, expectedMode, expectedHeld, expectedUnwritten =
                     match entry with
-                    | LaunchDescriptor.SuppliedNothing -> PipeEnd.Read, FileAccessMode.ReadOnly
-                    | LaunchDescriptor.Drained -> PipeEnd.Write, FileAccessMode.WriteOnly
+                    | LaunchDescriptor.Supplied bytes ->
+                        let held = min bytes.Length 65536
+                        PipeEnd.Read, FileAccessMode.ReadOnly, held, bytes.Length - held
+                    | LaunchDescriptor.Drained -> PipeEnd.Write, FileAccessMode.WriteOnly, 0, 0
 
                 description.AccessMode |> shouldEqual expectedMode
                 description.NonBlocking |> shouldEqual false
@@ -324,8 +338,22 @@ module TestUnixSystemInitial =
                     pipeEnd |> shouldEqual expectedEnd
 
                     let pipe = UnixMachineState.pipe pipeId system.Machine
-                    pipe.Origin |> shouldEqual (PipeOrigin.Launched (ExternalEndpoint fd, entry))
-                    PipeBuffer.held pipe.Buffer |> shouldEqual 0
+
+                    match pipe.Origin, entry with
+                    | PipeOrigin.Launched (endpoint, ClientEnd.Draining), LaunchDescriptor.Drained
+                    | PipeOrigin.Launched (endpoint, ClientEnd.WriteEndClosed), LaunchDescriptor.Supplied _ ->
+                        endpoint |> shouldEqual (ExternalEndpoint fd)
+                        expectedUnwritten |> shouldEqual 0
+                    | PipeOrigin.Launched (endpoint, ClientEnd.Supplying unwritten), LaunchDescriptor.Supplied bytes ->
+                        endpoint |> shouldEqual (ExternalEndpoint fd)
+                        unwritten.Length |> shouldEqual expectedUnwritten
+
+                        unwritten.ToImmutableArray ()
+                        |> Seq.toList
+                        |> shouldEqual (bytes |> Seq.skip expectedHeld |> Seq.toList)
+                    | origin, _ -> failwith $"fd %d{fd}, launched as %A{entry}, made a pipe of origin %A{origin}"
+
+                    PipeBuffer.held pipe.Buffer |> shouldEqual expectedHeld
                 | other -> failwith $"fd %d{fd} is %A{other}, not a pipe end"
 
             system.Machine.Pipes |> Map.count |> shouldEqual launch.Count
