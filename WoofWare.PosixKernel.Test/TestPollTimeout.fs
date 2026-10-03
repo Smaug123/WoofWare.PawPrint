@@ -455,13 +455,15 @@ module TestPollTimeout =
         withRegistry registry system
 
     let private pollDefects (system : UnixSystem<int, string>) : UnixSystemDefect<int> list =
+        // `Is*` tests rather than a match: `UnixSystemDefect` has 64 cases, so a
+        // match with two outcomes compiles to a 64-entry switch with two targets,
+        // whose branch the x64 JIT of runtimes 10.0.0 to 10.0.11 inverts
+        // (dotnet/runtime#131716).
         UnixSystem.checkInvariants system
         |> List.filter (fun defect ->
-            match defect with
-            | UnixSystemDefect.ParkedPollDescriptorRebound _
-            | UnixSystemDefect.ParkedOnAbsentDescription _
-            | UnixSystemDefect.ParkedPollOnEventQueue _ -> true
-            | _ -> false
+            defect.IsParkedPollDescriptorRebound
+            || defect.IsParkedOnAbsentDescription
+            || defect.IsParkedPollOnEventQueue
         )
 
     [<Test>]
