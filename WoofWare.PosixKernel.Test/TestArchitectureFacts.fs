@@ -207,6 +207,7 @@ module TestArchitectureFacts =
         for platform, expected in presetChecks do
             let system =
                 UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             UnixMachineState.userBufferCheck system.Machine |> shouldEqual expected
             UnixSystem.checkInvariants system |> shouldEqual []
@@ -220,8 +221,8 @@ module TestArchitectureFacts =
                 ]
 
         let property (platform : SimulatedUnixPlatform, limit : uint64) : unit =
-            let machine =
-                (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)).Machine
+            let image =
+                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let admissible =
                 SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
@@ -230,7 +231,7 @@ module TestArchitectureFacts =
 
             let outcome =
                 try
-                    Ok (UnixMachineState.withUserAddressLimit limit machine)
+                    Ok (UnixBootImage.withUserAddressLimit limit image |> UnixBootImage.boot).Machine
                 with e ->
                     Error e.Message
 
@@ -242,7 +243,7 @@ module TestArchitectureFacts =
                 |> shouldEqual (UserBufferCheck.BeforeOperation limit)
             | Error message ->
                 admissible |> shouldEqual false
-                message |> shouldContainText "UnixMachineState.withUserAddressLimit"
+                message |> shouldContainText "UnixBootImage.withUserAddressLimit"
 
         let gen = Gen.zip (Gen.elements (presetChecks |> List.map fst)) limitGen
 
@@ -265,6 +266,7 @@ module TestArchitectureFacts =
         let property (platform : SimulatedUnixPlatform, check : UserBufferCheck) : unit =
             let system =
                 UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let forged =
                 { system with

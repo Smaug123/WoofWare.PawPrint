@@ -48,8 +48,12 @@ The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`:
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
 
-`UnixSystem.initial` builds a process that has not done anything yet.
-Configure it before its first syscall with the setters, such as `UnixSystem.withCredentials`, `UnixSystem.withFileSystemAndCurrentDirectory`, `UnixMachineState.withBootTime` and `UnixProcessState.withEnvironment`.
+`UnixSystem.initial` builds the *boot image* of a process that has not done anything yet: a `UnixBootImage`, which no syscall takes.
+Configure it with the setters in the `UnixBootImage` module, such as `withCredentials`, `withFileSystemAndCurrentDirectory`, `withBootTime` and `withEnvironment`, then `UnixBootImage.boot` it to get the `UnixSystem` its first syscall takes.
+Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
+What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixMachineState.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
+
+The records are public, so a client can still build or copy one by hand, which bypasses all of this; a later change is to make their fields internal.
 
 ```fsharp
 open WoofWare.PosixKernel
@@ -61,9 +65,11 @@ let path (text : string) : PathArgumentBytes =
 
 // A process on a Linux x86-64 machine, before anything has happened to it:
 // a filesystem holding nothing but /dev, and descriptors 0, 1 and 2 as pipes. It has one task,
-// which this client names 0, on logical processor 0.
+// which this client names 0, on logical processor 0, and runs as root.
 let system : UnixSystem<int, unit> =
     UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+    |> UnixBootImage.withCredentials "example" (Credentials.ofIds UserId.root (GroupId.parseOrFail "example" 0u) [])
+    |> UnixBootImage.boot
 
 let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
     match UnixSystem.step 0 (Syscall.MkDir (path "/tmp", 0o755)) system with

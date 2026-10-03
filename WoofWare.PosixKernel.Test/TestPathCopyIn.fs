@@ -43,19 +43,19 @@ module TestPathCopyIn =
         (seed : Map<DirectoryEntryName, SeedEntry>)
         : UnixSystem<int, string>
         =
-        let system : UnixSystem<int, string> =
+        let system : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixSystem.withCredentials context credentials
+            |> UnixBootImage.withCredentials context credentials
 
         match
-            UnixSystem.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystemAndCurrentDirectory
                 epoch
                 (InodeOwner.ofProcess credentials)
                 seed
                 (AbsoluteUnixPath.parseOrFail context "/")
                 system
         with
-        | Ok system -> system
+        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"could not build the system: %A{fault}"
 
     let private name (text : string) : DirectoryEntryName =

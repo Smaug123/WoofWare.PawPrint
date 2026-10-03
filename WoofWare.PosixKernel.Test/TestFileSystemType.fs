@@ -62,9 +62,12 @@ module TestFileSystemType =
         | Ok name -> name
         | Error defect -> failwith $"test bug: %s{name} is not a Unix string: %O{defect}"
 
-    /// The machine a simulated process boots with on `flavour`'s platform.
-    let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0))
+    /// The machine a simulated process boots with on `flavour`'s platform,
+    /// configured with the mount `mount`.
+    let private machineMounting (flavour : SimulatedUnixFlavour) (mount : EmulatedMount option) : UnixMachineState =
+        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+         |> UnixBootImage.withMount mount
+         |> UnixBootImage.boot)
             .Machine
 
     let private everyFlavour : SimulatedUnixFlavour list =
@@ -248,23 +251,19 @@ module TestFileSystemType =
             ]
 
     let private systemWith (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
+        let image : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-
-        let system =
-            { system with
-                Machine = UnixMachineState.withMount (Some mount) system.Machine
-            }
+            |> UnixBootImage.withMount (Some mount)
 
         match
-            UnixSystem.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystemAndCurrentDirectory
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess (UnixSystem.defaultCredentials (SimulatedUnixPlatform.flavour platform)))
                 tree
                 AbsoluteUnixPath.root
-                system
+                image
         with
-        | Ok system -> system
+        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"test bug: the tree does not seed: %A{fault}"
 
     let private reading : OpenFlags =
@@ -366,7 +365,7 @@ module TestFileSystemType =
     [<Test>]
     let ``omitting the mount takes the flavour's own default`` () : unit =
         for flavour in everyFlavour do
-            let kernel = machineOn flavour |> UnixMachineState.withMount None
+            let kernel = machineMounting flavour None
 
             kernel.Mount |> shouldEqual (EmulatedMount.defaultFor flavour)
 
@@ -386,7 +385,7 @@ module TestFileSystemType =
                         EmulatedFileSystemType.isReportableUnder flavour (EmulatedMount.fileSystemType mount)
 
                 if permitted then
-                    let kernel = machineOn flavour |> UnixMachineState.withMount requested
+                    let kernel = machineMounting flavour requested
 
                     let carried = SimulatedUnixPlatform.flavour kernel.UnixPlatform
 
@@ -408,8 +407,7 @@ module TestFileSystemType =
         for flavour, fsType in everyIncoherentPair do
             let thrown =
                 Assert.Throws (fun () ->
-                    machineOn flavour
-                    |> UnixMachineState.withMount (Some (EmulatedMount.defaultOf fsType))
+                    machineMounting flavour (Some (EmulatedMount.defaultOf fsType))
                     |> ignore<UnixMachineState>
                 )
 
@@ -421,7 +419,7 @@ module TestFileSystemType =
         // would pass that test and break every host.
         for flavour, fsType in everyCoherentPair do
             let mount = EmulatedMount.defaultOf fsType
-            let kernel = machineOn flavour |> UnixMachineState.withMount (Some mount)
+            let kernel = machineMounting flavour (Some mount)
 
             kernel.Mount |> shouldEqual mount
 

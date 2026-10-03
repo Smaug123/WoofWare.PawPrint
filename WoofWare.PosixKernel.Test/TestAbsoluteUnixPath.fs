@@ -245,20 +245,24 @@ module TestAbsoluteUnixPath =
 
         let exn =
             Assert.Throws<Exception> (fun () ->
-                AbsoluteUnixPath.assertValid "UnixSystem.withFileSystemAndCurrentDirectory" forged
+                AbsoluteUnixPath.assertValid "UnixBootImage.withFileSystemAndCurrentDirectory" forged
                 |> ignore<AbsoluteUnixPath>
             )
 
-        exn.Message |> shouldContainText "UnixSystem.withFileSystemAndCurrentDirectory"
+        exn.Message
+        |> shouldContainText "UnixBootImage.withFileSystemAndCurrentDirectory"
+
         exn.Message |> shouldContainText "Unchecked.defaultof"
 
     [<Test>]
     let ``parseOrFail names the offending knob`` () : unit =
         let exn =
             Assert.Throws<Exception> (fun () ->
-                AbsoluteUnixPath.parseOrFail "UnixSystem.withFileSystemAndCurrentDirectory" "relative"
+                AbsoluteUnixPath.parseOrFail "UnixBootImage.withFileSystemAndCurrentDirectory" "relative"
                 |> ignore<AbsoluteUnixPath>
             )
 
-        exn.Message |> shouldContainText "UnixSystem.withFileSystemAndCurrentDirectory"
+        exn.Message
+        |> shouldContainText "UnixBootImage.withFileSystemAndCurrentDirectory"
+
         exn.Message |> shouldContainText "relative"

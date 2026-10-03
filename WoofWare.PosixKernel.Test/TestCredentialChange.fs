@@ -61,19 +61,23 @@ module TestCredentialChange =
     let private requestedGroup (raw : int64) : GroupId option =
         if raw = -1L then None else Some (gid (uint32 raw))
 
+    let private imageWith
+        (platform : SimulatedUnixPlatform)
+        (coreDumps : CoreDumps)
+        (credentials : Credentials)
+        : UnixBootImage<int, string>
+        =
+        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.withCredentials context credentials
+        |> UnixBootImage.withCoreDumps coreDumps
+
     let private systemWith
         (platform : SimulatedUnixPlatform)
         (coreDumps : CoreDumps)
         (credentials : Credentials)
         : UnixSystem<int, string>
         =
-        let system =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixSystem.withCredentials context credentials
-
-        { system with
-            Process = UnixProcessState.withCoreDumps coreDumps system.Process
-        }
+        imageWith platform coreDumps credentials |> UnixBootImage.boot
 
     let private answerText (answer : SyscallAnswer) : string =
         match answer with
@@ -580,14 +584,14 @@ module TestCredentialChange =
 
         let system =
             match
-                systemWith linux CoreDumps.Suppressed (Credentials.ofIds UserId.root (gid 0u) [])
-                |> UnixSystem.withFileSystemAndCurrentDirectory
+                imageWith linux CoreDumps.Suppressed (Credentials.ofIds UserId.root (gid 0u) [])
+                |> UnixBootImage.withFileSystemAndCurrentDirectory
                     UnixTimestamp.epoch
                     (InodeOwner.ofProcess (Credentials.ofIds UserId.root (gid 0u) []))
                     seed
                     AbsoluteUnixPath.root
             with
-            | Ok system -> system
+            | Ok image -> UnixBootImage.boot image
             | Error fault -> failwith $"%A{fault}"
 
         let _, system =

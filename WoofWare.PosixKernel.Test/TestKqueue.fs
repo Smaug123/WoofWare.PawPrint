@@ -28,10 +28,12 @@ module TestKqueue =
 
     let private darwin : UnixSystem<int, string> =
         UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
         |> fun system -> ([ 1..4 ], system) ||> List.foldBack Tasks.ensure
 
     let private linux : UnixSystem<int, string> =
         UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
         |> Tasks.ensure 1
 
     let private withRegistry

@@ -19,9 +19,11 @@ module TestUnixEntropy =
 
     let private linux () : UnixSystem<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
     let private darwin () : UnixSystem<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
     /// Every kind of buffer, with an unmapped address at each end of the space.
     let private bufferGen : Gen<UserBuffer> =

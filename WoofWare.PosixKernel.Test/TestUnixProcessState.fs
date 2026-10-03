@@ -49,6 +49,11 @@ module TestUnixProcessState =
             CoreDumps = CoreDumps.Suppressed
         }
 
+    /// A freshly made process, for the setters, which configure one before it
+    /// boots.
+    let private image : UnixBootImage<int, string> =
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
     [<Test>]
     let ``the signal state is keyed by whatever the client names tasks`` () : unit =
         // The claim the two type parameters exist to make. `int` names a task and
@@ -102,12 +107,13 @@ module TestUnixProcessState =
         let mutable withDuplicates = 0
 
         let property (before : UnixByteString list, after : UnixByteString list) : unit =
-            let proc =
-                empty
-                |> UnixProcessState.withEnvironment context before
-                |> UnixProcessState.withEnvironment context after
+            let system =
+                image
+                |> UnixBootImage.withEnvironment context before
+                |> UnixBootImage.withEnvironment context after
+                |> UnixBootImage.boot
 
-            proc.Environment |> shouldEqual after
+            system.Process.Environment |> shouldEqual after
 
             if List.length (List.distinct after) < List.length after then
                 withDuplicates <- withDuplicates + 1
@@ -125,11 +131,11 @@ module TestUnixProcessState =
         // calls it.
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixProcessState.withEnvironment
+                UnixBootImage.withEnvironment
                     "whatever the client calls it"
                     [ UnixByteString.empty ; Unchecked.defaultof<UnixByteString> ]
-                    empty
-                |> ignore<UnixProcessState<int, string>>
+                    image
+                |> ignore<UnixBootImage<int, string>>
             )
 
         exn.Message |> shouldContainText "whatever the client calls it"
@@ -140,24 +146,24 @@ module TestUnixProcessState =
         // can produce is a defaulted one; this setter is where it stops.
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixProcessState.withProcessPath
+                UnixBootImage.withProcessPath
                     "the client's name for the path"
                     (Some Unchecked.defaultof<AbsoluteUnixPath>)
-                    empty
-                |> ignore<UnixProcessState<int, string>>
+                    image
+                |> ignore<UnixBootImage<int, string>>
             )
 
         exn.Message |> shouldContainText "the client's name for the path"
 
     [<Test>]
     let ``no path is an answer rather than a request for a default`` () : unit =
-        let proc =
-            { empty with
-                ProcessPath = Some (AbsoluteUnixPath.parseOrFail context "/bin/guest")
-            }
-            |> UnixProcessState.withProcessPath context None
+        let system =
+            image
+            |> UnixBootImage.withProcessPath context (Some (AbsoluteUnixPath.parseOrFail context "/bin/guest"))
+            |> UnixBootImage.withProcessPath context None
+            |> UnixBootImage.boot
 
-        proc.ProcessPath |> shouldEqual None
+        system.Process.ProcessPath |> shouldEqual None
 
     [<Test>]
     let ``the process's privilege is its credentials' privilege`` () : unit =

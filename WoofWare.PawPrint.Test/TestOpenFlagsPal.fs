@@ -168,12 +168,13 @@ module TestOpenFlagsPal =
         for platform in platforms do
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixSystem.withCredentials
+                |> UnixBootImage.withCredentials
                     "TestOpenFlagsPal"
                     (Credentials.ofIds
                         (UserId.parseOrFail "TestOpenFlagsPal" 1000u)
                         (GroupId.parseOrFail "TestOpenFlagsPal" 1000u)
                         [])
+                |> UnixBootImage.boot
 
             let words =
                 [

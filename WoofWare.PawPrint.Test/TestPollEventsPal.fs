@@ -226,6 +226,7 @@ module TestPollEventsPal =
     let private linux : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let system =
             match UnixTaskLifecycle.spawn system.Leader poller (CpuId 0) system with

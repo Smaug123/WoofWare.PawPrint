@@ -23,6 +23,7 @@ module TestListen =
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
 
     let private platforms : SimulatedUnixPlatform list =

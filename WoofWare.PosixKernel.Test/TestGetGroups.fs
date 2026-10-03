@@ -27,7 +27,8 @@ module TestGetGroups =
 
     let private systemWith (platform : SimulatedUnixPlatform) (credentials : Credentials) : UnixSystem<int, string> =
         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixSystem.withCredentials context credentials
+        |> UnixBootImage.withCredentials context credentials
+        |> UnixBootImage.boot
 
     let private linuxWithGroups (groups : uint32 list) : UnixSystem<int, string> =
         Credentials.ofIds (uid 1000u) (gid 1000u) (groups |> List.map gid)
@@ -344,12 +345,13 @@ module TestGetGroupsAgainstHost =
                 // installed one.
                 let system : UnixSystem<int, string> =
                     UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                    |> UnixSystem.withCredentials
+                    |> UnixBootImage.withCredentials
                         context
                         (Credentials.ofIds
                             (UserId.parseOrFail context (geteuid ()))
                             (GroupId.parseOrFail context (getegid ()))
                             listed)
+                    |> UnixBootImage.boot
 
                 let sizes =
                     [ Int32.MinValue ; -1 ; 0 ; count - 1 ; count ; count + 1 ; capacity ]

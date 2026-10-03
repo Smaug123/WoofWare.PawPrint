@@ -44,8 +44,9 @@ module TestSystemTimeAsTicks =
     /// clock is in the 100 ns ticks PawPrint counts it in. Reached through the
     /// setters `KernelConfig.toKernel` and the driver loop use.
     let private machineOn (platform : SimulatedUnixPlatform) (epochMs : int64) (clockTicks : int64) : UnixMachineState =
-        (EmulatedKernel.create platform StandardStreamsConfig.piped
+        (EmulatedKernel.image platform StandardStreamsConfig.piped
          |> EmulatedKernel.withWallClockEpochMs epochMs
+         |> EmulatedKernel.boot
          |> EmulatedKernel.withVirtualClockTicks clockTicks)
             .Machine
 
@@ -252,7 +253,7 @@ module TestSystemTimeAsTicks =
             let representable = epochMs >= 0L && epochMs <= maxEpochMs
 
             let accepted =
-                succeeds (fun () -> EmulatedKernel.withWallClockEpochMs epochMs EmulatedKernel.initial)
+                succeeds (fun () -> EmulatedKernel.withWallClockEpochMs epochMs EmulatedKernel.initialImage)
 
             accepted = representable
 

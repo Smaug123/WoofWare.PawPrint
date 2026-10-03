@@ -143,27 +143,22 @@ module TestBindingAgainstHost =
 
     /// The model of this host, as the caller this test process is, holding the probe tree.
     let private model (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let initial =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-
-        let system =
-            initial
-            |> UnixSystem.withCredentials
-                "TestBindingAgainstHost"
-                (Credentials.ofIds
-                    (UserId.parseOrFail "TestBindingAgainstHost" (geteuid ()))
-                    initial.Process.Credentials.EffectiveGroup
-                    [])
+        let credentials =
+            Credentials.ofIds
+                (UserId.parseOrFail "TestBindingAgainstHost" (geteuid ()))
+                (UnixSystem.defaultGroupId (SimulatedUnixPlatform.flavour platform))
+                []
 
         match
-            UnixSystem.withFileSystemAndCurrentDirectory
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials "TestBindingAgainstHost" credentials
+            |> UnixBootImage.withFileSystemAndCurrentDirectory
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
-                (InodeOwner.ofProcess system.Process.Credentials)
+                (InodeOwner.ofProcess credentials)
                 BindingProbes.tree
                 AbsoluteUnixPath.root
-                system
         with
-        | Ok system -> system
+        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"seeding failed: %A{fault}"
 
     let private onModel (platform : SimulatedUnixPlatform) (call : BindingProbeCall) : int option =

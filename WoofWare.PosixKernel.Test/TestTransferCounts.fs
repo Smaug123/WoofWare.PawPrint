@@ -69,16 +69,16 @@ module TestTransferCounts =
             SimulatedUnixPlatform.macOsArm64, None
         ]
 
-    let internal systemOn (platform : SimulatedUnixPlatform, limit : uint64 option) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
+    let internal imageOn (platform : SimulatedUnixPlatform, limit : uint64 option) : UnixBootImage<int, string> =
+        let image : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         match limit with
-        | None -> system
-        | Some limit ->
-            { system with
-                Machine = UnixMachineState.withUserAddressLimit limit system.Machine
-            }
+        | None -> image
+        | Some limit -> image |> UnixBootImage.withUserAddressLimit limit
+
+    let internal systemOn (machine : SimulatedUnixPlatform * uint64 option) : UnixSystem<int, string> =
+        imageOn machine |> UnixBootImage.boot
 
     let private contentOf (length : int) : byte[] =
         Array.init length (fun i -> byte (i + 1))
@@ -914,12 +914,10 @@ module TestTransferCounts =
             (count : uint64)
             : Seen
             =
-            let system = systemOn (platform, None)
-
             let system =
-                { system with
-                    Machine = UnixMachineState.withMount (Some (EmulatedMount.defaultOf fileSystem)) system.Machine
-                }
+                imageOn (platform, None)
+                |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fileSystem))
+                |> UnixBootImage.boot
 
             let fd, registry =
                 FileDescriptorRegistry.openDirectory rootInode system.Process.FileDescriptors

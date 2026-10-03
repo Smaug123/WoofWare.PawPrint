@@ -115,19 +115,6 @@ module ThreadIdAllocator =
             failwith
                 $"%s{context}: Darwin has no pid_max; its thread IDs come from a 64-bit counter that no setting bounds."
 
-    /// Whether `allocator` has handed out nothing since it gave `leader` its id:
-    /// whether the process has never created a thread, even one that has since
-    /// exited.
-    let internal untouchedSince (leader : OsThreadId) (allocator : ThreadIdAllocator) : bool =
-        // Each id handed out moves the counter to just past it, and a live
-        // leader's id is never handed out again, so the counter sits just past the
-        // leader's id exactly until the first thread is created.
-        let after = OsThreadId.toUInt64 leader + 1UL
-
-        match allocator with
-        | ThreadIdAllocator.Linux (cursor, _) -> uint64 cursor = after
-        | ThreadIdAllocator.Darwin next -> next = after
-
     /// Whether `id` is one `allocator` could have handed out and not yet reached:
     /// below `pid_max` on Linux, and below the counter on Darwin.
     let internal couldHaveMinted (id : OsThreadId) (allocator : ThreadIdAllocator) : bool =

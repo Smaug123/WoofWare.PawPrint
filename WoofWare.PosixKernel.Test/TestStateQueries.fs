@@ -25,8 +25,11 @@ module TestStateQueries =
             SimulatedUnixPlatform.macOsArm64
         ]
 
-    let private initialOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+    let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> =
         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+    let private initialOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        imageOn platform |> UnixBootImage.boot
 
     [<Test>]
     let ``platform is the one the machine was started on`` () : unit =
@@ -40,9 +43,10 @@ module TestStateQueries =
             |> shouldEqual UnixSystem.defaultProcessorCount
 
         let property (platform : SimulatedUnixPlatform, count : int) : unit =
-            (initialOn platform).Machine
-            |> UnixMachineState.withProcessorCount count
-            |> UnixMachineState.processorCount
+            imageOn platform
+            |> UnixBootImage.withProcessorCount count
+            |> UnixBootImage.boot
+            |> fun system -> UnixMachineState.processorCount system.Machine
             |> shouldEqual count
 
         Check.One (
@@ -138,9 +142,10 @@ module TestStateQueries =
             UnixProcessState.environment (initialOn platform).Process |> shouldEqual []
 
         let property (entries : UnixByteString list) : unit =
-            (initialOn SimulatedUnixPlatform.linuxX64).Process
-            |> UnixProcessState.withEnvironment context entries
-            |> UnixProcessState.environment
+            imageOn SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withEnvironment context entries
+            |> UnixBootImage.boot
+            |> fun system -> UnixProcessState.environment system.Process
             |> shouldEqual entries
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.listOf entryGen |> Gen.resize 6)) property)
@@ -151,9 +156,10 @@ module TestStateQueries =
         |> shouldEqual UnixSystem.defaultProcessPath
 
         for path in [ None ; Some (AbsoluteUnixPath.parseOrFail context "/bin/guest") ] do
-            (initialOn SimulatedUnixPlatform.linuxX64).Process
-            |> UnixProcessState.withProcessPath context path
-            |> UnixProcessState.processPath
+            imageOn SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withProcessPath context path
+            |> UnixBootImage.boot
+            |> fun system -> UnixProcessState.processPath system.Process
             |> shouldEqual path
 
     [<Test>]

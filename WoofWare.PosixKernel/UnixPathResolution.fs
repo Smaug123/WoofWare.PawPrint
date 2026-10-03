@@ -1757,7 +1757,7 @@ module UnixPathResolution =
     /// Without <c>AT_EACCESS</c> the path is walked, and the inode judged, with the process's
     /// <i>real</i> user and group (see <c>Credentials.realIdsAsEffective</c>); with it, with
     /// the effective ones, as every other syscall is. On Darwin the two are always the
-    /// same, since <c>UnixSystem.withCredentials</c> admits no Darwin process whose real
+    /// same, since <c>UnixBootImage.withCredentials</c> admits no Darwin process whose real
     /// and effective IDs differ.
     ///
     /// Answers 0 or the errno, and changes nothing: measured on both, it moves no

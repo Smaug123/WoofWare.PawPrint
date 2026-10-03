@@ -30,6 +30,20 @@ module TestTaskState =
         let state, frame = aFrame (bare ())
         IlMachineState.addThread frame state |> fst
 
+    /// `bare`, on a machine of four processors.
+    let private bareOnFour () : IlMachineState =
+        (bare ())
+            .MapKernel (fun _ ->
+                EmulatedKernel.initialImage
+                |> UnixBootImage.withProcessorCount 4
+                |> EmulatedKernel.boot
+            )
+
+    /// `machine`, on a machine of four processors.
+    let private machineOnFour () : IlMachineState =
+        let state, frame = aFrame (bareOnFour ())
+        IlMachineState.addThread frame state |> fst
+
     let private threads (state : IlMachineState) : Map<ThreadId, ThreadStatus> =
         state.ThreadState |> Map.map (fun _ ts -> ts.Status)
 
@@ -159,8 +173,7 @@ module TestTaskState =
 
     [<Test>]
     let ``guest threads take successive cores in the rotation, in construction order`` () : unit =
-        let state =
-            (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
+        let state = machineOnFour ()
 
         let state, first =
             IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
@@ -181,8 +194,7 @@ module TestTaskState =
 
     [<Test>]
     let ``addThread gives the leader its thread once, on the rotation's first slot`` () : unit =
-        let state =
-            (bare ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
+        let state = bareOnFour ()
 
         let state, frame = aFrame state
         let state, first = IlMachineState.addThread frame state
@@ -438,8 +450,7 @@ module TestTaskState =
         // thread, so that the task under test is not on core 0: a fixture whose
         // thread already sits there cannot tell "parking left the core alone"
         // from "parking reset it to zero".
-        let state =
-            (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
+        let state = machineOnFour ()
 
         let state, thread =
             ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1) state
