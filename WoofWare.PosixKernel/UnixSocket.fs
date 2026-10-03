@@ -1,49 +1,6 @@
 namespace WoofWare.PosixKernel
 
-/// Which of `struct sockaddr_in`'s fields a caller's declared length reaches,
-/// for a syscall whose sockaddr the kernel is about to copy in.
-///
-/// The kernel copies the caller's whole declared length whatever this says; what
-/// it names is which fields that copy actually *contains*, and so which of them
-/// the caller can supply. A shorter length is not an error -- `bind(2)` and
-/// `connect(2)` both have measured answers for a sockaddr whose family they
-/// never saw -- so this is an instruction to the caller rather than a verdict.
-[<RequireQualifiedAccess>]
-type SockaddrCopyFields =
-    /// The copy reaches no field this kernel reads. Pass no family and no
-    /// endpoint.
-    | Nothing
-    /// It reaches `sa_family` and no further. Pass the family alone.
-    | Family
-    /// It reaches `sa_family`, `sin_addr` and `sin_port`. Pass both.
-    | FamilyAndEndpoint
-
-[<RequireQualifiedAccess>]
-module SockaddrCopyFields =
-    /// Refuse a caller that supplied a different set of fields from the one the
-    /// copy reaches.
-    ///
-    /// Not defensiveness. This kernel's answer for a field it *could not read*
-    /// is measured and different from its answer for a field nobody bothered to
-    /// read, so conflating the two would be a silent wrong answer rather than a
-    /// crash. `operation` is the caller's own name for itself, since the mistake
-    /// is the caller's.
-    let checkSupplied
-        (operation : string)
-        (fields : SockaddrCopyFields)
-        (family : int option)
-        (endpoint : InternetEndpoint option)
-        : unit
-        =
-        let expected =
-            match fields with
-            | SockaddrCopyFields.Nothing -> false, false
-            | SockaddrCopyFields.Family -> true, false
-            | SockaddrCopyFields.FamilyAndEndpoint -> true, true
-
-        if (Option.isSome family, Option.isSome endpoint) <> expected then
-            failwith
-                $"%s{operation}: the copy of this sockaddr reaches %O{fields}, but the caller supplied family=%b{Option.isSome family} endpoint=%b{Option.isSome endpoint}. A field this kernel could not read and a field the caller did not read have different measured answers, so they must not be conflated (this is a bug in the caller)."
+open System.Collections.Immutable
 
 /// Which syscall is copying a `struct sockaddr` in.
 [<RequireQualifiedAccess>]
@@ -79,9 +36,16 @@ type SockaddrCopyAdmission =
     /// Always a failure: every screen that precedes the copy is one that can
     /// only refuse, which is why this carries an errno rather than an outcome.
     | Answered of error : UnixError
-    /// The copy is reached: it takes exactly `length` bytes from the caller's
-    /// buffer, of which `fields` says which are worth decoding.
-    | Transfer of length : int * fields : SockaddrCopyFields
+    /// The copy is reached: it takes exactly the first `length` bytes of the
+    /// caller's buffer, which may be none. Pass every one of them to the
+    /// syscall, which decodes them itself.
+    ///
+    /// Every one, and not only those of the fields the syscall goes on to
+    /// read: both kernels copy the whole declared length before they look at
+    /// any field, so a fault anywhere in those bytes is EFAULT, whichever field
+    /// it lies in. A caller that cannot say whether its buffer holds that many
+    /// bytes has no answer to give, and should refuse rather than guess.
+    | Transfer of length : int
 
 /// Why this kernel will not answer a syscall that copies a `struct sockaddr` in.
 ///
@@ -401,9 +365,9 @@ type private SockaddrCopyStep =
     | Answered of error : UnixError
     /// The copy has no answer for this buffer.
     | Refused of BufferRefusal
-    /// The copy takes `length` bytes without fault, of which `fields` are worth
-    /// decoding. `bytesAvailable` is whether the caller can produce them.
-    | Copies of length : int * fields : SockaddrCopyFields * bytesAvailable : bool
+    /// The copy takes `length` bytes without fault. `bytesAvailable` is whether
+    /// the caller can produce them.
+    | Copies of length : int * bytesAvailable : bool
 
 /// What a Darwin protocol switch entry does when `socket(2)` selects it.
 [<RequireQualifiedAccess>]
@@ -415,13 +379,6 @@ type private DarwinAttach =
 
 [<RequireQualifiedAccess>]
 module UnixSocket =
-
-    /// The shortest copy that contains both transport fields: `sin_addr` is the
-    /// further of the two, so its end is the extent. The same on both flavours --
-    /// Darwin's `sa_len` byte displaces `sa_family` into byte 1 and leaves the
-    /// transport fields where they are.
-    let private internetEndpointExtent : int =
-        InternetSockaddr.address.Offset + InternetSockaddr.address.Width
 
     /// What the copy-in of `declaredLength` bytes of a `struct sockaddr_in`
     /// from `destination` does, on `platform`. Knows nothing of the descriptor,
@@ -458,22 +415,14 @@ module UnixSocket =
                | SimulatedUnixFlavour.Darwin -> reachesFamily
 
         if not copies then
-            SockaddrCopyStep.Copies (0, SockaddrCopyFields.Nothing, true)
+            SockaddrCopyStep.Copies (0, true)
         else
-
-        let fields =
-            if length >= internetEndpointExtent then
-                SockaddrCopyFields.FamilyAndEndpoint
-            elif reachesFamily then
-                SockaddrCopyFields.Family
-            else
-                SockaddrCopyFields.Nothing
 
         match destination with
         | UserBuffer.Unmapped _ -> SockaddrCopyStep.Answered UnixError.EFAULT
         | UserBuffer.Addressless -> SockaddrCopyStep.Refused BufferRefusal.AddresslessAtTransfer
-        | UserBuffer.Opaque -> SockaddrCopyStep.Copies (length, fields, false)
-        | UserBuffer.Mapped -> SockaddrCopyStep.Copies (length, fields, true)
+        | UserBuffer.Opaque -> SockaddrCopyStep.Copies (length, false)
+        | UserBuffer.Mapped -> SockaddrCopyStep.Copies (length, true)
 
     /// Everything `bind(2)` or `connect(2)` decides before the kernel copies the
     /// caller's sockaddr in, which is where a client that cannot always produce
@@ -546,9 +495,33 @@ module UnixSocket =
         match copy.Force () with
         | SockaddrCopyStep.Answered error -> answered error
         | SockaddrCopyStep.Refused refusal -> Error (SockaddrCopyRefusal.Buffer refusal)
-        | SockaddrCopyStep.Copies (length, _, false) when length > 0 ->
+        | SockaddrCopyStep.Copies (length, false) when length > 0 ->
             Error (SockaddrCopyRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
-        | SockaddrCopyStep.Copies (length, fields, _) -> Ok (SockaddrCopyAdmission.Transfer (length, fields))
+        | SockaddrCopyStep.Copies (length, _) -> Ok (SockaddrCopyAdmission.Transfer length)
+
+    /// How many bytes the copy-in of a `struct sockaddr` declared `declaredLength`
+    /// long takes from real storage on `platform`: what `admitSockaddrCopy`
+    /// answers `Transfer` with for a mapped buffer, or 0 where the length is
+    /// rejected before anything is copied.
+    let internal mappedCopyLength (platform : SimulatedUnixPlatform) (declaredLength : uint32) : int =
+        match sockaddrCopyStep platform UserBuffer.Mapped declaredLength with
+        | SockaddrCopyStep.Copies (length, _) -> length
+        | SockaddrCopyStep.Answered _ -> 0
+        | SockaddrCopyStep.Refused refusal ->
+            failwith
+                $"UnixSocket.mappedCopyLength: a copy from real storage was refused (%O{refusal}), which only a buffer naming no storage can be (this is a bug in this library)."
+
+    /// Refuse a caller that passed a different number of bytes from the `length`
+    /// the kernel copies. `operation` is the caller's own name for itself, since
+    /// the mistake is the caller's.
+    let internal requireCopied (operation : string) (length : int) (copied : ImmutableArray<byte>) : unit =
+        if copied.IsDefault then
+            failwith
+                $"%s{operation}: copied is the default ImmutableArray, whose underlying array is null. That is not an empty copy; pass ImmutableArray<byte>.Empty."
+
+        if copied.Length <> length then
+            failwith
+                $"%s{operation}: the kernel copies %d{length} bytes of this sockaddr, but the caller passed %d{copied.Length}. Pass exactly the bytes the copy takes: a field the kernel could not read and a field holding zero have different answers, so neither too few nor too many can be answered for (this is a bug in the caller)."
 
     // `<sys/socket.h>` and `<netinet/in.h>`: these numbers are the same on both
     // flavours. `AF_INET6` is not, and is `SimulatedUnixPlatform`'s.
@@ -1020,35 +993,18 @@ module UnixSocket =
         FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors
         |> Option.map (fun description -> description.NonBlocking)
 
-    /// `bind(2)`: give `fd` a local address.
-    ///
-    /// `family` and `endpoint` are what the caller read out of its sockaddr, and
-    /// must be exactly what `admitSockaddrCopy` asked for -- the same contract
-    /// `connect` states, and for the same reason: this kernel's answer for a
-    /// field it *could not read* is measured and different from its answer for a
-    /// field nobody read.
-    ///
-    /// Which existing bindings the new one conflicts with depends on
-    /// `SO_REUSEADDR` as `setsockopt` last left it, on this socket and on the
-    /// others; see `SimulatedUnixPlatform.bindConflict`.
-    ///
-    /// Answers where the socket ended up, which for a request of port 0 is a
-    /// port this kernel chose.
-    let bind<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `bind(2)` past the copy: what it answers for the sockaddr `copied`
+    /// decodes to, on `fd`, which `admitSockaddrCopy` has taken as far as the
+    /// copy.
+    let internal bindDecoded<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
-        (destination : UserBuffer)
         (declaredLength : uint32)
-        (family : int option)
-        (endpoint : InternetEndpoint option)
+        (copied : CopiedInternetSockaddr)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
         =
-        match admitSockaddrCopy SockaddrCopySyscall.Bind fd destination declaredLength system with
-        | Error refusal -> Error (BindRefusal.Copy refusal)
-        | Ok (SockaddrCopyAdmission.Answered error) -> Ok (BindAnswer.Failed error, system)
-        | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
-
-        SockaddrCopyFields.checkSupplied "UnixSocket.bind" fields family endpoint
+        let family = copied.Family
+        let endpoint = copied.Endpoint
 
         // The admission has classified the descriptor as an IPv4 socket, or it
         // would not have reached the copy.
@@ -1225,6 +1181,42 @@ module UnixSocket =
                 }
 
         Ok (BindAnswer.Bound bound.Endpoint, system)
+
+    /// `bind(2)`: give `fd` a local address.
+    ///
+    /// `copied` is the bytes the kernel copies in: exactly as many as
+    /// `admitSockaddrCopy` answered `Transfer` with, from the start of the
+    /// caller's buffer, or none where it answered `Answered`. Passing any other
+    /// number is refused, as a bug in the caller. The kernel reads the family,
+    /// port and address out of them itself.
+    ///
+    /// Which existing bindings the new one conflicts with depends on
+    /// `SO_REUSEADDR` as `setsockopt` last left it, on this socket and on the
+    /// others; see `SimulatedUnixPlatform.bindConflict`.
+    ///
+    /// Answers where the socket ended up, which for a request of port 0 is a
+    /// port this kernel chose.
+    let bind<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (copied : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
+        =
+        match admitSockaddrCopy SockaddrCopySyscall.Bind fd destination declaredLength system with
+        | Error refusal -> Error (BindRefusal.Copy refusal)
+        | Ok (SockaddrCopyAdmission.Answered error) ->
+            requireCopied "UnixSocket.bind" 0 copied
+            Ok (BindAnswer.Failed error, system)
+        | Ok (SockaddrCopyAdmission.Transfer length) ->
+            requireCopied "UnixSocket.bind" length copied
+
+            bindDecoded
+                fd
+                declaredLength
+                (SimulatedUnixPlatform.decodeInternetSockaddr system.Machine.UnixPlatform copied)
+                system
 
     /// `listen(2)`: make `fd` a passive socket, and give it an address if it has
     /// none.

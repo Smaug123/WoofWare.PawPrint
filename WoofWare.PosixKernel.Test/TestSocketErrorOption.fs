@@ -74,7 +74,7 @@ module TestSocketErrorOption =
         | other, _ -> failwith $"setting O_NONBLOCK on fd %d{fd} answered %A{other}"
 
     let private bindAt (fd : int) (endpoint : InternetEndpoint) (system : UnixSystem<int, string>) =
-        match UnixSocket.bind fd UserBuffer.Mapped 16u inetFamily (Some endpoint) system with
+        match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) endpoint) system with
         | Ok (BindAnswer.Bound _, system) -> system
         | other -> failwith $"binding fd %d{fd} to %O{endpoint} answered %A{other}"
 
@@ -84,7 +84,7 @@ module TestSocketErrorOption =
         (system : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        match UnixConnection.connect fd UserBuffer.Mapped 16u inetFamily (Some destination) system with
+        match CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) destination) system with
         | Ok answer -> answer
         | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 

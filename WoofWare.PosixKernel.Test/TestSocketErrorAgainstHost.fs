@@ -216,13 +216,7 @@ module TestSocketErrorAgainstHost =
         : (int * UnixSystem<int, string>) option
         =
         match
-            UnixConnection.connect
-                fd
-                UserBuffer.Mapped
-                16u
-                (Some SimulatedUnixPlatform.internetAddressFamily)
-                (Some (loopback port))
-                system
+            CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet system.Machine.UnixPlatform (loopback port)) system
         with
         | Ok (ConnectOutcome.Completed, system) -> Some (0, system)
         | Ok (ConnectOutcome.Failed error, system) -> Some (errnoOf system.Machine.UnixPlatform error, system)
@@ -245,12 +239,11 @@ module TestSocketErrorAgainstHost =
 
         let system =
             match
-                UnixSocket.bind
+                CopyIn.bind
                     listener
                     UserBuffer.Mapped
                     16u
-                    (Some SimulatedUnixPlatform.internetAddressFamily)
-                    (Some (loopback listenerPort))
+                    (CopyIn.inet system.Machine.UnixPlatform (loopback listenerPort))
                     system
             with
             | Ok (BindAnswer.Bound _, system) -> system

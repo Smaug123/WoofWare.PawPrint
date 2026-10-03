@@ -1512,27 +1512,6 @@ module EmulatedKernel =
         }
 
 
-    /// `UnixConnection.connectSocket` — `connect(2)` past the caller's own screens
-    /// and copy-in faults — through this kernel rather than through its POSIX
-    /// half.
-    ///
-    /// Here for the reason `acceptConnection` below is: six fixtures call it
-    /// holding an `EmulatedKernel`, and writing `unix` in and `withUnix` back
-    /// out at each would be this function, copied. A `ConnectRefusal` is
-    /// raised, since the fixtures that call this never ask for one.
-    let connectSocket
-        (socketId : SocketId)
-        (nonBlocking : bool)
-        (declaredLength : uint32)
-        (family : int option)
-        (destination : InternetEndpoint option)
-        (kernel : EmulatedKernel)
-        : ConnectOutcome * EmulatedKernel
-        =
-        match UnixConnection.connectSocket socketId nonBlocking declaredLength family destination kernel.System with
-        | Ok (outcome, system) -> outcome, withUnix system kernel
-        | Error refusal -> failwith $"EmulatedKernel.connectSocket: %s{ConnectRefusal.describe refusal}"
-
     /// `UnixConnection.acceptConnection` — dequeue the oldest completed connection
     /// from `socketId`'s accept queue and materialise the server-side socket
     /// onto it — through this kernel rather than through its POSIX half.

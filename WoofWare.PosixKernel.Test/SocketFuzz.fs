@@ -241,9 +241,6 @@ module SocketFuzz =
     /// uses real ephemeral ports instead; port numbers are never compared.
     let private listenerPortBase : uint16 = 20000us
 
-    let private inetFamily : int option =
-        Some SimulatedUnixPlatform.internetAddressFamily
-
     type private ExecState =
         {
             Kernel : UnixSystem<int, string>
@@ -385,7 +382,14 @@ module SocketFuzz =
             let socketId = socketIdOfSlot client state
 
             let outcome, kernel =
-                match UnixConnection.connectSocket socketId true 16u inetFamily (Some endpoint) state.Kernel with
+                match
+                    UnixConnection.connectSocket
+                        socketId
+                        true
+                        16u
+                        (CopyIn.inetCopy (UnixSystem.platform state.Kernel) endpoint)
+                        state.Kernel
+                with
                 | Ok answer -> answer
                 | Error refusal -> raise (ModelRefusal (ConnectRefusal.describe refusal))
 
@@ -409,8 +413,9 @@ module SocketFuzz =
                         socketId
                         true
                         16u
-                        inetFamily
-                        (Some (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 1us))
+                        (CopyIn.inetCopy
+                            (UnixSystem.platform state.Kernel)
+                            (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 1us))
                         state.Kernel
                 with
                 | Ok answer -> answer

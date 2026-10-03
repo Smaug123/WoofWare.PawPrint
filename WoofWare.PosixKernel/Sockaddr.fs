@@ -218,3 +218,17 @@ type BindFault =
     | AlreadyBound
     /// Another socket holds a conflicting address. `EADDRINUSE`.
     | AddressInUse
+
+/// What the bytes a `bind(2)` or `connect(2)` copied in say, read as a
+/// `struct sockaddr_in`: each field the copy reached all of, and `None` for one
+/// it did not.
+///
+/// A field the copy did not reach is not the same as a field holding zero:
+/// the two have different measured answers, which is why each is an option.
+type internal CopiedInternetSockaddr =
+    {
+        /// `sa_family`, in the platform's own `AF_*` numbering.
+        Family : int option
+        /// `sin_addr` and `sin_port`, present only when the copy reached both.
+        Endpoint : InternetEndpoint option
+    }

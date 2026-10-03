@@ -79,7 +79,9 @@ module TestWakeCondition =
         let loopback = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
 
         let system =
-            match UnixSocket.bind listenerFd UserBuffer.Mapped 16u inet (Some loopback) system with
+            match
+                CopyIn.bind listenerFd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) loopback) system
+            with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"binding the listener: %A{other}"
 
@@ -92,7 +94,9 @@ module TestWakeCondition =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let system =
-            match UnixConnection.connect clientFd UserBuffer.Mapped 16u inet (Some loopback) system with
+            match
+                CopyIn.connect clientFd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) loopback) system
+            with
             | Ok (ConnectOutcome.Completed, system) -> system
             | other -> failwith $"connecting: %A{other}"
 

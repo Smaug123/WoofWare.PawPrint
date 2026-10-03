@@ -1,5 +1,7 @@
 namespace WoofWare.PosixKernel
 
+open System.Collections.Immutable
+
 /// One `connect(2)` call's answer: it completed, or it failed with the errno
 /// the syscall left. EINPROGRESS is a `Failed` like any other -- a caller
 /// reports it as it reports any other errno -- and the outcome it defers is
@@ -224,28 +226,25 @@ module ConnectRefusal =
 [<RequireQualifiedAccess>]
 module UnixConnection =
 
-    /// `connect(2)` past the wrapper's screens and the copy-in faults, which
-    /// stay with the caller (they are about the client's memory, which this library
-    /// cannot see): the per-flavour ladder over the socket's phase, the
-    /// declared length, the sockaddr family, and the destination.
-    ///
-    /// `family` (the *platform* family number) and `destination` are `None`
-    /// when the declared length does not reach the field — this function only
-    /// ever answers for an unreadable field, never reads one.
+    /// `connect(2)` past the descriptor screens and the copy-in: the
+    /// per-flavour ladder over the socket's phase, the declared length, the
+    /// sockaddr's family, and the destination, for the sockaddr `copied`
+    /// decodes to.
     ///
     /// Every answered row is measured (`connect_probe.c` and successors,
     /// 2026-08-21; docs/plans/2026-08-21-socket-connect.md holds the table);
     /// a `ConnectRefusal` names an unmeasured or unmodellable input, and a
     /// throw is a bug in this library or in the caller's state construction.
-    let connectSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal connectDecoded<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (nonBlocking : bool)
         (declaredLength : uint32)
-        (family : int option)
-        (destination : InternetEndpoint option)
+        (copied : CopiedInternetSockaddr)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
+        let family = copied.Family
+        let destination = copied.Endpoint
         let sock = UnixMachineState.socket socketId system.Machine
         let platform = system.Machine.UnixPlatform
         let flavour = SimulatedUnixPlatform.flavour platform
@@ -807,7 +806,7 @@ module UnixConnection =
                 | Some dest -> attemptStream dest
                 | None ->
                     failwith
-                        "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is a bug in the caller of UnixConnection.connectSocket."
+                        "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the copy held no destination, though a length that passes it reaches `sin_addr` (this is a bug in this library)."
             | SimulatedUnixFlavour.Darwin ->
                 // The state arms answer first — measured: a refused socket's
                 // EISCONN beats a good destination, AF_UNSPEC and an
@@ -865,7 +864,7 @@ module UnixConnection =
                 | Some dest -> attemptStream dest
                 | None ->
                     failwith
-                        "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is a bug in the caller of UnixConnection.connectSocket."
+                        "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the copy held no destination, though a length that passes it reaches `sin_addr` (this is a bug in this library)."
         | SocketKind.Datagram ->
             match lengthVerdict with
             | BindLengthVerdict.RejectedBeforeCopy error -> fail error
@@ -1013,7 +1012,7 @@ module UnixConnection =
             match destination with
             | None ->
                 failwith
-                    "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the destination was not supplied; the caller reads it whenever the length reaches it. This is a bug in the caller of UnixConnection.connectSocket."
+                    "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the copy held no destination, though a length that passes it reaches `sin_addr` (this is a bug in this library)."
             | Some dest ->
 
             if dest.Address = InternetEndpoint.WildcardAddress then
@@ -1047,35 +1046,62 @@ module UnixConnection =
 
             completed system
 
-    /// `connect(2)`: point `fd` at `endpoint`, or ask what pointing it there
-    /// would answer.
+    /// `connect(2)` on the socket `socketId` past the descriptor screens: the
+    /// ladder `connect` runs once it has looked the descriptor up, through a
+    /// description whose `O_NONBLOCK` is `nonBlocking`. For a client that wants
+    /// to put a kernel into a state where a connection is pending, established
+    /// or refused; a syscall goes through `connect`.
     ///
-    /// `family` is the *platform's* family number as it was found in the
-    /// caller's sockaddr, and `endpoint` the address and port found there. Both
-    /// must be exactly what `admitSockaddrCopy` asked for: a `SockaddrCopyFields` of
-    /// `Nothing` means neither, `Family` the family alone, `FamilyAndEndpoint`
-    /// both. Supplying less than that is refused rather than answered, because
-    /// this kernel's answer for an *unreadable* field is measured and different
-    /// from its answer for a field nobody bothered to read.
+    /// `copied` is the bytes a copy-in of `declaredLength` takes from real
+    /// storage: exactly as many as `admitSockaddrCopy` answers `Transfer` with
+    /// for a mapped buffer, and none where it rejects the length before the
+    /// copy. Passing any other number is refused, as a bug in the caller.
+    let connectSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (nonBlocking : bool)
+        (declaredLength : uint32)
+        (copied : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        =
+        let platform = system.Machine.UnixPlatform
+
+        UnixSocket.requireCopied
+            "UnixConnection.connectSocket"
+            (UnixSocket.mappedCopyLength platform declaredLength)
+            copied
+
+        connectDecoded
+            socketId
+            nonBlocking
+            declaredLength
+            (SimulatedUnixPlatform.decodeInternetSockaddr platform copied)
+            system
+
+    /// `connect(2)`: point `fd` at the address in its sockaddr, or ask what
+    /// pointing it there would answer.
     ///
-    /// The screens `admitSockaddrCopy` performs are performed again here, so a caller
-    /// that already has the fields need not have asked; they are pure, and they
-    /// agree.
+    /// `copied` is the bytes the kernel copies in: exactly as many as
+    /// `admitSockaddrCopy` answered `Transfer` with, from the start of the
+    /// caller's buffer, or none where it answered `Answered`. Passing any other
+    /// number is refused, as a bug in the caller. The kernel reads the family,
+    /// port and address out of them itself.
     let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
         (declaredLength : uint32)
-        (family : int option)
-        (endpoint : InternetEndpoint option)
+        (copied : ImmutableArray<byte>)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
         match UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd destination declaredLength system with
         | Error refusal -> Error (ConnectRefusal.Copy refusal)
-        | Ok (SockaddrCopyAdmission.Answered error) -> Ok (ConnectOutcome.Failed error, system)
-        | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
+        | Ok (SockaddrCopyAdmission.Answered error) ->
+            UnixSocket.requireCopied "UnixConnection.connect" 0 copied
+            Ok (ConnectOutcome.Failed error, system)
+        | Ok (SockaddrCopyAdmission.Transfer length) ->
 
-        SockaddrCopyFields.checkSupplied "UnixConnection.connect" fields family endpoint
+        UnixSocket.requireCopied "UnixConnection.connect" length copied
 
         // `admitSockaddrCopy` reached the copy, so the descriptor is a live IPv4
         // socket; nothing between there and here could have changed that.
@@ -1096,7 +1122,12 @@ module UnixConnection =
                 failwith
                     $"UnixConnection.connect: fd %d{fd} resolved to a socket a line above and nothing here closes it (this is a bug in this library)."
 
-        connectSocket socketId nonBlocking declaredLength family endpoint system
+        connectDecoded
+            socketId
+            nonBlocking
+            declaredLength
+            (SimulatedUnixPlatform.decodeInternetSockaddr system.Machine.UnixPlatform copied)
+            system
 
     /// Dequeue the oldest completed connection from `socketId`'s accept queue
     /// and materialise the server-side socket onto it: a fresh socket, bound at

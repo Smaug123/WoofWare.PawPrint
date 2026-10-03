@@ -144,7 +144,7 @@ type SocketBinding =
 type ListenState =
     {
         /// The backlog argument `listen(2)` recorded, verbatim. Its one reader
-        /// is the accept-queue capacity check in `UnixConnection.connectSocket`,
+        /// is the accept-queue capacity check in `UnixConnection.connect`,
         /// which derives the flavour's admission bound from it — measured,
         /// Linux admits `backlog + 1` completed connections and Darwin exactly
         /// `backlog` — so this stores the input to that rule rather than a

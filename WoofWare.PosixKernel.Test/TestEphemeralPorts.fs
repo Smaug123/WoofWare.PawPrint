@@ -68,7 +68,7 @@ module TestEphemeralPorts =
             else
                 system
 
-        match UnixSocket.bind fd UserBuffer.Mapped 16u inetFamily (Some endpoint) system with
+        match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) endpoint) system with
         | Ok (answer, system) -> Ok answer, system
         | Error refusal -> Error refusal, system
 
@@ -116,7 +116,7 @@ module TestEphemeralPorts =
         (system : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        match UnixConnection.connect fd UserBuffer.Mapped 16u inetFamily (Some destination) system with
+        match CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) destination) system with
         | Ok result -> result
         | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 

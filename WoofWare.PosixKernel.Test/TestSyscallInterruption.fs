@@ -117,7 +117,14 @@ module TestSyscallInterruption =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let system =
-            match UnixSocket.bind listener UserBuffer.Mapped 16u inetFamily (Some (loopback 5000us)) system with
+            match
+                CopyIn.bind
+                    listener
+                    UserBuffer.Mapped
+                    16u
+                    (CopyIn.inet (UnixSystem.platform system) (loopback 5000us))
+                    system
+            with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"binding the listener: %A{other}"
 
@@ -277,7 +284,14 @@ module TestSyscallInterruption =
             let client, system =
                 NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-            match UnixConnection.connect client UserBuffer.Mapped 16u inetFamily (Some (loopback 5000us)) system with
+            match
+                CopyIn.connect
+                    client
+                    UserBuffer.Mapped
+                    16u
+                    (CopyIn.inet (UnixSystem.platform system) (loopback 5000us))
+                    system
+            with
             | Ok (ConnectOutcome.Completed, system) -> system
             | other -> failwith $"connecting: %A{other}"
 
