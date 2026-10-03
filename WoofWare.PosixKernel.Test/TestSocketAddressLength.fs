@@ -29,8 +29,6 @@ module TestSocketAddressLength =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 200
 
-    let private inetFamily : int = SimulatedUnixPlatform.internetAddressFamily
-
     let private loopback (port : uint16) : InternetEndpoint =
         InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
 
@@ -73,7 +71,7 @@ module TestSocketAddressLength =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
     let private bindAt (endpoint : InternetEndpoint) (fd : int) (system : UnixSystem<int, string>) =
-        match UnixSocket.bind fd UserBuffer.Mapped 16u (Some inetFamily) (Some endpoint) system with
+        match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet system.Machine.UnixPlatform endpoint) system with
         | Ok (BindAnswer.Bound _, system) -> system
         | other -> failwith $"binding fd %d{fd} at %O{endpoint}: %A{other}"
 
@@ -91,7 +89,12 @@ module TestSocketAddressLength =
         let fd, system = streamSocket system
 
         match
-            UnixConnection.connect fd UserBuffer.Mapped 16u (Some inetFamily) (Some (loopback listenerPort)) system
+            CopyIn.connect
+                fd
+                UserBuffer.Mapped
+                16u
+                (CopyIn.inet system.Machine.UnixPlatform (loopback listenerPort))
+                system
         with
         | Ok (ConnectOutcome.Completed, system) -> fd, system
         | other -> failwith $"connecting a client: %A{other}"
@@ -108,19 +111,6 @@ module TestSocketAddressLength =
         match UnixSocket.getsockname fd UserBuffer.Mapped 16u system with
         | Ok (GetSockNameAnswer.Reported (endpoint, _)) -> endpoint
         | other -> failwith $"getsockname of fd %d{fd}: %A{other}"
-
-    /// What the copy-in of a well-formed `sockaddr_in` naming `endpoint` hands
-    /// over, given the fields the admission says it reaches.
-    let private fieldsFor
-        (endpoint : InternetEndpoint)
-        (admission : SockaddrCopyAdmission)
-        : int option * InternetEndpoint option
-        =
-        match admission with
-        | SockaddrCopyAdmission.Answered _
-        | SockaddrCopyAdmission.Transfer (_, SockaddrCopyFields.Nothing) -> None, None
-        | SockaddrCopyAdmission.Transfer (_, SockaddrCopyFields.Family) -> Some inetFamily, None
-        | SockaddrCopyAdmission.Transfer (_, SockaddrCopyFields.FamilyAndEndpoint) -> Some inetFamily, Some endpoint
 
     let private admit
         (syscall : SockaddrCopySyscall)
@@ -158,11 +148,9 @@ module TestSocketAddressLength =
             everyLength (fun word ->
                 let fd, system = streamSocket (systemOn platform)
                 let target = loopback 0us
-                let admission = admit SockaddrCopySyscall.Bind fd UserBuffer.Mapped word system
-                let family, endpoint = fieldsFor target admission
 
                 let actual =
-                    match UnixSocket.bind fd UserBuffer.Mapped word family endpoint system with
+                    match CopyIn.bind fd UserBuffer.Mapped word (CopyIn.inet platform target) system with
                     | Ok (BindAnswer.Bound _, _) -> None
                     | Ok (BindAnswer.Failed error, _) -> Some error
                     | Error refusal -> failwith $"word 0x%08x{word}: %s{BindRefusal.describe refusal}"
@@ -179,11 +167,9 @@ module TestSocketAddressLength =
                 let _, system = withListener platform
                 let fd, system = streamSocket system
                 let target = loopback listenerPort
-                let admission = admit SockaddrCopySyscall.Connect fd UserBuffer.Mapped word system
-                let family, endpoint = fieldsFor target admission
 
                 let actual =
-                    match UnixConnection.connect fd UserBuffer.Mapped word family endpoint system with
+                    match CopyIn.connect fd UserBuffer.Mapped word (CopyIn.inet platform target) system with
                     | Ok (ConnectOutcome.Completed, _) -> None
                     | Ok (ConnectOutcome.Failed error, _) -> Some error
                     | Error refusal -> failwith $"word 0x%08x{word}: %s{ConnectRefusal.describe refusal}"
@@ -340,12 +326,11 @@ module TestSocketAddressLength =
                             let system = UnixSocket.setNonBlocking fd true system |> snd
 
                             match
-                                UnixConnection.connect
+                                CopyIn.connect
                                     fd
                                     UserBuffer.Mapped
                                     16u
-                                    (Some inetFamily)
-                                    (Some (loopback listenerPort))
+                                    (CopyIn.inet system.Machine.UnixPlatform (loopback listenerPort))
                                     system
                             with
                             | Ok (ConnectOutcome.Failed UnixError.EINPROGRESS, system) -> fd, system

@@ -58,7 +58,9 @@ module KeventWorld =
             fd, system
 
     let bind (fd : int) (port : uint16) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixSocket.bind fd UserBuffer.Mapped 16u inet (Some (loopback port)) system with
+        match
+            CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) (loopback port)) system
+        with
         | Ok (BindAnswer.Bound _, system) -> system
         | other -> failwith $"binding fd %d{fd} at port %d{port}: %A{other}"
 
@@ -78,7 +80,9 @@ module KeventWorld =
         (system : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        match UnixConnection.connect fd UserBuffer.Mapped 16u inet (Some (loopback port)) system with
+        match
+            CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) (loopback port)) system
+        with
         | Ok answered -> answered
         | Error refusal -> failwith $"connecting fd %d{fd} to port %d{port}: %s{ConnectRefusal.describe refusal}"
 

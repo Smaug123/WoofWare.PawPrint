@@ -60,7 +60,9 @@ module TestDatagramDissolve =
             match bindTo with
             | None -> system
             | Some endpoint ->
-                match UnixSocket.bind fd UserBuffer.Mapped 16u inetFamily (Some endpoint) system with
+                match
+                    CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) endpoint) system
+                with
                 | Ok (BindAnswer.Bound _, system) -> system
                 | other -> failwith $"bind to %s{InternetEndpoint.toString endpoint}: %A{other}"
 
@@ -69,7 +71,12 @@ module TestDatagramDissolve =
                 system
             else
                 match
-                    UnixConnection.connect fd UserBuffer.Mapped 16u inetFamily (Some (endpoint loopback 9000us)) system
+                    CopyIn.connect
+                        fd
+                        UserBuffer.Mapped
+                        16u
+                        (CopyIn.inet (UnixSystem.platform system) (endpoint loopback 9000us))
+                        system
                 with
                 | Ok (ConnectOutcome.Completed, system) -> system
                 | other -> failwith $"connect: %A{other}"
@@ -77,7 +84,17 @@ module TestDatagramDissolve =
         fd, system
 
     let private dissolve (fd : int) (system : UnixSystem<int, string>) : ConnectOutcome * UnixSystem<int, string> =
-        match UnixConnection.connectSocket (socketOf fd system) false 16u (Some 0) None system with
+        match
+            UnixConnection.connectSocket
+                (socketOf fd system)
+                false
+                16u
+                (CopyIn.mapped
+                    (UnixSystem.platform system)
+                    16u
+                    (CopyIn.blob (UnixSystem.platform system) 0 (InternetEndpoint.ofParts 0u 0us)))
+                system
+        with
         | Ok answer -> answer
         | Error refusal -> failwith $"dissolve refused: %s{ConnectRefusal.describe refusal}"
 
@@ -171,7 +188,14 @@ module TestDatagramDissolve =
     let ``a half-bound socket connects from its address on a fresh port`` () : unit =
         let fd, system = halfBound ()
 
-        match UnixConnection.connect fd UserBuffer.Mapped 16u inetFamily (Some (endpoint loopback 9001us)) system with
+        match
+            CopyIn.connect
+                fd
+                UserBuffer.Mapped
+                16u
+                (CopyIn.inet (UnixSystem.platform system) (endpoint loopback 9001us))
+                system
+        with
         | Ok (ConnectOutcome.Completed, after) ->
             let binding = (bound fd after).Value
             binding.Endpoint.Address |> shouldEqual loopback
@@ -190,7 +214,7 @@ module TestDatagramDissolve =
             ] do
             let fd, system = halfBound ()
 
-            match UnixSocket.bind fd UserBuffer.Mapped 16u inetFamily (Some rebind) system with
+            match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) rebind) system with
             | Ok (BindAnswer.Bound actual, after) ->
                 actual.Address |> shouldEqual rebind.Address
 
@@ -208,7 +232,14 @@ module TestDatagramDissolve =
             let fd, system = datagram platform (Some (endpoint wildcard 5555us)) true
             let _, after = dissolve fd system
 
-            match UnixSocket.bind fd UserBuffer.Mapped 16u inetFamily (Some (endpoint wildcard 0us)) after with
+            match
+                CopyIn.bind
+                    fd
+                    UserBuffer.Mapped
+                    16u
+                    (CopyIn.inet (UnixSystem.platform after) (endpoint wildcard 0us))
+                    after
+            with
             | Ok (BindAnswer.Failed UnixError.EINVAL, _) -> ()
             | other -> failwith $"rebind after dissolve on %O{platform}: %A{other}"
 
@@ -265,7 +296,14 @@ module TestDatagramDissolve =
         let other, system =
             NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
 
-        match UnixSocket.bind other UserBuffer.Mapped 16u inetFamily (Some (endpoint loopback 0us)) system with
+        match
+            CopyIn.bind
+                other
+                UserBuffer.Mapped
+                16u
+                (CopyIn.inet (UnixSystem.platform system) (endpoint loopback 0us))
+                system
+        with
         | Ok (BindAnswer.Bound actual, after) ->
             actual.Address |> shouldEqual loopback
             actual.Port |> shouldNotEqual 0us

@@ -47,8 +47,6 @@ module TestBind =
     /// unless it is testing the length itself.
     let private exactLength : uint32 = 16u
 
-    let private inetFamily : int = SimulatedUnixPlatform.internetAddressFamily
-
     let private socketOfKind (kind : SocketKind) (phase : SocketPhase) : SocketDescription =
         {
             Domain = SocketDomain.Inet
@@ -106,7 +104,9 @@ module TestBind =
         (system : UnixSystem<int, string>)
         : BindAnswer * UnixSystem<int, string>
         =
-        match UnixSocket.bind fd UserBuffer.Mapped exactLength (Some inetFamily) (Some endpoint) system with
+        match
+            CopyIn.bind fd UserBuffer.Mapped exactLength (CopyIn.inet (UnixSystem.platform system) endpoint) system
+        with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{BindRefusal.describe refusal}"
 
@@ -286,7 +286,7 @@ module TestBind =
     let ``a foreign family is EAFNOSUPPORT`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = stream platform
 
-        UnixSocket.bind fd UserBuffer.Mapped exactLength (Some 99) (Some (loopback 5000us)) system
+        CopyIn.bind fd UserBuffer.Mapped exactLength (CopyIn.blob platform 99 (loopback 5000us)) system
         |> shouldEqual (Ok (BindAnswer.Failed UnixError.EAFNOSUPPORT, system))
 
     /// `AF_UNSPEC` is two rules. Linux takes it only with an all-zero address;
@@ -298,12 +298,11 @@ module TestBind =
 
             // A zero address: both take it.
             match
-                UnixSocket.bind
+                CopyIn.bind
                     fd
                     UserBuffer.Mapped
                     exactLength
-                    (Some 0)
-                    (Some (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us))
+                    (CopyIn.blob platform 0 (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us))
                     system
             with
             | Ok (BindAnswer.Bound _, _) -> ()
@@ -311,7 +310,7 @@ module TestBind =
 
             // A non-zero one: Linux refuses, Darwin binds it.
             let answer =
-                UnixSocket.bind fd UserBuffer.Mapped exactLength (Some 0) (Some (loopback 5000us)) system
+                CopyIn.bind fd UserBuffer.Mapped exactLength (CopyIn.blob platform 0 (loopback 5000us)) system
 
             match SimulatedUnixPlatform.flavour platform, answer with
             | SimulatedUnixFlavour.Linux, Ok (BindAnswer.Failed UnixError.EAFNOSUPPORT, _) -> ()
@@ -363,12 +362,11 @@ module TestBind =
             let fd, system = stream platform
             let _, system = bound fd (loopback 5000us) system
 
-            UnixSocket.bind
+            CopyIn.bind
                 fd
                 UserBuffer.Mapped
                 exactLength
-                (Some inetFamily)
-                (Some (InternetEndpoint.ofParts multicast 5000us))
+                (CopyIn.inet platform (InternetEndpoint.ofParts multicast 5000us))
                 system
 
         match attempt SimulatedUnixPlatform.linuxX64 with
@@ -390,13 +388,13 @@ module TestBind =
     let ``bind leaves SO_REUSEADDR as it found it`` (platform : SimulatedUnixPlatform) : unit =
         let attempts =
             [
-                UserBuffer.Mapped, Some inetFamily, Some (loopback 5000us), true
-                UserBuffer.Mapped, Some inetFamily, Some (loopback 1023us), false
-                UserBuffer.Unmapped 4096UL, None, None, false
+                UserBuffer.Mapped, loopback 5000us, true
+                UserBuffer.Mapped, loopback 1023us, false
+                UserBuffer.Unmapped 4096UL, loopback 5000us, false
             ]
 
         for reuse in [ false ; true ] do
-            for destination, family, endpoint, succeeds in attempts do
+            for destination, endpoint, succeeds in attempts do
                 let fd, system =
                     withSocket
                         (SocketId 0L)
@@ -405,7 +403,7 @@ module TestBind =
                         }
                         (systemOn platform)
 
-                match UnixSocket.bind fd destination exactLength family endpoint system with
+                match CopyIn.bind fd destination exactLength (CopyIn.inet platform endpoint) system with
                 | Ok (answer, after) ->
                     (match answer with
                      | BindAnswer.Bound _ -> true
@@ -427,12 +425,11 @@ module TestBind =
         let fd, system = stream platform
         let multicast = 0xE0000001u
 
-        UnixSocket.bind
+        CopyIn.bind
             fd
             UserBuffer.Mapped
             exactLength
-            (Some inetFamily)
-            (Some (InternetEndpoint.ofParts multicast 5000us))
+            (CopyIn.inet platform (InternetEndpoint.ofParts multicast 5000us))
             system
         |> shouldEqual (Error (BindRefusal.UnmodelledMulticast (SocketId 0L, multicast)))
 
@@ -460,18 +457,19 @@ module TestBind =
         let fd, system =
             withSocket (SocketId 0L) (socketOfKind SocketKind.Stream SocketPhase.Idle) system
 
-        UnixSocket.bind fd UserBuffer.Mapped exactLength (Some inetFamily) (Some (loopback 0us)) system
+        CopyIn.bind fd UserBuffer.Mapped exactLength (CopyIn.inet SimulatedUnixPlatform.linuxX64 (loopback 0us)) system
         |> shouldEqual (Error (BindRefusal.EphemeralPortsExhausted (40000us, 40000us)))
 
-    /// The field-consistency contract `connect` states, restated because `bind`
-    /// is a second caller of it and a wrong set here is just as silent.
+    /// The byte-count contract `connect` states, restated because `bind` is a
+    /// second caller of it and a short copy here is just as silent.
     [<TestCaseSource(nameof platforms)>]
-    let ``supplying fields the admission did not ask for is a caller bug`` (platform : SimulatedUnixPlatform) : unit =
+    let ``passing fewer bytes than the copy takes is a caller bug`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = stream platform
 
         let e =
             Assert.Throws<exn> (fun () ->
-                UnixSocket.bind fd UserBuffer.Mapped exactLength None None system |> ignore<_>
+                UnixSocket.bind fd UserBuffer.Mapped exactLength ImmutableArray.Empty system
+                |> ignore<_>
             )
 
-        e.Message |> shouldContainText "have different measured answers"
+        e.Message |> shouldContainText "have different answers"

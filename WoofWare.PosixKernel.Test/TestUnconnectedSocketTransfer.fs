@@ -290,7 +290,9 @@ module TestUnconnectedSocketTransfer =
             NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
 
         let connectTo (endpoint : InternetEndpoint) (family : int) (system : UnixSystem<int, string>) =
-            match UnixConnection.connect fd UserBuffer.Mapped 16u (Some family) (Some endpoint) system with
+            match
+                CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.blob system.Machine.UnixPlatform family endpoint) system
+            with
             | Ok (ConnectOutcome.Completed, system) -> system
             | other -> failwith $"connect did not complete: %A{other}"
 
@@ -299,13 +301,7 @@ module TestUnconnectedSocketTransfer =
 
         let system =
             match
-                UnixSocket.bind
-                    fd
-                    UserBuffer.Mapped
-                    16u
-                    (Some SimulatedUnixPlatform.internetAddressFamily)
-                    (Some (loopbackAt 0us))
-                    system
+                CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet system.Machine.UnixPlatform (loopbackAt 0us)) system
             with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"bind failed: %A{other}"
@@ -319,7 +315,17 @@ module TestUnconnectedSocketTransfer =
         // The `AF_UNSPEC` connect, whose sockaddr carries a family and no
         // endpoint.
         let system =
-            match UnixConnection.connectSocket socketId false 16u (Some 0) None system with
+            match
+                UnixConnection.connectSocket
+                    socketId
+                    false
+                    16u
+                    (CopyIn.mapped
+                        (UnixSystem.platform system)
+                        16u
+                        (CopyIn.blob (UnixSystem.platform system) 0 (InternetEndpoint.ofParts 0u 0us)))
+                    system
+            with
             | Ok (ConnectOutcome.Completed, system) -> system
             | other -> failwith $"the dissolve did not complete: %A{other}"
 
@@ -378,12 +384,11 @@ module TestUnconnectedSocketTransfer =
             | SocketDomain.Unix -> None
             | SocketDomain.Inet ->
                 match
-                    UnixSocket.bind
+                    CopyIn.bind
                         fd
                         UserBuffer.Mapped
                         16u
-                        (Some SimulatedUnixPlatform.internetAddressFamily)
-                        (Some loopbackAnyPort)
+                        (CopyIn.inet system.Machine.UnixPlatform loopbackAnyPort)
                         system
                 with
                 | Ok (BindAnswer.Bound _, system) -> Some system

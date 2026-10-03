@@ -1,6 +1,7 @@
 namespace WoofWare.PosixKernel
 
 open System.Buffers.Binary
+open System.Collections.Immutable
 
 /// Why a string is not usable as a `utsname.release`.
 [<RequireQualifiedAccess>]
@@ -1180,6 +1181,109 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> 4
         | SimulatedUnixFlavour.Darwin -> 0x1007
 
+    /// Whether a multi-byte integer the process stores — `sa_family` in a
+    /// `struct sockaddr`, a socket option's `int` — has its least significant
+    /// byte first.
+    ///
+    /// Both architectures this library models are little-endian; the match is
+    /// here so that one which is not must say so.
+    let private machineIsLittleEndian (platform : SimulatedUnixPlatform) : bool =
+        match architecture platform with
+        | SimulatedUnixArchitecture.X64
+        | SimulatedUnixArchitecture.Arm64 -> true
+
+    /// `sa_family`, in this platform's own `AF_*` numbering, from the bytes of
+    /// the family field `sockaddrFamilyField` places: as many as it is wide, in
+    /// the machine's own byte order.
+    ///
+    /// Any other number of bytes is not a family field, and is refused.
+    let decodeSockaddrFamily (platform : SimulatedUnixPlatform) (field : ImmutableArray<byte>) : int =
+        let width = SockaddrFamilyField.width (sockaddrFamilyField platform)
+
+        if field.IsDefault || field.Length <> width then
+            failwith
+                $"SimulatedUnixPlatform.decodeSockaddrFamily: this platform's family field is %d{width} bytes wide, and the caller passed %d{(if field.IsDefault then 0 else field.Length)} (this is a bug in the caller)."
+
+        match width with
+        | 1 -> int field.[0]
+        | _ ->
+            if machineIsLittleEndian platform then
+                int (BinaryPrimitives.ReadUInt16LittleEndian (field.AsSpan ()))
+            else
+                int (BinaryPrimitives.ReadUInt16BigEndian (field.AsSpan ()))
+
+    /// The bytes of this platform's family field holding `family`, to be stored
+    /// at `SockaddrFamilyField.offset`: in the machine's own byte order, and
+    /// truncated to the field's width exactly as a C assignment through a
+    /// `sa_family_t` truncates.
+    let encodeSockaddrFamily (platform : SimulatedUnixPlatform) (family : int) : byte[] =
+        match SockaddrFamilyField.width (sockaddrFamilyField platform) with
+        | 1 -> [| byte family |]
+        | width ->
+            let bytes = Array.zeroCreate<byte> width
+
+            if machineIsLittleEndian platform then
+                BinaryPrimitives.WriteUInt16LittleEndian (System.Span<byte> bytes, uint16 family)
+            else
+                BinaryPrimitives.WriteUInt16BigEndian (System.Span<byte> bytes, uint16 family)
+
+            bytes
+
+    /// What `copied`, every byte a `bind(2)` or `connect(2)` copied in, says
+    /// when read as this platform's `struct sockaddr_in`.
+    ///
+    /// A field is present exactly when the copy reached all of it. Nothing else
+    /// is read: measured on both flavours (`sockaddr-decoding.c`), neither kernel
+    /// looks at `sin_zero` or at any byte past it, and Darwin ignores the
+    /// `sa_len` byte, every one of its 256 values answering as the length
+    /// argument says.
+    let internal decodeInternetSockaddr
+        (platform : SimulatedUnixPlatform)
+        (copied : ImmutableArray<byte>)
+        : CopiedInternetSockaddr
+        =
+        if copied.IsDefault then
+            failwith
+                "SimulatedUnixPlatform.decodeInternetSockaddr: copied is the default ImmutableArray, whose underlying array is null. That is not an empty copy; pass ImmutableArray<byte>.Empty."
+
+        let family =
+            let field = sockaddrFamilyField platform
+
+            if SockaddrFamilyField.reachedBy field copied.Length then
+                Some (
+                    decodeSockaddrFamily
+                        platform
+                        (copied.Slice (SockaddrFamilyField.offset field, SockaddrFamilyField.width field))
+                )
+            else
+                None
+
+        let endpoint =
+            if
+                SockaddrField.reachedBy InternetSockaddr.port copied.Length
+                && SockaddrField.reachedBy InternetSockaddr.address copied.Length
+            then
+                let span = copied.AsSpan ()
+
+                let port =
+                    BinaryPrimitives.ReadUInt16BigEndian (
+                        span.Slice (InternetSockaddr.port.Offset, InternetSockaddr.port.Width)
+                    )
+
+                let address =
+                    BinaryPrimitives.ReadUInt32BigEndian (
+                        span.Slice (InternetSockaddr.address.Offset, InternetSockaddr.address.Width)
+                    )
+
+                Some (InternetEndpoint.ofParts address port)
+            else
+                None
+
+        {
+            Family = family
+            Endpoint = endpoint
+        }
+
     /// `struct sockaddr_in` for `endpoint`, as this platform's kernel copies one
     /// out: the family, the port and the address, and on the flavours that have
     /// the field, the `sa_len` byte in front of them.
@@ -1209,18 +1313,14 @@ module SimulatedUnixPlatform =
         )
 
         let field = sockaddrFamilyField platform
-        let familyOffset = SockaddrFamilyField.offset field
+        let familyBytes = encodeSockaddrFamily platform internetAddressFamily
+        familyBytes.CopyTo (blob, SockaddrFamilyField.offset field)
 
-        match SockaddrFamilyField.width field with
-        | 1 ->
-            blob.[familyOffset] <- byte internetAddressFamily
+        match field with
+        | SockaddrFamilyField.OneByteAtOffsetOne ->
             // Written only on the flavour that has the field -- on Linux those
             // two bytes are the family itself.
             blob.[0] <- byte realLength
-        | _ ->
-            BinaryPrimitives.WriteUInt16LittleEndian (
-                System.Span<byte> (blob, familyOffset, 2),
-                uint16 internetAddressFamily
-            )
+        | SockaddrFamilyField.TwoBytesAtOffsetZero -> ()
 
         blob
