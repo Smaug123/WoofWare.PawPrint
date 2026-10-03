@@ -313,7 +313,9 @@ module WakeCondition =
                 && (FileDescriptorRegistry.descriptions system.Process.FileDescriptors).[writer].NonBlocking
         | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
         | WakePrimitive.SignalDeliverable -> SyscallInterruption.wakes task system
-        | WakePrimitive.EndedByClose -> endedByClose task system
+        // `satisfied` answers a call a close has ended before it asks any
+        // primitive, so this is asked only of one no close has ended.
+        | WakePrimitive.EndedByClose -> false
 
     /// The primitives of `condition`, the wake condition of `task`, which hold of
     /// `system`: empty exactly when the syscall that parked on it would get no

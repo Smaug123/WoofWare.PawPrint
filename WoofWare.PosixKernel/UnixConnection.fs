@@ -15,6 +15,9 @@ type AcceptOutcome =
     /// The call failed with this errno, and nothing about the listener changed.
     /// The accept queue in particular is untouched: measured on both flavours,
     /// a failed `accept` leaves a queued connection queued.
+    ///
+    /// Answered by `finishAccept`, the task is no longer parked in the system
+    /// this rides with.
     | Failed of error : UnixError
     /// A connection was dequeued and a socket materialised onto it. `fd` is the
     /// descriptor that socket is open on.

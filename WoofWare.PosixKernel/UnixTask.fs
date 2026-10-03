@@ -342,6 +342,10 @@ module ParkedSyscall =
     /// real syscall holds a reference to each file it found: each stays alive
     /// until the call returns, whatever descriptors are closed meanwhile.
     ///
+    /// An accept or pipe transfer a Darwin close has ended
+    /// (`SleepTarget.EndedByClose`) holds none: it returned, as far as the
+    /// kernel is concerned, before the close did.
+    ///
     /// A Linux `poll` holds every description it watches, as Linux's holds each
     /// file whose wait queue it sleeps on; a Darwin one holds none.
     let descriptions (parked : ParkedSyscall) : OpenFileDescriptionId list =
