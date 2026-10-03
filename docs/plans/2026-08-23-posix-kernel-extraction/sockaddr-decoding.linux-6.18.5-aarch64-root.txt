@@ -1,0 +1,431 @@
+# Linux 6.18.5 aarch64
+# refused port 36501, datagram peer port 48129
+F bind/stream    len=0   family 0..300 (0x0000..0x012c): EINVAL
+F bind/stream    len=0   family 512..512 (0x0200..0x0200): EINVAL
+F bind/stream    len=0   family 514..514 (0x0202..0x0202): EINVAL
+F bind/stream    len=0   family 770..770 (0x0302..0x0302): EINVAL
+F bind/stream    len=0   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/stream    len=0   family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/stream    len=0   family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/stream    len=0   family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/stream    len=1   family 0..300 (0x0000..0x012c): EINVAL
+F bind/stream    len=1   family 512..512 (0x0200..0x0200): EINVAL
+F bind/stream    len=1   family 514..514 (0x0202..0x0202): EINVAL
+F bind/stream    len=1   family 770..770 (0x0302..0x0302): EINVAL
+F bind/stream    len=1   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/stream    len=1   family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/stream    len=1   family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/stream    len=1   family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/stream    len=2   family 0..300 (0x0000..0x012c): EINVAL
+F bind/stream    len=2   family 512..512 (0x0200..0x0200): EINVAL
+F bind/stream    len=2   family 514..514 (0x0202..0x0202): EINVAL
+F bind/stream    len=2   family 770..770 (0x0302..0x0302): EINVAL
+F bind/stream    len=2   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/stream    len=2   family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/stream    len=2   family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/stream    len=2   family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/stream    len=8   family 0..300 (0x0000..0x012c): EINVAL
+F bind/stream    len=8   family 512..512 (0x0200..0x0200): EINVAL
+F bind/stream    len=8   family 514..514 (0x0202..0x0202): EINVAL
+F bind/stream    len=8   family 770..770 (0x0302..0x0302): EINVAL
+F bind/stream    len=8   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/stream    len=8   family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/stream    len=8   family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/stream    len=8   family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/stream    len=15  family 0..300 (0x0000..0x012c): EINVAL
+F bind/stream    len=15  family 512..512 (0x0200..0x0200): EINVAL
+F bind/stream    len=15  family 514..514 (0x0202..0x0202): EINVAL
+F bind/stream    len=15  family 770..770 (0x0302..0x0302): EINVAL
+F bind/stream    len=15  family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/stream    len=15  family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/stream    len=15  family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/stream    len=15  family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/stream    len=16  family 0..1 (0x0000..0x0001): EAFNOSUPPORT
+F bind/stream    len=16  family 2..2 (0x0002..0x0002): OK
+F bind/stream    len=16  family 3..65535 (0x0003..0xffff): EAFNOSUPPORT
+F bind/stream    len=17  family 0..1 (0x0000..0x0001): EAFNOSUPPORT
+F bind/stream    len=17  family 2..2 (0x0002..0x0002): OK
+F bind/stream    len=17  family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F bind/stream    len=17  family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F bind/stream    len=17  family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F bind/stream    len=17  family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F bind/stream    len=17  family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F bind/stream    len=17  family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F bind/stream    len=17  family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F bind/stream    len=17  family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F bind/stream    len=28  family 0..1 (0x0000..0x0001): EAFNOSUPPORT
+F bind/stream    len=28  family 2..2 (0x0002..0x0002): OK
+F bind/stream    len=28  family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F bind/stream    len=28  family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F bind/stream    len=28  family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F bind/stream    len=28  family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F bind/stream    len=28  family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F bind/stream    len=28  family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F bind/stream    len=28  family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F bind/stream    len=28  family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F bind/stream    len=128 family 0..1 (0x0000..0x0001): EAFNOSUPPORT
+F bind/stream    len=128 family 2..2 (0x0002..0x0002): OK
+F bind/stream    len=128 family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F bind/stream    len=128 family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F bind/stream    len=128 family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F bind/stream    len=128 family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F bind/stream    len=128 family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F bind/stream    len=128 family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F bind/stream    len=128 family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F bind/stream    len=128 family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F bind/dgram     len=0   family 0..300 (0x0000..0x012c): EINVAL
+F bind/dgram     len=0   family 512..512 (0x0200..0x0200): EINVAL
+F bind/dgram     len=0   family 514..514 (0x0202..0x0202): EINVAL
+F bind/dgram     len=0   family 770..770 (0x0302..0x0302): EINVAL
+F bind/dgram     len=0   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/dgram     len=0   family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/dgram     len=0   family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/dgram     len=0   family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/dgram     len=1   family 0..300 (0x0000..0x012c): EINVAL
+F bind/dgram     len=1   family 512..512 (0x0200..0x0200): EINVAL
+F bind/dgram     len=1   family 514..514 (0x0202..0x0202): EINVAL
+F bind/dgram     len=1   family 770..770 (0x0302..0x0302): EINVAL
+F bind/dgram     len=1   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/dgram     len=1   family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/dgram     len=1   family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/dgram     len=1   family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/dgram     len=2   family 0..300 (0x0000..0x012c): EINVAL
+F bind/dgram     len=2   family 512..512 (0x0200..0x0200): EINVAL
+F bind/dgram     len=2   family 514..514 (0x0202..0x0202): EINVAL
+F bind/dgram     len=2   family 770..770 (0x0302..0x0302): EINVAL
+F bind/dgram     len=2   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/dgram     len=2   family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/dgram     len=2   family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/dgram     len=2   family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/dgram     len=8   family 0..300 (0x0000..0x012c): EINVAL
+F bind/dgram     len=8   family 512..512 (0x0200..0x0200): EINVAL
+F bind/dgram     len=8   family 514..514 (0x0202..0x0202): EINVAL
+F bind/dgram     len=8   family 770..770 (0x0302..0x0302): EINVAL
+F bind/dgram     len=8   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/dgram     len=8   family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/dgram     len=8   family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/dgram     len=8   family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/dgram     len=15  family 0..300 (0x0000..0x012c): EINVAL
+F bind/dgram     len=15  family 512..512 (0x0200..0x0200): EINVAL
+F bind/dgram     len=15  family 514..514 (0x0202..0x0202): EINVAL
+F bind/dgram     len=15  family 770..770 (0x0302..0x0302): EINVAL
+F bind/dgram     len=15  family 2562..2562 (0x0a02..0x0a02): EINVAL
+F bind/dgram     len=15  family 32770..32770 (0x8002..0x8002): EINVAL
+F bind/dgram     len=15  family 65282..65282 (0xff02..0xff02): EINVAL
+F bind/dgram     len=15  family 65534..65535 (0xfffe..0xffff): EINVAL
+F bind/dgram     len=16  family 0..1 (0x0000..0x0001): EAFNOSUPPORT
+F bind/dgram     len=16  family 2..2 (0x0002..0x0002): OK
+F bind/dgram     len=16  family 3..65535 (0x0003..0xffff): EAFNOSUPPORT
+F bind/dgram     len=17  family 0..1 (0x0000..0x0001): EAFNOSUPPORT
+F bind/dgram     len=17  family 2..2 (0x0002..0x0002): OK
+F bind/dgram     len=17  family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F bind/dgram     len=17  family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F bind/dgram     len=17  family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F bind/dgram     len=17  family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F bind/dgram     len=17  family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F bind/dgram     len=17  family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F bind/dgram     len=17  family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F bind/dgram     len=17  family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F bind/dgram     len=28  family 0..1 (0x0000..0x0001): EAFNOSUPPORT
+F bind/dgram     len=28  family 2..2 (0x0002..0x0002): OK
+F bind/dgram     len=28  family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F bind/dgram     len=28  family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F bind/dgram     len=28  family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F bind/dgram     len=28  family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F bind/dgram     len=28  family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F bind/dgram     len=28  family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F bind/dgram     len=28  family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F bind/dgram     len=28  family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F bind/dgram     len=128 family 0..1 (0x0000..0x0001): EAFNOSUPPORT
+F bind/dgram     len=128 family 2..2 (0x0002..0x0002): OK
+F bind/dgram     len=128 family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F bind/dgram     len=128 family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F bind/dgram     len=128 family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F bind/dgram     len=128 family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F bind/dgram     len=128 family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F bind/dgram     len=128 family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F bind/dgram     len=128 family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F bind/dgram     len=128 family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F connect/stream len=0   family 0..300 (0x0000..0x012c): EINVAL
+F connect/stream len=0   family 512..512 (0x0200..0x0200): EINVAL
+F connect/stream len=0   family 514..514 (0x0202..0x0202): EINVAL
+F connect/stream len=0   family 770..770 (0x0302..0x0302): EINVAL
+F connect/stream len=0   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/stream len=0   family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/stream len=0   family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/stream len=0   family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/stream len=1   family 0..300 (0x0000..0x012c): EINVAL
+F connect/stream len=1   family 512..512 (0x0200..0x0200): EINVAL
+F connect/stream len=1   family 514..514 (0x0202..0x0202): EINVAL
+F connect/stream len=1   family 770..770 (0x0302..0x0302): EINVAL
+F connect/stream len=1   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/stream len=1   family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/stream len=1   family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/stream len=1   family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/stream len=2   family 0..0 (0x0000..0x0000): OK
+F connect/stream len=2   family 1..300 (0x0001..0x012c): EINVAL
+F connect/stream len=2   family 512..512 (0x0200..0x0200): EINVAL
+F connect/stream len=2   family 514..514 (0x0202..0x0202): EINVAL
+F connect/stream len=2   family 770..770 (0x0302..0x0302): EINVAL
+F connect/stream len=2   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/stream len=2   family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/stream len=2   family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/stream len=2   family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/stream len=8   family 0..0 (0x0000..0x0000): OK
+F connect/stream len=8   family 1..300 (0x0001..0x012c): EINVAL
+F connect/stream len=8   family 512..512 (0x0200..0x0200): EINVAL
+F connect/stream len=8   family 514..514 (0x0202..0x0202): EINVAL
+F connect/stream len=8   family 770..770 (0x0302..0x0302): EINVAL
+F connect/stream len=8   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/stream len=8   family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/stream len=8   family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/stream len=8   family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/stream len=15  family 0..0 (0x0000..0x0000): OK
+F connect/stream len=15  family 1..300 (0x0001..0x012c): EINVAL
+F connect/stream len=15  family 512..512 (0x0200..0x0200): EINVAL
+F connect/stream len=15  family 514..514 (0x0202..0x0202): EINVAL
+F connect/stream len=15  family 770..770 (0x0302..0x0302): EINVAL
+F connect/stream len=15  family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/stream len=15  family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/stream len=15  family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/stream len=15  family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/stream len=16  family 0..0 (0x0000..0x0000): OK
+F connect/stream len=16  family 1..1 (0x0001..0x0001): EAFNOSUPPORT
+F connect/stream len=16  family 2..2 (0x0002..0x0002): ECONNREFUSED
+F connect/stream len=16  family 3..65535 (0x0003..0xffff): EAFNOSUPPORT
+F connect/stream len=17  family 0..0 (0x0000..0x0000): OK
+F connect/stream len=17  family 1..1 (0x0001..0x0001): EAFNOSUPPORT
+F connect/stream len=17  family 2..2 (0x0002..0x0002): ECONNREFUSED
+F connect/stream len=17  family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F connect/stream len=17  family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F connect/stream len=17  family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F connect/stream len=17  family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F connect/stream len=17  family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F connect/stream len=17  family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F connect/stream len=17  family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F connect/stream len=17  family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F connect/stream len=28  family 0..0 (0x0000..0x0000): OK
+F connect/stream len=28  family 1..1 (0x0001..0x0001): EAFNOSUPPORT
+F connect/stream len=28  family 2..2 (0x0002..0x0002): ECONNREFUSED
+F connect/stream len=28  family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F connect/stream len=28  family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F connect/stream len=28  family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F connect/stream len=28  family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F connect/stream len=28  family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F connect/stream len=28  family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F connect/stream len=28  family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F connect/stream len=28  family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F connect/stream len=128 family 0..0 (0x0000..0x0000): OK
+F connect/stream len=128 family 1..1 (0x0001..0x0001): EAFNOSUPPORT
+F connect/stream len=128 family 2..2 (0x0002..0x0002): ECONNREFUSED
+F connect/stream len=128 family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F connect/stream len=128 family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F connect/stream len=128 family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F connect/stream len=128 family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F connect/stream len=128 family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F connect/stream len=128 family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F connect/stream len=128 family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F connect/stream len=128 family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F connect/dgram  len=0   family 0..300 (0x0000..0x012c): EINVAL
+F connect/dgram  len=0   family 512..512 (0x0200..0x0200): EINVAL
+F connect/dgram  len=0   family 514..514 (0x0202..0x0202): EINVAL
+F connect/dgram  len=0   family 770..770 (0x0302..0x0302): EINVAL
+F connect/dgram  len=0   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/dgram  len=0   family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/dgram  len=0   family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/dgram  len=0   family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/dgram  len=1   family 0..300 (0x0000..0x012c): EINVAL
+F connect/dgram  len=1   family 512..512 (0x0200..0x0200): EINVAL
+F connect/dgram  len=1   family 514..514 (0x0202..0x0202): EINVAL
+F connect/dgram  len=1   family 770..770 (0x0302..0x0302): EINVAL
+F connect/dgram  len=1   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/dgram  len=1   family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/dgram  len=1   family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/dgram  len=1   family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/dgram  len=2   family 0..0 (0x0000..0x0000): OK
+F connect/dgram  len=2   family 1..300 (0x0001..0x012c): EINVAL
+F connect/dgram  len=2   family 512..512 (0x0200..0x0200): EINVAL
+F connect/dgram  len=2   family 514..514 (0x0202..0x0202): EINVAL
+F connect/dgram  len=2   family 770..770 (0x0302..0x0302): EINVAL
+F connect/dgram  len=2   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/dgram  len=2   family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/dgram  len=2   family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/dgram  len=2   family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/dgram  len=8   family 0..0 (0x0000..0x0000): OK
+F connect/dgram  len=8   family 1..300 (0x0001..0x012c): EINVAL
+F connect/dgram  len=8   family 512..512 (0x0200..0x0200): EINVAL
+F connect/dgram  len=8   family 514..514 (0x0202..0x0202): EINVAL
+F connect/dgram  len=8   family 770..770 (0x0302..0x0302): EINVAL
+F connect/dgram  len=8   family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/dgram  len=8   family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/dgram  len=8   family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/dgram  len=8   family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/dgram  len=15  family 0..0 (0x0000..0x0000): OK
+F connect/dgram  len=15  family 1..300 (0x0001..0x012c): EINVAL
+F connect/dgram  len=15  family 512..512 (0x0200..0x0200): EINVAL
+F connect/dgram  len=15  family 514..514 (0x0202..0x0202): EINVAL
+F connect/dgram  len=15  family 770..770 (0x0302..0x0302): EINVAL
+F connect/dgram  len=15  family 2562..2562 (0x0a02..0x0a02): EINVAL
+F connect/dgram  len=15  family 32770..32770 (0x8002..0x8002): EINVAL
+F connect/dgram  len=15  family 65282..65282 (0xff02..0xff02): EINVAL
+F connect/dgram  len=15  family 65534..65535 (0xfffe..0xffff): EINVAL
+F connect/dgram  len=16  family 0..0 (0x0000..0x0000): OK
+F connect/dgram  len=16  family 1..1 (0x0001..0x0001): EAFNOSUPPORT
+F connect/dgram  len=16  family 2..2 (0x0002..0x0002): OK
+F connect/dgram  len=16  family 3..65535 (0x0003..0xffff): EAFNOSUPPORT
+F connect/dgram  len=17  family 0..0 (0x0000..0x0000): OK
+F connect/dgram  len=17  family 1..1 (0x0001..0x0001): EAFNOSUPPORT
+F connect/dgram  len=17  family 2..2 (0x0002..0x0002): OK
+F connect/dgram  len=17  family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F connect/dgram  len=17  family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F connect/dgram  len=17  family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F connect/dgram  len=17  family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F connect/dgram  len=17  family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F connect/dgram  len=17  family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F connect/dgram  len=17  family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F connect/dgram  len=17  family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F connect/dgram  len=28  family 0..0 (0x0000..0x0000): OK
+F connect/dgram  len=28  family 1..1 (0x0001..0x0001): EAFNOSUPPORT
+F connect/dgram  len=28  family 2..2 (0x0002..0x0002): OK
+F connect/dgram  len=28  family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F connect/dgram  len=28  family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F connect/dgram  len=28  family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F connect/dgram  len=28  family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F connect/dgram  len=28  family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F connect/dgram  len=28  family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F connect/dgram  len=28  family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F connect/dgram  len=28  family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+F connect/dgram  len=128 family 0..0 (0x0000..0x0000): OK
+F connect/dgram  len=128 family 1..1 (0x0001..0x0001): EAFNOSUPPORT
+F connect/dgram  len=128 family 2..2 (0x0002..0x0002): OK
+F connect/dgram  len=128 family 3..300 (0x0003..0x012c): EAFNOSUPPORT
+F connect/dgram  len=128 family 512..512 (0x0200..0x0200): EAFNOSUPPORT
+F connect/dgram  len=128 family 514..514 (0x0202..0x0202): EAFNOSUPPORT
+F connect/dgram  len=128 family 770..770 (0x0302..0x0302): EAFNOSUPPORT
+F connect/dgram  len=128 family 2562..2562 (0x0a02..0x0a02): EAFNOSUPPORT
+F connect/dgram  len=128 family 32770..32770 (0x8002..0x8002): EAFNOSUPPORT
+F connect/dgram  len=128 family 65282..65282 (0xff02..0xff02): EAFNOSUPPORT
+F connect/dgram  len=128 family 65534..65535 (0xfffe..0xffff): EAFNOSUPPORT
+Z bind 127.0.0.1:0       zero       OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         zero       OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 zero       OK local=127.0.0.1:nonzero
+Z connect listener       zero       OK local=127.0.0.1:nonzero
+Z connect/dgram          zero       OK local=127.0.0.1:nonzero
+Z bind 127.0.0.1:0       all-ff     OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         all-ff     OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 all-ff     OK local=127.0.0.1:nonzero
+Z connect listener       all-ff     OK local=127.0.0.1:nonzero
+Z connect/dgram          all-ff     OK local=127.0.0.1:nonzero
+Z bind 127.0.0.1:0       byte8=1    OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         byte8=1    OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 byte8=1    OK local=127.0.0.1:nonzero
+Z connect listener       byte8=1    OK local=127.0.0.1:nonzero
+Z connect/dgram          byte8=1    OK local=127.0.0.1:nonzero
+Z bind 127.0.0.1:0       byte9=1    OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         byte9=1    OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 byte9=1    OK local=127.0.0.1:nonzero
+Z connect listener       byte9=1    OK local=127.0.0.1:nonzero
+Z connect/dgram          byte9=1    OK local=127.0.0.1:nonzero
+Z bind 127.0.0.1:0       byte10=1   OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         byte10=1   OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 byte10=1   OK local=127.0.0.1:nonzero
+Z connect listener       byte10=1   OK local=127.0.0.1:nonzero
+Z connect/dgram          byte10=1   OK local=127.0.0.1:nonzero
+Z bind 127.0.0.1:0       byte11=1   OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         byte11=1   OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 byte11=1   OK local=127.0.0.1:nonzero
+Z connect listener       byte11=1   OK local=127.0.0.1:nonzero
+Z connect/dgram          byte11=1   OK local=127.0.0.1:nonzero
+Z bind 127.0.0.1:0       byte12=1   OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         byte12=1   OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 byte12=1   OK local=127.0.0.1:nonzero
+Z connect listener       byte12=1   OK local=127.0.0.1:nonzero
+Z connect/dgram          byte12=1   OK local=127.0.0.1:nonzero
+Z bind 127.0.0.1:0       byte13=1   OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         byte13=1   OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 byte13=1   OK local=127.0.0.1:nonzero
+Z connect listener       byte13=1   OK local=127.0.0.1:nonzero
+Z connect/dgram          byte13=1   OK local=127.0.0.1:nonzero
+Z bind 127.0.0.1:0       byte14=1   OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         byte14=1   OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 byte14=1   OK local=127.0.0.1:nonzero
+Z connect listener       byte14=1   OK local=127.0.0.1:nonzero
+Z connect/dgram          byte14=1   OK local=127.0.0.1:nonzero
+Z bind 127.0.0.1:0       byte15=1   OK local=127.0.0.1:nonzero
+Z bind 0.0.0.0:0         byte15=1   OK local=0.0.0.0:nonzero
+Z bind/dgram 127.0.0.1:0 byte15=1   OK local=127.0.0.1:nonzero
+Z connect listener       byte15=1   OK local=127.0.0.1:nonzero
+Z connect/dgram          byte15=1   OK local=127.0.0.1:nonzero
+D stream AF_INET6(10) 127.0.0.1    EAFNOSUPPORT
+D stream AF_INET6(10) 0.0.0.0      EAFNOSUPPORT
+D stream AF_INET6(10) 8.8.8.8      EAFNOSUPPORT
+D dgram AF_INET6(10) 127.0.0.1     EAFNOSUPPORT
+D dgram AF_INET6(10) 0.0.0.0       EAFNOSUPPORT
+D dgram AF_INET6(10) 8.8.8.8       EAFNOSUPPORT
+X bind/stream    len 17..128, bytes 16.. = 0xff: OK
+X bind/dgram     len 17..128, bytes 16.. = 0xff: OK
+X connect/stream len 17..128, bytes 16.. = 0xff: ECONNREFUSED
+X connect/dgram  len 17..128, bytes 16.. = 0xff: OK
+T getsockname declared=0  OK cell=16  bytes=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=0 prefix-of-full=yes
+T getpeername declared=0  OK cell=16  bytes=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=0 prefix-of-full=yes
+T getsockname declared=1  OK cell=16  bytes=02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=1 prefix-of-full=yes
+T getpeername declared=1  OK cell=16  bytes=02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=1 prefix-of-full=yes
+T getsockname declared=2  OK cell=16  bytes=0200aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=2 prefix-of-full=yes
+T getpeername declared=2  OK cell=16  bytes=0200aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=2 prefix-of-full=yes
+T getsockname declared=3  OK cell=16  bytes=0200aeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=3 prefix-of-full=yes
+T getpeername declared=3  OK cell=16  bytes=0200e9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=3 prefix-of-full=yes
+T getsockname declared=4  OK cell=16  bytes=0200ae78aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=4 prefix-of-full=yes
+T getpeername declared=4  OK cell=16  bytes=0200e9e3aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=4 prefix-of-full=yes
+T getsockname declared=5  OK cell=16  bytes=0200ae787faaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=5 prefix-of-full=yes
+T getpeername declared=5  OK cell=16  bytes=0200e9e37faaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=5 prefix-of-full=yes
+T getsockname declared=6  OK cell=16  bytes=0200ae787f00aaaaaaaaaaaaaaaaaaaaaaaaaaaa written=6 prefix-of-full=yes
+T getpeername declared=6  OK cell=16  bytes=0200e9e37f00aaaaaaaaaaaaaaaaaaaaaaaaaaaa written=6 prefix-of-full=yes
+T getsockname declared=7  OK cell=16  bytes=0200ae787f0000aaaaaaaaaaaaaaaaaaaaaaaaaa written=7 prefix-of-full=yes
+T getpeername declared=7  OK cell=16  bytes=0200e9e37f0000aaaaaaaaaaaaaaaaaaaaaaaaaa written=7 prefix-of-full=yes
+T getsockname declared=8  OK cell=16  bytes=0200ae787f000001aaaaaaaaaaaaaaaaaaaaaaaa written=8 prefix-of-full=yes
+T getpeername declared=8  OK cell=16  bytes=0200e9e37f000001aaaaaaaaaaaaaaaaaaaaaaaa written=8 prefix-of-full=yes
+T getsockname declared=9  OK cell=16  bytes=0200ae787f00000100aaaaaaaaaaaaaaaaaaaaaa written=9 prefix-of-full=yes
+T getpeername declared=9  OK cell=16  bytes=0200e9e37f00000100aaaaaaaaaaaaaaaaaaaaaa written=9 prefix-of-full=yes
+T getsockname declared=10 OK cell=16  bytes=0200ae787f0000010000aaaaaaaaaaaaaaaaaaaa written=10 prefix-of-full=yes
+T getpeername declared=10 OK cell=16  bytes=0200e9e37f0000010000aaaaaaaaaaaaaaaaaaaa written=10 prefix-of-full=yes
+T getsockname declared=11 OK cell=16  bytes=0200ae787f000001000000aaaaaaaaaaaaaaaaaa written=11 prefix-of-full=yes
+T getpeername declared=11 OK cell=16  bytes=0200e9e37f000001000000aaaaaaaaaaaaaaaaaa written=11 prefix-of-full=yes
+T getsockname declared=12 OK cell=16  bytes=0200ae787f00000100000000aaaaaaaaaaaaaaaa written=12 prefix-of-full=yes
+T getpeername declared=12 OK cell=16  bytes=0200e9e37f00000100000000aaaaaaaaaaaaaaaa written=12 prefix-of-full=yes
+T getsockname declared=13 OK cell=16  bytes=0200ae787f0000010000000000aaaaaaaaaaaaaa written=13 prefix-of-full=yes
+T getpeername declared=13 OK cell=16  bytes=0200e9e37f0000010000000000aaaaaaaaaaaaaa written=13 prefix-of-full=yes
+T getsockname declared=14 OK cell=16  bytes=0200ae787f000001000000000000aaaaaaaaaaaa written=14 prefix-of-full=yes
+T getpeername declared=14 OK cell=16  bytes=0200e9e37f000001000000000000aaaaaaaaaaaa written=14 prefix-of-full=yes
+T getsockname declared=15 OK cell=16  bytes=0200ae787f00000100000000000000aaaaaaaaaa written=15 prefix-of-full=yes
+T getpeername declared=15 OK cell=16  bytes=0200e9e37f00000100000000000000aaaaaaaaaa written=15 prefix-of-full=yes
+T getsockname declared=16 OK cell=16  bytes=0200ae787f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T getpeername declared=16 OK cell=16  bytes=0200e9e37f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T getsockname declared=17 OK cell=16  bytes=0200ae787f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T getpeername declared=17 OK cell=16  bytes=0200e9e37f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T getsockname declared=18 OK cell=16  bytes=0200ae787f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T getpeername declared=18 OK cell=16  bytes=0200e9e37f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T getsockname declared=19 OK cell=16  bytes=0200ae787f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T getpeername declared=19 OK cell=16  bytes=0200e9e37f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T getsockname declared=20 OK cell=16  bytes=0200ae787f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T getpeername declared=20 OK cell=16  bytes=0200e9e37f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T accept      declared=0  OK cell=16  bytes=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=0 prefix-of-full=yes
+T accept      declared=1  OK cell=16  bytes=02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=1 prefix-of-full=yes
+T accept      declared=2  OK cell=16  bytes=0200aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=2 prefix-of-full=yes
+T accept      declared=3  OK cell=16  bytes=0200aeaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=3 prefix-of-full=yes
+T accept      declared=4  OK cell=16  bytes=0200aea4aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=4 prefix-of-full=yes
+T accept      declared=5  OK cell=16  bytes=0200aeac7faaaaaaaaaaaaaaaaaaaaaaaaaaaaaa written=5 prefix-of-full=yes
+T accept      declared=6  OK cell=16  bytes=0200aeba7f00aaaaaaaaaaaaaaaaaaaaaaaaaaaa written=6 prefix-of-full=yes
+T accept      declared=7  OK cell=16  bytes=0200aec87f0000aaaaaaaaaaaaaaaaaaaaaaaaaa written=7 prefix-of-full=yes
+T accept      declared=8  OK cell=16  bytes=0200aed67f000001aaaaaaaaaaaaaaaaaaaaaaaa written=8 prefix-of-full=yes
+T accept      declared=9  OK cell=16  bytes=0200aede7f00000100aaaaaaaaaaaaaaaaaaaaaa written=9 prefix-of-full=yes
+T accept      declared=10 OK cell=16  bytes=0200aee47f0000010000aaaaaaaaaaaaaaaaaaaa written=10 prefix-of-full=yes
+T accept      declared=11 OK cell=16  bytes=0200aeee7f000001000000aaaaaaaaaaaaaaaaaa written=11 prefix-of-full=yes
+T accept      declared=12 OK cell=16  bytes=0200aefc7f00000100000000aaaaaaaaaaaaaaaa written=12 prefix-of-full=yes
+T accept      declared=13 OK cell=16  bytes=0200af0c7f0000010000000000aaaaaaaaaaaaaa written=13 prefix-of-full=yes
+T accept      declared=14 OK cell=16  bytes=0200af107f000001000000000000aaaaaaaaaaaa written=14 prefix-of-full=yes
+T accept      declared=15 OK cell=16  bytes=0200af1e7f00000100000000000000aaaaaaaaaa written=15 prefix-of-full=yes
+T accept      declared=16 OK cell=16  bytes=0200af2c7f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T accept      declared=17 OK cell=16  bytes=0200af367f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T accept      declared=18 OK cell=16  bytes=0200af3e7f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T accept      declared=19 OK cell=16  bytes=0200af4e7f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
+T accept      declared=20 OK cell=16  bytes=0200af587f0000010000000000000000aaaaaaaa written=16 prefix-of-full=yes
