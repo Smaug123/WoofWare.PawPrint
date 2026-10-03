@@ -165,6 +165,15 @@ type internal DispatchOutcome =
     /// The receiver's type does not decide what runs.
     | Undecided
 
+/// What the analysis is working out while it resolves what a call returns: a return that
+/// depends on one of these is only its declared type.
+[<RequireQualifiedAccess>]
+type internal Pending =
+    /// What an instance's `ret`s return.
+    | Return of MethodInstance
+    /// What the call at this offset of an instance returns.
+    | Call of MethodInstance * offset : int
+
 /// What one instance of a method calls, each at the IL offset of the call: the instances it
 /// reaches, what calls raise instead of reaching anything, and the calls whose target the instance
 /// does not decide.
@@ -2089,14 +2098,17 @@ module EscapeAnalysis =
                 | _ -> opaque, rethrows
             )
 
-        // What the body returns: the top of the stack at each `ret` a run can reach.
+        // What the body returns: the top of the stack at each `ret` a run can reach. A `jmp`
+        // returns whatever the method it transfers to does, which this does not follow.
         let returns =
             ((Some Set.empty), ops)
             ||> Array.fold (fun returned (op, offset) ->
                 match op, returned with
-                | IlOp.Nullary NullaryIlOp.Ret, Some returned when executed.Contains offset ->
+                | _ when not (executed.Contains offset) -> returned
+                | IlOp.Nullary NullaryIlOp.Ret, Some returned ->
                     objectsAt offset 0
                     |> Option.map (fun objects -> Set.union returned (Set.ofList objects))
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, _), _ -> None
                 | _ -> returned
             )
             |> Option.map StackValue.Objects
@@ -2615,11 +2627,10 @@ module EscapeAnalysis =
     /// The classes an object among `objects` may be of in `instance`, whose definition's facts are
     /// `facts`: each type, and whether the object's class is exactly it, rather than it or one
     /// derived from it. `None` where the instance does not decide them. `inProgress` holds the
-    /// instances whose returns are being worked out; a return that depends on one of them is its
-    /// declared type.
+    /// returns being worked out; a return that depends on one of them is its declared type.
     let rec private objectTypes
         (state : EscapeAnalysisState)
-        (inProgress : Set<MethodInstance>)
+        (inProgress : Set<Pending>)
         (instance : MethodInstance)
         (facts : LocalFacts)
         (objects : Set<SpelledObject>)
@@ -2663,12 +2674,19 @@ module EscapeAnalysis =
     /// returns. `None` where the call is not decided, or what one of those returns is not known.
     and private returnedBy
         (state : EscapeAnalysisState)
-        (inProgress : Set<MethodInstance>)
+        (inProgress : Set<Pending>)
         (instance : MethodInstance)
         (facts : LocalFacts)
         (call : int)
         : EscapeAnalysisState * (ConcreteTypeHandle * bool) list option
         =
+        let pending = Pending.Call (instance, call)
+
+        if inProgress.Contains pending then
+            state, None
+        else
+
+        let inProgress = Set.add pending inProgress
         let assembly = assemblyOf state instance.Definition.AssemblyFullName
 
         let reachedBy (outcomes : DispatchOutcome list) : MethodInstance list option =
@@ -2725,7 +2743,7 @@ module EscapeAnalysis =
     /// `receivers`, may be of; `None` where the instance does not decide those classes.
     and private virtualOutcomes
         (state : EscapeAnalysisState)
-        (inProgress : Set<MethodInstance>)
+        (inProgress : Set<Pending>)
         (instance : MethodInstance)
         (facts : LocalFacts)
         (receivers : Set<SpelledObject>)
@@ -2750,23 +2768,24 @@ module EscapeAnalysis =
 
     /// The classes of the objects `instance` returns, over every `ret` of its body: each type, and
     /// whether the object's class is exactly it. `None` where only its declared return type says,
-    /// which is also the answer for a return that depends on an instance in `inProgress`.
+    /// which is also the answer for a return that depends on one in `inProgress`.
     and private returnsOf
         (state : EscapeAnalysisState)
-        (inProgress : Set<MethodInstance>)
+        (inProgress : Set<Pending>)
         (instance : MethodInstance)
         : EscapeAnalysisState * (ConcreteTypeHandle * bool) list option
         =
         match state.Returns.TryFind instance with
         | Some known -> state, known
-        | None when inProgress.Contains instance -> state, None
+        | None when inProgress.Contains (Pending.Return instance) -> state, None
         | None ->
             let state, facts = factsFor state instance.Definition
 
             let state, types =
                 match facts.Returns with
                 | StackValue.Unknown -> state, None
-                | StackValue.Objects objects -> objectTypes state (Set.add instance inProgress) instance facts objects
+                | StackValue.Objects objects ->
+                    objectTypes state (Set.add (Pending.Return instance) inProgress) instance facts objects
 
             let types =
                 types |> Option.filter (fun types -> types.Length <= returnedClassesLimit)

@@ -3344,6 +3344,167 @@ public static class Runners
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
 
+    /// An image with two returns the analysis cannot follow, which no C# spells:
+    ///   - `Runners.Walk`: `newobj SealedNode; L: callvirt Node::Next; dup; brtrue L; pop`, a loop
+    ///     carrying a call's result back round, on the stack, as that same call's receiver;
+    ///   - `Runners.Jumps`: `jmp Factory`, which returns what `Factory` does (a `Divides`), with no
+    ///     `ret` of its own; `Runners.UseJump` calls `Probe` on what it returns.
+    let private fabricateLoops () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Loops", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Loops"
+
+        let virtualAttributes =
+            MethodAttributes.Public
+            ||| MethodAttributes.Virtual
+            ||| MethodAttributes.HideBySig
+            ||| MethodAttributes.NewSlot
+
+        let overrideAttributes =
+            MethodAttributes.Public
+            ||| MethodAttributes.Virtual
+            ||| MethodAttributes.HideBySig
+
+        let node =
+            modul.DefineType ("Loops.Node", TypeAttributes.Public ||| TypeAttributes.Class)
+
+        node.DefineDefaultConstructor MethodAttributes.Public
+        |> ignore<Emit.ConstructorBuilder>
+
+        let next = node.DefineMethod ("Next", virtualAttributes, node, [||])
+        let il = next.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldnull
+        il.Emit Emit.OpCodes.Ret
+        node.CreateType () |> ignore<Type>
+
+        let sealedNode =
+            modul.DefineType (
+                "Loops.SealedNode",
+                TypeAttributes.Public ||| TypeAttributes.Class ||| TypeAttributes.Sealed,
+                node
+            )
+
+        let sealedNodeConstructor =
+            sealedNode.DefineDefaultConstructor MethodAttributes.Public
+
+        let sealedNext = sealedNode.DefineMethod ("Next", overrideAttributes, node, [||])
+        let il = sealedNext.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldnull
+        il.Emit Emit.OpCodes.Ret
+        sealedNode.CreateType () |> ignore<Type>
+
+        let probeBase =
+            modul.DefineType ("Loops.Base", TypeAttributes.Public ||| TypeAttributes.Class)
+
+        probeBase.DefineDefaultConstructor MethodAttributes.Public
+        |> ignore<Emit.ConstructorBuilder>
+
+        let probe =
+            probeBase.DefineMethod ("Probe", virtualAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = probe.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldarg_1
+        il.Emit Emit.OpCodes.Ldarg_2
+        il.Emit Emit.OpCodes.Add
+        il.Emit Emit.OpCodes.Ret
+        probeBase.CreateType () |> ignore<Type>
+
+        let divides =
+            modul.DefineType ("Loops.Divides", TypeAttributes.Public ||| TypeAttributes.Class, probeBase)
+
+        let dividesConstructor = divides.DefineDefaultConstructor MethodAttributes.Public
+
+        let dividesProbe =
+            divides.DefineMethod ("Probe", overrideAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = dividesProbe.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldarg_1
+        il.Emit Emit.OpCodes.Ldarg_2
+        il.Emit Emit.OpCodes.Div
+        il.Emit Emit.OpCodes.Ret
+        divides.CreateType () |> ignore<Type>
+
+        let runners =
+            modul.DefineType (
+                "Loops.Runners",
+                TypeAttributes.Public
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+                ||| TypeAttributes.Class
+            )
+
+        let staticAttributes =
+            MethodAttributes.Public
+            ||| MethodAttributes.Static
+            ||| MethodAttributes.HideBySig
+
+        let walk =
+            runners.DefineMethod ("Walk", staticAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = walk.GetILGenerator ()
+        let loop = il.DefineLabel ()
+        il.Emit (Emit.OpCodes.Newobj, sealedNodeConstructor)
+        il.MarkLabel loop
+        il.Emit (Emit.OpCodes.Callvirt, next)
+        il.Emit Emit.OpCodes.Dup
+        il.Emit (Emit.OpCodes.Brtrue, loop)
+        il.Emit Emit.OpCodes.Pop
+        il.Emit Emit.OpCodes.Ldc_I4_0
+        il.Emit Emit.OpCodes.Ret
+
+        let factory = runners.DefineMethod ("Factory", staticAttributes, probeBase, [||])
+        let il = factory.GetILGenerator ()
+        il.Emit (Emit.OpCodes.Newobj, dividesConstructor)
+        il.Emit Emit.OpCodes.Ret
+
+        let jumps = runners.DefineMethod ("Jumps", staticAttributes, probeBase, [||])
+        let il = jumps.GetILGenerator ()
+        il.Emit (Emit.OpCodes.Jmp, factory)
+
+        let useJump =
+            runners.DefineMethod ("UseJump", staticAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = useJump.GetILGenerator ()
+        il.Emit (Emit.OpCodes.Call, jumps)
+        il.Emit Emit.OpCodes.Ldarg_0
+        il.Emit Emit.OpCodes.Ldarg_1
+        il.Emit (Emit.OpCodes.Callvirt, probe)
+        il.Emit Emit.OpCodes.Ret
+
+        runners.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    [<Test>]
+    let ``a return the analysis cannot follow is only its declared type`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = fabricateLoops ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Loops.dll") (new MemoryStream (image))
+
+        let cases =
+            [
+                // Answering at all is the main claim: it is a summary rather than a crash.
+                "Walk", Set.empty, DispatchClaim.SoundOnly
+                "UseJump", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.SoundOnly
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "Loops" image
+
+        let _, failures =
+            dispatchFailures fixture "Loops" runtime cases (analysisOver [ fixture ] id)
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
     /// The receivers of the static dispatch fixture, and which of `DivideByZeroException` and
     /// `OverflowException` the `Probe` each supplies raises. A static method has no receiver object,
     /// so the type a `constrained.` prefix names decides what runs, even a class others derive from.
