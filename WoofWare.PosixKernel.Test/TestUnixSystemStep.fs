@@ -1993,6 +1993,7 @@ module TestUnixSystemStep =
                         NoFollow = false
                         CloseOnExec = false
                         Synchronous = false
+                        DataSynchronous = false
                         Directory = false
                     }
                     path
@@ -4015,6 +4016,7 @@ module TestUnixSystemStep =
             NoFollow = false
             CloseOnExec = false
             Synchronous = false
+            DataSynchronous = false
             Directory = false
         }
 
@@ -4288,12 +4290,12 @@ module TestUnixSystemStep =
             |> shouldEqual UnixError.ELOOP
 
     [<Test>]
-    let ``O_CLOEXEC and O_SYNC are accepted and change nothing`` () : unit =
-        // They are in the record so a caller can say they were asked for rather
-        // than drop them silently; this kernel models neither `exec` nor
-        // durability. Asserted as "the same answer as without them" rather than
-        // as "no error", which would pass for an implementation that rejected
-        // every open.
+    let ``O_CLOEXEC and O_SYNC change only what fcntl reports`` () : unit =
+        // This kernel models neither `exec` nor durability, so the two flags
+        // change nothing but the descriptor's FD_CLOEXEC and the description's
+        // O_SYNC and O_DSYNC. Asserted as "the same answer, and the same system
+        // once those are taken back" rather than as "no error", which would pass
+        // for an implementation that rejected every open.
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
@@ -4304,13 +4306,52 @@ module TestUnixSystemStep =
                     { plainOpen with
                         CloseOnExec = true
                         Synchronous = true
+                        DataSynchronous = true
                         Directory = false
                     }
                     (statPath "/d/inner/t")
                     0o666
                     system
 
-            withBoth |> shouldEqual plain
+            fst withBoth |> shouldEqual (fst plain)
+
+            let fd =
+                match fst withBoth with
+                | SyscallAnswer.Completed fd -> int fd
+                | other -> failwith $"expected a descriptor, got %A{other}"
+
+            let after = snd withBoth
+
+            FileDescriptorRegistry.tryFindFlags fd after.Process.FileDescriptors
+            |> shouldEqual (
+                Some
+                    { DescriptorFlags.none with
+                        CloseOnExec = true
+                    }
+            )
+
+            let takenBack =
+                { after with
+                    Process =
+                        { after.Process with
+                            FileDescriptors =
+                                after.Process.FileDescriptors
+                                |> FileDescriptorRegistry.setFlags fd DescriptorFlags.none
+                                |> FileDescriptorRegistry.mapStatus
+                                    (FileDescriptorRegistry.tryFindId fd after.Process.FileDescriptors |> Option.get)
+                                    (fun status ->
+                                        status.Synchronous |> shouldEqual true
+                                        status.DataSynchronous |> shouldEqual true
+
+                                        { status with
+                                            Synchronous = false
+                                            DataSynchronous = false
+                                        }
+                                    )
+                        }
+                }
+
+            takenBack |> shouldEqual (snd plain)
 
     [<Test>]
     let ``a created file takes its permissions from mode and the umask`` () : unit =

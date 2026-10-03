@@ -69,7 +69,7 @@ module TestSocketErrorOption =
         NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
 
     let private nonBlocking (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixSocket.setNonBlocking fd true system with
+        match UnixDescriptor.setNonBlocking fd true system with
         | SetNonBlockingAnswer.Set, system -> system
         | other, _ -> failwith $"setting O_NONBLOCK on fd %d{fd} answered %A{other}"
 

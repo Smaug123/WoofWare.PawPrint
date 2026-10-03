@@ -97,6 +97,7 @@ module TestDarwinPoll =
             NoFollow = false
             CloseOnExec = false
             Synchronous = false
+            DataSynchronous = false
             Directory = directory
         }
 

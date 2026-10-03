@@ -87,8 +87,8 @@ module TestSocketSyscall =
                 if domainNumber platform socket.Domain <> domain then
                     describe $"library domain %O{socket.Domain}"
 
-                if UnixSocket.isNonBlocking fd after <> Some measuredNonBlocking then
-                    describe $"library non-blocking %A{UnixSocket.isNonBlocking fd after}"
+                if UnixDescriptor.isNonBlocking fd after <> Some measuredNonBlocking then
+                    describe $"library non-blocking %A{UnixDescriptor.isNonBlocking fd after}"
 
                 // Linux reports the protocol it resolved; a protocol the caller
                 // named must be that one.
@@ -305,7 +305,7 @@ module TestSocketSyscall =
 
             let answer (socketType : int) =
                 match UnixSocket.socket domain socketType protocol system with
-                | Ok (Ok (fd, after)) -> Ok (Ok (UnixSocket.isNonBlocking fd after))
+                | Ok (Ok (fd, after)) -> Ok (Ok (UnixDescriptor.isNonBlocking fd after))
                 | Ok (Error error) -> Ok (Error error)
                 | Error refusal -> Error (refusalKind refusal)
 

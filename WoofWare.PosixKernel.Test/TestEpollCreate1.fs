@@ -103,6 +103,16 @@ module TestEpollCreate1 =
 
                 fd |> shouldEqual expectedFd
 
+                // EPOLL_CLOEXEC gives the descriptor FD_CLOEXEC, and that is
+                // all it changes.
+                let expectedRegistry =
+                    FileDescriptorRegistry.setFlags
+                        fd
+                        { DescriptorFlags.none with
+                            CloseOnExec = (flags = cloExec)
+                        }
+                        expectedRegistry
+
                 after
                 |> shouldEqual
                     { holed with

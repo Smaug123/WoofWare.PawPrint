@@ -256,7 +256,7 @@ module SocketArgumentsPal =
     /// Linux's `SOCK_CLOEXEC`, which `SystemNative_Socket` ORs into every type
     /// under `#ifdef SOCK_CLOEXEC`. Darwin's headers do not define it, so there
     /// the shim sets `FD_CLOEXEC` with a separate `fcntl` after the call, which
-    /// has nothing to change in a kernel that models no `exec`.
+    /// the `SystemNative_Socket` handler makes.
     [<Literal>]
     let private LinuxSockCloExec = 0x80000
 

@@ -50,6 +50,7 @@ module TestDirectoryDescription =
             NoFollow = false
             CloseOnExec = false
             Synchronous = false
+            DataSynchronous = false
             Directory = false
         }
 
@@ -756,6 +757,7 @@ module TestDirectoryDescription =
                         AccessMode = access
                         NonBlocking = false
                         Flock = None
+                        Status = OpenFileStatus.none
                     }
                 ])
             (OpenFileDescriptionId 9L)

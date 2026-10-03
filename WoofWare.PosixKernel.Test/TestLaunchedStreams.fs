@@ -315,7 +315,7 @@ module TestLaunchedStreams =
             | Ok (answer, after) -> Some (Answer.Syscall answer, after)
             | Error _ -> None
         | Op.SetNonBlocking (fd, value) ->
-            let answer, after = UnixSocket.setNonBlocking fd value system
+            let answer, after = UnixDescriptor.setNonBlocking fd value system
             Some (Answer.NonBlocking answer, after)
         | Op.Poll fd ->
             match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
