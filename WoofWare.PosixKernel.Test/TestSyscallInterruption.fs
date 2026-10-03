@@ -1,8 +1,6 @@
 namespace WoofWare.PosixKernel.Test
 
 open System.Collections.Immutable
-open FsCheck
-open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
@@ -29,7 +27,6 @@ open WoofWare.PosixKernel
 module TestSyscallInterruption =
 
     let private context : string = "TestSyscallInterruption"
-    let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 600
     let private nanosecondsPerMillisecond : int64 = 1_000_000L
 
     let private inetFamily : int option =
@@ -448,58 +445,64 @@ module TestSyscallInterruption =
                 Sleep.EpollWait 5
             ]
 
-    /// SIGUSR1 and SIGUSR2, which catch, ignore and default alike on both
-    /// flavours, and which the leader blocks in no handler frame here.
-    let private sentGen : Gen<Sent list> =
-        let one (signal : Signal) : Gen<Sent option> =
-            Gen.frequency
-                [
-                    2, Gen.constant None
-                    3,
-                    ArbMap.defaults
-                    |> ArbMap.generate<bool>
-                    |> Gen.map (fun r -> Some (Sent.Caught (signal, r)))
-                    1, Gen.constant (Some (Sent.Ignored signal))
-                ]
+    /// Every way of sending SIGUSR1 and SIGUSR2, which catch, ignore and
+    /// default alike on both flavours, and which the leader blocks in no
+    /// handler frame here.
+    let private everySent : Sent list list =
+        let one (signal : Signal) : Sent option list =
+            [
+                None
+                Some (Sent.Caught (signal, true))
+                Some (Sent.Caught (signal, false))
+                Some (Sent.Ignored signal)
+            ]
 
-        Gen.map2 (fun a b -> List.choose id [ a ; b ]) (one Signal.SIGUSR1) (one Signal.SIGUSR2)
+        [
+            for usr1 in one Signal.SIGUSR1 do
+                for usr2 in one Signal.SIGUSR2 do
+                    List.choose id [ usr1 ; usr2 ]
+        ]
 
     [<Test>]
     let ``a sleeping call ends as the measured table says, and only a woken sleeper ends`` () : unit =
         let mutable seen : Set<string> = Set.empty
 
-        let gen =
-            gen {
-                let! flavour = Gen.elements [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
-                let! sleep = Gen.elements (sleepsOn flavour)
-                // The leader as well as other tasks: a thread-directed signal
-                // reaches either.
-                let! task = Gen.choose (0, 2)
-                let! sent = sentGen
+        // Whether the call's own answer is ready; a poll of nothing has none.
+        let readies (sleep : Sleep) : bool list =
+            if sleep = Sleep.PollOfNothing then
+                [ false ]
+            else
+                [ false ; true ]
 
-                let! ready =
-                    if sleep = Sleep.PollOfNothing then
-                        Gen.constant false
-                    else
-                        ArbMap.defaults |> ArbMap.generate<bool>
+        let pastDeadlines (sleep : Sleep) : bool list =
+            if timeoutOf sleep = None then
+                [ false ]
+            else
+                [ false ; true ]
 
-                let! pastDeadline =
-                    if timeoutOf sleep = None then
-                        Gen.constant false
-                    else
-                        ArbMap.defaults |> ArbMap.generate<bool>
+        // On Linux, the last descriptor onto what the call sleeps on is closed
+        // under it, which changes nothing about how it ends.
+        let closedUnders (flavour : SimulatedUnixFlavour) (sleep : Sleep) : bool list =
+            match flavour, enteredThrough linuxWorld sleep with
+            | SimulatedUnixFlavour.Linux, Some _ -> [ false ; true ]
+            | _ -> [ false ]
 
-                let! readyFirst = ArbMap.defaults |> ArbMap.generate<bool>
-
-                // On Linux, the last descriptor onto what the call sleeps on is
-                // closed under it, which changes nothing about how it ends.
-                let! closedUnder =
-                    match flavour, enteredThrough linuxWorld sleep with
-                    | SimulatedUnixFlavour.Linux, Some _ -> ArbMap.defaults |> ArbMap.generate<bool>
-                    | _ -> Gen.constant false
-
-                return flavour, sleep, task, sent, ready, pastDeadline, readyFirst, closedUnder
-            }
+        // The inputs are finite, so every one of them is run, and whether
+        // every ending is reached does not depend on which were drawn.
+        let cases =
+            [
+                for flavour in [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ] do
+                    for sleep in sleepsOn flavour do
+                        // The leader as well as other tasks: a thread-directed
+                        // signal reaches either.
+                        for task in 0..2 do
+                            for sent in everySent do
+                                for ready in readies sleep do
+                                    for pastDeadline in pastDeadlines sleep do
+                                        for readyFirst in [ false ; true ] do
+                                            for closedUnder in closedUnders flavour sleep do
+                                                flavour, sleep, task, sent, ready, pastDeadline, readyFirst, closedUnder
+            ]
 
         let property (flavour, sleep, task, sent, ready, pastDeadline, readyFirst, closedUnder) =
             let world =
@@ -600,7 +603,11 @@ module TestSyscallInterruption =
                     |> shouldEqual caught
                 | other -> failwith $"unexpected return to user mode: %A{other}"
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen gen) property)
+        for case in cases do
+            try
+                property case
+            with e ->
+                raise (System.Exception ($"failed on %A{case}", e))
 
         // Every ending was reached.
         seen
