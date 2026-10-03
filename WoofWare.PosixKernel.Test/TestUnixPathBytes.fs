@@ -20,11 +20,15 @@ module TestUnixPathBytes =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
-    let private linux : UnixSystem<int, string> =
+    let private linuxImage : UnixBootImage<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-    let private darwin : UnixSystem<int, string> =
+    let private darwinImage : UnixBootImage<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+    let private linux : UnixSystem<int, string> = UnixBootImage.boot linuxImage
+
+    let private darwin : UnixSystem<int, string> = UnixBootImage.boot darwinImage
 
     let private byteString (bytes : byte seq) : UnixByteString =
         match UnixByteString.ofBytes (ImmutableArray.CreateRange bytes) with
@@ -171,19 +175,19 @@ module TestUnixPathBytes =
 
     let private epoch : UnixTimestamp = UnixTimestamp.ofMillisecondsSinceEpoch 0L
 
-    /// `system` with its filesystem replaced by `seed`, and the root as its
-    /// current directory. There is no `symlink` syscall, so seeding is how a
-    /// link comes to exist.
-    let private seeded (seed : (DirectoryEntryName * SeedEntry) list) (system : UnixSystem<int, string>) =
+    /// `image` booted with its filesystem `seed`, and the root as its current
+    /// directory. There is no `symlink` syscall, so seeding is how a link comes
+    /// to exist.
+    let private seeded (seed : (DirectoryEntryName * SeedEntry) list) (image : UnixBootImage<int, string>) =
         match
-            UnixSystem.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystemAndCurrentDirectory
                 epoch
-                (InodeOwner.ofProcess system.Process.Credentials)
+                (InodeOwner.ofProcess (UnixBootImage.boot image).Process.Credentials)
                 (Map.ofList seed)
                 AbsoluteUnixPath.root
-                system
+                image
         with
-        | Ok system -> system
+        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"seeding failed: %A{fault}"
 
     let private text : string -> byte list = BindingProbes.text
@@ -191,7 +195,7 @@ module TestUnixPathBytes =
     [<Test>]
     let ``Darwin refuses to bind a name that is not UTF-8, after every other refusal`` () : unit =
         // Run as `UnixSystem.initial`'s unprivileged caller, as the probes were.
-        let system = seeded (Map.toList BindingProbes.tree) darwin
+        let system = seeded (Map.toList BindingProbes.tree) darwinImage
 
         for description, call, expected in BindingProbes.rows do
             let actual = BindingProbes.runModel call system
@@ -206,7 +210,7 @@ module TestUnixPathBytes =
         // `BindingProbes`, because it needs a current directory the host test
         // cannot give its own process.
         let orphaned =
-            seeded (Map.toList BindingProbes.tree) darwin
+            seeded (Map.toList BindingProbes.tree) darwinImage
             |> Answered.mkdir (PathArg.ofPath (pathOf (text "/gone"))) 0o777
             |> completed
             |> Answered.chdir (PathArg.ofPath (pathOf (text "/gone")))
@@ -263,16 +267,16 @@ module TestUnixPathBytes =
             "rename", BindingProbeCall.Rename (text "f", name)
         ]
 
-    let private withFile (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+    let private withFile (image : UnixBootImage<int, string>) : UnixSystem<int, string> =
         seeded
             [
                 DirectoryEntryName.parseOrFail "test" "f", SeedEntry.file ImmutableArray.Empty
             ]
-            system
+            image
 
     [<Test>]
     let ``Linux never answers EILSEQ`` () : unit =
-        let system = withFile linux
+        let system = withFile linuxImage
 
         let property (name : byte list) : unit =
             for operation, call in bindings name do
@@ -290,7 +294,7 @@ module TestUnixPathBytes =
         // §1.1.1, and the test below). The precondition is not decoration --
         // EILSEQ is the last check, so an over-long or unwritable case answers
         // something else whatever the bytes.
-        let system = withFile darwin
+        let system = withFile darwinImage
         let limits = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64
 
         let property (bytes : byte list) : unit =
@@ -317,7 +321,7 @@ module TestUnixPathBytes =
         // APFS refuses these three classes of them. Pinned so that a change to
         // either side is a decision rather than an accident; a faithful model
         // (a `BindableEntryNames.AppleUnicode` case) is what would flip them.
-        let system = withFile darwin
+        let system = withFile darwinImage
 
         for description, name in BindingProbes.overAdmitted do
             for operation, call in bindings name do
@@ -346,9 +350,9 @@ module TestUnixPathBytes =
     [<Test>]
     let ``readlink and lstat report a seeded target byte for byte`` () : unit =
         let property (bytes : byte list) : unit =
-            for system in [ linux ; darwin ] do
+            for image in [ linuxImage ; darwinImage ] do
                 let system =
-                    seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf bytes, None) ] system
+                    seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf bytes, None) ] image
 
                 match
                     UnixNamespace.readlink (PathArg.ofPath (pathOf [ slash ; byte 'l' ])) UserBuffer.Mapped 8192 system
@@ -377,7 +381,7 @@ module TestUnixPathBytes =
                     nameOf [ 0xFFuy ], SeedEntry.directory Map.empty
                     nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf [ 0xFFuy ], None)
                 ]
-                linux
+                linuxImage
 
         match
             UnixPathResolution.stat
@@ -401,7 +405,7 @@ module TestUnixPathBytes =
 
         let lookup (length : int) : Result<FileStatusAnswer, StatRefusal> =
             let system =
-                seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf (target length), None) ] darwin
+                seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf (target length), None) ] darwinImage
 
             UnixPathResolution.stat
                 SymlinkPolicy.Follow

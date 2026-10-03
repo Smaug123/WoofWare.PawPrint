@@ -58,9 +58,9 @@ module TestInodeLifetime =
     let private standingAt (dir : string) : UnixSystem<int, string> =
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault seed (absolute dir)
+            |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault seed (absolute dir)
         with
-        | Ok system -> system
+        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"the fixture's own seed did not boot at %s{dir}: %O{fault}."
 
     let private kernel () : UnixSystem<int, string> = standingAt "/outer/inner"

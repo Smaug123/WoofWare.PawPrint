@@ -13,7 +13,7 @@ open WoofWare.PosixKernel
 /// What an `EVFILT_WRITE` event's `data` holds for a Darwin TCP socket, the free
 /// space in its send buffer (`DarwinReadiness.sendBufferSpace`), and the
 /// `net.inet.tcp.sendspace` configuration it is computed from
-/// (`UnixMachineState.withTcpSendSpace`).
+/// (`UnixBootImage.withTcpSendSpace`).
 ///
 /// Held to `docs/plans/2026-08-23-posix-kernel-extraction/kevent-write-data.c`'s
 /// output, measured on Darwin 27.0.0 arm64 and embedded: every row of the routes
@@ -121,10 +121,9 @@ module TestKeventWriteData =
     // Driving the kernel
     // ------------------------------------------------------------------
 
-    let private withSendSpace (sendSpace : int option) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        { system with
-            Machine = UnixMachineState.withTcpSendSpace sendSpace system.Machine
-        }
+    /// `KeventWorld.darwin`, booted with the send space `sendSpace`.
+    let private darwinWithSendSpace (sendSpace : int option) : UnixSystem<int, string> =
+        KeventWorld.darwinWith (UnixBootImage.withTcpSendSpace sendSpace)
 
     /// The `data` of the WRITE event registering `fd` in a new kqueue reports, under
     /// EV_CLEAR or level registration.
@@ -181,8 +180,7 @@ module TestKeventWriteData =
             Phase = phase
         }
 
-    let private darwinMachine (sendSpace : int option) : UnixMachineState =
-        (withSendSpace sendSpace KeventWorld.darwin).Machine
+    let private darwinMachine (sendSpace : int option) : UnixMachineState = (darwinWithSendSpace sendSpace).Machine
 
     // ------------------------------------------------------------------
     // The measured rows
@@ -226,8 +224,7 @@ module TestKeventWriteData =
         measured |> shouldHaveLength 13
 
         for (size, values) in measured do
-            let connecting, accepted =
-                connectedWriteData (withSendSpace (Some size) KeventWorld.darwin)
+            let connecting, accepted = connectedWriteData (darwinWithSendSpace (Some size))
 
             List.distinct values |> shouldHaveLength 1
 
@@ -273,7 +270,7 @@ module TestKeventWriteData =
             for (size, values) in measured do
                 let modelled =
                     match family with
-                    | "IPv4" -> refusedWriteData (withSendSpace (Some size) KeventWorld.darwin)
+                    | "IPv4" -> refusedWriteData (darwinWithSendSpace (Some size))
                     | _ ->
                         [
                             DarwinReadiness.sendBufferSpace
@@ -326,8 +323,7 @@ module TestKeventWriteData =
     [<Test>]
     let ``every admissible send space gives both ends of a connection the grown buffer`` () : unit =
         let property (sendSpace : int) : unit =
-            let connecting, accepted =
-                connectedWriteData (withSendSpace (Some sendSpace) KeventWorld.darwin)
+            let connecting, accepted = connectedWriteData (darwinWithSendSpace (Some sendSpace))
 
             connecting @ accepted |> List.distinct |> shouldEqual [ grown 16332L sendSpace ]
 
@@ -336,7 +332,7 @@ module TestKeventWriteData =
                 (darwinMachine (Some sendSpace))
             |> shouldEqual (grown 16312L sendSpace)
 
-            refusedWriteData (withSendSpace (Some sendSpace) KeventWorld.darwin)
+            refusedWriteData (darwinWithSendSpace (Some sendSpace))
             |> List.distinct
             |> shouldEqual [ 2048L ]
 
@@ -353,9 +349,9 @@ module TestKeventWriteData =
         let linux =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
 
-        linux.Machine.TcpSendSpace |> shouldEqual 16384
+        (UnixBootImage.boot linux).Machine.TcpSendSpace |> shouldEqual 16384
 
-        (UnixMachineState.withTcpSendSpace None linux.Machine).TcpSendSpace
+        (UnixBootImage.withTcpSendSpace None linux |> UnixBootImage.boot).Machine.TcpSendSpace
         |> shouldEqual 16384
 
         (darwinMachine None).TcpSendSpace |> shouldEqual 131072
@@ -393,7 +389,7 @@ module TestKeventWriteData =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
 
         let e =
-            Assert.Throws<Exception> (fun () -> UnixMachineState.withTcpSendSpace (Some 16384) linux.Machine |> ignore)
+            Assert.Throws<Exception> (fun () -> UnixBootImage.withTcpSendSpace (Some 16384) linux |> ignore)
 
         e.Message |> shouldContainText "Linux"
 
@@ -403,7 +399,9 @@ module TestKeventWriteData =
             socketIn SocketDomain.Inet (SocketPhase.Established (ConnectionId 0L))
 
         let linux =
-            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)).Machine
+            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
+             |> UnixBootImage.boot)
+                .Machine
 
         let refusals =
             [

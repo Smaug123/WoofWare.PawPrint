@@ -284,6 +284,7 @@ module TestUnconnectedSocketTransfer =
     let ``a failed write gives a half-bound Linux UDP socket a port and keeps its address`` () : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let fd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
@@ -348,6 +349,7 @@ module TestUnconnectedSocketTransfer =
     let private processOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
             UnixSystem.initial (platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
             |> Tasks.spawn 1
 
         { system with

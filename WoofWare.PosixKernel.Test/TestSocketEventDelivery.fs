@@ -41,6 +41,7 @@ module TestSocketEventDelivery =
 
     let private initialSystem : UnixSystem<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
     /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
     /// guest; an errno comes back, because that is an answer.

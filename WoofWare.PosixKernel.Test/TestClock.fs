@@ -18,9 +18,15 @@ module TestClock =
     let private flavours : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
+    let private imageOn (flavour : SimulatedUnixFlavour) : UnixBootImage<int, string> =
+        UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
     let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0))
-            .Machine
+        (UnixBootImage.boot (imageOn flavour)).Machine
+
+    /// The machine of a process on `flavour` booted at `bootTime`.
+    let private bootedAt (flavour : SimulatedUnixFlavour) (bootTime : UnixTimestamp) : UnixMachineState =
+        (imageOn flavour |> UnixBootImage.withBootTime bootTime |> UnixBootImage.boot).Machine
 
     /// A value in `[low, high]`, weighted towards both ends as well as spread across
     /// the whole range: the ends are where the arithmetic can overflow, and a uniform
@@ -72,9 +78,7 @@ module TestClock =
         (sinceBoot : int64)
         : UnixMachineState
         =
-        machineOn flavour
-        |> UnixMachineState.withBootTime bootTime
-        |> UnixMachineState.advanceClock sinceBoot
+        bootedAt flavour bootTime |> UnixMachineState.advanceClock sinceBoot
 
     /// Any machine a client can reach: any flavour, any admissible boot instant, any uptime.
     let private reachableGen : Gen<SimulatedUnixFlavour * UnixTimestamp * int64> =
@@ -222,7 +226,7 @@ module TestClock =
 
             flavours
             |> List.forall (fun flavour ->
-                succeeds (fun () -> UnixMachineState.withBootTime timestamp (machineOn flavour)) = admissible
+                succeeds (fun () -> UnixBootImage.withBootTime timestamp (imageOn flavour)) = admissible
             )
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen gen) property)
@@ -240,10 +244,10 @@ module TestClock =
             let timestamp = UnixTimestamp.createOrFail "TestClock" seconds nanos
 
             let linux =
-                succeeds (fun () -> UnixMachineState.withBootTime timestamp (machineOn SimulatedUnixFlavour.Linux))
+                succeeds (fun () -> UnixBootImage.withBootTime timestamp (imageOn SimulatedUnixFlavour.Linux))
 
             let darwin =
-                succeeds (fun () -> UnixMachineState.withBootTime timestamp (machineOn SimulatedUnixFlavour.Darwin))
+                succeeds (fun () -> UnixBootImage.withBootTime timestamp (imageOn SimulatedUnixFlavour.Darwin))
 
             linux && darwin = (nanos % 1000 = 0)
 

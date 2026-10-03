@@ -44,7 +44,13 @@ public static class Entry
 }
 """
 
-    let private prepareProgram (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : Program.PreparedProgram =
+    /// The test program, prepared on a process started with `env` in its
+    /// environment.
+    let private prepareProgramWith
+        (env : (string * string) list)
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        : Program.PreparedProgram
+        =
         let image =
             Roslyn.compileAssemblyWithResources
                 "NativeEventSourceTest"
@@ -57,9 +63,21 @@ public static class Entry
 
         use peImage = new MemoryStream (image)
 
-        match
-            Program.prepare loggerFactory (Some "NativeEventSourceTest.cs") peImage (HostConfig.Default dotnetRuntimes)
-        with
+        let host = HostConfig.Default dotnetRuntimes
+
+        let host =
+            { host with
+                Guest =
+                    { host.Guest with
+                        Kernel =
+                            { host.Guest.Kernel with
+                                Environment =
+                                    env |> List.map (fun (name, value) -> EnvironmentPal.nameValueEntry name value)
+                            }
+                    }
+            }
+
+        match Program.prepare loggerFactory (Some "NativeEventSourceTest.cs") peImage host with
         | Program.ProgramStartResult.Ready prepared -> prepared
         | Program.ProgramStartResult.CompletedBeforeMain outcome ->
             failwith $"expected program to be ready before Main, got %O{outcome}"
@@ -141,11 +159,8 @@ public static class Entry
             TargetType = xplatTargetType prepared.BaseClassTypes
         }
 
-    let private withEnvironment (env : (string * string) list) (state : IlMachineState) : IlMachineState =
-        let entries =
-            env |> List.map (fun (name, value) -> EnvironmentPal.nameValueEntry name value)
-
-        state.MapKernel (EmulatedKernel.withEnvironment "test" entries)
+    let private prepareProgram (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : Program.PreparedProgram =
+        prepareProgramWith [] loggerFactory
 
     // ---------- Pure helper tests ----------
 
@@ -357,12 +372,11 @@ public static class Entry
     let ``IsEventSourceLoggingEnabled: returns 1 when DOTNET_EnableEventLog=1`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let prepared = prepareProgram loggerFactory
+        let prepared = prepareProgramWith [ "DOTNET_EnableEventLog", "1" ] loggerFactory
 
         let state, donor =
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
-        let state = withEnvironment [ "DOTNET_EnableEventLog", "1" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
@@ -371,12 +385,11 @@ public static class Entry
     let ``IsEventSourceLoggingEnabled: returns 0 when DOTNET_EnableEventLog=0`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let prepared = prepareProgram loggerFactory
+        let prepared = prepareProgramWith [ "DOTNET_EnableEventLog", "0" ] loggerFactory
 
         let state, donor =
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
-        let state = withEnvironment [ "DOTNET_EnableEventLog", "0" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
@@ -385,12 +398,11 @@ public static class Entry
     let ``IsEventSourceLoggingEnabled: hex 10 means 16 (nonzero, so TRUE)`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let prepared = prepareProgram loggerFactory
+        let prepared = prepareProgramWith [ "DOTNET_EnableEventLog", "10" ] loggerFactory
 
         let state, donor =
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
-        let state = withEnvironment [ "DOTNET_EnableEventLog", "10" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
@@ -399,12 +411,11 @@ public static class Entry
     let ``IsEventSourceLoggingEnabled: COMPlus_ fallback wires up`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let prepared = prepareProgram loggerFactory
+        let prepared = prepareProgramWith [ "COMPlus_EnableEventLog", "1" ] loggerFactory
 
         let state, donor =
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
         // No DOTNET_ key — only the legacy COMPlus_ knob is set.
-        let state = withEnvironment [ "COMPlus_EnableEventLog", "1" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
@@ -418,12 +429,11 @@ public static class Entry
         // the gate.
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let prepared = prepareProgram loggerFactory
+        let prepared = prepareProgramWith [ "DOTNET_EnableEventLog", "-1" ] loggerFactory
 
         let state, donor =
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
-        let state = withEnvironment [ "DOTNET_EnableEventLog", "-1" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
@@ -436,12 +446,13 @@ public static class Entry
         // typo-laden env values.
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let prepared = prepareProgram loggerFactory
+
+        let prepared =
+            prepareProgramWith [ "DOTNET_EnableEventLog", "1garbage" ] loggerFactory
 
         let state, donor =
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
-        let state = withEnvironment [ "DOTNET_EnableEventLog", "1garbage" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
@@ -459,12 +470,13 @@ public static class Entry
         // and disable the gate.
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let prepared = prepareProgram loggerFactory
+
+        let prepared =
+            prepareProgramWith [ "DOTNET_EnableEventLog", "-100000001" ] loggerFactory
 
         let state, donor =
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
-        let state = withEnvironment [ "DOTNET_EnableEventLog", "-100000001" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
@@ -473,12 +485,13 @@ public static class Entry
     let ``IsEventSourceLoggingEnabled: malformed value with no parseable digits defaults to FALSE`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let prepared = prepareProgram loggerFactory
+
+        let prepared =
+            prepareProgramWith [ "DOTNET_EnableEventLog", "garbage" ] loggerFactory
 
         let state, donor =
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
-        let state = withEnvironment [ "DOTNET_EnableEventLog", "garbage" ] state
 
         dispatchIsEnabled loggerFactory prepared state donor
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
@@ -494,12 +507,11 @@ public static class Entry
         // to build the LTTng-forwarding listener.
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
-        let prepared = prepareProgram loggerFactory
+        let prepared = prepareProgramWith [ "DOTNET_EnableEventLog", "1" ] loggerFactory
 
         let state, donor =
             donorConcretizedMethod loggerFactory prepared.BaseClassTypes prepared.State
 
-        let state = withEnvironment [ "DOTNET_EnableEventLog", "1" ] state
 
         let int32Handle =
             AllConcreteTypes.getRequiredNonGenericHandle state.TypeSystem.ConcreteTypes prepared.BaseClassTypes.Int32

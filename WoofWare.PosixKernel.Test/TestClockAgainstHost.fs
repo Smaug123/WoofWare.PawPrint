@@ -45,9 +45,15 @@ module TestClockAgainstHost =
     let private sweptIds : int list =
         [ -4096 .. 4096 ] @ [ System.Int32.MinValue ; System.Int32.MaxValue ]
 
+    let private imageOn (flavour : SimulatedUnixFlavour) : UnixBootImage<int, string> =
+        UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
     let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0))
-            .Machine
+        (UnixBootImage.boot (imageOn flavour)).Machine
+
+    /// The machine of a process on `flavour` booted at `bootTime`.
+    let private bootedAt (flavour : SimulatedUnixFlavour) (bootTime : UnixTimestamp) : UnixMachineState =
+        (imageOn flavour |> UnixBootImage.withBootTime bootTime |> UnixBootImage.boot).Machine
 
     [<Test>]
     let ``an id is EINVAL here exactly when the host says so, unless it is refused`` () : unit =
@@ -92,8 +98,7 @@ module TestClockAgainstHost =
             // of each whose sub-microsecond part is non-zero: a clock that keeps
             // whole microseconds drops it, and one that does not keeps it.
             let machine =
-                machineOn flavour
-                |> UnixMachineState.withBootTime (UnixTimestamp.ofSeconds 1_000_000L)
+                bootedAt flavour (UnixTimestamp.ofSeconds 1_000_000L)
                 |> UnixMachineState.advanceClock 1_000_000_123L
 
             // Linux's CLOCK_REALTIME_COARSE carries sub-microsecond digits only

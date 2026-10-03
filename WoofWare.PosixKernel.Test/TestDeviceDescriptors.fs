@@ -45,8 +45,6 @@ module TestDeviceDescriptors =
             Directory = false
         }
 
-    let private asRoot (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixSystem.withCredentials context (Credentials.ofIds UserId.root (GroupId.parseOrFail context 0u) []) system
 
     /// A Linux machine whose root holds a regular file `f`, holding five bytes,
     /// and whose process is the flavour's default unprivileged user, or root.
@@ -62,18 +60,27 @@ module TestDeviceDescriptors =
                     )
                 ]
 
-        let system : UnixSystem<int, string> =
+        let image : UnixBootImage<int, string> =
             UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
+        let image =
+            if root then
+                UnixBootImage.withCredentials
+                    context
+                    (Credentials.ofIds UserId.root (GroupId.parseOrFail context 0u) [])
+                    image
+            else
+                image
+
         match
-            UnixSystem.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystemAndCurrentDirectory
                 (UnixTimestamp.ofSeconds 1_700_000_000L)
                 rootOwner
                 seed
                 AbsoluteUnixPath.root
-                system
+                image
         with
-        | Ok system -> if root then asRoot system else system
+        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"booting failed: %A{fault}"
 
     let private booted : UnixSystem<int, string> = bootedAs false

@@ -40,6 +40,7 @@ module TestSignalReceiver =
         =
         let system =
             UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
             |> Tasks.spawn 1
             |> Tasks.spawn 2
             |> Tasks.spawn 3

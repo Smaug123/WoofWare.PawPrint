@@ -99,6 +99,7 @@ module TestSocketErrorOption =
 
     let private fresh (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
     /// A stream socket whose non-blocking connect to `nobody` was refused, with
     /// the refusal still pending; `prepare` runs on the socket first.

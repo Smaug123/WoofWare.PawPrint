@@ -22,8 +22,16 @@ module TestPthreadKill =
     let private leader : int = 0
     let private worker : int = 1
 
-    let private systemOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
+    let private systemOnWith
+        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
+        (flavour : SimulatedUnixFlavour)
+        : UnixSystem<int, string>
+        =
         UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams leader (CpuId 0)
+        |> configure
+        |> UnixBootImage.boot
+
+    let private systemOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> = systemOnWith id flavour
 
     let private withWorker (system : UnixSystem<int, string>) : UnixSystem<int, string> = Tasks.spawn worker system
 
@@ -138,12 +146,8 @@ module TestPthreadKill =
             let numbering = numberingOf flavour
 
             let system =
-                let system = systemOn flavour |> withWorker
-
                 let system =
-                    { system with
-                        Process = UnixProcessState.withCoreDumps coreDumps system.Process
-                    }
+                    systemOnWith (UnixBootImage.withCoreDumps coreDumps) flavour |> withWorker
 
                 match framed with
                 | None -> system
@@ -531,7 +535,7 @@ module TestPthreadKill =
     let ``pthread_kill by an init process is refused`` () : unit =
         for flavour in flavours do
             let init =
-                UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" 1) (systemOn flavour)
+                systemOnWith (UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" 1)) flavour
 
             UnixSignal.pthreadKill leader 15 init
             |> shouldEqual (Error ThreadKillRefusal.InitProcess)

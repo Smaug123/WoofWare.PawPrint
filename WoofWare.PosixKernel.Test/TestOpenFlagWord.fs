@@ -294,16 +294,18 @@ module TestOpenFlagWord =
     let private name (text : string) : DirectoryEntryName =
         DirectoryEntryName.parseOrFail context text
 
-    /// The probe's directory, `/w/p` here: `f` holding "abc" (0644), `d`
-    /// (0755), `l -> f`, and `g` and `h`, two links to one empty file on the
-    /// real kernels and two files here. Only `O_UNIQUE`, which the library
-    /// refuses, reads a link count.
-    let private probeSystem (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let credentials =
-            match SimulatedUnixPlatform.flavour platform with
-            | SimulatedUnixFlavour.Linux -> Owners.root
-            | SimulatedUnixFlavour.Darwin ->
-                Credentials.ofIds (UserId.parseOrFail context 501u) (GroupId.parseOrFail context 20u) []
+    /// Who ran the probe on `platform`, and so owns its files: root on Linux,
+    /// uid 501 on Darwin.
+    let private probeOwner (platform : SimulatedUnixPlatform) : Credentials =
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux -> Owners.root
+        | SimulatedUnixFlavour.Darwin ->
+            Credentials.ofIds (UserId.parseOrFail context 501u) (GroupId.parseOrFail context 20u) []
+
+    /// `probeSystem`, with the process running as `caller` rather than as the
+    /// user who owns the files.
+    let private probeSystemAs (caller : Credentials) (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        let credentials = probeOwner platform
 
         let bits (mode : int) = PermissionBits.parseOrFail context mode
 
@@ -328,20 +330,27 @@ module TestOpenFlagWord =
                     )
                 ]
 
-        let system : UnixSystem<int, string> =
+        let system : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixSystem.withCredentials context credentials
+            |> UnixBootImage.withCredentials context caller
 
         match
-            UnixSystem.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystemAndCurrentDirectory
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess credentials)
                 seed
                 (AbsoluteUnixPath.parseOrFail context "/w/p")
                 system
         with
-        | Ok system -> system
+        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"could not build the system: %A{fault}"
+
+    /// The probe's directory, `/w/p` here: `f` holding "abc" (0644), `d`
+    /// (0755), `l -> f`, and `g` and `h`, two links to one empty file on the
+    /// real kernels and two files here. Only `O_UNIQUE`, which the library
+    /// refuses, reads a link count.
+    let private probeSystem (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        probeSystemAs (probeOwner platform) platform
 
     let private argument (column : string) : PathArgumentBytes =
         match column with
@@ -490,7 +499,7 @@ module TestOpenFlagWord =
             let owner = probeSystem platform
             // Someone the files do not belong to, for whom the permission
             // bits decide.
-            let other = owner |> UnixSystem.withCredentials context stranger
+            let other = probeSystemAs stranger platform
 
             for system in [ owner ; other ] do
                 for flags in everyRequest |> List.filter parsedEntryPointAccepted do

@@ -136,16 +136,13 @@ module TestFileSystemTypePal =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+            |> UnixBootImage.boot
 
-        let machine =
-            UnixMachineState.withMount (Some (EmulatedMount.defaultOf fsType)) system.Machine
+        let machine = system.Machine
 
         match target with
-        | None ->
-            { system with
-                Machine = machine
-            }
-            |> UnixPathResolution.fstatfs 4242
+        | None -> system |> UnixPathResolution.fstatfs 4242
         | Some target -> FileSystemStatistics.ofObject machine.UnixPlatform machine.Mount target
 
     [<Test>]

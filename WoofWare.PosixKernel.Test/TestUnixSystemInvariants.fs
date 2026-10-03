@@ -29,6 +29,7 @@ module TestUnixSystemInvariants =
     let private system : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         { system with
             Machine =
@@ -43,6 +44,7 @@ module TestUnixSystemInvariants =
     let private unlaunched : UnixSystem<int, string> =
         let bare : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         { bare with
             Machine =
@@ -261,13 +263,13 @@ module TestUnixSystemInvariants =
 
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixSystem.withFileSystemAndCurrentDirectory
+            |> UnixBootImage.withFileSystemAndCurrentDirectory
                 epoch
                 Owners.linuxDefault
                 seed
                 (AbsoluteUnixPath.parseOrFail context "/outer/inner")
         with
-        | Ok system -> system
+        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"the fixture's own seed did not boot: %O{fault}."
 
     let private inodeOf (path : string) : InodeNumber =
@@ -702,10 +704,11 @@ module TestUnixSystemInvariants =
     let ``a mount the flavour cannot report is a defect`` () : unit =
         // Reachable only by assembling the record by hand: `UnixSystem.initial`
         // derives the type from the flavour, and
-        // `UnixMachineState.withMount` refuses one the machine's
+        // `UnixBootImage.withMount` refuses one the machine's
         // flavour cannot mount.
         let linux =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         { linux with
             Machine =
@@ -721,6 +724,7 @@ module TestUnixSystemInvariants =
 
         // A hand-built machine whose pair does describe one system is sound.
         UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
         |> fun darwin ->
             { darwin with
                 Machine =
@@ -741,7 +745,8 @@ module TestUnixSystemInvariants =
                 0
                 1
                 (CpuId 0)
-                (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0))
+                (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                 |> UnixBootImage.boot)
         with
         | Ok (_, system) -> system
         | Error error -> failwith $"spawn failed: %O{error}"
@@ -809,8 +814,9 @@ module TestUnixSystemInvariants =
 
         let lowered =
             (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-             |> UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" 5)
-             |> UnixSystem.withPidMax "test" 1000)
+             |> UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" 5)
+             |> UnixBootImage.boot
+             |> UnixSystem.writePidMaxSysctl "test" 1000)
                 .Machine.ThreadIds
 
         { linux with
@@ -835,7 +841,8 @@ module TestUnixSystemInvariants =
                 UnixSystem.pipedStandardStreams
                 0
                 (CpuId 0)
-             |> UnixSystem.withLeaderThreadId "test" 4242UL)
+             |> UnixBootImage.withLeaderThreadId "test" 4242UL
+             |> UnixBootImage.boot)
                 .Machine.ThreadIds
 
         { darwin with
@@ -854,9 +861,11 @@ module TestUnixSystemInvariants =
     let ``a thread ID counter of the other flavour is a defect`` () : unit =
         let linux =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let darwin =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let swapped (system : UnixSystem<int, string>) (from : UnixSystem<int, string>) =
             { system with

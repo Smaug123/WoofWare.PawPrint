@@ -143,8 +143,9 @@ module TestUserBufferCheck =
     // ------------------------------------------------- the platforms' answers
 
     let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
-        EmulatedKernel.create platform StandardStreamsConfig.piped
-        |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit limit)
+        EmulatedKernel.image platform StandardStreamsConfig.piped
+        |> UnixBootImage.withUserAddressLimit limit
+        |> EmulatedKernel.boot
 
     /// macOS performs no up-front check at all: measured, every address at
     /// every size reads 0 from a descriptor with nothing to transfer. So a

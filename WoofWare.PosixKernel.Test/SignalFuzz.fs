@@ -243,6 +243,7 @@ module SignalFuzz =
 
         let mutable system : UnixSystem<int, unit> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams leader (CpuId 0)
+            |> UnixBootImage.boot
 
         let self = ProcessId.toInt32 (UnixSystem.processId system)
 

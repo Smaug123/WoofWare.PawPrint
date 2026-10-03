@@ -31,12 +31,13 @@ module TestDirectoryStreamFds =
         Map.ofList [ name "dir", SeedEntry.directory Map.empty ]
 
     let private kernel () : EmulatedKernel =
-        EmulatedKernel.initial
+        EmulatedKernel.initialImage
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             createdAt
             (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
             seed
             (absolute "/")
+        |> EmulatedKernel.boot
 
     /// Everything `SystemNative_OpenDir` does to kernel state: the library opens
     /// the directory, and the client allocates the native block standing in for

@@ -202,15 +202,13 @@ module TestPipeAgainstHost =
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering platform
 
             let initial =
-                let system : UnixSystem<int, string> =
-                    UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-
                 let uid = UserId.parseOrFail "TestPipeAgainstHost" (hostGetEUid ())
                 let gid = GroupId.parseOrFail "TestPipeAgainstHost" (hostGetEGid ())
 
-                let system =
-                    system
-                    |> UnixSystem.withCredentials "TestPipeAgainstHost" (Credentials.ofIds uid gid [])
+                let system : UnixSystem<int, string> =
+                    UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                    |> UnixBootImage.withCredentials "TestPipeAgainstHost" (Credentials.ofIds uid gid [])
+                    |> UnixBootImage.boot
 
                 // The test host's runtime ignores SIGPIPE, so a write with no
                 // reader answers EPIPE there rather than ending it.
@@ -630,7 +628,8 @@ module TestPipeAgainstHost =
                     UnixPipe.pipe2
                         flags
                         UserBuffer.Mapped
-                        (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0))
+                        (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                         |> UnixBootImage.boot)
 
                 match model, host with
                 | Ok (Pipe2Answer.Created _, _), Ok () -> ()

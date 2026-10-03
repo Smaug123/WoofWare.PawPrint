@@ -108,7 +108,9 @@ module TestSyscallInterruption =
     /// `holder`.
     let private worldOn (platform : SimulatedUnixPlatform) : World =
         let system =
-            (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0), [ 1..3 ])
+            (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+             |> UnixBootImage.boot,
+             [ 1..3 ])
             ||> List.fold (fun system name -> Tasks.ensure name system)
 
         let listener, system =

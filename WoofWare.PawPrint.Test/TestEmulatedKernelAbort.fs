@@ -16,8 +16,9 @@ module TestEmulatedKernelAbort =
 
     /// A process as the runtime starts it, with one task: `thread`, its leader.
     let private kernelOn (platform : SimulatedUnixPlatform) (coreDumps : CoreDumps) : EmulatedKernel =
-        EmulatedKernel.create platform StandardStreamsConfig.piped
-        |> EmulatedKernel.mapProcess (UnixProcessState.withCoreDumps coreDumps)
+        EmulatedKernel.image platform StandardStreamsConfig.piped
+        |> UnixBootImage.withCoreDumps coreDumps
+        |> EmulatedKernel.boot
 
     let private platforms : SimulatedUnixPlatform list =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]

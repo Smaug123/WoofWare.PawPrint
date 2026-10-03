@@ -41,7 +41,9 @@ module TestUserBufferCheckAgainstHost =
 
     /// A machine on `platform`, to apply this host's measured facts to.
     let private machineOn (platform : SimulatedUnixPlatform) : UnixMachineState =
-        (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)).Machine
+        (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+         |> UnixBootImage.boot)
+            .Machine
 
     /// Whether the host refuses `length` bytes at `address` on a descriptor with
     /// nothing to transfer.
@@ -162,8 +164,10 @@ module TestUserBufferCheckAgainstHost =
                     match measureLimit fd 1UL with
                     | None -> UserBufferCheck.AtCopyTime
                     | Some limit ->
-                        machineOn platform
-                        |> UnixMachineState.withUserAddressLimit limit
+                        (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                         |> UnixBootImage.withUserAddressLimit limit
+                         |> UnixBootImage.boot)
+                            .Machine
                         |> UnixMachineState.userBufferCheck
 
                 let describe (refuses : bool) : string =

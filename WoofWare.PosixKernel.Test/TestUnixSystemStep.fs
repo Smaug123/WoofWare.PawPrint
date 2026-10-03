@@ -40,19 +40,19 @@ module TestUnixSystemStep =
     let private waiterTask : int = 2
     let private thirdTask : int = 3
 
+    /// The boot image of a simulated process on the flavour asked for, on a
+    /// machine with no addresses.
+    let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> =
+        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.withLocalAddresses [] []
+
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        imageOn platform |> UnixBootImage.boot
 
-        { system with
-            Machine =
-                { system.Machine with
-                    LocalAddresses = []
-                    LocalRoutes = []
-                }
-        }
+    let private linuxRoot : Credentials =
+        Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) []
 
 
     let private linux : UnixSystem<int, string> =
@@ -1622,13 +1622,20 @@ module TestUnixSystemStep =
     let ``fstat reports the inode's owner, whoever is asking`` () : unit =
         // Asserted by *changing* the asker, so that an answer read off the
         // caller's credentials rather than the inode fails.
-        let fd, system = withOpenFile linux
+        // The file is made by the default user, and the process then becomes
+        // another, through the syscalls: it starts as root, acts as the default
+        // user to make the file, and takes root back to change who it is.
+        let fd, system =
+            imageOn SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withCredentials "test" linuxRoot
+            |> UnixBootImage.boot
+            |> Become.temporarily Owners.linuxDefaultCaller
+            |> withOpenFile
 
         let system =
             system
-            |> UnixSystem.withCredentials
-                "test"
-                (Credentials.ofIds (UserId.parseOrFail "test" 41u) (GroupId.parseOrFail "test" 43u) [])
+            |> Become.rootAgain
+            |> Become.fully (Credentials.ofIds (UserId.parseOrFail "test" 41u) (GroupId.parseOrFail "test" 43u) [])
 
         let status = UnixPathResolution.fstat fd system |> reported
         status.UserId |> shouldEqual Owners.linuxDefault.User
@@ -1650,7 +1657,10 @@ module TestUnixSystemStep =
                 SupplementaryGroups = [ GroupId.parseOrFail "test" 64u ]
             }
 
-        let system = linux |> UnixSystem.withCredentials "test" credentials
+        let system =
+            imageOn SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withCredentials "test" credentials
+            |> UnixBootImage.boot
 
         UnixDescriptor.effectiveUserId system |> shouldEqual credentials.EffectiveUser
 
@@ -1924,10 +1934,13 @@ module TestUnixSystemStep =
         |> shouldEqual (Error (PathFailure.Errno UnixError.EACCES))
 
         // uid 0 is exempt, which is what says the rule is being read from the
-        // process rather than hardcoded.
-        let asRoot =
-            system
-            |> UnixSystem.withCredentials "test" (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
+        // process rather than hardcoded. Root owns its tree, whose directory is
+        // as unsearchable to its owner as the other was to its own.
+        let _, _, _, asRoot =
+            imageOn SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withCredentials "test" linuxRoot
+            |> UnixBootImage.boot
+            |> withTreeUnder (PermissionBits.parseOrFail context 0o600)
 
         match UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") asRoot with
         | Ok _ -> ()
@@ -2396,7 +2409,9 @@ module TestUnixSystemStep =
 
         // Away from the default, so that a primitive answering a constant fails.
         let configured =
-            UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" 3) linux
+            imageOn SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" 3)
+            |> UnixBootImage.boot
 
         UnixSystem.processId configured |> ProcessId.toInt32 |> shouldEqual 3
 
@@ -2410,8 +2425,8 @@ module TestUnixSystemStep =
     [<Test>]
     let ``withProcessId refuses the forged default process ID`` () : unit =
         let apply () =
-            UnixSystem.withProcessId "ctx" Unchecked.defaultof<ProcessId> linux
-            |> ignore<UnixSystem<int, string>>
+            UnixBootImage.withProcessId "ctx" Unchecked.defaultof<ProcessId> (imageOn SimulatedUnixPlatform.linuxX64)
+            |> ignore<UnixBootImage<int, string>>
 
         let exn = Assert.Throws<System.Exception> (TestDelegate apply)
 
@@ -5733,8 +5748,10 @@ module TestUnixSystemStep =
         // permission check rather than anything else about that directory, so
         // uid 0 walks straight in.
         let asRoot =
-            withChDirTree linux
-            |> UnixSystem.withCredentials "test" (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
+            imageOn SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withCredentials "test" linuxRoot
+            |> UnixBootImage.boot
+            |> withChDirTree
 
         changedTo "ronly" asRoot |> shouldEqual (Ok (Some "/ronly"))
 

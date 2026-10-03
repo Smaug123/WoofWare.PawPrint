@@ -67,6 +67,7 @@ module TestSocketAddressLength =
     /// is made by.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
     let private streamSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system

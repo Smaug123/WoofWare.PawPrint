@@ -273,7 +273,7 @@ module Standing =
         // group-2000 0040 file and may read a group-1000 one; and a group
         // reached only through a supplementary group selects the group triple
         // over all 4096 modes. A Darwin process cannot have differing real and
-        // effective IDs in this library (`UnixSystem.withCredentials`).
+        // effective IDs in this library (`UnixBootImage.withCredentials`).
         {
             Privilege = Credentials.privilege credentials
             Owns = owner.User = credentials.EffectiveUser
