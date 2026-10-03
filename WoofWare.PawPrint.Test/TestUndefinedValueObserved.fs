@@ -866,6 +866,38 @@ unsafe class Program
             )
 
     [<Test>]
+    let ``Making an array whose lower bound nothing wrote ends the run where the runtime reads it`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        int* numbers = stackalloc int[1];
+        // Only moved so far: CoreLib checks the lengths, but hands the lower bounds to the runtime
+        // unread.
+        int[] lowerBounds = { numbers[0], 0 };
+        Array made = Array.CreateInstance(typeof(int), new[] { 1, 1 }, lowerBounds);
+        return made.Rank == 2 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedArrayLowerBound.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int32
+                stackOrigins observation.Value |> shouldEqual [ 0 ; 1 ; 2 ; 3 ]
+                expectReadByRuntime "<InternalCreate>g__" "the lower bounds of the array it makes" observation
+            )
+
+    [<Test>]
     let ``A socket address with an unwritten port ends the run at the port's read`` () : unit =
         let source =
             """
