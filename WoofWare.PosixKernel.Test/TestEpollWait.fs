@@ -179,9 +179,7 @@ module TestEpollWait =
         if alreadyReady then
             system
         else
-            withRegistry
-                (FileDescriptorRegistry.appendSocketEventReady portId key system.Process.FileDescriptors)
-                system
+            withRegistry (FileDescriptorRegistry.appendEpollReady portId key system.Process.FileDescriptors) system
 
     /// The connection is taken by someone else: the listener's level drops, and
     /// the pending entry goes stale.
@@ -402,7 +400,7 @@ module TestEpollWait =
             |> shouldEqual (
                 Interruptible.condition (
                     WakeCondition.AnyOf (
-                        WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable portId),
+                        WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable portId),
                         [ WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ]
                     )
                 )
@@ -440,7 +438,7 @@ module TestEpollWait =
 
             condition
             |> shouldEqual (
-                Interruptible.condition (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable portId))
+                Interruptible.condition (WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable portId))
             )
 
             UnixWait.deadlines (Set.singleton task) parked |> shouldEqual []
@@ -470,7 +468,7 @@ module TestEpollWait =
             let ready = parked |> after (min elapsed (deadline - 1L)) |> signal
 
             woken ready
-            |> shouldEqual (Some (Set.singleton (WakePrimitive.SocketEventDeliverable portId)))
+            |> shouldEqual (Some (Set.singleton (WakePrimitive.EpollEventDeliverable portId)))
 
             let events, finished = finishes ready
             events |> shouldEqual delivered
@@ -491,7 +489,7 @@ module TestEpollWait =
                 Some (
                     Set.ofList
                         [
-                            WakePrimitive.SocketEventDeliverable portId
+                            WakePrimitive.EpollEventDeliverable portId
                             WakePrimitive.DeadlinePassed deadline
                         ]
                 )
@@ -512,7 +510,7 @@ module TestEpollWait =
         let ready = parked |> after 1L |> signal
 
         woken ready
-        |> shouldEqual (Some (Set.singleton (WakePrimitive.SocketEventDeliverable portId)))
+        |> shouldEqual (Some (Set.singleton (WakePrimitive.EpollEventDeliverable portId)))
 
         // Someone else takes the connection before the woken waiter runs.
         let stale = unready ready
@@ -674,7 +672,7 @@ module TestEpollWait =
 
                     let registry =
                         if isPending then
-                            FileDescriptorRegistry.appendSocketEventReady id stdinKey registry
+                            FileDescriptorRegistry.appendEpollReady id stdinKey registry
                         else
                             registry
 
@@ -741,7 +739,7 @@ module TestEpollWait =
 
                     let event =
                         if isPending wait.Port then
-                            Some (WakePrimitive.SocketEventDeliverable wait.Port)
+                            Some (WakePrimitive.EpollEventDeliverable wait.Port)
                         else
                             None
 

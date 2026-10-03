@@ -158,7 +158,7 @@ module EpollReadyList =
                 | Some registration -> registration
                 | None ->
                     failwith
-                        $"EpollReadyList.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
+                        $"EpollReadyList.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.EpollReadyEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
 
             let reported = LinuxReadiness.ofDescription targetId system &&& registration.Events
 
@@ -263,7 +263,7 @@ module EpollReadyList =
             Process =
                 { system.Process with
                     FileDescriptors =
-                        FileDescriptorRegistry.setSocketEventReady portId surviving system.Process.FileDescriptors
+                        FileDescriptorRegistry.setEpollReady portId surviving system.Process.FileDescriptors
                 }
         }
 

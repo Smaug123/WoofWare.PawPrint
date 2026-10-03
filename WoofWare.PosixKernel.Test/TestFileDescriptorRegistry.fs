@@ -1872,8 +1872,8 @@ module TestFileDescriptorRegistry =
             registry
             |> add portFd aFd 1UL
             |> add portFd bFd 2UL
-            |> FileDescriptorRegistry.appendSocketEventReady portId a
-            |> FileDescriptorRegistry.appendSocketEventReady portId b
+            |> FileDescriptorRegistry.appendEpollReady portId a
+            |> FileDescriptorRegistry.appendEpollReady portId b
 
         let registry =
             FileDescriptorRegistry.modifyEpollRegistration portId a EpollEvents.In 3UL registry
@@ -1991,10 +1991,7 @@ module TestFileDescriptorRegistry =
                 (OpenFileDescriptionId 100L)
 
         FileDescriptorRegistry.checkInvariants registry
-        |> shouldEqual
-            [
-                FileDescriptorRegistryDefect.SocketEventRegistrationTargetDead (portId, deadId)
-            ]
+        |> shouldEqual [ FileDescriptorRegistryDefect.EpollRegistrationTargetDead (portId, deadId) ]
 
     /// A port whose ready list disagrees with its interest table: one entry
     /// nothing registers, and one registered entry pending twice.
@@ -2036,13 +2033,13 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.checkInvariants (withReady [ 7, OpenFileDescriptionId 55L ])
         |> shouldEqual
             [
-                FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered (portId, 7, OpenFileDescriptionId 55L)
+                FileDescriptorRegistryDefect.EpollReadyEntryUnregistered (portId, 7, OpenFileDescriptionId 55L)
             ]
 
         FileDescriptorRegistry.checkInvariants (withReady [ sockFd, sockId ; sockFd, sockId ])
         |> shouldEqual
             [
-                FileDescriptorRegistryDefect.SocketEventReadyEntryDuplicated (portId, sockFd, sockId)
+                FileDescriptorRegistryDefect.EpollReadyEntryDuplicated (portId, sockFd, sockId)
             ]
 
         FileDescriptorRegistry.checkInvariants (withReady [ sockFd, sockId ])

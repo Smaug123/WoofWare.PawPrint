@@ -35,7 +35,7 @@ type WakePrimitive =
     /// `port` is the open file description rather than the descriptor, for the
     /// reason `FlockGrantable`'s requester is: the number can be closed and
     /// reused while the wait sleeps, and a `dup` of it waits on the same port.
-    | SocketEventDeliverable of port : OpenFileDescriptionId
+    | EpollEventDeliverable of port : OpenFileDescriptionId
     /// The kqueue the open file description `kqueue` names has been drained:
     /// a `close(2)` of a descriptor a `kevent` wait on it was entered through
     /// has ended every wait on it (see `KqueueState.Drained`).
@@ -233,7 +233,7 @@ module WakeCondition =
                     mode
                     registry
                 |> not
-        | WakePrimitive.SocketEventDeliverable port -> EpollReadyList.hasDeliverableEvent port system
+        | WakePrimitive.EpollEventDeliverable port -> EpollReadyList.hasDeliverableEvent port system
         | WakePrimitive.KqueueEventDeliverable kqueue -> KqueueQueue.hasDeliverableEvent kqueue system
         | WakePrimitive.KqueuePollReportable -> KqueuePoll.reportable task system
         | WakePrimitive.KqueueDrained kqueue ->
@@ -385,7 +385,7 @@ module WakeCondition =
         match condition with
         | WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) -> [ deadline ]
         | WakeCondition.Primitive (WakePrimitive.FlockGrantable _)
-        | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _)
+        | WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable _)
         | WakeCondition.Primitive (WakePrimitive.KqueueDrained _)
         | WakeCondition.Primitive (WakePrimitive.KqueueEventDeliverable _)
         | WakeCondition.Primitive WakePrimitive.KqueuePollReportable
@@ -425,7 +425,7 @@ module WakeCondition =
                 ]
             | ParkedSyscall.EpollWait wait ->
                 let deliverable =
-                    WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable wait.Port)
+                    WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable wait.Port)
 
                 match wait.Deadline with
                 | None -> [ deliverable ]

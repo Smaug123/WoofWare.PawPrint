@@ -570,9 +570,7 @@ module UnixPoll =
                 not alreadyPending
                 && LinuxReadiness.ofDescription targetId system &&& stored <> 0u
             then
-                withRegistry
-                    (FileDescriptorRegistry.appendSocketEventReady portId key system.Process.FileDescriptors)
-                    system
+                withRegistry (FileDescriptorRegistry.appendEpollReady portId key system.Process.FileDescriptors) system
             else
                 system
 

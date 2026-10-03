@@ -67,7 +67,7 @@ module TestSocketEventDelivery =
     /// said it would. Nothing else asserts that, and each reader looks correct
     /// alone — a lost wakeup is a waiter that sleeps through an event the drain
     /// would have handed it.
-    let private deliverSocketEvents
+    let private deliverEpollEvents
         (portId : OpenFileDescriptionId)
         (maxCount : int)
         (kernel : UnixSystem<int, string>)
@@ -82,7 +82,7 @@ module TestSocketEventDelivery =
 
         delivered, system
 
-    let private hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
+    let private hasDeliverableEpollEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
         EpollReadyList.hasDeliverableEvent portId kernel
 
     let private addPort (kernel : UnixSystem<int, string>) : int * OpenFileDescriptionId * UnixSystem<int, string> =
@@ -214,7 +214,7 @@ module TestSocketEventDelivery =
 
         let _, _, kernel = UnixConnection.acceptConnection listenerId kernel
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         delivered |> shouldEqual []
         readyOf portId kernel |> shouldEqual []
         assertSound kernel
@@ -231,18 +231,18 @@ module TestSocketEventDelivery =
         let kernel = register portFd listenerFd 7UL kernel
         let _, kernel = connect c1 false (loopback 5000us) kernel
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered |> shouldEqual [ 7UL, (EpollEvents.In) ]
 
         // B: the level is still high (queue nonempty), and nothing reports.
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         delivered |> shouldEqual []
 
         // D: the second connect is a fresh signal even though the reported
         // mask never changed.
         let _, kernel = connect c2 false (loopback 5000us) kernel
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 7UL ]
         assertSound kernel
 
@@ -256,13 +256,13 @@ module TestSocketEventDelivery =
         let _, c2, kernel = addStream kernel
         let kernel = register portFd listenerFd 7UL kernel
         let _, kernel = connect c1 false (loopback 5000us) kernel
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 7UL ]
 
         let _, _, kernel = UnixConnection.acceptConnection listenerId kernel
         let _, kernel = connect c2 false (loopback 5000us) kernel
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 7UL ]
         assertSound kernel
 
@@ -278,8 +278,8 @@ module TestSocketEventDelivery =
         let portFd, portId, kernel = addPort kernel
         let kernel = register portFd listenerFd 9UL kernel
 
-        hasDeliverableSocketEvents portId kernel |> shouldEqual true
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        hasDeliverableEpollEvents portId kernel |> shouldEqual true
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 9UL ]
         assertSound kernel
 
@@ -292,7 +292,7 @@ module TestSocketEventDelivery =
         let kernel = register portFd listenerFd 9UL kernel
 
         readyOf portId kernel |> shouldEqual []
-        hasDeliverableSocketEvents portId kernel |> shouldEqual false
+        hasDeliverableEpollEvents portId kernel |> shouldEqual false
         assertSound kernel
 
     // --- rows F-J, R: order ---
@@ -314,7 +314,7 @@ module TestSocketEventDelivery =
             let _, kernel = connect c1 false (loopback first) kernel
             let _, kernel = connect c2 false (loopback second) kernel
 
-            let delivered, kernel = deliverSocketEvents portId 8 kernel
+            let delivered, kernel = deliverEpollEvents portId 8 kernel
 
             dataOf delivered
             |> shouldEqual (if firstIsL1 then [ 1UL ; 2UL ] else [ 2UL ; 1UL ])
@@ -337,7 +337,7 @@ module TestSocketEventDelivery =
         let _, kernel = connect c2 false (loopback 5001us) kernel
         let _, kernel = connect c3 false (loopback 5002us) kernel
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
         assertSound kernel
 
@@ -357,7 +357,7 @@ module TestSocketEventDelivery =
         let _, kernel = connect c2 false (loopback 5001us) kernel
         let kernel = register portFd l2Fd 2UL kernel
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 1UL ; 2UL ]
         assertSound kernel
 
@@ -379,14 +379,14 @@ module TestSocketEventDelivery =
         let _, kernel = connect c2 false (loopback 5002us) kernel
         let _, kernel = connect c3 false (loopback 5003us) kernel
 
-        let delivered, kernel = deliverSocketEvents portId 2 kernel
+        let delivered, kernel = deliverEpollEvents portId 2 kernel
         dataOf delivered |> shouldEqual [ 1UL ; 2UL ]
         readyOf portId kernel |> List.length |> shouldEqual 1
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 3UL ]
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         delivered |> shouldEqual []
         assertSound kernel
 
@@ -419,7 +419,7 @@ module TestSocketEventDelivery =
 
             let _, kernel = connect c1 false (loopback 5000us) kernel
 
-            let delivered, kernel = deliverSocketEvents portId 8 kernel
+            let delivered, kernel = deliverEpollEvents portId 8 kernel
 
             dataOf delivered
             |> shouldEqual (if originalFirst then [ 2UL ; 1UL ] else [ 1UL ; 2UL ])
@@ -436,7 +436,7 @@ module TestSocketEventDelivery =
         let _, c1, kernel = addStream kernel
         let kernel = register portFd listenerFd 7UL kernel
         let _, kernel = connect c1 false (loopback 5000us) kernel
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 7UL ]
 
         let kernel =
@@ -445,7 +445,7 @@ module TestSocketEventDelivery =
             | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
             | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 7UL ]
         assertSound kernel
 
@@ -468,7 +468,7 @@ module TestSocketEventDelivery =
             | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
             | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
         assertSound kernel
 
@@ -484,7 +484,7 @@ module TestSocketEventDelivery =
         let kernel = register portFd clientFd 5UL kernel
 
         // Consume the idle OUT|HUP edge the ADD-of-ready queued.
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered |> shouldEqual [ 5UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
 
@@ -493,7 +493,7 @@ module TestSocketEventDelivery =
 
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered
         |> shouldEqual
@@ -506,7 +506,7 @@ module TestSocketEventDelivery =
                  ||| EpollEvents.Err)
             ]
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         delivered |> shouldEqual []
 
         // The delivering connect resets the socket, and the reset signals.
@@ -514,7 +514,7 @@ module TestSocketEventDelivery =
 
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered |> shouldEqual [ 5UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
 
@@ -539,20 +539,20 @@ module TestSocketEventDelivery =
         let portFd, portId, kernel = addPort initialSystem
         let clientFd, clientId, kernel = addStream kernel
         let kernel = register portFd clientFd 5UL kernel
-        let _, kernel = deliverSocketEvents portId 8 kernel
+        let _, kernel = deliverEpollEvents portId 8 kernel
         let _, kernel = connect clientId true (loopback 5999us) kernel
-        let _, kernel = deliverSocketEvents portId 8 kernel
+        let _, kernel = deliverEpollEvents portId 8 kernel
 
         let value, kernel = readSocketError clientFd kernel
         value |> shouldEqual 111
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         delivered |> shouldEqual []
 
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNABORTED)
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         delivered |> shouldEqual [ 5UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
 
         assertSound kernel
@@ -564,11 +564,11 @@ module TestSocketEventDelivery =
         let portFd, portId, kernel = addPort initialSystem
         let clientFd, clientId, kernel = addStream kernel
         let kernel = register portFd clientFd 5UL kernel
-        let _, kernel = deliverSocketEvents portId 8 kernel
+        let _, kernel = deliverEpollEvents portId 8 kernel
         let _, kernel = connect clientId true (loopback 5999us) kernel
         let _, kernel = readSocketError clientFd kernel
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered
         |> shouldEqual
@@ -598,7 +598,7 @@ module TestSocketEventDelivery =
             | Error refusal -> failwith $"remove failed: %s{EpollCtlRefusal.describe refusal}"
 
         readyOf portId kernel |> shouldEqual []
-        hasDeliverableSocketEvents portId kernel |> shouldEqual false
+        hasDeliverableEpollEvents portId kernel |> shouldEqual false
         assertSound kernel
 
     /// Closing the registered target's last descriptor sweeps its pending
@@ -629,7 +629,7 @@ module TestSocketEventDelivery =
             | Error error -> failwith $"close failed: %O{error}"
 
         readyOf portId kernel |> shouldEqual []
-        hasDeliverableSocketEvents portId kernel |> shouldEqual false
+        hasDeliverableEpollEvents portId kernel |> shouldEqual false
         assertSound kernel
 
     /// A failed ADD (EEXIST here) leaves the ordinal counter exactly as it
@@ -663,7 +663,7 @@ module TestSocketEventDelivery =
         let kernel = register portFd clientFd 5UL kernel
 
         // Consume the ADD-of-ready edge (established, live peer: OUT).
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered |> shouldEqual [ 5UL, (EpollEvents.Out) ]
 
@@ -672,7 +672,7 @@ module TestSocketEventDelivery =
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered
         |> shouldEqual [ 5UL, (EpollEvents.In ||| EpollEvents.Out ||| EpollEvents.RdHup) ]
@@ -716,7 +716,7 @@ module TestSocketEventDelivery =
         // re-poll reports nothing under CLOSE|ERROR against a level with
         // neither.
         readyOf portId kernel |> List.length |> shouldEqual 1
-        hasDeliverableSocketEvents portId kernel |> shouldEqual false
+        hasDeliverableEpollEvents portId kernel |> shouldEqual false
 
         // A newer edge elsewhere, then the widening MOD: the FIN's entry
         // keeps its earlier position and delivers first (`order8.c`).
@@ -731,7 +731,7 @@ module TestSocketEventDelivery =
             | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
             | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 5UL ; 9UL ]
         assertSound kernel
 
@@ -753,7 +753,7 @@ module TestSocketEventDelivery =
         assertSound kernel
 
         let kernel = register portFd clientFd 5UL kernel
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered
         |> shouldEqual [ 5UL, (EpollEvents.In ||| EpollEvents.Out ||| EpollEvents.RdHup) ]
@@ -790,12 +790,12 @@ module TestSocketEventDelivery =
 
         // Consume the client's idle ADD-of-ready edge so only the connect's
         // pair remains.
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 1UL ]
 
         let _, kernel = connect clientId false (loopback 5000us) kernel
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 1UL ; 2UL ]
         assertSound kernel
 
@@ -810,13 +810,13 @@ module TestSocketEventDelivery =
         let kernel = register portFd clientFd 6UL kernel
 
         // Consume the idle OUT|HUP edge the ADD-of-ready queued.
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 6UL ]
 
         let outcome, kernel = connect clientId false (loopback 5000us) kernel
         outcome |> shouldEqual ConnectOutcome.Completed
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered |> shouldEqual [ 6UL, (EpollEvents.Out) ]
 
@@ -830,14 +830,14 @@ module TestSocketEventDelivery =
         let portFd, portId, kernel = addPort initialSystem
         let clientFd, clientId, kernel = addStream kernel
         let kernel = register portFd clientFd 6UL kernel
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 6UL ]
 
         let outcome, kernel = connect clientId false (loopback 5999us) kernel
 
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
 
         delivered |> shouldEqual [ 6UL, (EpollEvents.Out ||| EpollEvents.Hup) ]
 
@@ -867,7 +867,7 @@ module TestSocketEventDelivery =
 
         let _, kernel = connect c1 false (loopback 5001us) kernel
         readyOf portId kernel |> shouldEqual []
-        hasDeliverableSocketEvents portId kernel |> shouldEqual false
+        hasDeliverableEpollEvents portId kernel |> shouldEqual false
 
         let _, kernel = connect c2 false (loopback 5002us) kernel
 
@@ -877,7 +877,7 @@ module TestSocketEventDelivery =
             | Ok (EpollCtlAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
             | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
         assertSound kernel
 
@@ -909,11 +909,11 @@ module TestSocketEventDelivery =
 
             let kernel = ctl 1 aFd (mask ||| EpollEvents.EdgeTriggered) 1UL kernel
             let kernel = ctl 1 bFd (EpollEvents.In ||| EpollEvents.EdgeTriggered) 2UL kernel
-            let _, kernel = deliverSocketEvents portId 8 kernel
+            let _, kernel = deliverEpollEvents portId 8 kernel
             let _, kernel = connect c1 false (loopback 5001us) kernel
             let _, kernel = connect c2 false (loopback 5002us) kernel
             let kernel = ctl 3 aFd (EpollEvents.In ||| EpollEvents.EdgeTriggered) 1UL kernel
-            let delivered, kernel = deliverSocketEvents portId 8 kernel
+            let delivered, kernel = deliverEpollEvents portId 8 kernel
 
             let expected =
                 if Set.contains mask keyed then
@@ -945,9 +945,9 @@ module TestSocketEventDelivery =
             | Error refusal -> failwith $"modify failed: %s{EpollCtlRefusal.describe refusal}"
 
         readyOf portId kernel |> List.length |> shouldEqual 1
-        hasDeliverableSocketEvents portId kernel |> shouldEqual false
+        hasDeliverableEpollEvents portId kernel |> shouldEqual false
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         delivered |> shouldEqual []
         readyOf portId kernel |> shouldEqual []
         assertSound kernel
@@ -984,7 +984,7 @@ module TestSocketEventDelivery =
 
         let _, kernel = connect c1 false (loopback 5000us) kernel
 
-        let delivered, kernel = deliverSocketEvents portId 8 kernel
+        let delivered, kernel = deliverEpollEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
         assertSound kernel
 

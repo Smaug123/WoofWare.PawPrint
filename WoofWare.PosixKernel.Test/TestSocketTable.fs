@@ -48,7 +48,7 @@ module TestSocketTable =
     /// polled against and the drain its woken handler performs read the same
     /// annotated walk, so a drain reports something exactly when the predicate
     /// said it would.
-    let private deliverSocketEvents
+    let private deliverEpollEvents
         (portId : OpenFileDescriptionId)
         (maxCount : int)
         (kernel : UnixSystem<int, string>)
@@ -63,7 +63,7 @@ module TestSocketTable =
 
         delivered, system
 
-    let private hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
+    let private hasDeliverableEpollEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
         EpollReadyList.hasDeliverableEvent portId kernel
 
     let private linuxReadiness (targetId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : uint32 =
@@ -1090,22 +1090,21 @@ module TestSocketTable =
                     }
             }
 
-        hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        hasDeliverableEpollEvents (OpenFileDescriptionId 50L) kernel
         |> shouldEqual false
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
 
         outcome |> shouldEqual ConnectOutcome.Completed
 
-        hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
-        |> shouldEqual true
+        hasDeliverableEpollEvents (OpenFileDescriptionId 50L) kernel |> shouldEqual true
 
-        let delivered, kernel = deliverSocketEvents (OpenFileDescriptionId 50L) 8 kernel
+        let delivered, kernel = deliverEpollEvents (OpenFileDescriptionId 50L) 8 kernel
 
         delivered |> shouldEqual [ 0xBEEFUL, EpollEvents.In ]
 
         // Consumed: nothing further until the next edge.
-        hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        hasDeliverableEpollEvents (OpenFileDescriptionId 50L) kernel
         |> shouldEqual false
 
     [<Test>]

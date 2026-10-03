@@ -8,7 +8,7 @@ open WoofWare.PosixKernel
 
 /// Park order, and which parked tasks a system wakes.
 ///
-/// The socket-event half of `UnixWait.wakes` lives in `TestUnixSystemStep` and
+/// The epoll half of `UnixWait.wakes` lives in `TestUnixSystemStep` and
 /// `TestEpollWait`, beside the port fixtures that can make a port deliverable.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]

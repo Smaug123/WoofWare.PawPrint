@@ -167,7 +167,7 @@ module UnixWait =
 
         let exclusiveQueueOf (primitive : WakePrimitive) : ExclusiveWaitQueue option =
             match primitive with
-            | WakePrimitive.SocketEventDeliverable port -> Some (ExclusiveWaitQueue.Epoll port)
+            | WakePrimitive.EpollEventDeliverable port -> Some (ExclusiveWaitQueue.Epoll port)
             | WakePrimitive.AcceptQueueNonEmpty listener -> Some (ExclusiveWaitQueue.Listener listener)
             | WakePrimitive.PipeHasBytes reader when linux -> pipeOf reader |> Option.map ExclusiveWaitQueue.PipeReaders
             | WakePrimitive.PipeHasRoom (writer, _, _) when linux ->

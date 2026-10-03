@@ -878,17 +878,17 @@ type FileDescriptorRegistryDefect =
     /// is `close`'s sweep here, so a survivor is a leak — invisible to every
     /// syscall (no fd can name the dead description again) but exactly what
     /// the readiness wake must never deliver from.
-    | SocketEventRegistrationTargetDead of port : OpenFileDescriptionId * target : OpenFileDescriptionId
+    | EpollRegistrationTargetDead of port : OpenFileDescriptionId * target : OpenFileDescriptionId
     /// An epoll instance's ready list holds an entry its interest table does
     /// not register. Every path that removes a registration (DEL, and close's
     /// sweep) removes its pending entry in the same step, so a survivor would
     /// deliver an event from a corpse.
-    | SocketEventReadyEntryUnregistered of port : OpenFileDescriptionId * key : int * target : OpenFileDescriptionId
+    | EpollReadyEntryUnregistered of port : OpenFileDescriptionId * key : int * target : OpenFileDescriptionId
     /// An epoll instance's ready list holds the same entry twice. A pending
     /// registration keeps its place rather than being re-queued (measured:
     /// a re-signal does not move it), so a duplicate would deliver one edge
     /// twice.
-    | SocketEventReadyEntryDuplicated of port : OpenFileDescriptionId * key : int * target : OpenFileDescriptionId
+    | EpollReadyEntryDuplicated of port : OpenFileDescriptionId * key : int * target : OpenFileDescriptionId
     /// A kqueue holds a registration made through a descriptor that is not
     /// open. Closing a descriptor removes every registration made through it,
     /// so the registration has outlived its descriptor.
@@ -1948,7 +1948,7 @@ module FileDescriptorRegistry =
     /// loudly partial on a key that is not registered or is already pending —
     /// both would mean the caller's decision was made against a different
     /// table than the one being written.
-    let internal appendSocketEventReady
+    let internal appendEpollReady
         (portId : OpenFileDescriptionId)
         (key : int * OpenFileDescriptionId)
         (registry : FileDescriptorRegistry)
@@ -1957,7 +1957,7 @@ module FileDescriptorRegistry =
         match Map.tryFind portId registry.Descriptions with
         | None ->
             failwith
-                $"appendSocketEventReady: %O{portId} names no live open file description; the caller resolved it moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
+                $"appendEpollReady: %O{portId} names no live open file description; the caller resolved it moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendEpollReady."
         | Some description ->
 
         match description.Target with
@@ -1968,16 +1968,16 @@ module FileDescriptorRegistry =
         | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _ ->
             failwith
-                $"appendSocketEventReady: %O{portId} is not an epoll instance; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
+                $"appendEpollReady: %O{portId} is not an epoll instance; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendEpollReady."
         | OpenFileTarget.Epoll portState ->
 
         if not (Map.containsKey key portState.Registrations) then
             failwith
-                $"appendSocketEventReady: %A{key} is not registered with port %O{portId}, so it cannot become pending on it (this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady)."
+                $"appendEpollReady: %A{key} is not registered with port %O{portId}, so it cannot become pending on it (this is a bug in the caller of FileDescriptorRegistry.appendEpollReady)."
 
         if List.contains key portState.Ready then
             failwith
-                $"appendSocketEventReady: %A{key} is already pending on port %O{portId}; a pending entry keeps its place rather than being re-queued, so the caller should not have asked (this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady)."
+                $"appendEpollReady: %A{key} is already pending on port %O{portId}; a pending entry keeps its place rather than being re-queued, so the caller should not have asked (this is a bug in the caller of FileDescriptorRegistry.appendEpollReady)."
 
         { registry with
             Descriptions =
@@ -1999,7 +1999,7 @@ module FileDescriptorRegistry =
     /// register, and on a duplicate: the caller derived `ready` from the
     /// port's own state moments ago, so any of those means it wrote against
     /// a different table than the one it read.
-    let internal setSocketEventReady
+    let internal setEpollReady
         (portId : OpenFileDescriptionId)
         (ready : (int * OpenFileDescriptionId) list)
         (registry : FileDescriptorRegistry)
@@ -2008,7 +2008,7 @@ module FileDescriptorRegistry =
         match Map.tryFind portId registry.Descriptions with
         | None ->
             failwith
-                $"setSocketEventReady: %O{portId} names no live open file description (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
+                $"setEpollReady: %O{portId} names no live open file description (this is a bug in the caller of FileDescriptorRegistry.setEpollReady, which derived the list from a different table)."
         | Some description ->
 
         match description.Target with
@@ -2019,17 +2019,17 @@ module FileDescriptorRegistry =
         | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _ ->
             failwith
-                $"setSocketEventReady: %O{portId} is not an epoll instance (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
+                $"setEpollReady: %O{portId} is not an epoll instance (this is a bug in the caller of FileDescriptorRegistry.setEpollReady, which derived the list from a different table)."
         | OpenFileTarget.Epoll portState ->
 
         for key in ready do
             if not (Map.containsKey key portState.Registrations) then
                 failwith
-                    $"setSocketEventReady: %A{key} is not registered with port %O{portId} (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
+                    $"setEpollReady: %A{key} is not registered with port %O{portId} (this is a bug in the caller of FileDescriptorRegistry.setEpollReady, which derived the list from a different table)."
 
         if List.length (List.distinct ready) <> List.length ready then
             failwith
-                $"setSocketEventReady: the ready list for port %O{portId} repeats an entry (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
+                $"setEpollReady: the ready list for port %O{portId} repeats an entry (this is a bug in the caller of FileDescriptorRegistry.setEpollReady, which derived the list from a different table)."
 
         { registry with
             Descriptions =
@@ -2247,7 +2247,7 @@ module FileDescriptorRegistry =
                         if Map.containsKey targetId registry.Descriptions then
                             None
                         else
-                            Some (FileDescriptorRegistryDefect.SocketEventRegistrationTargetDead (portId, targetId))
+                            Some (FileDescriptorRegistryDefect.EpollRegistrationTargetDead (portId, targetId))
                     )
             )
 
@@ -2269,13 +2269,7 @@ module FileDescriptorRegistry =
                             if Map.containsKey key portState.Registrations then
                                 None
                             else
-                                Some (
-                                    FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered (
-                                        portId,
-                                        fd,
-                                        targetId
-                                    )
-                                )
+                                Some (FileDescriptorRegistryDefect.EpollReadyEntryUnregistered (portId, fd, targetId))
                         )
 
                     let duplicated =
@@ -2283,13 +2277,7 @@ module FileDescriptorRegistry =
                         |> List.countBy id
                         |> List.choose (fun ((fd, targetId), count) ->
                             if count > 1 then
-                                Some (
-                                    FileDescriptorRegistryDefect.SocketEventReadyEntryDuplicated (
-                                        portId,
-                                        fd,
-                                        targetId
-                                    )
-                                )
+                                Some (FileDescriptorRegistryDefect.EpollReadyEntryDuplicated (portId, fd, targetId))
                             else
                                 None
                         )

@@ -3544,7 +3544,7 @@ module TestUnixSystemStep =
         { system with
             Process =
                 { system.Process with
-                    FileDescriptors = FileDescriptorRegistry.appendSocketEventReady portId (stdin, stdinId) registry
+                    FileDescriptors = FileDescriptorRegistry.appendEpollReady portId (stdin, stdinId) registry
                 }
         }
 
@@ -3698,7 +3698,7 @@ module TestUnixSystemStep =
         WakeCondition.ofPark parked
         |> shouldEqual (
             Interruptible.condition (
-                WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf fd system))
+                WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable (descriptionOf fd system))
             )
         )
 
@@ -3709,12 +3709,12 @@ module TestUnixSystemStep =
         // them.
         let quiet, system = withPort linux
 
-        holds 0 (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf quiet system))) system
+        holds 0 (WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable (descriptionOf quiet system))) system
         |> shouldEqual false
 
         let ready, system = withPendingPort linux
 
-        holds 0 (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))) system
+        holds 0 (WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable (descriptionOf ready system))) system
         |> shouldEqual true
 
     /// `waiters` parked, in this order, in an `epoll_wait` on the port `fd` names.
@@ -3746,7 +3746,7 @@ module TestUnixSystemStep =
         UnixWait.wakes (Set.singleton 7) parked
         |> shouldEqual (
             [
-                7, Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
+                7, Set.singleton (WakePrimitive.EpollEventDeliverable (descriptionOf ready system))
             ]
         )
 
@@ -3758,7 +3758,7 @@ module TestUnixSystemStep =
         let parked = parkedOnPortInOrder [ 9 ; 7 ; 8 ] ready system
 
         let fired =
-            Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
+            Set.singleton (WakePrimitive.EpollEventDeliverable (descriptionOf ready system))
 
         UnixWait.wakes (Set.ofList [ 7 ; 8 ; 9 ]) parked |> shouldEqual [ 8, fired ]
 
@@ -3789,7 +3789,7 @@ module TestUnixSystemStep =
         UnixWait.wakes (Set.ofList [ 7 ; 8 ; 9 ]) reparked
         |> shouldEqual
             [
-                9, Set.singleton (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))
+                9, Set.singleton (WakePrimitive.EpollEventDeliverable (descriptionOf ready system))
             ]
 
     [<Test>]
