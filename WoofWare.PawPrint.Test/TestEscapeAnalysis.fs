@@ -25,6 +25,8 @@ using System;
 
 namespace Fixture;
 
+public class GenericFailure<T> : Exception { }
+
 public class Locking
 {
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.Synchronized)]
@@ -255,8 +257,12 @@ public static class Cases
 
     public static void CoreLibThrowHelper(object o) { ArgumentNullException.ThrowIfNull(o); }
 
-    // Nothing says what the parameter is at run time.
+    // The parameter holds an object of the type it is declared with, or a subtype.
     public static void ThrowsParameter(Exception e) { throw e; }
+
+    // The helper's return type spells its own type variable, but still names the exception's class.
+    public static void ThrowsGenericReturned() { throw MakeGeneric<int>(); }
+    static GenericFailure<T> MakeGeneric<T>() => new GenericFailure<T>();
 }
 
 // A static virtual is dispatched on the type argument: the default body is not what runs for
@@ -495,6 +501,10 @@ public static class MathF
             // A value is of the type the IL spells for it.
             { expect "Fixture.Cases" "ThrowsParameter" with
                 Contains = [ "<:System.Exception" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Cases" "ThrowsGenericReturned" with
+                Contains = [ "<:Fixture.GenericFailure`1" ]
                 Unknown = Some false
             }
             { expect "Fixture.Cases" "CoreLibThrowHelper" with
@@ -2229,6 +2239,9 @@ public static class Uses
         /// What `Make` returns, stored in and loaded back from an `object[]`: the analysis does not
         /// follow what an array holds, so it does not know the operand's type.
         | Untyped
+        /// `newobj Nullable<int>(1); box Nullable<int>; throw`: boxing a nullable boxes its value, or
+        /// makes null, so what is thrown is an `Int32`, not a `Nullable<int>`.
+        | BoxedNullable
 
     /// The `catch` clause, if any, around an emitted method's raise.
     [<RequireQualifiedAccess>]
@@ -2246,6 +2259,7 @@ public static class Uses
             Raise.ReturnedWrapper
             Raise.ConstructedWrapperOfException
             Raise.Untyped
+            Raise.BoxedNullable
         ]
 
     let private clauses : Clause list =
@@ -2337,6 +2351,33 @@ public static class Uses
             |> TypeReferenceHandle.op_Implicit
 
         let objectRef = typeRef "System" "Object"
+
+        // `Nullable<int>`, and its constructor taking the value.
+        let nullableOfInt : EntityHandle =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .TypeSpecificationSignature()
+                .GenericInstantiation(typeRef "System" "Nullable`1", 1, true)
+                .AddArgument()
+                .Int32 ()
+
+            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+            |> TypeSpecificationHandle.op_Implicit
+
+        let nullableConstructor : EntityHandle =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (
+                    1,
+                    (fun returnType -> returnType.Void ()),
+                    (fun parameters -> parameters.AddParameter().Type().GenericTypeParameter 0)
+                )
+
+            metadata.AddMemberReference (nullableOfInt, metadata.GetOrAddString ".ctor", metadata.GetOrAddBlob blob)
+            |> MemberReferenceHandle.op_Implicit
 
         let signature (isInstance : bool) (returnsObject : bool) : BlobHandle =
             let blob = BlobBuilder ()
@@ -2440,6 +2481,13 @@ public static class Uses
                 code.OpCode ILOpCode.Stelem_ref
                 code.LoadConstantI4 0
                 code.OpCode ILOpCode.Ldelem_ref
+                code.OpCode ILOpCode.Throw
+            | Raise.BoxedNullable ->
+                code.LoadConstantI4 1
+                code.OpCode ILOpCode.Newobj
+                code.Token nullableConstructor
+                code.OpCode ILOpCode.Box
+                code.Token nullableOfInt
                 code.OpCode ILOpCode.Throw
 
         let addMethod (name : string) (returnsObject : bool) (body : int) : unit =
@@ -2640,11 +2688,12 @@ public static class Uses
 
             RuntimeCompatibility.wrapsNonExceptionThrows assembly |> shouldEqual wraps
 
-            // An untyped raise throws what `Raise.Returned` throws, which the runtime is already
-            // asked about; what is checked of it is how the analysis treats an unknown exception.
+            // An untyped raise throws what `Raise.Returned` throws, and a boxed nullable a boxed
+            // `Int32`, neither an exception, as the runtime is already asked about; what is checked
+            // of them is how the analysis treats an unknown exception.
             let runtime =
                 cases
-                |> List.filter (fun (raise, _, _, _) -> raise <> Raise.Untyped)
+                |> List.filter (fun (raise, _, _, _) -> raise <> Raise.Untyped && raise <> Raise.BoxedNullable)
                 |> List.map (fun (_, _, _, name) -> name)
                 |> escapingOnRealRuntime image
 
@@ -2661,7 +2710,8 @@ public static class Uses
                     $"%s{name} in an assembly that %s{wrapping}: %A{render analysis escapes}, unknown %b{escapes.Unknown}"
 
                 match raise with
-                | Raise.Untyped ->
+                | Raise.Untyped
+                | Raise.BoxedNullable ->
                     // A `rethrow` re-raises what its clause caught of an unknown exception, which
                     // is nothing for a clause for an interface, and one of the clause's type for a
                     // clause that sees only exceptions: for a type other than an ancestor of
@@ -3103,6 +3153,7 @@ public class Base { public virtual int Probe(int a, int b) => unchecked(a + b); 
 public class Divides : Base { public override int Probe(int a, int b) => a / b; }
 public sealed class SealedAdds : Base { public override int Probe(int a, int b) => checked(a + b); }
 public class OpenDivides : Base { public override int Probe(int a, int b) => a / b; }
+public sealed class SealedGeneric<T> : Base { public override int Probe(int a, int b) => a / b; }
 
 public interface IProbe { int Probe(int a, int b); }
 public sealed class SealedViaInterface : IProbe { public int Probe(int a, int b) => a / b; }
@@ -3116,6 +3167,7 @@ public static class Through
     public static int Sealed(SealedAdds x, int a, int b) => x.Probe(a, b);
     public static int Open(OpenDivides x, int a, int b) => x.Probe(a, b);
     public static int Generic<T>(T x, int a, int b) where T : Base => x.Probe(a, b);
+    public static SealedGeneric<T> MakeSealed<T>() => new SealedGeneric<T>();
 }
 
 public static class Runners
@@ -3128,6 +3180,8 @@ public static class Runners
     public static int BoxedStruct(int a, int b) => ((IProbe)new ValueAdds()).Probe(a, b);
     public static int GenericSealed(int a, int b) => Through.Generic(new SealedAdds(), a, b);
     public static int GenericOpen(int a, int b) => Through.Generic(new OpenDivides(), a, b);
+    // The receiver's type is the callee's return type, spelled with the callee's type variable.
+    public static int GenericReturned(int a, int b) => Through.MakeSealed<int>().Probe(a, b);
     public static int ThrowJoined(int a, int b) =>
         throw (b == 0 ? (Exception)new First() : new Second());
 }
@@ -3155,6 +3209,7 @@ public static class Runners
                 "BoxedStruct", Set.singleton overflows, DispatchClaim.Precise
                 "GenericSealed", Set.singleton overflows, DispatchClaim.Precise
                 "GenericOpen", both, DispatchClaim.Unknown
+                "GenericReturned", both, DispatchClaim.SoundOnly
             ]
 
         let runtime =

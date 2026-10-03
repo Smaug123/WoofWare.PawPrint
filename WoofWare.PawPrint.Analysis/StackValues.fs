@@ -24,11 +24,23 @@ type internal StackValue =
     /// does not say.
     | Unknown
 
+/// A type a body's metadata spells for a stack value.
+type internal SpelledType =
+    {
+        Type : TypeDefn
+        /// The full name of the assembly whose metadata spells it.
+        SpelledIn : string
+        /// Whether a type variable in it is the body's own, so that an instance of the body can
+        /// concretise it. One a member's signature spells, such as a callee's return type, has the
+        /// member's type variables instead, and names only the type definition it instantiates.
+        InBodyContext : bool
+    }
+
 /// The values a body's spellings give each source of a stack value.
 type internal BodySpellings =
     {
-        /// Each type spelled, with the full name of the assembly whose metadata spells it.
-        Spellings : (TypeDefn * string) list
+        /// Each type spelled.
+        Spellings : SpelledType list
         /// What `ldarg` of each index pushes, `this` at 0 for an instance method.
         Arguments : StackValue list
         /// What `ldloc` of each index pushes.

@@ -1237,9 +1237,9 @@ module EscapeAnalysis =
         (unbound : Set<int>)
         : EscapeAnalysisState * BodySpellings
         =
-        let spellings = System.Collections.Generic.List<TypeDefn * string> ()
+        let spellings = System.Collections.Generic.List<SpelledType> ()
 
-        let objectOf (exact : bool) (spelling : TypeDefn) (spelledIn : string) : StackValue =
+        let objectOf (exact : bool) (inBodyContext : bool) (spelling : TypeDefn) (spelledIn : string) : StackValue =
             match TypeDefn.stripCustomModifiers spelling with
             | TypeDefn.Byref _
             | TypeDefn.Pointer _
@@ -1247,7 +1247,13 @@ module EscapeAnalysis =
             | TypeDefn.FunctionPointer _
             | TypeDefn.Void -> StackValue.Unknown
             | _ ->
-                spellings.Add (spelling, spelledIn)
+                spellings.Add
+                    {
+                        Type = spelling
+                        SpelledIn = spelledIn
+                        InBodyContext = inBodyContext
+                    }
+
                 let index = spellings.Count - 1
 
                 let spelled =
@@ -1261,17 +1267,19 @@ module EscapeAnalysis =
         // A type a signature spells in the body's own assembly, but in the context of the member
         // it belongs to: a type variable in it is not the body's.
         let ofMemberSignature (spelling : TypeDefn) : StackValue =
-            if mentionsTypeVariable spelling then
-                StackValue.Unknown
-            else
-                objectOf false spelling assembly.DefinitionFullName
+            objectOf false (not (mentionsTypeVariable spelling)) spelling assembly.DefinitionFullName
 
         let ofOwnSpelling (spelling : TypeDefn) : StackValue =
-            objectOf false spelling assembly.DefinitionFullName
+            objectOf false true spelling assembly.DefinitionFullName
 
         let ofTypeToken (exact : bool) (state : EscapeAnalysisState) (token : MetadataToken) =
             match spelledType state assembly token with
-            | state, Some (spelling, spelledIn) -> state, objectOf exact spelling spelledIn
+            | state, Some (spelling, spelledIn) ->
+                // A nullable type named by `box`, `isinst` or `castclass` stands for the value it
+                // holds, boxed, or null (ECMA-335 III.4.1, III.4.3, III.4.6).
+                match nominalIdentity state (assemblyOf state spelledIn) spelling with
+                | state, Some identity when identity = state.BaseTypes.Nullable.Identity -> state, StackValue.Unknown
+                | state, _ -> state, objectOf exact true spelling spelledIn
             | state, None -> state, StackValue.Unknown
 
         let state, this =
@@ -1307,7 +1315,7 @@ module EscapeAnalysis =
                                 |> ImmutableArray.CreateRange
                             )
 
-                    state, [ objectOf false spelling identity.AssemblyFullName ]
+                    state, [ objectOf false true spelling identity.AssemblyFullName ]
 
         let arguments = this @ (method.Signature.ParameterTypes |> List.map ofOwnSpelling)
 
@@ -1317,7 +1325,7 @@ module EscapeAnalysis =
             |> Option.defaultValue []
 
         let string =
-            objectOf true (TypeDefn.PrimitiveType PrimitiveType.String) state.BaseTypes.Corelib.DefinitionFullName
+            objectOf true true (TypeDefn.PrimitiveType PrimitiveType.String) state.BaseTypes.Corelib.DefinitionFullName
 
         let state, tokens =
             ((state, Map.empty), List.indexed body.Instructions)
@@ -1656,7 +1664,7 @@ module EscapeAnalysis =
         let folder
             (targets : Map<int, CallTarget>)
             (unbound : Set<int>)
-            (spellings : (TypeDefn * string)[])
+            (spellings : SpelledType[])
             (objectsAt : int -> int -> SpelledObject list option)
             (calleeArguments : int -> int option)
             (
@@ -1711,9 +1719,11 @@ module EscapeAnalysis =
                                 | None, _ -> state, None
                                 | Some thrown, SpelledObject.Null -> state, Some thrown
                                 | Some thrown, (SpelledObject.Exactly index | SpelledObject.Within index) ->
-                                    let spelling, spelledIn = spellings.[index]
+                                    let spelling = spellings.[index]
 
-                                    match nominalIdentity state (assemblyOf state spelledIn) spelling with
+                                    match
+                                        nominalIdentity state (assemblyOf state spelling.SpelledIn) spelling.Type
+                                    with
                                     | state, None -> state, None
                                     | state, Some identity ->
                                         match object with
@@ -1825,24 +1835,32 @@ module EscapeAnalysis =
                                     match call, calleeArguments offset with
                                     | UnaryMetadataTokenIlOp.Callvirt, Some arguments when arguments > 0 ->
                                         objectsAt offset (arguments - 1)
-                                        |> Option.map (
-                                            List.choose (fun object ->
-                                                match object with
-                                                | SpelledObject.Null -> None
-                                                | SpelledObject.Exactly index
-                                                | SpelledObject.Within index ->
-                                                    let spelling, spelledIn = spellings.[index]
+                                        |> Option.bind (fun objects ->
+                                            let spelled =
+                                                objects
+                                                |> List.choose (fun object ->
+                                                    match object with
+                                                    | SpelledObject.Null -> None
+                                                    | SpelledObject.Exactly index -> Some (spellings.[index], true)
+                                                    | SpelledObject.Within index -> Some (spellings.[index], false)
+                                                )
 
-                                                    Some
-                                                        {
-                                                            Spelling = spelling
-                                                            SpelledIn = spelledIn
-                                                            Exact =
-                                                                match object with
-                                                                | SpelledObject.Exactly _ -> true
-                                                                | _ -> false
-                                                        }
-                                            )
+                                            // A type a member's signature spells has that member's
+                                            // type variables, which no instance of this body binds.
+                                            if
+                                                spelled |> List.forall (fun (spelling, _) -> spelling.InBodyContext)
+                                            then
+                                                spelled
+                                                |> List.map (fun (spelling, exact) ->
+                                                    {
+                                                        Spelling = spelling.Type
+                                                        SpelledIn = spelling.SpelledIn
+                                                        Exact = exact
+                                                    }
+                                                )
+                                                |> Some
+                                            else
+                                                None
                                         )
                                     | _ -> None
 
