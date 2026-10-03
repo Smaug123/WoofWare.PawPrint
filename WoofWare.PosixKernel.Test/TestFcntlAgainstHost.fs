@@ -7,9 +7,16 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `fcntl(2)`'s status and descriptor flags, and `dup2(2)`, against the Linux
-/// kernel this test runs on: CI's x86-64, whose numbering the committed probe
-/// (measured on aarch64) does not cover, and aarch64 where it is run by hand.
+/// `fcntl(2)`'s status and descriptor flags against the Linux kernel this test
+/// runs on: CI's x86-64, whose numbering the committed probe (measured on
+/// aarch64) does not cover, and aarch64 where it is run by hand.
+///
+/// Every host descriptor here is one the test opened itself, and only those are
+/// closed. `dup2` and `F_DUPFD` are deliberately absent: they place a descriptor
+/// at a number the caller names or the rest of the table decides, and in a test
+/// host that number can belong to the runtime or to another test running
+/// alongside, which `dup2` would silently close. `TestFcntlMeasured` replays
+/// them from the committed probe instead.
 ///
 /// Linux only. `fcntl` is variadic, and Darwin's arm64 ABI passes a variadic
 /// argument on the stack where a P/Invoke passes it in a register, so a call
@@ -31,9 +38,6 @@ module TestFcntlAgainstHost =
 
     [<DllImport("libc", EntryPoint = "socket", SetLastError = true)>]
     extern int private hostSocket(int domain, int kind, int protocol)
-
-    [<DllImport("libc", EntryPoint = "dup2", SetLastError = true)>]
-    extern int private hostDup2(int oldFd, int newFd)
 
     [<DllImport("libc", EntryPoint = "close")>]
     extern int private hostClose(int fd)
@@ -192,95 +196,5 @@ module TestFcntlAgainstHost =
 
                     (word, FcntlWorld.word answer, FcntlWorld.descriptorFlags fd system)
                     |> shouldEqual (word, set, after)
-            )
-        )
-
-    /// `dup2` onto an open, a free and the same descriptor, and from a closed
-    /// one, and `F_DUPFD` from every minimum below a table with gaps: the
-    /// answers and the descriptor flags after, as the host's.
-    [<Test>]
-    let ``dup2 and F_DUPFD answer and flag as the host's do`` () : unit =
-        onLinux (fun platform ->
-            withHostDirectory (fun directory ->
-                // Well above anything the test host holds, so that the gaps are
-                // the test's own.
-                let baseFd = 900
-
-                let hostTable () =
-                    for i in 0..5 do
-                        let fd, _ = hostMake platform directory "file-rdonly"
-                        hostDup2 (fd, baseFd + i) |> shouldEqual (baseFd + i)
-                        hostClose fd |> ignore
-
-                    hostClose (baseFd + 2) |> ignore
-                    hostClose (baseFd + 4) |> ignore
-
-                let hostClean () =
-                    for i in 0..20 do
-                        hostClose (baseFd + i) |> ignore
-
-                let modelTable () =
-                    let system = FcntlWorld.system (runFor platform)
-                    let fd, system = FcntlWorld.make "file-rdonly" system |> Option.get
-
-                    let system =
-                        (system, [ 0..5 ])
-                        ||> List.fold (fun system i ->
-                            match UnixDescriptor.dup2 fd (baseFd + i) system with
-                            | Ok (_, system) -> system
-                            | Error refusal -> failwith $"%s{Dup2Refusal.describe refusal}"
-                        )
-
-                    [ fd ; baseFd + 2 ; baseFd + 4 ]
-                    |> List.fold
-                        (fun system fd ->
-                            match UnixDescriptor.close fd system with
-                            | Ok (_, system) -> system
-                            | Error refusal -> failwith $"%s{CloseRefusal.describe refusal}"
-                        )
-                        system
-
-                for minimum in [ baseFd .. baseFd + 7 ] do
-                    for command in [ FcntlWorld.DupFd ; FcntlWorld.dupFdCloexec platform ] do
-                        hostTable ()
-                        let created = hostFcntl (baseFd, command, minimum)
-                        let host = hostWord platform created
-                        let flags = hostWord platform (hostFcntl (created, FcntlWorld.GetFd, 0))
-                        hostClean ()
-
-                        let answer, system = FcntlWorld.fcntl baseFd command minimum (modelTable ())
-
-                        let modelFlags =
-                            match answer with
-                            | SyscallAnswer.Completed fd -> FcntlWorld.descriptorFlags (int fd) system
-                            | SyscallAnswer.Failed _ -> FcntlWorld.descriptorFlags -1 system
-
-                        (minimum, command, FcntlWorld.word answer, modelFlags)
-                        |> shouldEqual (minimum, command, host, flags)
-
-                for oldFd, newFd in
-                    [
-                        baseFd, baseFd + 1
-                        baseFd, baseFd + 2
-                        baseFd, baseFd
-                        baseFd + 2, baseFd + 1
-                        baseFd + 2, baseFd + 2
-                        baseFd, -1
-                    ] do
-                    hostTable ()
-                    hostFcntl (baseFd + 1, FcntlWorld.SetFd, 1) |> ignore
-                    let host = hostDup2 (oldFd, newFd)
-                    let hostAnswer = if host >= 0 then $"ok %d{host}" else hostWord platform host
-                    let flags = hostWord platform (hostFcntl (newFd, FcntlWorld.GetFd, 0))
-                    hostClean ()
-
-                    let system = modelTable ()
-                    let _, system = FcntlWorld.fcntl (baseFd + 1) FcntlWorld.SetFd 1 system
-
-                    match UnixDescriptor.dup2 oldFd newFd system with
-                    | Ok (answer, system) ->
-                        (oldFd, newFd, FcntlWorld.number answer, FcntlWorld.descriptorFlags newFd system)
-                        |> shouldEqual (oldFd, newFd, hostAnswer, flags)
-                    | Error refusal -> failwith $"%s{Dup2Refusal.describe refusal}"
             )
         )
