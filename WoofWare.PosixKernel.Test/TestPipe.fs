@@ -598,7 +598,7 @@ module TestPipe =
 
                     system <- after
                 | PipeOp.Dup fd ->
-                    let answer, after = UnixDescriptor.dup fd system
+                    let answer, after = Answered.dup fd system
 
                     match Map.tryFind fd reference.Fds, answer with
                     | None, SyscallAnswer.Failed UnixError.EBADF -> ()
@@ -1315,7 +1315,7 @@ module TestPipe =
                 | other -> failwith $"%A{other}"
 
             let dupped, system =
-                match UnixDescriptor.dup w system with
+                match Answered.dup w system with
                 | SyscallAnswer.Completed fd, system -> int fd, system
                 | other -> failwith $"%A{other}"
 

@@ -442,6 +442,22 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> GetSockNameFaultLength.AlreadyReported
         | SimulatedUnixFlavour.Darwin -> GetSockNameFaultLength.Untouched
 
+    /// The number every descriptor this kernel hands out lies below: the soft
+    /// `RLIMIT_NOFILE` it assumes the process has at least. A call that would
+    /// put a descriptor at or above it is refused (`DescriptorLimitRefusal`),
+    /// since what it answers depends on a limit this kernel does not model.
+    ///
+    /// It is the flavour's default soft limit at process start, so a process
+    /// is below it only if its parent lowered the limit.
+    let descriptorBound (platform : SimulatedUnixPlatform) : int =
+        // Measured by `rlimit-nofile.c`: 1024 on Linux, the kernel's own default
+        // (INR_OPEN_CUR, read as the first process of a booted 6.12 x86-64
+        // kernel) and what PAM's login path gives uid 1000 on 6.18.5 aarch64;
+        // 256 on Darwin, what launchd gives a job on 27.0.0.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> 1024
+        | SimulatedUnixFlavour.Darwin -> 256
+
     /// Whether the socket `accept(2)` hands back inherits `O_NONBLOCK` from the
     /// listening descriptor.
     ///

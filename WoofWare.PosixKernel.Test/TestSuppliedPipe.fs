@@ -494,7 +494,7 @@ module TestSuppliedPipe =
             writerOpen system |> shouldEqual true
 
             let duplicate, system =
-                match UnixDescriptor.dup 0 system with
+                match Answered.dup 0 system with
                 | SyscallAnswer.Completed fd, system -> int fd, system
                 | other -> failwith $"dup(0) answered %A{other}"
 

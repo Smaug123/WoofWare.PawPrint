@@ -295,6 +295,9 @@ type GetSockOptAnswer =
 /// model. Each carries the caller's arguments as they were passed.
 [<RequireQualifiedAccess>]
 type SocketRefusal =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    | DescriptorLimit of DescriptorLimitRefusal
     /// A protocol family other than `AF_UNIX`, `AF_INET` and `AF_INET6` that
     /// the simulated kernel has, or on Linux may have depending on how it was
     /// built. This library models no socket in it.
@@ -322,6 +325,7 @@ module SocketRefusal =
     /// a diagnostic.
     let describe (refusal : SocketRefusal) : string =
         match refusal with
+        | SocketRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | SocketRefusal.UnmodelledDomain domain ->
             $"domain %d{domain} names a protocol family other than AF_UNIX, AF_INET and AF_INET6, which the simulated kernel has (or, on Linux, may have, depending on how it was built). This kernel models no socket in it."
         | SocketRefusal.RawSocket (domain, socketType, protocol) ->
@@ -893,6 +897,21 @@ module UnixSocket =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<Result<int * UnixSystem<'Task, 'Handler>, UnixError>, SocketRefusal>
         =
+        // Measured (`fcntl-dup.c`, LIMIT rows): with no descriptor left below
+        // the limit, Darwin answers EMFILE ahead of every screen of the three
+        // numbers, and Linux answers those screens first.
+        let room =
+            FileDescriptorRegistry.room
+                (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
+                0
+                1
+                system.Process.FileDescriptors
+
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, room with
+        | SimulatedUnixFlavour.Darwin, Error refusal -> Error (SocketRefusal.DescriptorLimit refusal)
+        | SimulatedUnixFlavour.Darwin, Ok ()
+        | SimulatedUnixFlavour.Linux, _ ->
+
         let decoding =
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Linux -> decodeLinux system.Machine.UnixPlatform domain socketType protocol
@@ -902,6 +921,10 @@ module UnixSocket =
         | SocketDecoding.Refused refusal -> Error refusal
         | SocketDecoding.Fails error -> Ok (Error error)
         | SocketDecoding.Creates (socketDomain, kind, socketProtocol, nonBlocking) ->
+            match room with
+            | Error refusal -> Error (SocketRefusal.DescriptorLimit refusal)
+            | Ok () ->
+
             let fd, system = allocate socketDomain kind socketProtocol nonBlocking system
 
             // Only Linux has `SOCK_CLOEXEC`; the Darwin decoder has refused

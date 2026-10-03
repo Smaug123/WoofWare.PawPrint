@@ -454,7 +454,7 @@ module TestPipeAgainstHost =
                                 if hostNew < 0 then
                                     failwith $"%s{where}: host dup failed"
 
-                                match UnixDescriptor.dup modelFd system with
+                                match Answered.dup modelFd system with
                                 | SyscallAnswer.Completed modelNew, after ->
                                     slots <- slots @ [ int modelNew, hostNew, pipeEnd, group ]
                                     system <- after

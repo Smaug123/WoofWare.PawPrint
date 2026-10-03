@@ -191,7 +191,7 @@ module TestFcntlMeasured =
                                     (FcntlWorld.system run)
 
                             let copy, system =
-                                match UnixDescriptor.dup fd system with
+                                match Answered.dup fd system with
                                 | SyscallAnswer.Completed copy, system -> int copy, system
                                 | other -> failwith $"dup: %A{other}"
 
@@ -221,7 +221,7 @@ module TestFcntlMeasured =
                                     | SyscallAnswer.Failed error -> failwith $"%s{operation}: %A{error}"
 
                                 if operation = "dup" then
-                                    ok (UnixDescriptor.dup fd system)
+                                    ok (Answered.dup fd system)
                                 elif operation = "F_DUPFD" then
                                     ok (FcntlWorld.fcntl fd FcntlWorld.DupFd 0 system)
                                 elif operation = "F_DUPFD_CLOEXEC" then
@@ -290,8 +290,18 @@ module TestFcntlMeasured =
 
     // ------------------------------------------------------------------ LIMIT
 
-    /// The probe's table for the LIMIT and DUP2 rows: 3 to 12 open on `f`,
-    /// then 5 and 9 closed.
+    /// Whether `refusal` is the descriptor bound's, which a row measured at a
+    /// soft limit of the bound answers with `limitErrno`.
+    let private boundRefusal (expectedDescriptor : int) (bound : int) (refusal : DescriptorLimitRefusal) : unit =
+        refusal
+        |> shouldEqual
+            {
+                Descriptor = expectedDescriptor
+                Bound = bound
+            }
+
+    /// The probe's table for the F_DUPFD rows: 3 to 12 open on `f`, then 5 and
+    /// 9 closed.
     let private limitTable (run : FcntlWorld.Run) : UnixSystem<int, string> =
         let system =
             (FcntlWorld.system run, [ 3..12 ])
@@ -312,18 +322,30 @@ module TestFcntlMeasured =
             )
             system
 
-    /// `F_DUPFD` and `F_DUPFD_CLOEXEC` from an open, a closed and a negative
-    /// descriptor, at each argument the probe tried below its soft limit of
-    /// 64, and the four commands on closed descriptors: as measured. The rows
-    /// at or above the limit are EINVAL on both kernels, which this kernel,
-    /// modelling no `RLIMIT_NOFILE`, answers with a descriptor; they are
-    /// counted, and must be exactly the rows that measured EINVAL for an open
-    /// source at a non-negative argument.
+    /// The probe ran its LIMIT and DUP2 rows at a soft limit of the bound this
+    /// kernel assumes, which it printed.
     [<Test>]
-    let ``F_DUPFD finds the lowest free descriptor at or above its argument, as measured below the limit`` () : unit =
+    let ``the probe's limit is the bound`` () : unit =
         for run in runs do
+            FcntlWorld.rows "LIMIT" run
+            |> List.filter (fun row -> List.head row = "bound")
+            |> shouldEqual
+                [
+                    [ "bound" ; string<int> (SimulatedUnixPlatform.descriptorBound run.Platform) ]
+                ]
+
+    /// `F_DUPFD` and `F_DUPFD_CLOEXEC` from an open, a closed and a negative
+    /// descriptor at every argument the probe tried, and the four commands on
+    /// closed descriptors, at a soft limit of the bound: every row is answered
+    /// as measured, except the rows an argument at or above the bound decides,
+    /// which measured EINVAL and are refused.
+    [<Test>]
+    let ``F_DUPFD answers as measured at the bound, and refuses where the limit decides`` () : unit =
+        for run in runs do
+            let bound = SimulatedUnixPlatform.descriptorBound run.Platform
+            let table = limitTable run
             let mutable replayed = 0
-            let mutable beyondLimit = 0
+            let mutable refused = 0
 
             for row in FcntlWorld.rows "LIMIT" run do
                 match row with
@@ -343,22 +365,25 @@ module TestFcntlMeasured =
                         else
                             FcntlWorld.dupFdCloexec run.Platform
 
-                    if fd = 3 && argument >= 64 then
-                        measured |> shouldEqual "EINVAL"
-                        beyondLimit <- beyondLimit + 1
-                    else
+                    match UnixDescriptor.fcntl fd command argument table with
+                    | Ok (answer, _) ->
                         replayed <- replayed + 1
 
-                        (source,
-                         argument,
-                         FcntlWorld.number (fst (FcntlWorld.fcntl fd command argument (limitTable run))))
-                        |> shouldEqual (source, argument, measured)
+                        (run.Name, source, argument, FcntlWorld.number answer)
+                        |> shouldEqual (run.Name, source, argument, measured)
+                    | Error (FcntlRefusal.DescriptorLimit refusal) ->
+                        refused <- refused + 1
+
+                        (run.Name, source, argument, measured)
+                        |> shouldEqual (run.Name, source, argument, "EINVAL")
+
+                        boundRefusal argument bound refusal
+                    | Error refusal -> failwith $"%s{run.Name} %A{row}: %s{FcntlRefusal.describe refusal}"
                 | [ closed ; getfl ; setfl ; getfd ; setfd ] when closed.StartsWith "closed " ->
                     let fd = int (field "closed " closed)
-                    let system = limitTable run
 
                     let answer (command : int) =
-                        FcntlWorld.word (fst (FcntlWorld.fcntl fd command 0 system))
+                        FcntlWorld.word (fst (FcntlWorld.fcntl fd command 0 table))
 
                     replayed <- replayed + 1
 
@@ -374,34 +399,223 @@ module TestFcntlMeasured =
                     // EBADF ahead of the command, which this kernel refuses.
                     onClosed |> shouldEqual "closed EBADF"
 
-                    UnixDescriptor.fcntl 60 9999 0 (limitTable run)
-                    |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EBADF, limitTable run))
+                    UnixDescriptor.fcntl 60 9999 0 table
+                    |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EBADF, table))
 
                     onOpen.StartsWith "open " |> shouldEqual true
 
-                    match UnixDescriptor.fcntl 3 9999 0 (limitTable run) with
+                    match UnixDescriptor.fcntl 3 9999 0 table with
                     | Error (FcntlRefusal.UnmodelledCommand 9999) -> ()
                     | other -> failwith $"command 9999 on an open descriptor: %A{other}"
                 | _ -> ()
 
+            // From the open descriptor, the arguments at or above the bound:
+            // the bound, one past it, 1<<20 and INT_MAX, for each command.
+            refused |> shouldEqual 8
             replayed |> shouldBeGreaterThan 50
-            beyondLimit |> shouldEqual 8
+
+    /// The table the probe's allocator rows ran against: 3 open on `f`, a
+    /// listener at 4 with a connection queued from a client at 6, a
+    /// non-blocking listener at 5 with none, and every other descriptor below
+    /// the bound taken but, with `oneLeft`, the last.
+    let private allocatorTable (run : FcntlWorld.Run) (oneLeft : bool) : UnixSystem<int, string> =
+        let bound = SimulatedUnixPlatform.descriptorBound run.Platform
+        let system = FcntlWorld.system run
+
+        let file, system =
+            FcntlWorld.openWith (FcntlWorld.opening FileAccessMode.ReadOnly) "f" system
+
+        let queued, system = FcntlWorld.listener 5000us false system
+        let empty, system = FcntlWorld.listener 5001us true system
+
+        let client, system =
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+        let system = FcntlWorld.connect client 5000us system
+        (file, queued, empty, client) |> shouldEqual (3, 4, 5, 6)
+        let last = if oneLeft then bound - 2 else bound - 1
+
+        ([ 7..last ], system)
+        ||> List.foldBack (fun target system ->
+            match UnixDescriptor.dup2 3 target system with
+            | Ok (SyscallAnswer.Completed _, system) -> system
+            | other -> failwith $"filling the table at %d{target}: %A{other}"
+        )
+
+    /// What each allocator the probe called, and each screen ahead of it,
+    /// answers on a table with one descriptor below the bound left and with
+    /// none: every row is answered as measured, except those that turn on the
+    /// limit, which measured EMFILE and are refused. Which rows those are is the
+    /// flavour's: Linux answers open's flag screen and EFAULT and every socket
+    /// screen ahead of the allocation, and Darwin does not; Darwin's accept
+    /// allocates only once there is a connection to take, and Linux's first.
+    [<Test>]
+    let ``every allocator answers as measured at the bound, and refuses where the limit decides`` () : unit =
+        for run in runs do
+            let bound = SimulatedUnixPlatform.descriptorBound run.Platform
+            let platform = run.Platform
+            let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
+
+            let tables =
+                Map.ofList [ "one left", allocatorTable run true ; "full", allocatorTable run false ]
+
+            let mutable replayed = 0
+            let mutable refused : (string * string) list = []
+
+            let socket (domain : int) (kind : int) (protocol : int) (system : UnixSystem<int, string>) =
+                match UnixSocket.socket domain kind protocol system with
+                | Ok (Ok (fd, _)) -> Ok (SyscallAnswer.Completed (int64 fd))
+                | Ok (Error error) -> Ok (SyscallAnswer.Failed error)
+                | Error (SocketRefusal.DescriptorLimit refusal) -> Error refusal
+                | Error refusal ->
+                    failwith $"socket(%d{domain}, %d{kind}, %d{protocol}): %s{SocketRefusal.describe refusal}"
+
+            let openOf (flags : int) (path : PathArgumentBytes) (system : UnixSystem<int, string>) =
+                match UnixNamespace.openPath flags path 0o644 system with
+                | Ok (answer, _) -> Ok answer
+                | Error (OpenRefusal.DescriptorLimit refusal) -> Error refusal
+                | Error refusal -> failwith $"open: %s{OpenRefusal.describe refusal}"
+
+            let pipeOf (flags : int) (system : UnixSystem<int, string>) =
+                match UnixPipe.pipe2 flags UserBuffer.Mapped system with
+                | Ok (Pipe2Answer.Created (r, _), _) -> Ok (SyscallAnswer.Completed 0L)
+                | Ok (Pipe2Answer.Failed error, _) -> Ok (SyscallAnswer.Failed error)
+                | Error (Pipe2Refusal.DescriptorLimit refusal) -> Error refusal
+                | Error refusal -> failwith $"pipe2: %s{Pipe2Refusal.describe refusal}"
+
+            let acceptOf (fd : int) (system : UnixSystem<int, string>) =
+                match UnixConnection.accept 0 fd UserBuffer.Mapped 16u system with
+                | Ok (AcceptOutcome.Accepted (accepted, _, _), _) -> Ok (SyscallAnswer.Completed (int64 accepted))
+                | Ok (AcceptOutcome.Failed error, _) -> Ok (SyscallAnswer.Failed error)
+                | Error (AcceptRefusal.DescriptorLimit refusal) -> Error refusal
+                | other -> failwith $"accept of %d{fd}: %A{other}"
+
+            let fcntlOf (fd : int) (argument : int) (system : UnixSystem<int, string>) =
+                match UnixDescriptor.fcntl fd FcntlWorld.DupFd argument system with
+                | Ok (answer, _) -> Ok answer
+                | Error (FcntlRefusal.DescriptorLimit refusal) -> Error refusal
+                | Error refusal -> failwith $"F_DUPFD: %s{FcntlRefusal.describe refusal}"
+
+            let readOnly = 0
+
+            let creatingDirectory =
+                OpenFlagWords.bitOf platform OpenFlagBit.Create
+                ||| OpenFlagWords.bitOf platform OpenFlagBit.Directory
+
+            for row in FcntlWorld.rows "LIMIT" run do
+                match row with
+                | [ state ; call ; measured ] when state = "one left" || state = "full" ->
+                    let system = tables.[state]
+
+                    let answer : Result<SyscallAnswer, DescriptorLimitRefusal> =
+                        match call with
+                        | "dup" -> UnixDescriptor.dup 3 system |> Result.map fst
+                        | "dup of closed" -> UnixDescriptor.dup (bound + 1) system |> Result.map fst
+                        | "dup of -1" -> UnixDescriptor.dup -1 system |> Result.map fst
+                        | "F_DUPFD arg 0" -> fcntlOf 3 0 system
+                        | "F_DUPFD of closed arg 0" -> fcntlOf (bound + 1) 0 system
+                        | "F_DUPFD arg -1" -> fcntlOf 3 -1 system
+                        | "open" -> openOf readOnly (PathArg.ofText "f") system
+                        | "open of a missing file" -> openOf readOnly (PathArg.ofText "nx-missing") system
+                        | "open with O_CREAT|O_DIRECTORY" ->
+                            openOf creatingDirectory (PathArg.ofText "nx-missing") system
+                        | "open of NULL" -> openOf readOnly PathArgumentBytes.Unreadable system
+                        | "socket" ->
+                            let d, k, p =
+                                NewSocket.arguments platform SocketDomain.Inet SocketKind.Stream SocketProtocol.Default
+
+                            socket d k p system
+                        | "socket of a bad family" -> socket 12345 1 0 system
+                        | "socket of a bad type" -> socket SimulatedUnixPlatform.internetAddressFamily 99 0 system
+                        | "socket of a bad protocol" -> socket SimulatedUnixPlatform.internetAddressFamily 1 99 system
+                        | "pipe" -> pipeOf 0 system
+                        | "pipe2 bad flag" -> pipeOf (if linux then 1 else 0x10) system
+                        | "kqueue" ->
+                            match UnixKqueue.kqueue system with
+                            | Ok (fd, _) -> Ok (SyscallAnswer.Completed (int64 fd))
+                            | Error (KqueueRefusal.DescriptorLimit refusal) -> Error refusal
+                            | Error refusal -> failwith $"kqueue: %s{KqueueRefusal.describe refusal}"
+                        | "epoll_create1"
+                        | "epoll_create1 bad flag" ->
+                            match UnixPoll.epollCreate1 (if call = "epoll_create1" then 0 else 1) system with
+                            | Ok (Ok (fd, _)) -> Ok (SyscallAnswer.Completed (int64 fd))
+                            | Ok (Error error) -> Ok (SyscallAnswer.Failed error)
+                            | Error (EpollCreateRefusal.DescriptorLimit refusal) -> Error refusal
+                            | Error refusal -> failwith $"epoll_create1: %s{EpollCreateRefusal.describe refusal}"
+                        | dup2 when dup2.StartsWith "dup2 onto open " ->
+                            match UnixDescriptor.dup2 3 (bound - 2) system with
+                            | Ok (answer, _) -> Ok answer
+                            | Error refusal -> failwith $"dup2: %s{Dup2Refusal.describe refusal}"
+                        | "accept of closed" -> acceptOf (bound + 1) system
+                        | "accept of a file" -> acceptOf 3 system
+                        | "accept with nothing queued, non-blocking" -> acceptOf 5 system
+                        | "accept with a connection queued" -> acceptOf 4 system
+                        | other -> failwith $"unknown LIMIT row %s{other}"
+
+                    match answer with
+                    | Ok answer ->
+                        replayed <- replayed + 1
+
+                        (run.Name, state, call, FcntlWorld.number answer)
+                        |> shouldEqual (run.Name, state, call, measured)
+                    | Error refusal ->
+                        refused <- (state, call) :: refused
+
+                        (run.Name, state, call, measured)
+                        |> shouldEqual (run.Name, state, call, "EMFILE")
+                        // The lowest number the call could have used: the
+                        // bound, or for a pipe with one left, the write end's.
+                        refusal.Bound |> shouldEqual bound
+                        refusal.Descriptor |> shouldEqual bound
+                | _ -> ()
+
+            let allocators =
+                [
+                    "dup"
+                    "F_DUPFD arg 0"
+                    "open"
+                    "open of a missing file"
+                    "socket"
+                    "pipe"
+                    "accept with a connection queued"
+                    if linux then "epoll_create1" else "kqueue"
+                ]
+
+            let expected =
+                [
+                    "one left", "pipe"
+                    for call in allocators do
+                        "full", call
+                    if linux then
+                        "full", "accept of a file"
+                        "full", "accept with nothing queued, non-blocking"
+                    else
+                        "full", "open with O_CREAT|O_DIRECTORY"
+                        "full", "open of NULL"
+                        "full", "socket of a bad family"
+                        "full", "socket of a bad type"
+                        "full", "socket of a bad protocol"
+                ]
+
+            (run.Name, Set.ofList refused) |> shouldEqual (run.Name, Set.ofList expected)
+            replayed |> shouldBeGreaterThan 25
 
     // ------------------------------------------------------------------ DUP2
 
-    /// Every `dup2` and `dup3` the probe made whose answer does not turn on the
-    /// soft limit: the answer, and whether the target is open after it. The
-    /// rows targeting 64, 65 and `INT_MAX` from an open source with good flags
-    /// are EBADF on both kernels by the limit; they are counted.
+    /// Every `dup2` and `dup3` the probe made, at a soft limit of the bound:
+    /// the answer, and whether the target is open after it. The rows that put
+    /// a good source onto a target at or above the bound measured EBADF by the
+    /// limit and are refused; every other is answered as measured, a closed or
+    /// negative source onto such a target included.
     [<Test>]
-    let ``dup2 and dup3 answer as measured below the limit`` () : unit =
+    let ``dup2 and dup3 answer as measured at the bound, and refuse where the limit decides`` () : unit =
         for run in runs do
+            let bound = SimulatedUnixPlatform.descriptorBound run.Platform
             let mutable replayed = 0
-            let mutable beyondLimit = 0
-            let reset () = FcntlWorld.system run
+            let mutable refused = 0
 
-            let table () =
-                let system = reset ()
+            let table =
+                let system = FcntlWorld.system run
 
                 let a, system =
                     FcntlWorld.openWith (FcntlWorld.opening FileAccessMode.ReadOnly) "f" system
@@ -417,6 +631,22 @@ module TestFcntlMeasured =
                 | Some _ -> "open"
                 | None -> "closed"
 
+            let check label measured targetState newFd (answer, after) =
+                replayed <- replayed + 1
+
+                (run.Name,
+                 label,
+                 FcntlWorld.number answer,
+                 $"target was %s{isOpen newFd table}, is %s{isOpen newFd after}")
+                |> shouldEqual (run.Name, label, measured, targetState)
+
+                UnixSystem.checkInvariants after |> shouldEqual []
+
+            let limited label measured newFd (refusal : DescriptorLimitRefusal) =
+                refused <- refused + 1
+                (run.Name, label, measured) |> shouldEqual (run.Name, label, "EBADF")
+                boundRefusal newFd bound refusal
+
             for row in FcntlWorld.rows "DUP2" run do
                 match row with
                 | [ "dup2" ; label ; arrow ; measured ; targetState ] ->
@@ -424,50 +654,32 @@ module TestFcntlMeasured =
                     let oldFd = int parts.[0]
                     let newFd = int parts.[2]
 
-                    if oldFd = 3 && newFd >= 64 then
-                        measured |> shouldEqual "EBADF"
-                        beyondLimit <- beyondLimit + 1
-                    else
-                        replayed <- replayed + 1
-                        let system = table ()
-                        let was = isOpen newFd system
-
-                        match UnixDescriptor.dup2 oldFd newFd system with
-                        | Ok (answer, after) ->
-                            (label, FcntlWorld.number answer, $"target was %s{was}, is %s{isOpen newFd after}")
-                            |> shouldEqual (label, measured, targetState)
-
-                            UnixSystem.checkInvariants after |> shouldEqual []
-                        | Error refusal -> failwith $"%s{label}: %s{Dup2Refusal.describe refusal}"
+                    match UnixDescriptor.dup2 oldFd newFd table with
+                    | Ok answered -> check label measured targetState newFd answered
+                    | Error (Dup2Refusal.DescriptorLimit refusal) -> limited label measured newFd refusal
+                    | Error refusal -> failwith $"%s{label}: %s{Dup2Refusal.describe refusal}"
                 | [ "dup3" ; label ; arrow ; measured ; targetState ] ->
                     let parts = arrow.Split ' '
                     let oldFd = int parts.[0]
                     let newFd = int parts.[2]
                     let flags = Convert.ToUInt32 (parts.[4].Substring 2, 16) |> int
 
-                    if oldFd = 3 && newFd >= 64 && flags &&& ~~~OpenFlagNumbering.LinuxCloseOnExec = 0 then
-                        measured |> shouldEqual "EBADF"
-                        beyondLimit <- beyondLimit + 1
-                    else
-                        replayed <- replayed + 1
-                        let system = table ()
-                        let was = isOpen newFd system
-
-                        match UnixDescriptor.dup3 oldFd newFd flags system with
-                        | Ok (answer, after) ->
-                            (label, FcntlWorld.number answer, $"target was %s{was}, is %s{isOpen newFd after}")
-                            |> shouldEqual (label, measured, targetState)
-                        | Error refusal -> failwith $"%s{label}: %s{Dup3Refusal.describe refusal}"
+                    match UnixDescriptor.dup3 oldFd newFd flags table with
+                    | Ok answered -> check label measured targetState newFd answered
+                    | Error (Dup3Refusal.DescriptorLimit refusal) -> limited label measured newFd refusal
+                    | Error refusal -> failwith $"%s{label}: %s{Dup3Refusal.describe refusal}"
                 | [ "dup3 onto open" ; _ ] -> ()
                 | other -> failwith $"malformed DUP2 row %A{other}"
 
+            // dup2 of 3 onto the bound, one past it and INT_MAX; and on Linux
+            // dup3 of 3 onto the bound with good flags.
             match SimulatedUnixPlatform.flavour run.Platform with
             | SimulatedUnixFlavour.Linux ->
+                refused |> shouldEqual 4
                 replayed |> shouldBeGreaterThan 40
-                beyondLimit |> shouldEqual 4
             | SimulatedUnixFlavour.Darwin ->
+                refused |> shouldEqual 3
                 replayed |> shouldBeGreaterThan 10
-                beyondLimit |> shouldEqual 3
 
     /// Under Darwin there is no `dup3`.
     [<Test>]
@@ -549,7 +761,7 @@ module TestFcntlMeasured =
                 let (_, w2), system = FcntlWorld.pipe 0 system
 
                 let kept, system =
-                    match UnixDescriptor.dup w system with
+                    match Answered.dup w system with
                     | SyscallAnswer.Completed kept, system -> int kept, system
                     | other -> failwith $"dup: %A{other}"
 
@@ -601,7 +813,7 @@ module TestFcntlMeasured =
                 let x, system = FcntlWorld.openWith reading "f" system
 
                 let y, system =
-                    match UnixDescriptor.dup x system with
+                    match Answered.dup x system with
                     | SyscallAnswer.Completed y, system -> int y, system
                     | other -> failwith $"dup: %A{other}"
 
@@ -615,7 +827,7 @@ module TestFcntlMeasured =
                     let x, system = FcntlWorld.openWith reading "f" system
 
                     let y, system =
-                        match UnixDescriptor.dup x system with
+                        match Answered.dup x system with
                         | SyscallAnswer.Completed y, system -> int y, system
                         | other -> failwith $"dup: %A{other}"
 
@@ -735,7 +947,7 @@ module TestFcntlMeasured =
                             let _, system = flockOf other (lockShared ||| lockNonBlocking) system
                             Some (flockOf fd (lockExclusive ||| lockNonBlocking) system)
                         | "flock through a dup" ->
-                            match UnixDescriptor.dup fd system with
+                            match Answered.dup fd system with
                             | SyscallAnswer.Completed copy, system ->
                                 let answer, system = flockOf (int copy) (lockShared ||| lockNonBlocking) system
 
@@ -874,7 +1086,7 @@ module TestFcntlMeasured =
         let (_, w), system = FcntlWorld.pipe 0 (FcntlWorld.system run |> ignoringSigPipe)
 
         let kept, system =
-            match UnixDescriptor.dup w system with
+            match Answered.dup w system with
             | SyscallAnswer.Completed kept, system -> int kept, system
             | other -> failwith $"dup: %A{other}"
 
@@ -928,7 +1140,7 @@ module TestFcntlMeasured =
 
                 let system =
                     if keepDup then
-                        snd (UnixDescriptor.dup listening system)
+                        snd (Answered.dup listening system)
                     else
                         system
 
@@ -960,11 +1172,7 @@ module TestFcntlMeasured =
                 let target, system = FcntlWorld.openWith reading "f" system
                 let _, system = flockOf holder 2 system
 
-                let system =
-                    if keepDup then
-                        snd (UnixDescriptor.dup target system)
-                    else
-                        system
+                let system = if keepDup then snd (Answered.dup target system) else system
 
                 let system =
                     match UnixDescriptor.flock 1 target 2 system with

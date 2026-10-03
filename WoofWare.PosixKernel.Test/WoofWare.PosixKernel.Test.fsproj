@@ -70,6 +70,7 @@
     <Compile Include="TestOpenFlagWord.fs" />
     <Compile Include="TestFcntlMeasured.fs" />
     <Compile Include="TestFcntlReference.fs" />
+    <Compile Include="TestDescriptorBound.fs" />
     <Compile Include="TestFcntlAgainstHost.fs" />
     <Compile Include="TestUserBuffer.fs" />
     <Compile Include="TestTransferCounts.fs" />

@@ -2437,14 +2437,14 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``dup of a closed descriptor is EBADF and changes nothing`` () : unit =
-        let answer, after = UnixDescriptor.dup 7 linux
+        let answer, after = Answered.dup 7 linux
         answer |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)
         after |> shouldEqual linux
 
     [<Test>]
     let ``dup shares the description and takes the lowest free descriptor`` () : unit =
         let fd, system = withOpenFile linux
-        let answer, after = UnixDescriptor.dup fd system
+        let answer, after = Answered.dup fd system
 
         let duplicated =
             match answer with
@@ -3279,7 +3279,7 @@ module TestUnixSystemStep =
 
             let system =
                 if dupKept then
-                    match UnixDescriptor.dup second system with
+                    match Answered.dup second system with
                     | SyscallAnswer.Completed _, system -> system
                     | other -> failwith $"%A{other}"
                 else
@@ -3350,7 +3350,7 @@ module TestUnixSystemStep =
         let first, second, system = withTwoDescriptions darwin
 
         let alias, system =
-            match UnixDescriptor.dup second system with
+            match Answered.dup second system with
             | SyscallAnswer.Completed fd, system -> int fd, system
             | other -> failwith $"%A{other}"
 
