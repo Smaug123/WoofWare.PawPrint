@@ -208,7 +208,14 @@ class WaitsOnADuplicatedPort
 
         let stripped =
             { prepared with
-                State = prepared.State.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.unpark thread))
+                State =
+                    prepared.State.MapKernel (
+                        EmulatedKernel.mapUnix (fun system ->
+                            { system with
+                                Tasks = UnixTaskTable.unpark thread system.Tasks
+                            }
+                        )
+                    )
             }
 
         let _messages, loggerFactory =
@@ -634,7 +641,7 @@ class ClosesAParkedPort
         | RunOutcome.NormalExit (state, _, _) ->
             state.LatchedExitCode |> shouldEqual 2
 
-            let unix = EmulatedKernel.unix state.Kernel
+            let unix = state.Kernel.System
 
             let ports =
                 unix.Tasks

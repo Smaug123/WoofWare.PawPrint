@@ -59,7 +59,7 @@ module TestTaskState =
 
         UnixTaskTable.osThreadIdOf (ThreadId 0) state.Kernel.Tasks
         |> OsThreadId.toUInt64
-        |> shouldEqual (uint64 (ProcessId.toInt32 state.Kernel.Process.ProcessId))
+        |> shouldEqual (uint64 (ProcessId.toInt32 state.Kernel.System.Process.ProcessId))
 
         EmulatedKernel.checkTaskInvariants (threads state) state.Kernel
         |> shouldEqual [ EmulatedKernelDefect.TaskWithoutThread (ThreadId 0) ]
@@ -218,9 +218,13 @@ module TestTaskState =
 
         let stripped =
             state.MapKernel (fun kernel ->
-                { kernel with
-                    Tasks = Map.remove thread kernel.Tasks
-                }
+                EmulatedKernel.mapUnix
+                    (fun system ->
+                        { system with
+                            Tasks = Map.remove thread system.Tasks
+                        }
+                    )
+                    kernel
             )
 
         EmulatedKernel.checkTaskInvariants (threads stripped) stripped.Kernel
@@ -345,12 +349,12 @@ module TestTaskState =
         let state =
             state.MapKernel (SignalFrames.enter worker (Set.singleton Signal.SIGUSR1))
 
-        SignalState.tasksWithFrames state.Kernel.Process.Signals
+        SignalState.tasksWithFrames state.Kernel.System.Process.Signals
         |> shouldEqual (Set.singleton worker)
 
         let state = Scheduler.onThreadTerminated worker state
 
-        SignalState.tasksWithFrames state.Kernel.Process.Signals |> shouldBeEmpty
+        SignalState.tasksWithFrames state.Kernel.System.Process.Signals |> shouldBeEmpty
         EmulatedKernel.checkInvariants state.Kernel |> shouldBeEmpty
 
     [<TestCaseSource(nameof parks)>]
@@ -408,7 +412,13 @@ module TestTaskState =
 
         let other = parks |> List.find (fun p -> p <> parked)
 
-        state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.unpark thread))
+        state.MapKernel (
+            EmulatedKernel.mapUnix (fun system ->
+                { system with
+                    Tasks = UnixTaskTable.unpark thread system.Tasks
+                }
+            )
+        )
         |> fun state -> state.MapKernel (EmulatedKernel.mapUnix (UnixWait.park thread other))
         |> fun state -> UnixTaskTable.parkedFor thread state.Kernel.Tasks
         |> shouldEqual (Some other)
@@ -423,7 +433,7 @@ module TestTaskState =
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixTaskLifecycle.spawn (ThreadId 0) thread (CpuId 3) (EmulatedKernel.unix state.Kernel)
+                UnixTaskLifecycle.spawn (ThreadId 0) thread (CpuId 3) state.Kernel.System
                 |> ignore<Result<OsThreadId * UnixSystem<ThreadId, NativeSignalHandler>, UnixError>>
             )
 
@@ -485,7 +495,13 @@ module TestTaskState =
         agrees woken
 
         let released =
-            woken.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.unpark thread))
+            woken.MapKernel (
+                EmulatedKernel.mapUnix (fun system ->
+                    { system with
+                        Tasks = UnixTaskTable.unpark thread system.Tasks
+                    }
+                )
+            )
 
         UnixTaskTable.parkedFor thread released.Kernel.Tasks |> shouldEqual None
 

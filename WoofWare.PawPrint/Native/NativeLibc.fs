@@ -195,7 +195,7 @@ module NativeLibc =
         match raised.Target with
         | ValueSome target when
             target <> leader
-            && List.contains raised (SignalState.pending (UnixProcessState.signals after.Process))
+            && List.contains raised (SignalState.pending (UnixSystem.signals after))
             ->
             Some (UnmodelledSelfSignal.PendingOnOtherThread raised.Signal)
         | ValueSome _
@@ -210,7 +210,7 @@ module NativeLibc =
     /// answer to give.
     let kill (operation : string) (ctx : NativeCallContext) (pid : int) (signo : int) : NativeHandlerResult =
         let state = ctx.State
-        let system = EmulatedKernel.unix state.Kernel
+        let system = state.Kernel.System
 
         let returning (value : int) (state : IlMachineState) : NativeHandlerResult =
             state
@@ -271,7 +271,7 @@ module NativeLibc =
     /// refuses fails the run: the model has no answer to give.
     let raiseSignal (operation : string) (ctx : NativeCallContext) (signo : int) : NativeHandlerResult =
         let state = ctx.State
-        let system = EmulatedKernel.unix state.Kernel
+        let system = state.Kernel.System
 
         let returning (value : int) (state : IlMachineState) : NativeHandlerResult =
             state

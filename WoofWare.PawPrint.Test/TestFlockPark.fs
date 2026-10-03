@@ -543,7 +543,7 @@ class Program
 
         // `b`'s description holds nothing: the conversion dropped its shared lock before
         // discovering it could not have the exclusive one.
-        let registry = (EmulatedKernel.unix state.Kernel).Process.FileDescriptors
+        let registry = state.Kernel.System.Process.FileDescriptors
 
         match FileDescriptorRegistry.tryFind 4 registry with
         | Some description -> description.Flock |> shouldEqual None

@@ -19,7 +19,7 @@ module SignalFrames =
     /// Fails the test unless the return to user mode delivers the carrier
     /// alone.
     let enter (thread : ThreadId) (mask : Set<Signal>) (kernel : EmulatedKernel) : EmulatedKernel =
-        let system = EmulatedKernel.unix kernel
+        let system = kernel.System
         let before = KernelSignals.disposition carrier system
 
         let action =
