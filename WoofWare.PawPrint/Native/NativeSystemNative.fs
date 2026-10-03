@@ -185,13 +185,13 @@ module NativeSystemNative =
     /// What a guest did to reach one of the kernel's refusals of a Darwin row
     /// nobody has measured, and what would lift it. The kernel names the row;
     /// every handler that can meet one adds this.
+    let private unmeasuredDarwinRow : string =
+        "Only a Darwin kernel refuses this, and only for an inode whose owner or group is not the caller's, which a guest meets when `KernelConfig.FileSystem` or `KernelConfig.FileSystemRootOwner` states another owner. Measuring the row needs root, or a second user, on Darwin; the flavour-divergence table in the emulated-posix-kernel skill lists what has been measured."
+
     /// The failure a handler raises when the kernel library will not hand out a
     /// descriptor at or above its bound.
     let private descriptorLimitMessage (operation : string) (refusal : DescriptorLimitRefusal) : string =
         $"%s{operation}: %s{DescriptorLimitRefusal.describe refusal} The guest has that many descriptors open; PawPrint answers only below the bound, which is the soft limit a process starts with."
-
-    let private unmeasuredDarwinRow : string =
-        "Only a Darwin kernel refuses this, and only for an inode whose owner or group is not the caller's, which a guest meets when `KernelConfig.FileSystem` or `KernelConfig.FileSystemRootOwner` states another owner. Measuring the row needs root, or a second user, on Darwin; the flavour-divergence table in the emulated-posix-kernel skill lists what has been measured."
 
     /// Store the errno a failed syscall earned, in the raw numbering this
     /// kernel's flavour uses, and hand back the state to push a sentinel from.
