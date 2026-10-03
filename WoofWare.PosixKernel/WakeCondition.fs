@@ -40,6 +40,12 @@ type WakePrimitive =
     /// a `close(2)` of a descriptor a `kevent` wait on it was entered through
     /// has ended every wait on it (see `KqueueState.Drained`).
     | KqueueDrained of kqueue : OpenFileDescriptionId
+    /// A wait for events on the kqueue the open file description `kqueue`
+    /// names would report at least one now (`KqueueQueue.hasDeliverableEvent`).
+    ///
+    /// Every waiter on one kqueue wakes for it, and the first to finish takes
+    /// what it reports; the rest wait again.
+    | KqueueEventDeliverable of kqueue : OpenFileDescriptionId
     /// The open file description `description` presents at least one of
     /// `conditions`, in the numbering `<poll.h>` and `<sys/epoll.h>` share, as
     /// `LinuxReadiness.ofDescription` reads its level.
@@ -177,6 +183,7 @@ module WakeCondition =
                     registry
                 |> not
         | WakePrimitive.SocketEventDeliverable port -> SocketEventPort.hasDeliverableEvent port system
+        | WakePrimitive.KqueueEventDeliverable kqueue -> KqueueQueue.hasDeliverableEvent kqueue system
         | WakePrimitive.KqueueDrained kqueue ->
             match
                 FileDescriptorRegistry.descriptions system.Process.FileDescriptors
@@ -306,6 +313,7 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.FlockGrantable _)
         | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _)
         | WakeCondition.Primitive (WakePrimitive.KqueueDrained _)
+        | WakeCondition.Primitive (WakePrimitive.KqueueEventDeliverable _)
         | WakeCondition.Primitive (WakePrimitive.DescriptorReady _)
         | WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty _)
         | WakeCondition.Primitive (WakePrimitive.PipeHasBytes _)
@@ -349,13 +357,19 @@ module WakeCondition =
                         WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline)
                     ]
             | ParkedSyscall.Kevent wait ->
-                // No event can end it: the kqueue holds no registration, since
-                // `kevent` refuses every change.
+                let deliverable =
+                    WakeCondition.Primitive (WakePrimitive.KqueueEventDeliverable wait.Kqueue)
+
                 let drained = WakeCondition.Primitive (WakePrimitive.KqueueDrained wait.Kqueue)
 
                 match wait.Deadline with
-                | None -> [ drained ]
-                | Some deadline -> [ drained ; WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ]
+                | None -> [ deliverable ; drained ]
+                | Some deadline ->
+                    [
+                        deliverable
+                        drained
+                        WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline)
+                    ]
             | ParkedSyscall.Poll poll ->
                 let watched =
                     poll.Entries

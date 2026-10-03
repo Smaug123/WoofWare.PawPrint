@@ -1,0 +1,128 @@
+#	net.inet.tcp.sendspace=131072 kern.ipc.maxsockbuf=8388608 lo0 mtu=16384 own address on en0: present
+E	IPv4 127.0.0.1	connecting	SO_SNDBUF before connect=131072 clear=146988 clear-again=146988 level=146988 level-again=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988
+E	IPv4 127.0.0.1	accepted	SO_SNDBUF before connect=-1 clear=146988 clear-again=146988 level=146988 level-again=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988
+E	IPv4 127.0.0.1	connecting end, 1000 bytes waiting: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv4 127.0.0.1	connecting end, after reading 1000: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv4 127.0.0.1	accepted end, after sending 1000: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv4 127.0.0.1	sweep: 50 connections, connecting end matched 50, accepted end matched 50
+E	IPv4 to 0.0.0.0	connecting	SO_SNDBUF before connect=131072 clear=146988 clear-again=146988 level=146988 level-again=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988
+E	IPv4 to 0.0.0.0	accepted	SO_SNDBUF before connect=-1 clear=146988 clear-again=146988 level=146988 level-again=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988
+E	IPv4 to 0.0.0.0	connecting end, 1000 bytes waiting: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv4 to 0.0.0.0	connecting end, after reading 1000: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv4 to 0.0.0.0	accepted end, after sending 1000: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv4 to 0.0.0.0	sweep: 50 connections, connecting end matched 50, accepted end matched 50
+E	IPv4 own address	connecting	SO_SNDBUF before connect=131072 clear=146988 clear-again=146988 level=146988 level-again=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988
+E	IPv4 own address	accepted	SO_SNDBUF before connect=-1 clear=146988 clear-again=146988 level=146988 level-again=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988
+E	IPv4 own address	write answered -1: Broken pipe
+E	IPv4 own address	connecting end, 1000 bytes waiting: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv4 own address	connecting end, after reading 0: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv4 own address	accepted end, after sending 1000: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv4 own address	sweep: 50 connections, connecting end matched 50, accepted end matched 50
+E	IPv6 ::1	connecting	SO_SNDBUF before connect=131072 clear=146808 clear-again=146808 level=146808 level-again=146808 SO_SNDBUF=146808 TCP_MAXSEG=16312 predicted=146808
+E	IPv6 ::1	accepted	SO_SNDBUF before connect=-1 clear=146808 clear-again=146808 level=146808 level-again=146808 SO_SNDBUF=146808 TCP_MAXSEG=16312 predicted=146808
+E	IPv6 ::1	connecting end, 1000 bytes waiting: clear=146808 level=146808 SO_SNDBUF=146808
+E	IPv6 ::1	connecting end, after reading 1000: clear=146808 level=146808 SO_SNDBUF=146808
+E	IPv6 ::1	accepted end, after sending 1000: clear=146808 level=146808 SO_SNDBUF=146808
+E	IPv6 ::1	sweep: 50 connections, connecting end matched 50, accepted end matched 50
+E	IPv6 to ::ffff:127.0.0.1	connecting	SO_SNDBUF before connect=131072 clear=146988 clear-again=146988 level=146988 level-again=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988
+E	IPv6 to ::ffff:127.0.0.1	accepted	SO_SNDBUF before connect=-1 clear=146988 clear-again=146988 level=146988 level-again=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988
+E	IPv6 to ::ffff:127.0.0.1	connecting end, 1000 bytes waiting: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv6 to ::ffff:127.0.0.1	connecting end, after reading 1000: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv6 to ::ffff:127.0.0.1	accepted end, after sending 1000: clear=146988 level=146988 SO_SNDBUF=146988
+E	IPv6 to ::ffff:127.0.0.1	sweep: 50 connections, connecting end matched 50, accepted end matched 50
+B	IPv4 127.0.0.1	SO_SNDBUF set 1000, read back 1000	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 8192, read back 8192	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 16000, read back 16000	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 16332, read back 16332	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 16333, read back 16333	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 20000, read back 20000	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 32664, read back 32664	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 48996, read back 48996	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 48997, read back 48997	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 49152, read back 49152	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 49153, read back 49153	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 50000, read back 50000	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 65328, read back 65328	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 65329, read back 65329	clear=81660 level=81660 SO_SNDBUF=81660 TCP_MAXSEG=16332 predicted=81660	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 100000, read back 100000	clear=114324 level=114324 SO_SNDBUF=114324 TCP_MAXSEG=16332 predicted=114324	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 131072, read back 131072	clear=146988 level=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 146988, read back 146988	clear=146988 level=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 146989, read back 146989	clear=163320 level=163320 SO_SNDBUF=163320 TCP_MAXSEG=16332 predicted=163320	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 200000, read back 200000	clear=212316 level=212316 SO_SNDBUF=212316 TCP_MAXSEG=16332 predicted=212316	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 1000000, read back 1000000	clear=1012584 level=1012584 SO_SNDBUF=1012584 TCP_MAXSEG=16332 predicted=1012584	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 8380000, read back 8380000	clear=8388608 level=8388608 SO_SNDBUF=8388608 TCP_MAXSEG=16332 predicted=8388608	match
+B	IPv4 127.0.0.1	SO_SNDBUF set 8388608, read back 8388608	clear=8388608 level=8388608 SO_SNDBUF=8388608 TCP_MAXSEG=16332 predicted=8388608	match
+B	IPv4 own address	SO_SNDBUF set 1000, read back 1000	clear=1000 level=1000 SO_SNDBUF=1000 TCP_MAXSEG=1000 predicted=1000	match
+B	IPv4 own address	SO_SNDBUF set 8192, read back 8192	clear=8192 level=8192 SO_SNDBUF=8192 TCP_MAXSEG=8192 predicted=8192	match
+B	IPv4 own address	SO_SNDBUF set 16000, read back 16000	clear=16000 level=16000 SO_SNDBUF=16000 TCP_MAXSEG=16000 predicted=16000	match
+B	IPv4 own address	SO_SNDBUF set 16332, read back 16332	clear=16332 level=16332 SO_SNDBUF=16332 TCP_MAXSEG=16332 predicted=16332	match
+B	IPv4 own address	SO_SNDBUF set 16333, read back 16333	clear=32664 level=32664 SO_SNDBUF=32664 TCP_MAXSEG=16332 predicted=32664	match
+B	IPv4 own address	SO_SNDBUF set 20000, read back 20000	clear=32664 level=32664 SO_SNDBUF=32664 TCP_MAXSEG=16332 predicted=32664	match
+B	IPv4 own address	SO_SNDBUF set 32664, read back 32664	clear=32664 level=32664 SO_SNDBUF=32664 TCP_MAXSEG=16332 predicted=32664	match
+B	IPv4 own address	SO_SNDBUF set 48996, read back 48996	clear=48996 level=48996 SO_SNDBUF=48996 TCP_MAXSEG=16332 predicted=48996	match
+B	IPv4 own address	SO_SNDBUF set 48997, read back 48997	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 own address	SO_SNDBUF set 49152, read back 49152	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 own address	SO_SNDBUF set 49153, read back 49153	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 own address	SO_SNDBUF set 50000, read back 50000	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 own address	SO_SNDBUF set 65328, read back 65328	clear=65328 level=65328 SO_SNDBUF=65328 TCP_MAXSEG=16332 predicted=65328	match
+B	IPv4 own address	SO_SNDBUF set 65329, read back 65329	clear=81660 level=81660 SO_SNDBUF=81660 TCP_MAXSEG=16332 predicted=81660	match
+B	IPv4 own address	SO_SNDBUF set 100000, read back 100000	clear=114324 level=114324 SO_SNDBUF=114324 TCP_MAXSEG=16332 predicted=114324	match
+B	IPv4 own address	SO_SNDBUF set 131072, read back 131072	clear=146988 level=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988	match
+B	IPv4 own address	SO_SNDBUF set 146988, read back 146988	clear=146988 level=146988 SO_SNDBUF=146988 TCP_MAXSEG=16332 predicted=146988	match
+B	IPv4 own address	SO_SNDBUF set 146989, read back 146989	clear=163320 level=163320 SO_SNDBUF=163320 TCP_MAXSEG=16332 predicted=163320	match
+B	IPv4 own address	SO_SNDBUF set 200000, read back 200000	clear=212316 level=212316 SO_SNDBUF=212316 TCP_MAXSEG=16332 predicted=212316	match
+B	IPv4 own address	SO_SNDBUF set 1000000, read back 1000000	clear=1012584 level=1012584 SO_SNDBUF=1012584 TCP_MAXSEG=16332 predicted=1012584	match
+B	IPv4 own address	SO_SNDBUF set 8380000, read back 8380000	clear=8388608 level=8388608 SO_SNDBUF=8388608 TCP_MAXSEG=16332 predicted=8388608	match
+B	IPv4 own address	SO_SNDBUF set 8388608, read back 8388608	clear=8388608 level=8388608 SO_SNDBUF=8388608 TCP_MAXSEG=16332 predicted=8388608	match
+B	IPv6 ::1	SO_SNDBUF set 1000, read back 1000	clear=1000 level=1000 SO_SNDBUF=1000 TCP_MAXSEG=1000 predicted=1000	match
+B	IPv6 ::1	SO_SNDBUF set 8192, read back 8192	clear=8192 level=8192 SO_SNDBUF=8192 TCP_MAXSEG=8192 predicted=8192	match
+B	IPv6 ::1	SO_SNDBUF set 16000, read back 16000	clear=16000 level=16000 SO_SNDBUF=16000 TCP_MAXSEG=16000 predicted=16000	match
+B	IPv6 ::1	SO_SNDBUF set 16332, read back 16332	clear=32624 level=32624 SO_SNDBUF=32624 TCP_MAXSEG=16312 predicted=32624	match
+B	IPv6 ::1	SO_SNDBUF set 16333, read back 16333	clear=32624 level=32624 SO_SNDBUF=32624 TCP_MAXSEG=16312 predicted=32624	match
+B	IPv6 ::1	SO_SNDBUF set 20000, read back 20000	clear=32624 level=32624 SO_SNDBUF=32624 TCP_MAXSEG=16312 predicted=32624	match
+B	IPv6 ::1	SO_SNDBUF set 32664, read back 32664	clear=48936 level=48936 SO_SNDBUF=48936 TCP_MAXSEG=16312 predicted=48936	match
+B	IPv6 ::1	SO_SNDBUF set 48996, read back 48996	clear=65248 level=65248 SO_SNDBUF=65248 TCP_MAXSEG=16312 predicted=65248	match
+B	IPv6 ::1	SO_SNDBUF set 48997, read back 48997	clear=65248 level=65248 SO_SNDBUF=65248 TCP_MAXSEG=16312 predicted=65248	match
+B	IPv6 ::1	SO_SNDBUF set 49152, read back 49152	clear=65248 level=65248 SO_SNDBUF=65248 TCP_MAXSEG=16312 predicted=65248	match
+B	IPv6 ::1	SO_SNDBUF set 49153, read back 49153	clear=65248 level=65248 SO_SNDBUF=65248 TCP_MAXSEG=16312 predicted=65248	match
+B	IPv6 ::1	SO_SNDBUF set 50000, read back 50000	clear=65248 level=65248 SO_SNDBUF=65248 TCP_MAXSEG=16312 predicted=65248	match
+B	IPv6 ::1	SO_SNDBUF set 65328, read back 65328	clear=81560 level=81560 SO_SNDBUF=81560 TCP_MAXSEG=16312 predicted=81560	match
+B	IPv6 ::1	SO_SNDBUF set 65329, read back 65329	clear=81560 level=81560 SO_SNDBUF=81560 TCP_MAXSEG=16312 predicted=81560	match
+B	IPv6 ::1	SO_SNDBUF set 100000, read back 100000	clear=114184 level=114184 SO_SNDBUF=114184 TCP_MAXSEG=16312 predicted=114184	match
+B	IPv6 ::1	SO_SNDBUF set 131072, read back 131072	clear=146808 level=146808 SO_SNDBUF=146808 TCP_MAXSEG=16312 predicted=146808	match
+B	IPv6 ::1	SO_SNDBUF set 146988, read back 146988	clear=163120 level=163120 SO_SNDBUF=163120 TCP_MAXSEG=16312 predicted=163120	match
+B	IPv6 ::1	SO_SNDBUF set 146989, read back 146989	clear=163120 level=163120 SO_SNDBUF=163120 TCP_MAXSEG=16312 predicted=163120	match
+B	IPv6 ::1	SO_SNDBUF set 200000, read back 200000	clear=212056 level=212056 SO_SNDBUF=212056 TCP_MAXSEG=16312 predicted=212056	match
+B	IPv6 ::1	SO_SNDBUF set 1000000, read back 1000000	clear=1011344 level=1011344 SO_SNDBUF=1011344 TCP_MAXSEG=16312 predicted=1011344	match
+B	IPv6 ::1	SO_SNDBUF set 8380000, read back 8380000	clear=8384368 level=8384368 SO_SNDBUF=8384368 TCP_MAXSEG=16312 predicted=8384368	match
+B	IPv6 ::1	SO_SNDBUF set 8388608, read back 8388608	clear=8388608 level=8388608 SO_SNDBUF=8388608 TCP_MAXSEG=16312 predicted=8388608	match
+R	IPv4	clear=2048 (flags 0x8021) clear-again=2048 level=2048 level-again=2048 SO_SNDBUF=131072 predicted=2048
+R	IPv4	sweep: 50 refusals, matched 50
+R	IPv4	SO_SNDBUF set 1, read back 1	clear=1 level=1 predicted=1	match
+R	IPv4	SO_SNDBUF set 512, read back 512	clear=512 level=512 predicted=512	match
+R	IPv4	SO_SNDBUF set 1000, read back 1000	clear=1000 level=1000 predicted=1000	match
+R	IPv4	SO_SNDBUF set 2047, read back 2047	clear=2047 level=2047 predicted=2047	match
+R	IPv4	SO_SNDBUF set 2048, read back 2048	clear=2048 level=2048 predicted=2048	match
+R	IPv4	SO_SNDBUF set 2049, read back 2049	clear=2048 level=2048 predicted=2048	match
+R	IPv4	SO_SNDBUF set 4096, read back 4096	clear=2048 level=2048 predicted=2048	match
+R	IPv4	SO_SNDBUF set 16384, read back 16384	clear=2048 level=2048 predicted=2048	match
+R	IPv4	SO_SNDBUF set 100000, read back 100000	clear=2048 level=2048 predicted=2048	match
+R	IPv4	SO_SNDBUF set 131072, read back 131072	clear=2048 level=2048 predicted=2048	match
+R	IPv4	SO_SNDBUF set 262144, read back 262144	clear=2048 level=2048 predicted=2048	match
+R	IPv4	SO_SNDBUF set 1000000, read back 1000000	clear=2048 level=2048 predicted=2048	match
+R	IPv4	blocking refusal	clear=2048 level=2048 SO_SNDBUF=131072
+R	IPv6	clear=2048 (flags 0x8021) clear-again=2048 level=2048 level-again=2048 SO_SNDBUF=131072 predicted=2048
+R	IPv6	sweep: 50 refusals, matched 50
+R	IPv6	SO_SNDBUF set 1, read back 1	clear=1 level=1 predicted=1	match
+R	IPv6	SO_SNDBUF set 512, read back 512	clear=512 level=512 predicted=512	match
+R	IPv6	SO_SNDBUF set 1000, read back 1000	clear=1000 level=1000 predicted=1000	match
+R	IPv6	SO_SNDBUF set 2047, read back 2047	clear=2047 level=2047 predicted=2047	match
+R	IPv6	SO_SNDBUF set 2048, read back 2048	clear=2048 level=2048 predicted=2048	match
+R	IPv6	SO_SNDBUF set 2049, read back 2049	clear=2048 level=2048 predicted=2048	match
+R	IPv6	SO_SNDBUF set 4096, read back 4096	clear=2048 level=2048 predicted=2048	match
+R	IPv6	SO_SNDBUF set 16384, read back 16384	clear=2048 level=2048 predicted=2048	match
+R	IPv6	SO_SNDBUF set 100000, read back 100000	clear=2048 level=2048 predicted=2048	match
+R	IPv6	SO_SNDBUF set 131072, read back 131072	clear=2048 level=2048 predicted=2048	match
+R	IPv6	SO_SNDBUF set 262144, read back 262144	clear=2048 level=2048 predicted=2048	match
+R	IPv6	SO_SNDBUF set 1000000, read back 1000000	clear=2048 level=2048 predicted=2048	match
+R	IPv6	blocking refusal	clear=2048 level=2048 SO_SNDBUF=131072

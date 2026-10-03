@@ -210,47 +210,6 @@ module ConnectRefusal =
 [<RequireQualifiedAccess>]
 module UnixConnection =
 
-    /// The `Process` half, mapped. Here because `connectSocket` below signals
-    /// through it in four places and spelling the record update out each time
-    /// would bury what those four lines are doing.
-    let private mapProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (f : UnixProcessState<'Task, 'Handler> -> UnixProcessState<'Task, 'Handler>)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        { system with
-            Process = f system.Process
-        }
-
-    /// A *data-ready* wake on `socketId` — the accept-queue push is the one
-    /// modelled producer. Keyed with what `sock_def_readable` passes its
-    /// waiters, `EPOLLIN|EPOLLPRI|EPOLLRDNORM|EPOLLRDBAND`, so a registration
-    /// whose stored mask misses all four is never queued (measured,
-    /// `order6.c`), and one asking only for `EPOLLPRI` or `EPOLLRDBAND` is
-    /// queued although a listener never reports either (measured, the WAKE
-    /// section of `epoll-ctl.c`: such an entry keeps the wake's place in the
-    /// ready list through a later MOD).
-    ///
-    /// The producers are a measured set, not "anything that writes the
-    /// socket table": a datagram re-target or dissolve, `bind(2)`, and the
-    /// completion-reporting connect measurably signal nothing at all
-    /// (`order3.c` rows N, O, P).
-    let signalSocketDataReady<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (socketId : SocketId)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors =
-                        FileDescriptorRegistry.signalSocketEventPorts
-                            (UnixProcessState.descriptionsNamingSocket socketId system.Process)
-                            (Some (EpollEvents.In ||| EpollEvents.Pri ||| EpollEvents.RdNorm ||| EpollEvents.RdBand))
-                            system.Process.FileDescriptors
-                }
-        }
-
     /// `connect(2)` past the wrapper's screens and the copy-in faults, which
     /// stay with the caller (they are about the client's memory, which this library
     /// cannot see): the per-flavour ladder over the socket's phase, the
@@ -617,8 +576,8 @@ module UnixConnection =
                 // syscall's own answer is deferred to EINPROGRESS.
                 let system =
                     system
-                    |> mapProcess (UnixProcessState.signalSocketStateChange socketId)
-                    |> signalSocketDataReady listenerId
+                    |> SocketWake.signal socketId SocketWake.ConnectResolved
+                    |> SocketWake.signal listenerId SocketWake.AcceptQueuePush
 
                 if nonBlocking then
                     // The syscall itself still answers EINPROGRESS —
@@ -703,7 +662,7 @@ module UnixConnection =
                     // (measured separately for the deferred path, `order3.c`
                     // row M); inline delivery collapses them into this one
                     // state change, so one signal carries both.
-                    let system = mapProcess (UnixProcessState.signalSocketStateChange socketId) system
+                    let system = SocketWake.signal socketId SocketWake.ConnectResolved system
 
                     failed UnixError.ECONNREFUSED system
                 else
@@ -728,7 +687,7 @@ module UnixConnection =
 
                     // The error's arrival signals the client (measured,
                     // `order3.c` row M: the 0x201d edge).
-                    let system = mapProcess (UnixProcessState.signalSocketStateChange socketId) system
+                    let system = SocketWake.signal socketId SocketWake.ConnectResolved system
 
                     failed UnixError.EINPROGRESS system
 
@@ -807,7 +766,7 @@ module UnixConnection =
                     // was already consumed sees a fresh OUT|HUP edge after
                     // the delivering connect (measured, `order3.c` row M, and
                     // `consumed-epoll.c` R2 for the aborting one).
-                    let system = mapProcess (UnixProcessState.signalSocketStateChange socketId) system
+                    let system = SocketWake.signal socketId SocketWake.RefusalReset system
 
                     failed answer system
                 | SocketPhase.Established _ -> fail UnixError.EISCONN
@@ -1284,7 +1243,7 @@ module UnixConnection =
         // The FIN's edge, raised once the tables reflect the close, as `close`
         // raises it.
         (system, clients)
-        ||> List.fold (fun system client -> mapProcess (UnixProcessState.signalSocketStateChange client) system)
+        ||> List.fold (fun system client -> SocketWake.signal client SocketWake.PeerFin system)
 
     /// Hand the oldest connection on `socketId`'s queue over to the caller: the
     /// half of `accept(2)` that follows the choice of a connection, shared by a
