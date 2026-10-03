@@ -503,6 +503,7 @@ module TestBlockingPipe =
         match outcome with
         | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) -> Seen.ReadBytes (List.ofSeq bytes), Some after
         | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), after) -> Seen.Failed error, Some after
+        | Ok (ReadOutcome.Answered (ReadAnswer.Drawn _), _) -> failwith "a read of a pipe drew from the entropy pool"
         | Ok (ReadOutcome.WouldBlock _, after) -> Seen.Sleeps, Some after
         | Ok (ReadOutcome.Restarts, after) -> Seen.Restarts, Some after
         | Error (ReadRefusal.Interruption _) -> Seen.Refused, None

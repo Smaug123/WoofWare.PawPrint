@@ -1,0 +1,31 @@
+# Linux 6.18.5 aarch64 mem=MemTotal:        6216072 kB
+BIG /dev/zero count=0x7ffff000 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/zero count=0x7ffff001 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/zero count=0x7fffffff -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/zero count=0x80000000 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/zero count=0x100000000 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/zero count=0x7fffffffffffffff -> -1 (0xffffffffffffffff) errno=14
+BIG /dev/zero count=0xffffffffffffffff -> -1 (0xffffffffffffffff) errno=14
+BIG /dev/random count=0x7ffff000 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/random count=0x7ffff001 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/random count=0x7fffffff -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/random count=0x80000000 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/random count=0x100000000 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/random count=0x7fffffffffffffff -> -1 (0xffffffffffffffff) errno=14
+BIG /dev/random count=0xffffffffffffffff -> -1 (0xffffffffffffffff) errno=14
+BIG /dev/urandom count=0x7ffff000 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/urandom count=0x7ffff001 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/urandom count=0x7fffffff -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/urandom count=0x80000000 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/urandom count=0x100000000 -> 2147479552 (0x7ffff000) errno=0
+BIG /dev/urandom count=0x7fffffffffffffff -> -1 (0xffffffffffffffff) errno=14
+BIG /dev/urandom count=0xffffffffffffffff -> -1 (0xffffffffffffffff) errno=14
+SIGNAL /dev/zero size=16777216 reps=300 signals=300 whole=0 short=300 eintr=0 other=0 short_counts: 376832 634880 880640 1052672 1191936 1286144 1359872 1409024 1449984 1474560 1495040 1511424 1519616 1523712 1531904 1536000
+SIGNAL /dev/zero size=1048576 reps=300 signals=150 whole=150 short=150 eintr=0 other=0 short_counts: 487424 196608 483328 491520 466944 479232 458752 454656 475136 462848 471040 442368 495616 499712 425984 430080
+SIGNAL /dev/zero size=4097 reps=20000 signals=96 whole=19917 short=83 eintr=0 other=0 short_counts: 4096
+SIGNAL /dev/random size=16777216 reps=300 signals=300 whole=0 short=300 eintr=0 other=0 short_counts: 45056 40960 49152 28672 36864
+SIGNAL /dev/random size=1048576 reps=300 signals=300 whole=0 short=300 eintr=0 other=0 short_counts: 45056 32768 40960 36864 49152 28672
+SIGNAL /dev/random size=4097 reps=20000 signals=1931 whole=18120 short=1880 eintr=0 other=0 short_counts: 4096
+SIGNAL /dev/urandom size=16777216 reps=300 signals=300 whole=0 short=300 eintr=0 other=0 short_counts: 49152 28672 45056 40960
+SIGNAL /dev/urandom size=1048576 reps=300 signals=300 whole=0 short=300 eintr=0 other=0 short_counts: 45056 40960 36864 28672
+SIGNAL /dev/urandom size=4097 reps=20000 signals=1942 whole=18095 short=1905 eintr=0 other=0 short_counts: 4096

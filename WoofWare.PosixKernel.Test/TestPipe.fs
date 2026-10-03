@@ -1106,13 +1106,13 @@ module TestPipe =
                 | SimulatedUnixFlavour.Linux -> UnixError.ESPIPE
                 | SimulatedUnixFlavour.Darwin -> UnixError.EBADF
 
-            UnixReadWrite.pread r UserBuffer.Mapped 1UL 0L system
+            PReadUnchanged.pread r UserBuffer.Mapped 1UL 0L system
             |> shouldEqual (Ok (ReadAnswer.Failed UnixError.ESPIPE))
 
-            UnixReadWrite.pread w UserBuffer.Mapped 1UL 0L system
+            PReadUnchanged.pread w UserBuffer.Mapped 1UL 0L system
             |> shouldEqual (Ok (ReadAnswer.Failed tie))
 
-            match UnixReadWrite.admitPWrite r UserBuffer.Mapped 1UL 0L system with
+            match UnixReadWrite.admitPWrite 0 r UserBuffer.Mapped 1UL 0L system with
             | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) -> error |> shouldEqual tie
             | other -> failwith $"%O{platform}: %A{other}"
 

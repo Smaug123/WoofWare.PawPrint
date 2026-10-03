@@ -14,6 +14,12 @@ type ReadAnswer =
     /// dereferenced its buffer before checking for empty would turn that answer
     /// into a fault.
     | Completed of bytes : ImmutableArray<byte>
+    /// Bytes from the kernel's entropy pool, which `/dev/urandom` reads: the
+    /// caller fetches them from the draw, all at once or a range at a time,
+    /// into its buffer, and the entry point returns `EntropyDraw.count draw`,
+    /// which is never 0. The system that comes back with this answer has
+    /// already moved its pool past them.
+    | Drawn of draw : EntropyDraw
     /// The entry point returns -1 and the caller stores `error` wherever its
     /// libc keeps errno. The file offset does not move.
     | Failed of error : UnixError
@@ -39,9 +45,17 @@ type ReadRefusal =
     /// A read asleep on a pipe has an answer, and the library will not say
     /// whether that or a signal ends it.
     | Interruption of SyscallInterruptionRefusal
+    /// A read of `count` bytes of `/dev/urandom`, more than a page, by a task
+    /// with a signal pending that it would take on its return to user mode.
+    | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
 module ReadRefusal =
+    /// Shared with `PReadRefusal`, whose case of the same name is the same
+    /// fact.
+    let internal describeSignalAtPageBoundary (count : int) : string =
+        $"the descriptor is /dev/urandom, the read is of %d{count} bytes, more than a page, and a signal is pending that the reading task would take on its return to user mode. Linux's read stops at the first page boundary once a signal is pending, short of the count, and this kernel answers no short read of a device."
+
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half — which entry point, which descriptor, and which of its own
     /// callers could have reached this.
@@ -56,6 +70,29 @@ module ReadRefusal =
             $"the descriptor is directory %O{inode} on %O{fileSystem}, which this description has read part of the way through. Ahead of a directory's EISDIR, Linux answers EINVAL when position + count passes INT64_MAX and Darwin answers 0 when the position is INT64_MAX, and the position after a partial scan is %O{fileSystem}'s own cookie (on an NFS mount, whatever the server chose, up to INT64_MAX), which is not a number this kernel's position corresponds to. So whether this read is EISDIR or the position's answer is unknown here."
         | ReadRefusal.Interruption refusal ->
             $"the read was asleep on a pipe: %s{SyscallInterruptionRefusal.describe refusal}"
+        | ReadRefusal.SignalAtPageBoundary count -> describeSignalAtPageBoundary count
+
+/// Why this kernel will not answer a `pread`.
+///
+/// `ReadRefusal` without its cases for sockets, pipes and directories partway
+/// through a scan, rather than the same type: `pread` answers ESPIPE for the
+/// first two and reads a directory at the offset it is given, so a shared type
+/// would hand every client arms it could not reach.
+[<RequireQualifiedAccess>]
+type PReadRefusal =
+    /// The buffer has no answer at the step the read reached.
+    | Buffer of BufferRefusal
+    /// As `ReadRefusal.SignalAtPageBoundary`.
+    | SignalAtPageBoundary of count : int
+
+[<RequireQualifiedAccess>]
+module PReadRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half.
+    let describe (refusal : PReadRefusal) : string =
+        match refusal with
+        | PReadRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | PReadRefusal.SignalAtPageBoundary count -> ReadRefusal.describeSignalAtPageBoundary count
 
 /// What became of a `read(2)` this kernel could answer, where "answer" may be
 /// "the calling task sleeps".
@@ -187,9 +224,17 @@ type WriteRefusal =
     /// from inside its own PID namespace, every signal it has not installed a
     /// handler for, and this library does not model that.
     | InitProcess of target : BrokenWriteTarget
+    /// A write of `count` bytes to `/dev/urandom`, more than a page, by a task
+    /// with a signal pending that it would take on its return to user mode.
+    | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
 module WriteRefusal =
+    /// Shared with `PWriteRefusal`, whose case of the same name is the same
+    /// fact.
+    let internal describeSignalAtPageBoundary (count : int) : string =
+        $"the descriptor is /dev/urandom, the write is of %d{count} bytes, more than a page, and a signal is pending that the writing task would take on its return to user mode. Linux's write stops at the first page boundary once a signal is pending, short of the count, and this kernel answers no short write to a device."
+
     // Its own function because `write` and `pwrite` reach the same limit from
     // different offsets and must say the same thing about it.
     let internal describeUnmeasuredSetIdChange (inode : InodeNumber) (refusal : SetIdChangeRefusal) : string =
@@ -221,6 +266,7 @@ module WriteRefusal =
         | WriteRefusal.SignalReceiver (target, refusal) ->
             $"the descriptor is %s{BrokenWriteTarget.describe target}, so the write answers EPIPE and raises SIGPIPE; but which task would take that signal is not modelled (%A{refusal})."
         | WriteRefusal.UnmeasuredSetIdChange (inode, refusal) -> describeUnmeasuredSetIdChange inode refusal
+        | WriteRefusal.SignalAtPageBoundary count -> describeSignalAtPageBoundary count
 
 /// What a `write(2)` this kernel answered did to the process that made it,
 /// besides answering: `'Answer` is what the call answered, a `WriteAdmission`
@@ -290,6 +336,8 @@ type PWriteRefusal =
     /// What writing to the file at `inode` would do to its set-ID bits has not
     /// been measured for this writer.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
+    /// As `WriteRefusal.SignalAtPageBoundary`.
+    | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
 module PWriteRefusal =
@@ -305,6 +353,7 @@ module PWriteRefusal =
             WriteRefusal.describeExceedsRepresentableLength inode offset count
         | PWriteRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             WriteRefusal.describeUnmeasuredSetIdChange inode refusal
+        | PWriteRefusal.SignalAtPageBoundary count -> WriteRefusal.describeSignalAtPageBoundary count
 
 /// Why this kernel will not answer a `copy_file_range(2)`.
 [<RequireQualifiedAccess>]
@@ -355,6 +404,32 @@ type private ReadTarget =
     /// A directory, which has no byte contents to read, at the position its
     /// open file description holds.
     | Directory of inode : InodeNumber * position : DirectoryPosition
+    /// A character device, whose driver answers.
+    | CharacterDevice of device : CharacterDevice
+
+/// What a `pread` will read from, once every question that precedes the
+/// buffer screen has been settled: a seekable object open for reading.
+[<RequireQualifiedAccess>]
+type private PReadTarget =
+    /// A regular file or a directory, whose contents decide the answer.
+    | File of inode : InodeNumber
+    /// A character device, whose driver answers.
+    | CharacterDevice of device : CharacterDevice
+
+/// What a `pwrite` will write into: a seekable object open for writing.
+[<RequireQualifiedAccess>]
+type private PWriteTarget =
+    /// A regular file.
+    | File of inode : InodeNumber
+    /// A character device, whose driver answers.
+    | CharacterDevice of device : CharacterDevice
+
+/// Why a device's own read or write has no answer, for each syscall to state
+/// in its own refusals.
+[<RequireQualifiedAccess>]
+type private DeviceRefusal =
+    | Buffer of BufferRefusal
+    | SignalAtPageBoundary of count : int
 
 /// What a `write` will operate on, once the descriptor's access mode has been
 /// checked and before its buffer is screened.
@@ -369,6 +444,8 @@ type private WriteTarget =
     /// The write end of a pipe, the open file description it was reached
     /// through, and whether that description carries `O_NONBLOCK`.
     | Pipe of pipe : PipeId * description : OpenFileDescriptionId * nonBlocking : bool
+    /// A character device, whose driver answers.
+    | CharacterDevice of device : CharacterDevice
 
 /// How far a write into a pipe gets before it needs the caller's bytes.
 [<RequireQualifiedAccess>]
@@ -1020,7 +1097,7 @@ module UnixReadWrite =
         (buffer : UserBuffer)
         (count : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ReadAnswer, BufferRefusal>
+        : Result<Result<ImmutableArray<byte>, UnixError>, BufferRefusal>
         =
         let entry =
             match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
@@ -1034,10 +1111,10 @@ module UnixReadWrite =
             // EISDIR on both, and behind the buffer screen rather than ahead of
             // it: measured, `read(dir, NULL, 5)` is EISDIR while
             // `read(dir, (void*)-1, 5)` is EFAULT under a screening flavour.
-            Ok (ReadAnswer.Failed UnixError.EISDIR)
+            Ok (Error UnixError.EISDIR)
         | InodeContent.CharacterDevice _ ->
             failwith
-                $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a character device. This kernel opens no description of a device as a file (this is a bug in this library)."
+                $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a character device, through a description of a regular file. A description of a device is OpenFileTarget.CharacterDevice, and UnixSystem.checkInvariants reports this one as DescriptionKindMismatch (this is a bug in this library)."
         | InodeContent.Symlink _ ->
             failwith
                 $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what reading a link through a descriptor means (this is a bug in this library)."
@@ -1050,7 +1127,7 @@ module UnixReadWrite =
             // `read(f, NULL, 5)` at end-of-file is 0 on both platforms rather
             // than EFAULT. A null pointer is an ordinary user address, so it
             // reaches here rather than being screened above.
-            Ok (ReadAnswer.Completed ImmutableArray.Empty)
+            Ok (Ok ImmutableArray.Empty)
         else
 
         // The one point at which the buffer must actually hold bytes.
@@ -1059,16 +1136,131 @@ module UnixReadWrite =
             // Measured: an EFAULT leaves the file's contents and the caller's
             // offset alone. A kernel faults in `copy_to_user`, after deciding
             // what it would have transferred but before consuming anything.
-            Ok (ReadAnswer.Failed UnixError.EFAULT)
+            Ok (Error UnixError.EFAULT)
         | UserBuffer.Opaque -> Error BufferRefusal.OpaqueAtTransfer
         | UserBuffer.Addressless -> Error BufferRefusal.AddresslessAtTransfer
         | UserBuffer.Mapped ->
 
         // A range copy rather than an enumeration: one call can move nearly two
         // gigabytes.
-        ImmutableArray.Create (contents, int offset, transfer)
-        |> ReadAnswer.Completed
-        |> Ok
+        Ok (Ok (ImmutableArray.Create (contents, int offset, transfer)))
+
+    /// Whether a transfer of `count` bytes with `/dev/urandom` by `task` would
+    /// stop short at a page boundary for a signal. Linux's
+    /// `get_random_bytes_user` and `write_pool_user` (drivers/char/random.c,
+    /// 6.18) move a 64-byte block at a time and, each time the bytes moved reach
+    /// a multiple of a page with more still to move, stop if a signal is
+    /// pending: so a transfer of more than a page by a task with one pending
+    /// moves a page, short. They count bytes moved, so where the buffer starts
+    /// does not matter, and a transfer of a page or less never reaches a check.
+    let private stopsAtPageBoundary<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        let pageSize =
+            SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize system.Machine.UnixPlatform)
+
+        count > pageSize && SyscallInterruption.wakes task system
+
+    /// What a device's own write of `count` bytes by `task`, at most one call's
+    /// worth, answers without the bytes, once everything ahead of the driver
+    /// has passed; `None` where it copies them, which it then takes all of.
+    /// Neither device changes anything a later call could see, so a write
+    /// moves no timestamp, position or pool.
+    let private deviceWriteWithoutBytes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (device : CharacterDevice)
+        (buffer : UserBuffer)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteAnswer option, DeviceRefusal>
+        =
+        match device with
+        | CharacterDevice.Null ->
+            // `write_null` answers the count without reading the buffer:
+            // measured, through NULL and through unmapped memory alike, and
+            // for every count (`devices.c`, WRITE rows).
+            Ok (Some (WriteAnswer.Completed (int64 count)))
+        | CharacterDevice.URandom ->
+
+        if count = 0 then
+            Ok (Some (WriteAnswer.Completed 0L))
+        else
+
+        // `/dev/urandom` copies what it is given into the input pool, at
+        // every uid: measured, NULL and unmapped memory are EFAULT
+        // (`devices.c`, WRITE rows). The bytes change nothing this kernel's
+        // pool hands out, which no process could tell from a real kernel's.
+        match buffer with
+        | UserBuffer.Unmapped _ -> Ok (Some (WriteAnswer.Failed UnixError.EFAULT))
+        | UserBuffer.Opaque -> Error (DeviceRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (DeviceRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Mapped ->
+            if stopsAtPageBoundary task count system then
+                Error (DeviceRefusal.SignalAtPageBoundary count)
+            else
+                Ok None
+
+    /// A device's own read of `count` bytes, at most one call's worth, once
+    /// everything ahead of the driver has passed. Neither device keeps a
+    /// position, so neither the description nor any timestamp moves.
+    let private readDevice<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (device : CharacterDevice)
+        (buffer : UserBuffer)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadAnswer * UnixSystem<'Task, 'Handler>, DeviceRefusal>
+        =
+        match device with
+        | CharacterDevice.Null ->
+            // `read_null` is end-of-file without looking at the buffer:
+            // measured, 0 for every count, through NULL and through unmapped
+            // memory alike (`devices.c`, READ rows).
+            Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+        | CharacterDevice.URandom ->
+
+        if count = 0 then
+            // Measured, `read(fd, NULL, 0)` is 0: nothing is copied, so the
+            // buffer is not consulted.
+            Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+        else
+
+        match buffer with
+        | UserBuffer.Unmapped _ ->
+            // Measured, EFAULT (`devices.c`, READ rows). The pool stays put, as
+            // `getrandom`'s does on a fault: no process can tell where a real
+            // kernel's pool is.
+            Ok (ReadAnswer.Failed UnixError.EFAULT, system)
+        | UserBuffer.Opaque -> Error (DeviceRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (DeviceRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Mapped ->
+
+        // Measured (`bigread.c`): a read of 4097 bytes interrupted by a signal
+        // answered 4096, and no read was ever EINTR.
+        if stopsAtPageBoundary task count system then
+            Error (DeviceRefusal.SignalAtPageBoundary count)
+        else
+
+        // The whole count otherwise, from the pool `getrandom` draws on:
+        // measured, every count up to one call's worth is read in full
+        // (`devices.c` READ rows, `bigread.c`). A signal that arrives during a
+        // real read can still stop it short at a page boundary; reading in
+        // full is the outcome in which it arrives after the last check, and it
+        // is then taken as the call returns.
+        let draw, pool = EntropyPool.take count system.Machine.EntropyPool
+
+        Ok (
+            ReadAnswer.Drawn draw,
+            { system with
+                Machine =
+                    { system.Machine with
+                        EntropyPool = pool
+                    }
+            }
+        )
 
     /// `read(2)`: move up to `count` bytes from `fd`'s current offset into the
     /// caller's buffer, and advance the offset by what actually moved.
@@ -1090,6 +1282,9 @@ module UnixReadWrite =
     /// through a description without `O_NONBLOCK`, sleeps (`ReadOutcome.WouldBlock`)
     /// without looking at the buffer, and `finishRead` finishes it. Setting
     /// `O_NONBLOCK` on the description while it sleeps does not wake it.
+    ///
+    /// A read of `/dev/urandom` longer than a page, by a task with a signal
+    /// pending, is refused (`ReadRefusal.SignalAtPageBoundary`).
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
@@ -1145,6 +1340,7 @@ module UnixReadWrite =
             | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
             | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
             | OpenFileTarget.Socket socketId -> Ok (ReadTarget.Socket (socketId, description.NonBlocking))
+            | OpenFileTarget.CharacterDevice (_, device) -> Ok (ReadTarget.CharacterDevice device)
             | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
             | OpenFileTarget.Directory (inode, position) -> Ok (ReadTarget.Directory (inode, position))
             | OpenFileTarget.Pipe (pipeId, PipeEnd.Read) ->
@@ -1170,6 +1366,15 @@ module UnixReadWrite =
         | Ok false ->
 
         match target with
+        | ReadTarget.CharacterDevice device ->
+            // No position check: a device's position is always 0, which no
+            // count that passed the screen can carry past `INT64_MAX`.
+            // `O_NONBLOCK` changes nothing either, neither device ever having
+            // anything to wait for.
+            match readDevice task device buffer (oneCallsWorth platform count) system with
+            | Error (DeviceRefusal.Buffer refusal) -> Error (ReadRefusal.Buffer refusal)
+            | Error (DeviceRefusal.SignalAtPageBoundary count) -> Error (ReadRefusal.SignalAtPageBoundary count)
+            | Ok (answer, system) -> answered answer system
         | ReadTarget.Socket (socketId, nonBlocking) ->
             // A zero-length read of a socket is where the flavours part, and on
             // one of them it needs no phase at all. Measured across every phase
@@ -1314,8 +1519,8 @@ module UnixReadWrite =
         // same operation, so the two share it.
         match readFileAt "read" fd inode offset buffer (oneCallsWorth platform count) system with
         | Error refusal -> Error (ReadRefusal.Buffer refusal)
-        | Ok (ReadAnswer.Failed error) -> answered (ReadAnswer.Failed error) system
-        | Ok (ReadAnswer.Completed bytes) ->
+        | Ok (Error error) -> answered (ReadAnswer.Failed error) system
+        | Ok (Ok bytes) ->
 
         if bytes.IsEmpty then
             // Nothing moved, so the offset stays exactly where it was rather
@@ -1503,20 +1708,27 @@ module UnixReadWrite =
     /// EINVAL. Where in the order it is answered differs between the flavours,
     /// which is what makes this more than `read` with an extra argument.
     ///
-    /// No system comes back, because a `pread` changes nothing in one: it moves
-    /// no file offset, and nothing in this kernel moves `atime`.
+    /// It moves no file offset, and nothing in this kernel moves `atime`, so the
+    /// system that comes back is the one that arrived unless the read drew from
+    /// the entropy pool (`ReadAnswer.Drawn`).
+    ///
+    /// `task` is the task making the call, which must be one of the process's
+    /// and not asleep in another; a read of `/dev/urandom` asks whether it has
+    /// a signal pending (`PReadRefusal.SignalAtPageBoundary`).
     let pread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
         (count : uint64)
         (offset : int64)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ReadAnswer, BufferRefusal>
+        : Result<ReadAnswer * UnixSystem<'Task, 'Handler>, PReadRefusal>
         =
+        checkIssuer "pread" task system
         let platform = system.Machine.UnixPlatform
 
         if countRefused platform count then
-            Ok (ReadAnswer.Failed UnixError.EINVAL)
+            Ok (ReadAnswer.Failed UnixError.EINVAL, system)
         else
 
         let flavour = SimulatedUnixPlatform.flavour platform
@@ -1556,7 +1768,7 @@ module UnixReadWrite =
         // `pread` needs a seekable object, and a directory is one, so a
         // directory's EISDIR comes from the operation below rather than from
         // here.
-        let target : Result<InodeNumber, UnixError> =
+        let target : Result<PReadTarget, UnixError> =
             if offsetCheckedBeforeDescriptor && offsetInvalid then
                 Error UnixError.EINVAL
             else
@@ -1569,6 +1781,28 @@ module UnixReadWrite =
             // below need it and neither may guess: for a pipe it breaks the
             // ESPIPE/EBADF tie, and for a regular file it is the whole answer.
             let readable = FileAccessMode.permitsRead description.AccessMode
+
+            // What a seekable object answers ahead of the buffer screen.
+            let seekable (target : PReadTarget) : Result<PReadTarget, UnixError> =
+                if not readable then
+                    // A descriptor not open for reading: EBADF on both, which is
+                    // `vfs_read`'s answer for a file whose `FMODE_READ` is
+                    // clear.
+                    //
+                    // Ahead of Darwin's offset check rather than after it, and
+                    // measured: `pread(wronlyFd, buf, 4, -1)` is EBADF on Darwin
+                    // but EINVAL on Linux, so on Darwin the access mode is
+                    // settled before the offset is looked at, exactly as
+                    // seekability is above. On Linux this ordering cannot be
+                    // observed, the offset check having already run.
+                    Error UnixError.EBADF
+                elif not offsetCheckedBeforeDescriptor && offsetInvalid then
+                    // Darwin's turn to validate the offset: it has now resolved
+                    // the descriptor, its seekability and its access mode, which
+                    // is exactly the window in which it differs from Linux.
+                    Error UnixError.EINVAL
+                else
+                    Ok target
 
             match description.Target with
             | OpenFileTarget.Pipe _ ->
@@ -1614,30 +1848,14 @@ module UnixReadWrite =
                 // `pread` never reaches the socket's own read operation.
                 Error UnixError.ESPIPE
             | OpenFileTarget.File (inode, _)
-            | OpenFileTarget.Directory (inode, _) ->
-                if not readable then
-                    // A descriptor not open for reading: EBADF on both, which is
-                    // `vfs_read`'s answer for a file whose `FMODE_READ` is
-                    // clear.
-                    //
-                    // Ahead of Darwin's offset check rather than after it, and
-                    // measured: `pread(wronlyFd, buf, 4, -1)` is EBADF on Darwin
-                    // but EINVAL on Linux, so on Darwin the access mode is
-                    // settled before the offset is looked at, exactly as
-                    // seekability is above. On Linux this ordering cannot be
-                    // observed, the offset check having already run.
-                    Error UnixError.EBADF
-                elif not offsetCheckedBeforeDescriptor && offsetInvalid then
-                    // Darwin's turn to validate the offset: it has now resolved
-                    // the descriptor, its seekability and its access mode, which
-                    // is exactly the window in which it differs from Linux.
-                    Error UnixError.EINVAL
-                else
-                    Ok inode
+            | OpenFileTarget.Directory (inode, _) -> seekable (PReadTarget.File inode)
+            // Seekable as far as `pread` asks: measured on Linux, 16@0 and
+            // 16@2^40 answer as `read` does (`devices.c`, PREAD rows).
+            | OpenFileTarget.CharacterDevice (_, device) -> seekable (PReadTarget.CharacterDevice device)
 
         match target with
-        | Error error -> Ok (ReadAnswer.Failed error)
-        | Ok inode ->
+        | Error error -> Ok (ReadAnswer.Failed error, system)
+        | Ok target ->
 
         // Everything below is the object's own read operation, which under a
         // screening flavour the buffer screen precedes: hence EFAULT ahead of
@@ -1647,15 +1865,28 @@ module UnixReadWrite =
         match
             UserBufferCheck.faultsBeforeOperationFor (UnixMachineState.userBufferCheck system.Machine) buffer count
         with
-        | Error refusal -> Error refusal
-        | Ok true -> Ok (ReadAnswer.Failed UnixError.EFAULT)
+        | Error refusal -> Error (PReadRefusal.Buffer refusal)
+        | Ok true -> Ok (ReadAnswer.Failed UnixError.EFAULT, system)
         | Ok false ->
 
+        // Linux's sum check holds for a device too, whose `pread` takes the
+        // offset it is given: measured, 16@INT64_MAX is EINVAL there.
         match readAnsweredByPosition (positionCheck platform offset count) with
-        | Some answer -> Ok answer
+        | Some answer -> Ok (answer, system)
         | None ->
 
-        readFileAt "pread" fd inode offset buffer (oneCallsWorth platform count) system
+        match target with
+        | PReadTarget.CharacterDevice device ->
+            match readDevice task device buffer (oneCallsWorth platform count) system with
+            | Error (DeviceRefusal.Buffer refusal) -> Error (PReadRefusal.Buffer refusal)
+            | Error (DeviceRefusal.SignalAtPageBoundary count) -> Error (PReadRefusal.SignalAtPageBoundary count)
+            | Ok answer -> Ok answer
+        | PReadTarget.File inode ->
+
+        match readFileAt "pread" fd inode offset buffer (oneCallsWorth platform count) system with
+        | Error refusal -> Error (PReadRefusal.Buffer refusal)
+        | Ok (Error error) -> Ok (ReadAnswer.Failed error, system)
+        | Ok (Ok bytes) -> Ok (ReadAnswer.Completed bytes, system)
 
     /// What a `write` will operate on, once the descriptor's access mode has
     /// been checked: a file at its description's own offset, a socket, or a
@@ -1693,6 +1924,7 @@ module UnixReadWrite =
         | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
         | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
         | OpenFileTarget.Socket socketId -> Ok (WriteTarget.Socket socketId)
+        | OpenFileTarget.CharacterDevice (_, device) -> Ok (WriteTarget.CharacterDevice device)
         | OpenFileTarget.File (inode, offset) -> Ok (WriteTarget.File (inode, offset))
         | OpenFileTarget.Pipe (pipeId, PipeEnd.Write) ->
             Ok (WriteTarget.Pipe (pipeId, descriptionId, description.NonBlocking))
@@ -1818,6 +2050,16 @@ module UnixReadWrite =
         // is unmeasured here; it is refused with the rest of that phase.)
         match target with
         | WriteTarget.Socket socketId -> socketWrite (WriteAdmission.Answered) task socketId count system
+        | WriteTarget.CharacterDevice device ->
+            // No position check, as for a read: a device's position is always
+            // 0.
+            let count = oneCallsWorth platform count
+
+            match deviceWriteWithoutBytes task device buffer count system with
+            | Error (DeviceRefusal.Buffer refusal) -> Error (WriteRefusal.Buffer refusal)
+            | Error (DeviceRefusal.SignalAtPageBoundary count) -> Error (WriteRefusal.SignalAtPageBoundary count)
+            | Ok (Some answer) -> Ok (unchanged (WriteAdmission.Answered answer))
+            | Ok None -> Ok (unchanged (WriteAdmission.Transfer count))
         | WriteTarget.Pipe (pipeId, descriptionId, nonBlocking) ->
             // A pipe has no position, and its own write decides the zero-length
             // case, which it answers differently from a file.
@@ -1930,6 +2172,10 @@ module UnixReadWrite =
             // `admitWrite` never reaches this: that call answered or refused
             // first.
             socketWrite id task socketId (uint64 bytes.Length) system
+        // Both devices take every byte they are given and keep none of it.
+        | Ok (WriteTarget.CharacterDevice CharacterDevice.URandom) when stopsAtPageBoundary task bytes.Length system ->
+            Error (WriteRefusal.SignalAtPageBoundary bytes.Length)
+        | Ok (WriteTarget.CharacterDevice _) -> returns (WriteAnswer.Completed (int64 bytes.Length)) system
         | Ok (WriteTarget.Pipe (pipeId, descriptionId, nonBlocking)) ->
             match pipeWriteStep pipeId nonBlocking bytes.Length UserBuffer.Mapped system with
             | PipeWriteStep.Refused refusal -> Error refusal
@@ -2404,17 +2650,17 @@ module UnixReadWrite =
             | step -> mismatch $"is not the blocking write that puts in part of it and sleeps (%A{step})"
         | other -> mismatch $"names %A{other} rather than the write end of a pipe"
 
-    /// The inode a `pwrite` will write into, once every question that precedes
-    /// the buffer screen has been settled.
+    /// What a `pwrite` will write into, once every question that precedes the
+    /// buffer screen has been settled.
     ///
-    /// Only a regular file reaches it: `pwrite` needs a seekable object, and a
-    /// directory can only ever be opened for reading, so `pwrite` to one is the
-    /// access mode's EBADF rather than a kind's EISDIR.
+    /// Only a regular file or a device reaches it: `pwrite` needs a seekable
+    /// object, and a directory can only ever be opened for reading, so `pwrite`
+    /// to one is the access mode's EBADF rather than a kind's EISDIR.
     let private pwriteTarget<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (offset : int64)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<InodeNumber, UnixError>
+        : Result<PWriteTarget, UnixError>
         =
         // **Ahead of the descriptor, on both flavours** — which is exactly where
         // `pwrite` differs from `pread`, and it is measured rather than inferred
@@ -2446,6 +2692,20 @@ module UnixReadWrite =
         // need it and neither may guess: for a pipe it breaks the ESPIPE/EBADF
         // tie, and for a regular file it is the whole answer.
         let writable = FileAccessMode.permitsWrite description.AccessMode
+
+        // What a seekable object answers ahead of the buffer screen.
+        let seekable (target : PWriteTarget) : Result<PWriteTarget, UnixError> =
+            if not writable then
+                // `vfs_write`'s EBADF for a descriptor whose `FMODE_WRITE` is clear,
+                // and it precedes both the buffer screen and the zero-length no-op:
+                // measured, `pwrite(rdonlyFd, (void*)-1, 4, 0)` is EBADF rather than
+                // EFAULT and `pwrite(rdonlyFd, buf, 0, 0)` is EBADF rather than 0.
+                //
+                // This is also what makes a directory unreachable below: one can only
+                // be opened for reading, so it never gets past here.
+                Error UnixError.EBADF
+            else
+                Ok target
 
         match description.Target with
         | OpenFileTarget.Pipe _ ->
@@ -2492,19 +2752,10 @@ module UnixReadWrite =
             // `PWriteRefusal` has no socket case.
             Error UnixError.ESPIPE
         | OpenFileTarget.File (inode, _)
-        | OpenFileTarget.Directory (inode, _) ->
-
-        if not writable then
-            // `vfs_write`'s EBADF for a descriptor whose `FMODE_WRITE` is clear,
-            // and it precedes both the buffer screen and the zero-length no-op:
-            // measured, `pwrite(rdonlyFd, (void*)-1, 4, 0)` is EBADF rather than
-            // EFAULT and `pwrite(rdonlyFd, buf, 0, 0)` is EBADF rather than 0.
-            //
-            // This is also what makes a directory unreachable below: one can only
-            // be opened for reading, so it never gets past here.
-            Error UnixError.EBADF
-        else
-            Ok inode
+        | OpenFileTarget.Directory (inode, _) -> seekable (PWriteTarget.File inode)
+        // Seekable as far as `pwrite` asks: measured on Linux, 16@0 answers as
+        // `write` does (`devices.c`, PWRITE rows).
+        | OpenFileTarget.CharacterDevice (_, device) -> seekable (PWriteTarget.CharacterDevice device)
 
     /// Every answer `pwrite(2)` gives *without* reading the caller's buffer, and
     /// otherwise how many bytes to extract.
@@ -2517,7 +2768,12 @@ module UnixReadWrite =
     /// so a caller can be told to extract bytes for a write that is then refused
     /// as unrepresentable. That costs the caller work rather than correctness,
     /// the refusal carrying no state, and it is what `admitWrite` does too.
+    ///
+    /// `task` is the task making the call, which must be one of the process's
+    /// and not asleep in another; a write to `/dev/urandom` asks whether it
+    /// has a signal pending (`PWriteRefusal.SignalAtPageBoundary`).
     let admitPWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (buffer : UserBuffer)
         (count : uint64)
@@ -2525,6 +2781,7 @@ module UnixReadWrite =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PWriteAdmission, PWriteRefusal>
         =
+        checkIssuer "admitPWrite" task system
         let platform = system.Machine.UnixPlatform
 
         if countRefused platform count then
@@ -2533,7 +2790,7 @@ module UnixReadWrite =
 
         match pwriteTarget fd offset system with
         | Error error -> Ok (PWriteAdmission.Answered (WriteAnswer.Failed error))
-        | Ok _ ->
+        | Ok target ->
 
         // `vfs_write` screens the buffer between the access mode above and the
         // file operation, so under a screening flavour this beats the no-op
@@ -2565,6 +2822,15 @@ module UnixReadWrite =
             Ok (PWriteAdmission.Answered (WriteAnswer.Completed 0L))
         else
 
+        match target with
+        | PWriteTarget.CharacterDevice device ->
+            match deviceWriteWithoutBytes task device buffer count system with
+            | Error (DeviceRefusal.Buffer refusal) -> Error (PWriteRefusal.Buffer refusal)
+            | Error (DeviceRefusal.SignalAtPageBoundary count) -> Error (PWriteRefusal.SignalAtPageBoundary count)
+            | Ok (Some answer) -> Ok (PWriteAdmission.Answered answer)
+            | Ok None -> Ok (PWriteAdmission.Transfer count)
+        | PWriteTarget.File _ ->
+
         match buffer with
         | UserBuffer.Unmapped _ ->
             // Real `pwrite(2)` answers EFAULT for any non-dereferenceable
@@ -2594,8 +2860,13 @@ module UnixReadWrite =
     /// caller's mistake.
     ///
     /// Never short and never `EINTR`: this kernel has nothing that could push
-    /// back on a write, and its filesystem cannot run out of space.
+    /// back on a write, and its filesystem cannot run out of space. A write of
+    /// more than a page to `/dev/urandom` by a task with a signal pending,
+    /// which a real kernel would cut short, is refused.
+    ///
+    /// `task` is as `admitPWrite`'s.
     let pwrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (bytes : ImmutableArray<byte>)
         (offset : int64)
@@ -2606,11 +2877,13 @@ module UnixReadWrite =
             failwith
                 "UnixReadWrite.pwrite: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
 
+        checkIssuer "pwrite" task system
+
         assertOneCallsWorth "pwrite" system.Machine.UnixPlatform bytes
 
         match pwriteTarget fd offset system with
         | Error error -> Ok (WriteAnswer.Failed error, system)
-        | Ok inode ->
+        | Ok target ->
 
         // Ahead of the zero-length no-op: Darwin's EFBIG at INT64_MAX answers
         // a count of zero too, measured.
@@ -2628,6 +2901,13 @@ module UnixReadWrite =
             // inode.
             Ok (WriteAnswer.Completed 0L, system)
         else
+
+        match target with
+        // Both devices take every byte they are given and keep none of it.
+        | PWriteTarget.CharacterDevice CharacterDevice.URandom when stopsAtPageBoundary task bytes.Length system ->
+            Error (PWriteRefusal.SignalAtPageBoundary bytes.Length)
+        | PWriteTarget.CharacterDevice _ -> Ok (WriteAnswer.Completed (int64 bytes.Length), system)
+        | PWriteTarget.File inode ->
 
         let now = UnixMachineState.realtime system.Machine
 
@@ -2704,6 +2984,8 @@ module UnixReadWrite =
         // 1 and 5 bytes, the source's offset unmoved
         // (`copy-file-range-max-offset.c`). One call moves a whole 3 MiB file;
         // `copy-file-range-cap.c` shows a call moving at most 0x7ffff000 bytes.
+        // A device on either side is EINVAL, as it is not a regular file
+        // (`devices-l2.c`, COPY_FILE_RANGE rows).
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Darwin -> Error (CopyFileRangeRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
@@ -2721,6 +3003,7 @@ module UnixReadWrite =
             match description.Target with
             | OpenFileTarget.Directory _ -> true
             | OpenFileTarget.File _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _

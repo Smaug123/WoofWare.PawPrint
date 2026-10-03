@@ -15,8 +15,8 @@ namespace WoofWare.PosixKernel
 /// `uint32` states both.
 ///
 /// Answers for the socket phases `UnixMachineState.socketReadinessLevel`
-/// answers, both ends of a pipe, and regular files and directories (which epoll will not register, but `poll`
-/// answers). A socket
+/// answers, both ends of a pipe, and regular files, directories and character
+/// devices (which epoll will not register, but `poll` answers). A socket
 /// event port is refused: what either waiter reports for one is not modelled.
 [<RequireQualifiedAccess>]
 module LinuxReadiness =
@@ -82,13 +82,18 @@ module LinuxReadiness =
             ||| (if level.Hup then EpollEvents.Hup else 0u)
             ||| (if level.Err then EpollEvents.Err else 0u)
         | OpenFileTarget.File _
-        | OpenFileTarget.Directory _ ->
+        | OpenFileTarget.Directory _
+        | OpenFileTarget.CharacterDevice _ ->
             // Measured through `poll`: a regular file answers IN|OUT|RDNORM|
             // WRNORM at every offset, empty or not, and under every access
             // mode, and a directory answers the same. Files have no `->poll`
             // handler, so `vfs_poll` reports `DEFAULT_POLLMASK` for them. The
             // same missing handler is why `epoll_ctl` answers EPERM for one, so
             // only `poll` asks.
+            //
+            // `/dev/null` and `/dev/urandom` have none either, and answer the
+            // same mask under every access mode (`devices.c`, POLL rows).
+            // `/dev/random` is the device that does, and is not modelled.
             EpollEvents.In ||| EpollEvents.Out ||| EpollEvents.RdNorm ||| EpollEvents.WrNorm
         | OpenFileTarget.Pipe (pipeId, PipeEnd.Read) ->
             // Measured on Linux 6.18.5 (`pipe-states.c` in
@@ -186,6 +191,7 @@ module SocketEventPort =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
@@ -228,6 +234,7 @@ module SocketEventPort =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
