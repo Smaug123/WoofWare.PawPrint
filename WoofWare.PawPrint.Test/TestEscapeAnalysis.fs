@@ -3260,6 +3260,251 @@ public static class Runners
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
 
+    /// Callers of `Probe` through `callvirt` on what a call returns: the class of the object is
+    /// what the callee's `ret`s return, which may be narrower than its declared return type.
+    let private returnSource : string =
+        """
+namespace Returns;
+
+public class Base { public virtual int Probe(int a, int b) => unchecked(a + b); }
+public class Divides : Base { public override int Probe(int a, int b) => a / b; }
+public sealed class SealedAdds : Base { public override int Probe(int a, int b) => checked(a + b); }
+public class OpenDivides : Base { public override int Probe(int a, int b) => a / b; }
+
+// As `ArrayPool<T>.Shared` is: a getter of the pool type returning a field of a sealed subclass.
+public abstract class Pool<T>
+{
+    private static readonly SealedPool<T> s_shared = new SealedPool<T>();
+    public static Pool<T> Shared => s_shared;
+    public abstract int Probe(int a, int b);
+}
+
+public sealed class SealedPool<T> : Pool<T> { public override int Probe(int a, int b) => a / b; }
+
+public static class Sources
+{
+    private static readonly SealedAdds s_adds = new SealedAdds();
+    public static Base Field => s_adds;
+    public static Base Fresh() => new Divides();
+    public static Base Either(bool c) => c ? new Divides() : new SealedAdds();
+    public static Base Relay() => Fresh();
+    public static Base Passed(Base b) => b;
+    public static Base Recurse(int n) => n <= 0 ? new Divides() : Recurse(n - 1);
+    public static T Identity<T>(T x) => x;
+}
+
+public static class Runners
+{
+    public static int ThroughField(int a, int b) => Sources.Field.Probe(a, b);
+    public static int ThroughFresh(int a, int b) => Sources.Fresh().Probe(a, b);
+    public static int ThroughEither(int a, int b) => Sources.Either(b == 0).Probe(a, b);
+    public static int ThroughRelay(int a, int b) => Sources.Relay().Probe(a, b);
+    public static int ThroughShared(int a, int b) => Pool<int>.Shared.Probe(a, b);
+    public static int ThroughIdentitySealed(int a, int b) => Sources.Identity(new SealedAdds()).Probe(a, b);
+    public static int ThroughPassed(int a, int b) => Sources.Passed(new OpenDivides()).Probe(a, b);
+    public static int ThroughRecursion(int a, int b) => Sources.Recurse(1).Probe(a, b);
+}
+"""
+
+    [<Test>]
+    let ``a callvirt on what a call returns runs the override of the class the callee returns`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "Returns" OutputKind.DynamicallyLinkedLibrary [] [ returnSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Returns.dll") (new MemoryStream (image))
+
+        let both = Set.ofList [ dividesByZero ; overflows ]
+
+        let cases =
+            [
+                "ThroughField", Set.singleton overflows, DispatchClaim.Precise
+                "ThroughFresh", both, DispatchClaim.Precise
+                "ThroughEither", both, DispatchClaim.Precise
+                "ThroughRelay", both, DispatchClaim.Precise
+                "ThroughShared", both, DispatchClaim.Precise
+                "ThroughIdentitySealed", Set.singleton overflows, DispatchClaim.Precise
+                // The callee returns whatever it is given, which may be of any class.
+                "ThroughPassed", both, DispatchClaim.Unknown
+                // A return that depends on itself is its declared type.
+                "ThroughRecursion", both, DispatchClaim.SoundOnly
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "Returns" image
+
+        let _, failures =
+            dispatchFailures fixture "Returns" runtime cases (analysisOver [ fixture ] id)
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// An image with two returns the analysis cannot follow, which no C# spells:
+    ///   - `Runners.Walk`: `newobj SealedNode; L: callvirt Node::Next; dup; brtrue L; pop`, a loop
+    ///     carrying a call's result back round, on the stack, as that same call's receiver;
+    ///   - `Runners.Jumps`: `jmp Factory`, which returns what `Factory` does (a `Divides`), with no
+    ///     `ret` of its own; `Runners.UseJump` calls `Probe` on what it returns.
+    let private fabricateLoops () : byte[] =
+        let builder =
+            Emit.PersistedAssemblyBuilder (AssemblyName "Loops", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Loops"
+
+        let virtualAttributes =
+            MethodAttributes.Public
+            ||| MethodAttributes.Virtual
+            ||| MethodAttributes.HideBySig
+            ||| MethodAttributes.NewSlot
+
+        let overrideAttributes =
+            MethodAttributes.Public
+            ||| MethodAttributes.Virtual
+            ||| MethodAttributes.HideBySig
+
+        let node =
+            modul.DefineType ("Loops.Node", TypeAttributes.Public ||| TypeAttributes.Class)
+
+        node.DefineDefaultConstructor MethodAttributes.Public
+        |> ignore<Emit.ConstructorBuilder>
+
+        let next = node.DefineMethod ("Next", virtualAttributes, node, [||])
+        let il = next.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldnull
+        il.Emit Emit.OpCodes.Ret
+        node.CreateType () |> ignore<Type>
+
+        let sealedNode =
+            modul.DefineType (
+                "Loops.SealedNode",
+                TypeAttributes.Public ||| TypeAttributes.Class ||| TypeAttributes.Sealed,
+                node
+            )
+
+        let sealedNodeConstructor =
+            sealedNode.DefineDefaultConstructor MethodAttributes.Public
+
+        let sealedNext = sealedNode.DefineMethod ("Next", overrideAttributes, node, [||])
+        let il = sealedNext.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldnull
+        il.Emit Emit.OpCodes.Ret
+        sealedNode.CreateType () |> ignore<Type>
+
+        let probeBase =
+            modul.DefineType ("Loops.Base", TypeAttributes.Public ||| TypeAttributes.Class)
+
+        probeBase.DefineDefaultConstructor MethodAttributes.Public
+        |> ignore<Emit.ConstructorBuilder>
+
+        let probe =
+            probeBase.DefineMethod ("Probe", virtualAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = probe.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldarg_1
+        il.Emit Emit.OpCodes.Ldarg_2
+        il.Emit Emit.OpCodes.Add
+        il.Emit Emit.OpCodes.Ret
+        probeBase.CreateType () |> ignore<Type>
+
+        let divides =
+            modul.DefineType ("Loops.Divides", TypeAttributes.Public ||| TypeAttributes.Class, probeBase)
+
+        let dividesConstructor = divides.DefineDefaultConstructor MethodAttributes.Public
+
+        let dividesProbe =
+            divides.DefineMethod ("Probe", overrideAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = dividesProbe.GetILGenerator ()
+        il.Emit Emit.OpCodes.Ldarg_1
+        il.Emit Emit.OpCodes.Ldarg_2
+        il.Emit Emit.OpCodes.Div
+        il.Emit Emit.OpCodes.Ret
+        divides.CreateType () |> ignore<Type>
+
+        let runners =
+            modul.DefineType (
+                "Loops.Runners",
+                TypeAttributes.Public
+                ||| TypeAttributes.Abstract
+                ||| TypeAttributes.Sealed
+                ||| TypeAttributes.Class
+            )
+
+        let staticAttributes =
+            MethodAttributes.Public
+            ||| MethodAttributes.Static
+            ||| MethodAttributes.HideBySig
+
+        let walk =
+            runners.DefineMethod ("Walk", staticAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = walk.GetILGenerator ()
+        let loop = il.DefineLabel ()
+        il.Emit (Emit.OpCodes.Newobj, sealedNodeConstructor)
+        il.MarkLabel loop
+        il.Emit (Emit.OpCodes.Callvirt, next)
+        il.Emit Emit.OpCodes.Dup
+        il.Emit (Emit.OpCodes.Brtrue, loop)
+        il.Emit Emit.OpCodes.Pop
+        il.Emit Emit.OpCodes.Ldc_I4_0
+        il.Emit Emit.OpCodes.Ret
+
+        let factory = runners.DefineMethod ("Factory", staticAttributes, probeBase, [||])
+        let il = factory.GetILGenerator ()
+        il.Emit (Emit.OpCodes.Newobj, dividesConstructor)
+        il.Emit Emit.OpCodes.Ret
+
+        let jumps = runners.DefineMethod ("Jumps", staticAttributes, probeBase, [||])
+        let il = jumps.GetILGenerator ()
+        il.Emit (Emit.OpCodes.Jmp, factory)
+
+        let useJump =
+            runners.DefineMethod ("UseJump", staticAttributes, typeof<int>, [| typeof<int> ; typeof<int> |])
+
+        let il = useJump.GetILGenerator ()
+        il.Emit (Emit.OpCodes.Call, jumps)
+        il.Emit Emit.OpCodes.Ldarg_0
+        il.Emit Emit.OpCodes.Ldarg_1
+        il.Emit (Emit.OpCodes.Callvirt, probe)
+        il.Emit Emit.OpCodes.Ret
+
+        runners.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    [<Test>]
+    let ``a return the analysis cannot follow is only its declared type`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = fabricateLoops ()
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Loops.dll") (new MemoryStream (image))
+
+        let cases =
+            [
+                // Answering at all is the main claim: it is a summary rather than a crash.
+                "Walk", Set.empty, DispatchClaim.SoundOnly
+                "UseJump", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.SoundOnly
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "Loops" image
+
+        let _, failures =
+            dispatchFailures fixture "Loops" runtime cases (analysisOver [ fixture ] id)
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
     /// The receivers of the static dispatch fixture, and which of `DivideByZeroException` and
     /// `OverflowException` the `Probe` each supplies raises. A static method has no receiver object,
     /// so the type a `constrained.` prefix names decides what runs, even a class others derive from.

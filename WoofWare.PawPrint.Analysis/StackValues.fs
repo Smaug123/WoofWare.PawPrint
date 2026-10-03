@@ -14,6 +14,10 @@ type internal SpelledObject =
     /// Null, or an object whose class is the type spelled or one derived from it: what a value of
     /// that static type holds. For a value type, that value boxed.
     | Within of spelling : int
+    /// What the call at this offset returns: what the `ret`s of the method it reaches return, which
+    /// each instance of the body decides; or, where that is not known, `Within` the declared return
+    /// type, if it is spelled.
+    | Returned of call : int * declared : int option
 
 /// What a stack slot holds, as far as the body's spellings say.
 [<RequireQualifiedAccess>]
