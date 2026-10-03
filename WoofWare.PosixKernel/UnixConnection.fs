@@ -305,13 +305,16 @@ module UnixConnection =
         // yet: loopback source, ephemeral port, the same conflict rule as
         // bind(2)'s own port-0 path. The source address for a non-loopback
         // destination is the route's preferred source, which is unmeasured,
-        // so that input is refused.
-        let ensureBound
+        // so that input is refused. `current` is the binding the source is
+        // resolved from, which is the socket's own unless the connect has
+        // already reset it.
+        let ensureBoundFrom
+            (current : SocketBinding option)
             (dest : InternetEndpoint)
             (system : UnixSystem<'Task, 'Handler>)
             : Result<SocketBinding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
-            match sock.Binding with
+            match current with
             | Some binding when binding.Endpoint.Port = 0us ->
                 // Half-bound: a datagram dissolve kept the locked address and
                 // dropped the port. Linux's `inet_autobind` gives it a port and
@@ -396,6 +399,14 @@ module UnixConnection =
                     }
                 )
             | None -> Error (ConnectRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
+
+
+        let ensureBound
+            (dest : InternetEndpoint)
+            (system : UnixSystem<'Task, 'Handler>)
+            : Result<SocketBinding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+            =
+            ensureBoundFrom sock.Binding dest system
 
         // The established/refused attempt, shared by both flavours once the
         // per-flavour screens have let an idle stream socket through.
@@ -1150,8 +1161,13 @@ module UnixConnection =
             // A datagram connect is a peer filter, not a handshake: it
             // succeeds with nothing at the destination and a re-connect
             // re-targets, both measured. It binds implicitly just as a
-            // stream connect does.
-            match ensureBound dest system with
+            // stream connect does. On Darwin the source is resolved from the
+            // binding the disconnect left, so a connected socket bound to an
+            // interface address connects to loopback from 127.0.0.1, where
+            // Linux keeps the interface address (`sockaddr-dgram-reconnect.c`).
+            let current = (UnixMachineState.socket socketId disconnectedFirst.Machine).Binding
+
+            match ensureBoundFrom current dest disconnectedFirst with
             | Error refusal -> Error refusal
             | Ok (binding, system) ->
 

@@ -280,3 +280,86 @@ module TestConnectDestinationMeasured =
     [<Test>]
     let ``every Darwin row is answered as measured`` () : unit =
         check "darwin" SimulatedUnixPlatform.macOsArm64
+
+    /// `sockaddr-dgram-reconnect.c`'s rows: a datagram socket bound to an
+    /// interface address, connected to a socket there or not, connecting to
+    /// loopback. Darwin's disconnect resets a connected one's address, so it
+    /// connects from 127.0.0.1; Linux keeps the interface address. The probe's
+    /// interface address stands here as 10.0.0.5, an address the machine holds.
+    let private reconnect (flavour : string) (platform : SimulatedUnixPlatform) : unit =
+        let iface = 0x0A000005u
+
+        let row =
+            Regex @"^R (?<state>[\w-]+)\s+to (?<dest>[\d.]+)\s*: (?<ans>\w+) local=(?<addr>[\w.]+) port=(?<port>\w+)$"
+
+        let rows =
+            resource $"sockaddr-dgram-reconnect.%s{flavour}.txt"
+            |> Array.toList
+            |> List.filter (fun line -> not (line.StartsWith "#"))
+
+        rows |> List.length |> shouldEqual 4
+
+        for line in rows do
+            let m = row.Match line
+
+            if not m.Success then
+                failwith $"unparsed probe line: %s{line}"
+
+            let system =
+                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.withLocalAddresses [ InternetEndpoint.LoopbackAddress ; iface ] []
+                |> UnixBootImage.boot
+
+            let udp (system : UnixSystem<int, string>) =
+                NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
+
+            let bindTo fd (endpoint : InternetEndpoint) system =
+                match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
+                | Ok (BindAnswer.Bound bound, system) -> bound, system
+                | other -> failwith $"%s{line}: bind answered %A{other}"
+
+            let connectTo fd (endpoint : InternetEndpoint) system =
+                CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system
+
+            let peer, system = udp system
+            let peerAt, system = bindTo peer (InternetEndpoint.ofParts iface 0us) system
+            let fd, system = udp system
+            let bound, system = bindTo fd (InternetEndpoint.ofParts iface 0us) system
+
+            let system =
+                if m.Groups.["state"].Value = "connected" then
+                    match connectTo fd peerAt system with
+                    | Ok (ConnectOutcome.Completed, system) -> system
+                    | other -> failwith $"%s{line}: the first connect answered %A{other}"
+                else
+                    system
+
+            let destination =
+                match m.Groups.["dest"].Value with
+                | "127.0.0.1" -> InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+                | _ -> InternetEndpoint.ofParts 0u 6000us
+
+            match connectTo fd destination system with
+            | Ok (ConnectOutcome.Completed, after) ->
+                m.Groups.["ans"].Value |> shouldEqual "OK"
+                let now = local (socketOf fd after)
+
+                let address =
+                    if now.Address = iface then
+                        "iface"
+                    elif now.Address = InternetEndpoint.LoopbackAddress then
+                        "127.0.0.1"
+                    else
+                        dotted now.Address
+
+                (address, (if now.Port = bound.Port then "same" else "other"))
+                |> shouldEqual (m.Groups.["addr"].Value, m.Groups.["port"].Value)
+            | other -> failwith $"%s{line}: answered %A{other}"
+
+    [<Test>]
+    let ``a Linux socket bound to an interface address reconnects as measured`` () : unit =
+        reconnect "linux" SimulatedUnixPlatform.linuxX64
+
+    [<Test>]
+    let ``a Darwin socket bound to an interface address reconnects as measured`` () : unit =
+        reconnect "darwin" SimulatedUnixPlatform.macOsArm64
