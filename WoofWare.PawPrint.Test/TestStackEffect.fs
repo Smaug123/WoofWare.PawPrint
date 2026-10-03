@@ -11,6 +11,7 @@ open WoofWare.PawPrint
 /// value it pushes is. Its oracle is CoreCLR's own opcode table, `opcode.def` in the pinned
 /// runtime source, which gives each opcode's pops and the stack type of each push.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestStackEffect =
 
     let private requireRuntimeSrc () : string =
