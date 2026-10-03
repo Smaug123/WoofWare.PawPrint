@@ -22,8 +22,14 @@ What lives here:
   execute: following branches, fall-through and `leave`, entering a handler only once its protected
   block has run, and following a conditional branch one way only where it pops a Boolean known in
   advance. `StackShape` and the escape analysis both read it.
-* `StackShape` — the shape of the evaluation stack on entry to every instruction of a body, joined
-  over every path that reaches it, and the control-flow joins at which CoreCLR's importer widens a
+* `StackEffect` — what each instruction pops, and what each value it pushes is (a literal, an
+  argument, a call's result, an element of the array popped, ...), without saying what such a
+  value is in any one analysis's terms. CoreCLR's own `opcode.def` is its oracle.
+* `StackFlow` — a dataflow over the evaluation stack, generic in what it tracks about each slot: a
+  `SlotLattice` says what each `StackEffect` push is in its terms and how two paths' values meet,
+  and the flow joins them over every path, sharing CoreCLR's spill temps across a join.
+* `StackShape` — `StackFlow` over float widths: the shape of the evaluation stack on entry to every
+  instruction of a body, joined over every path that reaches it, and the control-flow joins at which CoreCLR's importer widens a
   float32 slot to double because another path delivers a double there. What a token-bearing
   instruction does to the stack comes in as data (`StackShapeTokens` reads it from a PE module's
   own signature blobs); the interpreter checks its own stack against the analysis in Debug builds.

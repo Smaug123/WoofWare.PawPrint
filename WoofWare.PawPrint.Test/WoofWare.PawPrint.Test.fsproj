@@ -120,6 +120,7 @@
     <Compile Include="TestRawRootFieldLayoutDisplacement.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestOpcodeFaults.fs" />
+    <Compile Include="TestStackEffect.fs" />
     <Compile Include="TestStackShape.fs" />
     <Compile Include="TestControlFlow.fs" />
     <Compile Include="TestStackShapeDynamicScope.fs" />

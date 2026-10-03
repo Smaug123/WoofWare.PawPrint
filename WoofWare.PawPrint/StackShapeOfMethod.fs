@@ -113,7 +113,7 @@ module StackShapeOfMethod =
         // Only what control can reach is read, as CoreCLR's importer reads only what it
         // imports: a token on dead code may name what cannot be resolved.
         let tokens =
-            StackShapeTokens.ofBody assembly binding (StackShape.reachable body) body
+            StackShapeTokens.ofBody assembly binding (StackFlow.reachable body) body
 
         StackShape.analyse (inputsOf assembly binding definition.IsStatic definition.Signature body tokens) body
 
@@ -385,7 +385,7 @@ module StackShapeOfMethod =
         // Only what control can reach is read, as CoreCLR's importer reads only what it
         // imports: a token on dead code may name an entry the interpreter cannot resolve, and
         // the body ran fine before because that instruction never executed.
-        let reachable = StackShape.reachable body
+        let reachable = StackFlow.reachable body
 
         let sourceAssembly (sourced : SourcedMetadataToken) : DumpedAssembly =
             state.LoadedAssembly sourced.SourceAssembly.FullName
