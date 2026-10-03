@@ -391,11 +391,11 @@ module TestUnixSystemInvariants =
         |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentDescription (task, absentDescription) ]
 
     [<Test>]
-    let ``a task parked in a socket wait on an absent description is a defect`` () : unit =
+    let ``a task parked in an epoll_wait on an absent description is a defect`` () : unit =
         system
         |> withTask (
             Some (
-                ParkedSyscall.SocketWait
+                ParkedSyscall.EpollWait
                     {
                         Port = absentDescription
                         MaxEvents = 1
@@ -408,7 +408,7 @@ module TestUnixSystemInvariants =
         |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentDescription (task, absentDescription) ]
 
     [<Test>]
-    let ``a task parked in a socket wait on a description that is not a port is a defect`` () : unit =
+    let ``a task parked in an epoll_wait on a description that is not an epoll instance is a defect`` () : unit =
         // stdout, which every system holds and which is not a port.
         let stdoutDescription, target =
             match FileDescriptorRegistry.tryFindWithId 1 system.Process.FileDescriptors with
@@ -418,7 +418,7 @@ module TestUnixSystemInvariants =
         system
         |> withTask (
             Some (
-                ParkedSyscall.SocketWait
+                ParkedSyscall.EpollWait
                     {
                         Port = stdoutDescription
                         MaxEvents = 1
@@ -428,7 +428,7 @@ module TestUnixSystemInvariants =
             )
         )
         |> UnixSystem.checkInvariants
-        |> shouldEqual [ UnixSystemDefect.ParkedSocketWaitOnNonPort (task, stdoutDescription, target) ]
+        |> shouldEqual [ UnixSystemDefect.ParkedEpollWaitOnNonEpoll (task, stdoutDescription, target) ]
 
     /// `system` with tasks 1 and 2 parked on stdout's description, in that order.
     let private twoParked : UnixSystem<int, string> =
@@ -520,7 +520,7 @@ module TestUnixSystemInvariants =
         withPort
         |> withTask (
             Some (
-                ParkedSyscall.SocketWait
+                ParkedSyscall.EpollWait
                     {
                         Port = port
                         MaxEvents = 1

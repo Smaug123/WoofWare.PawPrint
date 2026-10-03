@@ -118,7 +118,7 @@ module TestSocketWait =
 
         let parkedOn (system : UnixSystem<int, string>) : Waited =
             match UnixTaskTable.parkedFor task system.Tasks with
-            | Some (ParkedSyscall.SocketWait wait) -> Waited.Parked (wait.Port, wait.MaxEvents)
+            | Some (ParkedSyscall.EpollWait wait) -> Waited.Parked (wait.Port, wait.MaxEvents)
             | Some (ParkedSyscall.Kevent wait) -> Waited.Parked (wait.Kqueue, wait.MaxEvents)
             | other -> failwith $"expected a wait's park, got %A{other}"
 

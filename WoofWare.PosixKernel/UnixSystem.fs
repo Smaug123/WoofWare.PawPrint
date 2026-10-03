@@ -191,8 +191,8 @@ type UnixSystemDefect<'Task> =
     | UnreferencedDescription of description : OpenFileDescriptionId
     /// A task is parked in an `epoll_wait` on a description that is not an
     /// epoll instance, which no wait could have produced and which
-    /// `SocketEventPort.hasDeliverableEvent` crashes on.
-    | ParkedSocketWaitOnNonPort of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// `EpollReadyList.hasDeliverableEvent` crashes on.
+    | ParkedEpollWaitOnNonEpoll of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
     /// A task is parked in a `kevent` on a description that is not a kqueue,
     /// which no wait could have produced and on which `WakeCondition.satisfied`
     /// crashes.
@@ -1167,7 +1167,7 @@ module UnixSystem =
                         []
                     else
                         [ UnixSystemDefect.ParkedOnAbsentDescription (task, parked.Requester) ]
-                | Some (ParkedSyscall.SocketWait wait) ->
+                | Some (ParkedSyscall.EpollWait wait) ->
                     match Map.tryFind wait.Port descriptions with
                     | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, wait.Port) ]
                     | Some description ->
@@ -1180,7 +1180,7 @@ module UnixSystem =
                         | OpenFileTarget.CharacterDevice _
                         | OpenFileTarget.Pipe _ ->
                             [
-                                UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
+                                UnixSystemDefect.ParkedEpollWaitOnNonEpoll (task, wait.Port, description.Target)
                             ]
                 | Some (ParkedSyscall.Kevent wait) ->
                     let count =

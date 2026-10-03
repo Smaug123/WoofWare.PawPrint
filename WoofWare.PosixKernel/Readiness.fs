@@ -16,8 +16,8 @@ namespace WoofWare.PosixKernel
 ///
 /// Answers for the socket phases `UnixMachineState.socketReadinessLevel`
 /// answers, both ends of a pipe, and regular files, directories and character
-/// devices (which epoll will not register, but `poll` answers). A socket
-/// event port is refused: what either waiter reports for one is not modelled.
+/// devices (which epoll will not register, but `poll` answers). An epoll
+/// instance is refused: what either waiter reports for one is not modelled.
 [<RequireQualifiedAccess>]
 module LinuxReadiness =
 
@@ -141,13 +141,13 @@ module LinuxReadiness =
 /// that make those changes: `UnixPoll.epollCtl`, and the socket operations in
 /// `UnixConnection`.
 [<RequireQualifiedAccess>]
-module SocketEventPort =
+module EpollReadyList =
 
     /// Each pending entry of the port, in delivery order, with what it would
     /// report if `epoll_wait` re-polled it right now: the target's current
     /// readiness restricted to the registration's stored mask.
     let private annotatedReady<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (portState : SocketEventPortState)
+        (portState : EpollState)
         (system : UnixSystem<'Task, 'Handler>)
         : ((int * OpenFileDescriptionId) * EpollRegistration * uint32) list
         =
@@ -158,7 +158,7 @@ module SocketEventPort =
                 | Some registration -> registration
                 | None ->
                     failwith
-                        $"SocketEventPort.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
+                        $"EpollReadyList.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
 
             let reported = LinuxReadiness.ofDescription targetId system &&& registration.Events
 
@@ -184,7 +184,7 @@ module SocketEventPort =
         match Map.tryFind portId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
         | None ->
             failwith
-                $"SocketEventPort.hasDeliverableEvent: %O{portId} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
+                $"EpollReadyList.hasDeliverableEvent: %O{portId} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
         | Some description ->
 
         match description.Target with
@@ -195,7 +195,7 @@ module SocketEventPort =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
-                $"SocketEventPort.hasDeliverableEvent: %O{portId} is not an epoll instance, so no wait can be parked on it (this is a bug in the caller of SocketEventPort.hasDeliverableEvent)."
+                $"EpollReadyList.hasDeliverableEvent: %O{portId} is not an epoll instance, so no wait can be parked on it (this is a bug in the caller of EpollReadyList.hasDeliverableEvent)."
         | OpenFileTarget.Epoll portState ->
             annotatedReady portState system
             |> List.exists (fun (_, _, reported) -> reported <> 0u)
@@ -222,12 +222,12 @@ module SocketEventPort =
         =
         if maxCount <= 0 then
             failwith
-                $"SocketEventPort.drain: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is a bug in the caller of SocketEventPort.drain."
+                $"EpollReadyList.drain: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is a bug in the caller of EpollReadyList.drain."
 
         match Map.tryFind portId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
         | None ->
             failwith
-                $"SocketEventPort.drain: %O{portId} names no live open file description (this is a bug in the caller of SocketEventPort.drain)."
+                $"EpollReadyList.drain: %O{portId} names no live open file description (this is a bug in the caller of EpollReadyList.drain)."
         | Some description ->
 
         match description.Target with
@@ -238,7 +238,7 @@ module SocketEventPort =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
-                $"SocketEventPort.drain: %O{portId} is not an epoll instance (this is a bug in the caller of SocketEventPort.drain)."
+                $"EpollReadyList.drain: %O{portId} is not an epoll instance (this is a bug in the caller of EpollReadyList.drain)."
         | OpenFileTarget.Epoll portState ->
 
         let rec walk
@@ -705,7 +705,7 @@ module KqueueQueue =
     /// right now: the question a task waiting in `kevent` on it is polled
     /// against, and the one `drain` answers by reporting.
     ///
-    /// Loudly partial in `kqueue`, as `SocketEventPort.hasDeliverableEvent` is
+    /// Loudly partial in `kqueue`, as `EpollReadyList.hasDeliverableEvent` is
     /// in its port: a task parked on a kqueue holds it until its call returns,
     /// so the kqueue cannot have gone while something waits on it.
     let hasDeliverableEvent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -819,7 +819,7 @@ module SocketWake =
 
     /// The key an epoll wake for `wake` carries, in Linux's `<sys/epoll.h>`
     /// numbering, or `None` for an unkeyed wake (see
-    /// `FileDescriptorRegistry.signalSocketEventPorts`).
+    /// `FileDescriptorRegistry.signalEpollInstances`).
     let epollKey (wake : SocketWake) : uint32 option =
         match wake with
         // A data-ready wake, keyed with what `sock_def_readable` passes its
@@ -870,7 +870,7 @@ module SocketWake =
                 Process =
                     { system.Process with
                         FileDescriptors =
-                            FileDescriptorRegistry.signalSocketEventPorts
+                            FileDescriptorRegistry.signalEpollInstances
                                 (UnixProcessState.descriptionsNamingSocket socketId system.Process)
                                 (epollKey wake)
                                 system.Process.FileDescriptors

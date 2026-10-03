@@ -3,8 +3,8 @@ namespace WoofWare.PosixKernel
 /// A wait queue whose waiters a real kernel wakes one at a time.
 [<RequireQualifiedAccess>]
 type internal ExclusiveWaitQueue =
-    /// The waiters in `epoll_wait` on the socket event port this description names.
-    | SocketEventPort of OpenFileDescriptionId
+    /// The waiters in `epoll_wait` on the epoll instance this description names.
+    | Epoll of OpenFileDescriptionId
     /// The waiters in `accept` on the listening socket this description names.
     | Listener of OpenFileDescriptionId
     /// The waiters in `read` for bytes from this pipe.
@@ -57,9 +57,9 @@ module UnixWait =
     ///
     /// A waiter whose `flock` has become grantable, whose polled descriptor is
     /// ready, whose deadline has passed, or to which a signal with a handler is
-    /// deliverable wakes, whoever else is waiting for the same thing. Waiters on a socket event port, and waiters in `accept`
+    /// deliverable wakes, whoever else is waiting for the same thing. Waiters on an epoll instance, and waiters in `accept`
     /// on a listener, queue exclusively: something to take wakes one of them,
-    /// the one that parked *last* on a socket event port and the one that
+    /// the one that parked *last* on an epoll instance and the one that
     /// parked *first* on a listener. Under Linux, so do the waiters in `read`
     /// for a pipe's bytes and those in `write` for its room, the one that
     /// parked first waking; under Darwin every one of them wakes. Exclusive
@@ -167,7 +167,7 @@ module UnixWait =
 
         let exclusiveQueueOf (primitive : WakePrimitive) : ExclusiveWaitQueue option =
             match primitive with
-            | WakePrimitive.SocketEventDeliverable port -> Some (ExclusiveWaitQueue.SocketEventPort port)
+            | WakePrimitive.SocketEventDeliverable port -> Some (ExclusiveWaitQueue.Epoll port)
             | WakePrimitive.AcceptQueueNonEmpty listener -> Some (ExclusiveWaitQueue.Listener listener)
             | WakePrimitive.PipeHasBytes reader when linux -> pipeOf reader |> Option.map ExclusiveWaitQueue.PipeReaders
             | WakePrimitive.PipeHasRoom (writer, _, _) when linux ->
@@ -195,8 +195,8 @@ module UnixWait =
                 else
                     match state.Parked with
                     | Some {
-                               Syscall = ParkedSyscall.SocketWait wait
-                           } -> Some (ExclusiveWaitQueue.SocketEventPort wait.Port)
+                               Syscall = ParkedSyscall.EpollWait wait
+                           } -> Some (ExclusiveWaitQueue.Epoll wait.Port)
                     // A call a close has ended waits on no queue.
                     | Some {
                                Syscall = ParkedSyscall.Accept accept
@@ -255,7 +255,7 @@ module UnixWait =
 
                     let _, woken =
                         match queue with
-                        | ExclusiveWaitQueue.SocketEventPort _ -> List.maxBy fst waiters
+                        | ExclusiveWaitQueue.Epoll _ -> List.maxBy fst waiters
                         | ExclusiveWaitQueue.Listener _
                         | ExclusiveWaitQueue.PipeReaders _
                         | ExclusiveWaitQueue.PipeWriters _ -> List.minBy fst waiters

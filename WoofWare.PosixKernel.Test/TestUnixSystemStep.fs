@@ -858,8 +858,8 @@ module TestUnixSystemStep =
                 }
         }
 
-    /// A descriptor onto a socket event port.
-    let private withSocketEventPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+    /// A descriptor onto an epoll instance.
+    let private withEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         fd,
@@ -1026,7 +1026,7 @@ module TestUnixSystemStep =
 
         for flavour in [ linux ; darwin ] do
             let socketFd, socketSystem = withSocket flavour
-            let portFd, portSystem = withSocketEventPort flavour
+            let portFd, portSystem = withEpoll flavour
 
             for buffer in [ UserBuffer.Mapped ; wild ; UserBuffer.Opaque ; UserBuffer.Addressless ] do
                 for count in [ 0UL ; 5UL ] do
@@ -1117,12 +1117,12 @@ module TestUnixSystemStep =
         PReadUnchanged.pread darwinSocket UserBuffer.Mapped 5UL -1L darwinSocketSystem
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
-        let linuxPort, linuxPortSystem = withSocketEventPort linux
+        let linuxPort, linuxPortSystem = withEpoll linux
 
         PReadUnchanged.pread linuxPort UserBuffer.Mapped 5UL -1L linuxPortSystem
         |> shouldEqual (failedWith UnixError.EINVAL)
 
-        let darwinPort, darwinPortSystem = withSocketEventPort darwin
+        let darwinPort, darwinPortSystem = withEpoll darwin
 
         PReadUnchanged.pread darwinPort UserBuffer.Mapped 5UL -1L darwinPortSystem
         |> shouldEqual (failedWith UnixError.ESPIPE)
@@ -1242,7 +1242,7 @@ module TestUnixSystemStep =
             let readOnlyFd, readOnly = withReadOnlyFile flavour
             let dirFd, dirSystem = withOpenDirectory flavour
             let socketFd, socketSystem = withSocket flavour
-            let portFd, portSystem = withSocketEventPort flavour
+            let portFd, portSystem = withEpoll flavour
 
             for descriptor, holding in
                 [
@@ -1323,7 +1323,7 @@ module TestUnixSystemStep =
 
         for flavour in [ linux ; darwin ] do
             let socketFd, socketSystem = withSocket flavour
-            let portFd, portSystem = withSocketEventPort flavour
+            let portFd, portSystem = withEpoll flavour
 
             for buffer in [ UserBuffer.Mapped ; wild ; UserBuffer.Opaque ; UserBuffer.Addressless ] do
                 for count in [ 0UL ; 4UL ] do
@@ -1343,7 +1343,7 @@ module TestUnixSystemStep =
         |> endedBySigPipe
         |> shouldEqual true
 
-        let portFd, portSystem = withSocketEventPort linux
+        let portFd, portSystem = withEpoll linux
 
         WriteAdmissions.unchanged portFd UserBuffer.Mapped 4UL portSystem
         |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL)))
@@ -1691,7 +1691,7 @@ module TestUnixSystemStep =
         UnixPathResolution.fstat 1 linux
         |> shouldEqual (Error (FStatRefusal.LaunchedPipe (PipeId 1L)))
 
-        let portFd, portSystem = withSocketEventPort linux
+        let portFd, portSystem = withEpoll linux
 
         UnixPathResolution.fstat portFd portSystem
         |> shouldEqual (Error FStatRefusal.SocketEventPort)
@@ -3405,15 +3405,15 @@ module TestUnixSystemStep =
             | Ok (fd, system) -> fd, system
             | Error refusal -> failwith $"expected a kqueue, got %A{refusal}"
 
-    /// Task 7 parked in a socket wait on the port `fd` names.
+    /// Task 7 parked in an `epoll_wait` on the port `fd` names.
     let private parkedOnPort (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         let system = withTask 7 system
 
         UnixWait.park
             7
-            (ParkedSyscall.SocketWait
+            (ParkedSyscall.EpollWait
                 {
-                    ParkedSocketWait.Port = descriptionOf fd system
+                    ParkedEpollWait.Port = descriptionOf fd system
                     MaxEvents = 8
                     Buffer = UserBuffer.Mapped
                     Deadline = None
@@ -3552,7 +3552,7 @@ module TestUnixSystemStep =
     let ``a port with nothing pending would deliver nothing`` () : unit =
         let fd, system = withPort linux
 
-        SocketEventPort.hasDeliverableEvent (descriptionOf fd system) system
+        EpollReadyList.hasDeliverableEvent (descriptionOf fd system) system
         |> shouldEqual false
 
     [<Test>]
@@ -3560,13 +3560,13 @@ module TestUnixSystemStep =
         let fd, system = withPendingPort linux
         let portId = descriptionOf fd system
 
-        SocketEventPort.hasDeliverableEvent portId system |> shouldEqual true
+        EpollReadyList.hasDeliverableEvent portId system |> shouldEqual true
 
-        let delivered, drained = SocketEventPort.drain portId 8 system
+        let delivered, drained = EpollReadyList.drain portId 8 system
 
         delivered |> shouldEqual [ 0xBEEFUL, EpollEvents.Hup ]
 
-        SocketEventPort.hasDeliverableEvent portId drained |> shouldEqual false
+        EpollReadyList.hasDeliverableEvent portId drained |> shouldEqual false
 
     [<Test>]
     let ``the predicate and the drain cannot disagree`` () : unit =
@@ -3580,15 +3580,15 @@ module TestUnixSystemStep =
 
         for fd, system in [ empty ; pending ] do
             let portId = descriptionOf fd system
-            let predicted = SocketEventPort.hasDeliverableEvent portId system
-            let delivered, drained = SocketEventPort.drain portId 8 system
+            let predicted = EpollReadyList.hasDeliverableEvent portId system
+            let delivered, drained = EpollReadyList.drain portId 8 system
 
             List.isEmpty delivered |> shouldEqual (not predicted)
 
             // ...and again in the state the drain produced, which is the state a
             // waiter that found nothing parks in.
-            let predicted = SocketEventPort.hasDeliverableEvent portId drained
-            let delivered, _ = SocketEventPort.drain portId 8 drained
+            let predicted = EpollReadyList.hasDeliverableEvent portId drained
+            let delivered, _ = EpollReadyList.drain portId 8 drained
 
             List.isEmpty delivered |> shouldEqual (not predicted)
 
@@ -3612,7 +3612,7 @@ module TestUnixSystemStep =
             | Error error -> failwith $"expected the close to succeed, got %O{error}"
 
         let exn =
-            Assert.Throws<exn> (fun () -> SocketEventPort.hasDeliverableEvent portId closed |> ignore)
+            Assert.Throws<exn> (fun () -> EpollReadyList.hasDeliverableEvent portId closed |> ignore)
 
         exn.Message |> shouldContainText "a park holds what it waits on"
 
@@ -3621,7 +3621,7 @@ module TestUnixSystemStep =
         // `false` here would be a waiter parked on something that can never
         // deliver, reported as an ordinary "not yet".
         let exn =
-            Assert.Throws<exn> (fun () -> SocketEventPort.hasDeliverableEvent (descriptionOf 0 linux) linux |> ignore)
+            Assert.Throws<exn> (fun () -> EpollReadyList.hasDeliverableEvent (descriptionOf 0 linux) linux |> ignore)
 
         exn.Message |> shouldContainText "is not an epoll instance"
 
@@ -3636,7 +3636,7 @@ module TestUnixSystemStep =
         let portId = descriptionOf fd system
 
         let exn =
-            Assert.Throws<exn> (fun () -> SocketEventPort.drain portId 0 system |> ignore)
+            Assert.Throws<exn> (fun () -> EpollReadyList.drain portId 0 system |> ignore)
 
         exn.Message |> shouldContainText "is not positive"
 
@@ -3685,9 +3685,9 @@ module TestUnixSystemStep =
         let fd, system = withPort linux
 
         let parked =
-            ParkedSyscall.SocketWait
+            ParkedSyscall.EpollWait
                 {
-                    ParkedSocketWait.Port = descriptionOf fd system
+                    ParkedEpollWait.Port = descriptionOf fd system
                     MaxEvents = 8
                     Buffer = UserBuffer.Mapped
                     Deadline = None
@@ -3705,7 +3705,7 @@ module TestUnixSystemStep =
     [<Test>]
     let ``a wait on a port with nothing pending is not satisfied, and a pending entry satisfies it`` () : unit =
         // The socket condition through `satisfied`, which is what a client actually polls —
-        // `SocketEventPort.hasDeliverableEvent` has its own rows, and this is the wiring between
+        // `EpollReadyList.hasDeliverableEvent` has its own rows, and this is the wiring between
         // them.
         let quiet, system = withPort linux
 
@@ -3717,7 +3717,7 @@ module TestUnixSystemStep =
         holds 0 (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable (descriptionOf ready system))) system
         |> shouldEqual true
 
-    /// `waiters` parked, in this order, in a socket wait on the port `fd` names.
+    /// `waiters` parked, in this order, in an `epoll_wait` on the port `fd` names.
     let private parkedOnPortInOrder
         (waiters : int list)
         (fd : int)
@@ -3729,9 +3729,9 @@ module TestUnixSystemStep =
             withTask task system
             |> UnixWait.park
                 task
-                (ParkedSyscall.SocketWait
+                (ParkedSyscall.EpollWait
                     {
-                        ParkedSocketWait.Port = descriptionOf fd system
+                        ParkedEpollWait.Port = descriptionOf fd system
                         MaxEvents = 8
                         Buffer = UserBuffer.Mapped
                         Deadline = None
@@ -3777,9 +3777,9 @@ module TestUnixSystemStep =
         let reparked =
             UnixWait.park
                 9
-                (ParkedSyscall.SocketWait
+                (ParkedSyscall.EpollWait
                     {
-                        ParkedSocketWait.Port = descriptionOf ready system
+                        ParkedEpollWait.Port = descriptionOf ready system
                         MaxEvents = 8
                         Buffer = UserBuffer.Mapped
                         Deadline = None
@@ -4895,7 +4895,7 @@ module TestUnixSystemStep =
             |> sockNameFailed
             |> shouldEqual (UnixError.ENOTSOCK, None)
 
-            let portFd, portSystem = withSocketEventPort flavour
+            let portFd, portSystem = withEpoll flavour
 
             UnixSocket.getsockname portFd (UserBuffer.Unmapped 8UL) 16u portSystem
             |> sockNameFailed

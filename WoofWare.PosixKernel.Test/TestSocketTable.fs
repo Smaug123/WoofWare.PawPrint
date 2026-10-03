@@ -43,7 +43,7 @@ module TestSocketTable =
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | Ok (SyscallAnswer.Completed _, system) -> Ok system
 
-    /// `SocketEventPort.drain` against a kernel, with the claim its two readers
+    /// `EpollReadyList.drain` against a kernel, with the claim its two readers
     /// exist to satisfy checked on every call: the predicate a parked waiter is
     /// polled against and the drain its woken handler performs read the same
     /// annotated walk, so a drain reports something exactly when the predicate
@@ -54,17 +54,17 @@ module TestSocketTable =
         (kernel : UnixSystem<int, string>)
         : (uint64 * uint32) list * UnixSystem<int, string>
         =
-        let predicted = SocketEventPort.hasDeliverableEvent portId kernel
-        let delivered, system = SocketEventPort.drain portId maxCount kernel
+        let predicted = EpollReadyList.hasDeliverableEvent portId kernel
+        let delivered, system = EpollReadyList.drain portId maxCount kernel
 
         if List.isEmpty delivered = predicted then
             failwith
-                $"SocketEventPort.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
+                $"EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
 
         delivered, system
 
     let private hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
-        SocketEventPort.hasDeliverableEvent portId kernel
+        EpollReadyList.hasDeliverableEvent portId kernel
 
     let private linuxReadiness (targetId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : uint32 =
         LinuxReadiness.ofDescription targetId kernel

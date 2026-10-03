@@ -22,7 +22,7 @@ type CpuId =
 /// the real syscall holds a file reference: the fd the wait was called through
 /// is never consulted again, and the instance lives at least as long as the
 /// wait (`ParkedSyscall.descriptions`).
-type ParkedSocketWait =
+type ParkedEpollWait =
     {
         /// <summary>
         /// The open file description of the epoll instance being waited on.
@@ -327,7 +327,7 @@ type ParkedPipeWrite =
 /// </remarks>
 [<RequireQualifiedAccess>]
 type ParkedSyscall =
-    | SocketWait of ParkedSocketWait
+    | EpollWait of ParkedEpollWait
     | Kevent of ParkedKevent
     | Flock of ParkedFlock
     | Poll of ParkedPoll
@@ -350,7 +350,7 @@ module ParkedSyscall =
     /// file whose wait queue it sleeps on; a Darwin one holds none.
     let descriptions (parked : ParkedSyscall) : OpenFileDescriptionId list =
         match parked with
-        | ParkedSyscall.SocketWait wait -> [ wait.Port ]
+        | ParkedSyscall.EpollWait wait -> [ wait.Port ]
         | ParkedSyscall.Kevent wait -> [ wait.Kqueue ]
         | ParkedSyscall.Flock parked -> [ parked.Requester ]
         | ParkedSyscall.Poll poll ->
@@ -551,7 +551,7 @@ module UnixTaskTable =
         // Which syscall a park is of, and nothing else about it.
         let kind (parked : ParkedSyscall) : int =
             match parked with
-            | ParkedSyscall.SocketWait _ -> 0
+            | ParkedSyscall.EpollWait _ -> 0
             | ParkedSyscall.Flock _ -> 1
             | ParkedSyscall.Poll _ -> 2
             | ParkedSyscall.Accept _ -> 3

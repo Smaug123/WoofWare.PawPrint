@@ -1089,9 +1089,9 @@ module UnixDescriptor =
         let requester, mode =
             match UnixTaskTable.parkedFor task system.Tasks with
             | Some (ParkedSyscall.Flock parked) -> parked.Requester, parked.Mode
-            | Some (ParkedSyscall.SocketWait wait) ->
+            | Some (ParkedSyscall.EpollWait wait) ->
                 failwith
-                    $"UnixDescriptor.flockAcquire: task %O{task} is parked in a socket wait on %O{wait.Port}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
+                    $"UnixDescriptor.flockAcquire: task %O{task} is parked in an epoll_wait on %O{wait.Port}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
             | Some (ParkedSyscall.Kevent wait) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in a kevent on %O{wait.Kqueue}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
@@ -1442,7 +1442,7 @@ module UnixDescriptor =
                 parks
                 |> List.tryPick (fun (task, parked) ->
                     match parked with
-                    | ParkedSyscall.SocketWait wait when wait.Port = closingId ->
+                    | ParkedSyscall.EpollWait wait when wait.Port = closingId ->
                         failwith
                             $"UnixDescriptor.close: task %O{task} is parked in an epoll_wait on %O{closingId} under the Darwin flavour, which has no epoll (this is a bug in the caller's state construction)."
                     | ParkedSyscall.Flock parked when parked.Requester = closingId ->
@@ -1478,7 +1478,7 @@ module UnixDescriptor =
                         with
                         | true -> None
                         | false -> Some (CloseRefusal.DarwinWokenTransfer (closingId, task))
-                    | ParkedSyscall.SocketWait _
+                    | ParkedSyscall.EpollWait _
                     | ParkedSyscall.Kevent _
                     | ParkedSyscall.Accept _
                     | ParkedSyscall.PipeRead _
@@ -1514,7 +1514,7 @@ module UnixDescriptor =
                     else
                         None
                 | ParkedSyscall.Flock _
-                | ParkedSyscall.SocketWait _
+                | ParkedSyscall.EpollWait _
                 | ParkedSyscall.Kevent _
                 | ParkedSyscall.KqueuePoll _
                 | ParkedSyscall.Accept _
@@ -1543,7 +1543,7 @@ module UnixDescriptor =
                |> List.exists (fun (_, parked) ->
                    match parked with
                    | ParkedSyscall.Accept accept -> enteredHere accept.Listener
-                   | ParkedSyscall.SocketWait _
+                   | ParkedSyscall.EpollWait _
                    | ParkedSyscall.Kevent _
                    | ParkedSyscall.Flock _
                    | ParkedSyscall.Poll _
@@ -1592,7 +1592,7 @@ module UnixDescriptor =
             | ParkedSyscall.Accept _
             | ParkedSyscall.PipeRead _
             | ParkedSyscall.PipeWrite _
-            | ParkedSyscall.SocketWait _
+            | ParkedSyscall.EpollWait _
             | ParkedSyscall.Kevent _
             | ParkedSyscall.Flock _
             | ParkedSyscall.Poll _
@@ -1758,7 +1758,7 @@ module UnixDescriptor =
                     |> List.exists (fun (_, parked) ->
                         match parked with
                         | ParkedSyscall.Kevent wait -> wait.Kqueue = closingId && wait.Fd = fd
-                        | ParkedSyscall.SocketWait _
+                        | ParkedSyscall.EpollWait _
                         | ParkedSyscall.Flock _
                         | ParkedSyscall.Poll _
                         | ParkedSyscall.KqueuePoll _

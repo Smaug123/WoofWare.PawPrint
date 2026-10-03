@@ -116,10 +116,10 @@ module TestEpollCtl =
         | Some id -> id
         | None -> failwith $"fd %d{fd} is not live"
 
-    let private portOf (portFd : int) (system : UnixSystem<int, string>) : SocketEventPortState =
+    let private portOf (portFd : int) (system : UnixSystem<int, string>) : EpollState =
         match FileDescriptorRegistry.tryFindTarget portFd system.Process.FileDescriptors with
         | Some (OpenFileTarget.Epoll portState) -> portState
-        | other -> failwith $"expected an event port, got %A{other}"
+        | other -> failwith $"expected an epoll instance, got %A{other}"
 
     let private ready (portFd : int) (system : UnixSystem<int, string>) : (int * OpenFileDescriptionId) list =
         (portOf portFd system).Ready
@@ -588,7 +588,7 @@ module TestEpollCtl =
                 )
                 system
 
-        let delivered, _ = SocketEventPort.drain portId 64 system
+        let delivered, _ = EpollReadyList.drain portId 64 system
 
         let expected =
             rows

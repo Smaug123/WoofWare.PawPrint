@@ -1015,7 +1015,7 @@ module UnixReadWrite =
 
             let registry =
                 if progress.WroteIntoEmpty then
-                    FileDescriptorRegistry.signalSocketEventPorts
+                    FileDescriptorRegistry.signalEpollInstances
                         readers
                         (Some (EpollEvents.In ||| EpollEvents.RdNorm))
                         registry
@@ -1023,7 +1023,7 @@ module UnixReadWrite =
                     registry
 
             if progress.Closed then
-                FileDescriptorRegistry.signalSocketEventPorts readers None registry
+                FileDescriptorRegistry.signalEpollInstances readers None registry
             else
                 registry
 
@@ -2181,7 +2181,7 @@ module UnixReadWrite =
                     // carries `EPOLLOUT | EPOLLWRNORM` (`pipe_read`).
                     let registry =
                         if filled then
-                            FileDescriptorRegistry.signalSocketEventPorts
+                            FileDescriptorRegistry.signalEpollInstances
                                 (UnixProcessState.descriptionsNamingPipeEnd pipeId PipeEnd.Write system.Process)
                                 (Some (EpollEvents.Out ||| EpollEvents.WrNorm))
                                 system.Process.FileDescriptors

@@ -89,7 +89,7 @@ module SyscallInterruption =
         | ParkedSyscall.Accept _
         | ParkedSyscall.PipeRead _
         | ParkedSyscall.PipeWrite _ -> SignalRestartRule.RestartsUnderSaRestart
-        | ParkedSyscall.SocketWait _
+        | ParkedSyscall.EpollWait _
         | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _
         | ParkedSyscall.KqueuePoll _ -> SignalRestartRule.FailsWithEintr

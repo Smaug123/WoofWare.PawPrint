@@ -185,7 +185,7 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 3
         FileDescriptorRegistry.assertInvariants "socket closed" registry |> ignore
 
-    /// Two socket event ports are two *descriptions* but one `flock` object.
+    /// Two epoll instances are two *descriptions* but one `flock` object.
     /// That split is why `OpenFileObject` must stay the contention key rather
     /// than becoming a general-purpose identity: on Linux every anon-inode file
     /// shares a single inode, so an exclusive lock on one port excludes the
@@ -195,11 +195,11 @@ module TestFileDescriptorRegistry =
     /// one port and finds the other excluded — so this test exists for the
     /// description half, which has none: nothing a guest can call tells two
     /// ports apart. That half matters for the wait rather than for `flock`.
-    /// `ParkedSocketWait` keys a parked task on the port's
+    /// `ParkedEpollWait` keys a parked task on the port's
     /// `OpenFileDescriptionId`, so two ports sharing one description identity
     /// would wake the wrong waiter.
     [<Test>]
-    let ``two socket event ports are two descriptions but one flock object`` () : unit =
+    let ``two epoll instances are two descriptions but one flock object`` () : unit =
         let a, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let b, registry = FileDescriptorRegistry.createEpoll registry
@@ -235,7 +235,7 @@ module TestFileDescriptorRegistry =
     /// a port is the first target kind whose *identity* is the description, so
     /// "the description outlived its descriptors" would be a different bug.
     [<Test>]
-    let ``a socket event port outlives a closed descriptor but not its last`` () : unit =
+    let ``an epoll instance outlives a closed descriptor but not its last`` () : unit =
         let a, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let b, registry =
@@ -1754,12 +1754,12 @@ module TestFileDescriptorRegistry =
         =
         match FileDescriptorRegistry.tryFindTarget portFd registry with
         | Some (OpenFileTarget.Epoll portState) -> portState.Registrations
-        | other -> failwith $"fd %d{portFd} is not a socket event port: %O{other}"
+        | other -> failwith $"fd %d{portFd} is not an epoll instance: %O{other}"
 
     let private readyOf (portFd : int) (registry : FileDescriptorRegistry) : (int * OpenFileDescriptionId) list =
         match FileDescriptorRegistry.tryFindTarget portFd registry with
         | Some (OpenFileTarget.Epoll portState) -> portState.Ready
-        | other -> failwith $"fd %d{portFd} is not a socket event port: %O{other}"
+        | other -> failwith $"fd %d{portFd} is not an epoll instance: %O{other}"
 
     let private idOf (fd : int) (registry : FileDescriptorRegistry) : OpenFileDescriptionId =
         match FileDescriptorRegistry.tryFindId fd registry with

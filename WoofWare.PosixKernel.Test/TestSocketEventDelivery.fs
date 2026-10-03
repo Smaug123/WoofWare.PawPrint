@@ -60,7 +60,7 @@ module TestSocketEventDelivery =
             Tasks = f system.Tasks
         }
 
-    /// `SocketEventPort.drain` against a kernel, with the claim its two readers
+    /// `EpollReadyList.drain` against a kernel, with the claim its two readers
     /// exist to satisfy checked on every call: the predicate a parked waiter is
     /// polled against and the drain its woken handler performs read the same
     /// annotated walk, so a drain reports something exactly when the predicate
@@ -73,17 +73,17 @@ module TestSocketEventDelivery =
         (kernel : UnixSystem<int, string>)
         : (uint64 * uint32) list * UnixSystem<int, string>
         =
-        let predicted = SocketEventPort.hasDeliverableEvent portId kernel
-        let delivered, system = SocketEventPort.drain portId maxCount kernel
+        let predicted = EpollReadyList.hasDeliverableEvent portId kernel
+        let delivered, system = EpollReadyList.drain portId maxCount kernel
 
         if List.isEmpty delivered = predicted then
             failwith
-                $"SocketEventPort.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
+                $"EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
 
         delivered, system
 
     let private hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
-        SocketEventPort.hasDeliverableEvent portId kernel
+        EpollReadyList.hasDeliverableEvent portId kernel
 
     let private addPort (kernel : UnixSystem<int, string>) : int * OpenFileDescriptionId * UnixSystem<int, string> =
         let fd, registry = FileDescriptorRegistry.createEpoll kernel.Process.FileDescriptors
@@ -1015,9 +1015,9 @@ module TestSocketEventDelivery =
                 |> Tasks.spawn 1
                 |> UnixWait.park
                     1
-                    (ParkedSyscall.SocketWait
+                    (ParkedSyscall.EpollWait
                         {
-                            ParkedSocketWait.Port = portId
+                            ParkedEpollWait.Port = portId
                             MaxEvents = 8
                             Buffer = UserBuffer.Mapped
                             Deadline = None
@@ -1039,7 +1039,7 @@ module TestSocketEventDelivery =
             FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
             |> Map.containsKey (
                 match UnixTaskTable.parkedFor 1 closed.Tasks with
-                | Some (ParkedSyscall.SocketWait wait) -> wait.Port
+                | Some (ParkedSyscall.EpollWait wait) -> wait.Port
                 | other -> failwith $"expected the wait to stay parked, got %A{other}"
             )
             |> shouldEqual true

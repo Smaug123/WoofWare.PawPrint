@@ -123,7 +123,7 @@ class LockAndPortWaiters
 
     let private isPortWait (parked : ParkedSyscall) : bool =
         match parked with
-        | ParkedSyscall.SocketWait _
+        | ParkedSyscall.EpollWait _
         | ParkedSyscall.Kevent _ -> true
         | ParkedSyscall.Flock _
         | ParkedSyscall.Poll _

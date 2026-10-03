@@ -522,7 +522,7 @@ module TestPollTimeout =
                         Requester = idOf listener idle
                         Mode = FlockMode.Shared
                     }
-                ParkedSyscall.SocketWait
+                ParkedSyscall.EpollWait
                     {
                         Port = idOf listener idle
                         MaxEvents = 1

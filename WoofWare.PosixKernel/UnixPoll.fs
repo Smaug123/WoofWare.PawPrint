@@ -129,7 +129,7 @@ type EpollWaitOutcome =
     | Answered of events : (uint64 * uint32) list
     /// `epoll_wait` did not return. The calling task is parked, and sleeps
     /// until `WakeCondition.satisfied` of this condition is non-empty and
-    /// `UnixWait.wakes` wakes it; then `UnixPoll.finishSocketWait` finishes the
+    /// `UnixWait.wakes` wakes it; then `UnixPoll.finishEpollWait` finishes the
     /// call.
     | WouldBlock of WakeCondition
 
@@ -167,7 +167,7 @@ module EpollWaitRefusal =
             $"this kernel is %O{flavour}-flavoured, and epoll_wait exists on Linux only. This flavour's counterpart is kevent (UnixKqueue.kevent)."
         | EpollWaitRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | EpollWaitRefusal.UnmeasuredCopyOutFault port ->
-            $"the socket event port %O{port} has events to deliver, so this call copies them out -- but the buffer is unmapped, so that copy faults. Which of the events the walk took stay pending after the fault, and whether the call answers EFAULT or the count copied before it, are unmeasured."
+            $"the epoll instance %O{port} has events to deliver, so this call copies them out -- but the buffer is unmapped, so that copy faults. Which of the events the walk took stay pending after the fault, and whether the call answers EFAULT or the count copied before it, are unmeasured."
         | EpollWaitRefusal.DeadlineBeyondClock (now, timeoutMilliseconds) ->
             $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
         | EpollWaitRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
@@ -1361,9 +1361,9 @@ module UnixPoll =
             | UserBuffer.Opaque -> Error (EpollWaitRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
             | UserBuffer.Addressless -> Error (EpollWaitRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
 
-    /// Park `task` in a wait on the socket event port `port` for up to
+    /// Park `task` in a wait on the epoll instance `port` for up to
     /// `maxEvents` events, until `deadline`.
-    let private parkSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private parkEpollWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (port : OpenFileDescriptionId)
         (maxEvents : int)
@@ -1373,7 +1373,7 @@ module UnixPoll =
         : EpollWaitOutcome * UnixSystem<'Task, 'Handler>
         =
         let parked =
-            ParkedSyscall.SocketWait
+            ParkedSyscall.EpollWait
                 {
                     Port = port
                     MaxEvents = maxEvents
@@ -1396,13 +1396,13 @@ module UnixPoll =
     ///
     /// Delivery walks the port's pending registrations in order, reporting each
     /// one whose target is still ready and consuming each one walked, stale or
-    /// not (see `SocketEventPort.drain`). A wait that finds something answers it
+    /// not (see `EpollReadyList.drain`). A wait that finds something answers it
     /// whatever the timeout. One that finds nothing answers no events at once
     /// for a timeout of 0; parks `task` for a positive timeout until an event is
     /// deliverable or `milliseconds` have passed on the machine's monotonic
     /// clock; and parks it until an event is deliverable for any negative
     /// timeout, which is infinite. A parked wait is finished with
-    /// `finishSocketWait`. The walk's consumption stands whether or not the call
+    /// `finishEpollWait`. The walk's consumption stands whether or not the call
     /// then sleeps.
     ///
     /// A call that delivers events copies them out to `buffer`, which must be
@@ -1427,7 +1427,7 @@ module UnixPoll =
         match UnixTaskTable.parkedFor task system.Tasks with
         | Some parked ->
             failwith
-                $"UnixPoll.epollWait: task %O{task} is parked in %A{parked}, and is issuing an epoll_wait. A task blocks in one syscall at a time; a parked wait is finished with `finishSocketWait` (this is a bug in the client)."
+                $"UnixPoll.epollWait: task %O{task} is parked in %A{parked}, and is issuing an epoll_wait. A task blocks in one syscall at a time; a parked wait is finished with `finishEpollWait` (this is a bug in the client)."
         | None ->
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
@@ -1439,7 +1439,7 @@ module UnixPoll =
         | Ok (Error error) -> Ok (EpollWaitOutcome.Failed error, system)
         | Ok (Ok port) ->
 
-        let delivered, system = SocketEventPort.drain port maxEvents system
+        let delivered, system = EpollReadyList.drain port maxEvents system
 
         // Measured (`epoll-wait.c`, sections B and C): a wait that finds
         // something answers at once whatever the timeout, and one that finds
@@ -1453,24 +1453,24 @@ module UnixPoll =
 
         match relativeDeadline now milliseconds with
         | Error () -> Error (EpollWaitRefusal.DeadlineBeyondClock (now, milliseconds))
-        | Ok deadline -> Ok (parkSocketWait task port maxEvents buffer deadline system)
+        | Ok deadline -> Ok (parkEpollWait task port maxEvents buffer deadline system)
 
-    let private finishSocketWaitHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private finishEpollWaitHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<EpollWaitOutcome * UnixSystem<'Task, 'Handler>, EpollWaitRefusal>
         =
         let parked =
             match UnixTaskTable.parkedFor task system.Tasks with
-            | Some (ParkedSyscall.SocketWait parked) -> parked
+            | Some (ParkedSyscall.EpollWait parked) -> parked
             | Some other ->
                 failwith
-                    $"UnixPoll.finishSocketWait: task %O{task} is parked in %A{other}, not in a socket event wait, so there is no wait to finish (this is a bug in the client)."
+                    $"UnixPoll.finishEpollWait: task %O{task} is parked in %A{other}, not in an epoll_wait, so there is no wait to finish (this is a bug in the client)."
             | None ->
                 failwith
-                    $"UnixPoll.finishSocketWait: task %O{task} is not parked, so there is no wait to finish. Only a task `epollWait` answered `WouldBlock` finishes here (this is a bug in the client)."
+                    $"UnixPoll.finishEpollWait: task %O{task} is not parked, so there is no wait to finish. Only a task `epollWait` answered `WouldBlock` finishes here (this is a bug in the client)."
 
-        let delivered, system = SocketEventPort.drain parked.Port parked.MaxEvents system
+        let delivered, system = EpollReadyList.drain parked.Port parked.MaxEvents system
 
         let timedOut =
             match parked.Deadline with
@@ -1498,10 +1498,10 @@ module UnixPoll =
         | Ok (Some SyscallInterruption.Eintr) -> Ok (EpollWaitOutcome.Failed UnixError.EINTR, finished)
         | Ok (Some SyscallInterruption.Restart) ->
             failwith
-                "UnixPoll.finishSocketWait: a socket event wait restarted after a signal, where `SyscallInterruption.ruleOf` says one never restarts (this is a bug in this library)."
-        | Ok None -> Ok (parkSocketWait task parked.Port parked.MaxEvents parked.Buffer parked.Deadline system)
+                "UnixPoll.finishEpollWait: an epoll_wait restarted after a signal, where `SyscallInterruption.ruleOf` says one never restarts (this is a bug in this library)."
+        | Ok None -> Ok (parkEpollWait task parked.Port parked.MaxEvents parked.Buffer parked.Deadline system)
 
-    /// Finish the wait on a socket event port that `task` is parked in: walk
+    /// Finish the wait on an epoll instance that `task` is parked in: walk
     /// the port again, as a woken real wait does, and answer.
     ///
     /// Delivers from the port the call was made on and with the `maxEvents` it
@@ -1522,8 +1522,8 @@ module UnixPoll =
     /// Delivering events copies them out to the buffer the call was made with;
     /// see `epollWait` for the buffers that refuses.
     ///
-    /// `task` must be parked in a socket event wait.
-    let finishSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `task` must be parked in an `epoll_wait`.
+    let finishEpollWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<EpollWaitOutcome * UnixSystem<'Task, 'Handler>, EpollWaitRefusal>
@@ -1536,7 +1536,7 @@ module UnixPoll =
         // The call's reference to the port goes as it returns, and with it the
         // port, if no descriptor names it any more (`open-file-references.c`
         // section E).
-        finishSocketWaitHolding task system
+        finishEpollWaitHolding task system
         |> Result.map (fun (outcome, after) ->
-            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixPoll.finishSocketWait" held after
+            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixPoll.finishEpollWait" held after
         )

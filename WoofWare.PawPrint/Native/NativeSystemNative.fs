@@ -3836,7 +3836,7 @@ module NativeSystemNative =
             // numbers are reused as soon as they are freed and another thread
             // may have closed and reopened this one while this call slept.
             match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
-            | Some (ParkedSyscall.SocketWait _)
+            | Some (ParkedSyscall.EpollWait _)
             | Some (ParkedSyscall.Kevent _) ->
                 // Unreachable: a task parked in a socket wait is not running IL,
                 // and a woken one re-enters its own handler before it can reach
@@ -5163,7 +5163,7 @@ module NativeSystemNative =
                 let fd = fdArgument operation instruction.Arguments.[0]
 
                 settle fd (int parked.DeclaredLength) (UnixConnection.finishAccept ctx.Thread state.Kernel.System)
-            | Some (ParkedSyscall.SocketWait _)
+            | Some (ParkedSyscall.EpollWait _)
             | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)
             | Some (ParkedSyscall.Poll _)
@@ -6337,8 +6337,8 @@ module NativeSystemNative =
             // So a re-entry consults no screen and no descriptor table: the
             // kernel finishes the call from the park.
             match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
-            | Some (ParkedSyscall.SocketWait _) ->
-                match UnixPoll.finishSocketWait ctx.Thread state.Kernel.System with
+            | Some (ParkedSyscall.EpollWait _) ->
+                match UnixPoll.finishEpollWait ctx.Thread state.Kernel.System with
                 | Error refusal -> refuse refusal
                 | Ok (outcome, system) -> settle outcome system
             | Some (ParkedSyscall.Kevent _) ->
@@ -6666,7 +6666,7 @@ module NativeSystemNative =
                         $"%s{operation}: thread %O{ctx.Thread} re-entered a poll of %d{eventCount} entries, but its park records %d{List.length parked.Entries}. A re-entry runs the same call with the same arguments (this is an interpreter bug)."
 
                 settle parked.Entries (PollEventsPal.finish ctx.Thread state.Kernel.System)
-            | Some (ParkedSyscall.SocketWait _)
+            | Some (ParkedSyscall.EpollWait _)
             | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)
             | Some (ParkedSyscall.Accept _)

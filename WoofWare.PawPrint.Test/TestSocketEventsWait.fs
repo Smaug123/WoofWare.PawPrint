@@ -136,9 +136,9 @@ class WaitsOnADuplicatedPort
         UnixTaskTable.parkedFor thread state.Kernel.Tasks
         |> shouldEqual (
             Some (
-                ParkedSyscall.SocketWait
+                ParkedSyscall.EpollWait
                     {
-                        ParkedSocketWait.Port = OpenFileDescriptionId 3L
+                        ParkedEpollWait.Port = OpenFileDescriptionId 3L
                         MaxEvents = 1
                         Buffer = UserBuffer.Mapped
                         Deadline = None
@@ -228,7 +228,7 @@ class WaitsOnADuplicatedPort
                             | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
                             | other -> failwith $"sending SIGUSR1 answered %A{other}"
 
-                        match UnixPoll.finishSocketWait thread interrupted with
+                        match UnixPoll.finishEpollWait thread interrupted with
                         | Ok (EpollWaitOutcome.Failed UnixError.EINTR, system) ->
                             // The signal has done its work; ignoring it discards it, so the
                             // step below meets the waiter rather than the signal.
@@ -473,7 +473,7 @@ class TwoPortsOneEdge
 }
 """
 
-    /// Every thread currently parked in a socket wait, with the port its task records.
+    /// Every thread currently parked in an `epoll_wait`, with the port its task records.
     let private parkedOnPorts (state : IlMachineState) : (ThreadId * OpenFileDescriptionId) list =
         state.ThreadState
         |> Map.toList
@@ -481,7 +481,7 @@ class TwoPortsOneEdge
             match ts.Status with
             | ThreadStatus.BlockedInSyscall ->
                 match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
-                | Some (ParkedSyscall.SocketWait wait) -> Some (tid, wait.Port)
+                | Some (ParkedSyscall.EpollWait wait) -> Some (tid, wait.Port)
                 | Some (ParkedSyscall.Kevent _)
                 | Some (ParkedSyscall.Flock _)
                 | Some (ParkedSyscall.Poll _)
@@ -671,7 +671,7 @@ class ClosesAParkedPort
                 |> List.choose (fun (_, task) ->
                     match UnixTaskState.park task with
                     | Some {
-                               Syscall = ParkedSyscall.SocketWait wait
+                               Syscall = ParkedSyscall.EpollWait wait
                            } -> Some wait.Port
                     | _ -> None
                 )

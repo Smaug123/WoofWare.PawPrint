@@ -11,8 +11,8 @@ open WoofWare.PosixKernel
 /// The oracle flattens a condition into the list of primitives it mentions with an
 /// explicit work stack, and decides each primitive from a truth table this file states
 /// by construction, where `WakeCondition.satisfied` recurses over the tree and asks the
-/// kernel. The world is built so that every primitive's answer is known: two socket
-/// event ports, which share one anonymous inode and so contend under `flock`, with an
+/// kernel. The world is built so that every primitive's answer is known: two epoll
+/// instances, which share one anonymous inode and so contend under `flock`, with an
 /// exclusive lock held through the first; neither port has anything to deliver;
 /// two kqueues, the first with a ready listener queued and the second drained;
 /// the standard streams, whose readiness is the launch shape's; and two tasks,
@@ -437,7 +437,7 @@ module TestWakeCondition =
                     Requester = blocked
                     Mode = FlockMode.Exclusive
                 }
-            ParkedSyscall.SocketWait
+            ParkedSyscall.EpollWait
                 {
                     Port = locker
                     MaxEvents = 1

@@ -24,8 +24,8 @@ type WakePrimitive =
     /// `dup` of that descriptor waits on the same lock, and the number itself is
     /// reusable while the description lives on.
     | FlockGrantable of requester : OpenFileDescriptionId * mode : FlockMode
-    /// A wait for events on the socket event port the open file description
-    /// `port` names, parked because the port had nothing to deliver.
+    /// A wait for events on the epoll instance the open file description
+    /// `port` names, parked because the instance had nothing to deliver.
     ///
     /// Carries no event count, unlike the record a client parks with: how many
     /// events the caller asked for decides what the *finishing* call copies out,
@@ -52,7 +52,7 @@ type WakePrimitive =
     ///
     /// What a `poll(2)` entry waits for, with `conditions` its request plus the
     /// `POLLERR` and `POLLHUP` a poll reports unasked. It never waits on a
-    /// socket event port, whose level is not modelled.
+    /// epoll instance, whose level is not modelled.
     | DescriptorReady of description : OpenFileDescriptionId * conditions : uint32
     /// The Darwin `poll` the waiting task is asleep in would report something
     /// were it to scan the kqueue it made for itself now
@@ -203,7 +203,7 @@ module WakeCondition =
         | Some (ParkedSyscall.Accept _)
         | Some (ParkedSyscall.PipeRead _)
         | Some (ParkedSyscall.PipeWrite _)
-        | Some (ParkedSyscall.SocketWait _)
+        | Some (ParkedSyscall.EpollWait _)
         | Some (ParkedSyscall.Kevent _)
         | Some (ParkedSyscall.Flock _)
         | Some (ParkedSyscall.Poll _)
@@ -233,7 +233,7 @@ module WakeCondition =
                     mode
                     registry
                 |> not
-        | WakePrimitive.SocketEventDeliverable port -> SocketEventPort.hasDeliverableEvent port system
+        | WakePrimitive.SocketEventDeliverable port -> EpollReadyList.hasDeliverableEvent port system
         | WakePrimitive.KqueueEventDeliverable kqueue -> KqueueQueue.hasDeliverableEvent kqueue system
         | WakePrimitive.KqueuePollReportable -> KqueuePoll.reportable task system
         | WakePrimitive.KqueueDrained kqueue ->
@@ -405,7 +405,7 @@ module WakeCondition =
     /// first.
     ///
     /// The direction that generalises, and the one every reader of a park should
-    /// use. A record is *richer* than its condition — a socket wait also carries
+    /// use. A record is *richer* than its condition — a parked `epoll_wait` also carries
     /// the event count its finishing call will copy out with, which no condition
     /// mentions — so record to condition is total where condition to record is
     /// not. A parked `poll` that watches no descriptor and has no deadline waits
@@ -423,7 +423,7 @@ module WakeCondition =
                 [
                     WakeCondition.Primitive (WakePrimitive.FlockGrantable (parked.Requester, parked.Mode))
                 ]
-            | ParkedSyscall.SocketWait wait ->
+            | ParkedSyscall.EpollWait wait ->
                 let deliverable =
                     WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable wait.Port)
 
@@ -524,7 +524,7 @@ type SyscallOutcome =
     /// the number. Descriptor numbers are reused as soon as they are free, so a
     /// `close` of the number this call was made through can leave that number
     /// naming something else entirely by the time the waiter wakes, while the
-    /// object lives on for the waiter. `ParkedSocketWait` holds its port by
+    /// object lives on for the waiter. `ParkedEpollWait` holds its port by
     /// description identity for exactly this reason.
     ///
     /// The system this rides with is the one a real kernel sleeps *in*, not the

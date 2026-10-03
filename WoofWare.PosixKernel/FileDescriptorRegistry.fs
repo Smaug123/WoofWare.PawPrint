@@ -295,7 +295,7 @@ type OpenFileObject =
     /// grants one. `OpenFileObject` is the contention key (see this type's
     /// summary), not a general-purpose identity — code that wants to tell two
     /// ports apart wants `OpenFileDescriptionId`, which is what
-    /// `ParkedSocketWait` keys on.
+    /// `ParkedEpollWait` keys on.
     ///
     /// Not the answer for a socket: Linux puts those on `sockfs` with an inode
     /// each, not on `anon_inodefs`. See `Socket`.
@@ -447,7 +447,7 @@ module ReadinessLevel =
 
     let isEmpty (readiness : ReadinessLevel) : bool = readiness = none
 
-/// One registration held by a socket event port: what `epoll_ctl(2)` recorded
+/// One registration held by an epoll instance: what `epoll_ctl(2)` recorded
 /// for one target.
 type EpollRegistration =
     {
@@ -474,7 +474,7 @@ type EpollRegistration =
 
 /// Everything one epoll instance holds: its interest table, and the ready list
 /// `epoll_wait` drains.
-type SocketEventPortState =
+type EpollState =
     {
         /// The interest table, keyed exactly as epoll keys a registration:
         /// the (fd number, open file description) pair of the target.
@@ -597,7 +597,7 @@ type OpenFileTarget =
     /// through a `dup` of the *instance* answers EEXIST for an
     /// already-registered target, because the `dup` pair shares this
     /// description and so this table.
-    | Epoll of state : SocketEventPortState
+    | Epoll of state : EpollState
     /// A Darwin kqueue, handed out by `UnixKqueue.kqueue` and destroyed when
     /// its last reference goes, as any open file is.
     ///
@@ -873,18 +873,18 @@ type FileDescriptorRegistryDefect =
     /// than copying it — and it would be visible to a process through `flock`, which
     /// contends between descriptions naming one object but not within one.
     | DuplicateSocketId of first : OpenFileDescriptionId * second : OpenFileDescriptionId * socket : SocketId
-    /// A socket event port's interest table registers an open file description
+    /// An epoll instance's interest table registers an open file description
     /// that no longer exists. Linux removes these at file-release time, which
     /// is `close`'s sweep here, so a survivor is a leak — invisible to every
     /// syscall (no fd can name the dead description again) but exactly what
     /// the readiness wake must never deliver from.
     | SocketEventRegistrationTargetDead of port : OpenFileDescriptionId * target : OpenFileDescriptionId
-    /// A socket event port's ready list holds an entry its interest table does
+    /// An epoll instance's ready list holds an entry its interest table does
     /// not register. Every path that removes a registration (DEL, and close's
     /// sweep) removes its pending entry in the same step, so a survivor would
     /// deliver an event from a corpse.
     | SocketEventReadyEntryUnregistered of port : OpenFileDescriptionId * key : int * target : OpenFileDescriptionId
-    /// A socket event port's ready list holds the same entry twice. A pending
+    /// An epoll instance's ready list holds the same entry twice. A pending
     /// registration keeps its place rather than being re-queued (measured:
     /// a re-signal does not move it), so a duplicate would deliver one edge
     /// twice.
@@ -1817,10 +1817,10 @@ module FileDescriptorRegistry =
     /// on a dead or non-epoll description: every caller resolved it as an
     /// epoll instance moments ago, so either means it wrote against a different
     /// table than the one it read. `operation` names the caller for that message.
-    let private mapSocketEventPort
+    let private mapEpollState
         (operation : string)
         (portId : OpenFileDescriptionId)
-        (f : SocketEventPortState -> SocketEventPortState)
+        (f : EpollState -> EpollState)
         (registry : FileDescriptorRegistry)
         : FileDescriptorRegistry
         =
@@ -1866,7 +1866,7 @@ module FileDescriptorRegistry =
         : FileDescriptorRegistry
         =
         registry
-        |> mapSocketEventPort
+        |> mapEpollState
             "addEpollRegistration"
             portId
             (fun portState ->
@@ -1895,7 +1895,7 @@ module FileDescriptorRegistry =
         : FileDescriptorRegistry
         =
         registry
-        |> mapSocketEventPort
+        |> mapEpollState
             "modifyEpollRegistration"
             portId
             (fun portState ->
@@ -1928,7 +1928,7 @@ module FileDescriptorRegistry =
         : FileDescriptorRegistry
         =
         registry
-        |> mapSocketEventPort
+        |> mapEpollState
             "removeEpollRegistration"
             portId
             (fun portState ->
@@ -2066,7 +2066,7 @@ module FileDescriptorRegistry =
     /// newest-registered first — the socket's wait queue is LIFO (measured,
     /// `order4.c`) — and a registration already pending keeps its place
     /// (`order2.c` row H).
-    let internal signalSocketEventPorts
+    let internal signalEpollInstances
         (naming : Set<OpenFileDescriptionId>)
         (wakeKey : uint32 option)
         (registry : FileDescriptorRegistry)

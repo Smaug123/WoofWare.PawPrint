@@ -160,7 +160,7 @@ module TestPosixFadvise =
             |> shouldEqual (Ok FileAdviceAnswer.Completed)
 
     [<Test>]
-    let ``a socket event port succeeds`` () : unit =
+    let ``an epoll instance succeeds`` () : unit =
         // Measured on an epoll port, which answers success for the same reason
         // the socket does.
         let fd, system = systemOn SimulatedUnixPlatform.linuxX64 |> eventPort
