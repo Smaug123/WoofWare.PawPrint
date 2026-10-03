@@ -628,31 +628,6 @@ module UnixReadWrite =
                 }
         }
 
-    /// `system` with the timestamps of the pipe `pipeId` passed through
-    /// `touch`, if this kernel holds them: it holds none for a pipe the process
-    /// was launched with, whose timestamps are the launcher's.
-    let private withTimes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (pipeId : PipeId)
-        (touch : PipeTimes -> PipeTimes)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        let pipe = UnixMachineState.pipe pipeId system.Machine
-
-        match pipe.Origin with
-        | PipeOrigin.Launched _ -> system
-        | PipeOrigin.Made status ->
-            withPipe
-                pipeId
-                { pipe with
-                    Origin =
-                        PipeOrigin.Made
-                            { status with
-                                Times = touch status.Times
-                            }
-                }
-                system
-
     /// What a read reaching `pipeId`'s read operation does to its timestamps:
     /// on Darwin, moves the read end's `st_atime` to now; on Linux, nothing.
     let private touchedByRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -660,19 +635,9 @@ module UnixReadWrite =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-        | SimulatedUnixFlavour.Linux -> system
-        | SimulatedUnixFlavour.Darwin ->
-            let now = UnixMachineState.realtime system.Machine
-
-            withTimes
-                pipeId
-                (fun times ->
-                    { times with
-                        ReadEndAccess = now
-                    }
-                )
-                system
+        { system with
+            Machine = UnixMachineState.touchedByPipeRead pipeId system.Machine
+        }
 
     /// What a write reaching `pipeId`'s write operation does to its timestamps:
     /// on Darwin, moves `st_mtime` and `st_ctime` of both ends to now; on
@@ -682,20 +647,9 @@ module UnixReadWrite =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-        | SimulatedUnixFlavour.Linux -> system
-        | SimulatedUnixFlavour.Darwin ->
-            let now = UnixMachineState.realtime system.Machine
-
-            withTimes
-                pipeId
-                (fun times ->
-                    { times with
-                        Modification = now
-                        StatusChange = now
-                    }
-                )
-                system
+        { system with
+            Machine = UnixMachineState.touchedByPipeWrite pipeId system.Machine
+        }
 
     /// `system` with `pipeId`'s buffer as a write of `count` bytes that took none
     /// of them leaves it.
@@ -1471,7 +1425,7 @@ module UnixReadWrite =
                     let parked =
                         ParkedSyscall.PipeRead
                             {
-                                Reader = descriptionId
+                                Reader = SleepTarget.Waiting (descriptionId, fd)
                                 Buffer = buffer
                                 Count = count
                             }
@@ -1585,7 +1539,21 @@ module UnixReadWrite =
                 failwith
                     $"UnixReadWrite.finishRead: task %O{task} is not parked, so there is no read to finish. Only a task `read` answered `WouldBlock` finishes here (this is a bug in the client)."
 
-        let pipeId = parkedPipe "finishRead" task parked.Reader PipeEnd.Read system
+        match parked.Reader with
+        | SleepTarget.EndedByClose _ ->
+            // Measured on Darwin 27.0.0 (`close-ends-call.c`, sections P1, P5
+            // and P6): end of file. The close moved the read end's atime as it
+            // ended the call (section P8), and whatever has happened since
+            // happened after the call returned.
+            Ok (
+                ReadOutcome.Answered (ReadAnswer.Completed ImmutableArray.Empty),
+                { system with
+                    Tasks = UnixTaskTable.unpark task system.Tasks
+                }
+            )
+        | SleepTarget.Waiting (reader, _) ->
+
+        let pipeId = parkedPipe "finishRead" task reader PipeEnd.Read system
         let pipe = UnixMachineState.pipe pipeId system.Machine
 
         // Measured on Darwin (pipe-blocking.c section L): the read end's atime
@@ -1632,7 +1600,7 @@ module UnixReadWrite =
         | Error refusal -> Error (ReadRefusal.Interruption refusal)
         | Ok (Some SyscallInterruption.Eintr) -> Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EINTR), finished)
         | Ok (Some SyscallInterruption.Restart) -> Ok (ReadOutcome.Restarts, finished)
-        | Ok None when givesUpWhenBeaten parked.Reader system ->
+        | Ok None when givesUpWhenBeaten reader system ->
             Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EAGAIN), finished)
         | Ok None ->
             // Measured on both (pipe-blocking.c section A3): a reader that
@@ -1658,6 +1626,10 @@ module UnixReadWrite =
     /// Darwin, whose every sleeper wakes, one that finds nothing through a
     /// description that has since become non-blocking answers `EAGAIN`. An
     /// answer, `Restarts` included, clears the park.
+    ///
+    /// A read a close has ended (`SleepTarget.EndedByClose`, under Darwin)
+    /// answers end of file, whatever the pipe holds by now and whatever signal
+    /// is pending: the close moved the timestamps and released the read end.
     ///
     /// `task` must be asleep in a `read`.
     let finishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1916,11 +1888,12 @@ module UnixReadWrite =
             failwith
                 $"UnixReadWrite.write: fd %d{fd} names directory %O{inode} with an access mode that permits writing. A directory can only be opened for reading (open answers EISDIR otherwise), so FileDescriptorRegistry.checkInvariants reports this as WritableDirectory (this is a bug in this library)."
 
-    /// `task` asleep in a write of `count` bytes through `writer`, the first
-    /// `written` of them in already.
+    /// `task` asleep in a write of `count` bytes through `writer`, made through
+    /// the descriptor `fd`, the first `written` of them in already.
     let private parkWrite<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (writer : OpenFileDescriptionId)
+        (fd : int)
         (buffer : UserBuffer)
         (count : int)
         (written : int)
@@ -1942,7 +1915,7 @@ module UnixReadWrite =
         let parked =
             ParkedSyscall.PipeWrite
                 {
-                    Writer = writer
+                    Writer = SleepTarget.Waiting (writer, fd)
                     Buffer = buffer
                     Count = count
                     Written = written
@@ -2067,7 +2040,7 @@ module UnixReadWrite =
             // Darwin (pipe-blocking.c section L).
             | PipeWriteStep.Sleeps ->
                 leftUntaken pipeId count system
-                |> parkWrite task descriptionId buffer count 0
+                |> parkWrite task descriptionId fd buffer count 0
                 |> Ok
             // Only the bytes the pipe will take: a short write never reads the
             // rest of the caller's buffer, and `write` offered this prefix takes
@@ -2169,7 +2142,7 @@ module UnixReadWrite =
                 returns answer (touchedByWrite pipeId (leftUntaken pipeId bytes.Length system))
             | PipeWriteStep.Sleeps ->
                 leftUntaken pipeId bytes.Length system
-                |> parkWrite task descriptionId UserBuffer.Mapped bytes.Length 0
+                |> parkWrite task descriptionId fd UserBuffer.Mapped bytes.Length 0
                 |> Ok
             | PipeWriteStep.TakesThenSleeps taken ->
                 let pipe = UnixMachineState.pipe pipeId system.Machine
@@ -2185,7 +2158,7 @@ module UnixReadWrite =
                         Buffer = buffer
                     }
                     system
-                |> parkWrite task descriptionId UserBuffer.Mapped bytes.Length written
+                |> parkWrite task descriptionId fd UserBuffer.Mapped bytes.Length written
                 |> Ok
             | PipeWriteStep.Takes taken ->
                 let pipe = UnixMachineState.pipe pipeId system.Machine
@@ -2344,24 +2317,21 @@ module UnixReadWrite =
         | WriteOutcome.Restarts system -> WriteOutcome.Restarts (release system)
         | WriteOutcome.ProcessEnded ended -> WriteOutcome.ProcessEnded ended
 
-    /// The write `task` is asleep in, and the pipe it writes into.
+    /// The write `task` is asleep in.
     let private parkedWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (syscall : string)
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : ParkedPipeWrite * PipeId
+        : ParkedPipeWrite
         =
-        let parked =
-            match UnixTaskTable.parkedFor task system.Tasks with
-            | Some (ParkedSyscall.PipeWrite parked) -> parked
-            | Some other ->
-                failwith
-                    $"UnixReadWrite.%s{syscall}: task %O{task} is parked in %A{other}, not in a write, so there is no write to finish (this is a bug in the client)."
-            | None ->
-                failwith
-                    $"UnixReadWrite.%s{syscall}: task %O{task} is not parked, so there is no write to finish. Only a task a write answered `WouldBlock` finishes here (this is a bug in the client)."
-
-        parked, parkedPipe syscall task parked.Writer PipeEnd.Write system
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some (ParkedSyscall.PipeWrite parked) -> parked
+        | Some other ->
+            failwith
+                $"UnixReadWrite.%s{syscall}: task %O{task} is parked in %A{other}, not in a write, so there is no write to finish (this is a bug in the client)."
+        | None ->
+            failwith
+                $"UnixReadWrite.%s{syscall}: task %O{task} is not parked, so there is no write to finish. Only a task a write answered `WouldBlock` finishes here (this is a bug in the client)."
 
     /// After a sleeping write has put bytes in, its count `parked.Count` not
     /// all in yet: whether it sleeps on, or ends with the count it has put in,
@@ -2374,6 +2344,8 @@ module UnixReadWrite =
     let private afterPartWritten<'Task, 'Handler, 'Answer when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (pipeId : PipeId)
+        (writer : OpenFileDescriptionId)
+        (fd : int)
         (parked : ParkedPipeWrite)
         (givesUp : bool)
         (answered : WriteAnswer -> 'Answer)
@@ -2390,14 +2362,32 @@ module UnixReadWrite =
                 |> touchedByWrite pipeId
 
             Ok (WriteOutcome.Returns (answered (WriteAnswer.Completed (int64 parked.Written)), finished))
-        | Ok _ -> Ok (parkWrite task parked.Writer parked.Buffer parked.Count parked.Written system)
+        | Ok _ -> Ok (parkWrite task writer fd parked.Buffer parked.Count parked.Written system)
 
     let private admitFinishWriteHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteOutcome<WriteResumption, 'Task, 'Handler>, WriteRefusal>
         =
-        let parked, pipeId = parkedWrite "admitFinishWrite" task system
+        let parked = parkedWrite "admitFinishWrite" task system
+
+        match parked.Writer with
+        | SleepTarget.EndedByClose pipeId ->
+            // Measured on Darwin 27.0.0 (`close-ends-call.c`, sections P2-P4
+            // and P7): EPIPE, whatever the write had put in, and SIGPIPE, which
+            // ran on the main thread as it does for a write into a pipe with no
+            // reader. The close moved the write end's mtime and ctime as it
+            // ended the call (section P8).
+            broken
+                (WriteResumption.Answered (WriteAnswer.Failed UnixError.EPIPE))
+                task
+                (BrokenWriteTarget.Pipe pipeId)
+                { system with
+                    Tasks = UnixTaskTable.unpark task system.Tasks
+                }
+        | SleepTarget.Waiting (writer, fd) ->
+
+        let pipeId = parkedPipe "admitFinishWrite" task writer PipeEnd.Write system
         let pipe = UnixMachineState.pipe pipeId system.Machine
 
         // Measured on Darwin (pipe-blocking.c section L): a sleeping write
@@ -2454,7 +2444,15 @@ module UnixReadWrite =
             | UserBuffer.Addressless -> Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
             | UserBuffer.Mapped -> Ok (WriteOutcome.Returns (WriteResumption.Transfer (parked.Written, taking), system))
         elif parked.Written > 0 then
-            afterPartWritten task pipeId parked (givesUpWhenBeaten parked.Writer system) WriteResumption.Answered system
+            afterPartWritten
+                task
+                pipeId
+                writer
+                fd
+                parked
+                (givesUpWhenBeaten writer system)
+                WriteResumption.Answered
+                system
         else
 
         // Measured on both (pipe-blocking.c section D): a write asleep with
@@ -2463,11 +2461,11 @@ module UnixReadWrite =
         | Error refusal -> Error (WriteRefusal.Interruption refusal)
         | Ok (Some SyscallInterruption.Eintr) -> answered (WriteAnswer.Failed UnixError.EINTR) finished
         | Ok (Some SyscallInterruption.Restart) -> Ok (WriteOutcome.Restarts finished)
-        | Ok None when givesUpWhenBeaten parked.Writer system -> answered (WriteAnswer.Failed UnixError.EAGAIN) finished
+        | Ok None when givesUpWhenBeaten writer system -> answered (WriteAnswer.Failed UnixError.EAGAIN) finished
         | Ok None ->
             // Measured on both (pipe-blocking.c section B): a writer that finds
             // no room again sleeps at the back of the queue.
-            Ok (parkWrite task parked.Writer parked.Buffer parked.Count parked.Written system)
+            Ok (parkWrite task writer fd parked.Buffer parked.Count parked.Written system)
 
     /// Every answer the `write` `task` is asleep in gives *without* reading more
     /// of the caller's buffer, and otherwise which of its bytes to extract next.
@@ -2490,6 +2488,10 @@ module UnixReadWrite =
     ///   park; except that on Darwin, whose every sleeper wakes, one whose
     ///   description has since become non-blocking gives up, answering the
     ///   count it had put in, or `EAGAIN` if none.
+    /// - **A close has ended it** (`SleepTarget.EndedByClose`, under Darwin):
+    ///   `EPIPE` whatever it had put in, raising `SIGPIPE` as a write with no
+    ///   reader does, whatever the pipe holds by now and whatever signal is
+    ///   pending; the close moved the timestamps and released the write end.
     ///
     /// Under Linux the first two beat a pending signal, whose handlers run as
     /// the call returns; under Darwin a kernel answers whichever reached the
@@ -2523,7 +2525,16 @@ module UnixReadWrite =
             failwith
                 "UnixReadWrite.finishWrite: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
 
-        let parked, pipeId = parkedWrite "finishWrite" task system
+        let parked = parkedWrite "finishWrite" task system
+
+        let writer, fd =
+            match parked.Writer with
+            | SleepTarget.Waiting (writer, fd) -> writer, fd
+            | SleepTarget.EndedByClose pipeId ->
+                failwith
+                    $"UnixReadWrite.finishWrite: task %O{task}'s write into pipe %O{pipeId} has been ended by a close, so there are no bytes to give it: `admitFinishWrite` answers such a write without a transfer (this is a bug in the caller)."
+
+        let pipeId = parkedPipe "finishWrite" task writer PipeEnd.Write system
         let pipe = UnixMachineState.pipe pipeId system.Machine
         let taking = PipeBuffer.resumeTakes parked.Count parked.Written pipe.Buffer
 
@@ -2560,9 +2571,9 @@ module UnixReadWrite =
             // (section N1, N2): one whose description became non-blocking
             // while it slept fills the room and returns its count too.
             let nonBlocking =
-                (FileDescriptorRegistry.descriptions system.Process.FileDescriptors).[parked.Writer].NonBlocking
+                (FileDescriptorRegistry.descriptions system.Process.FileDescriptors).[writer].NonBlocking
 
-            afterPartWritten task pipeId parked nonBlocking id system
+            afterPartWritten task pipeId writer fd parked nonBlocking id system
 
     /// The `write` `task` is asleep in, given the bytes the caller extracted
     /// after `admitFinishWrite` said to: they go into the pipe, and the call
@@ -2628,7 +2639,7 @@ module UnixReadWrite =
                         Buffer = PipeBuffer.writeWith total bytes pipe.Buffer
                     }
                     system
-                |> parkWrite task descriptionId UserBuffer.Mapped total taken
+                |> parkWrite task descriptionId fd UserBuffer.Mapped total taken
                 |> Ok
             | step -> mismatch $"is not the blocking write that puts in part of it and sleeps (%A{step})"
         | other -> mismatch $"names %A{other} rather than the write end of a pipe"

@@ -893,9 +893,13 @@ module TestSignalDispatch =
                 dispatcherRead dispatcher state
                 |> Option.defaultWith (fun () -> failwith "the dispatcher is not asleep in its read")
 
-            Some read.Reader
+            read.Reader
             |> shouldEqual (
-                FileDescriptorRegistry.tryFindId (pipeOf state).ReadEnd state.Kernel.Process.FileDescriptors
+                SleepTarget.Waiting (
+                    FileDescriptorRegistry.tryFindId (pipeOf state).ReadEnd state.Kernel.Process.FileDescriptors
+                    |> Option.get,
+                    (pipeOf state).ReadEnd
+                )
             )
 
             read.Count |> shouldEqual 1
@@ -954,11 +958,16 @@ module TestSignalDispatch =
             callbackArguments dispatcher state |> List.head |> shouldEqual (int32Arg 2)
 
     [<Test>]
-    let ``a sleeping dispatcher holds its read end open against a close`` () : unit =
+    let ``a close of the read end leaves a sleeping dispatcher asleep on Linux, and ends its read on Darwin``
+        ()
+        : unit
+        =
         // Measured (open-file-references.c, section B): on Linux the sleeping
         // read holds the description, so closing the last descriptor onto it
         // leaves the read asleep on a description that outlives the number.
-        // Darwin's close would end the read, which this kernel refuses.
+        // On Darwin (close-ends-call.c, sections P1 and P5) the close ends the
+        // read at end of file, which the real loop answers by closing the
+        // descriptor and exiting its thread, which PawPrint refuses.
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             let state, dispatcher, _ = preparedStateOn platform
             let state = poll state
@@ -971,7 +980,12 @@ module TestSignalDispatch =
                 let state = state.MapKernel (EmulatedKernel.withUnix system)
                 dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
                 defects state |> shouldEqual []
-            | SimulatedUnixFlavour.Darwin, Error (CloseRefusal.DarwinPipeDescriptorWithTransfer _) -> ()
+            | SimulatedUnixFlavour.Darwin, Ok (SyscallAnswer.Completed _, system) ->
+                let state = state.MapKernel (EmulatedKernel.withUnix system)
+                defects state |> shouldEqual []
+
+                let refused = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
+                refused.Message |> shouldContainText "reads 0 bytes rather than one"
             | flavour, other ->
                 failwith $"%O{flavour}: closing the read end under the sleeping dispatcher answered %O{other}"
 

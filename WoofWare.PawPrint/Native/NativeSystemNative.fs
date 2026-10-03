@@ -505,10 +505,8 @@ module NativeSystemNative =
                 "Accept the connection or close the client before closing the listener."
             | CloseRefusal.PolledDescriptor _ ->
                 "Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
-            | CloseRefusal.DarwinListenerDescriptorWithAccepter _ ->
-                "Model a close ending a sleeping accept with ECONNABORTED before closing the listener out from under it, or configure a Linux platform."
-            | CloseRefusal.DarwinPipeDescriptorWithTransfer _ ->
-                "Model a close ending a sleeping read or write before closing its pipe end out from under it, or configure a Linux platform."
+            | CloseRefusal.DarwinWokenTransfer _ ->
+                "Measure which of the close and what had woken it a Darwin read or write answers when the descriptor it was made through closes before it runs, or configure a Linux platform."
 
         $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal} %s{remedy}"
 
@@ -5073,7 +5071,8 @@ module NativeSystemNative =
                         $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} `socketAddress` is %O{addressArgument}; pass a real buffer."
                 | Error (AcceptRefusal.UnmeasuredKind _ as refusal)
                 | Error (AcceptRefusal.Interruption _ as refusal)
-                | Error (AcceptRefusal.Release _ as refusal) ->
+                | Error (AcceptRefusal.Release _ as refusal)
+                | Error (AcceptRefusal.DarwinDrainedListener _ as refusal) ->
                     failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
                 // A signal ended the sleep. The shim's `accept4` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
@@ -5093,11 +5092,11 @@ module NativeSystemNative =
                         (Some (NativeLocals.AcceptAddressLength declaredLength))
                         system
                         state
-                | Ok (AcceptOutcome.Failed error, _) ->
-                    // No system is carried back: the library documents that a failing
-                    // accept changes nothing, so writing one would be a no-op that
-                    // hid a future change to that contract.
-                    failFromSyscall error state
+                | Ok (AcceptOutcome.Failed error, system) ->
+                    // A first call's failure changes nothing, but a finishing
+                    // call's clears the task's park: under Darwin, an accept a
+                    // close has ended answers ECONNABORTED from its park.
+                    state.MapKernel (EmulatedKernel.withUnix system) |> failFromSyscall error
                 | Ok (AcceptOutcome.DroppedConnection error, system) ->
                     // Only a negative length drops a connection, and the shim
                     // answers that itself before calling `accept4`, so no

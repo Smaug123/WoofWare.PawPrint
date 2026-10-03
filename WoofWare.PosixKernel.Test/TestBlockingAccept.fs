@@ -159,7 +159,7 @@ module TestBlockingAccept =
             | Ok (AcceptOutcome.WouldBlock condition, parked) ->
                 condition
                 |> shouldEqual (
-                    Interruptible.condition (WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener))
+                    Interruptible.closable [ WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener) ]
                 )
 
                 UnixTaskTable.parkOf task parked.Tasks
@@ -169,7 +169,7 @@ module TestBlockingAccept =
                             Syscall =
                                 ParkedSyscall.Accept
                                     {
-                                        Listener = listener
+                                        Listener = SleepTarget.Waiting (listener, fd)
                                         Destination = destination
                                         DeclaredLength = declaredLength
                                     }
@@ -302,7 +302,7 @@ module TestBlockingAccept =
                 | Ok (AcceptOutcome.WouldBlock condition, parkedAgain) ->
                     condition
                     |> shouldEqual (
-                        Interruptible.condition (WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener))
+                        Interruptible.closable [ WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener) ]
                     )
 
                     UnixTaskTable.parkOf 1 parkedAgain.Tasks
@@ -510,7 +510,7 @@ module TestBlockingAccept =
 
                     let system = if isQueued then connectTo port system else system
 
-                    system, listeners @ [ idOf fd system ]
+                    system, listeners @ [ idOf fd system, fd ]
                 )
                 |> fun (system, listeners) -> listeners, system
 
@@ -521,7 +521,7 @@ module TestBlockingAccept =
                         park.Waiter
                         (ParkedSyscall.Accept
                             {
-                                Listener = listeners.[park.Listener]
+                                Listener = SleepTarget.Waiting listeners.[park.Listener]
                                 Destination = UserBuffer.Mapped
                                 DeclaredLength = 16u
                             })
@@ -536,7 +536,7 @@ module TestBlockingAccept =
                     | Some {
                                Syscall = ParkedSyscall.Accept accept
                                Ordinal = ordinal
-                           } -> Some (name, accept.Listener, ordinal)
+                           } -> Some (name, SleepTarget.description accept.Listener |> Option.get, ordinal)
                     | _ -> None
                 )
 
@@ -547,7 +547,7 @@ module TestBlockingAccept =
                 |> Set.ofList
 
             let isQueued (listener : OpenFileDescriptionId) : bool =
-                queued.[List.findIndex ((=) listener) listeners]
+                queued.[List.findIndex (fst >> (=) listener) listeners]
 
             let finishingOn (listener : OpenFileDescriptionId) : bool =
                 parkedTasks
@@ -698,24 +698,726 @@ module TestBlockingAccept =
             awake [ 1 ] system |> shouldEqual [ 1 ]
             finishWithConnection 1 system |> ignore<_>
 
-    /// Measured (`blocking-accept.c`, sections C1 and C2): on Darwin, closing
-    /// the descriptor the accept came through ends it at once with
-    /// ECONNABORTED, even while a `dup` keeps the listener open. Closing another
-    /// descriptor did not (C3), but the park does not record which descriptor
-    /// the call came through, so every close onto the listener is refused.
+    /// `system` with a caught `SIGUSR1` pending for `task`.
+    let private signalled (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        { system with
+            Process =
+                { system.Process with
+                    Signals =
+                        system.Process.Signals
+                        |> SignalState.setDisposition
+                            Signal.SIGUSR1
+                            (SignalDisposition.Catch (SignalCatch.ofHandler "h"))
+                        |> SignalState.enqueue
+                            {
+                                Signal = Signal.SIGUSR1
+                                Target = ValueSome task
+                            }
+                }
+        }
+
+    let private closed (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixDescriptor.close fd system with
+        | Ok (SyscallAnswer.Completed 0L, system) -> system
+        | other -> failwith $"expected the close of fd %d{fd} to succeed, got %A{other}"
+
+    let private finishAborted (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixConnection.finishAccept task system with
+        | Ok (AcceptOutcome.Failed UnixError.ECONNABORTED, system) -> system
+        | other -> failwith $"expected task %d{task}'s accept to answer ECONNABORTED, got %A{other}"
+
+    let private acceptAnswer (fd : int) (system : UnixSystem<int, string>) =
+        UnixConnection.accept 6 fd UserBuffer.Mapped 16u system
+
+    /// Measured (`close-ends-call.c`, sections A1-A4, and `blocking-accept.c`
+    /// section C): on Darwin, closing the descriptor an accept was made
+    /// through ends at once, with ECONNABORTED, every accept asleep on the
+    /// listener, through that descriptor or a `dup` of it. The calls hold
+    /// nothing once the close returns: with no `dup` the listener is gone, and a
+    /// connect is refused; with one, the port still listens, and a later accept
+    /// takes the connection.
     [<Test>]
-    let ``Darwin: closing any descriptor onto a listener an accept sleeps on is refused`` () : unit =
-        for closeEntered in [ true ; false ] do
+    let ``Darwin: closing the descriptor an accept was made through ends every accept on the listener`` () : unit =
+        for keepDup in [ false ; true ] do
             let fd, system = world SimulatedUnixPlatform.macOsArm64
             let listener = idOf fd system
-            let other, system = dupOf fd system
-            let system = parkIn 1 fd system
+            let other, system = if keepDup then dupOf fd system else -1, system
+            let system = parkIn 1 fd system |> parkIn 2 fd
+            let system = if keepDup then parkIn 3 other system else system
+            let parked = if keepDup then [ 1 ; 2 ; 3 ] else [ 1 ; 2 ]
 
-            match UnixDescriptor.close (if closeEntered then fd else other) system with
-            | Error refusal ->
-                refusal
-                |> shouldEqual (CloseRefusal.DarwinListenerDescriptorWithAccepter (listener, 1))
-            | Ok (answer, _) -> failwith $"expected the close to be refused, got %A{answer}"
+            let system = closed fd system
+
+            UnixSystem.checkInvariants system |> shouldEqual []
+            awake parked system |> shouldEqual parked
+
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            |> Map.containsKey listener
+            |> shouldEqual keepDup
+
+            let system =
+                (system, parked) ||> List.fold (fun system task -> finishAborted task system)
+
+            UnixSystem.checkInvariants system |> shouldEqual []
+
+            if keepDup then
+                let system = connectTo 5000us (setNonBlocking other true system)
+
+                match acceptAnswer other system with
+                | Ok (AcceptOutcome.Accepted _, _) -> ()
+                | answer -> failwith $"expected the drained listener to hand over a queued connection, got %A{answer}"
+            else
+                connectAnswer 5000us system
+                |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+
+    /// Measured (`blocking-accept.c`, section C3): closing a descriptor onto
+    /// the listener that no accept was made through ends nothing, and a
+    /// connection then completes the accept.
+    [<Test>]
+    let ``Darwin: closing another descriptor onto the listener leaves the accept waiting`` () : unit =
+        let fd, system = world SimulatedUnixPlatform.macOsArm64
+        let other, system = dupOf fd system
+        let system = parkIn 1 fd system |> closed other
+
+        awake [ 1 ] system |> shouldEqual []
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        let system = connectTo 5000us system
+        awake [ 1 ] system |> shouldEqual [ 1 ]
+        finishWithConnection 1 system |> ignore<_>
+
+    /// Measured (`close-ends-call.c`, section A7): a listener a close has
+    /// drained still hands a queued connection to an accept (A7c), and answers
+    /// a non-blocking one EAGAIN when none is queued (A7a), but a blocking one
+    /// that would sleep answers ECONNABORTED once anything wakes it, and of two
+    /// such sleepers one connection wakes one (A7g), which this kernel's wake
+    /// does not follow, so the sleep is refused.
+    [<Test>]
+    let ``Darwin: a drained listener hands over a queued connection and refuses a sleep`` () : unit =
+        let fd, system = world SimulatedUnixPlatform.macOsArm64
+        let other, system = dupOf fd system
+
+        let socket =
+            match FileDescriptorRegistry.tryFindTarget other system.Process.FileDescriptors with
+            | Some (OpenFileTarget.Socket socketId) -> socketId
+            | target -> failwith $"fd %d{other} names %A{target}, not a socket"
+
+        let system = parkIn 1 fd system |> closed fd |> finishAborted 1
+
+        match acceptAnswer other system with
+        | Error (AcceptRefusal.DarwinDrainedListener refused) -> refused |> shouldEqual socket
+        | answer -> failwith $"expected a sleep on the drained listener to be refused, got %A{answer}"
+
+        match acceptAnswer other (setNonBlocking other true system) with
+        | Ok (AcceptOutcome.Failed UnixError.EAGAIN, _) -> ()
+        | answer -> failwith $"expected EAGAIN, got %A{answer}"
+
+        match acceptAnswer other (connectTo 5000us system) with
+        | Ok (AcceptOutcome.Accepted _, after) -> UnixSystem.checkInvariants after |> shouldEqual []
+        | answer -> failwith $"expected the queued connection, got %A{answer}"
+
+        // A second `listen` leaves it drained (section A7h).
+        let relistened =
+            match UnixSocket.listen other 16 system with
+            | Ok (ListenAnswer.Listening _, system) -> system
+            | other -> failwith $"listening again: %A{other}"
+
+        match acceptAnswer other relistened with
+        | Error (AcceptRefusal.DarwinDrainedListener _) -> ()
+        | answer -> failwith $"expected a sleep on the drained listener to be refused, got %A{answer}"
+
+    /// Measured (`close-ends-call.c`, sections A7b and A7d): an accept woken on
+    /// a drained listener answers ECONNABORTED whatever woke it, leaving a
+    /// connection queued. So an accept the close ended answers it beside a
+    /// connection that had already woken it, and beside a signal pending before
+    /// the close or after.
+    [<Test>]
+    let ``Darwin: an accept a close has ended answers ECONNABORTED beside a connection or a signal`` () : unit =
+        // A connection queued, which woke the accept before the close.
+        let fd, system = world SimulatedUnixPlatform.macOsArm64
+        let other, system = dupOf fd system
+        let system = parkIn 1 fd system |> connectTo 5000us
+        awake [ 1 ] system |> shouldEqual [ 1 ]
+        let system = closed fd system |> finishAborted 1
+        queueOf other system |> List.length |> shouldEqual 1
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        // A signal pending before the close, and one after.
+        for before in [ true ; false ] do
+            let fd, system = world SimulatedUnixPlatform.macOsArm64
+            let system = parkIn 1 fd system
+            let system = if before then signalled 1 system else system
+            let system = closed fd system
+            let system = if before then system else signalled 1 system
+            awake [ 1 ] system |> shouldEqual [ 1 ]
+            finishAborted 1 system |> UnixSystem.checkInvariants |> shouldEqual []
+
+    /// The close records its answer in the park, which forgets the descriptor
+    /// number: a later descriptor under the same number, onto another
+    /// listener, belongs to the calls made through it alone.
+    [<Test>]
+    let ``Darwin: a descriptor number reused after the close ends only what was made through it`` () : unit =
+        let fd, system = world SimulatedUnixPlatform.macOsArm64
+        let _, system = dupOf fd system
+        let system = parkIn 1 fd system |> closed fd
+
+        let second, system = listenerAt 5001us system
+        second |> shouldEqual fd
+        let system = parkIn 2 second system
+        awake [ 2 ] system |> shouldEqual []
+
+        let system = closed second system
+        awake [ 1 ; 2 ] system |> shouldEqual [ 1 ; 2 ]
+        let system = finishAborted 1 system |> finishAborted 2
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+    // ------------------------------------------------------------------
+    // Accepts, closes and dups, against a reference
+    // ------------------------------------------------------------------
+
+    /// One step of the closing property. A task is named by its index, modulo
+    /// their number, among those that can take the step: those making no call,
+    /// for an accept; those in one, for a signal; those woken, for a finish.
+    [<RequireQualifiedAccess>]
+    type private AcceptOp =
+        | Accept of task : int * fd : int
+        | Connect
+        | Close of fd : int
+        | Dup of fd : int
+        | Signal of task : int
+        | Wake
+        | Finish of task : int
+
+    type private AcceptPark =
+        {
+            /// The descriptor the accept was made through; `None` once a close
+            /// has ended it, under Darwin.
+            Through : int option
+            Ordinal : int
+            /// The client has woken it, and not yet finished it.
+            Woken : bool
+        }
+
+    type private AcceptReference =
+        {
+            Linux : bool
+            Restart : bool
+            /// Open descriptor to whether it names the listener.
+            Fds : Map<int, bool>
+            Parks : Map<int, AcceptPark>
+            NextOrdinal : int
+            Signalled : Set<int>
+            Queued : int
+            Drained : bool
+            /// Whether the listening socket still exists.
+            Alive : bool
+        }
+
+    /// Whether something still holds the listener: a descriptor, or an accept
+    /// that has not been ended (every accept, under Linux).
+    let private listenerHeld (r : AcceptReference) : bool =
+        (r.Fds |> Map.exists (fun _ listener -> listener))
+        || (r.Parks |> Map.exists (fun _ park -> park.Through.IsSome))
+
+    let private lowestFree (r : AcceptReference) : int =
+        Seq.initInfinite id |> Seq.find (fun n -> not (Map.containsKey n r.Fds))
+
+    let private acceptTasks : int list = [ 1 ; 2 ; 3 ; 4 ]
+
+    let rec private returnToUser (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixSignal.onReturnToUser task system with
+        | Ok (None, system) -> system
+        | Ok (Some (SignalDelivery.RunHandlers frames), system) ->
+            (system, frames)
+            ||> List.fold (fun system frame -> UnixSignal.sigreturn task frame.Id system)
+            |> returnToUser task
+        | other -> failwith $"returning task %d{task} to user mode: %A{other}"
+
+    /// `weights` are the frequencies of an accept, a connect, a close, a dup, a
+    /// signal, a wake and a finish; descriptors are drawn from 3 to `highestFd`.
+    let private acceptOpGenWeighted (highestFd : int) (weights : int * int * int * int * int * int * int) =
+        let accepts, connects, closes, dups, signals, wakes, finishes = weights
+        let task = Gen.elements acceptTasks
+        let fd = Gen.choose (3, highestFd)
+
+        Gen.frequency
+            [
+                accepts, Gen.map2 (fun t fd -> AcceptOp.Accept (t, fd)) task fd
+                connects, Gen.constant AcceptOp.Connect
+                closes, Gen.map AcceptOp.Close fd
+                dups, Gen.map AcceptOp.Dup fd
+                signals, Gen.map AcceptOp.Signal task
+                wakes, Gen.constant AcceptOp.Wake
+                finishes, Gen.map AcceptOp.Finish task
+            ]
+
+    let private acceptOpGen : Gen<AcceptOp> =
+        acceptOpGenWeighted 8 (6, 4, 3, 3, 2, 6, 8)
+
+    /// Weighted towards accepts asleep through several descriptors, and the
+    /// closes that end them, which `acceptOpGen` reaches only now and then.
+    let private closingAcceptOpGen : Gen<AcceptOp> =
+        acceptOpGenWeighted 6 (8, 1, 4, 5, 1, 4, 5)
+
+    /// Measured on Darwin (`close-ends-call.c`) and Linux (`blocking-accept.c`,
+    /// `open-file-references.c`): several tasks accepting on one listener
+    /// through several descriptors onto it, with connections, closes, `dup`s
+    /// and signals between, against a reference that states each rule again.
+    /// Under Linux no close ends an accept; under Darwin a close of the
+    /// descriptor one was made through ends every accept on the listener and
+    /// drains it, whatever descriptor number is reused afterwards.
+    [<Test>]
+    let ``accepts, closes and dups on one listener keep to the reference`` () : unit =
+        let covered = System.Collections.Concurrent.ConcurrentDictionary<string, int> ()
+
+        let cover (label : string) =
+            covered.AddOrUpdate (label, 1, (fun _ n -> n + 1)) |> ignore
+
+        let property (platform : SimulatedUnixPlatform, restart : bool, ops : AcceptOp list) : unit =
+            let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
+            let flavourName = if linux then "Linux" else "Darwin"
+            let listenerFd, system = world platform
+
+            let mutable system =
+                { system with
+                    Process =
+                        { system.Process with
+                            Signals =
+                                system.Process.Signals
+                                |> SignalState.setDisposition
+                                    Signal.SIGUSR1
+                                    (SignalDisposition.Catch
+                                        { SignalCatch.ofHandler "h" with
+                                            Restart = restart
+                                        })
+                        }
+                }
+
+            let listenerId = idOf listenerFd system
+
+            let mutable reference =
+                {
+                    Linux = linux
+                    Restart = restart
+                    Fds =
+                        FileDescriptorRegistry.fds system.Process.FileDescriptors
+                        |> Map.map (fun _ id -> id = listenerId)
+                    Parks = Map.empty
+                    NextOrdinal = 0
+                    Signalled = Set.empty
+                    Queued = 0
+                    Drained = false
+                    Alive = true
+                }
+
+            let answered (task : int) (r : AcceptReference) =
+                { r with
+                    Parks = Map.remove task r.Parks
+                    Signalled = Set.remove task r.Signalled
+                }
+
+            // The accepted socket is closed at once: the reference follows the
+            // listener's descriptors and the clients', and nothing else.
+            let dropAccepted (fd : int) (system : UnixSystem<int, string>) =
+                match UnixDescriptor.close fd system with
+                | Ok (SyscallAnswer.Completed 0L, system) -> system
+                | other -> failwith $"closing the accepted fd %d{fd}: %A{other}"
+
+            for i, op in List.indexed ops do
+                let pick (eligible : int -> bool) (index : int) : int option =
+                    match List.filter eligible acceptTasks with
+                    | [] -> None
+                    | candidates -> Some candidates.[index % List.length candidates]
+
+                let onListenerOrClosed (fd : int) =
+                    match Map.tryFind fd reference.Fds with
+                    | Some false -> false
+                    | Some true
+                    | None -> true
+
+                let resolved =
+                    match op with
+                    | AcceptOp.Accept (index, fd) when onListenerOrClosed fd ->
+                        pick (fun t -> not (Map.containsKey t reference.Parks)) index
+                        |> Option.map (fun t -> AcceptOp.Accept (t, fd))
+                    | AcceptOp.Close fd
+                    | AcceptOp.Dup fd when onListenerOrClosed fd -> Some op
+                    | AcceptOp.Accept _
+                    | AcceptOp.Close _
+                    | AcceptOp.Dup _ -> None
+                    | AcceptOp.Connect -> if reference.Queued < 8 then Some op else None
+                    | AcceptOp.Signal index ->
+                        pick (fun t -> Map.containsKey t reference.Parks) index
+                        |> Option.map AcceptOp.Signal
+                    | AcceptOp.Finish index ->
+                        pick (fun t -> Map.tryFind t reference.Parks |> Option.exists (fun p -> p.Woken)) index
+                        |> Option.map AcceptOp.Finish
+                    | AcceptOp.Wake -> Some op
+
+                match resolved with
+                | None -> ()
+                | Some op ->
+
+                let where = $"%O{platform}, restart %b{restart}, op %d{i} (%A{op})"
+
+                match op with
+                | AcceptOp.Accept (task, fd) ->
+                    let answer = UnixConnection.accept task fd UserBuffer.Mapped 16u system
+
+                    match Map.tryFind fd reference.Fds, answer with
+                    | None, Ok (AcceptOutcome.Failed UnixError.EBADF, _) -> cover $"%s{flavourName} accept: EBADF"
+                    | Some _, Ok (AcceptOutcome.Accepted (accepted, _, _), after) when reference.Queued > 0 ->
+                        cover $"%s{flavourName} accept: a queued connection"
+                        system <- dropAccepted accepted after
+
+                        reference <-
+                            { reference with
+                                Queued = reference.Queued - 1
+                            }
+                    | Some _, Error (AcceptRefusal.DarwinDrainedListener _) when
+                        reference.Drained && reference.Queued = 0
+                        ->
+                        cover "Darwin accept: refused, the listener drained"
+                    | Some _, Ok (AcceptOutcome.WouldBlock _, after) when not reference.Drained && reference.Queued = 0 ->
+                        cover $"%s{flavourName} accept: sleeps"
+                        system <- after
+
+                        reference <-
+                            { reference with
+                                Parks =
+                                    Map.add
+                                        task
+                                        {
+                                            Through = Some fd
+                                            Ordinal = reference.NextOrdinal
+                                            Woken = false
+                                        }
+                                        reference.Parks
+                                NextOrdinal = reference.NextOrdinal + 1
+                            }
+                    | _, other -> failwith $"%s{where}: %A{other}"
+                | AcceptOp.Connect ->
+                    let client, created =
+                        NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+                    client |> shouldEqual (lowestFree reference)
+
+                    match
+                        UnixConnection.connect client UserBuffer.Mapped 16u inetFamily (Some (loopback 5000us)) created
+                    with
+                    | Ok (ConnectOutcome.Completed, after) when reference.Alive ->
+                        system <- after
+
+                        reference <-
+                            { reference with
+                                Fds = Map.add client false reference.Fds
+                                Queued = reference.Queued + 1
+                            }
+                    | Ok (ConnectOutcome.Failed UnixError.ECONNREFUSED, after) when not reference.Alive ->
+                        cover $"%s{flavourName} connect: refused, the listener gone"
+                        system <- after
+
+                        reference <-
+                            { reference with
+                                Fds = Map.add client false reference.Fds
+                            }
+                    | other -> failwith $"%s{where}: %A{other}"
+                | AcceptOp.Close fd ->
+                    match Map.tryFind fd reference.Fds with
+                    | None ->
+                        match UnixDescriptor.close fd system with
+                        | Ok (SyscallAnswer.Failed UnixError.EBADF, _) -> ()
+                        | other -> failwith $"%s{where}: %A{other}"
+                    | Some _ ->
+
+                    let drains =
+                        not linux
+                        && reference.Parks |> Map.exists (fun _ park -> park.Through = Some fd)
+
+                    let after =
+                        { reference with
+                            Fds = Map.remove fd reference.Fds
+                            Drained = reference.Drained || drains
+                            Parks =
+                                if drains then
+                                    reference.Parks
+                                    |> Map.map (fun _ park ->
+                                        { park with
+                                            Through = None
+                                        }
+                                    )
+                                else
+                                    reference.Parks
+                        }
+
+                    let dies = reference.Alive && not (listenerHeld after)
+
+                    match UnixDescriptor.close fd system with
+                    | Error (CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) when
+                        dies && reference.Queued > 0
+                        ->
+                        cover $"%s{flavourName} close: refused, a connection left queued"
+                    | Ok (SyscallAnswer.Completed 0L, closed) when not (dies && reference.Queued > 0) ->
+                        if drains then
+                            cover "Darwin close: ends every accept on the listener"
+
+                            if
+                                reference.Parks
+                                |> Map.exists (fun _ park -> park.Through.IsSome && park.Through <> Some fd)
+                            then
+                                cover "Darwin close: ends an accept made through another descriptor"
+
+                        if
+                            not linux
+                            && reference.Parks |> Map.exists (fun _ park -> park.Through.IsNone)
+                            && Map.containsKey fd reference.Fds
+                            && reference.Fds.[fd]
+                        then
+                            cover "Darwin close: a descriptor onto the listener while an ended accept is unfinished"
+
+                        system <- closed
+
+                        reference <-
+                            { after with
+                                Alive = reference.Alive && not dies
+                            }
+                    | other -> failwith $"%s{where}: dies %b{dies}, %A{other}"
+                | AcceptOp.Dup fd ->
+                    let answer, after = UnixDescriptor.dup fd system
+
+                    match Map.tryFind fd reference.Fds with
+                    | None -> answer |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)
+                    | Some named ->
+                        let lowest = lowestFree reference
+                        answer |> shouldEqual (SyscallAnswer.Completed (int64 lowest))
+
+                        if reference.Parks |> Map.exists (fun _ park -> park.Through.IsNone) then
+                            cover $"%s{flavourName} dup: a number an ended accept was made through"
+
+                        reference <-
+                            { reference with
+                                Fds = Map.add lowest named reference.Fds
+                            }
+
+                    system <- after
+                | AcceptOp.Signal task ->
+                    system <-
+                        { system with
+                            Process =
+                                { system.Process with
+                                    Signals =
+                                        SignalState.enqueue
+                                            {
+                                                Signal = Signal.SIGUSR1
+                                                Target = ValueSome task
+                                            }
+                                            system.Process.Signals
+                                }
+                        }
+
+                    reference <-
+                        { reference with
+                            Signalled = Set.add task reference.Signalled
+                        }
+                | AcceptOp.Wake ->
+                    let asleep =
+                        reference.Parks |> Map.filter (fun _ park -> not park.Woken) |> Map.toList
+
+                    let finishing =
+                        reference.Parks |> Map.exists (fun _ park -> park.Woken && park.Through.IsSome)
+
+                    let first =
+                        if reference.Queued = 0 || finishing then
+                            None
+                        else
+                            asleep
+                            |> List.filter (fun (_, park) -> park.Through.IsSome)
+                            |> List.sortBy (fun (_, park) -> park.Ordinal)
+                            |> List.tryHead
+                            |> Option.map fst
+
+                    let expected =
+                        asleep
+                        |> List.filter (fun (task, park) ->
+                            park.Through.IsNone
+                            || Set.contains task reference.Signalled
+                            || first = Some task
+                        )
+                        |> List.sortBy (fun (_, park) -> park.Ordinal)
+                        |> List.map fst
+
+                    let woken =
+                        UnixWait.wakes (asleep |> List.map fst |> Set.ofList) system |> List.map fst
+
+                    if woken <> expected then
+                        failwith $"%s{where}: woke %A{woken}, expected %A{expected}"
+
+                    reference <-
+                        { reference with
+                            Parks =
+                                (reference.Parks, woken)
+                                ||> List.fold (fun parks task ->
+                                    Map.add
+                                        task
+                                        { parks.[task] with
+                                            Woken = true
+                                        }
+                                        parks
+                                )
+                        }
+                | AcceptOp.Finish task ->
+                    let park = reference.Parks.[task]
+                    let signalled = Set.contains task reference.Signalled
+                    let answer = UnixConnection.finishAccept task system
+
+                    let settle (r : AcceptReference) (after : UnixSystem<int, string>) =
+                        let r = answered task r
+                        let dies = r.Alive && not (listenerHeld r)
+
+                        system <- returnToUser task after
+
+                        reference <-
+                            { r with
+                                Alive = r.Alive && not dies
+                            }
+
+                    match park.Through, answer with
+                    | None, Ok (AcceptOutcome.Failed UnixError.ECONNABORTED, after) ->
+                        cover "Darwin finish: ECONNABORTED"
+
+                        if reference.Queued > 0 then
+                            cover "Darwin finish: ECONNABORTED with a connection queued"
+
+                        if signalled then
+                            cover "Darwin finish: ECONNABORTED with a signal pending"
+
+                        settle reference after
+                    | Some _, _ when reference.Queued > 0 ->
+                        let leftHeld = listenerHeld (answered task reference)
+
+                        match answer with
+                        | Error (AcceptRefusal.Interruption _) when signalled && not linux ->
+                            cover "Darwin finish: refused, a connection and a signal"
+                        | Error (AcceptRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) when
+                            not leftHeld && reference.Queued > 1
+                            ->
+                            cover $"%s{flavourName} finish: refused, a connection left queued"
+                        | Ok (AcceptOutcome.Accepted (accepted, _, _), after) when leftHeld || reference.Queued = 1 ->
+                            cover $"%s{flavourName} finish: a connection"
+
+                            settle
+                                { reference with
+                                    Queued = reference.Queued - 1
+                                }
+                                (dropAccepted accepted after)
+                        | other -> failwith $"%s{where}: %A{other}"
+                    | Some _, Ok (AcceptOutcome.Failed UnixError.EINTR, after) when signalled && not restart ->
+                        settle reference after
+                    | Some _, Ok (AcceptOutcome.Restarts, after) when signalled && restart -> settle reference after
+                    | Some _, Ok (AcceptOutcome.WouldBlock _, after) when not signalled ->
+                        system <- after
+
+                        reference <-
+                            { reference with
+                                Parks =
+                                    Map.add
+                                        task
+                                        { park with
+                                            Woken = false
+                                            Ordinal = reference.NextOrdinal
+                                        }
+                                        reference.Parks
+                                NextOrdinal = reference.NextOrdinal + 1
+                            }
+                    | _, other -> failwith $"%s{where}: %A{other}"
+
+                match UnixSystem.checkInvariants system with
+                | [] -> ()
+                | defects -> failwith $"%s{where}: %A{defects}"
+
+                // Every park agrees with the reference's.
+                for task in acceptTasks do
+                    let expected =
+                        Map.tryFind task reference.Parks |> Option.map (fun park -> park.Through)
+
+                    let actual =
+                        UnixTaskTable.parkedFor task system.Tasks
+                        |> Option.map (fun parked ->
+                            match parked with
+                            | ParkedSyscall.Accept {
+                                                       Listener = SleepTarget.Waiting (_, fd)
+                                                   } -> Some fd
+                            | ParkedSyscall.Accept {
+                                                       Listener = SleepTarget.EndedByClose _
+                                                   } -> None
+                            | other -> failwith $"%s{where}: task %d{task} parked in %A{other}"
+                        )
+
+                    if expected <> actual then
+                        failwith $"%s{where}: task %d{task} parked as %A{actual}, expected %A{expected}"
+
+                let socket =
+                    system.Machine.Sockets
+                    |> Map.tryPick (fun _ socket ->
+                        match socket.Phase with
+                        | SocketPhase.Listening listenState -> Some listenState
+                        | _ -> None
+                    )
+
+                match socket with
+                | Some listenState when reference.Alive ->
+                    (List.length listenState.Queue, listenState.Drained)
+                    |> shouldEqual (reference.Queued, reference.Drained)
+                | None when not reference.Alive -> ()
+                | other -> failwith $"%s{where}: the listener is %A{other}, alive %b{reference.Alive}"
+
+        let gen =
+            gen {
+                let! platform = platformGen
+                let! restart = ArbMap.defaults |> ArbMap.generate<bool>
+                let! length = Gen.choose (0, 60)
+                let! ops = Gen.listOfLength length acceptOpGen
+                return platform, restart, ops
+            }
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
+
+        let closingGen =
+            Gen.zip
+                (ArbMap.defaults |> ArbMap.generate<bool>)
+                (Gen.choose (0, 60)
+                 |> Gen.bind (fun length -> Gen.listOfLength length closingAcceptOpGen))
+            |> Gen.map (fun (restart, ops) -> SimulatedUnixPlatform.macOsArm64, restart, ops)
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen closingGen) property)
+
+        let required =
+            [
+                "Linux accept: sleeps"
+                "Linux finish: a connection"
+                "Linux close: refused, a connection left queued"
+                "Linux finish: refused, a connection left queued"
+                "Linux connect: refused, the listener gone"
+                "Darwin accept: sleeps"
+                "Darwin accept: a queued connection"
+                "Darwin accept: refused, the listener drained"
+                "Darwin close: ends every accept on the listener"
+                "Darwin close: ends an accept made through another descriptor"
+                "Darwin close: a descriptor onto the listener while an ended accept is unfinished"
+                "Darwin close: refused, a connection left queued"
+                "Darwin connect: refused, the listener gone"
+                "Darwin dup: a number an ended accept was made through"
+                "Darwin finish: ECONNABORTED"
+                "Darwin finish: ECONNABORTED with a connection queued"
+                "Darwin finish: ECONNABORTED with a signal pending"
+                "Darwin finish: refused, a connection and a signal"
+                "Darwin finish: a connection"
+            ]
+
+        let missing = required |> List.filter (fun label -> not (covered.ContainsKey label))
+
+        if not (List.isEmpty missing) then
+            failwith $"the property never reached %A{missing}; it reached %A{List.ofSeq covered.Keys |> List.sort}"
 
     // ------------------------------------------------------------------
     // What the park may name
@@ -731,25 +1433,148 @@ module TestBlockingAccept =
         let idle, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-        let parkedOn (listener : OpenFileDescriptionId) : UnixSystem<int, string> =
+        let parkedOn (listener : OpenFileDescriptionId) (fd : int) : UnixSystem<int, string> =
             UnixWait.park
                 1
                 (ParkedSyscall.Accept
                     {
-                        Listener = listener
+                        Listener = SleepTarget.Waiting (listener, fd)
                         Destination = UserBuffer.Mapped
                         DeclaredLength = 16u
                     })
                 system
 
-        for description in [ idOf idle system ; idOf 0 system ] do
-            UnixSystem.checkInvariants (parkedOn description)
+        for fd in [ idle ; 0 ] do
+            let description = idOf fd system
+
+            UnixSystem.checkInvariants (parkedOn description fd)
             |> shouldEqual [ UnixSystemDefect.ParkedAcceptOnNonListener (1, description) ]
 
         let absent = OpenFileDescriptionId 1_000_000L
 
-        UnixSystem.checkInvariants (parkedOn absent)
+        UnixSystem.checkInvariants (parkedOn absent 1_000)
         |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentDescription (1, absent) ]
+
+    /// `system` with the park of `task` passed through `rewrite`.
+    let private reparked
+        (task : int)
+        (rewrite : ParkedAccept -> ParkedAccept)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        let state = UnixTaskTable.get task system.Tasks
+
+        match state.Parked with
+        | Some ({
+                    Syscall = ParkedSyscall.Accept accept
+                } as park) ->
+            { system with
+                Tasks =
+                    Map.add
+                        task
+                        { state with
+                            Parked =
+                                Some
+                                    { park with
+                                        Syscall = ParkedSyscall.Accept (rewrite accept)
+                                    }
+                        }
+                        system.Tasks
+            }
+        | other -> failwith $"task %d{task} is parked in %A{other}"
+
+    /// `system` with the listener `fd` names marked drained, as only a Darwin
+    /// close marks one.
+    let private drainedByHand (fd : int) (system : UnixSystem<int, string>) : SocketId * UnixSystem<int, string> =
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | Some (OpenFileTarget.Socket socketId) ->
+            let socket = UnixMachineState.socket socketId system.Machine
+
+            match socket.Phase with
+            | SocketPhase.Listening listenState ->
+                socketId,
+                { system with
+                    Machine =
+                        { system.Machine with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { socket with
+                                        Phase =
+                                            SocketPhase.Listening
+                                                { listenState with
+                                                    Drained = true
+                                                }
+                                    }
+                                    system.Machine.Sockets
+                        }
+                }
+            | phase -> failwith $"fd %d{fd} is %A{phase}"
+        | other -> failwith $"fd %d{fd} names %A{other}"
+
+    /// Under Darwin the descriptor a sleeping accept was made through names its
+    /// listener while it sleeps, since a close of it ends the accept; under
+    /// Linux the number is not consulted.
+    [<TestCaseSource(nameof platforms)>]
+    let ``an accept asleep through a descriptor that names something else is a Darwin defect``
+        (platform : SimulatedUnixPlatform)
+        : unit
+        =
+        let fd, system = world platform
+        let listener = idOf fd system
+
+        let system =
+            parkIn 1 fd system
+            |> reparked
+                1
+                (fun accept ->
+                    { accept with
+                        Listener = SleepTarget.Waiting (listener, 0)
+                    }
+                )
+
+        UnixSystem.checkInvariants system
+        |> shouldEqual (
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> []
+            | SimulatedUnixFlavour.Darwin ->
+                [
+                    UnixSystemDefect.ParkedCallDescriptorRebound (1, 0, listener, Some (idOf 0 system))
+                ]
+        )
+
+    /// Only Darwin's close ends an accept, or drains a listener; and no accept
+    /// sleeps on a drained one.
+    [<Test>]
+    let ``an ended accept or a drained listener under Linux, and a sleep on a drained listener, are defects``
+        ()
+        : unit
+        =
+        let fd, system = world SimulatedUnixPlatform.linuxX64
+        let socketId, drained = drainedByHand fd system
+
+        UnixSystem.checkInvariants drained
+        |> shouldEqual [ UnixSystemDefect.ListenerDrainedUnderLinux socketId ]
+
+        let ended =
+            parkIn 1 fd system
+            |> reparked
+                1
+                (fun accept ->
+                    { accept with
+                        Listener = SleepTarget.EndedByClose socketId
+                    }
+                )
+
+        UnixSystem.checkInvariants ended
+        |> shouldEqual [ UnixSystemDefect.ParkedCallEndedByCloseUnderLinux 1 ]
+
+        let fd, system = world SimulatedUnixPlatform.macOsArm64
+        let listener = idOf fd system
+        let _, asleepOnDrained = parkIn 1 fd system |> drainedByHand fd
+
+        UnixSystem.checkInvariants asleepOnDrained
+        |> shouldEqual [ UnixSystemDefect.ParkedAcceptOnDrainedListener (1, listener) ]
 
     /// `SO_RCVTIMEO` bounds a blocking accept on Linux, answering EAGAIN at the
     /// timeout (`blocking-accept.c`, section E1; Darwin's accept ignores it).

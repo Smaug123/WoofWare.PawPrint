@@ -416,6 +416,7 @@ module TestUnixSystemStep =
                     {
                         ListenState.Backlog = 4
                         ListenState.Queue = []
+                        ListenState.Drained = false
                     }
                 SocketPhase.Established (ConnectionId 0L)
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L)

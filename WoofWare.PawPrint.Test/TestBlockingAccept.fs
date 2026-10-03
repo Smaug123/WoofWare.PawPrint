@@ -201,7 +201,7 @@ class NeverConnected
             Some (
                 ParkedSyscall.Accept
                     {
-                        Listener = OpenFileDescriptionId 3L
+                        Listener = SleepTarget.Waiting (OpenFileDescriptionId 3L, 3)
                         Destination = UserBuffer.Mapped
                         DeclaredLength = 16u
                     }

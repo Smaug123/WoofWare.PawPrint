@@ -453,7 +453,7 @@ module TestPipe =
 
                         let parked =
                             {
-                                Writer = writer
+                                Writer = SleepTarget.Waiting (writer, fd)
                                 Buffer = buffer
                                 Count = count
                                 Written = takes
@@ -543,7 +543,10 @@ module TestPipe =
                         let parked =
                             {
                                 Reader =
-                                    FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                                    SleepTarget.Waiting (
+                                        FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get,
+                                        fd
+                                    )
                                 Buffer = buffer
                                 Count = count
                             }

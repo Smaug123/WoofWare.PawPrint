@@ -205,19 +205,54 @@ type ParkedKqueuePoll =
         Deadline : int64 option
     }
 
+/// What a sleeping call that waits on one open file description waits on, or
+/// that a close has ended it: the state of a blocking `accept(2)`, pipe
+/// `read(2)` or pipe `write(2)`.
+///
+/// `'Object` names the kernel object the call waited on, by the machine's own
+/// identity for it (a `SocketId` or a `PipeId`), for a call that no longer
+/// holds a description to name it by.
+[<RequireQualifiedAccess>]
+type SleepTarget<'Object> =
+    /// The call waits on the open file description `description`, which it
+    /// holds, having been made through the descriptor `fd`.
+    ///
+    /// Held by description rather than by descriptor: a `dup` of the descriptor
+    /// names the same description, and the call keeps it whatever is closed.
+    /// Under Darwin, `fd` names `description` for as long as the call waits,
+    /// since a close of it ends the call (`EndedByClose`). Under Linux a close
+    /// of `fd` leaves the call waiting, so the number can be freed, and taken
+    /// by a later open, while the call sleeps; nothing reads it there.
+    | Waiting of description : OpenFileDescriptionId * fd : int
+    /// Under Darwin, a close has ended the call, which waited on `object`. It
+    /// holds nothing, and its finishing call answers what the close left it.
+    ///
+    /// A pipe transfer is ended by a close of the descriptor it was made
+    /// through; an accept by a close of the descriptor any accept on the same
+    /// listener was made through (see `ListenState.Drained`).
+    | EndedByClose of object : 'Object
+
+[<RequireQualifiedAccess>]
+module SleepTarget =
+    /// The open file description the call waits on and holds, or `None` once a
+    /// close has ended it.
+    let description<'Object> (target : SleepTarget<'Object>) : OpenFileDescriptionId option =
+        match target with
+        | SleepTarget.Waiting (description, _) -> Some description
+        | SleepTarget.EndedByClose _ -> None
+
 /// One task's in-flight blocking `accept(2)`: the listening socket it waits on
 /// for a connection, and where the connection's peer address goes when one
 /// arrives.
 type ParkedAccept =
     {
         /// The open file description of the listening socket the call was made
-        /// through.
+        /// through, and the descriptor it was made through; or the listening
+        /// socket, once a close has ended the call.
         ///
-        /// Held by description rather than by descriptor: a `dup` of the
-        /// descriptor names the same listener, and under Linux the descriptor
-        /// the call came through can be closed while it sleeps, the last one
-        /// included, leaving the listener to the call.
-        Listener : OpenFileDescriptionId
+        /// Under Linux the descriptor the call came through can be closed while
+        /// it sleeps, the last one included, leaving the listener to the call.
+        Listener : SleepTarget<SocketId>
         /// Where the peer address is to be copied out to, as the caller
         /// classified it when the call was entered.
         Destination : UserBuffer
@@ -237,11 +272,9 @@ type ParkedAccept =
 type ParkedPipeRead =
     {
         /// The open file description of the pipe's read end the call was made
-        /// through.
-        ///
-        /// Held by description rather than by descriptor: the sleeping call
-        /// holds the file, and a `dup` of the descriptor names the same one.
-        Reader : OpenFileDescriptionId
+        /// through, and the descriptor it was made through; or the pipe, once a
+        /// close has ended the call.
+        Reader : SleepTarget<PipeId>
         /// Where the bytes are to be copied out to, as the caller classified it
         /// when the call was entered. Nothing is copied before the call sleeps,
         /// so a buffer naming no storage faults only once there is something to
@@ -263,9 +296,9 @@ type ParkedPipeRead =
 type ParkedPipeWrite =
     {
         /// The open file description of the pipe's write end the call was made
-        /// through, held by description for the reason `ParkedPipeRead.Reader`
-        /// is.
-        Writer : OpenFileDescriptionId
+        /// through, and the descriptor it was made through; or the pipe, once a
+        /// close has ended the call.
+        Writer : SleepTarget<PipeId>
         /// Where the bytes come from, as the caller classified it when the call
         /// was entered.
         Buffer : UserBuffer
@@ -330,9 +363,11 @@ module ParkedSyscall =
         // the address of a socket closed under a sleeping Darwin poll wakes
         // nothing.
         | ParkedSyscall.KqueuePoll _ -> []
-        | ParkedSyscall.Accept accept -> [ accept.Listener ]
-        | ParkedSyscall.PipeRead read -> [ read.Reader ]
-        | ParkedSyscall.PipeWrite write -> [ write.Writer ]
+        // A call a close has ended holds nothing: Darwin's close does not
+        // return until the call has, and the call's reference goes as it does.
+        | ParkedSyscall.Accept accept -> SleepTarget.description accept.Listener |> Option.toList
+        | ParkedSyscall.PipeRead read -> SleepTarget.description read.Reader |> Option.toList
+        | ParkedSyscall.PipeWrite write -> SleepTarget.description write.Writer |> Option.toList
 
 /// Where one park stands in the order every park on this machine was made in.
 ///

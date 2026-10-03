@@ -274,17 +274,31 @@ module DebuggerServer =
                 | Some deadline -> writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
             | Some (ParkedSyscall.Accept parked) ->
                 writer.WriteString ("kind", "blockedInAccept")
-                let (OpenFileDescriptionId listener) = parked.Listener
-                writer.WriteNumber ("listener", listener)
+
+                match parked.Listener with
+                | SleepTarget.Waiting (OpenFileDescriptionId listener, fd) ->
+                    writer.WriteNumber ("listener", listener)
+                    writer.WriteNumber ("fd", fd)
+                | SleepTarget.EndedByClose (SocketId socket) -> writer.WriteNumber ("endedByCloseOnSocket", socket)
             | Some (ParkedSyscall.PipeRead parked) ->
                 writer.WriteString ("kind", "blockedInPipeRead")
-                let (OpenFileDescriptionId reader) = parked.Reader
-                writer.WriteNumber ("description", reader)
+
+                match parked.Reader with
+                | SleepTarget.Waiting (OpenFileDescriptionId reader, fd) ->
+                    writer.WriteNumber ("description", reader)
+                    writer.WriteNumber ("fd", fd)
+                | SleepTarget.EndedByClose (PipeId pipe) -> writer.WriteNumber ("endedByCloseOnPipe", pipe)
+
                 writer.WriteNumber ("count", parked.Count)
             | Some (ParkedSyscall.PipeWrite parked) ->
                 writer.WriteString ("kind", "blockedInPipeWrite")
-                let (OpenFileDescriptionId writerDescription) = parked.Writer
-                writer.WriteNumber ("description", writerDescription)
+
+                match parked.Writer with
+                | SleepTarget.Waiting (OpenFileDescriptionId writerDescription, fd) ->
+                    writer.WriteNumber ("description", writerDescription)
+                    writer.WriteNumber ("fd", fd)
+                | SleepTarget.EndedByClose (PipeId pipe) -> writer.WriteNumber ("endedByCloseOnPipe", pipe)
+
                 writer.WriteNumber ("count", parked.Count)
                 writer.WriteNumber ("written", parked.Written)
             | None -> writer.WriteString ("kind", "blockedInSyscall")
