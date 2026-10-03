@@ -113,6 +113,16 @@ Z stream AF_INET   127.0.0.1:lst bound    : OK local=127.0.0.1:same peer=yes
 Z stream AF_INET   127.0.0.1:lst wildbound: OK local=127.0.0.1:same peer=yes
 Z stream AF_INET   127.0.0.1:lst connected: EISCONN local=127.0.0.1:same peer=yes
 Z stream AF_INET   127.0.0.1:lst listening: EOPNOTSUPP local=127.0.0.1:same peer=no
+Z stream AF_INET   127.0.0.2:0   fresh    : EADDRNOTAVAIL local=0.0.0.0:new peer=no
+Z stream AF_INET   127.0.0.2:0   bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=no
+Z stream AF_INET   127.0.0.2:0   wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=no
+Z stream AF_INET   127.0.0.2:0   connected: EISCONN local=127.0.0.1:same peer=yes
+Z stream AF_INET   127.0.0.2:0   listening: EOPNOTSUPP local=127.0.0.1:same peer=no
+Z stream AF_INET   8.8.8.8:0     fresh    : EADDRNOTAVAIL local=0.0.0.0:new peer=no
+Z stream AF_INET   8.8.8.8:0     bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=no
+Z stream AF_INET   8.8.8.8:0     wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=no
+Z stream AF_INET   8.8.8.8:0     connected: EISCONN local=127.0.0.1:same peer=yes
+Z stream AF_INET   8.8.8.8:0     listening: EOPNOTSUPP local=127.0.0.1:same peer=no
 Z stream AF_UNSPEC 0.0.0.0:0     fresh    : EADDRNOTAVAIL local=0.0.0.0:new peer=no
 Z stream AF_UNSPEC 0.0.0.0:0     bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=no
 Z stream AF_UNSPEC 0.0.0.0:0     wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=no
@@ -133,6 +143,16 @@ Z stream AF_UNSPEC 127.0.0.1:lst bound    : OK local=127.0.0.1:same peer=yes
 Z stream AF_UNSPEC 127.0.0.1:lst wildbound: OK local=127.0.0.1:same peer=yes
 Z stream AF_UNSPEC 127.0.0.1:lst connected: EISCONN local=127.0.0.1:same peer=yes
 Z stream AF_UNSPEC 127.0.0.1:lst listening: EOPNOTSUPP local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 127.0.0.2:0   fresh    : EADDRNOTAVAIL local=0.0.0.0:new peer=no
+Z stream AF_UNSPEC 127.0.0.2:0   bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 127.0.0.2:0   wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 127.0.0.2:0   connected: EISCONN local=127.0.0.1:same peer=yes
+Z stream AF_UNSPEC 127.0.0.2:0   listening: EOPNOTSUPP local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 8.8.8.8:0     fresh    : EADDRNOTAVAIL local=0.0.0.0:new peer=no
+Z stream AF_UNSPEC 8.8.8.8:0     bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 8.8.8.8:0     wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 8.8.8.8:0     connected: EISCONN local=127.0.0.1:same peer=yes
+Z stream AF_UNSPEC 8.8.8.8:0     listening: EOPNOTSUPP local=127.0.0.1:same peer=no
 Z dgram  AF_INET   0.0.0.0:0     fresh    : EADDRNOTAVAIL local=0.0.0.0:0 peer=no
 Z dgram  AF_INET   0.0.0.0:0     bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=no
 Z dgram  AF_INET   0.0.0.0:0     wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=no
@@ -149,6 +169,14 @@ Z dgram  AF_INET   127.0.0.1:lst fresh    : OK local=127.0.0.1:new peer=yes
 Z dgram  AF_INET   127.0.0.1:lst bound    : OK local=127.0.0.1:same peer=yes
 Z dgram  AF_INET   127.0.0.1:lst wildbound: OK local=127.0.0.1:same peer=yes
 Z dgram  AF_INET   127.0.0.1:lst connected: OK local=127.0.0.1:same peer=yes
+Z dgram  AF_INET   127.0.0.2:0   fresh    : EADDRNOTAVAIL local=0.0.0.0:0 peer=no
+Z dgram  AF_INET   127.0.0.2:0   bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=no
+Z dgram  AF_INET   127.0.0.2:0   wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=no
+Z dgram  AF_INET   127.0.0.2:0   connected: EADDRNOTAVAIL local=0.0.0.0:same peer=no
+Z dgram  AF_INET   8.8.8.8:0     fresh    : EADDRNOTAVAIL local=0.0.0.0:0 peer=no
+Z dgram  AF_INET   8.8.8.8:0     bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=no
+Z dgram  AF_INET   8.8.8.8:0     wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=no
+Z dgram  AF_INET   8.8.8.8:0     connected: EADDRNOTAVAIL local=0.0.0.0:same peer=no
 Z dgram  AF_UNSPEC 0.0.0.0:0     fresh    : EAFNOSUPPORT local=0.0.0.0:0 peer=no
 Z dgram  AF_UNSPEC 0.0.0.0:0     bound    : EAFNOSUPPORT local=127.0.0.1:same peer=no
 Z dgram  AF_UNSPEC 0.0.0.0:0     wildbound: EAFNOSUPPORT local=0.0.0.0:same peer=no
@@ -165,3 +193,11 @@ Z dgram  AF_UNSPEC 127.0.0.1:lst fresh    : EAFNOSUPPORT local=0.0.0.0:0 peer=no
 Z dgram  AF_UNSPEC 127.0.0.1:lst bound    : EAFNOSUPPORT local=127.0.0.1:same peer=no
 Z dgram  AF_UNSPEC 127.0.0.1:lst wildbound: EAFNOSUPPORT local=0.0.0.0:same peer=no
 Z dgram  AF_UNSPEC 127.0.0.1:lst connected: EAFNOSUPPORT local=0.0.0.0:same peer=no
+Z dgram  AF_UNSPEC 127.0.0.2:0   fresh    : EAFNOSUPPORT local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 127.0.0.2:0   bound    : EAFNOSUPPORT local=127.0.0.1:same peer=no
+Z dgram  AF_UNSPEC 127.0.0.2:0   wildbound: EAFNOSUPPORT local=0.0.0.0:same peer=no
+Z dgram  AF_UNSPEC 127.0.0.2:0   connected: EAFNOSUPPORT local=0.0.0.0:same peer=no
+Z dgram  AF_UNSPEC 8.8.8.8:0     fresh    : EAFNOSUPPORT local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 8.8.8.8:0     bound    : EAFNOSUPPORT local=127.0.0.1:same peer=no
+Z dgram  AF_UNSPEC 8.8.8.8:0     wildbound: EAFNOSUPPORT local=0.0.0.0:same peer=no
+Z dgram  AF_UNSPEC 8.8.8.8:0     connected: EAFNOSUPPORT local=0.0.0.0:same peer=no

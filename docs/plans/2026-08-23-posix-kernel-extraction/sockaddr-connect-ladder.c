@@ -26,8 +26,8 @@
 //      bound datagram socket's for dgram. Then the same with an all-zero
 //      blob (address and port 0).
 //   Z  AF_INET and AF_UNSPEC at length 16, to 0.0.0.0:0, 127.0.0.1:0,
-//      0.0.0.0:<listener> and 127.0.0.1:<listener>, in every state of both
-//      kinds.
+//      0.0.0.0:<listener> and 127.0.0.1:<listener>, and on Darwin also to
+//      127.0.0.2:0 and 8.8.8.8:0, in every state of both kinds.
 //
 // Build and run, from this directory:
 //   Darwin: nix develop -c clang -Wall -o /tmp/scl sockaddr-connect-ladder.c && /tmp/scl
@@ -42,7 +42,8 @@
 //     at every length 2..255, and binds nothing. AF_UNSPEC is AF_INET in every
 //     state: an idle socket with no address is first bound to the wildcard and
 //     an ephemeral port, and then a length other than 16 is EINVAL and a port
-//     of 0 (to 0.0.0.0 or 127.0.0.1) EADDRNOTAVAIL, the binding staying; a
+//     of 0 (to any address: 0.0.0.0, 127.0.0.1, 127.0.0.2, 8.8.8.8) is
+//     EADDRNOTAVAIL, the binding staying; a
 //     connected socket answers EISCONN, a listening one EOPNOTSUPP.
 //   Darwin, dgram: every length but 16 is EINVAL, whatever the family; at 16,
 //     AF_UNSPEC is EAFNOSUPPORT. A connected socket is disconnected by every
@@ -305,11 +306,18 @@ int main(void)
         { "127.0.0.1:0", INADDR_LOOPBACK, 0 },
         { "0.0.0.0:lst", INADDR_ANY, 1 },
         { "127.0.0.1:lst", INADDR_LOOPBACK, 1 },
+#ifdef __APPLE__
+        // Darwin only: whether a port of 0 is refused before the address is
+        // looked at. On Linux a stream connect there sends a SYN that may
+        // never be answered.
+        { "127.0.0.2:0", 0x7f000002, 0 },
+        { "8.8.8.8:0", 0x08080808, 0 },
+#endif
     };
     unsigned zfamilies[] = { AF_INET, AF_UNSPEC };
     for (int type = SOCK_STREAM; type <= SOCK_DGRAM; type++)
         for (unsigned f = 0; f < 2; f++)
-            for (unsigned d = 0; d < 4; d++)
+            for (unsigned d = 0; d < sizeof dests / sizeof dests[0]; d++)
                 for (enum state st = FRESH; st <= LISTENING; st++) {
                     uint16_t port = dests[d].port_is_listener ? (type == SOCK_STREAM ? listener_port : dgram_peer_port) : 0;
                     fill(zfamilies[f], dests[d].address, port);
