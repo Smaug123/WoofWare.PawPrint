@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Executable contract for check-pawprint-references.py.
+# Executable contract for check-client-references.py.
 #
 # Builds a throwaway library directory holding every shape the check has an
 # opinion about, and asserts the report names exactly the lines that name
-# PawPrint, in code, docstrings, comments and strings alike. The silent shapes
-# are as much the point: a check that fires on `WoofWare.PosixKernel` or on the
-# word "program" is a check nobody keeps. The exit status is asserted too, since
-# that is what the flake check branches on.
+# PawPrint or CoreCLR or say "guest", in code, docstrings, comments and strings
+# alike. The silent shapes are as much the point: a check that fires on
+# `WoofWare.PosixKernel`, on the word "program" or on "a .NET string" is a check
+# nobody keeps. The exit status is asserted too, since that is what the flake
+# check branches on.
 set -euo pipefail
 
 # The checker is normally its sibling; the flake check passes it in from the
 # store, where the two have no directory in common.
-checker="${1:-$(cd "$(dirname "$0")" && pwd)/check-pawprint-references.py}"
+checker="${1:-$(cd "$(dirname "$0")" && pwd)/check-client-references.py}"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -46,6 +47,19 @@ module B
 let nested = 1
 EOF
 
+cat > "$tmp/lib/Nested/Clr.fs" <<'EOF'
+module Clr
+/// CoreCLR's shim screens with it.
+// SystemNative_GetPort byte-swaps; System.Native does too.
+let m () = failwith "a guest passed it"
+/// Guest-visible, as the BCL and the PAL say; Interop.Sys too.
+/// CoreLib's SocketAsyncEngine waits on it; guests do too.
+/// Takes a .NET string; a foreign-function layer screens it.
+/// The process passed it; PALETTE, shimmer and a guesthouse are not markers.
+/// The runtime and managed code are ordinary words.
+let clr = 1
+EOF
+
 cat > "$tmp/lib/README.md" <<'EOF'
 Extracted from WoofWare.PawPrint, whose KernelConfig configures it.
 EOF
@@ -74,6 +88,18 @@ expected_hits=(
   "Nested/B.fs:3: DirectoryStreamFds:"
   "Nested/B.fs:4: NextLowLevelMonitorId:"
   "Nested/B.fs:4: LowLevelMonitor:"
+  "Nested/Clr.fs:2: CoreCLR:"
+  "Nested/Clr.fs:2: shim:"
+  "Nested/Clr.fs:3: SystemNative:"
+  "Nested/Clr.fs:3: System.Native:"
+  "Nested/Clr.fs:4: guest:"
+  "Nested/Clr.fs:5: Guest:"
+  "Nested/Clr.fs:5: BCL:"
+  "Nested/Clr.fs:5: PAL:"
+  "Nested/Clr.fs:5: Interop.:"
+  "Nested/Clr.fs:6: CoreLib:"
+  "Nested/Clr.fs:6: SocketAsyncEngine:"
+  "Nested/Clr.fs:6: guests:"
 )
 
 fail=0
@@ -97,6 +123,12 @@ fi
 # is a real reference, so the line is reported once, for that token alone.
 if grep -qE 'A\.fs:(4|6|10|12|14|15|16|17|18): ' <<<"$out"; then
   echo "FAIL: a silent line was reported" >&2
+  fail=1
+fi
+# CoreCLR's names and "guest" are whole words; the English and .NET words beside
+# them, and words that merely begin with one, are not.
+if grep -qE 'Clr\.fs:(1|7|8|9|10): ' <<<"$out"; then
+  echo "FAIL: a silent CoreCLR-fixture line was reported" >&2
   fail=1
 fi
 if grep -q 'README' <<<"$out"; then
@@ -132,4 +164,4 @@ if [ "$fail" -ne 0 ]; then
   echo "$out" >&2
   exit 1
 fi
-echo "pawprint-references contract: ${#expected_hits[@]} references reported, silent shapes silent"
+echo "client-references contract: ${#expected_hits[@]} references reported, silent shapes silent"

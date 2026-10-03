@@ -106,7 +106,7 @@ module ObjectLifetime =
         // which is zero for it by construction: nothing holds an entry naming
         // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
         // so the count alone would free the filesystem out from under every
-        // path. A guest can reach here with it — `close(open("/"))` is an
+        // path. A process can reach here with it — `close(open("/"))` is an
         // ordinary thing to do.
         if inode = VirtualFileSystem.root system.Machine.FileSystem then
             system

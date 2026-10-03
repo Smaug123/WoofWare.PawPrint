@@ -145,7 +145,7 @@ module DirectoryEntryName =
                 $"%s{context}: %s{describe error}. A FileName that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with FileName.parse instead."
 
 /// <summary>
-/// One component of a guest-supplied path, between two separators.
+/// One component of a path a process supplies, between two separators.
 /// </summary>
 [<RequireQualifiedAccess>]
 type PathComponent =
@@ -168,12 +168,12 @@ type PathComponent =
     | Name of name : DirectoryEntryName
 
 /// <summary>
-/// Why a .NET string is not usable as a guest-supplied Unix path.
+/// Why a .NET string is not usable as a Unix path a process supplies.
 /// </summary>
 ///
 /// <remarks>
 /// Far more permissive than <c>AbsoluteUnixPathError</c>, which instead describes what the <i>kernel can return</i>.
-/// A guest may legitimately pass a relative path, repeated separators, a trailing separator, and "." or
+/// A process may legitimately pass a relative path, repeated separators, a trailing separator, and "." or
 /// ".." components.
 /// </remarks>
 [<RequireQualifiedAccess>]
@@ -181,7 +181,7 @@ type UnixPathError =
     /// <summary>The candidate was null.</summary>
     /// <remarks>
     /// Distinct from the <i>empty</i> path, whose parse is permitted.
-    /// The empty string is a legal C string and a guest can legally supply it to a syscall;
+    /// The empty string is a legal C string and a process can legally supply it to a syscall;
     /// the kernel only rejects it at resolution time (with <c>ENOENT</c>).
     /// </remarks>
     | Null
@@ -192,7 +192,7 @@ type UnixPathError =
     | Text of defect : UnixPathTextDefect
 
 /// <summary>
-/// A path exactly as a guest handed it to a syscall.
+/// A path exactly as a process handed it to a syscall.
 /// </summary>
 /// <remarks>
 /// Possibly relative, possibly containing "." and ".." components, possibly with a trailing
@@ -240,7 +240,7 @@ type PathCursor =
         {
             /// <summary>
             /// The path text currently being resolved. Not necessarily the text
-            /// the guest passed, because a symlink expansion may have replaced the original.
+            /// the caller passed, because a symlink expansion may have replaced the original.
             /// </summary>
             ///
             /// <remarks>
@@ -394,7 +394,7 @@ module PathCursor =
 
 [<RequireQualifiedAccess>]
 module UnixPath =
-    /// The path's bytes, exactly as the guest passed them, separator runs and all.
+    /// The path's bytes, exactly as the caller passed them, separator runs and all.
     let toByteString (path : UnixPath) : UnixByteString = path.Raw
 
     /// The path as a .NET string, or `None` if its bytes are not valid UTF-8.
@@ -457,7 +457,7 @@ module UnixPath =
 
     /// <summary>The empty path: neither rooted nor naming any component.</summary>
     /// <remarks>
-    /// A legal C string, and one a guest really can pass, so it parses.
+    /// A legal C string, and one a process really can pass, so it parses.
     /// However, no resolution of it can succeed, and the kernel reports <c>ENOENT</c> when you try.
     /// </remarks>
     let empty : UnixPath =
@@ -471,7 +471,7 @@ module UnixPath =
     /// </remarks>
     let isEmpty (path : UnixPath) : bool = UnixByteString.length path.Raw = 0
 
-    /// Take a guest-supplied byte string as a path. Every NUL-free byte
+    /// Take a byte string a process supplied as a path. Every NUL-free byte
     /// string is one, so this cannot fail.
     ///
     /// Stores the bytes verbatim, for the reasons `parse` gives.
@@ -488,7 +488,7 @@ module UnixPath =
         | Ok bytes -> ofByteString bytes
         | Error defect -> failwith $"UnixPath.root: %s{UnixPathText.describe defect}"
 
-    /// <summary>Parse a guest-supplied path.</summary>
+    /// <summary>Parse a path a process supplied.</summary>
     ///
     /// <remarks>
     /// Stores the UTF-8 encoding of the candidate verbatim.
@@ -519,9 +519,9 @@ module UnixPath =
 
     /// <summary><c>UnixPath.parse</c>, but throwing on error.</summary>
     /// <remarks>
-    /// Don't use this for paths arriving from a guest, because
-    /// a guest can legally pass a path which contains NULs; the kernel must
-    /// then reply to the guest with an error, rather than crashing.
+    /// Don't use this for paths arriving from a process, because
+    /// a process can legally pass a path which contains NULs; the kernel must
+    /// then reply to the process with an error, rather than crashing.
     /// </remarks>
     let parseOrFail (context : string) (candidate : string) : UnixPath =
         match parse candidate with
@@ -529,7 +529,7 @@ module UnixPath =
         | Error error -> failwith $"%s{context}: %s{describe error} (got %s{candidate})"
 
     /// <summary>
-    /// Widen a fully-resolved absolute path into the shape of a guest-supplied path.
+    /// Widen a fully-resolved absolute path into the shape of a path a process supplies.
     /// </summary>
     let ofAbsolute (path : AbsoluteUnixPath) : UnixPath =
         ofByteString (AbsoluteUnixPath.toByteString path)

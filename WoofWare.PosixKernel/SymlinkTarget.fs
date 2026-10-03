@@ -4,7 +4,7 @@ namespace WoofWare.PosixKernel
 /// The target of a symbolic link.
 /// </summary>
 /// <remarks>
-/// See also <c>UnixPath</c>, which represents the paths a guest can construct.
+/// See also <c>UnixPath</c>, which represents the paths a process can construct.
 /// Every <c>SymlinkTarget</c> is a valid <c>UnixPath</c>.
 /// </remarks>
 [<Struct>]
@@ -16,7 +16,7 @@ type SymlinkTarget =
     /// <remarks>
     /// <c>readlink(2)</c> returns the stored bytes unchanged, and <c>lstat</c> reports their length as the link's
     /// <c>st_size</c>, so a link created with target "a//b/" must read back as "a//b/" — a difference a
-    /// guest really can see.
+    /// process really can see.
     /// </remarks>
     | SymlinkTarget of target : UnixByteString
 

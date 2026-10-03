@@ -983,8 +983,8 @@ module UnixSocket =
         // Store, and then report: measured, the bit toggles on both, and the
         // answers differ -- Linux succeeds on an epoll instance (6.18.5) where
         // Darwin reports ENOTTY on a kqueue *with the bit toggled anyway*, in
-        // both directions (through the real shim's
-        // `SystemNative_FcntlSetIsNonBlocking`, macOS 26). Neither wait takes its
+        // both directions (through `fcntl(F_GETFL)` and then `fcntl(F_SETFL)`,
+        // macOS 26). Neither wait takes its
         // blocking behaviour from the flag: `epoll_wait` and `kevent` block per
         // their own timeout argument.
         | Some (OpenFileTarget.Epoll _) -> SetNonBlockingAnswer.Set, stored system

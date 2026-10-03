@@ -54,7 +54,7 @@ type TrailingSeparatorPolicy =
     /// walk never reaches the final component in either.
     ///
     /// The separator may equally have arrived from a spliced symlink target
-    /// rather than from the guest's own path: `l -> "cyc2/"` opened with
+    /// rather than from the caller's own path: `l -> "cyc2/"` opened with
     /// `O_CREAT` is EISDIR rather than ELOOP, so the check has to sit inside the
     /// walk rather than at the syscall boundary.
     | RefuseIsDirectory
@@ -93,7 +93,7 @@ type TrailingSeparatorPolicy =
 /// off its own path, because a symlink expansion replaces the final component:
 /// with `l1 -> "."` and `l2 -> "d/.."`, the paths "l1/" and "l2/" are the same
 /// shape but land on different navigation, so the navigation is unrecoverable
-/// from the original path. Which navigation it was is guest-observable: Linux's
+/// from the original path. Which navigation it was is observable: Linux's
 /// `rmdir` owes "d/." EINVAL and "d/.." ENOTEMPTY, and Darwin's owes the root
 /// reached by either one EBUSY where "/" itself is EISDIR.
 [<RequireQualifiedAccess>]
@@ -170,7 +170,7 @@ type Resolution =
         ///
         /// Not simply the caller's `UnixPath.hasTrailingSeparator`: following a
         /// final symlink replaces the final path segment, so a link whose
-        /// target is "d/" imposes the demand even when the guest's own path did
+        /// target is "d/" imposes the demand even when the caller's own path did
         /// not.
         ///
         /// What the demand *costs* is the walk's business under
@@ -218,7 +218,7 @@ type Resolution =
 ///
 /// The point of pausing is that a syscall resolving *two* paths can interleave
 /// them. Linux's `rename` walks both parents before it looks either final
-/// component up, which is guest-visible: `rename("<300 bytes>", "nodir/x")` is
+/// component up, which is observable: `rename("<300 bytes>", "nodir/x")` is
 /// ENOENT because the destination's parent fails before the source's final name
 /// is length-checked, while `rename("nope", "<300 bytes>")` is ENOENT the other
 /// way round. One `resolveFull` cannot answer both, because it does the parent
@@ -807,7 +807,7 @@ module PathWalk =
             // separator in "ld/" applies to whatever ld expands to, so a
             // link with target "d" still has to land on a directory; and a
             // link with target "d/" imposes the demand even when the
-            // guest's own path carried none.
+            // caller's own path carried none.
             //
             // This demand is threaded rather than read back off the spliced
             // buffer, and must be: resolving "ld/" consumes the trailing

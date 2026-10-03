@@ -1720,7 +1720,7 @@ module UnixNamespace =
             // source's own subtree, and an orphaned destination directory. The
             // verdict owes an errno for every one of those, so reaching here
             // means the verdict let something through rather than that the
-            // guest did anything unusual.
+            // caller did anything unusual.
             failwith
                 $"UnixNamespace.rename: moving \"%s{DirectoryEntryName.toEscaped sourceName}\" from inode %O{sourceDirectory} to \"%s{DirectoryEntryName.toEscaped destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
         | Ok (outcome, filesystem) ->
@@ -1753,7 +1753,7 @@ module UnixNamespace =
         )
 
     /// `rename(2)` in one call, for a caller holding both pathnames already —
-    /// every caller but the one reading them out of a guest's memory, where
+    /// every caller but the one reading them out of a process's memory, where
     /// reading the destination too early is itself observable.
     let rename<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (source : PathArgumentBytes)

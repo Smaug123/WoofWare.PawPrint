@@ -96,7 +96,7 @@ type UnlinkRules =
 [<RequireQualifiedAccess>]
 type UnlinkVerdict =
     /// <summary>
-    /// Answer the guest with this errno.
+    /// Answer the caller with this errno.
     /// </summary>
     | Refuse of error : UnixError
     /// <summary>
@@ -446,7 +446,7 @@ type RmDirRules =
 /// What `opendir(3)` should do next, once its path has been resolved.
 [<RequireQualifiedAccess>]
 type OpenDirVerdict =
-    /// Answer the guest with this errno, and a NULL `DIR*`.
+    /// Answer the caller with this errno, and a NULL `DIR*`.
     | Refuse of error : UnixError
     /// Open a stream over this directory.
     | Open of directory : InodeNumber
@@ -516,7 +516,7 @@ module OpenDirRules =
 /// What `rmdir(2)` should do next, once its path has been resolved.
 [<RequireQualifiedAccess>]
 type RmDirVerdict =
-    /// Answer the guest with this errno.
+    /// Answer the caller with this errno.
     | Refuse of error : UnixError
     /// Remove `name` from `directory`, and — since no other name can point at a
     /// directory — free the inode unless a descriptor or the current directory

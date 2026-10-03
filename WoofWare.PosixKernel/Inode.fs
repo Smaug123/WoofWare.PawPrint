@@ -6,11 +6,11 @@ open System.Collections.Immutable
 /// Identity of a file within the emulated filesystem.
 /// </summary>
 /// <remarks>
-/// This is the <c>st_ino</c> a guest reads back from <c>stat</c>.
+/// This is the <c>st_ino</c> a process reads back from <c>stat</c>.
 ///
-/// The exact values are guest-observable: for example, the .NET BCL often
-/// explicitly determines whether two paths name the same file by comparing
-/// device and inode identifiers as integers.
+/// The exact values are observable: a program commonly decides whether two
+/// paths name the same file by comparing their device and inode numbers as
+/// integers.
 /// </remarks>
 [<Struct>]
 type InodeNumber =

@@ -216,7 +216,7 @@ module UnixByteString =
     ///
     /// Throws if `bytes` is a *default* `ImmutableArray` rather than
     /// an empty one: that is a forged value rather than data, and no byte string a
-    /// guest could supply produces it.
+    /// caller could supply produces it.
     let ofBytes (bytes : ImmutableArray<byte>) : Result<UnixByteString, UnixByteStringDefect> =
         if bytes.IsDefault then
             raise (
@@ -240,7 +240,7 @@ module UnixByteString =
     /// or explain why the string has no such encoding.
     ///
     /// This is the constructor for host-supplied configuration, where a path is
-    /// written as an F# literal. A guest-supplied path arrives as bytes and goes
+    /// written as an F# literal. A path a process supplies arrives as bytes and goes
     /// through `ofBytes` instead.
     ///
     /// An unpaired surrogate is refused here rather than encoded: it has no UTF-8

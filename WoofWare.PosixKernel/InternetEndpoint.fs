@@ -7,7 +7,7 @@ namespace WoofWare.PosixKernel
 /// This is what <c>bind(2)</c> associates a socket with, and what <c>getsockname(2)</c> reports back.
 ///
 /// Both fields are stored in host order.
-/// The wire layout which we get from a guest is network order.
+/// The wire layout a process passes is network order.
 ///
 /// We currently only model IPv4.
 /// </remarks>
@@ -31,7 +31,7 @@ type InternetEndpoint =
 /// <remarks>
 /// Not the same thing as the prefix length attached to an interface address assignment.
 ///
-/// The distinction is guest-visible.
+/// The distinction is visible to a process.
 /// Linux lets <c>bind(2)</c> take any address which Linux's routing machinery regards as
 /// locally delivered: it consults its local routing table to determine this, and e.g.
 /// <c>127.0.0.0/8</c> is in the local table by default, so Linux permits binding to <c>127.9.9.9</c>.
@@ -94,8 +94,8 @@ module InternetEndpoint =
     /// "192.168.0.1:8080"
     /// </example>
     /// <remarks>
-    /// Not a guest-visible rendering. (Nothing in the emulated kernel formats an address as a string
-    /// for a guest to read.)
+    /// Not a rendering any process sees. (Nothing in the emulated kernel formats an address as a
+    /// string for a process to read.)
     /// </remarks>
     let toString (endpoint : InternetEndpoint) : string =
         let a = endpoint.Address
