@@ -6943,20 +6943,19 @@ module NativeSystemNative =
                 match fill with
                 | NonSecureRandomFill.Filled bytes -> writeRandomBytes ctx operation buffer bytes state
                 | NonSecureRandomFill.OverExisting (written, mask, error) ->
-                    // The secure read failed partway, and the shim XORs over what
-                    // the buffer then holds: the bytes it read, and the guest's own
-                    // past them.
+                    // As the shim does it: the secure read has written its prefix
+                    // into the buffer before it failed, and the XOR then runs over
+                    // the buffer as it stands, that prefix and the guest's own
+                    // bytes past it.
+                    let state = writeRandomBytes ctx operation buffer written state
+
                     let existing =
                         if length = 0 then
                             ImmutableArray.Empty
                         else
                             readBytesThrough ctx operation buffer length state
 
-                    let bytes =
-                        Seq.init
-                            length
-                            (fun i -> (if i < written.Length then written.[i] else existing.[i]) ^^^ mask.[i])
-                        |> ImmutableArray.CreateRange
+                    let bytes = Seq.map2 (^^^) existing mask |> ImmutableArray.CreateRange
 
                     writeRandomBytes ctx operation buffer bytes state |> withErrnoOnly ctx error
 

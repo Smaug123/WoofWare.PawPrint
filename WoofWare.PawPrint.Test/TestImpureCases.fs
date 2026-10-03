@@ -1533,6 +1533,18 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // A secure read that writes part of the buffer and then fails,
+                // under the non-secure entry point, whose mask then goes over the
+                // buffer as it stands; the guest's header says how.
+                FileName = "MinipalPartialReadLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Reads every field `SystemNative_Stat`/`LStat` write, through a
                 // hand-rolled P/Invoke. Impure because most of those fields
                 // *cannot* agree with a real filesystem: a real file's owner is
