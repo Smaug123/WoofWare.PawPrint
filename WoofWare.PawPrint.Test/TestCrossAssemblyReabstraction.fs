@@ -103,6 +103,7 @@ public class SC : ISBar { }
 public struct SS : ISBar { }
 public class VNo : IVBar { }
 public class VDef : IVDefBar, IVDefBaz { }
+public class VExact : IVBar, IV<object> { }
 
 public static class Cases
 {
@@ -219,6 +220,11 @@ public static class Cases
     public static int CaseExactReabstractionBeforeVariance() =>
         Expect<EntryPointNotFoundException>(() => ((IVDef<object>)new VDef()).Frob());
 
+    /// `IV<object>` is an entry, so the exact pass finds its own body, and `IVBar`'s reabstraction of
+    /// `IV<string>`, reached only through variance, is no candidate in it.
+    public static int CaseVarianceOnlyReabstraction() =>
+        Expect<EntryPointNotFoundException>(() => ((IV<object>)new VExact()).Frob());
+
     /// Measured: the delegate is made, and invoking it throws.
     public static int CaseStaticPointer()
     {
@@ -325,6 +331,10 @@ public static class Program
     [<Test>]
     let ``a reabstraction in the exact pass hides a body the variance pass would find`` () : unit =
         refuses "CaseExactReabstractionBeforeVariance" 0 [ "through a variant interface" ]
+
+    [<Test>]
+    let ``a reabstraction reached only through variance does not hide an exact body`` () : unit =
+        agrees "CaseVarianceOnlyReabstraction" 106
 
     /// The reabstraction and `IQux`'s body are equally specific, so the call is ambiguous, which
     /// PawPrint does not yet raise in the guest.
