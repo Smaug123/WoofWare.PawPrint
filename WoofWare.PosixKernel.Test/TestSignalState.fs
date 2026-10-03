@@ -1983,6 +1983,96 @@ module TestSignalState =
             else
                 ValueSome (pick current)
 
+        // Darwin holds a signal pending on the process and one pending on the
+        // leader as one, which `generate` refuses to leave pending; so under
+        // Darwin's numbering, generating at the partner of an entry already
+        // pending is over-weighted; otherwise about two walks in a hundred
+        // reach the refusal.
+        let pickGeneratedEntry () : PendingSignal<TestTask> =
+            let partners =
+                match numbering with
+                | SignalNumbering.Linux -> []
+                | SignalNumbering.Darwin ->
+                    r.Pending
+                    |> List.choose (fun p ->
+                        match p.Target with
+                        | ValueNone ->
+                            Some
+                                { p with
+                                    Target = ValueSome referenceLeader
+                                }
+                        | ValueSome task when task = referenceLeader ->
+                            Some
+                                { p with
+                                    Target = ValueNone
+                                }
+                        | ValueSome _ -> None
+                    )
+
+            match partners with
+            | _ :: _ when rng.Next 3 = 0 -> pick partners
+            | _ ->
+                {
+                    Signal = pickGenerated ()
+                    Target = pickTarget ()
+                }
+
+        // Darwin takes a task's candidates lowest number first, the process's
+        // and its own as one, so an action passes a candidate the task blocks
+        // only when a higher-numbered signal the task does not block is
+        // pending beside it. The blocked one must be directed at the task: one
+        // directed at the process, which the leader blocks, is refused at
+        // delivery while another task could take it. So under Darwin's
+        // numbering, a task some frame masks is over-weighted as a target: it
+        // is sent a signal its mask holds, or, once one is pending for it, a
+        // signal above it that it would take; otherwise about one walk in a
+        // hundred lines the two up.
+        let pickEnqueuedEntry () : PendingSignal<TestTask> =
+            let masked =
+                match numbering with
+                | SignalNumbering.Linux -> []
+                | SignalNumbering.Darwin ->
+                    current
+                    |> List.choose (fun task ->
+                        match referenceMask r task |> Set.toList with
+                        | [] -> None
+                        | mask -> Some (task, mask)
+                    )
+
+            match masked with
+            | _ :: _ when rng.Next 2 = 0 ->
+                let task, mask = pick masked
+
+                let heldHere =
+                    r.Pending
+                    |> List.filter (fun p -> p.Target = ValueSome task && referenceBlocks r task p.Signal)
+
+                let deliverableAbove (held : Signal) : Signal list =
+                    allSignals numbering
+                    |> List.filter (fun signal ->
+                        referencePickKey numbering signal > referencePickKey numbering held
+                        && not (referenceBlocks r task signal)
+                        && not (referenceIgnoredAtGeneration numbering r signal)
+                    )
+
+                let signal =
+                    match heldHere |> List.map (fun p -> p.Signal) with
+                    | [] -> pick mask
+                    | held ->
+                        match deliverableAbove (List.minBy (referencePickKey numbering) held) with
+                        | [] -> pick mask
+                        | above -> pick above
+
+                {
+                    Signal = signal
+                    Target = ValueSome task
+                }
+            | _ ->
+                {
+                    Signal = pickGenerated ()
+                    Target = pickTarget ()
+                }
+
         let kind = rng.Next 100
 
         if kind < 25 then
@@ -1994,19 +2084,9 @@ module TestSignalState =
             | [] -> Op.Deliver (pickCoreDumps (), referenceLeader)
             | framed -> Op.Sigreturn (pick framed)
         elif kind < 60 then
-            Op.Enqueue
-                {
-                    Signal = pickGenerated ()
-                    Target = pickTarget ()
-                }
+            Op.Enqueue (pickEnqueuedEntry ())
         elif kind < 70 then
-            Op.Generate (
-                pickCoreDumps (),
-                {
-                    Signal = pickGenerated ()
-                    Target = pickTarget ()
-                }
-            )
+            Op.Generate (pickCoreDumps (), pickGeneratedEntry ())
         elif kind < 94 then
             // The leader is asked half the time: it is the only task that takes
             // the process's own signals.
@@ -2053,7 +2133,7 @@ module TestSignalState =
         let mutable observedOutOfGenerationOrder = 0
         let mutable observedExits = 0
 
-        let property (NonNegativeInt seed : NonNegativeInt) : unit =
+        let property (seed : int) : unit =
             let rng = System.Random seed
             let steps = rng.Next (10, 80)
 
@@ -2208,16 +2288,21 @@ module TestSignalState =
                 tasks <- tasks'
                 assertEquivalent numbering tasks s r
 
-        Check.One (propertyConfig, property)
+        // The seed is drawn from the whole range, so that each run walks fresh
+        // sequences: FsCheck draws a size-bounded integer from 0 to 100 only.
+        // A seed has no meaningful shrink, so it is given no shrinker.
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.choose (0, System.Int32.MaxValue))) property)
 
         // Distribution checks: the random walk must hit each of these
         // paths frequently enough that a regression would actually surface.
-        // The thresholds are conservative: measured over 30 runs per
-        // numbering, each sits at least four standard deviations below the
-        // mean, except for the rare paths, which are only required to be
-        // reached (a frame holding back a caught signal, and an action past a
-        // skipped candidate, have means of 11 to 90; a queued real-time
-        // duplicate, 11; a generation refused for the receiver, 25 to 30).
+        // The thresholds are conservative: measured over 5000 runs per
+        // numbering, each resampling 500 walks from 5000, each sits at least
+        // four standard deviations below the mean, except for the
+        // rare paths, which are only required to be reached. For each of
+        // those (a frame holding back a caught signal, with means of 42 and
+        // 91; an action past a skipped candidate, 24 and 29; a queued
+        // real-time duplicate, 30; a merge refusal, 105), the chance that no
+        // walk in a run reaches it is below one in a hundred million.
         observedHandlerDeliveries |> shouldBeGreaterThan 30
         observedNonLeaderDeliveries |> shouldBeGreaterThan 10
         observedDefaultTerminates |> shouldBeGreaterThan 50
@@ -2258,8 +2343,7 @@ module TestSignalState =
         | SignalNumbering.Darwin -> observedGenerationDrops |> shouldBeGreaterThan 20
 
         // Only Darwin holds a signal pending on the process and one pending on
-        // the leader as one, which this library refuses to leave pending
-        // (8 to 17 times in each of 10 runs).
+        // the leader as one, which this library refuses to leave pending.
         match numbering with
         | SignalNumbering.Linux -> observedMergeRefusals |> shouldEqual 0
         | SignalNumbering.Darwin -> observedMergeRefusals |> shouldBeGreaterThan 0

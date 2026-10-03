@@ -113,11 +113,6 @@ module Signal =
     /// has no real-time signals and so no <c>SIGRTMAX</c> at all. Both measured
     /// by installing <c>SIG_DFL</c> with <c>sigaction</c> for every number up
     /// to <c>NSIG + 1</c>, on Linux 6.18.5 / glibc 2.41 and Darwin 25.6.0.
-    ///
-    /// This is the kernel's ceiling, which is not the same number as the one
-    /// CoreCLR's shim screens with: its <c>GetSignalMax()</c> is <c>SIGRTMAX</c>
-    /// where that is defined and <c>NSIG</c> otherwise, so on Darwin it admits
-    /// 32. A client that speaks to that shim states that rule itself.
     /// </remarks>
     let highestSignoUnder (numbering : SignalNumbering) : int =
         match numbering with
@@ -254,7 +249,7 @@ module Signal =
     /// <returns>
     /// <c>ValueNone</c> for a number that is not a signal on this platform:
     /// zero, a negative, or anything above <c>highestSignoUnder</c>. Darwin's
-    /// 32 is such a number, even though CoreCLR's shim admits it.
+    /// 32 is such a number, although it is that platform's <c>NSIG</c>.
     /// </returns>
     let ofRawSignoUnder (numbering : SignalNumbering) (signo : int) : Signal voption =
         // Written out rather than searched for through `toRawSignoUnder`, so

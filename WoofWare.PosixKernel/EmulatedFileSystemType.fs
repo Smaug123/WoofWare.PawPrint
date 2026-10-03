@@ -192,7 +192,7 @@ module EmulatedFileSystemType =
     ///
     /// The flavour does not *determine* a mount's type, but it does rule
     /// several out, and a kernel that claimed one of those would be handing a
-    /// guest a fact no real system of the platform it impersonates could
+    /// process a fact no real system of the platform it impersonates could
     /// produce. Written as an exhaustive pair match rather than as a
     /// predicate over one axis, so that a new flavour or a new filesystem
     /// stops compiling until someone has looked the combination up.

@@ -1467,9 +1467,9 @@ module TestImpureCases =
                     )
             }
             {
-                // The replay contract for the two random streams: under the
-                // default configuration these bytes are what every run hands
-                // the guest. The guest's header says what each row reads. A
+                // The replay contract for the two random entry points: under
+                // the default configuration these bytes are what every run
+                // hands the guest. The guest's header says what each row reads. A
                 // change here changes every `Guid.NewGuid` and `new Random()`
                 // a recorded trace observed, so it is never a test to update
                 // in passing.
@@ -1498,21 +1498,51 @@ module TestImpureCases =
 
                         hex.Length |> shouldEqual (2 * 88)
 
+                        // Each row is reproduced outside PawPrint by
+                        // docs/plans/2026-08-23-posix-kernel-extraction/entropy-streams-default.py,
+                        // from the pool's splitmix64 at `UnixSystem.defaultEntropySeed`,
+                        // glibc's lrand48 after `srand48(0)` (the clock starts
+                        // at the epoch and has not reached a second), and
+                        // CoreLib's xoshiro256**.
                         rows
                         |> shouldEqual
                             [
-                                // `Guid.NewGuid()`
+                                // `Guid.NewGuid()`: the pool's first 16 bytes.
                                 "21a2be4a9ff6b04c8989142347031794"
-                                // `new Random()`, then `Next()` twice
-                                "a053172130583170"
+                                // `new Random()`, then `Next()` twice: seeded with
+                                // the pool's next 32 bytes XOR lrand48.
+                                "84047026f637fd28"
                                 // `SystemNative_GetCryptographicallySecureRandomBytes`
-                                "03fe9d60505955dd0028b1de50b1afdbb62c446c2e9b787e"
+                                "e4a7fbf850d15909ea9edb3cf11673a9680052f95882cd74"
                                 // `SystemNative_GetNonCryptographicallySecureRandomBytes`
-                                "eaa27e740c9fcb53e132451fbe9a822c3cab16c93a1384c5"
+                                "3190ca8ed60c980af5341a9ba230b2ffb265b8fe253fd6fe"
                                 // `Guid.NewGuid()`
-                                "c4f8e4c736561e44a4a7fbf850d15909"
+                                "05394f5285586f49b6b2a36c38561daf"
                             ]
                     )
+            }
+            {
+                // minipal's /dev/urandom descriptor is the guest's to see and to
+                // close; the guest's header says what each check reads.
+                FileName = "MinipalUrandomDescriptorLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A secure read that writes part of the buffer and then fails,
+                // under the non-secure entry point, whose mask then goes over the
+                // buffer as it stands; the guest's header says how.
+                FileName = "MinipalPartialReadLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
             }
             {
                 // Reads every field `SystemNative_Stat`/`LStat` write, through a
@@ -3524,7 +3554,10 @@ module TestImpureCases =
                 AssertTerminalState =
                     Some (fun state ->
                         let _, expected =
-                            MinipalRandom.secureRandomBytes "test" 16 (KernelConfig.toKernel KernelConfig.Default)
+                            MinipalRandom.coreClrSecureRandomBytes
+                                "test"
+                                16
+                                (KernelConfig.toKernel KernelConfig.Default)
 
                         state.Kernel.Machine.EntropyPool |> shouldEqual expected.Machine.EntropyPool
                     )
@@ -4390,6 +4423,47 @@ module TestImpureCases =
 
         exn.Message |> shouldContainText "SystemNative_CopyFile"
         exn.Message |> shouldContainText "fcopyfile"
+
+    [<Test>]
+    let ``System.Native's copy from /dev/urandom, which never ends, stops the run`` () : unit =
+        // The shim's read/write loop copies until a read answers 0, which
+        // /dev/urandom never does: a real process spins there for ever, and
+        // PawPrint, which would spin inside one native call, refuses. The copy
+        // from /dev/null before it ends at once.
+        let source = Assembly.getEmbeddedResourceAsString "CopyFileFromUrandomLinux.cs" assy
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "CopyFileFromUrandomLinux.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+
+        let run (argv : string list) =
+            use peImage = new MemoryStream (image)
+
+            BoundedRun.run
+                loggerFactory
+                "CopyFileFromUrandomLinux.cs"
+                (Some "CopyFileFromUrandomLinux.cs")
+                peImage
+                { HostConfig.Default dotnetRuntimes with
+                    Guest =
+                        { GuestConfig.Default dotnetRuntimes with
+                            Argv = argv
+                        }
+                }
+            |> ExpectRun.ended
+
+        // The copies that end, including the one whose first write fails.
+        match run [] with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
+        | other -> failwith $"expected a normal exit, got %O{other}"
+
+        let exn = Assert.Catch (fun () -> run [ "endless" ] |> ignore<RunOutcome>)
+
+        exn.Message |> shouldContainText "SystemNative_CopyFile"
+        exn.Message |> shouldContainText "never reaches end-of-file"
 
     [<Test>]
     let ``a Linux kernel older than 5.3 sends System.Native's copy to sendfile, which stops the run`` () : unit =

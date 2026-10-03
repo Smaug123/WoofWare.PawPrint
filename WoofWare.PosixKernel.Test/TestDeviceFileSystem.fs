@@ -476,10 +476,6 @@ module TestDeviceFileSystem =
     let ``a device node is a node, whatever asks`` () : unit =
         let system = booted linux
 
-        match OpenFlagWords.openPath reading (PathArg.ofText "/dev/urandom") 0 system with
-        | Error (OpenRefusal.CharacterDevice (_, CharacterDevice.URandom)) -> ()
-        | other -> failwith $"open /dev/urandom: expected a refusal until devices open, got %A{other}"
-
         match
             OpenFlagWords.openPath
                 { reading with

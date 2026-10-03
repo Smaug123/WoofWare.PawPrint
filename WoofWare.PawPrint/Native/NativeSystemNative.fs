@@ -173,6 +173,15 @@ module NativeSystemNative =
         | NamedType concreteTypes ("", "Error", generics) when generics.IsEmpty -> Some ()
         | _ -> None
 
+    /// What a read did: the bytes it moved into the caller's buffer, however
+    /// the kernel describes them, or the errno it failed with.
+    let private (|Moved|ReadFailed|) (answer : ReadAnswer) : Choice<ImmutableArray<byte>, UnixError> =
+        match answer with
+        | ReadAnswer.Completed bytes -> Moved bytes
+        // Produced whole, which a guest reads in buffers of its own size.
+        | ReadAnswer.Drawn draw -> Moved (EntropyDraw.bytes draw)
+        | ReadAnswer.Failed error -> ReadFailed error
+
     /// What a guest did to reach one of the kernel's refusals of a Darwin row
     /// nobody has measured, and what would lift it. The kernel names the row;
     /// every handler that can meet one adds this.
@@ -1529,14 +1538,34 @@ module NativeSystemNative =
             | Ok (ReadOutcome.Restarts, _) ->
                 failwith
                     $"%s{operation}: reading the source restarted after a signal, but only a sleeping read restarts, and a source opened by path is never a pipe"
-            | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), system) -> Error (withErrno ctx error system state)
-            | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
+            | Ok (ReadOutcome.Answered (ReadFailed error), system) -> Error (withErrno ctx error system state)
+            | Ok (ReadOutcome.Answered (Moved bytes), system) ->
                 let state = withAnswered system state
 
                 if bytes.IsEmpty then
                     Ok state
                 else
-                    writeAll bytes state |> Result.bind readWrite
+
+                writeAll bytes state
+                |> Result.bind (fun state ->
+                    // A source that never reaches end-of-file, once a whole
+                    // round has been read and written, leaves the loop nothing
+                    // to end on: every later read and write is answered as this
+                    // one was, so a real process copies for ever. Here the loop
+                    // runs inside one native call, which no step budget and no
+                    // other thread could interrupt, so it is refused instead.
+                    // A round that fails, as a write to a closed destination
+                    // does, still returns its errno.
+                    match
+                        FileDescriptorRegistry.tryFindTarget
+                            source
+                            (EmulatedKernel.unix state.Kernel).Process.FileDescriptors
+                    with
+                    | Some (OpenFileTarget.CharacterDevice (_, CharacterDevice.URandom)) ->
+                        failwith
+                            $"%s{operation}: fd %d{source} is /dev/urandom, which never reaches end-of-file, so the shim's read/write loop would copy for ever inside one native call."
+                    | _ -> readWrite state
+                )
 
         let copiedState = if copied then Ok state else readWrite state
 
@@ -1632,14 +1661,13 @@ module NativeSystemNative =
     /// The destination of `SystemNative_GetNonCryptographicallySecureRandomBytes`
     /// or `SystemNative_GetCryptographicallySecureRandomBytes`, which declare
     /// the identical `(byte* buffer, int32 bufferLength)` argument list and
-    /// differ only in which stream fills the buffer. `None` when the call asks
-    /// for no bytes, in which case it must touch neither the buffer nor the
-    /// stream.
-    let private randomBytesDestination
-        (ctx : NativeCallContext)
-        (operation : string)
-        : (ManagedPointerSource * int) option
-        =
+    /// differ only in which of minipal's paths fills the buffer.
+    ///
+    /// A length of zero is still a call: on Linux minipal opens its descriptor
+    /// and reads nothing from it, and its non-secure path seeds `lrand48`. The
+    /// buffer is not touched then, so CoreLib may pass a null pointer for an
+    /// empty span.
+    let private randomBytesDestination (ctx : NativeCallContext) (operation : string) : ManagedPointerSource * int =
         let buffer =
             NativeCall.managedPointerOfPointerArgument operation "buffer" ctx.Instruction.Arguments.[0]
 
@@ -1652,18 +1680,27 @@ module NativeSystemNative =
             // so seeing one here means a guest bug we want to surface
             // rather than a silently truncated buffer.
             failwith $"%s{operation}: bufferLength %d{length} is negative"
-        elif length = 0 then
-            // Match the C behaviour of `arc4random_buf(buf, 0)` /
-            // `read(fd, buf, 0)`: no-op, do not even dereference
-            // `buffer` (which CoreLib may pass as a null pointer
-            // for an empty span), and do not advance the stream.
-            None
+
+        match buffer with
+        | ManagedPointerSource.Null when length > 0 ->
+            failwith
+                $"%s{operation}: refused to fill %d{length} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null destination for a non-zero length)"
+        | _ -> buffer, length
+
+    /// `bytes` written through `buffer`, unless there are none, when the buffer
+    /// is not touched at all.
+    let private writeRandomBytes
+        (ctx : NativeCallContext)
+        (operation : string)
+        (buffer : ManagedPointerSource)
+        (bytes : ImmutableArray<byte>)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        if bytes.IsEmpty then
+            state
         else
-            match buffer with
-            | ManagedPointerSource.Null ->
-                failwith
-                    $"%s{operation}: refused to fill %d{length} bytes through null buffer pointer (CoreLib should not invoke this entry point with a null destination for a non-zero length)"
-            | _ -> Some (buffer, length)
+            writeBytesThrough ctx operation buffer bytes state
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -3922,19 +3959,24 @@ module NativeSystemNative =
             // EBADF not being one of the errnos that clears the flag.
             match
                 UnixReadWrite.pread
+                    ctx.Thread
                     fd
                     (BufferPointer.toUserBuffer buffer)
                     (uint64 bufferSize)
                     fileOffset
                     (EmulatedKernel.unix state.Kernel)
             with
-            | Error refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
-            | Ok (ReadAnswer.Failed error) ->
-                withErrnoOnly ctx error state
+            | Error (PReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Error (PReadRefusal.SignalAtPageBoundary _ as refusal) ->
+                failwith $"%s{operation}: fd %d{fd}: %s{PReadRefusal.describe refusal}"
+            | Ok (ReadFailed error, system) ->
+                withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (ReadAnswer.Completed bytes) ->
+            | Ok (Moved bytes, system) ->
+
+            let state = withAnswered system state
 
             // Empty means the read moved nothing *and did not touch the buffer*,
             // so the pointer must not be resolved: `pread(f, NULL, 5, atEof)` is
@@ -4004,9 +4046,12 @@ module NativeSystemNative =
                 | PWriteRefusal.UnmeasuredSetIdChange _ ->
                     failwith
                         $"%s{operation}: fd %d{fd}: PWriteRefusal.UnmeasuredSetIdChange: %s{PWriteRefusal.describe refusal} %s{unmeasuredDarwinRow}"
+                | PWriteRefusal.SignalAtPageBoundary _ ->
+                    failwith $"%s{operation}: fd %d{fd}: %s{PWriteRefusal.describe refusal}"
 
             match
                 UnixReadWrite.admitPWrite
+                    ctx.Thread
                     fd
                     (BufferPointer.toUserBuffer buffer)
                     (uint64 bufferSize)
@@ -4043,7 +4088,7 @@ module NativeSystemNative =
 
             let bytes = readBytesThrough ctx operation source count state
 
-            match UnixReadWrite.pwrite fd bytes fileOffset (EmulatedKernel.unix state.Kernel) with
+            match UnixReadWrite.pwrite ctx.Thread fd bytes fileOffset (EmulatedKernel.unix state.Kernel) with
             | Error refusal -> refused refusal
             | Ok (WriteAnswer.Failed error, system) ->
                 withErrno ctx error system state
@@ -4113,7 +4158,8 @@ module NativeSystemNative =
                 | Error (ReadRefusal.ScannedDirectoryPosition _ as refusal) ->
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} CoreLib never reads a directory through `SystemNative_Read` (it enumerates with `SystemNative_OpenDir` and `SystemNative_ReadDir`, whose descriptor it never sees), so this is a hand-rolled P/Invoke reading a directory it has partly enumerated. Rewind it with `lseek(fd, 0, SEEK_SET)`, or read before enumerating."
-                | Error (ReadRefusal.Interruption _ as refusal) ->
+                | Error (ReadRefusal.Interruption _ as refusal)
+                | Error (ReadRefusal.SignalAtPageBoundary _ as refusal) ->
                     failwith $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal}"
                 | Ok (ReadOutcome.WouldBlock _, system) ->
                     // Park re-entrantly, as `SystemNative_Accept` does: the frame
@@ -4129,14 +4175,14 @@ module NativeSystemNative =
                 // EINTR, and a restart calls again with no EINTR.
                 | Ok (ReadOutcome.Restarts, system) ->
                     callAgainAfterSignal ctx operation Interrupted.Restarted None system state
-                | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EINTR), system) ->
+                | Ok (ReadOutcome.Answered (ReadFailed UnixError.EINTR), system) ->
                     callAgainAfterSignal ctx operation Interrupted.Eintr None system state
-                | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), system) ->
+                | Ok (ReadOutcome.Answered (ReadFailed error), system) ->
                     withErrno ctx error system state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                     |> NativeHandlerResult.completed
                     |> Some
-                | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
+                | Ok (ReadOutcome.Answered (Moved bytes), system) ->
 
                 // Empty means the read moved nothing *and did not touch the buffer*,
                 // so the pointer must not be resolved: `read(f, NULL, 5)` at
@@ -6670,6 +6716,8 @@ module NativeSystemNative =
                     | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
                     | WriteRefusal.UnmeasuredSetIdChange _ ->
                         $"(WriteRefusal.UnmeasuredSetIdChange) %s{unmeasuredDarwinRow}"
+                    | WriteRefusal.SignalAtPageBoundary _ ->
+                        "Reachable from the BCL: a FileStream write of more than a page to /dev/urandom while a signal is pending for the writing thread."
 
                 failwith $"%s{operation}: fd %d{fd}: %s{WriteRefusal.describe refusal} %s{reachability}"
 
@@ -6881,26 +6929,37 @@ module NativeSystemNative =
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
-            // The C library's stream, not the kernel's pool: see
-            // `EmulatedKernel.NonCryptoRandomState`.
+            // minipal's non-secure path: see `MinipalRandom`.
             let operation = "SystemNative_GetNonCryptographicallySecureRandomBytes"
 
-            match randomBytesDestination ctx operation with
-            | None -> state
-            | Some (buffer, length) ->
-                let bytes, prngState =
-                    NonCryptoRandom.drawBytes length state.Kernel.NonCryptoRandomState
+            let state =
+                let buffer, length = randomBytesDestination ctx operation
 
-                let state =
-                    writeBytesThrough ctx operation buffer (ImmutableArray.CreateRange bytes) state
+                let fill, kernel =
+                    MinipalRandom.systemNativeNonSecureRandomBytes operation ctx.Thread length state.Kernel
 
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        NonCryptoRandomState = prngState
-                    }
-                )
-            |> NativeHandlerResult.completed
-            |> Some
+                let state = state.MapKernel (fun _ -> kernel)
+
+                match fill with
+                | NonSecureRandomFill.Filled bytes -> writeRandomBytes ctx operation buffer bytes state
+                | NonSecureRandomFill.OverExisting (written, mask, error) ->
+                    // As the shim does it: the secure read has written its prefix
+                    // into the buffer before it failed, and the XOR then runs over
+                    // the buffer as it stands, that prefix and the guest's own
+                    // bytes past it.
+                    let state = writeRandomBytes ctx operation buffer written state
+
+                    let existing =
+                        if length = 0 then
+                            ImmutableArray.Empty
+                        else
+                            readBytesThrough ctx operation buffer length state
+
+                    let bytes = Seq.map2 (^^^) existing mask |> ImmutableArray.CreateRange
+
+                    writeRandomBytes ctx operation buffer bytes state |> withErrnoOnly ctx error
+
+            state |> NativeHandlerResult.completed |> Some
         | Some "SystemNative_GetCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
@@ -6916,24 +6975,30 @@ module NativeSystemNative =
             // Unlike its non-crypto sibling this entry point reports status:
             // `Interop.GetCryptographicallySecureRandomBytes` branches on the
             // result with `brfalse` and throws `CryptographicException` for
-            // anything non-zero. `MinipalRandom` never fails, so this always
-            // reports success. Malformed arguments abort loudly inside
+            // anything non-zero. On Linux minipal's read fails when a guest has
+            // closed or replaced its descriptor, and this then reports -1 with
+            // the read's errno, as the shim does. Malformed arguments abort loudly inside
             // `randomBytesDestination` rather than being reported as entropy
             // failure, because a negative length or a null destination is a
             // guest/interpreter bug, not the condition `CryptographicException`
             // is meant to describe.
             let operation = "SystemNative_GetCryptographicallySecureRandomBytes"
 
-            let state =
-                match randomBytesDestination ctx operation with
-                | None -> state
-                | Some (buffer, length) ->
-                    let bytes, kernel = MinipalRandom.secureRandomBytes operation length state.Kernel
-                    let state = state.MapKernel (fun _ -> kernel)
-                    writeBytesThrough ctx operation buffer bytes state
+            let state, result =
+                let buffer, length = randomBytesDestination ctx operation
+
+                let fill, kernel =
+                    MinipalRandom.systemNativeSecureRandomBytes operation ctx.Thread length state.Kernel
+
+                let state = state.MapKernel (fun _ -> kernel)
+
+                match fill with
+                | SecureRandomFill.Filled bytes -> writeRandomBytes ctx operation buffer bytes state, 0
+                | SecureRandomFill.Failed (written, error) ->
+                    writeRandomBytes ctx operation buffer written state |> withErrnoOnly ctx error, -1
 
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_Free", [ ConcretePointer _ ], MethodReturnType.Void ->

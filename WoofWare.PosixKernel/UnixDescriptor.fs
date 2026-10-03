@@ -469,7 +469,8 @@ module UnixDescriptor =
                 // (seekability checked first).
                 Some DescriptorFault.NotSeekable
             | Some (OpenFileTarget.File _)
-            | Some (OpenFileTarget.Directory _) -> None
+            | Some (OpenFileTarget.Directory _)
+            | Some (OpenFileTarget.CharacterDevice _) -> None
 
         let ordered : UnixError option =
             match descriptorFault with
@@ -511,6 +512,11 @@ module UnixDescriptor =
         // whence 5 and above were rejected as EINVAL.
         match target with
         | Some (OpenFileTarget.Epoll _) -> Ok (SyscallAnswer.Completed 0L, system)
+        // A device keeps no position, and answers 0 for every whence in 0..4
+        // and every offset, negative and `INT64_MAX` included (`devices.c` and
+        // `devices-l2.c`, LSEEK rows): `/dev/null`'s `null_lseek` resets a
+        // position nothing moves, and `/dev/urandom`'s is `noop_llseek`.
+        | Some (OpenFileTarget.CharacterDevice _) -> Ok (SyscallAnswer.Completed 0L, system)
         // Each of these answered EBADF or ESPIPE above.
         | None
         | Some (OpenFileTarget.Kqueue _)
@@ -524,7 +530,7 @@ module UnixDescriptor =
         // Whence *validity* is settled; whence *semantics* is not, and the two
         // sit at different points in Linux's order — which is why refusing 3 and
         // 4 up front would be wrong. Measured, `lseek(badfd, 0, 3)` is EBADF and
-        // `lseek(pipe, 0, 3)` is ESPIPE on both platforms, so a guest reaching
+        // `lseek(pipe, 0, 3)` is ESPIPE on both platforms, so a caller reaching
         // here with whence 3 or 4 really is asking about a seekable file's
         // sparseness.
         if whence > seekEnd then
@@ -589,7 +595,7 @@ module UnixDescriptor =
                 | InodeContent.RegularFile (contents, _) -> Ok (SeekEndBasis.Size (int64 contents.Length))
                 | InodeContent.CharacterDevice _ ->
                     failwith
-                        $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a character device. This kernel opens no description of a device as a file (this is a bug in this library)."
+                        $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a character device, through a description of a regular file. A description of a device is OpenFileTarget.CharacterDevice, and UnixSystem.checkInvariants reports this one as DescriptionKindMismatch (this is a bug in this library)."
                 | InodeContent.Symlink _ ->
                     // Not reachable: `open` resolves symlinks, so no descriptor
                     // names one. Stated rather than folded in so that an
@@ -747,10 +753,13 @@ module UnixDescriptor =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _
-        | OpenFileTarget.Socket _ ->
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _ ->
             // EINVAL on both platforms for every object that is not a regular
             // file: measured on a pipe (either end), an INET socket, a UNIX
-            // socket, an epoll port and a kqueue. Unlike `pread`/`pwrite` there
+            // socket, an epoll port and a kqueue, and on Linux on `/dev/null`
+            // and `/dev/urandom`, through descriptors opened for reading as
+            // well as for writing (`devices.c`, FTRUNCATE rows). Unlike `pread`/`pwrite` there
             // is no unseekable-versus-unwritable tie for the platforms to break
             // differently, so this arm deliberately carries no Darwin flag.
             Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
@@ -825,7 +834,8 @@ module UnixDescriptor =
         | OpenFileTarget.Directory _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _
-        | OpenFileTarget.Socket _ ->
+        | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _ ->
 
         // The generic path every non-pipe reaches screens the length and the
         // advice, and both answer EINVAL, so their relative order is invisible.
@@ -932,6 +942,9 @@ module UnixDescriptor =
                 | OpenFileTarget.Epoll _ ->
                     failwith
                         "UnixDescriptor.flock: a Darwin-flavoured kernel holds an epoll instance, which only Linux has (this is a bug in the caller's state construction)."
+                | OpenFileTarget.CharacterDevice _ ->
+                    failwith
+                        "UnixDescriptor.flock: a Darwin-flavoured kernel holds a description of a device, which only Linux's devtmpfs gives (this is a bug in the caller's state construction)."
                 | OpenFileTarget.Socket socketId -> Some (FLockRefusal.DarwinSocket socketId)
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _ ->
@@ -1142,7 +1155,9 @@ module UnixDescriptor =
     /// end has closed; on Darwin the read end reports them and the write end
     /// reports 0. EBADF for a descriptor that is not open, whatever the
     /// destination; EFAULT for an unmapped destination, whatever the pipe
-    /// holds. Refused for every descriptor that is not a pipe end.
+    /// holds. A device answers its driver's errno whatever the destination
+    /// (`CharacterDevice.unrecognisedIoctl`). Refused for every other
+    /// descriptor that is not a pipe end.
     ///
     /// Changes nothing.
     let bytesAvailable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1162,6 +1177,10 @@ module UnixDescriptor =
         | Some (OpenFileTarget.Kqueue _)
         | Some (OpenFileTarget.Epoll _)
         | Some (OpenFileTarget.Socket _) -> Error (BytesAvailableRefusal.UnmodelledTarget fd)
+        | Some (OpenFileTarget.CharacterDevice (_, device)) ->
+            // The driver's own answer, without the destination: Linux asks the
+            // inode whether it is a regular file before it would write one.
+            Ok (BytesAvailableAnswer.Failed (CharacterDevice.unrecognisedIoctl device))
         | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
 
         let held = PipeBuffer.held (UnixMachineState.pipe pipeId system.Machine).Buffer
@@ -1202,7 +1221,9 @@ module UnixDescriptor =
         // filesystem is EISDIR, two pipe ends, two sockets or two epoll
         // instances are EINVAL, a read-only destination or a write-only source
         // is EBADF, and two regular files are EOPNOTSUPP, empty or not, and the
-        // same description included. ext4 answers as tmpfs does.
+        // same description included. ext4 answers as tmpfs does. A device
+        // against a regular file is EXDEV either way round, and two devices
+        // are EINVAL (`devices-l2.c`, FICLONE rows).
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Darwin -> Error (FileCloneRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
@@ -1217,7 +1238,8 @@ module UnixDescriptor =
         let fileSystemOf (description : OpenFileDescription) : ObjectFileSystem =
             match description.Target with
             | OpenFileTarget.File (inode, _)
-            | OpenFileTarget.Directory (inode, _) ->
+            | OpenFileTarget.Directory (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _) ->
                 ObjectFileSystem.Mounted (VirtualFileSystem.mountedRootOf inode system.Machine.FileSystem)
             | OpenFileTarget.Pipe _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Pipe
             | OpenFileTarget.Socket _ -> ObjectFileSystem.Pseudo PseudoFileSystem.Socket
@@ -1230,6 +1252,7 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.Directory _ -> true
             | OpenFileTarget.File _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
@@ -1239,6 +1262,7 @@ module UnixDescriptor =
             match description.Target with
             | OpenFileTarget.File _ -> true
             | OpenFileTarget.Directory _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
@@ -1283,12 +1307,16 @@ module UnixDescriptor =
         //   TCP or UDP socket, IPv4 or IPv6     ENOTTY   ENXIO
         //   Unix-domain socket, either kind     ENOTTY   EOPNOTSUPP
         //   epoll port / kqueue                 EINVAL   ENOTTY
+        //
+        // and a device answers what its driver does
+        // (`CharacterDevice.unrecognisedIoctl`).
         let error =
             match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
             | None -> UnixError.EBADF
             | Some (OpenFileTarget.File _)
             | Some (OpenFileTarget.Directory _)
             | Some (OpenFileTarget.Pipe _) -> UnixError.ENOTTY
+            | Some (OpenFileTarget.CharacterDevice (_, device)) -> CharacterDevice.unrecognisedIoctl device
             | Some (OpenFileTarget.Epoll _) -> UnixError.EINVAL
             | Some (OpenFileTarget.Kqueue _) -> UnixError.ENOTTY
             | Some (OpenFileTarget.Socket socketId) ->
@@ -1458,6 +1486,7 @@ module UnixDescriptor =
             | OpenFileTarget.Epoll _
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Pipe _ -> registry
 

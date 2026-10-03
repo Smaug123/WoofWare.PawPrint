@@ -322,7 +322,8 @@ module TestPollEventsPal =
             match description.Target with
             | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId system.Machine
             | OpenFileTarget.File _
-            | OpenFileTarget.Directory _ ->
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.CharacterDevice _ ->
                 { ReadinessLevel.none with
                     In = true
                     Out = true

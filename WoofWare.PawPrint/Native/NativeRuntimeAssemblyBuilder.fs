@@ -24,7 +24,7 @@ module NativeRuntimeAssemblyBuilder =
     /// one: the metadata emitter stamps a dynamic module's version ID that way, so it differs between
     /// runs of the real runtime.
     let private freshModuleVersionId (operation : string) (state : IlMachineState) : Guid * IlMachineState =
-        let bytes, kernel = MinipalRandom.secureRandomBytes operation 16 state.Kernel
+        let bytes, kernel = MinipalRandom.coreClrSecureRandomBytes operation 16 state.Kernel
         let bytes = Seq.toArray bytes
         // `Data3` is bytes 6 and 7, little-endian, and its top nibble is the version.
         bytes.[7] <- (bytes.[7] &&& 0x0Fuy) ||| 0x40uy

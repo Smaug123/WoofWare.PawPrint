@@ -19,6 +19,14 @@ module TestSocketBinding =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    /// A seed for a walk's own `System.Random`, drawn from the whole range so
+    /// that each run walks fresh sequences: FsCheck sizes an integer generator,
+    /// so at the default end size `NonNegativeInt` yields only 0 to 100, and
+    /// every run would walk some of the same 101 sequences. A seed has no meaningful shrink, since a smaller seed is a
+    /// different walk rather than a simpler one, so it is given no shrinker.
+    let private walkSeed : Arbitrary<int> =
+        Arb.fromGen (Gen.choose (0, System.Int32.MaxValue))
+
     let private platforms =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
@@ -341,7 +349,7 @@ module TestSocketBinding =
 
     [<Test>]
     let ``an ephemeral port is in range, free, and a function of the kernel alone`` () : unit =
-        let property (NonNegativeInt seed : NonNegativeInt) : bool =
+        let property (seed : int) : bool =
             let rng = System.Random seed
             let low = uint16 (1024 + rng.Next 1000)
             let high = low + uint16 (rng.Next 50)
@@ -370,7 +378,7 @@ module TestSocketBinding =
                 // Only when the range really is exhausted.
                 [ low..high ] |> List.forall (fun port -> Set.contains port taken)
 
-        Check.One (propertyConfig, property)
+        Check.One (propertyConfig, Prop.forAll walkSeed property)
 
     /// Successive allocations do not repeat, which is what stops a bind of port
     /// 0 from handing two sockets one port before either has been recorded.
@@ -439,5 +447,5 @@ module TestSocketBinding =
 
             exn.Message |> shouldContainText substring
 
-        shouldFail 0us 100us "port 0 is how a guest"
+        shouldFail 0us 100us "port 0 is how a process"
         shouldFail 100us 99us "is empty"

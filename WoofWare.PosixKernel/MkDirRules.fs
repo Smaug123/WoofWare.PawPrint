@@ -49,7 +49,7 @@ type MkDirRules =
 [<RequireQualifiedAccess>]
 type MkDirVerdict =
     /// <summary>
-    /// Answer the guest with this errno.
+    /// Answer the caller with this errno.
     /// </summary>
     | Refuse of error : UnixError
     /// <summary>
