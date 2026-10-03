@@ -57,6 +57,9 @@ public static class Natives
     // An FCall no contract describes.
     public static int ThreadId() => Environment.CurrentManagedThreadId;
 
+    // A P/Invoke into libSystem.Native, the framework's own shim.
+    public static long Timestamp() => System.Diagnostics.Stopwatch.GetTimestamp();
+
     // The shadow `System.MathF` in this assembly, not CoreLib's.
     public static float Impostor() => MathF.Sin(1f);
 }
@@ -545,6 +548,9 @@ public static class MathF
             }
             { expect "Fixture.Natives" "ThreadId" with
                 Unknown = Some true
+            }
+            { expect "Fixture.Natives" "Timestamp" with
+                Unknown = Some false
             }
             { expect "Fixture.Natives" "Impostor" with
                 Unknown = Some true
