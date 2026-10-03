@@ -1259,13 +1259,9 @@ module EmulatedKernel =
     /// The checks `withVirtualClockTicks` and `retireStep` share: shared so that the fused
     /// per-instruction advance cannot drift from the general setter's contract.
     let validateVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : unit =
-        // Checked independently of the monotonicity comparison below, which on its own would
-        // wave through a negative target whenever the current value is more negative still —
-        // reachable because a machine assembled by record-copy never passed through here.
-        if ticks < 0L then
-            failwith
-                $"virtual clock would be set to %d{ticks} ticks; simulated uptime starts at zero and cannot be negative"
-
+        // The machine's uptime starts at zero and only `UnixSystem.advanceClock` moves it, which
+        // refuses to move it backwards, so a target below the current value is the only way to ask
+        // for a negative one.
         if ticks < kernel.VirtualClockTicks then
             failwith
                 $"virtual clock would move backwards, from %d{kernel.VirtualClockTicks} to %d{ticks} ticks; it is monotonic by construction and every guest-visible clock derives from it"
@@ -1473,12 +1469,11 @@ module EmulatedKernel =
 
         let count = effectiveProcessorCount kernel
 
-        // `withProcessorCount` rejects non-positive counts and
-        // `effectiveProcessorCount` only ever returns a positive configured
-        // value or `kernel.ProcessorCount`, but a kernel built by record-copy
-        // can bypass the setter. Assert at the point of use rather than
-        // dividing by zero, mirroring what `NativeEnvironment` does before
-        // handing the count to the guest.
+        // Unreachable: `UnixBootImage.withProcessorCount` refuses a count
+        // below 1, and `effectiveProcessorCount` only ever returns a positive
+        // configured value or that count. Asserted rather than dividing by
+        // zero, mirroring what `NativeEnvironment` does before handing the
+        // count to the guest.
         if count < 1 then
             failwith
                 $"effective ProcessorCount is %d{count}, but must be at least 1 for a simulated thread to be placed on a processor"

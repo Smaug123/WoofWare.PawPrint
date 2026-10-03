@@ -415,41 +415,42 @@ type TaskPark =
 /// in the kernel: the kernel returns an error code and the syscall wrapper
 /// stores it, so the slot belongs to the client.
 type UnixTaskState =
-    {
-        /// The simulated logical processor this task is pinned to: what
-        /// `sched_getcpu(3)` reports while it runs.
-        ///
-        /// Assigned once, when the task is created: the processor its creator
-        /// names to `UnixTaskLifecycle.spawn`. This library has no scheduler:
-        /// under a client that runs one task at a time and never migrates one
-        /// between cores, "pinned to" and "currently executing on" coincide, and
-        /// a core-aware client would rewrite this.
-        Cpu : CpuId
-        /// The OS thread identifier this task reports, as `gettid(2)` does.
-        ///
-        /// Minted by the machine's `ThreadIdAllocator` when the task is created,
-        /// and fixed from then on. No two live tasks share one. On Linux an exited
-        /// task's id comes back once the counter wraps at `pid_max`, so a stale
-        /// owner identity recorded by a user-space lock can then be mistaken for a
-        /// live owner, as it can on a real Linux.
-        OsThreadId : OsThreadId
-        /// The syscall this task is blocked in, and where that park stands in park
-        /// order, if it is blocked in one.
-        ///
-        /// A real kernel holds a blocked task's in-flight syscall arguments on
-        /// its stack; this is that. Three readers, and they must agree, which is
-        /// why there is one of it: the re-entry consults it rather than the
-        /// caller's argument cells, which the process may have written since;
-        /// whatever a client polls to decide the call can be finished reads it
-        /// to learn what the call is waiting for; and whatever destroys an open
-        /// file description reads it, because a description a park names
-        /// (`ParkedSyscall.descriptions`) lives until the call returns.
-        ///
-        /// Every payload holds kernel objects by *identity*, never by descriptor
-        /// number: a sleeping task keeps the object rather than the number, and
-        /// descriptor numbers are reused as soon as they are free.
-        Parked : TaskPark option
-    }
+    internal
+        {
+            /// The simulated logical processor this task is pinned to: what
+            /// `sched_getcpu(3)` reports while it runs.
+            ///
+            /// Assigned once, when the task is created: the processor its creator
+            /// names to `UnixTaskLifecycle.spawn`. This library has no scheduler:
+            /// under a client that runs one task at a time and never migrates one
+            /// between cores, "pinned to" and "currently executing on" coincide, and
+            /// a core-aware client would rewrite this.
+            Cpu : CpuId
+            /// The OS thread identifier this task reports, as `gettid(2)` does.
+            ///
+            /// Minted by the machine's `ThreadIdAllocator` when the task is created,
+            /// and fixed from then on. No two live tasks share one. On Linux an exited
+            /// task's id comes back once the counter wraps at `pid_max`, so a stale
+            /// owner identity recorded by a user-space lock can then be mistaken for a
+            /// live owner, as it can on a real Linux.
+            OsThreadId : OsThreadId
+            /// The syscall this task is blocked in, and where that park stands in park
+            /// order, if it is blocked in one.
+            ///
+            /// A real kernel holds a blocked task's in-flight syscall arguments on
+            /// its stack; this is that. Three readers, and they must agree, which is
+            /// why there is one of it: the re-entry consults it rather than the
+            /// caller's argument cells, which the process may have written since;
+            /// whatever a client polls to decide the call can be finished reads it
+            /// to learn what the call is waiting for; and whatever destroys an open
+            /// file description reads it, because a description a park names
+            /// (`ParkedSyscall.descriptions`) lives until the call returns.
+            ///
+            /// Every payload holds kernel objects by *identity*, never by descriptor
+            /// number: a sleeping task keeps the object rather than the number, and
+            /// descriptor numbers are reused as soon as they are free.
+            Parked : TaskPark option
+        }
 
 /// Reading one task.
 [<RequireQualifiedAccess>]
@@ -580,8 +581,8 @@ module UnixTaskTable =
     /// The table alone: a description only this park held is left in the
     /// descriptor table, where `UnixSystem.checkInvariants` reports it as a
     /// leak. The syscalls' own finishing calls end a park and release what it
-    /// held; a client that ends a park must use them.
-    let unpark<'Task when 'Task : comparison>
+    /// held.
+    let internal unpark<'Task when 'Task : comparison>
         (name : 'Task)
         (tasks : Map<'Task, UnixTaskState>)
         : Map<'Task, UnixTaskState>

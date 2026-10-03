@@ -254,6 +254,21 @@ module TestUnixWait =
         UnixWait.wakes (Set.ofList [ 1 ; 2 ]) parked |> shouldEqual []
 
     [<Test>]
+    let ``clearing a park lets another syscall park`` () : unit =
+        // The refusal below is about an *unclosed* park, not about a task's history: a
+        // completion that clears its record leaves the task free to block in anything.
+        let cleared =
+            let parked = system |> UnixWait.park 1 (parkOfTask 1)
+
+            { parked with
+                Tasks = UnixTaskTable.unpark 1 parked.Tasks
+            }
+
+        UnixWait.park 1 (parkOfTask 3) cleared
+        |> fun system -> UnixTaskTable.parkedFor 1 system.Tasks
+        |> shouldEqual (Some (parkOfTask 3))
+
+    [<Test>]
     let ``a park of a different syscall over an existing one is refused`` () : unit =
         let parked = system |> UnixWait.park 1 (parkOfTask 1)
 

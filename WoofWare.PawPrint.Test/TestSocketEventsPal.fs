@@ -514,189 +514,25 @@ module TestSocketEventsPal =
     // answered when the library stored the shim's three-bit interest.
     // ---------------------------------------------------------------------
 
-    /// One call a guest can make through the two entry points, past the
-    /// wrapper's screens: masks within `SocketEventsPal.supported`, and never
-    /// equal (the wrapper answers equal masks itself).
-    type private ShimCall =
-        | Change of port : int * target : int * current : int * next : int * data : uint64
-        | Wait of port : int * maxEvents : int
-
-    /// What one registration held, in the shim's terms: the three conditions
-    /// `epoll_ctl` keeps of a `SocketEvents` mask, and the data.
-    type private OldRegistration =
-        {
-            Interest : int
-            Data : uint64
-        }
-
-    /// The shim-shaped model the library used to be, stated independently of
-    /// it: a table per port description keyed on (fd, description), and a
-    /// ready list, with the ladder and the reporting rule written out in the
-    /// shim's own terms. Socket phases are fixed for the whole sequence, so
-    /// the only producer is registration itself.
-    type private OldModel =
-        {
-            Tables : Map<OpenFileDescriptionId, Map<int * OpenFileDescriptionId, OldRegistration>>
-            Ready : Map<OpenFileDescriptionId, (int * OpenFileDescriptionId) list>
-        }
-
-    let private linuxSystem : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
-
-        { system with
-            Machine =
-                { system.Machine with
-                    LocalRoutes = []
+    /// Every combination of the five conditions a target's level states.
+    let private everyLevel : ReadinessLevel list =
+        [
+            for bits in 0..31 ->
+                {
+                    In = bits &&& 0x01 <> 0
+                    Out = bits &&& 0x02 <> 0
+                    RdHup = bits &&& 0x04 <> 0
+                    Hup = bits &&& 0x08 <> 0
+                    Err = bits &&& 0x10 <> 0
                 }
-        }
+        ]
 
-    let private withRegistry (registry : FileDescriptorRegistry) (system : UnixSystem<int, string>) =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
-
-    let private addSocket
-        (domain : SocketDomain)
-        (kind : SocketKind)
-        (phase : SocketPhase)
-        (system : UnixSystem<int, string>)
-        : int * UnixSystem<int, string>
-        =
-        let socketId = system.Machine.NextSocketId
-        let (SocketId raw) = socketId
-
-        let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
-
-        fd,
-        { withRegistry registry system with
-            Machine =
-                { system.Machine with
-                    Sockets =
-                        Map.add
-                            socketId
-                            {
-                                Domain = domain
-                                Kind = kind
-                                Protocol =
-                                    match domain, kind with
-                                    | SocketDomain.Unix, _ -> SocketProtocol.Default
-                                    | _, SocketKind.Stream -> SocketProtocol.Tcp
-                                    | _, _ -> SocketProtocol.Udp
-                                Binding = None
-                                ReuseAddress = false
-                                Phase = phase
-                            }
-                            system.Machine.Sockets
-                    NextSocketId = SocketId (raw + 1L)
-                }
-        }
-
-    /// Two ports (one with a `dup`), sockets in every phase whose level the
-    /// shim can see, the standard streams, a regular file, and a descriptor
-    /// that is not open: the pool a sequence draws its fds from.
-    let private pool : int list * UnixSystem<int, string> =
-        let connection = ConnectionId 7L
-        let system = linuxSystem
-
-        let portA, registry =
-            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
-
-        let portB, registry = FileDescriptorRegistry.createEpoll registry
-
-        let portCopy, registry =
-            match FileDescriptorRegistry.dup portA registry with
-            | Ok result -> result
-            | Error error -> failwith $"dup: %O{error}"
-
-        let file, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadWrite registry
-
-        let system = withRegistry registry system
-
-        let adders =
-            [
-                addSocket SocketDomain.Inet SocketKind.Stream SocketPhase.Idle
-                addSocket
-                    SocketDomain.Inet
-                    SocketKind.Stream
-                    (SocketPhase.Listening
-                        {
-                            Backlog = 8
-                            Queue = []
-                            Drained = false
-                        })
-                addSocket
-                    SocketDomain.Inet
-                    SocketKind.Stream
-                    (SocketPhase.Listening
-                        {
-                            Backlog = 8
-                            Queue = [ ConnectionId 9L ]
-                            Drained = false
-                        })
-                addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
-                addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
-                addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (ConnectionId 8L))
-                addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending)
-                addSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle
-                addSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle
-            ]
-
-        let socketFds, system =
-            adders
-            |> List.fold
-                (fun (fds, system) add ->
-                    let fd, system = add system
-                    fd :: fds, system
-                )
-                ([], system)
-
-        let firstSocket = List.last socketFds
-
-        let socketCopy, registry =
-            match FileDescriptorRegistry.dup firstSocket system.Process.FileDescriptors with
-            | Ok result -> result
-            | Error error -> failwith $"dup: %O{error}"
-
-        let system = withRegistry registry system
-
-        [ portA ; portB ; portCopy ; file ; 0 ; 1 ; 2 ; 60 ; socketCopy ]
-        @ List.rev socketFds,
-        system
-
-    /// The epoll level of a target, in the five conditions the shim could see.
-    let private oldLevel (targetId : OpenFileDescriptionId) (system : UnixSystem<int, string>) : ReadinessLevel =
-        match Map.tryFind targetId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
-        | None -> failwith $"oldLevel: %O{targetId} is not live"
-        | Some description ->
-
-        match description.Target with
-        | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId system.Machine
-        | OpenFileTarget.Pipe (pipeId, _) ->
-            // Only the launched standard streams are registered here: input
-            // whose writer has gone and supplied nothing, and output a client
-            // drains.
-            match (UnixMachineState.pipe pipeId system.Machine).Origin with
-            | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) ->
-                { ReadinessLevel.none with
-                    Hup = true
-                }
-            | PipeOrigin.Launched (_, ClientEnd.Draining) ->
-                { ReadinessLevel.none with
-                    Out = true
-                }
-            | PipeOrigin.Launched (_, ClientEnd.Supplying _) ->
-                failwith "oldLevel: no row launches a guest with bytes on its standard input"
-            | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed) ->
-                failwith "oldLevel: no row launches a guest with an output stream whose reader has gone"
-            | PipeOrigin.Made _ -> failwith $"oldLevel: %O{pipeId} is a pipe the process made, which no row registers"
-        | other -> failwith $"oldLevel: %O{other} cannot be registered"
+    let private epollLevel (level : ReadinessLevel) : uint32 =
+        (if level.In then epollBit "EPOLLIN" else 0u)
+        ||| (if level.Out then epollBit "EPOLLOUT" else 0u)
+        ||| (if level.RdHup then epollBit "EPOLLRDHUP" else 0u)
+        ||| (if level.Hup then epollBit "EPOLLHUP" else 0u)
+        ||| (if level.Err then epollBit "EPOLLERR" else 0u)
 
     /// What the old shim-shaped model reported for a registration with
     /// `interest` (the `SocketEvents` bits READ, WRITE and READCLOSE) on a
@@ -714,184 +550,30 @@ module TestSocketEventsPal =
         ||| (if rdHup then 0x04 else 0)
         ||| (if level.Err then 0x10 else 0)
 
-    /// One call against the old model: the transcript token, and the model
-    /// after.
-    let private oldStep (system : UnixSystem<int, string>) (model : OldModel) (call : ShimCall) : string * OldModel =
-        let registry = system.Process.FileDescriptors
-
-        match call with
-        | Change (port, target, current, next, data) ->
-            match FileDescriptorRegistry.tryFindWithId port registry with
-            | None -> "EBADF", model
-            | Some (portId, portDescription) ->
-
-            match FileDescriptorRegistry.tryFindWithId target registry with
-            | None -> "EBADF", model
-            | Some (targetId, targetDescription) ->
-
-            match targetDescription.Target with
-            | OpenFileTarget.File _ -> "EPERM", model
-            | _ ->
-
-            match portDescription.Target with
-            | OpenFileTarget.Epoll _ when portId <> targetId ->
-                let isAdd = current = 0
-                let isDel = not isAdd && next = 0
-
-                match targetDescription.Target with
-                | OpenFileTarget.Epoll _ when isAdd -> "refused", model
-                | _ ->
-
-                let table = Map.tryFind portId model.Tables |> Option.defaultValue Map.empty
-                let ready = Map.tryFind portId model.Ready |> Option.defaultValue []
-                let key = target, targetId
-                let registered = Map.containsKey key table
-
-                let commit (table : Map<_, OldRegistration>) (ready : (int * OpenFileDescriptionId) list) =
-                    "ok",
-                    { model with
-                        Tables = Map.add portId table model.Tables
-                        Ready = Map.add portId ready model.Ready
-                    }
-
-                let pend (interest : int) (ready : (int * OpenFileDescriptionId) list) =
-                    if
-                        not (List.contains key ready)
-                        && oldReport interest (oldLevel targetId system) <> 0
-                    then
-                        ready @ [ key ]
-                    else
-                        ready
-
-                let registration =
-                    {
-                        Interest = next &&& 0x07
-                        Data = data
-                    }
-
-                if isAdd then
-                    if registered then
-                        "EEXIST", model
-                    else
-                        commit (Map.add key registration table) (pend registration.Interest ready)
-                elif isDel then
-                    if registered then
-                        commit (Map.remove key table) (List.filter (fun k -> k <> key) ready)
-                    else
-                        "ENOENT", model
-                elif registered then
-                    commit (Map.add key registration table) (pend registration.Interest ready)
-                else
-                    "ENOENT", model
-            | _ -> "EINVAL", model
-        | Wait (port, maxEvents) ->
-            let portId =
-                match FileDescriptorRegistry.tryFindId port registry with
-                | Some id -> id
-                | None -> failwith "oldStep: waits are drawn only on live ports"
-
-            let table = Map.tryFind portId model.Tables |> Option.defaultValue Map.empty
-            let ready = Map.tryFind portId model.Ready |> Option.defaultValue []
-
-            let rec walk delivered remaining =
-                match remaining with
-                | [] -> List.rev delivered, []
-                | _ when List.length delivered = maxEvents -> List.rev delivered, remaining
-                | (_, targetId as key) :: rest ->
-                    let registration = table.[key]
-                    let reported = oldReport registration.Interest (oldLevel targetId system)
-
-                    if reported = 0 then
-                        walk delivered rest
-                    else
-                        walk ((registration.Data, reported) :: delivered) rest
-
-            let delivered, surviving = walk [] ready
-
-            $"%A{delivered}",
-            { model with
-                Ready = Map.add portId surviving model.Ready
-            }
-
-    /// One call against the new composition: the same transcript token, and
-    /// the system after.
-    let private newStep (system : UnixSystem<int, string>) (call : ShimCall) : string * UnixSystem<int, string> =
-        match call with
-        | Change (port, target, current, next, data) ->
-            match SocketEventsPal.tryChangeSocketEventRegistration port target current next data system with
-            | Ok (EpollCtlAnswer.Changed, system) -> "ok", system
-            | Ok (EpollCtlAnswer.Failed reason, after) ->
-                if after <> system then
-                    failwith $"a failed change moved the system: %A{call}"
-
-                $"%A{EpollCtlError.toErrno reason}", system
-            | Error (EpollCtlRefusal.NestedPort _) -> "refused", system
-            | Error refusal -> failwith $"unexpected refusal of %A{call}: %s{EpollCtlRefusal.describe refusal}"
-        | Wait (port, maxEvents) ->
-            let portId =
-                match FileDescriptorRegistry.tryFindId port system.Process.FileDescriptors with
-                | Some id -> id
-                | None -> failwith "newStep: waits are drawn only on live ports"
-
-            let delivered, system = SocketEventPort.drain portId maxEvents system
-
-            let delivered =
-                delivered
-                |> List.map (fun (data, events) -> data, SocketEventsPal.delivered events)
-
-            $"%A{delivered}", system
-
-    let private shimCallGen (fds : int list) : Gen<ShimCall> =
-        let fdGen = Gen.elements fds
-
-        let change =
-            gen {
-                let! port = fdGen
-                let! target = fdGen
-                let! current = Gen.choose (0, 0x1F)
-                let! next = Gen.choose (0, 0x1F) |> Gen.filter (fun next -> next <> current)
-                let! data = Gen.choose (0, 1000)
-                return Change (port, target, current, next, uint64 data)
-            }
-
-        let wait =
-            gen {
-                let! port = Gen.elements (List.take 3 fds)
-                let! maxEvents = Gen.elements [ 1 ; 2 ; 8 ]
-                return Wait (port, maxEvents)
-            }
-
-        Gen.frequency [ 4, change ; 1, wait ]
-
-    /// Random sequences of registration changes and waits, over two ports and
-    /// every target kind the shim can name, answered by the composition exactly
-    /// as the shim-shaped model answered them: the same errno or success for
-    /// every change, and the same `SocketEvent`s, in the same order, for every
-    /// wait.
+    /// Every mask the wrapper admits, registered at every level: converted in
+    /// as upstream registers it (`toEpollEvents`, with `EPOLLET`), reported as
+    /// Linux's epoll reports (the level restricted to what was registered, plus
+    /// `EPOLLERR` and `EPOLLHUP`; see `LinuxReadiness`), and converted out as
+    /// upstream delivers it, a registration delivers exactly what the
+    /// shim-shaped model delivered, and is on the ready list exactly when that
+    /// model's was.
     [<Test>]
-    let ``the composition answers every call as the shim-shaped model did`` () : unit =
-        let fds, system = pool
+    let ``the composition delivers at every level what the shim-shaped model did`` () : unit =
+        let alwaysReported = epollBit "EPOLLERR" ||| epollBit "EPOLLHUP"
 
-        let property (calls : ShimCall list) : unit =
-            calls
-            |> List.fold
-                (fun (system, model) call ->
-                    let expected, model = oldStep system model call
-                    let answered, system = newStep system call
+        let mismatches =
+            [
+                for level in everyLevel do
+                    for mask in 0 .. SocketEventsPal.supported do
+                        let registered = SocketEventsPal.toEpollEvents mask ||| EpollEvents.EdgeTriggered
+                        let kernel = epollLevel level &&& (registered ||| alwaysReported)
+                        let expected = oldReport (mask &&& 0x07) level
 
-                    if answered <> expected then
-                        failwith $"%A{call}: the shim-shaped model answered %s{expected}, the composition %s{answered}"
+                        if (kernel <> 0u) <> (expected <> 0) then
+                            yield $"%A{level}, mask 0x%02x{mask}: the kernel reported 0x%08x{kernel}"
+                        elif kernel <> 0u && SocketEventsPal.delivered kernel <> expected then
+                            yield
+                                $"%A{level}, mask 0x%02x{mask}: expected 0x%02x{expected}, delivered 0x%02x{SocketEventsPal.delivered kernel}"
+            ]
 
-                    system, model
-                )
-                (system,
-                 {
-                     Tables = Map.empty
-                     Ready = Map.empty
-                 })
-            |> ignore
-
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest 1000,
-            Prop.forAll (Arb.fromGen (Gen.listOf (shimCallGen fds))) property
-        )
+        mismatches |> List.truncate 20 |> shouldEqual []

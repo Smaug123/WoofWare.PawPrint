@@ -31,17 +31,7 @@ module TestMinipalRandom =
     /// A process booted from `image`, whose entropy pool is seeded with
     /// `seed`.
     let private bootedWithPool (image : UnixBootImage<ThreadId, NativeSignalHandler>) (seed : uint64) : EmulatedKernel =
-        let kernel = EmulatedKernel.boot image
-
-        { kernel with
-            System =
-                { kernel.System with
-                    Machine =
-                        { kernel.System.Machine with
-                            EntropyPool = EntropyPool.ofSeed seed
-                        }
-                }
-        }
+        image |> UnixBootImage.withEntropySeed seed |> EmulatedKernel.boot
 
     /// A fresh kernel on `platform` whose pool starts at `seed`.
     let private linuxAt (platform : SimulatedUnixPlatform) (seed : uint64) : EmulatedKernel =
@@ -65,7 +55,7 @@ module TestMinipalRandom =
         | ProcessRandom.LibSystem _ -> failwith "a Linux kernel holds libSystem's generator"
 
     let private openFds (kernel : EmulatedKernel) : int list =
-        FileDescriptorRegistry.fds kernel.System.Process.FileDescriptors
+        FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.System)
         |> Map.keys
         |> List.ofSeq
 
@@ -166,8 +156,8 @@ module TestMinipalRandom =
         // minipal keeps the number, and the pool did not move.
         descriptorOf after |> shouldEqual (Some fd)
 
-        after.System.Machine.EntropyPool
-        |> shouldEqual kernel.System.Machine.EntropyPool
+        (UnixSystem.entropyPool after.System)
+        |> shouldEqual (UnixSystem.entropyPool kernel.System)
 
     [<Test>]
     let ``a request for no bytes still opens the descriptor and reads it once`` () : unit =
@@ -353,7 +343,8 @@ module TestMinipalRandom =
             | Ok (GetEntropyAnswer.Completed draw, system) -> EntropyDraw.bytes draw, system
             | other -> failwith $"%A{other}"
 
-        kernel.System.Machine.EntropyPool |> shouldEqual booted.Machine.EntropyPool
+        (UnixSystem.entropyPool kernel.System)
+        |> shouldEqual (UnixSystem.entropyPool booted)
 
         let property (draws : (int * int) list) : unit =
             let actual, after =
@@ -388,8 +379,7 @@ module TestMinipalRandom =
 
             actual |> shouldEqual expected
             // No syscall, so no descriptor and no pool movement.
-            after.System.Machine |> shouldEqual kernel.System.Machine
-            after.System.Process |> shouldEqual kernel.System.Process
+            after.System |> shouldEqual kernel.System
 
         Check.One (
             propertyConfig,

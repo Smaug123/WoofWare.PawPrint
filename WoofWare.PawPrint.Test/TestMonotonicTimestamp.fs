@@ -330,29 +330,6 @@ module TestMonotonicTimestamp =
         Assert.Throws<Exception> (TestDelegate backwards) |> ignore<Exception>
 
     [<Test>]
-    let ``the clock writer rejects negative targets even when moving forwards`` () : unit =
-        // The monotonicity check alone waves this through: -10,000 is *greater* than -20,000, so
-        // the move is forwards and only an independent non-negativity check catches it. Reachable
-        // because a kernel assembled by record-copy never passed through the writer. Left
-        // untested, the writer would enforce a narrower range than its own doc comment claims.
-        let negativeKernel =
-            { EmulatedKernel.initial with
-                System =
-                    { EmulatedKernel.initial.System with
-                        Machine =
-                            { EmulatedKernel.initial.System.Machine with
-                                NanosecondsSinceBoot = -20_000L * ClockPal.nanosecondsPerTick
-                            }
-                    }
-            }
-
-        let forwardsButNegative () =
-            EmulatedKernel.withVirtualClockTicks -10_000L negativeKernel
-            |> ignore<EmulatedKernel>
-
-        Assert.Throws<Exception> (TestDelegate forwardsButNegative) |> ignore<Exception>
-
-    [<Test>]
     let ``a clock advanced by part of a tick is refused rather than rounded`` () : unit =
         // PawPrint advances the kernel's clock only by whole ticks, which is what makes every
         // tick-denominated reading exact. A kernel whose clock something else advanced by a

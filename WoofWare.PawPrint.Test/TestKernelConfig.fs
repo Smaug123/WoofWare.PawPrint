@@ -44,7 +44,7 @@ module TestKernelConfig =
     /// asserting "the kernel held *this* inode" is checked against the graph
     /// rather than against the kernel's own answer.
     let private inodeOf (kernel : EmulatedKernel) (path : string) : InodeNumber =
-        let vfs = kernel.System.Machine.FileSystem
+        let vfs = (UnixSystem.fileSystem kernel.System)
 
         match
             PathWalk.resolveExisting
@@ -64,7 +64,7 @@ module TestKernelConfig =
     let ``the process ID is configurable and validated`` () : unit =
         KernelConfig.Default.ProcessId |> shouldEqual UnixSystem.defaultProcessId
 
-        (KernelConfig.toKernel KernelConfig.Default).System.Process.ProcessId
+        (UnixSystem.processId (KernelConfig.toKernel KernelConfig.Default).System)
         |> shouldEqual UnixSystem.defaultProcessId
 
         let configured =
@@ -73,7 +73,7 @@ module TestKernelConfig =
                     ProcessId = ProcessId.parseOrFail "test" 3
                 }
 
-        configured.System.Process.ProcessId |> ProcessId.toInt32 |> shouldEqual 3
+        (UnixSystem.processId configured.System) |> ProcessId.toInt32 |> shouldEqual 3
 
         // The one value of the type that did not come from `parse`.
         let apply () =
@@ -93,11 +93,12 @@ module TestKernelConfig =
         KernelConfig.Default.ProtectedFiles |> shouldEqual ProtectedFiles.off
 
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
-            (KernelConfig.toKernel
-                { KernelConfig.Default with
-                    UnixPlatform = platform
-                })
-                .System.Machine.ProtectedFiles
+            UnixSystem.protectedFiles
+                (KernelConfig.toKernel
+                    { KernelConfig.Default with
+                        UnixPlatform = platform
+                    })
+                    .System
             |> shouldEqual ProtectedFiles.off
 
         let configured : ProtectedFiles =
@@ -107,11 +108,12 @@ module TestKernelConfig =
                 Fifos = CreationProtection.InWorldWritableStickyDirectories
             }
 
-        (KernelConfig.toKernel
-            { KernelConfig.Default with
-                ProtectedFiles = configured
-            })
-            .System.Machine.ProtectedFiles
+        UnixSystem.protectedFiles
+            (KernelConfig.toKernel
+                { KernelConfig.Default with
+                    ProtectedFiles = configured
+                })
+                .System
         |> shouldEqual configured
 
         let darwin () =
@@ -170,13 +172,13 @@ module TestKernelConfig =
 
         kernel.UnixPlatform |> shouldEqual SimulatedUnixPlatform.macOsArm64
 
-        kernel.System.Machine.Mount
+        (UnixSystem.mount kernel.System)
         |> shouldEqual (EmulatedMount.Apfs ApfsMount.defaults)
 
-        kernel.System.Machine.SoMaxConn |> shouldEqual 128
-        kernel.System.Machine.EphemeralPortRange |> shouldEqual (49152us, 65535us)
+        (UnixSystem.soMaxConn kernel.System) |> shouldEqual 128
+        (UnixSystem.ephemeralPortRange kernel.System) |> shouldEqual (49152us, 65535us)
 
-        kernel.System.Process.Credentials
+        (UnixSystem.credentials kernel.System)
         |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 501u) (GroupId.parseOrFail "test" 20u) [])
 
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
@@ -191,17 +193,18 @@ module TestKernelConfig =
                     GroupId = Some 1000u
                 }
 
-        configured.System.Machine.EphemeralPortRange |> shouldEqual (40000us, 40010us)
+        (UnixSystem.ephemeralPortRange configured.System)
+        |> shouldEqual (40000us, 40010us)
 
-        configured.System.Process.Credentials
+        (UnixSystem.credentials configured.System)
         |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 1000u) (GroupId.parseOrFail "test" 1000u) [])
 
         // The default configuration is Linux's, in every one of those fields.
         let linux = KernelConfig.toKernel KernelConfig.Default
         linux.UnixPlatform |> shouldEqual SimulatedUnixPlatform.linuxX64
-        linux.System.Machine.EphemeralPortRange |> shouldEqual (32768us, 60999us)
+        (UnixSystem.ephemeralPortRange linux.System) |> shouldEqual (32768us, 60999us)
 
-        linux.System.Process.Credentials
+        (UnixSystem.credentials linux.System)
         |> shouldEqual (Credentials.ofIds (UserId.parseOrFail "test" 1000u) (GroupId.parseOrFail "test" 1000u) [])
 
     [<Test>]
@@ -219,7 +222,7 @@ module TestKernelConfig =
                     SupplementaryGroups = groups
                 }
 
-        kernel.System.Process.Credentials
+        (UnixSystem.credentials kernel.System)
         |> shouldEqual (
             Credentials.ofIds
                 (UserId.parseOrFail "test" 37u)
@@ -262,10 +265,10 @@ module TestKernelConfig =
 
             // The device filesystem the kernel mounts at boot is root's, and is
             // not the seed's.
-            kernel.System.Machine.FileSystem
+            (UnixSystem.fileSystem kernel.System)
             |> VirtualFileSystem.inodes
             |> Map.filter (fun number _ ->
-                (VirtualFileSystem.mountedRootOf number kernel.System.Machine.FileSystem).IsNone
+                (VirtualFileSystem.mountedRootOf number (UnixSystem.fileSystem kernel.System)).IsNone
             )
             |> Map.iter (fun _ inode -> inode.Owner |> shouldEqual configured)
 
@@ -291,7 +294,7 @@ module TestKernelConfig =
     /// The owner of the inode `path` names, walked as root without following
     /// a final symlink, so that a link's own owner is what is read.
     let private ownerAt (kernel : EmulatedKernel) (path : string) : InodeOwner =
-        let vfs = kernel.System.Machine.FileSystem
+        let vfs = (UnixSystem.fileSystem kernel.System)
 
         match
             PathWalk.resolveExisting
@@ -410,9 +413,9 @@ module TestKernelConfig =
                 // Nothing on the root filesystem but the root and the seed's own
                 // entries; the device filesystem the kernel mounts at boot is
                 // not the seed's.
-                VirtualFileSystem.inodes kernel.System.Machine.FileSystem
+                VirtualFileSystem.inodes (UnixSystem.fileSystem kernel.System)
                 |> Map.filter (fun number _ ->
-                    (VirtualFileSystem.mountedRootOf number kernel.System.Machine.FileSystem).IsNone
+                    (VirtualFileSystem.mountedRootOf number (UnixSystem.fileSystem kernel.System)).IsNone
                 )
                 |> Map.count
                 |> shouldEqual (List.length paths + 1)
@@ -492,7 +495,7 @@ module TestKernelConfig =
             ] do
             let kernel = KernelConfig.toKernel (configured platform bits)
 
-            kernel.System.Process.Umask
+            (UnixSystem.fileModeCreationMask kernel.System)
             |> shouldEqual (PermissionBits.parseOrFail "test" bits)
 
             EmulatedKernel.checkInvariants kernel |> shouldEqual []
@@ -508,7 +511,7 @@ module TestKernelConfig =
 
         let kernel = KernelConfig.toKernel config
 
-        kernel.System.Process.CurrentDirectoryInode
+        (UnixSystem.currentDirectoryInode kernel.System)
         |> shouldEqual (inodeOf kernel "/outer/inner")
 
         EmulatedKernel.checkInvariants kernel |> shouldEqual []

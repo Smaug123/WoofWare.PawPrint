@@ -26,7 +26,7 @@ module UnixWait =
     /// Refuses to replace a park of one syscall with a park of another, and
     /// otherwise accepts a re-park of the same syscall, which moves the task to
     /// the back of park order.
-    let park<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal park<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (parked : ParkedSyscall)
         (system : UnixSystem<'Task, 'Handler>)

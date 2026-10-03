@@ -220,7 +220,7 @@ module TestSystemTimeAsTicks =
             let machine = machineWith epochMs clockTicks
 
             let ticks = ClockPal.systemTimeAsTicks machine
-            let stamp = UnixMachineState.realtime machine.Machine
+            let stamp = UnixSystem.realtime machine
 
             // Reassembled with the BCL's own arithmetic rather than by inverting
             // the implementation's division.
@@ -241,8 +241,7 @@ module TestSystemTimeAsTicks =
 
     [<Test>]
     let ``a default kernel stamps inodes at the Unix epoch`` () =
-        UnixMachineState.realtime initialMachine.Machine
-        |> shouldEqual UnixTimestamp.epoch
+        UnixSystem.realtime initialMachine |> shouldEqual UnixTimestamp.epoch
 
     /// Did the thunk complete, rather than failing the way PawPrint reports a
     /// violated kernel invariant?
@@ -315,5 +314,5 @@ module TestSystemTimeAsTicks =
     /// on Darwin: only `clock_gettime` reports whole microseconds.
     [<Test>]
     let ``the Darwin flavour stamps inodes to the tick`` () =
-        UnixMachineState.realtime (machineOn SimulatedUnixPlatform.macOsArm64 0L 17L).Machine
+        UnixSystem.realtime (machineOn SimulatedUnixPlatform.macOsArm64 0L 17L)
         |> shouldEqual (UnixTimestamp.createOrFail "TestSystemTimeAsTicks" 0L 1_700)

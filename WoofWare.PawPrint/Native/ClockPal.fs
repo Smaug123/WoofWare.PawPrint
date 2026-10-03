@@ -116,8 +116,8 @@ module ClockPal =
         let reading = read "SystemNative_GetSystemTimeAsTicks" clockRealtime system
         let seconds = UnixTimestamp.seconds reading
 
-        // The kernel refuses a boot instant before the epoch, so this is a
-        // machine assembled without `withBootTime`.
+        // Unreachable: the kernel refuses a boot instant before the epoch, and
+        // its clocks only move forwards.
         if seconds < 0L then
             failwith
                 $"SystemNative_GetSystemTimeAsTicks: the realtime clock reads %O{reading}, before the Unix epoch, which PawPrint does not model a simulated process observing."
