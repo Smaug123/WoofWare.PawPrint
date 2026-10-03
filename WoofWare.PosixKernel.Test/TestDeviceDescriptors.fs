@@ -144,7 +144,7 @@ module TestDeviceDescriptors =
         (system : UnixSystem<int, string>)
         : ImmutableArray<byte> * UnixSystem<int, string>
         =
-        match UnixEntropy.getRandom UserBuffer.Mapped count 0u system with
+        match UnixEntropy.getRandom 0 UserBuffer.Mapped count 0u system with
         | Ok (GetRandomAnswer.Completed draw, system) -> EntropyDraw.bytes draw, system
         | other -> failwith $"getrandom(%d{count}): expected bytes, got %A{other}"
 
@@ -243,8 +243,8 @@ module TestDeviceDescriptors =
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"chmod as root: %A{other}"
 
-        let unprivileged =
-            UnixSystem.withCredentials context booted.Process.Credentials narrowed
+        // Root then gives up its privilege for the default user's IDs.
+        let unprivileged = Become.fully booted.Process.Credentials narrowed
 
         for access in
             [
@@ -445,67 +445,6 @@ module TestDeviceDescriptors =
         |> fst
         |> shouldEqual (ReadAnswer.Completed ImmutableArray.Empty)
 
-    /// What is pending when a read of a device starts.
-    [<RequireQualifiedAccess>]
-    type private Pending =
-        | Nothing
-        /// SIGUSR1, caught, sent to the reader.
-        | CaughtForReader
-        /// SIGUSR1, caught, sent to another task.
-        | CaughtForAnother
-        /// SIGUSR1, ignored, sent to the reader, which discards it.
-        | IgnoredForReader
-        /// SIGCONT at its default, sent to the reader: it stays pending.
-        | DefaultForReader
-
-    let private pendingGen : Gen<Pending> =
-        Gen.elements
-            [
-                Pending.Nothing
-                Pending.CaughtForReader
-                Pending.CaughtForAnother
-                Pending.IgnoredForReader
-                Pending.DefaultForReader
-            ]
-
-    /// Whether `pending` leaves a signal the reader takes as it returns to user
-    /// mode, which is what Linux's `signal_pending` asks.
-    let private readerHasSignal (pending : Pending) : bool =
-        match pending with
-        | Pending.CaughtForReader
-        | Pending.DefaultForReader -> true
-        | Pending.Nothing
-        | Pending.CaughtForAnother
-        | Pending.IgnoredForReader -> false
-
-    /// `system` with task 1 beside the reader, and `pending` made so through
-    /// `sigaction` and `pthread_kill`.
-    let private withPending (pending : Pending) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        let system = Tasks.ensure 1 system
-
-        let install (disposition : SignalDisposition<string>) (system : UnixSystem<int, string>) =
-            match UnixSignal.sigaction 10 (Some disposition) system with
-            | Ok (_, system) -> system
-            | Error error -> failwith $"sigaction: %O{error}"
-
-        let send (target : int) (signo : int) (system : UnixSystem<int, string>) =
-            match UnixSignal.pthreadKill target signo system with
-            | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
-            | other -> failwith $"pthread_kill %d{target} %d{signo}: %A{other}"
-
-        match pending with
-        | Pending.Nothing -> system
-        | Pending.CaughtForReader ->
-            system
-            |> install (SignalDisposition.Catch (SignalCatch.ofHandler "h"))
-            |> send task 10
-        | Pending.CaughtForAnother ->
-            system
-            |> install (SignalDisposition.Catch (SignalCatch.ofHandler "h"))
-            |> send 1 10
-        | Pending.IgnoredForReader -> system |> install SignalDisposition.Ignore |> send task 10
-        | Pending.DefaultForReader -> system |> send task 18
-
     [<Test>]
     let ``a urandom read longer than a page is refused while the reader has a signal pending`` () : unit =
         // Linux's read copies a 64-byte block at a time and, at each page
@@ -514,9 +453,9 @@ module TestDeviceDescriptors =
         // short (`get_random_bytes_user`, drivers/char/random.c in 6.18). The
         // check counts bytes copied, so where the buffer starts does not
         // matter, and a read of exactly a page never reaches a check.
-        let property (count : uint64) (pending : Pending) (pread : bool) =
+        let property (count : uint64) (pending : PendingSignal) (pread : bool) =
             let fd, system = openDevice CharacterDevice.URandom FileAccessMode.ReadOnly booted
-            let system = withPending pending system
+            let system = PendingSignal.make task pending system
 
             let outcome =
                 if pread then
@@ -533,9 +472,12 @@ module TestDeviceDescriptors =
             match outcome with
             | Error refused ->
                 refused |> shouldEqual (int count)
-                (count > 4096UL && readerHasSignal pending) |> shouldEqual true
+
+                (count > 4096UL && PendingSignal.transferrerHasSignal pending)
+                |> shouldEqual true
             | Ok (answer, _) ->
-                (count > 4096UL && readerHasSignal pending) |> shouldEqual false
+                (count > 4096UL && PendingSignal.transferrerHasSignal pending)
+                |> shouldEqual false
 
                 match answer with
                 | ReadAnswer.Drawn draw -> EntropyDraw.count draw |> shouldEqual (int count)
@@ -552,17 +494,17 @@ module TestDeviceDescriptors =
         Check.One (
             config,
             Prop.forAll
-                (Arb.fromGen (Gen.zip3 countGen pendingGen (Gen.elements [ true ; false ])))
+                (Arb.fromGen (Gen.zip3 countGen PendingSignal.gen (Gen.elements [ true ; false ])))
                 (fun (c, p, pr) -> property c p pr)
         )
 
     [<Test>]
     let ``a urandom write longer than a page is refused while the writer has a signal pending`` () : unit =
         // `write_pool_user` stops at a page boundary as the read does.
-        let property (count : int) (pending : Pending) (positioned : bool) =
+        let property (count : int) (pending : PendingSignal) (positioned : bool) =
             let fd, system = openDevice CharacterDevice.URandom FileAccessMode.WriteOnly booted
-            let system = withPending pending system
-            let refused = count > 4096 && readerHasSignal pending
+            let system = PendingSignal.make task pending system
+            let refused = count > 4096 && PendingSignal.transferrerHasSignal pending
             let bytes = ImmutableArray.CreateRange (Seq.init count byte)
 
             if positioned then
@@ -612,14 +554,14 @@ module TestDeviceDescriptors =
         Check.One (
             config,
             Prop.forAll
-                (Arb.fromGen (Gen.zip3 countGen pendingGen (Gen.elements [ true ; false ])))
+                (Arb.fromGen (Gen.zip3 countGen PendingSignal.gen (Gen.elements [ true ; false ])))
                 (fun (c, p, pw) -> property c p pw)
         )
 
     [<Test>]
     let ``a pending signal changes nothing a write to null answers`` () : unit =
         let fd, system = openDevice CharacterDevice.Null FileAccessMode.WriteOnly booted
-        let system = withPending Pending.CaughtForReader system
+        let system = PendingSignal.make task PendingSignal.CaughtForTransferrer system
 
         admitWriteOf fd UserBuffer.Mapped 65536UL system
         |> fst
@@ -628,14 +570,14 @@ module TestDeviceDescriptors =
     [<Test>]
     let ``a pending signal changes nothing a read of null or a faulting read answers`` () : unit =
         let fd, system = openDevice CharacterDevice.Null FileAccessMode.ReadOnly booted
-        let system = withPending Pending.CaughtForReader system
+        let system = PendingSignal.make task PendingSignal.CaughtForTransferrer system
 
         readOf fd UserBuffer.Mapped 65536UL system
         |> fst
         |> shouldEqual (ReadAnswer.Completed ImmutableArray.Empty)
 
         let fd, system = openDevice CharacterDevice.URandom FileAccessMode.ReadOnly booted
-        let system = withPending Pending.CaughtForReader system
+        let system = PendingSignal.make task PendingSignal.CaughtForTransferrer system
 
         readOf fd (UserBuffer.Unmapped 0UL) 65536UL system
         |> fst

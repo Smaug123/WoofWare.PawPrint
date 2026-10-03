@@ -64,9 +64,10 @@
         <Compile Include="UnixMachine.fs" />
         <Compile Include="UnixClock.fs" />
         <Compile Include="UnixSystemState.fs" />
-        <Compile Include="ObjectLifetime.fs" />
         <Compile Include="UnixSocket.fs" />
         <Compile Include="Readiness.fs" />
+        <Compile Include="KqueuePoll.fs" />
+        <Compile Include="ObjectLifetime.fs" />
         <Compile Include="SyscallInterruption.fs" />
         <Compile Include="WakeCondition.fs" />
         <Compile Include="UnixWait.fs" />
@@ -80,6 +81,7 @@
         <Compile Include="UnixPipe.fs" />
         <Compile Include="UnixEntropy.fs" />
         <Compile Include="UnixNamespace.fs" />
+        <Compile Include="UnixCredentials.fs" />
         <Compile Include="UnixSystem.fs" />
         <Compile Include="UnixSignal.fs" />
         <EmbeddedResource Include="version.json" />

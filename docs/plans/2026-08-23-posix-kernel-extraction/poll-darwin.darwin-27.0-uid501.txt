@@ -1,0 +1,292 @@
+# poll-darwin
+S	tcpv4 unbound	filters READ=idle READ+OOBAND=idle WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 unbound	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	tcpv4 unbound	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->0(rv=0) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 bound	filters READ=idle READ+OOBAND=idle WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 bound	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	tcpv4 bound	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->0(rv=0) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 listener empty	filters READ=idle READ+OOBAND=idle WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 listener empty	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	tcpv4 listener empty	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->0(rv=0) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 listener queued	filters READ=ready(flags=0x11 fflags=0 data=1) READ+OOBAND=ready(flags=0x11 fflags=0 data=1) WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 listener queued	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	tcpv4 listener queued	answers 0->0(rv=0) IN->IN(rv=1) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 connected client	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=146988) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 connected client	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	tcpv4 connected client	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 accepted	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=146988) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 accepted	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	tcpv4 accepted	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 peer shut down writing	filters READ=ready(flags=0x8011 fflags=0 data=0) READ+OOBAND=ready(flags=0x8011 fflags=0 data=0) WRITE=ready(flags=0x11 fflags=0 data=146988) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 peer shut down writing	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=21
+S	tcpv4 peer shut down writing	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->OUT(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 own write side shut down	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x8011 fflags=0 data=146988) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 own write side shut down	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=3
+S	tcpv4 own write side shut down	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->HUP(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 peer closed	filters READ=ready(flags=0x8011 fflags=0 data=0) READ+OOBAND=ready(flags=0x8011 fflags=0 data=0) WRITE=ready(flags=0x11 fflags=0 data=146988) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 peer closed	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=21
+S	tcpv4 peer closed	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->OUT(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 own write side shut down, peer alive	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x8011 fflags=0 data=146988) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 own write side shut down, peer alive	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=3
+S	tcpv4 own write side shut down, peer alive	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->HUP(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 data waiting	filters READ=ready(flags=0x11 fflags=0 data=5) READ+OOBAND=ready(flags=0x11 fflags=0 data=5) WRITE=ready(flags=0x11 fflags=0 data=146988) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 data waiting	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=17
+S	tcpv4 data waiting	answers 0->0(rv=0) IN->IN(rv=1) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv4 reset by peer	filters READ=ready(flags=0x8011 fflags=54 data=0) READ+OOBAND=ready(flags=0x8011 fflags=54 data=0) WRITE=ready(flags=0x8011 fflags=54 data=146988) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 reset by peer	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	tcpv4 reset by peer	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+#	v4 connect to closed port: Operation now in progress
+S	tcpv4 refused, error pending	filters READ=ready(flags=0x8011 fflags=61 data=0) READ+OOBAND=ready(flags=0x8011 fflags=61 data=0) WRITE=ready(flags=0x8011 fflags=61 data=2048) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 refused, error pending	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	tcpv4 refused, error pending	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+#	v4 SO_ERROR=Connection refused
+S	tcpv4 refused, error taken	filters READ=ready(flags=0x8011 fflags=0 data=0) READ+OOBAND=ready(flags=0x8011 fflags=0 data=0) WRITE=ready(flags=0x8011 fflags=0 data=2048) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv4 refused, error taken	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	tcpv4 refused, error taken	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 unbound	filters READ=idle READ+OOBAND=idle WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 unbound	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	tcpv6 unbound	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->0(rv=0) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 bound	filters READ=idle READ+OOBAND=idle WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 bound	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	tcpv6 bound	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->0(rv=0) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 listener empty	filters READ=idle READ+OOBAND=idle WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 listener empty	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	tcpv6 listener empty	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->0(rv=0) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 listener queued	filters READ=ready(flags=0x11 fflags=0 data=1) READ+OOBAND=ready(flags=0x11 fflags=0 data=1) WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 listener queued	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	tcpv6 listener queued	answers 0->0(rv=0) IN->IN(rv=1) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 connected client	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=146808) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 connected client	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	tcpv6 connected client	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 accepted	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=146808) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 accepted	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	tcpv6 accepted	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 peer shut down writing	filters READ=ready(flags=0x8011 fflags=0 data=0) READ+OOBAND=ready(flags=0x8011 fflags=0 data=0) WRITE=ready(flags=0x11 fflags=0 data=146808) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 peer shut down writing	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=21
+S	tcpv6 peer shut down writing	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->OUT(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 own write side shut down	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x8011 fflags=0 data=146808) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 own write side shut down	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=3
+S	tcpv6 own write side shut down	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->HUP(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 peer closed	filters READ=ready(flags=0x8011 fflags=0 data=0) READ+OOBAND=ready(flags=0x8011 fflags=0 data=0) WRITE=ready(flags=0x11 fflags=0 data=146808) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 peer closed	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=21
+S	tcpv6 peer closed	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->OUT(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 own write side shut down, peer alive	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x8011 fflags=0 data=146808) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 own write side shut down, peer alive	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=3
+S	tcpv6 own write side shut down, peer alive	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->HUP(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 data waiting	filters READ=ready(flags=0x11 fflags=0 data=5) READ+OOBAND=ready(flags=0x11 fflags=0 data=5) WRITE=ready(flags=0x11 fflags=0 data=146808) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 data waiting	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=17
+S	tcpv6 data waiting	answers 0->0(rv=0) IN->IN(rv=1) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	tcpv6 reset by peer	filters READ=ready(flags=0x8011 fflags=54 data=0) READ+OOBAND=ready(flags=0x8011 fflags=54 data=0) WRITE=ready(flags=0x8011 fflags=54 data=146808) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 reset by peer	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	tcpv6 reset by peer	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+#	v6 connect to closed port: Operation now in progress
+S	tcpv6 refused, error pending	filters READ=ready(flags=0x8011 fflags=61 data=0) READ+OOBAND=ready(flags=0x8011 fflags=61 data=0) WRITE=ready(flags=0x8011 fflags=61 data=2048) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 refused, error pending	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	tcpv6 refused, error pending	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+#	v6 SO_ERROR=Connection refused
+S	tcpv6 refused, error taken	filters READ=ready(flags=0x8011 fflags=0 data=0) READ+OOBAND=ready(flags=0x8011 fflags=0 data=0) WRITE=ready(flags=0x8011 fflags=0 data=2048) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	tcpv6 refused, error taken	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	tcpv6 refused, error taken	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	udp fresh	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=9216) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	udp fresh	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	udp fresh	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	udp connected	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=9216) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	udp connected	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	udp connected	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	unix stream pair	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=8192) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	unix stream pair	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	unix stream pair	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	unix stream peer closed	filters READ=ready(flags=0x8011 fflags=0 data=0) READ+OOBAND=ready(flags=0x8011 fflags=0 data=0) WRITE=ready(flags=0x8011 fflags=0 data=8192) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	unix stream peer closed	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	unix stream peer closed	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	unix dgram pair	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=2048) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	unix dgram pair	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	unix dgram pair	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	pipe read end, empty	filters READ=idle READ+OOBAND=idle WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	pipe read end, empty	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	pipe read end, empty	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->0(rv=0) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	pipe write end, room	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=16384) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	pipe write end, room	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=5
+S	pipe write end, room	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->WRBAND(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->OUT(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	pipe read end, holding 3	filters READ=ready(flags=0x11 fflags=0 data=3) READ+OOBAND=ready(flags=0x11 fflags=0 data=3) WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	pipe read end, holding 3	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=17
+S	pipe read end, holding 3	answers 0->0(rv=0) IN->IN(rv=1) PRI->PRI(rv=1) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->RDBAND(rv=1) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	pipe read end, holding 3, writer closed	filters READ=ready(flags=0x8011 fflags=0 data=3) READ+OOBAND=ready(flags=0x8011 fflags=0 data=3) WRITE=ready(flags=0x8011 fflags=0 data=0) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	pipe read end, holding 3, writer closed	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	pipe read end, holding 3, writer closed	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	pipe read end, empty, writer closed	filters READ=ready(flags=0x8011 fflags=0 data=0) READ+OOBAND=ready(flags=0x8011 fflags=0 data=0) WRITE=ready(flags=0x8011 fflags=0 data=0) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	pipe read end, empty, writer closed	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	pipe read end, empty, writer closed	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+#	pipe filled with 65536 bytes
+S	pipe write end, full	filters READ=idle READ+OOBAND=idle WRITE=idle VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	pipe write end, full	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	pipe write end, full	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->0(rv=0) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	pipe write end, reader closed	filters READ=ready(flags=0x8011 fflags=0 data=0) READ+OOBAND=ready(flags=0x8011 fflags=0 data=0) WRITE=ready(flags=0x8011 fflags=0 data=0) VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	pipe write end, reader closed	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=18
+S	pipe write end, reader closed	answers 0->0(rv=0) IN->IN|HUP(rv=1) PRI->PRI|HUP(rv=1) OUT->HUP(rv=1) ERR->0(rv=0) HUP->HUP(rv=1) NVAL->0(rv=0) RDNORM->HUP|RDNORM(rv=1) RDBAND->HUP|RDBAND(rv=1) WRBAND->HUP(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|HUP(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	regular file O_RDONLY, empty	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=1) VNODE(EXTEND)=idle vnode-uniform=1
+S	regular file O_RDONLY, empty	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=64
+S	regular file O_RDONLY, empty	answers 0->0(rv=0) IN->IN(rv=1) PRI->PRI(rv=1) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->RDBAND(rv=1) WRBAND->WRBAND(rv=1) EXTEND->0(rv=0) ATTRIB->0(rv=0) NLINK->0(rv=0) WRITE->0(rv=0) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|OUT(rv=1) IN|EXTEND->IN(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->IN|PRI|OUT|RDNORM|RDBAND|WRBAND(rv=1)
+S	regular file O_WRONLY, 4 bytes	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=1) VNODE(EXTEND)=idle vnode-uniform=1
+S	regular file O_WRONLY, 4 bytes	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=64
+S	regular file O_WRONLY, 4 bytes	answers 0->0(rv=0) IN->IN(rv=1) PRI->PRI(rv=1) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->RDBAND(rv=1) WRBAND->WRBAND(rv=1) EXTEND->0(rv=0) ATTRIB->0(rv=0) NLINK->0(rv=0) WRITE->0(rv=0) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|OUT(rv=1) IN|EXTEND->IN(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->IN|PRI|OUT|RDNORM|RDBAND|WRBAND(rv=1)
+S	regular file O_RDONLY, 4 bytes, offset 0	filters READ=ready(flags=0x11 fflags=0 data=4) READ+OOBAND=ready(flags=0x11 fflags=0 data=4) WRITE=ready(flags=0x11 fflags=0 data=1) VNODE(EXTEND)=idle vnode-uniform=1
+S	regular file O_RDONLY, 4 bytes, offset 0	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=64
+S	regular file O_RDONLY, 4 bytes, offset 0	answers 0->0(rv=0) IN->IN(rv=1) PRI->PRI(rv=1) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->RDBAND(rv=1) WRBAND->WRBAND(rv=1) EXTEND->0(rv=0) ATTRIB->0(rv=0) NLINK->0(rv=0) WRITE->0(rv=0) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|OUT(rv=1) IN|EXTEND->IN(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->IN|PRI|OUT|RDNORM|RDBAND|WRBAND(rv=1)
+S	regular file O_RDONLY, 4 bytes, at end	filters READ=idle READ+OOBAND=idle WRITE=ready(flags=0x11 fflags=0 data=1) VNODE(EXTEND)=idle vnode-uniform=1
+S	regular file O_RDONLY, 4 bytes, at end	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=64
+S	regular file O_RDONLY, 4 bytes, at end	answers 0->0(rv=0) IN->IN(rv=1) PRI->PRI(rv=1) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->RDBAND(rv=1) WRBAND->WRBAND(rv=1) EXTEND->0(rv=0) ATTRIB->0(rv=0) NLINK->0(rv=0) WRITE->0(rv=0) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|OUT(rv=1) IN|EXTEND->IN(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->IN|PRI|OUT|RDNORM|RDBAND|WRBAND(rv=1)
+S	regular file O_RDWR	filters READ=ready(flags=0x11 fflags=0 data=4) READ+OOBAND=ready(flags=0x11 fflags=0 data=4) WRITE=ready(flags=0x11 fflags=0 data=1) VNODE(EXTEND)=idle vnode-uniform=1
+S	regular file O_RDWR	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=64
+S	regular file O_RDWR	answers 0->0(rv=0) IN->IN(rv=1) PRI->PRI(rv=1) OUT->OUT(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->RDBAND(rv=1) WRBAND->WRBAND(rv=1) EXTEND->0(rv=0) ATTRIB->0(rv=0) NLINK->0(rv=0) WRITE->0(rv=0) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->IN|OUT(rv=1) IN|EXTEND->IN(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->IN|PRI|OUT|RDNORM|RDBAND|WRBAND(rv=1)
+S	directory	filters READ=EINVAL READ+OOBAND=EINVAL WRITE=EINVAL VNODE(EXTEND)=idle vnode-uniform=1
+S	directory	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	directory	answers 0->0(rv=0) IN->NVAL(rv=1) PRI->NVAL(rv=1) OUT->NVAL(rv=1) ERR->0(rv=0) HUP->NVAL(rv=1) NVAL->0(rv=0) RDNORM->NVAL(rv=1) RDBAND->NVAL(rv=1) WRBAND->NVAL(rv=1) EXTEND->0(rv=0) ATTRIB->0(rv=0) NLINK->0(rv=0) WRITE->0(rv=0) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->NVAL(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	/dev/null	filters READ=EINVAL READ+OOBAND=EINVAL WRITE=EINVAL VNODE(EXTEND)=idle vnode-uniform=1
+S	/dev/null	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	/dev/null	answers 0->0(rv=0) IN->NVAL(rv=1) PRI->NVAL(rv=1) OUT->NVAL(rv=1) ERR->0(rv=0) HUP->NVAL(rv=1) NVAL->0(rv=0) RDNORM->NVAL(rv=1) RDBAND->NVAL(rv=1) WRBAND->NVAL(rv=1) EXTEND->0(rv=0) ATTRIB->0(rv=0) NLINK->0(rv=0) WRITE->0(rv=0) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->NVAL(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	kqueue, empty	filters READ=idle READ+OOBAND=idle WRITE=EINVAL VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	kqueue, empty	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	kqueue, empty	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->NVAL(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->NVAL(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->NVAL(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	kqueue, an event pending	filters READ=ready(flags=0x11 fflags=0 data=1) READ+OOBAND=ready(flags=0x11 fflags=0 data=1) WRITE=EINVAL VNODE(EXTEND)=EINVAL vnode-uniform=1
+S	kqueue, an event pending	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=17
+S	kqueue, an event pending	answers 0->0(rv=0) IN->IN(rv=1) PRI->PRI(rv=1) OUT->NVAL(rv=1) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->RDNORM(rv=1) RDBAND->RDBAND(rv=1) WRBAND->NVAL(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->NVAL(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	closed descriptor	filters READ=EBADF READ+OOBAND=EBADF WRITE=EBADF VNODE(EXTEND)=EBADF vnode-uniform=1
+S	closed descriptor	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=2
+S	closed descriptor	answers 0->0(rv=0) IN->NVAL(rv=1) PRI->NVAL(rv=1) OUT->NVAL(rv=1) ERR->0(rv=0) HUP->NVAL(rv=1) NVAL->0(rv=0) RDNORM->NVAL(rv=1) RDBAND->NVAL(rv=1) WRBAND->NVAL(rv=1) EXTEND->NVAL(rv=1) ATTRIB->NVAL(rv=1) NLINK->NVAL(rv=1) WRITE->NVAL(rv=1) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->NVAL(rv=1) IN|EXTEND->NVAL(rv=1) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->NVAL(rv=1)
+S	descriptor -1	filters READ=EBADF READ+OOBAND=EBADF WRITE=EBADF VNODE(EXTEND)=EBADF vnode-uniform=1
+S	descriptor -1	sweep 65536 masks: mismatches=0 rv-mismatches=0 failures=0 distinct-revents=1
+S	descriptor -1	answers 0->0(rv=0) IN->0(rv=0) PRI->0(rv=0) OUT->0(rv=0) ERR->0(rv=0) HUP->0(rv=0) NVAL->0(rv=0) RDNORM->0(rv=0) RDBAND->0(rv=0) WRBAND->0(rv=0) EXTEND->0(rv=0) ATTRIB->0(rv=0) NLINK->0(rv=0) WRITE->0(rv=0) 0x2000->0(rv=0) 0x4000->0(rv=0) 0x8000->0(rv=0) IN|OUT->0(rv=0) IN|EXTEND->0(rv=0) IN|PRI|OUT|ERR|HUP|NVAL|RDNORM|RDBAND|WRBAND|EXTEND|ATTRIB|NLINK|WRITE|0x2000|0x4000|0x8000->0(rv=0)
+M	M1 queued listener twice, IN and IN	rv=1	[0] 0; [1] IN
+M	M2 queued listener and its dup, IN and IN	rv=2	[0] IN; [1] IN
+M	M3 queued listener IN|EXTEND beside an idle socket IN	rv=1	[0] IN|NVAL; [1] 0
+M	M4 queued listener IN|EXTEND alone	rv=1	[0] NVAL
+M	M5 queued listener IN|EXTEND beside fd -1	rv=1	[0] IN|NVAL; [1] 0
+M	M6 fd -1 IN beside a closed fd IN	rv=1	[0] 0; [1] NVAL
+M	M7 closed fd 0 beside closed fd IN	rv=1	[0] 0; [1] NVAL
+M	M8 closed fd IN beside queued listener IN	rv=2	[0] NVAL; [1] IN
+M	M9 queued listener IN, then the same IN|EXTEND	rv=1	[0] 0; [1] IN|NVAL
+M	M10 queued listener IN|EXTEND, then the same IN	rv=2	[0] NVAL; [1] IN
+M	M11 connected client OUT, then the same IN	rv=1	[0] OUT; [1] 0
+M	M12 connected client OUT twice	rv=1	[0] 0; [1] OUT
+M	M13 peer-closed client IN|OUT, then the same IN	rv=2	[0] OUT; [1] IN|HUP
+M	M14 peer-closed client IN|OUT, then the same OUT	rv=2	[0] IN|HUP; [1] OUT
+M	M15 peer-closed client OUT, then the same IN	rv=2	[0] OUT; [1] IN|HUP
+M	M16 peer-closed client IN, then the same OUT	rv=2	[0] IN|HUP; [1] OUT
+M	M17 pipe holding 3, IN then PRI	rv=0	[0] 0; [1] 0
+M	M18 pipe holding 3, PRI then IN	rv=1	[0] 0; [1] IN
+M	M19 pipe holding 3, IN then IN|PRI	rv=1	[0] 0; [1] IN
+M	M20 pipe holding 3, PRI then IN|RDNORM	rv=1	[0] 0; [1] IN|RDNORM
+M	M21 pipe read end holding 3, IN|OUT then OUT	rv=1	[0] IN; [1] 0
+M	M22 pipe holding 3, writer closed, IN then PRI	rv=1	[0] 0; [1] PRI|HUP
+M	M23 regular file, IN then PRI	rv=0	[0] 0; [1] 0
+M	M24 regular file, PRI then IN	rv=1	[0] 0; [1] IN
+M	M25 regular file, IN|EXTEND then EXTEND	rv=1	[0] IN; [1] 0
+W	W11 idle socket IN|OUT, background poller, CPUs busy; connect, accept, peer close	40 trials: IN|OUT|HUP x36 OUT x4
+W	W11b the same without the peer's close	20 trials: OUT x20
+W	W1 empty listener IN, a connection at 50 ms	rv=1	-	after 54 ms	IN
+W	W2 empty listener HUP, a connection at 50 ms	rv=0	-	after 300 ms	0
+W	W3 empty listener HUP|OUT, a connection at 50 ms	rv=0	-	after 301 ms	0
+W	W4 connected client IN, the peer closes at 50 ms	rv=1	-	after 51 ms	IN|HUP
+W	W5 connected client HUP, the peer closes at 50 ms	rv=1	-	after 55 ms	HUP
+W	W6 idle socket IN|OUT; connect, accept, peer close while stopped	rv=1	OUT	after 238 ms
+W	W6 control: a fresh poll IN|OUT in that state	rv=1	-	after 0 ms	IN|HUP
+W	W6b idle socket IN|OUT; connect, accept while stopped	rv=1	OUT	after 244 ms
+W	W6c idle socket IN|OUT; connect refused while stopped	rv=1	IN|HUP	after 202 ms
+W	W6d idle socket OUT; connect refused while stopped	rv=1	HUP	after 205 ms
+W	W6c control: a fresh poll IN|OUT on a refused socket	rv=1	-	after 0 ms	IN|HUP
+W	W7 pipe read end holding 3, HUP, the writer closes at 50 ms	rv=0	-	after 301 ms	0
+W	W7 control: empty pipe read end, HUP, the writer closes at 50 ms	rv=1	-	after 50 ms	HUP
+W	W8 empty pipe read end IN, a write at 50 ms	rv=1	-	after 55 ms	IN
+W	W9 a closed descriptor asking 0, timeout 200	rv=0	-	after 200 ms	0
+W	W9 nfds 0, timeout 200	rv=0	-	after 201 ms	
+W	W10 queued listener HUP, another connection at 50 ms	rv=0	-	after 301 ms	0
+N	RLIMIT_NOFILE cur=1048576 max=9223372036854775807, uid 501
+N	limit=1048576 nfds=0 buffer=NULL	rv=0	-
+N	limit=1048576 nfds=0 buffer=70000 entries	rv=0	-
+N	limit=1048576 nfds=1 buffer=NULL	rv=-1	EFAULT
+N	limit=1048576 nfds=1 buffer=70000 entries	rv=0	-
+N	limit=1048576 nfds=64 buffer=NULL	rv=-1	EFAULT
+N	limit=1048576 nfds=64 buffer=70000 entries	rv=0	-
+N	limit=1048576 nfds=65 buffer=NULL	rv=-1	EFAULT
+N	limit=1048576 nfds=65 buffer=70000 entries	rv=0	-
+N	limit=1048576 nfds=1024 buffer=NULL	rv=-1	EFAULT
+N	limit=1048576 nfds=1024 buffer=70000 entries	rv=0	-
+N	limit=1048576 nfds=1025 buffer=NULL	rv=-1	EFAULT
+N	limit=1048576 nfds=1025 buffer=70000 entries	rv=0	-
+N	limit=1048576 nfds=2048 buffer=NULL	rv=-1	EFAULT
+N	limit=1048576 nfds=2048 buffer=70000 entries	rv=0	-
+N	limit=1048576 nfds=2049 buffer=NULL	rv=-1	EFAULT
+N	limit=1048576 nfds=2049 buffer=70000 entries	rv=0	-
+N	limit=1048576 nfds=10240 buffer=NULL	rv=-1	EFAULT
+N	limit=1048576 nfds=10240 buffer=70000 entries	rv=0	-
+N	limit=1048576 nfds=10241 buffer=NULL	rv=-1	EINVAL
+N	limit=1048576 nfds=10241 buffer=70000 entries	rv=-1	EINVAL
+N	limit=1048576 nfds=65536 buffer=NULL	rv=-1	EINVAL
+N	limit=1048576 nfds=65536 buffer=70000 entries	rv=-1	EINVAL
+N	limit=1048576 nfds=2147483647 buffer=NULL	rv=-1	EINVAL
+N	limit=1048576 nfds=2147483647 buffer=70000 entries	rv=-1	EINVAL
+N	limit=1048576 nfds=2147483648 buffer=NULL	rv=-1	EINVAL
+N	limit=1048576 nfds=2147483648 buffer=70000 entries	rv=-1	EINVAL
+N	limit=1048576 nfds=4294967295 buffer=NULL	rv=-1	EINVAL
+N	limit=1048576 nfds=4294967295 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=0 buffer=NULL	rv=0	-
+N	limit=64 nfds=0 buffer=70000 entries	rv=0	-
+N	limit=64 nfds=1 buffer=NULL	rv=-1	EFAULT
+N	limit=64 nfds=1 buffer=70000 entries	rv=0	-
+N	limit=64 nfds=64 buffer=NULL	rv=-1	EFAULT
+N	limit=64 nfds=64 buffer=70000 entries	rv=0	-
+N	limit=64 nfds=65 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=65 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=1024 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=1024 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=1025 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=1025 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=2048 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=2048 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=2049 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=2049 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=10240 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=10240 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=10241 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=10241 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=65536 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=65536 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=2147483647 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=2147483647 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=2147483648 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=2147483648 buffer=70000 entries	rv=-1	EINVAL
+N	limit=64 nfds=4294967295 buffer=NULL	rv=-1	EINVAL
+N	limit=64 nfds=4294967295 buffer=70000 entries	rv=-1	EINVAL
+N	limit=2048 nfds=0 buffer=NULL	rv=0	-
+N	limit=2048 nfds=0 buffer=70000 entries	rv=0	-
+N	limit=2048 nfds=1 buffer=NULL	rv=-1	EFAULT
+N	limit=2048 nfds=1 buffer=70000 entries	rv=0	-
+N	limit=2048 nfds=64 buffer=NULL	rv=-1	EFAULT
+N	limit=2048 nfds=64 buffer=70000 entries	rv=0	-
+N	limit=2048 nfds=65 buffer=NULL	rv=-1	EFAULT
+N	limit=2048 nfds=65 buffer=70000 entries	rv=0	-
+N	limit=2048 nfds=1024 buffer=NULL	rv=-1	EFAULT
+N	limit=2048 nfds=1024 buffer=70000 entries	rv=0	-
+N	limit=2048 nfds=1025 buffer=NULL	rv=-1	EFAULT
+N	limit=2048 nfds=1025 buffer=70000 entries	rv=0	-
+N	limit=2048 nfds=2048 buffer=NULL	rv=-1	EFAULT
+N	limit=2048 nfds=2048 buffer=70000 entries	rv=0	-
+N	limit=2048 nfds=2049 buffer=NULL	rv=-1	EINVAL
+N	limit=2048 nfds=2049 buffer=70000 entries	rv=-1	EINVAL
+N	limit=2048 nfds=10240 buffer=NULL	rv=-1	EINVAL
+N	limit=2048 nfds=10240 buffer=70000 entries	rv=-1	EINVAL
+N	limit=2048 nfds=10241 buffer=NULL	rv=-1	EINVAL
+N	limit=2048 nfds=10241 buffer=70000 entries	rv=-1	EINVAL
+N	limit=2048 nfds=65536 buffer=NULL	rv=-1	EINVAL
+N	limit=2048 nfds=65536 buffer=70000 entries	rv=-1	EINVAL
+N	limit=2048 nfds=2147483647 buffer=NULL	rv=-1	EINVAL
+N	limit=2048 nfds=2147483647 buffer=70000 entries	rv=-1	EINVAL
+N	limit=2048 nfds=2147483648 buffer=NULL	rv=-1	EINVAL
+N	limit=2048 nfds=2147483648 buffer=70000 entries	rv=-1	EINVAL
+N	limit=2048 nfds=4294967295 buffer=NULL	rv=-1	EINVAL
+N	limit=2048 nfds=4294967295 buffer=70000 entries	rv=-1	EINVAL
+N	read-only buffer, fd -1	rv=-1	EFAULT
+N	read-only buffer, a ready listener	rv=-1	EFAULT
+N	read-only buffer, a ready listener, timeout 100	rv=-1	EFAULT
+N	read-only buffer, fd -1, timeout 100	rv=-1	EFAULT	after 101 ms

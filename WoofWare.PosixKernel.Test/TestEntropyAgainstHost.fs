@@ -180,7 +180,7 @@ module TestEntropyAgainstHost =
                                 hostAnswer (int64 (getrandom (address storage where, unativeint count, flags)))
 
                             let modelled =
-                                match UnixEntropy.getRandom (classify where) count flags system with
+                                match UnixEntropy.getRandom 0 (classify where) count flags system with
                                 | Ok (GetRandomAnswer.Completed draw, _) -> Ok (int64 (EntropyDraw.count draw))
                                 | Ok (GetRandomAnswer.Failed error, _) ->
                                     Error (

@@ -62,13 +62,17 @@ module MinipalRandom =
 
     /// `length` bytes for CoreCLR's own copy of minipal, and the kernel after
     /// handing them out. `operation` names the entry point that asked, for
-    /// diagnostics.
+    /// diagnostics, and `thread` the thread that called it.
     ///
     /// On Linux, `getrandom(GRND_INSECURE)` in place of CoreCLR's unmodelled
     /// descriptor: the same bytes from the same pool. On Darwin,
     /// `CCRandomGenerateBytes`, from libSystem's generator.
+    ///
+    /// Fails loudly for a Linux request of more than a page by a thread with a
+    /// signal pending, which the kernel's `getrandom` refuses.
     let coreClrSecureRandomBytes
         (operation : string)
+        (thread : ThreadId)
         (length : int)
         (kernel : EmulatedKernel)
         : ImmutableArray<byte> * EmulatedKernel
@@ -89,7 +93,7 @@ module MinipalRandom =
                 system
             else
 
-            match UnixEntropy.getRandom UserBuffer.Mapped (uint64 remaining) GetRandomFlags.Insecure system with
+            match UnixEntropy.getRandom thread UserBuffer.Mapped (uint64 remaining) GetRandomFlags.Insecure system with
             | Ok (GetRandomAnswer.Completed draw, system) ->
                 let moved = EntropyDraw.count draw
 
@@ -102,6 +106,9 @@ module MinipalRandom =
             | Ok (GetRandomAnswer.Failed error, _) ->
                 failwith
                     $"%s{operation}: getrandom of %d{remaining} bytes into storage PawPrint owns answered %O{error} (this is a bug in the kernel library)."
+            | Error (GetRandomRefusal.SignalAtPageBoundary _ as refusal) ->
+                failwith
+                    $"%s{operation}: getrandom of %d{remaining} bytes on thread %O{thread}, which has a signal pending, was refused: %s{GetRandomRefusal.describe refusal}"
             | Error refusal ->
                 failwith
                     $"%s{operation}: getrandom of %d{remaining} bytes was refused: %s{GetRandomRefusal.describe refusal}"

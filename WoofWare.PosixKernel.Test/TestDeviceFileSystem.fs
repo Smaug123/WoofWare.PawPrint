@@ -380,9 +380,9 @@ module TestDeviceFileSystem =
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"chmod / as root: %A{other}"
 
+        // Root then gives up its privilege for an ordinary user's IDs.
         let sticky =
-            UnixSystem.withCredentials
-                context
+            Become.fully
                 (Credentials.ofIds (UserId.parseOrFail context 1000u) (GroupId.parseOrFail context 1000u) [])
                 sticky
 

@@ -24,9 +24,11 @@
     <Compile Include="PReadUnchanged.fs" />
     <Compile Include="DirectoryReading.fs" />
     <Compile Include="Owners.fs" />
+    <Compile Include="Become.fs" />
     <Compile Include="LaunchedStreams.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="Tasks.fs" />
+    <Compile Include="PendingSignal.fs" />
     <Compile Include="HandlerFrames.fs" />
     <Compile Include="Interruptible.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
@@ -35,6 +37,7 @@
     <Compile Include="TestInodeOwner.fs" />
     <Compile Include="TestPermissionStanding.fs" />
     <Compile Include="TestGetGroups.fs" />
+    <Compile Include="TestCredentialChange.fs" />
     <Compile Include="TestModeChange.fs" />
     <Compile Include="TestUmask.fs" />
     <Compile Include="TestAccess.fs" />
@@ -142,6 +145,11 @@
     <Compile Include="TestEpollCreate1.fs" />
     <Compile Include="TestEpollWait.fs" />
     <Compile Include="TestKqueue.fs" />
+    <Compile Include="KeventWorld.fs" />
+    <Compile Include="TestKeventMeasured.fs" />
+    <Compile Include="TestKeventRegistration.fs" />
+    <Compile Include="TestKeventWriteData.fs" />
+    <Compile Include="TestDarwinPoll.fs" />
     <Compile Include="TestPipeBuffer.fs" />
     <Compile Include="TestPipeBufferCorpus.fs" />
     <Compile Include="TestPipeBufferAgainstHost.fs" />
@@ -180,6 +188,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- What `setresuid(2)`, `setresgid(2)`, `setgroups(2)`, `getresuid(2)` and
+         `getresgid(2)` answered, measured per flavour by
+         docs/plans/2026-08-23-posix-kernel-extraction/setresid.c and embedded
+         from beside it. `TestCredentialChange` replays every row. -->
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\setresid.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.setresid.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\setresid.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.setresid.darwin.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- What `chown(2)`, `lchown(2)` and `fchown(2)` answered, measured per
          flavour by docs/plans/2026-08-23-posix-kernel-extraction/chown-rules.c,
          whose output is embedded from beside it rather than copied.
@@ -210,6 +227,15 @@
          docs/plans/2026-08-23-posix-kernel-extraction/kqueue-kevent.c, whose
          output is embedded from beside it. `TestKqueue` replays it. -->
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\kqueue-kevent.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.kqueueKevent.darwin.txt" />
+    <!-- kevent-register.c's output, measured on Darwin 27.0.0 arm64. `TestKeventMeasured`
+         replays it. -->
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\kevent-register.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.keventRegister.darwin.txt" />
+    <!-- kevent-write-data.c's output, measured on Darwin 27.0.0 arm64. `TestKeventWriteData`
+         replays it. -->
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\kevent-write-data.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.keventWriteData.darwin.txt" />
+    <!-- poll-darwin.c's output, measured on Darwin 27.0.0 arm64. `TestDarwinPoll`
+         replays its answers. -->
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\poll-darwin.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.pollDarwin.darwin.txt" />
   </ItemGroup>
 
   <ItemGroup>

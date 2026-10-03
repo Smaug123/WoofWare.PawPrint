@@ -390,6 +390,26 @@ module TestImpureCases =
             // ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
             // such a path directly in the meantime.
             currentDirectoryCase "/héllo/中文/🐶"
+            {
+                // Managed async connect, accept, send and receive over loopback on a
+                // Darwin kernel. Parked: the connect and the accept work
+                // (`SocketAsyncConnectDarwin.cs` carries them), but the send and
+                // receive need data transfer on a connection -- SystemNative_Send
+                // and SystemNative_Receive, and a receive path in the kernel --
+                // which this kernel does not model: it stops at "Unimplemented
+                // native method ... SystemNative_Receive" (measured). Un-park when
+                // it does.
+                FileName = "SocketAsyncSendReceiveDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -2350,6 +2370,80 @@ module TestImpureCases =
                     )
             }
             {
+                // Registrations on a Darwin process's kqueue through the shim:
+                // what a listener, a connected socket, a refused one and a peer's
+                // close report, converted to SocketEvents, and a removal of what
+                // is not registered. Every row measured on Darwin 27.0.0 by
+                // kevent-register.c.
+                FileName = "KqueueRegistrationDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no descriptor number or port, only results,
+                // counts, data and SocketEvents. Its send-buffer sizes are the
+                // defaults of a macOS host's net.inet.tcp.sendspace and lo0 MTU,
+                // which a host that changed either would not report.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Managed AcceptAsync over loopback on a Darwin kernel:
+                // SocketAsyncEngine registers the listener with its kqueue and waits
+                // for its READ to report each connection.
+                FileName = "SocketAsyncAcceptDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no port number, only that the two ends of
+                // each connection agree.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Managed ConnectAsync and AcceptAsync over loopback on a Darwin
+                // kernel, one connect completing and one refused, with no data
+                // carried. Each completes through SocketPal.TryCompleteConnect,
+                // which polls the socket for POLLOUT before reading SO_ERROR.
+                FileName = "SocketAsyncConnectDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no port number, only that the ends agree and
+                // which SocketError the refusal raises.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `SystemNative_Poll`'s Darwin-flavour rows: Darwin's poll is built
+                // over kqueue, so nothing is reported unasked, a descriptor named
+                // twice reports into the later entry, and a reported HUP suppresses
+                // OUT. Every row measured on Darwin 27.0.0 by poll-darwin.c.
+                FileName = "SocketPollDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts revents and counts, and no descriptor number
+                // or port.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The event-buffer stride under the epoll backend, seen through the
                 // count at which PawPrint can no longer address the block. Not
                 // differential: a real libc succeeds at every count here.
@@ -3556,6 +3650,7 @@ module TestImpureCases =
                         let _, expected =
                             MinipalRandom.coreClrSecureRandomBytes
                                 "test"
+                                (ThreadId 0)
                                 16
                                 (KernelConfig.toKernel KernelConfig.Default)
 

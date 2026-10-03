@@ -140,6 +140,35 @@ module SocketEventsPal =
                 change KeventFilter.Write saWrite
         ]
 
+    /// `GetSocketEvents`, the kqueue build's: the `SocketEvents` mask
+    /// `SystemNative_WaitForSocketEvents` writes for one event `kevent`
+    /// reported, from its `filter` and `flags`.
+    ///
+    /// `EVFILT_READ` is `SA_READ`, with `SA_READCLOSE` for `EV_EOF`;
+    /// `EVFILT_WRITE` is `SA_WRITE`, with `SA_READ` for `EV_EOF` ("EOF may be
+    /// handled as an EVFILT_READ | EVFILT_WRITE event", pal_networking.c); and
+    /// `EV_ERROR` adds `SA_ERROR` to either. No other filter is ever
+    /// registered, so none can be reported.
+    let ofKevent (filter : int16) (flags : uint16) : int =
+        let saRead = 0x01
+        let saWrite = 0x02
+        let saReadClose = 0x04
+        let saError = 0x10
+        let eof = flags &&& KeventFlags.Eof <> 0us
+
+        let events =
+            match filter with
+            | KeventFilter.Read -> saRead ||| (if eof then saReadClose else 0)
+            | KeventFilter.Write -> saWrite ||| (if eof then saRead else 0)
+            | other ->
+                failwith
+                    $"SocketEventsPal.ofKevent: kevent reported filter %d{other}, but only EVFILT_READ and EVFILT_WRITE are ever registered through this shim (this is an interpreter bug)."
+
+        if flags &&& KeventFlags.Error <> 0us then
+            events ||| saError
+        else
+            events
+
     /// The stride of the event buffer `SystemNative_CreateSocketEventBuffer`
     /// allocates and `SystemNative_WaitForSocketEvents` fills, in bytes.
     ///

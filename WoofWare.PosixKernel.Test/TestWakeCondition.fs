@@ -14,6 +14,7 @@ open WoofWare.PosixKernel
 /// kernel. The world is built so that every primitive's answer is known: two socket
 /// event ports, which share one anonymous inode and so contend under `flock`, with an
 /// exclusive lock held through the first; neither port has anything to deliver;
+/// two kqueues, the first with a ready listener queued and the second drained;
 /// the standard streams, whose readiness is the launch shape's; and two tasks,
 /// of which only `signalled` has a caught signal pending.
 [<TestFixture>]
@@ -66,6 +67,57 @@ module TestWakeCondition =
             | _, Some error -> failwith $"expected the lock to be granted, got %O{error}"
 
         let system = withRegistry registry system |> Tasks.spawn 1
+
+        // A listener holding a connection, registered for EVFILT_READ with the first
+        // kqueue and queued there, for `KqueueEventDeliverable`'s true answer. The
+        // filter reads only the socket's phase.
+        let listenerFd, system =
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+        let inet = Some SimulatedUnixPlatform.internetAddressFamily
+        let loopback = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
+
+        let system =
+            match UnixSocket.bind listenerFd UserBuffer.Mapped 16u inet (Some loopback) system with
+            | Ok (BindAnswer.Bound _, system) -> system
+            | other -> failwith $"binding the listener: %A{other}"
+
+        let system =
+            match UnixSocket.listen listenerFd 8 system with
+            | Ok (ListenAnswer.Listening _, system) -> system
+            | other -> failwith $"listening: %A{other}"
+
+        let clientFd, system =
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+        let system =
+            match UnixConnection.connect clientFd UserBuffer.Mapped 16u inet (Some loopback) system with
+            | Ok (ConnectOutcome.Completed, system) -> system
+            | other -> failwith $"connecting: %A{other}"
+
+        let system =
+            let key = listenerFd, KqueueFilter.Read
+
+            withRegistry
+                (FileDescriptorRegistry.setKqueueState
+                    (idOf 5 system)
+                    {
+                        Drained = false
+                        Registrations =
+                            Map.ofList
+                                [
+                                    key,
+                                    {
+                                        Clear = true
+                                        Receipt = false
+                                        UserData = 0UL
+                                        RegisteredAt = 0L
+                                    }
+                                ]
+                        Active = [ key ]
+                    }
+                    system.Process.FileDescriptors)
+                system
 
         let system =
             { system with
@@ -125,6 +177,8 @@ module TestWakeCondition =
             WakePrimitive.PipeReadWhileNonBlocking (idOf 1 system, -1L), false
             WakePrimitive.KqueueDrained (idOf 5 system), false
             WakePrimitive.KqueueDrained (idOf 6 system), true
+            WakePrimitive.KqueueEventDeliverable (idOf 5 system), true
+            WakePrimitive.KqueueEventDeliverable (idOf 6 system), false
         ]
 
     let private at (clock : int64) : UnixSystem<int, string> =
@@ -142,6 +196,8 @@ module TestWakeCondition =
         | WakePrimitive.FlockGrantable _
         | WakePrimitive.SocketEventDeliverable _
         | WakePrimitive.KqueueDrained _
+        | WakePrimitive.KqueueEventDeliverable _
+        | WakePrimitive.KqueuePollReportable
         | WakePrimitive.DescriptorReady _
         | WakePrimitive.AcceptQueueNonEmpty _
         | WakePrimitive.PipeHasBytes _
@@ -225,16 +281,18 @@ module TestWakeCondition =
     let ``a kevent wait on a kqueue that has gone is a broken park, not an answer`` () : unit =
         // A park holds the kqueue it waits on until the call returns, so the kqueue
         // cannot have gone under a waiter.
-        let exn =
-            Assert.Throws<exn> (fun () ->
-                WakeCondition.satisfied
-                    0
-                    (WakeCondition.Primitive (WakePrimitive.KqueueDrained (OpenFileDescriptionId 999L)))
-                    system
-                |> ignore<Set<WakePrimitive>>
-            )
+        for primitive in
+            [
+                WakePrimitive.KqueueDrained (OpenFileDescriptionId 999L)
+                WakePrimitive.KqueueEventDeliverable (OpenFileDescriptionId 999L)
+            ] do
+            let exn =
+                Assert.Throws<exn> (fun () ->
+                    WakeCondition.satisfied 0 (WakeCondition.Primitive primitive) system
+                    |> ignore<Set<WakePrimitive>>
+                )
 
-        exn.Message |> shouldContainText "is not in the table"
+            exn.Message |> shouldContainText "a park holds what it waits on"
 
     [<Test>]
     let ``satisfied agrees with the flattening oracle`` () : unit =
@@ -351,6 +409,8 @@ module TestWakeCondition =
                         | WakePrimitive.FlockGrantable _
                         | WakePrimitive.SocketEventDeliverable _
                         | WakePrimitive.KqueueDrained _
+                        | WakePrimitive.KqueueEventDeliverable _
+                        | WakePrimitive.KqueuePollReportable
                         | WakePrimitive.DescriptorReady _
                         | WakePrimitive.AcceptQueueNonEmpty _
                         | WakePrimitive.PipeHasBytes _

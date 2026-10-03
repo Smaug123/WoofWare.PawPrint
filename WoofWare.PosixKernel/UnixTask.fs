@@ -59,6 +59,9 @@ type ParkedKevent =
         /// The `nevents` the call was made with: positive, since a call with
         /// none to take returns at once.
         MaxEvents : int
+        /// The eventlist the call was given to copy events out to, as the
+        /// caller classified it when the call was entered.
+        Buffer : UserBuffer
         /// The instant, in nanoseconds since boot, at which the wait stops and
         /// returns no events; or `None` for a wait with a null timeout.
         Deadline : int64 option
@@ -92,8 +95,27 @@ type ParkedFlock =
         Mode : FlockMode
     }
 
-/// One entry of a parked `poll(2)`, as the call captured it when it went to
-/// sleep.
+/// One entry of a `poll(2)` call, as its caller supplied it: `struct pollfd`'s
+/// `fd` and `events`, without the `revents` the kernel writes back.
+type PollEntry =
+    {
+        /// The descriptor to poll. A negative one is not an error: measured on
+        /// both kernels, it is ignored, reports nothing, and does not count
+        /// towards the return value.
+        Fd : int
+        /// What the caller asked about: `events`, as raw bits in the simulated
+        /// flavour's own `<poll.h>` numbering.
+        ///
+        /// Under Linux, `POLLERR`, `POLLHUP` and `POLLNVAL` are reported whether
+        /// or not they appear here. Under Darwin, a request names kqueue filters
+        /// rather than conditions, and a request of none of the bits that
+        /// register one (`ERR`, `NVAL` and the bits above `POLLWRITE` among
+        /// them) reports nothing at all, even for a descriptor that is not open.
+        Events : int16
+    }
+
+/// One entry of a parked Linux-flavoured `poll(2)`, as the call captured it
+/// when it went to sleep.
 [<RequireQualifiedAccess>]
 type ParkedPollEntry =
     /// A negative descriptor, which `poll` ignores: it reports nothing and
@@ -109,7 +131,7 @@ type ParkedPollEntry =
     /// stay in step.
     | Watched of fd : int * description : OpenFileDescriptionId * events : int16
 
-/// One task's in-flight `poll(2)`: every entry the call was made with, in order,
+/// One task's in-flight Linux-flavoured `poll(2)`: every entry the call was made with, in order,
 /// and when it times out.
 type ParkedPoll =
     {
@@ -119,6 +141,67 @@ type ParkedPoll =
         /// The instant, in nanoseconds since boot, at which the call stops
         /// waiting and returns 0; or `None` for a call that waits until a
         /// descriptor is ready.
+        Deadline : int64 option
+    }
+
+/// One filter a Darwin-flavoured `poll(2)` registered in the kqueue it makes
+/// for its own use, keyed beside it by the descriptor number and the filter.
+///
+/// Darwin's `poll` registers, for each entry, one filter per group of the bits
+/// it asks for, each added once only (`EV_ONESHOT`): the first report it makes
+/// removes it, whether or not that report adds anything to the entry.
+type PollRegistration =
+    {
+        /// The index, in the call's entries, of the entry the filter reports
+        /// into: the last entry naming this descriptor and filter, since a
+        /// later entry's registration of the same pair replaces the earlier's
+        /// `udata` rather than adding a filter (measured).
+        Entry : int
+        /// Whether the entry that first registered the pair asked for
+        /// `POLLPRI` or `POLLRDBAND`, which registers `EVFILT_READ` with
+        /// `EV_OOBAND`. A later entry's registration keeps the first one's
+        /// flags (measured). A socket's filter ignores the flag; every other
+        /// target's reports it back, and `poll` then answers `POLLPRI` and
+        /// `POLLRDBAND` for a ready read.
+        OutOfBand : bool
+        /// Where the pair's first registration stands in the order the call
+        /// made them. One event that activates several registrations of a
+        /// socket's filter, made through different descriptors onto it,
+        /// queues the latest-made first, as it does in a kqueue `kevent` fills.
+        RegisteredAt : int
+    }
+
+/// One task's in-flight Darwin-flavoured `poll(2)`: the kqueue the call made
+/// for its own use, and when it times out.
+///
+/// Darwin builds `poll` over kqueue: the call registers a filter per group of
+/// requested bits in a kqueue that has no descriptor, and translates what the
+/// filters report back into `revents`. A sleeping call keeps that kqueue, and
+/// what it reports when it wakes depends on what has been activated in it, and
+/// in which order -- not only on what its descriptors present then.
+type ParkedKqueuePoll =
+    {
+        /// The entries, in the caller's order, which is the order the
+        /// finishing call reports `revents` in.
+        Entries : PollEntry list
+        /// The filters still registered: those that have not yet reported, keyed
+        /// by descriptor number and filter. Closing a descriptor removes every
+        /// one made through it, as it does from a kqueue a process holds.
+        Registrations : Map<int * KqueueFilter, PollRegistration>
+        /// The registrations of sockets' filters something has activated since
+        /// the call last scanned, in the order they were activated: the order
+        /// a scan reports them in, which decides whether a reported `POLLHUP`
+        /// suppresses a socket's `POLLOUT`. Always a subset of
+        /// `Registrations`, with no duplicates, naming sockets alone.
+        ///
+        /// A pipe's filters are not listed: every operation that makes one
+        /// ready activates it (measured), and the order a pipe entry's two
+        /// filters report in cannot change what the entry answers, so a scan
+        /// reports a pipe's registration exactly while its filter is ready.
+        Active : (int * KqueueFilter) list
+        /// The instant, in nanoseconds since boot, at which the call stops
+        /// waiting and returns 0; or `None` for a call that waits until
+        /// something is reported.
         Deadline : int64 option
     }
 
@@ -215,6 +298,7 @@ type ParkedSyscall =
     | Kevent of ParkedKevent
     | Flock of ParkedFlock
     | Poll of ParkedPoll
+    | KqueuePoll of ParkedKqueuePoll
     | Accept of ParkedAccept
     | PipeRead of ParkedPipeRead
     | PipeWrite of ParkedPipeWrite
@@ -225,8 +309,8 @@ module ParkedSyscall =
     /// real syscall holds a reference to each file it found: each stays alive
     /// until the call returns, whatever descriptors are closed meanwhile.
     ///
-    /// A `poll` holds every description it watches, as Linux's holds each file
-    /// whose wait queue it sleeps on.
+    /// A Linux `poll` holds every description it watches, as Linux's holds each
+    /// file whose wait queue it sleeps on; a Darwin one holds none.
     let descriptions (parked : ParkedSyscall) : OpenFileDescriptionId list =
         match parked with
         | ParkedSyscall.SocketWait wait -> [ wait.Port ]
@@ -239,6 +323,13 @@ module ParkedSyscall =
                 | ParkedPollEntry.Ignored _ -> None
                 | ParkedPollEntry.Watched (_, description, _) -> Some description
             )
+        // XNU's poll holds no file across its sleep: a filter it registered
+        // goes when the descriptor it was registered through closes
+        // (`knote_fdclose`), and the file with it if that was the last
+        // reference. Measured (`poll-timeout.c` section E): a datagram sent to
+        // the address of a socket closed under a sleeping Darwin poll wakes
+        // nothing.
+        | ParkedSyscall.KqueuePoll _ -> []
         | ParkedSyscall.Accept accept -> [ accept.Listener ]
         | ParkedSyscall.PipeRead read -> [ read.Reader ]
         | ParkedSyscall.PipeWrite write -> [ write.Writer ]
@@ -427,6 +518,7 @@ module UnixTaskTable =
             | ParkedSyscall.PipeRead _ -> 4
             | ParkedSyscall.PipeWrite _ -> 5
             | ParkedSyscall.Kevent _ -> 6
+            | ParkedSyscall.KqueuePoll _ -> 7
 
         let sameSyscall =
             match existing.Parked with

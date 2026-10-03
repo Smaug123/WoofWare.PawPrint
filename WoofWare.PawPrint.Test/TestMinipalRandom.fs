@@ -291,7 +291,9 @@ module TestMinipalRandom =
     let ``CoreCLR's copy on Linux is getrandom's bytes, and opens no descriptor`` () : unit =
         let property (platform : SimulatedUnixPlatform) (seed : uint64) (length : int) : unit =
             let kernel = linuxAt platform seed
-            let bytes, after = MinipalRandom.coreClrSecureRandomBytes "test" length kernel
+
+            let bytes, after =
+                MinipalRandom.coreClrSecureRandomBytes "test" thread length kernel
 
             let expected, system =
                 if length = 0 then
@@ -300,6 +302,7 @@ module TestMinipalRandom =
 
                 match
                     UnixEntropy.getRandom
+                        thread
                         UserBuffer.Mapped
                         (uint64 length)
                         GetRandomFlags.Insecure
@@ -359,7 +362,9 @@ module TestMinipalRandom =
                             | NonSecureRandomFill.Filled bytes, kernel -> Seq.toArray bytes, kernel
                             | other, _ -> failwith $"%A{other}"
                         | _ ->
-                            let bytes, kernel = MinipalRandom.coreClrSecureRandomBytes "test" length kernel
+                            let bytes, kernel =
+                                MinipalRandom.coreClrSecureRandomBytes "test" thread length kernel
+
                             Seq.toArray bytes, kernel
                     )
                     kernel
@@ -384,9 +389,34 @@ module TestMinipalRandom =
         )
 
     [<Test>]
+    let ``CoreCLR's copy on Linux, asked for more than a page with a signal pending, stops the run, naming why``
+        ()
+        : unit
+        =
+        // A default SIGCONT stays pending for the thread it was sent to.
+        let kernel = linuxAt SimulatedUnixPlatform.linuxX64 7UL
+
+        let system =
+            match UnixSignal.pthreadKill thread 18 (EmulatedKernel.unix kernel) with
+            | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+            | other -> failwith $"pthread_kill: %A{other}"
+
+        let kernel = EmulatedKernel.withUnix system kernel
+
+        let thrown =
+            Assert.Throws<exn> (fun () -> MinipalRandom.coreClrSecureRandomBytes "test" thread 4097 kernel |> ignore)
+
+        thrown.Message |> shouldContainText "signal pending"
+
+        // A page or less is answered whatever is pending.
+        MinipalRandom.coreClrSecureRandomBytes "test" thread 4096 kernel
+        |> fst
+        |> fun bytes -> bytes.Length |> shouldEqual 4096
+
+    [<Test>]
     let ``a negative length is refused`` () : unit =
         (fun () ->
-            MinipalRandom.coreClrSecureRandomBytes "test" -1 EmulatedKernel.initial
+            MinipalRandom.coreClrSecureRandomBytes "test" thread -1 EmulatedKernel.initial
             |> ignore
         )
         |> shouldFail<exn>

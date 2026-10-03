@@ -63,6 +63,13 @@ type Syscall =
     /// `clonefile(2)`. The pathnames are their arguments' bytes, which this
     /// kernel copies in at the points it measured; `flags` is raw.
     | CloneFile of source : PathArgumentBytes * destination : PathArgumentBytes * flags : int
+    /// `setresuid(2)`. `None` is `(uid_t)-1`: leave that ID as it is.
+    | SetResUid of real : UserId option * effective : UserId option * saved : UserId option
+    /// `setresgid(2)`. `None` is `(gid_t)-1`: leave that ID as it is.
+    | SetResGid of real : GroupId option * effective : GroupId option * saved : GroupId option
+    /// `setgroups(2)` of a list of `size` groups, whose words are as the caller
+    /// read them.
+    | SetGroups of size : int * words : GroupListWords
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
@@ -86,6 +93,9 @@ type SyscallRefusal<'Task> =
     | CopyFileRange of CopyFileRangeRefusal
     | FileClone of FileCloneRefusal
     | CloneFile of CloneFileRefusal
+    /// `setresuid(2)` and `setresgid(2)` alike.
+    | SetIds of SetIdsRefusal
+    | SetGroups of SetGroupsRefusal
 
 /// A way this system's tables disagree with each other — a state no kernel
 /// could be in, and which the operations here exist to keep unreachable.
@@ -157,7 +167,8 @@ type UnixSystemDefect<'Task> =
     /// A connection in the table has an identity at or above the next one to
     /// allocate, so a future connect would mint a duplicate.
     | NextConnectionIdNotFresh of nextConnectionId : ConnectionId * existing : ConnectionId
-    /// A socket event registration records an ADD ordinal at or above the
+    /// A socket event registration, an epoll instance's or a kqueue's, records
+    /// an ADD ordinal at or above the
     /// next one to mint, so some future ADD would repeat it — and the
     /// ordinal's whole job is to order same-signal ties, which a repeat
     /// leaves unspecified.
@@ -218,6 +229,23 @@ type UnixSystemDefect<'Task> =
         fd : int *
         watched : OpenFileDescriptionId *
         current : OpenFileDescriptionId option
+    /// A task's parked Darwin `poll` registers a filter through `fd`, which is
+    /// not open (`target` is `None`) or names something other than a socket
+    /// whose filters are modelled or a pipe. Closing a descriptor removes its
+    /// registrations, a poll registers on nothing else, and a regular file's
+    /// filters are always ready, so they report before the call can sleep.
+    | ParkedKqueuePollRegistrationTarget of task : 'Task * fd : int * target : OpenFileTarget option
+    /// A task's parked Darwin `poll` attributes the registration `key` to
+    /// entry `entry`, which the call does not have.
+    | ParkedKqueuePollEntryOutOfRange of task : 'Task * key : (int * KqueueFilter) * entry : int
+    /// A task's parked Darwin `poll` lists `key` as activated where the list
+    /// may not hold it: `key` is not registered, is listed twice, or is not a
+    /// socket's filter (see `ParkedKqueuePoll.Active`).
+    | ParkedKqueuePollActiveMalformed of task : 'Task * key : (int * KqueueFilter)
+    /// A task's parked Darwin `poll` registers the socket filter `key`, which is
+    /// ready, and does not list it as activated: whatever made it ready did not
+    /// activate it, so the call would sleep through what a real one wakes for.
+    | ParkedKqueuePollActivationMissed of task : 'Task * key : (int * KqueueFilter)
     /// A task is parked in an `accept` on a description that is not a listening
     /// socket, which no accept could have produced and on which
     /// `WakeCondition.satisfied` crashes.
@@ -593,6 +621,18 @@ module UnixSystem =
             UnixNamespace.cloneFile source destination flags system
             |> answered
             |> Result.mapError SyscallRefusal.CloneFile
+        | Syscall.SetResUid (real, effective, saved) ->
+            UnixCredentials.setresuid real effective saved system
+            |> answered
+            |> Result.mapError SyscallRefusal.SetIds
+        | Syscall.SetResGid (real, effective, saved) ->
+            UnixCredentials.setresgid real effective saved system
+            |> answered
+            |> Result.mapError SyscallRefusal.SetIds
+        | Syscall.SetGroups (size, words) ->
+            UnixCredentials.setgroups size words system
+            |> answered
+            |> Result.mapError SyscallRefusal.SetGroups
 
     /// Every way this system's tables disagree with each other: the socket table
     /// and the pipe table against the descriptor table, each pipe and the pipe
@@ -805,8 +845,11 @@ module UnixSystem =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
-                | OpenFileTarget.Pipe _
-                | OpenFileTarget.Kqueue _ -> []
+                | OpenFileTarget.Pipe _ -> []
+                | OpenFileTarget.Kqueue state ->
+                    state.Registrations
+                    |> Map.toList
+                    |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
                 | OpenFileTarget.Epoll portState ->
                     portState.Registrations
                     |> Map.toList
@@ -927,6 +970,69 @@ module UnixSystem =
 
                                 target @ rebound
                     )
+                | Some (ParkedSyscall.KqueuePoll poll) ->
+                    let entries = List.length poll.Entries
+
+                    let socketOf (fd : int) : SocketId option =
+                        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                        | Some (OpenFileTarget.Socket socketId) -> Some socketId
+                        | Some _
+                        | None -> None
+
+                    let registrations =
+                        poll.Registrations
+                        |> Map.toList
+                        |> List.collect (fun ((fd, filter as key), registration) ->
+                            let target =
+                                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                                | Some (OpenFileTarget.Socket socketId) as target ->
+                                    match Map.tryFind socketId system.Machine.Sockets with
+                                    | Some socket when DarwinReadiness.modelsSocket socket ->
+                                        if
+                                            not (List.contains key poll.Active)
+                                            && Option.isSome (DarwinReadiness.ofSocket filter socketId system.Machine)
+                                        then
+                                            [ UnixSystemDefect.ParkedKqueuePollActivationMissed (task, key) ]
+                                        else
+                                            []
+                                    | Some _
+                                    | None ->
+                                        [ UnixSystemDefect.ParkedKqueuePollRegistrationTarget (task, fd, target) ]
+                                | Some (OpenFileTarget.Pipe _) -> []
+                                | target -> [ UnixSystemDefect.ParkedKqueuePollRegistrationTarget (task, fd, target) ]
+
+                            let entry =
+                                if registration.Entry >= 0 && registration.Entry < entries then
+                                    []
+                                else
+                                    [
+                                        UnixSystemDefect.ParkedKqueuePollEntryOutOfRange (
+                                            task,
+                                            key,
+                                            registration.Entry
+                                        )
+                                    ]
+
+                            target @ entry
+                        )
+
+                    let active =
+                        poll.Active
+                        |> List.indexed
+                        |> List.choose (fun (index, (fd, _ as key)) ->
+                            let repeated = poll.Active |> List.take index |> List.contains key
+
+                            if
+                                repeated
+                                || not (Map.containsKey key poll.Registrations)
+                                || Option.isNone (socketOf fd)
+                            then
+                                Some (UnixSystemDefect.ParkedKqueuePollActiveMalformed (task, key))
+                            else
+                                None
+                        )
+
+                    registrations @ active
                 | Some (ParkedSyscall.Accept accept) ->
                     match Map.tryFind accept.Listener descriptions with
                     | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, accept.Listener) ]
@@ -1562,8 +1668,8 @@ module UnixSystem =
     /// it always is, and on Darwin as the start of a quiet machine's counter,
     /// which a client moves with `withLeaderThreadId`.
     ///
-    /// The three fields the platform *fixes* are derived from it rather than
-    /// taken as arguments — `SoMaxConn`, `Mount`, and the platform
+    /// The fields the platform *fixes* are derived from it rather than
+    /// taken as arguments — `SoMaxConn`, `TcpSendSpace`, `Mount`, and the platform
     /// itself — because a machine whose flavour and those disagree is one no
     /// real system could be: `EmulatedFileSystemType.isReportableUnder` says
     /// outright that a Darwin kernel never reports tmpfs. Building the record
@@ -1650,6 +1756,7 @@ module UnixSystem =
                     NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
                     EphemeralPortRange = defaultEphemeralPortRange flavour
                     SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
+                    TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
                     LocalAddresses = defaultLocalAddresses
                     LocalRoutes = defaultLocalRoutes
                     NanosecondsSinceBoot = 0L

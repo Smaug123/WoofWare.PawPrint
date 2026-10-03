@@ -53,9 +53,16 @@ type SignalDisposition<'Handler> =
 /// On a real system this is the net effect of the process's `RLIMIT_CORE`,
 /// the machine's core-file settings and whether a dump could be written where
 /// they say, so it is configuration rather than a fact about the kernel.
+///
+/// Linux also writes no dump for a process whose dumpable flag is clear, which
+/// a change of its effective IDs can set or clear. This library starts every
+/// process dumpable, since it models no `exec(2)` of a set-ID program, and
+/// `CoreDumps` is not that flag: see `Suppressed`.
 [<RequireQualifiedAccess>]
 type CoreDumps =
-    /// No dump is written, as under an `RLIMIT_CORE` of 0.
+    /// No dump is written, as under an `RLIMIT_CORE` of 0: for a reason that a
+    /// change of the process's IDs leaves in place, so `UnixCredentials`'
+    /// calls keep a process at `Suppressed`.
     | Suppressed
     /// Every death by a signal whose default action dumps core writes one.
     | Written
