@@ -1387,10 +1387,11 @@ public static class Uses
         // Answering at all is the claim: it is a summary rather than a crash.
         against2 "ConstrainedReachesGonePointer" |> ignore<Set<string> * bool>
 
-    /// An instance method of a class whose base class is in an assembly nothing has loaded yet:
-    /// the analysis loads it when it needs the base chain, as it loads any other assembly.
+    /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
+    /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
+    /// any other assembly.
     [<Test>]
-    let ``an instance method is analysed when its class's base is in an assembly not yet loaded`` () : unit =
+    let ``a class whose base is in an assembly not yet loaded is spelled by loading it`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let source =
@@ -1401,6 +1402,13 @@ public class Child : System.ComponentModel.Component
 {
     public int Divide(int a, int b) => a / b;
 }
+
+public static class Spells
+{
+    public static bool Check(object x) => x is Child;
+    public static Child Cast(object x) => (Child)x;
+    public static object Make() => new Child();
+}
 """
 
         let image =
@@ -1409,6 +1417,7 @@ public class Child : System.ComponentModel.Component
         let fixture =
             Assembly.read loggerFactory (Some "Derives.dll") (new MemoryStream (image))
 
+        // Each asked of an analysis of its own, which has loaded nothing for another.
         let analysis, escapes =
             EscapeAnalysis.escapes (analysisOver [ fixture ] id) (methodNamed fixture "Derives.Child" "Divide")
 
@@ -1416,6 +1425,11 @@ public class Child : System.ComponentModel.Component
 
         if escapes.Unknown || not (shown.Contains "=System.DivideByZeroException") then
             failwith $"Child.Divide: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+        // Answering at all is the claim: it is a summary rather than a crash.
+        for name in [ "Check" ; "Cast" ; "Make" ] do
+            EscapeAnalysis.escapes (analysisOver [ fixture ] id) (methodNamed fixture "Derives.Spells" name)
+            |> ignore<EscapeAnalysisState * Escapes>
 
     /// A client whose struct has a method, called by nothing, using a type from an assembly that is
     /// not present at all. The JIT never reads that method, so a call on the struct runs.

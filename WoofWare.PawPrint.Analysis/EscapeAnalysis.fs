@@ -1190,6 +1190,44 @@ module EscapeAnalysis =
             returnTypeOfCall state assembly assembly.MethodSpecs.[handle].Method
         | _ -> state, None
 
+    /// A type definition as a body spells it, instantiated with its own type parameters, and
+    /// whether it is a value type. Deciding that walks the base chain, which loads whatever assembly
+    /// it passes through.
+    let private spelledDefinition
+        (state : EscapeAnalysisState)
+        (identity : ResolvedTypeIdentity)
+        : EscapeAnalysisState * TypeDefn * bool
+        =
+        let valueType = state.BaseTypes.ValueType.Identity
+        let state, derivesFromValueType = derivesFrom state identity valueType
+
+        let isValueType =
+            derivesFromValueType
+            && identity <> valueType
+            && identity <> state.BaseTypes.Enum.Identity
+
+        let kind =
+            if isValueType then
+                SignatureTypeKind.ValueType
+            else
+                SignatureTypeKind.Class
+
+        let _, definition = definitionOf state identity
+        let named = TypeDefn.FromDefinition (identity, kind)
+
+        let spelling =
+            if definition.Generics.IsEmpty then
+                named
+            else
+                TypeDefn.GenericInstantiation (
+                    named,
+                    definition.Generics
+                    |> Seq.mapi (fun index _ -> TypeDefn.GenericTypeParameter index)
+                    |> ImmutableArray.CreateRange
+                )
+
+        state, spelling, isValueType
+
     /// The type a type token of a body of `assembly` names, as that body spells it, with the full
     /// name of the assembly whose metadata spells it; `None` for a token that does not bind, or a
     /// definition or reference naming a generic type, whose type variables would not be the body's.
@@ -1199,6 +1237,15 @@ module EscapeAnalysis =
         (token : MetadataToken)
         : EscapeAnalysisState * (TypeDefn * string) option
         =
+        let ofDefinition (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) =
+            let _, definition = definitionOf state identity
+
+            if definition.Generics.IsEmpty then
+                let state, spelling, _ = spelledDefinition state identity
+                state, Some (spelling, identity.AssemblyFullName)
+            else
+                state, None
+
         match token with
         | MetadataToken.TypeDefinition _
         | MetadataToken.TypeReference _
@@ -1206,24 +1253,15 @@ module EscapeAnalysis =
             match bindToken state assembly token with
             | state, _, _ :: _ -> state, None
             | state, _, [] ->
-                let typeSystem, spelling, spellingAssembly =
-                    TypeSystemState.resolveTypeMetadataToken
-                        state.LoggerFactory
-                        state.RuntimeDirs
-                        state.BaseTypes
-                        state.TypeSystem
-                        assembly
-                        token
-
-                let state =
-                    { state with
-                        TypeSystem = typeSystem
-                    }
-
                 match token with
-                | MetadataToken.TypeSpecification _ -> state, Some (spelling, spellingAssembly.DefinitionFullName)
-                | _ when mentionsTypeVariable spelling -> state, None
-                | _ -> state, Some (spelling, spellingAssembly.DefinitionFullName)
+                | MetadataToken.TypeSpecification handle ->
+                    state, Some (assembly.TypeSpecs.[handle].Signature, assembly.DefinitionFullName)
+                | MetadataToken.TypeDefinition handle -> ofDefinition state assembly.TypeDefs.[handle].Identity
+                | MetadataToken.TypeReference handle ->
+                    match resolveTypeRef state assembly assembly.TypeRefs.[handle] with
+                    | state, Some identity -> ofDefinition state identity
+                    | state, None -> state, None
+                | _ -> state, None
         | _ -> state, None
 
     /// What a body of `method`, which may be one the VM substitutes for its own, spells for each
@@ -1287,35 +1325,12 @@ module EscapeAnalysis =
                 state, []
             else
                 let identity = method.RequiredDeclaringType.Identity
-                let valueType = state.BaseTypes.ValueType.Identity
 
-                // Walking the base chain loads whatever assembly it passes through.
-                let state, derivesFromValueType = derivesFrom state identity valueType
-
-                if
-                    derivesFromValueType
-                    && identity <> valueType
-                    && identity <> state.BaseTypes.Enum.Identity
-                then
-                    // `this` is a managed pointer to the value.
-                    state, [ StackValue.Unknown ]
-                else
-                    // The class, instantiated with its own type parameters, which are the body's.
-                    let _, declaring = definitionOf state identity
-                    let named = TypeDefn.FromDefinition (identity, SignatureTypeKind.Class)
-
-                    let spelling =
-                        if declaring.Generics.IsEmpty then
-                            named
-                        else
-                            TypeDefn.GenericInstantiation (
-                                named,
-                                declaring.Generics
-                                |> Seq.mapi (fun index _ -> TypeDefn.GenericTypeParameter index)
-                                |> ImmutableArray.CreateRange
-                            )
-
-                    state, [ objectOf false true spelling identity.AssemblyFullName ]
+                // The declaring type's own type parameters are the body's.
+                match spelledDefinition state identity with
+                // `this` is a managed pointer to the value.
+                | state, _, true -> state, [ StackValue.Unknown ]
+                | state, spelling, false -> state, [ objectOf false true spelling identity.AssemblyFullName ]
 
         let arguments = this @ (method.Signature.ParameterTypes |> List.map ofOwnSpelling)
 
