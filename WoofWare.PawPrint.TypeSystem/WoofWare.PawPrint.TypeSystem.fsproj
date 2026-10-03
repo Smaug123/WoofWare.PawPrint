@@ -32,6 +32,7 @@
         <Compile Include="ConcreteMethodTable.fs" />
         <Compile Include="ConcreteInterfaceDispatch.fs" />
         <Compile Include="ConcreteVirtualDispatch.fs" />
+        <Compile Include="StaticVirtualDispatch.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 

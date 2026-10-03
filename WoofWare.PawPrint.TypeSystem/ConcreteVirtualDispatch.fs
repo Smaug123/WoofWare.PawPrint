@@ -38,8 +38,8 @@ type VirtualImplementation =
 
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
 /// CoreCLR's `MethodTable::FindDispatchImpl` decides it: the receiver's dispatch table and
-/// MethodImpls, its dispatch map, default interface bodies, variance, and the SZ-array carve-out;
-/// and which implementation of a static abstract interface member a `constrained.` type supplies.
+/// MethodImpls, its dispatch map, default interface bodies, variance, and the SZ-array carve-out.
+/// A static virtual is dispatched by `StaticVirtualDispatch` instead.
 /// Whatever loads an assembly or registers a concrete type on the way returns the state it leaves
 /// behind; `dotnetRuntimeDirs` is where the loader looks for an assembly not yet loaded.
 [<RequireQualifiedAccess>]
@@ -707,7 +707,7 @@ module ConcreteVirtualDispatch =
         ///
         /// `None` means the shape is outside what this serves and the caller should fall back: an
         /// interface target, whose dispatch goes through the interface map rather than a vtable index;
-        /// a non-virtual or static target; a target with no MethodDef row; a receiver with no class
+        /// a non-virtual target; a target with no MethodDef row; a receiver with no class
         /// chain; `walkBaseTypes = false`, which is the `constrained.` exact-type probe; or a
         /// declaration owning no slot of its own declaring type.
         let tryResolveBySlotTable
@@ -721,7 +721,6 @@ module ConcreteVirtualDispatch =
                 not walkBaseTypes
                 || methodDeclaringType.IsInterface
                 || not methodToCall.IsVirtual
-                || methodToCall.IsStatic
                 || methodToCall.TryMetadata.IsNone
             then
                 state, None
@@ -974,8 +973,7 @@ module ConcreteVirtualDispatch =
         let state, classImplementation =
             match bySlotTable with
             | Some result -> state, Some result
-            | None when methodDeclaringType.IsInterface && not methodToCall.IsStatic ->
-                tryResolveByInterfaceDispatchMap state
+            | None when methodDeclaringType.IsInterface -> tryResolveByInterfaceDispatchMap state
             | None -> findClassImplementation state
 
         match classImplementation with
@@ -1439,9 +1437,6 @@ module ConcreteVirtualDispatch =
     /// against the real runtime, and it runs only after the exact instantiation's own default body
     /// has been looked for, which is `FindDispatchImpl`'s order.
     ///
-    /// The rule is deliberately restricted to *instance* methods; see the `methodToCall.IsStatic`
-    /// guard below for why static interface members neither need nor may use this path.
-    ///
     /// Returns `[]` when no such entry exists, leaving the caller's answer unchanged.
     let private variantInterfaceMapRetargets
         (loggerFactory : ILoggerFactory)
@@ -1457,20 +1452,6 @@ module ConcreteVirtualDispatch =
         =
         // A non-generic interface has nothing to vary, so it can never reach here.
         if methodToCall.DeclaringTypeGenerics.IsEmpty then
-            state, []
-        elif
-            // Static interface members do not reach the retarget: a static virtual slot has no
-            // name-based matching to fall back on, so implementing one requires an explicit
-            // MethodImpl row, and the MethodImpl path in `tryResolveVirtualImplementationForSlot`
-            // is already variance-aware (`sourcesPure/StaticAbstractVariantInterfaceDispatch.cs`
-            // exercises exactly that route). Declining here rather than assuming it holds matters
-            // because the first-wins tie-break below would be *wrong* for a static member:
-            // CoreCLR guards its equivalent shortcut on `!pInterfaceMD->IsStatic()`, so a static
-            // one keeps scanning for a conflict and can throw AmbiguousResolutionException. If
-            // this ever does become reachable, returning nothing leaves the caller's existing
-            // loud failure in place instead of silently diverging.
-            methodToCall.IsStatic
-        then
             state, []
         else
 
@@ -1585,6 +1566,8 @@ module ConcreteVirtualDispatch =
     ///
     /// `Unmodelled` where default bodies conflict through variance, among which CoreCLR's variance
     /// pass takes the first candidate in an order that is not modelled.
+    ///
+    /// `methodToCall` must be an instance method: a static virtual is `StaticVirtualDispatch`'s.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1596,6 +1579,10 @@ module ConcreteVirtualDispatch =
         (state : TypeSystemState)
         : TypeSystemState * VirtualImplementation
         =
+        if methodToCall.IsStatic then
+            failwith
+                $"virtual dispatch of %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}: a static virtual is resolved by StaticVirtualDispatch.resolve, not by instance dispatch"
+
         let state, primary =
             tryResolveVirtualImplementationForSlot
                 loggerFactory
@@ -1680,100 +1667,3 @@ module ConcreteVirtualDispatch =
                         $"variant interface dispatch of %s{methodToCall.Name}: the dispatch map found no class implementation through any variance-compatible entry, but retargeting onto %O{retargeted.DeclaringTypeGenerics} found %s{MethodOwner.describe resolved.Definition.Owner}::%s{resolved.Definition.Name}"
 
         firstResolved state retargets
-
-    /// Resolve a `constrained.`-prefixed reference to a static abstract interface member down to
-    /// the implementation the constrained type supplies, returning it alongside its declaring
-    /// type's handle.
-    ///
-    /// Shared by `constrained. call` and `constrained. ldftn`, which pick their target the same
-    /// way: CoreCLR routes both through `getCallInfo` with the constrained token, and the switch
-    /// there is `pConstrainedResolvedToken != NULL && pMD->IsInterface() && pMD->IsStatic()`
-    /// (`jitinterface.cpp`, `getCallInfo`). That test is computed before anything branches on
-    /// `CORINFO_CALLINFO_LDFTN`, so the *method chosen* cannot differ between the two opcodes;
-    /// what differs afterwards is only what the caller does with it.
-    ///
-    /// `opName` names the prefixed instruction (`constrained.call` / `Ldftn`), so a failure says
-    /// which one hit it rather than always blaming `call`.
-    ///
-    /// The instance-receiver forms of the prefix (`CORINFO_DEREF_THIS` / `CORINFO_BOX_THIS`) are
-    /// not implemented: Roslyn emits `constrained.` before `ldftn` only for static
-    /// abstract interface members, and before `call`/`callvirt` the instance cases are handled by
-    /// `executeCallvirt`'s own transformation. Anything else fails loudly here rather than being
-    /// guessed at.
-    let resolveConstrainedStaticInterfaceMethod
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (opName : string)
-        (constrainedTypeHandle : ConcreteTypeHandle)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
-        (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (state : TypeSystemState)
-        : TypeSystemState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
-        =
-        let methodDeclAssy =
-            state._LoadedAssemblies.ByDefinitionName methodToCall.DeclaringAssemblyFullName
-
-        let methodDeclType =
-            methodDeclAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
-
-        if not methodToCall.IsStatic || not methodDeclType.IsInterface then
-            failwith
-                $"%s{opName}: expected a static interface method, got %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}"
-
-        match constrainedTypeHandle with
-        | ConcreteTypeHandle.Concrete _ ->
-            // Registration is checked eagerly, and separately from rendering: an unregistered
-            // handle would otherwise surface as a confusing resolution failure below rather than
-            // as the bookkeeping error it is.
-            if (AllConcreteTypes.lookup constrainedTypeHandle state.ConcreteTypes).IsNone then
-                failwith $"%s{opName}: constrained type handle %O{constrainedTypeHandle} is not registered"
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ ->
-            failwith
-                $"%s{opName}: static interface dispatch for non-concrete constrained type %O{constrainedTypeHandle} is not implemented"
-
-        let state, implementation =
-            tryResolveVirtualImplementation
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                concretizedMethod.Generics
-                concretizedMethod
-                constrainedTypeHandle
-                true
-                state
-
-        match implementation with
-        | VirtualImplementation.NotOverridden ->
-            let constrained =
-                AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes constrainedTypeHandle
-
-            failwith $"%s{opName}: could not find static implementation of %s{methodToCall.Name} on %s{constrained}"
-        | VirtualImplementation.Ambiguous candidates ->
-            candidates
-            |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
-            |> String.concat ", "
-            // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
-            |> failwithf
-                "%s: multiple most-specific default interface implementations of %s: %s"
-                opName
-                methodToCall.Name
-        | VirtualImplementation.Unmodelled reason -> failwith $"%s{opName}: %s{reason}"
-        | VirtualImplementation.Found implementation when not implementation.Definition.IsStatic ->
-            failwith
-                $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Definition.Owner}::%s{implementation.Definition.Name}"
-        | VirtualImplementation.Found implementation ->
-            MethodConcretisation.concretizeMethodWithAllGenerics
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                implementation.TypeGenerics
-                implementation.Definition
-                implementation.MethodGenerics
-                state
