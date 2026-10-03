@@ -56,15 +56,23 @@ module NativeLibcFile =
         | Ok (CloneFileScreen.Answered (answer, system)) -> answered (answer, system)
         | Ok (CloneFileScreen.NeedsSource screened) ->
 
-        let source =
-            NativeSystemNative.pathArgumentBytes ctx operation "src" instruction.Arguments.[0] state
+        match NativeSystemNative.pathArgumentBytes ctx operation "src" instruction.Arguments.[0] state with
+        | Error u ->
+            NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the path its `src` argument names" u
+            |> Some
+        | Ok source ->
+
 
         match UnixNamespace.cloneFileSourcePhase source screened with
         | Error refusal -> refused refusal
         | Ok (CloneFileProgress.Answered (answer, system)) -> answered (answer, system)
         | Ok (CloneFileProgress.NeedsDestination paused) ->
-            let destination =
-                NativeSystemNative.pathArgumentBytes ctx operation "dst" instruction.Arguments.[1] state
+            match NativeSystemNative.pathArgumentBytes ctx operation "dst" instruction.Arguments.[1] state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the path its `dst` argument names" u
+                |> Some
+            | Ok destination ->
+
 
             match UnixNamespace.cloneFileWithDestination destination paused with
             | Error refusal -> refused refusal

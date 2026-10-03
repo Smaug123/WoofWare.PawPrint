@@ -337,6 +337,84 @@ type FatalError =
         Message : string option
     }
 
+/// What an undefined value was about to be used for when the run ended because of it, and
+/// where.
+[<RequireQualifiedAccess>]
+type UndefinedValueUse =
+    /// Operand `fromTop` (0 being the top of the evaluation stack) of `instruction`, at `ilOffset`
+    /// in `method`, which `OperandUse` says the instruction observes.
+    | Operand of
+        method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+        ilOffset : int *
+        instruction : IlOp *
+        fromTop : int
+    /// A use of an operand the instruction's operand table does not show, which only its
+    /// implementation discovers: the type check `stelem.ref` makes of the reference it stores, or
+    /// the receiver a `callvirt` dispatches on. `description` says which.
+    | InstructionDetail of
+        method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+        ilOffset : int *
+        instruction : IlOp *
+        description : string
+    /// Argument `index` (`this` being 0) of `method`, whose implementation the runtime supplies —
+    /// a native method, a QCall, an intrinsic or a runtime-provided stub — and which reads its
+    /// arguments rather than moving them.
+    | RuntimeArgument of
+        method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+        index : int
+    /// Content that `method`, whose implementation the runtime supplies, uses though it is none of
+    /// its arguments: what it reads through a pointer or byref it was handed (the location
+    /// `Interlocked.Add` adds to, the buffer a write system call sends), or a value it is handed
+    /// back (the `hasValue` of a `Nullable<T>` that reflection boxes). `what` names it.
+    | ReadByRuntime of
+        method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+        what : string
+    /// The value the entry point returned, which would have become the process's exit code.
+    | ExitCode
+
+    override this.ToString () : string =
+        match this with
+        | UndefinedValueUse.Operand (method, ilOffset, instruction, fromTop) ->
+            $"operand %d{fromTop} from the top of the stack of %O{instruction} at IL offset 0x%04x{ilOffset} in %O{method}"
+        | UndefinedValueUse.InstructionDetail (method, ilOffset, instruction, description) ->
+            $"%s{description}, by %O{instruction} at IL offset 0x%04x{ilOffset} in %O{method}"
+        | UndefinedValueUse.RuntimeArgument (method, index) ->
+            $"argument %d{index} of the runtime-implemented %O{method}"
+        | UndefinedValueUse.ReadByRuntime (method, what) -> $"%s{what}, which the runtime-implemented %O{method} uses"
+        | UndefinedValueUse.ExitCode -> "the entry point's return value, as the process exit code"
+
+/// The run ended because the guest used a value whose content is undefined: `Value` descends from
+/// memory nothing wrote, and `Use` would have made the run depend on bits PawPrint does not have.
+/// Real .NET would have used whatever garbage was there; PawPrint stops rather than invent it.
+///
+/// Compared by reference: `UndefinedValueUse` names a method, and methods have no structural
+/// equality. Compare `Value` and the parts of `Use` a test cares about instead.
+[<ReferenceEquality>]
+type UndefinedValueObservation =
+    {
+        Value : UndefinedValue
+        Use : UndefinedValueUse
+    }
+
+    override this.ToString () : string =
+        let origins =
+            this.Value.Origins |> List.map string<UninitialisedByte> |> String.concat ", "
+
+        $"undefined value %O{this.Value} used as %O{this.Use}; its undefined bytes descend from %s{origins}, which nothing wrote"
+
+    /// `value`, read through a pointer by the runtime-implemented `method` and used there; `what`
+    /// names what was read.
+    static member ReadByRuntime
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (what : string)
+        (value : UndefinedValue)
+        : UndefinedValueObservation
+        =
+        {
+            Value = value
+            Use = UndefinedValueUse.ReadByRuntime (method, what)
+        }
+
 type WhatWeDid =
     | Executed
     /// We didn't run what you wanted, because we have to do class initialisation first.
@@ -407,6 +485,14 @@ type WhatWeDid =
     /// `AbstractMachine` converts this to `ExecutionResult.UnhandledException` at the same point
     /// it converts `Aborted`, so the scheduler never observes it.
     | UnhandledException of CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+    /// The step did not retire: the instruction would have used a value whose content is
+    /// undefined, so the run ends there. This is the channel for a use only the instruction's
+    /// implementation can see (see `UndefinedValueUse.InstructionDetail`); an operand the
+    /// instruction's `OperandUse` table names is caught before the instruction starts.
+    ///
+    /// `AbstractMachine` converts this to `ExecutionResult.UndefinedValueObserved` at the same
+    /// point it converts `Aborted`, so the scheduler never observes it.
+    | UndefinedValueObserved of UndefinedValueObservation
 
 /// An externally-observable side-effect that a single interpreter step requests
 /// from the driver (the imperative shell around the functional core). The
@@ -475,6 +561,14 @@ type ExecutionResult =
         IlMachineState *
         terminatingThread : ThreadId *
         CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+    /// `observingThread` was about to use a value whose content is undefined, so the run stops
+    /// with nothing invented for it, and no further step runs on any thread. The process has not
+    /// ended: real .NET goes on with whatever garbage the memory held, so the guest's behaviour
+    /// from here is undefined, and PawPrint stops rather than choosing one of the behaviours. The
+    /// driver reports this as `ProgramStepOutcome.StoppedAtUndefinedValue`, never as a
+    /// `RunOutcome`. It carries no state: the step did not happen, so the stop is at the state the
+    /// driver stepped from, which the driver holds.
+    | UndefinedValueObserved of observingThread : ThreadId * UndefinedValueObservation
 
 /// Outcome of invoking a hand-written JIT intrinsic (`Intrinsics.call`). This is the
 /// intrinsic analogue of `NativeHandlerResult` below, and exists for the same reason:
@@ -502,6 +596,24 @@ type IntrinsicResult =
         IlMachineState *
         exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> *
         message : string option
+    /// The intrinsic would have used an undefined value, typically one it read through a byref
+    /// argument, so the run ends. The case carries no state: the run is reported at the state
+    /// from before the call, whatever the intrinsic did before it found the value.
+    | UndefinedValueObserved of UndefinedValueObservation
+
+[<RequireQualifiedAccess>]
+module IntrinsicResult =
+    /// The outcome of an intrinsic that used what it read through a pointer: `Completed`, or the
+    /// end of the run if what it read was undefined. `what` names what was read.
+    let ofUse
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (what : string)
+        (result : Result<IlMachineState, UndefinedValue>)
+        : IntrinsicResult
+        =
+        match result with
+        | Ok state -> IntrinsicResult.Completed state
+        | Error u -> IntrinsicResult.UndefinedValueObserved (UndefinedValueObservation.ReadByRuntime method what u)
 
 /// Outcome of an `initblk`-shaped fill (`IntrinsicHelpers.executeInitBlock`), which serves both
 /// the opcode and the `Unsafe.InitBlock` / `Unsafe.InitBlockUnaligned` intrinsics the JIT
@@ -631,6 +743,10 @@ type NativeHandlerResult =
     /// an arbitrary `ExecutionResult`, routing `Stepped(Executed)` to `Completed` and
     /// rejecting other `Stepped` shapes as logic errors.
     | Terminating of ExecutionResult
+    /// The handler would have used an undefined value, typically one it read through a pointer
+    /// argument, so the run ends. The dispatcher reports it at the state from before the handler
+    /// ran, so the handler need not unwind anything it did first.
+    | UndefinedValueObserved of UndefinedValueObservation
 
 /// Result of returning from a method frame via `Ret`.
 type ReturnFrameResult =
@@ -729,11 +845,16 @@ module RunOutcome =
         | RunOutcome.SignalTerminated (state, _, _)
         | RunOutcome.GuestUnhandledException (state, _, _, _) -> state
 
-/// How a run of the interpreter finished.
+/// How a run of the interpreter finished: the simulated process ended, or PawPrint stopped it
+/// before it could.
 [<RequireQualifiedAccess>]
 type RunEnd =
     /// The process ended, as `RunOutcome` says.
     | Ended of RunOutcome
+    /// `observingThread` was about to use a value whose content is undefined, and PawPrint stopped
+    /// there (see `ExecutionResult.UndefinedValueObserved`). The process did not end, so the kernel
+    /// holds no termination for it; the state is the one from before the observing step.
+    | StoppedAtUndefinedValue of IlMachineState * observingThread : ThreadId * UndefinedValueObservation
 
 [<RequireQualifiedAccess>]
 module RunEnd =
@@ -741,6 +862,7 @@ module RunEnd =
     let state (runEnd : RunEnd) : IlMachineState =
         match runEnd with
         | RunEnd.Ended outcome -> RunOutcome.state outcome
+        | RunEnd.StoppedAtUndefinedValue (state, _, _) -> state
 
 [<RequireQualifiedAccess>]
 module ExecutionResult =
@@ -760,8 +882,9 @@ module ExecutionResult =
     /// Apply `f` to the machine state carried by any outcome, preserving the variant and its
     /// other payload.
     ///
-    /// Every `ExecutionResult` carries a state because every one of them describes a step that
-    /// was actually retired — that is the whole reason this function can be total. It exists so
+    /// Every `ExecutionResult` but a stop at an undefined value carries a state because it
+    /// describes a step that was actually retired; a stop describes one that was not, and has no
+    /// state to map. It exists so
     /// that per-step bookkeeping which must happen *whatever the step turned out to be* can be
     /// written once, at the driver's single call site of `AbstractMachine.executeOneStep`,
     /// rather than being repeated in each arm of the driver's match on the outcome.
@@ -780,6 +903,7 @@ module ExecutionResult =
         | ExecutionResult.Stepped (state, whatWeDid, effect) -> ExecutionResult.Stepped (f state, whatWeDid, effect)
         | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
             ExecutionResult.UnhandledException (f state, terminatingThread, exn)
+        | ExecutionResult.UndefinedValueObserved _ -> result
 
 [<RequireQualifiedAccess>]
 module NativeHandlerResult =
@@ -888,6 +1012,21 @@ module NativeHandlerResult =
     let aborted (thread : ThreadId) (fatal : FatalError) (state : IlMachineState) : NativeHandlerResult =
         NativeHandlerResult.Terminating (ExecutionResult.Aborted (state, thread, fatal))
 
+    /// Forward a `WhatWeDid.UndefinedValueObserved` outcome from a sub-call. As for `aborted`, the
+    /// run is over, and the dispatcher surfaces a `Terminating` result verbatim.
+    let undefinedValueObserved (thread : ThreadId) (observation : UndefinedValueObservation) : NativeHandlerResult =
+        NativeHandlerResult.Terminating (ExecutionResult.UndefinedValueObserved (thread, observation))
+
+    /// The handler would use `value`, which it read through a pointer it was handed or was handed
+    /// back, but it is undefined, so the run stops; `what` names it.
+    let undefinedRead
+        (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (what : string)
+        (value : UndefinedValue)
+        : NativeHandlerResult
+        =
+        NativeHandlerResult.UndefinedValueObserved (UndefinedValueObservation.ReadByRuntime method what value)
+
     /// Forward a `WhatWeDid.UnhandledException` outcome from a sub-call. The thread is
     /// terminating and takes the process with it, so, as for `aborted`, the native frame's own
     /// bookkeeping is irrelevant and the dispatcher surfaces a `Terminating` result verbatim.
@@ -923,6 +1062,7 @@ module NativeHandlerResult =
         // thread has already given up.
         | WhatWeDid.Aborted fatal -> Some (aborted thread fatal state)
         | WhatWeDid.UnhandledException exn -> Some (unhandledException thread exn state)
+        | WhatWeDid.UndefinedValueObserved observation -> Some (undefinedValueObserved thread observation)
         // A sub-call that voluntarily yielded did make forward progress, so the
         // calling native handler should continue exactly as for Executed. The yield
         // hint is meaningful only at the dispatcher/scheduler boundary; it does not
@@ -969,4 +1109,5 @@ module NativeHandlerResult =
         | ExecutionResult.ProcessExit _
         | ExecutionResult.Aborted _
         | ExecutionResult.SignalTerminated _
-        | ExecutionResult.UnhandledException _ -> NativeHandlerResult.Terminating executionResult
+        | ExecutionResult.UnhandledException _
+        | ExecutionResult.UndefinedValueObserved _ -> NativeHandlerResult.Terminating executionResult

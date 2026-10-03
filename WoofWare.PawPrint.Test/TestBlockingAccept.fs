@@ -173,6 +173,8 @@ class NeverConnected
             | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) -> prepared, stuck
             | Program.ProgramStepOutcome.Completed outcome ->
                 failwith $"guest exited instead of parking in Accept, so this test covered nothing: %O{outcome}"
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, _, observation) ->
+                failwith $"guest used an undefined value instead of parking in Accept: %O{observation}"
             | Program.ProgramStepOutcome.WorkerTerminated (prepared, _) -> loop prepared (steps + 1L)
             | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _) -> loop prepared (steps + 1L)
 
