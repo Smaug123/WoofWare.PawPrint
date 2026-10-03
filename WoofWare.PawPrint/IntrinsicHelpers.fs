@@ -544,6 +544,25 @@ module internal IntrinsicHelpers =
             | ByrefProjection.ReinterpretAs _ :: revPrefix -> ValueSome (root, List.rev revPrefix, 0)
             | _ -> ValueNone
 
+    /// Whether `value` would not be byte-addressable even with a number in every undefined leaf: a value
+    /// type is byte-addressable exactly when each of its fields is, so the walk follows
+    /// `CliType.ByteAddressability` and counts an undefined leaf as addressable.
+    let rec private obstructsBesidesUndefined (value : CliType) : bool =
+        match value with
+        | CliType.Undefined _ -> false
+        | CliType.ValueType vt ->
+            CliValueType.TryAllFields vt
+            |> List.exists (fun field -> obstructsBesidesUndefined field.Contents)
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ ->
+            match CliType.ByteAddressability value with
+            | CliByteAddressability.ByteAddressable -> false
+            | CliByteAddressability.SymbolicallyAddressable _
+            | CliByteAddressability.Rejected _ -> true
+
     /// Byte `byteOffset` of `value`, for a comparison that uses it: `Error` with that byte as an
     /// undefined value if it is undefined.
     let byteAtOffset
@@ -561,22 +580,37 @@ module internal IntrinsicHelpers =
             failwith $"%s{operation}: refusing to byte-compare non-tightly-packed value type %O{vt.Declared}"
         | _ -> ()
 
-        let undefinedByte =
+        let image =
             match CliType.ByteImageAt byteOffset 1 value with
-            | [| Error rejection |] -> rejection.UndefinedOrigin
-            | _ -> None
+            | [| byte |] -> byte
+            | image -> failwith $"unreachable: CliType.ByteImageAt returned %d{image.Length} bytes for a one-byte range"
 
-        match undefinedByte with
-        | Some origin ->
-            match UndefinedValue.tryOfBytes UndefinedPrimitive.UInt8 [ ValueByte.Undefined origin ] with
+        match image with
+        | Error rejection when rejection.UndefinedOrigin.IsSome ->
+            match
+                UndefinedValue.tryOfBytes
+                    UndefinedPrimitive.UInt8
+                    [ ValueByte.Undefined rejection.UndefinedOrigin.Value ]
+            with
             | ValueSome u -> Error u
             | ValueNone -> failwith "unreachable: a one-byte image of an undefined byte is undefined"
-        | None ->
+        | _ ->
 
-        try
-            CliType.BytesAt byteOffset 1 value |> Array.exactlyOne |> Ok
-        with ex ->
-            failwith $"%s{operation}: %s{ex.Message}"
+        // A value with a byte that has no number (a reference, a runtime pointer, a named native
+        // int) is refused whole, as a defined one is. An undefined byte elsewhere is not such a
+        // byte: this one's own image is then its number.
+        if obstructsBesidesUndefined value then
+            try
+                CliType.BytesAt byteOffset 1 value |> Array.exactlyOne |> Ok
+            with ex ->
+                failwith $"%s{operation}: %s{ex.Message}"
+        else
+
+        match image with
+        | Ok b -> Ok b
+        | Error rejection ->
+            failwith
+                $"unreachable: byte %d{byteOffset} of a value whose only obstructions are undefined bytes is %s{rejection.Description}"
 
     let readSpanHelpersSequenceEqualByte
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
