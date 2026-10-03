@@ -12,6 +12,14 @@ module TestFileDescriptorRegistry =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    /// A seed for a walk's own `System.Random`, drawn from the whole range so
+    /// that each run walks fresh sequences: FsCheck sizes an integer generator,
+    /// so at the default end size `NonNegativeInt` yields only 0 to 100, and
+    /// every run would walk some of the same 101 sequences. A seed has no meaningful shrink, since a smaller seed is a
+    /// different walk rather than a simpler one, so it is given no shrinker.
+    let private walkSeed : Arbitrary<int> =
+        Arb.fromGen (Gen.choose (0, System.Int32.MaxValue))
+
     let private openOn (inode : InodeNumber) : OpenFileDescription =
         {
             Target = OpenFileTarget.File (inode, 0L)
@@ -568,8 +576,8 @@ module TestFileDescriptorRegistry =
         let mutable observedCloses = 0
         let mutable observedHoleFills = 0
 
-        let property (NonNegativeInt seed : NonNegativeInt) : unit =
-            let rng = System.Random (seed)
+        let property (seed : int) : unit =
+            let rng = System.Random seed
             let steps = rng.Next (1, 30)
 
             let mutable registry = LaunchedStreams.registry
@@ -614,15 +622,14 @@ module TestFileDescriptorRegistry =
                         observedDups <- observedDups + 1
                     | Error e -> failwith $"unexpected dup error: %O{e}"
 
-        Check.One (propertyConfig, property)
+        Check.One (propertyConfig, Prop.forAll walkSeed property)
 
         // Distribution check: if observedHoleFills were 0, the property
         // could be satisfied by a buggy `max + 1` implementation, so assert
         // we observe gap-fills frequently enough that a regression would be
-        // caught. With 500 iterations of ~20 steps each, biased 70/30 toward
-        // dup, we expect on the order of thousands of dups and hundreds of
-        // hole-fills; require at least 30 to keep the false-negative
-        // probability comfortably below 1e-11.
+        // caught. Over 5000 runs, each resampling 500 walks from 5000 seeds,
+        // a run averaged about 5400 dups and 1450 hole-fills, with a standard
+        // deviation of about 50 hole-fills; a floor of 30 sits far below that.
         observedDups |> shouldBeGreaterThan 0
         observedCloses |> shouldBeGreaterThan 0
         observedHoleFills |> shouldBeGreaterThan 30
@@ -642,8 +649,8 @@ module TestFileDescriptorRegistry =
         let mutable observedSharingPairs = 0
         let mutable observedDistinctPairs = 0
 
-        let property (NonNegativeInt seed : NonNegativeInt) : unit =
-            let rng = System.Random (seed)
+        let property (seed : int) : unit =
+            let rng = System.Random seed
             let steps = rng.Next (1, 30)
 
             let mutable registry = LaunchedStreams.registry
@@ -697,7 +704,7 @@ module TestFileDescriptorRegistry =
                 |> Map.count
                 |> shouldEqual expectedDescriptions
 
-        Check.One (propertyConfig, property)
+        Check.One (propertyConfig, Prop.forAll walkSeed property)
 
         // Both halves of the equivalence must actually be exercised: without
         // sharing pairs the "if" half is vacuous, and without distinct pairs
@@ -1116,8 +1123,8 @@ module TestFileDescriptorRegistry =
 
         let inodes = [| InodeNumber 1L ; InodeNumber 2L |]
 
-        let property (NonNegativeInt seed : NonNegativeInt) : unit =
-            let rng = System.Random (seed)
+        let property (seed : int) : unit =
+            let rng = System.Random seed
             let steps = rng.Next (1, 40)
 
             let mutable registry = LaunchedStreams.registry
@@ -1238,7 +1245,7 @@ module TestFileDescriptorRegistry =
 
                 FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
 
-        Check.One (propertyConfig, property)
+        Check.One (propertyConfig, Prop.forAll walkSeed property)
 
         // Without refusals the exclusion rule is never exercised; without
         // conversions the re-lock path is never exercised.
@@ -1250,10 +1257,12 @@ module TestFileDescriptorRegistry =
         // which keeping and dropping are the same thing.
         //
         // The floor is much lower than its neighbours': this is the rarest event
-        // the run produces, measured at ~24 per run against ~24000 grants, so a
-        // floor of 30 would flake. One occurrence suffices — a single failed
-        // conversion diverges from the model on the next request — so this bound
-        // proves the event happens at all, not accumulates confidence.
+        // the run produces, reached by about one walk in fifteen and measured
+        // at about 37 per run against about 2200 grants, so a floor of 30 would
+        // flake; the chance that a run of 500 walks sees at most 5 is about
+        // 4e-10. One occurrence suffices — a single failed conversion diverges
+        // from the model on the next request — so this bound proves the event
+        // happens at all, not accumulates confidence.
         observedFailedConversions |> shouldBeGreaterThan 5
 
     [<Test>]
@@ -1484,8 +1493,8 @@ module TestFileDescriptorRegistry =
         let mutable observedDups = 0
         let mutable observedLiveSocketPairs = 0
 
-        let property (NonNegativeInt seed : NonNegativeInt) : unit =
-            let rng = System.Random (seed)
+        let property (seed : int) : unit =
+            let rng = System.Random seed
             let steps = rng.Next (1, 30)
 
             let mutable registry = LaunchedStreams.registry
@@ -1577,7 +1586,7 @@ module TestFileDescriptorRegistry =
 
                 FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
 
-        Check.One (propertyConfig, property)
+        Check.One (propertyConfig, Prop.forAll walkSeed property)
 
         // Without these the run could be sound while never having exercised the
         // operations the clauses are about.
