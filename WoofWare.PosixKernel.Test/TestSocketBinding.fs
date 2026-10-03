@@ -244,44 +244,62 @@ module TestSocketBinding =
         bindable SimulatedUnixPlatform.linuxX64 0x7F090909u |> shouldEqual true
         bindable SimulatedUnixPlatform.macOsArm64 0x7F090909u |> shouldEqual false
 
-    /// A multicast or broadcast address is one PawPrint refuses rather than
-    /// answers, and the refusal is placed at the fault position where the
-    /// address itself is judged. The classifier that puts it there must not be
-    /// silenced by a host that lists such an address as one this machine holds,
-    /// or covers it with a local route — otherwise the bind is *recorded*, and a
-    /// guest holds a multicast binding nothing downstream can honour.
+    /// A broadcast or multicast address is one this kernel never records a
+    /// binding to: a bind of one that would succeed is refused, and every other
+    /// is answered with its measured errno. A host that lists such an address
+    /// as one this machine holds, or covers it with a local route, must not
+    /// change that, or the bind is *recorded*, and the process holds a group
+    /// binding nothing downstream can honour.
     [<Test>]
-    let ``a multicast address faults however the host configures the machine`` () : unit =
+    let ``a group address is never bound however the host configures the machine`` () : unit =
         let multicast = 0xE0000001u // 224.0.0.1
         let broadcast = System.UInt32.MaxValue // 255.255.255.255
 
-        let hostile =
+        let hostile : (string * uint32 list * Ipv4Prefix list) list =
             [
-                "listed among this machine's addresses", [ multicast ; broadcast ], []
-                "covered by a local route", [], [ Ipv4Prefix.create 0xE0000000u 4 ; Ipv4Prefix.create 0u 0 ]
-                "both", [ multicast ; broadcast ], [ Ipv4Prefix.create 0u 0 ]
+                "as configured by default", [ loopback ], []
+                "listed among this machine's addresses", [ loopback ; multicast ; broadcast ], []
+                "covered by a local route", [ loopback ], [ Ipv4Prefix.create 0xE0000000u 4 ; Ipv4Prefix.create 0u 0 ]
+                "both", [ loopback ; multicast ; broadcast ], [ Ipv4Prefix.create 0u 0 ]
             ]
 
         for name, addresses, routes in hostile do
             for platform in platforms do
-                for address in [ multicast ; broadcast ] do
-                    // The classifier this one wraps is *not* asserted false here:
-                    // it answers a different question, and on Linux a local route
-                    // covering the address makes it genuinely bindable.
-                    SimulatedUnixPlatform.bindAddressFaults platform addresses routes address
-                    |> fun actual ->
-                        if not actual then
+                for kind in [ SocketKind.Stream ; SocketKind.Datagram ] do
+                    for address in [ multicast ; broadcast ] do
+                        let system =
+                            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                            |> UnixBootImage.withLocalAddresses addresses routes
+                            |> UnixBootImage.boot
+
+                        let protocol =
+                            if kind = SocketKind.Stream then
+                                SocketProtocol.Tcp
+                            else
+                                SocketProtocol.Udp
+
+                        let fd, system = NewSocket.create SocketDomain.Inet kind protocol system
+
+                        match
+                            CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform (endpoint address 5000us)) system
+                        with
+                        | Ok (BindAnswer.Bound _, _) ->
                             failwith
-                                $"%s{name}: %s{InternetEndpoint.toString (endpoint address 0us)} stopped faulting, so the refusal is silenced"
+                                $"%s{name}: %O{platform} %O{kind} bound %s{InternetEndpoint.toString (endpoint address 5000us)}"
+                        | Ok (BindAnswer.Failed _, _)
+                        | Error (BindRefusal.UnmodelledMulticast _) -> ()
+                        | Error refusal -> failwith $"%s{name}: unexpected refusal %s{BindRefusal.describe refusal}"
 
-        // ...while an address the host really does hold still binds, so the
-        // above is not passing by refusing everything.
+        // ...while an address the host really does hold still binds, and one it
+        // does not holds faults, so the above is not passing by refusing
+        // everything.
         for platform in platforms do
-            SimulatedUnixPlatform.bindAddressFaults platform [ loopback ] [] loopback
-            |> shouldEqual false
+            for kind in [ SocketKind.Stream ; SocketKind.Datagram ] do
+                SimulatedUnixPlatform.bindAddressFaults platform kind [ loopback ] [] loopback
+                |> shouldEqual false
 
-            SimulatedUnixPlatform.bindAddressFaults platform [ loopback ] [] 0x08080808u
-            |> shouldEqual true
+                SimulatedUnixPlatform.bindAddressFaults platform kind [ loopback ] [] 0x08080808u
+                |> shouldEqual true
 
     /// Whether `listen(2)` re-runs the port admission rule for a socket that is
     /// already bound. Measured on both kernels; the Linux answer is what makes

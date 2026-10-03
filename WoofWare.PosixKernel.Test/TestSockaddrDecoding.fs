@@ -54,22 +54,32 @@ module TestSockaddrDecoding =
                 (BinaryPrimitives.ReadUInt32BigEndian (ReadOnlySpan (blob, 4, 4)))
                 (BinaryPrimitives.ReadUInt16BigEndian (ReadOnlySpan (blob, 2, 2)))
 
+        /// `sin_addr`, taking every byte the copy did not reach as zero.
+        let private zeroFilled (blob : byte[]) (length : int) : uint32 =
+            let word = [| for i in 4..7 -> if i < length then blob.[i] else 0uy |]
+            BinaryPrimitives.ReadUInt32BigEndian (ReadOnlySpan word)
+
         let decode (platform : SimulatedUnixPlatform) (blob : byte[]) (length : int) : CopiedInternetSockaddr =
+            let zeroFilledAddress = zeroFilled blob length
+
             match fields length with
             | Fields.Nothing ->
                 {
                     Family = None
                     Endpoint = None
+                    ZeroFilledAddress = zeroFilledAddress
                 }
             | Fields.Family ->
                 {
                     Family = Some (family platform blob)
                     Endpoint = None
+                    ZeroFilledAddress = zeroFilledAddress
                 }
             | Fields.FamilyAndEndpoint ->
                 {
                     Family = Some (family platform blob)
                     Endpoint = Some (endpoint blob)
+                    ZeroFilledAddress = zeroFilledAddress
                 }
 
     let private platforms : SimulatedUnixPlatform list =

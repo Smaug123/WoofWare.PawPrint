@@ -946,18 +946,11 @@ module SimulatedUnixPlatform =
     /// Is this the all-ones broadcast address, or a multicast one
     /// (`224.0.0.0/4`)?
     ///
-    /// **This library refuses to bind either**, rather than answering. Measured, the
-    /// rule is not one rule: Linux takes both on a stream socket, Darwin answers
-    /// `EAFNOSUPPORT` there, and on Darwin the answer depends on the socket's
-    /// *kind* besides — a datagram socket binds a multicast group where a stream
-    /// socket does not. Modelling that is modelling multicast, which is group
-    /// membership and an interface to receive on, and this library has neither; a
-    /// bind that succeeded here would become a lie the moment `recvfrom` landed.
-    ///
-    /// So this classifier exists to *refuse* precisely, at the point in
-    /// `bindFaultOrder` where the address is judged — a fault the platform ranks
-    /// earlier still wins, which is what keeps the refusal from swallowing
-    /// answers this library does know.
+    /// What `bind(2)` does with one is `bindGroupAddressRule`'s. **This library
+    /// refuses any bind of one that would succeed**, rather than recording it:
+    /// it models no group membership and no interface to receive or broadcast
+    /// on, so such a binding would become a lie the moment a transfer landed.
+    /// Every bind of one that fails has its measured errno.
     let isBroadcastOrMulticast (address : uint32) : bool =
         address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
 
@@ -969,11 +962,8 @@ module SimulatedUnixPlatform =
     /// inside a local prefix as assigned while Darwin assigns loopback exactly
     /// one address.
     ///
-    /// Broadcast and multicast are a further Linux-only allowance
-    /// (`255.255.255.255` and `224.0.0.1` bind there and are `EAFNOSUPPORT` on
-    /// Darwin). Neither is modelled: this library has no interface to broadcast
-    /// on, and `UnixSocket.bind` refuses such an address rather than answering,
-    /// so a caller that needs one gets a diagnosis instead of a wrong errno.
+    /// Says nothing about broadcast and multicast addresses, which each flavour
+    /// rules on apart from its address list: see `bindGroupAddressRule`.
     let isBindableAddress
         (platform : SimulatedUnixPlatform)
         (localAddresses : uint32 list)
@@ -996,29 +986,47 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> localRoutes |> List.exists (Ipv4Prefix.contains address)
         | SimulatedUnixFlavour.Darwin -> false
 
-    /// Whether `bind(2)` has something to say about the address itself, as
-    /// opposed to about the length, the family, or another socket. Callers rank
-    /// this against the other faults in `bindFaultOrder`, at
-    /// `BindFault.AddressNotLocal`.
+    /// What this platform's `bind(2)` makes of `address` on a socket of `kind`,
+    /// if it is the broadcast address or a multicast one; `None` for any other.
     ///
-    /// That is `EADDRNOTAVAIL` in every case this library answers. A broadcast or
-    /// multicast address faults here too, and its caller refuses it outright
-    /// rather than reporting an errno — which is why this is not simply
-    /// `not isBindableAddress`. Such an address is not necessarily *unbindable*:
-    /// Linux binds `224.0.0.1` on a stream socket quite happily. It is one
-    /// this library declines to answer for, and a client that listed it in
-    /// `LocalAddresses`, or covered it with a `LocalRoutes` prefix, would
-    /// otherwise silence the refusal and record a multicast binding that nothing
-    /// downstream can honour.
+    /// Measured (`sockaddr-bind-ladder.c`, M and Z): Linux binds both, on
+    /// either kind of socket. Darwin binds a multicast address on a datagram
+    /// socket and answers `EADDRNOTAVAIL` for the broadcast address there; on a
+    /// stream socket it answers `EAFNOSUPPORT` for both, before it asks whether
+    /// the socket is already bound. None of this depends on the addresses the
+    /// machine holds, so a client that lists such an address cannot change it.
+    let bindGroupAddressRule
+        (platform : SimulatedUnixPlatform)
+        (kind : SocketKind)
+        (address : uint32)
+        : BindGroupAddressRule option
+        =
+        if not (isBroadcastOrMulticast address) then
+            None
+        else
+
+        match flavour platform, kind with
+        | SimulatedUnixFlavour.Linux, _ -> Some BindGroupAddressRule.Accepted
+        | SimulatedUnixFlavour.Darwin, SocketKind.Stream -> Some BindGroupAddressRule.RejectedWithTheFamily
+        | SimulatedUnixFlavour.Darwin, _ when address = System.UInt32.MaxValue -> Some BindGroupAddressRule.NotLocal
+        | SimulatedUnixFlavour.Darwin, _ -> Some BindGroupAddressRule.Accepted
+
+    /// Whether `bind(2)` rules on the address itself, on a socket of `kind`, as
+    /// opposed to on the length, the family, or another socket: `EADDRNOTAVAIL`,
+    /// ranked against the other faults at `BindFault.AddressNotLocal`.
     let bindAddressFaults
         (platform : SimulatedUnixPlatform)
+        (kind : SocketKind)
         (localAddresses : uint32 list)
         (localRoutes : Ipv4Prefix list)
         (address : uint32)
         : bool
         =
-        isBroadcastOrMulticast address
-        || not (isBindableAddress platform localAddresses localRoutes address)
+        match bindGroupAddressRule platform kind address with
+        | Some BindGroupAddressRule.NotLocal -> true
+        | Some BindGroupAddressRule.Accepted
+        | Some BindGroupAddressRule.RejectedWithTheFamily -> false
+        | None -> not (isBindableAddress platform localAddresses localRoutes address)
 
     /// Does a bind of `candidate` collide with the socket already bound at
     /// `existing`?
@@ -1282,6 +1290,15 @@ module SimulatedUnixPlatform =
         {
             Family = family
             Endpoint = endpoint
+            ZeroFilledAddress =
+                let word = Array.zeroCreate<byte> InternetSockaddr.address.Width
+                let offset = InternetSockaddr.address.Offset
+
+                for i in 0 .. word.Length - 1 do
+                    if offset + i < copied.Length then
+                        word.[i] <- copied.[offset + i]
+
+                BinaryPrimitives.ReadUInt32BigEndian (System.ReadOnlySpan<byte> word)
         }
 
     /// `struct sockaddr_in` for `endpoint`, as this platform's kernel copies one
