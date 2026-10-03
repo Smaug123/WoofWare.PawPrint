@@ -1,0 +1,403 @@
+# Linux 6.18.5 aarch64
+# P is 53689
+G stream family=0                  fresh     len 0..15: EINVAL local=0.0.0.0:0
+G stream family=0                  fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G stream family=0                  fresh     len 129..300: EINVAL local=0.0.0.0:0
+G stream family=1                  fresh     len 0..15: EINVAL local=0.0.0.0:0
+G stream family=1                  fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G stream family=1                  fresh     len 129..300: EINVAL local=0.0.0.0:0
+G stream family=2                  fresh     len 0..15: EINVAL local=0.0.0.0:0
+G stream family=2                  fresh     len 16..128: OK local=127.0.0.1:asked
+G stream family=2                  fresh     len 129..300: EINVAL local=0.0.0.0:0
+G stream family=3                  fresh     len 0..15: EINVAL local=0.0.0.0:0
+G stream family=3                  fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G stream family=3                  fresh     len 129..300: EINVAL local=0.0.0.0:0
+G stream family=10                 fresh     len 0..15: EINVAL local=0.0.0.0:0
+G stream family=10                 fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G stream family=10                 fresh     len 129..300: EINVAL local=0.0.0.0:0
+G stream family=255                fresh     len 0..15: EINVAL local=0.0.0.0:0
+G stream family=255                fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G stream family=255                fresh     len 129..300: EINVAL local=0.0.0.0:0
+G stream family=258                fresh     len 0..15: EINVAL local=0.0.0.0:0
+G stream family=258                fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G stream family=258                fresh     len 129..300: EINVAL local=0.0.0.0:0
+G dgram family=0                   fresh     len 0..15: EINVAL local=0.0.0.0:0
+G dgram family=0                   fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G dgram family=0                   fresh     len 129..300: EINVAL local=0.0.0.0:0
+G dgram family=1                   fresh     len 0..15: EINVAL local=0.0.0.0:0
+G dgram family=1                   fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G dgram family=1                   fresh     len 129..300: EINVAL local=0.0.0.0:0
+G dgram family=2                   fresh     len 0..15: EINVAL local=0.0.0.0:0
+G dgram family=2                   fresh     len 16..128: OK local=127.0.0.1:asked
+G dgram family=2                   fresh     len 129..300: EINVAL local=0.0.0.0:0
+G dgram family=3                   fresh     len 0..15: EINVAL local=0.0.0.0:0
+G dgram family=3                   fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G dgram family=3                   fresh     len 129..300: EINVAL local=0.0.0.0:0
+G dgram family=10                  fresh     len 0..15: EINVAL local=0.0.0.0:0
+G dgram family=10                  fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G dgram family=10                  fresh     len 129..300: EINVAL local=0.0.0.0:0
+G dgram family=255                 fresh     len 0..15: EINVAL local=0.0.0.0:0
+G dgram family=255                 fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G dgram family=255                 fresh     len 129..300: EINVAL local=0.0.0.0:0
+G dgram family=258                 fresh     len 0..15: EINVAL local=0.0.0.0:0
+G dgram family=258                 fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+G dgram family=258                 fresh     len 129..300: EINVAL local=0.0.0.0:0
+S stream family=0                  bound     len 0..15: EINVAL local=127.0.0.1:same
+S stream family=0                  bound     len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S stream family=0                  bound     len 129..300: EINVAL local=127.0.0.1:same
+S stream family=2                  bound     len 0..300: EINVAL local=127.0.0.1:same
+S stream family=10                 bound     len 0..15: EINVAL local=127.0.0.1:same
+S stream family=10                 bound     len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S stream family=10                 bound     len 129..300: EINVAL local=127.0.0.1:same
+S stream family=0                  wildbound len 0..15: EINVAL local=0.0.0.0:same
+S stream family=0                  wildbound len 16..128: EAFNOSUPPORT local=0.0.0.0:same
+S stream family=0                  wildbound len 129..300: EINVAL local=0.0.0.0:same
+S stream family=2                  wildbound len 0..300: EINVAL local=0.0.0.0:same
+S stream family=10                 wildbound len 0..15: EINVAL local=0.0.0.0:same
+S stream family=10                 wildbound len 16..128: EAFNOSUPPORT local=0.0.0.0:same
+S stream family=10                 wildbound len 129..300: EINVAL local=0.0.0.0:same
+S stream family=0                  connected len 0..15: EINVAL local=127.0.0.1:same
+S stream family=0                  connected len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S stream family=0                  connected len 129..300: EINVAL local=127.0.0.1:same
+S stream family=2                  connected len 0..300: EINVAL local=127.0.0.1:same
+S stream family=10                 connected len 0..15: EINVAL local=127.0.0.1:same
+S stream family=10                 connected len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S stream family=10                 connected len 129..300: EINVAL local=127.0.0.1:same
+S stream family=0                  listening len 0..15: EINVAL local=127.0.0.1:same
+S stream family=0                  listening len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S stream family=0                  listening len 129..300: EINVAL local=127.0.0.1:same
+S stream family=2                  listening len 0..300: EINVAL local=127.0.0.1:same
+S stream family=10                 listening len 0..15: EINVAL local=127.0.0.1:same
+S stream family=10                 listening len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S stream family=10                 listening len 129..300: EINVAL local=127.0.0.1:same
+S dgram family=0                   bound     len 0..15: EINVAL local=127.0.0.1:same
+S dgram family=0                   bound     len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S dgram family=0                   bound     len 129..300: EINVAL local=127.0.0.1:same
+S dgram family=2                   bound     len 0..300: EINVAL local=127.0.0.1:same
+S dgram family=10                  bound     len 0..15: EINVAL local=127.0.0.1:same
+S dgram family=10                  bound     len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S dgram family=10                  bound     len 129..300: EINVAL local=127.0.0.1:same
+S dgram family=0                   wildbound len 0..15: EINVAL local=0.0.0.0:same
+S dgram family=0                   wildbound len 16..128: EAFNOSUPPORT local=0.0.0.0:same
+S dgram family=0                   wildbound len 129..300: EINVAL local=0.0.0.0:same
+S dgram family=2                   wildbound len 0..300: EINVAL local=0.0.0.0:same
+S dgram family=10                  wildbound len 0..15: EINVAL local=0.0.0.0:same
+S dgram family=10                  wildbound len 16..128: EAFNOSUPPORT local=0.0.0.0:same
+S dgram family=10                  wildbound len 129..300: EINVAL local=0.0.0.0:same
+S dgram family=0                   connected len 0..15: EINVAL local=127.0.0.1:same
+S dgram family=0                   connected len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S dgram family=0                   connected len 129..300: EINVAL local=127.0.0.1:same
+S dgram family=2                   connected len 0..300: EINVAL local=127.0.0.1:same
+S dgram family=10                  connected len 0..15: EINVAL local=127.0.0.1:same
+S dgram family=10                  connected len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+S dgram family=10                  connected len 129..300: EINVAL local=127.0.0.1:same
+M stream AF_INET 224.0.0.1         fresh     len 0..15: EINVAL local=0.0.0.0:0
+M stream AF_INET 224.0.0.1         fresh     len 16..128: OK local=224.0.0.1:asked
+M stream AF_INET 224.0.0.1         fresh     len 129..300: EINVAL local=0.0.0.0:0
+M stream AF_INET 224.0.0.1         bound     len 0..300: EINVAL local=127.0.0.1:same
+M stream AF_UNSPEC 224.0.0.1       fresh     len 0..15: EINVAL local=0.0.0.0:0
+M stream AF_UNSPEC 224.0.0.1       fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+M stream AF_UNSPEC 224.0.0.1       fresh     len 129..300: EINVAL local=0.0.0.0:0
+M stream AF_UNSPEC 224.0.0.1       bound     len 0..15: EINVAL local=127.0.0.1:same
+M stream AF_UNSPEC 224.0.0.1       bound     len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+M stream AF_UNSPEC 224.0.0.1       bound     len 129..300: EINVAL local=127.0.0.1:same
+M stream AF_INET 255.255.255.255   fresh     len 0..15: EINVAL local=0.0.0.0:0
+M stream AF_INET 255.255.255.255   fresh     len 16..128: OK local=255.255.255.255:asked
+M stream AF_INET 255.255.255.255   fresh     len 129..300: EINVAL local=0.0.0.0:0
+M stream AF_INET 255.255.255.255   bound     len 0..300: EINVAL local=127.0.0.1:same
+M stream AF_UNSPEC 255.255.255.255 fresh     len 0..15: EINVAL local=0.0.0.0:0
+M stream AF_UNSPEC 255.255.255.255 fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+M stream AF_UNSPEC 255.255.255.255 fresh     len 129..300: EINVAL local=0.0.0.0:0
+M stream AF_UNSPEC 255.255.255.255 bound     len 0..15: EINVAL local=127.0.0.1:same
+M stream AF_UNSPEC 255.255.255.255 bound     len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+M stream AF_UNSPEC 255.255.255.255 bound     len 129..300: EINVAL local=127.0.0.1:same
+M dgram AF_INET 224.0.0.1          fresh     len 0..15: EINVAL local=0.0.0.0:0
+M dgram AF_INET 224.0.0.1          fresh     len 16..128: OK local=224.0.0.1:asked
+M dgram AF_INET 224.0.0.1          fresh     len 129..300: EINVAL local=0.0.0.0:0
+M dgram AF_INET 224.0.0.1          bound     len 0..300: EINVAL local=127.0.0.1:same
+M dgram AF_UNSPEC 224.0.0.1        fresh     len 0..15: EINVAL local=0.0.0.0:0
+M dgram AF_UNSPEC 224.0.0.1        fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+M dgram AF_UNSPEC 224.0.0.1        fresh     len 129..300: EINVAL local=0.0.0.0:0
+M dgram AF_UNSPEC 224.0.0.1        bound     len 0..15: EINVAL local=127.0.0.1:same
+M dgram AF_UNSPEC 224.0.0.1        bound     len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+M dgram AF_UNSPEC 224.0.0.1        bound     len 129..300: EINVAL local=127.0.0.1:same
+M dgram AF_INET 255.255.255.255    fresh     len 0..15: EINVAL local=0.0.0.0:0
+M dgram AF_INET 255.255.255.255    fresh     len 16..128: OK local=255.255.255.255:asked
+M dgram AF_INET 255.255.255.255    fresh     len 129..300: EINVAL local=0.0.0.0:0
+M dgram AF_INET 255.255.255.255    bound     len 0..300: EINVAL local=127.0.0.1:same
+M dgram AF_UNSPEC 255.255.255.255  fresh     len 0..15: EINVAL local=0.0.0.0:0
+M dgram AF_UNSPEC 255.255.255.255  fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0
+M dgram AF_UNSPEC 255.255.255.255  fresh     len 129..300: EINVAL local=0.0.0.0:0
+M dgram AF_UNSPEC 255.255.255.255  bound     len 0..15: EINVAL local=127.0.0.1:same
+M dgram AF_UNSPEC 255.255.255.255  bound     len 16..128: EAFNOSUPPORT local=127.0.0.1:same
+M dgram AF_UNSPEC 255.255.255.255  bound     len 129..300: EINVAL local=127.0.0.1:same
+Z stream AF_INET   0.0.0.0         0    fresh    : OK local=0.0.0.0:new
+Z stream AF_INET   0.0.0.0         0    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_INET   0.0.0.0         0    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_INET   0.0.0.0         0    connected: EINVAL local=127.0.0.1:same
+Z stream AF_INET   0.0.0.0         0    listening: EINVAL local=127.0.0.1:same
+Z stream AF_INET   0.0.0.0         P    fresh    : OK local=0.0.0.0:asked
+Z stream AF_INET   0.0.0.0         P    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_INET   0.0.0.0         P    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_INET   0.0.0.0         P    connected: EINVAL local=127.0.0.1:same
+Z stream AF_INET   0.0.0.0         P    listening: EINVAL local=127.0.0.1:same
+Z stream AF_INET   127.0.0.1       0    fresh    : OK local=127.0.0.1:new
+Z stream AF_INET   127.0.0.1       0    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_INET   127.0.0.1       0    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_INET   127.0.0.1       0    connected: EINVAL local=127.0.0.1:same
+Z stream AF_INET   127.0.0.1       0    listening: EINVAL local=127.0.0.1:same
+Z stream AF_INET   127.0.0.1       P    fresh    : OK local=127.0.0.1:asked
+Z stream AF_INET   127.0.0.1       P    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_INET   127.0.0.1       P    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_INET   127.0.0.1       P    connected: EINVAL local=127.0.0.1:same
+Z stream AF_INET   127.0.0.1       P    listening: EINVAL local=127.0.0.1:same
+Z stream AF_INET   8.8.8.8         0    fresh    : EADDRNOTAVAIL local=0.0.0.0:0
+Z stream AF_INET   8.8.8.8         0    bound    : EADDRNOTAVAIL local=127.0.0.1:same
+Z stream AF_INET   8.8.8.8         0    wildbound: EADDRNOTAVAIL local=0.0.0.0:same
+Z stream AF_INET   8.8.8.8         0    connected: EADDRNOTAVAIL local=127.0.0.1:same
+Z stream AF_INET   8.8.8.8         0    listening: EADDRNOTAVAIL local=127.0.0.1:same
+Z stream AF_INET   8.8.8.8         P    fresh    : EADDRNOTAVAIL local=0.0.0.0:0
+Z stream AF_INET   8.8.8.8         P    bound    : EADDRNOTAVAIL local=127.0.0.1:same
+Z stream AF_INET   8.8.8.8         P    wildbound: EADDRNOTAVAIL local=0.0.0.0:same
+Z stream AF_INET   8.8.8.8         P    connected: EADDRNOTAVAIL local=127.0.0.1:same
+Z stream AF_INET   8.8.8.8         P    listening: EADDRNOTAVAIL local=127.0.0.1:same
+Z stream AF_INET   224.0.0.1       0    fresh    : OK local=224.0.0.1:new
+Z stream AF_INET   224.0.0.1       0    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_INET   224.0.0.1       0    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_INET   224.0.0.1       0    connected: EINVAL local=127.0.0.1:same
+Z stream AF_INET   224.0.0.1       0    listening: EINVAL local=127.0.0.1:same
+Z stream AF_INET   224.0.0.1       P    fresh    : OK local=224.0.0.1:asked
+Z stream AF_INET   224.0.0.1       P    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_INET   224.0.0.1       P    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_INET   224.0.0.1       P    connected: EINVAL local=127.0.0.1:same
+Z stream AF_INET   224.0.0.1       P    listening: EINVAL local=127.0.0.1:same
+Z stream AF_INET   255.255.255.255 0    fresh    : OK local=255.255.255.255:new
+Z stream AF_INET   255.255.255.255 0    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_INET   255.255.255.255 0    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_INET   255.255.255.255 0    connected: EINVAL local=127.0.0.1:same
+Z stream AF_INET   255.255.255.255 0    listening: EINVAL local=127.0.0.1:same
+Z stream AF_INET   255.255.255.255 P    fresh    : OK local=255.255.255.255:asked
+Z stream AF_INET   255.255.255.255 P    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_INET   255.255.255.255 P    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_INET   255.255.255.255 P    connected: EINVAL local=127.0.0.1:same
+Z stream AF_INET   255.255.255.255 P    listening: EINVAL local=127.0.0.1:same
+Z stream AF_UNSPEC 0.0.0.0         0    fresh    : OK local=0.0.0.0:new
+Z stream AF_UNSPEC 0.0.0.0         0    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_UNSPEC 0.0.0.0         0    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_UNSPEC 0.0.0.0         0    connected: EINVAL local=127.0.0.1:same
+Z stream AF_UNSPEC 0.0.0.0         0    listening: EINVAL local=127.0.0.1:same
+Z stream AF_UNSPEC 0.0.0.0         P    fresh    : OK local=0.0.0.0:asked
+Z stream AF_UNSPEC 0.0.0.0         P    bound    : EINVAL local=127.0.0.1:same
+Z stream AF_UNSPEC 0.0.0.0         P    wildbound: EINVAL local=0.0.0.0:same
+Z stream AF_UNSPEC 0.0.0.0         P    connected: EINVAL local=127.0.0.1:same
+Z stream AF_UNSPEC 0.0.0.0         P    listening: EINVAL local=127.0.0.1:same
+Z stream AF_UNSPEC 127.0.0.1       0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_UNSPEC 127.0.0.1       0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 127.0.0.1       0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_UNSPEC 127.0.0.1       0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 127.0.0.1       0    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 127.0.0.1       P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_UNSPEC 127.0.0.1       P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 127.0.0.1       P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_UNSPEC 127.0.0.1       P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 127.0.0.1       P    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 8.8.8.8         0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_UNSPEC 8.8.8.8         0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 8.8.8.8         0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_UNSPEC 8.8.8.8         0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 8.8.8.8         0    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 8.8.8.8         P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_UNSPEC 8.8.8.8         P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 8.8.8.8         P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_UNSPEC 8.8.8.8         P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 8.8.8.8         P    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 224.0.0.1       0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_UNSPEC 224.0.0.1       0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 224.0.0.1       0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_UNSPEC 224.0.0.1       0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 224.0.0.1       0    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 224.0.0.1       P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_UNSPEC 224.0.0.1       P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 224.0.0.1       P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_UNSPEC 224.0.0.1       P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 224.0.0.1       P    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 255.255.255.255 0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_UNSPEC 255.255.255.255 0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 255.255.255.255 0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_UNSPEC 255.255.255.255 0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 255.255.255.255 0    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 255.255.255.255 P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_UNSPEC 255.255.255.255 P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 255.255.255.255 P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_UNSPEC 255.255.255.255 P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_UNSPEC 255.255.255.255 P    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  0.0.0.0         0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  0.0.0.0         0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  0.0.0.0         0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  0.0.0.0         0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  0.0.0.0         0    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  0.0.0.0         P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  0.0.0.0         P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  0.0.0.0         P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  0.0.0.0         P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  0.0.0.0         P    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  127.0.0.1       0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  127.0.0.1       0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  127.0.0.1       0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  127.0.0.1       0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  127.0.0.1       0    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  127.0.0.1       P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  127.0.0.1       P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  127.0.0.1       P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  127.0.0.1       P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  127.0.0.1       P    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  8.8.8.8         0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  8.8.8.8         0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  8.8.8.8         0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  8.8.8.8         0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  8.8.8.8         0    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  8.8.8.8         P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  8.8.8.8         P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  8.8.8.8         P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  8.8.8.8         P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  8.8.8.8         P    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  224.0.0.1       0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  224.0.0.1       0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  224.0.0.1       0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  224.0.0.1       0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  224.0.0.1       0    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  224.0.0.1       P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  224.0.0.1       P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  224.0.0.1       P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  224.0.0.1       P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  224.0.0.1       P    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  255.255.255.255 0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  255.255.255.255 0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  255.255.255.255 0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  255.255.255.255 0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  255.255.255.255 0    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  255.255.255.255 P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z stream AF_INET6  255.255.255.255 P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  255.255.255.255 P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z stream AF_INET6  255.255.255.255 P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z stream AF_INET6  255.255.255.255 P    listening: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET   0.0.0.0         0    fresh    : OK local=0.0.0.0:new
+Z dgram  AF_INET   0.0.0.0         0    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   0.0.0.0         0    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_INET   0.0.0.0         0    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   0.0.0.0         P    fresh    : OK local=0.0.0.0:asked
+Z dgram  AF_INET   0.0.0.0         P    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   0.0.0.0         P    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_INET   0.0.0.0         P    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   127.0.0.1       0    fresh    : OK local=127.0.0.1:new
+Z dgram  AF_INET   127.0.0.1       0    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   127.0.0.1       0    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_INET   127.0.0.1       0    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   127.0.0.1       P    fresh    : OK local=127.0.0.1:asked
+Z dgram  AF_INET   127.0.0.1       P    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   127.0.0.1       P    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_INET   127.0.0.1       P    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   8.8.8.8         0    fresh    : EADDRNOTAVAIL local=0.0.0.0:0
+Z dgram  AF_INET   8.8.8.8         0    bound    : EADDRNOTAVAIL local=127.0.0.1:same
+Z dgram  AF_INET   8.8.8.8         0    wildbound: EADDRNOTAVAIL local=0.0.0.0:same
+Z dgram  AF_INET   8.8.8.8         0    connected: EADDRNOTAVAIL local=127.0.0.1:same
+Z dgram  AF_INET   8.8.8.8         P    fresh    : EADDRNOTAVAIL local=0.0.0.0:0
+Z dgram  AF_INET   8.8.8.8         P    bound    : EADDRNOTAVAIL local=127.0.0.1:same
+Z dgram  AF_INET   8.8.8.8         P    wildbound: EADDRNOTAVAIL local=0.0.0.0:same
+Z dgram  AF_INET   8.8.8.8         P    connected: EADDRNOTAVAIL local=127.0.0.1:same
+Z dgram  AF_INET   224.0.0.1       0    fresh    : OK local=224.0.0.1:new
+Z dgram  AF_INET   224.0.0.1       0    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   224.0.0.1       0    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_INET   224.0.0.1       0    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   224.0.0.1       P    fresh    : OK local=224.0.0.1:asked
+Z dgram  AF_INET   224.0.0.1       P    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   224.0.0.1       P    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_INET   224.0.0.1       P    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   255.255.255.255 0    fresh    : OK local=255.255.255.255:new
+Z dgram  AF_INET   255.255.255.255 0    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   255.255.255.255 0    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_INET   255.255.255.255 0    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   255.255.255.255 P    fresh    : OK local=255.255.255.255:asked
+Z dgram  AF_INET   255.255.255.255 P    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_INET   255.255.255.255 P    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_INET   255.255.255.255 P    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_UNSPEC 0.0.0.0         0    fresh    : OK local=0.0.0.0:new
+Z dgram  AF_UNSPEC 0.0.0.0         0    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_UNSPEC 0.0.0.0         0    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_UNSPEC 0.0.0.0         0    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_UNSPEC 0.0.0.0         P    fresh    : OK local=0.0.0.0:asked
+Z dgram  AF_UNSPEC 0.0.0.0         P    bound    : EINVAL local=127.0.0.1:same
+Z dgram  AF_UNSPEC 0.0.0.0         P    wildbound: EINVAL local=0.0.0.0:same
+Z dgram  AF_UNSPEC 0.0.0.0         P    connected: EINVAL local=127.0.0.1:same
+Z dgram  AF_UNSPEC 127.0.0.1       0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_UNSPEC 127.0.0.1       0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 127.0.0.1       0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_UNSPEC 127.0.0.1       0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 127.0.0.1       P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_UNSPEC 127.0.0.1       P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 127.0.0.1       P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_UNSPEC 127.0.0.1       P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 8.8.8.8         0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_UNSPEC 8.8.8.8         0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 8.8.8.8         0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_UNSPEC 8.8.8.8         0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 8.8.8.8         P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_UNSPEC 8.8.8.8         P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 8.8.8.8         P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_UNSPEC 8.8.8.8         P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 224.0.0.1       0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_UNSPEC 224.0.0.1       0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 224.0.0.1       0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_UNSPEC 224.0.0.1       0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 224.0.0.1       P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_UNSPEC 224.0.0.1       P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 224.0.0.1       P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_UNSPEC 224.0.0.1       P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 255.255.255.255 0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_UNSPEC 255.255.255.255 0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 255.255.255.255 0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_UNSPEC 255.255.255.255 0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 255.255.255.255 P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_UNSPEC 255.255.255.255 P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_UNSPEC 255.255.255.255 P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_UNSPEC 255.255.255.255 P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  0.0.0.0         0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  0.0.0.0         0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  0.0.0.0         0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  0.0.0.0         0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  0.0.0.0         P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  0.0.0.0         P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  0.0.0.0         P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  0.0.0.0         P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  127.0.0.1       0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  127.0.0.1       0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  127.0.0.1       0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  127.0.0.1       0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  127.0.0.1       P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  127.0.0.1       P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  127.0.0.1       P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  127.0.0.1       P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  8.8.8.8         0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  8.8.8.8         0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  8.8.8.8         0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  8.8.8.8         0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  8.8.8.8         P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  8.8.8.8         P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  8.8.8.8         P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  8.8.8.8         P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  224.0.0.1       0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  224.0.0.1       0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  224.0.0.1       0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  224.0.0.1       0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  224.0.0.1       P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  224.0.0.1       P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  224.0.0.1       P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  224.0.0.1       P    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  255.255.255.255 0    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  255.255.255.255 0    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  255.255.255.255 0    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  255.255.255.255 0    connected: EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  255.255.255.255 P    fresh    : EAFNOSUPPORT local=0.0.0.0:0
+Z dgram  AF_INET6  255.255.255.255 P    bound    : EAFNOSUPPORT local=127.0.0.1:same
+Z dgram  AF_INET6  255.255.255.255 P    wildbound: EAFNOSUPPORT local=0.0.0.0:same
+Z dgram  AF_INET6  255.255.255.255 P    connected: EAFNOSUPPORT local=127.0.0.1:same

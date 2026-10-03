@@ -231,4 +231,26 @@ type internal CopiedInternetSockaddr =
         Family : int option
         /// `sin_addr` and `sin_port`, present only when the copy reached both.
         Endpoint : InternetEndpoint option
+        /// `sin_addr` as a reader sees it that takes every byte past the copy
+        /// as zero: what Darwin's stream `bind(2)` judges a broadcast or
+        /// multicast address by, so that `224` in byte 4 alone, at a length of
+        /// 5, is a multicast address to it. Measured
+        /// (`sockaddr-bind-ladder.c`, M).
+        ZeroFilledAddress : uint32
     }
+
+/// What this platform's `bind(2)` makes of a broadcast or multicast address,
+/// on a socket of some kind. This library models no use of either: it has no
+/// group membership, and no interface to receive or send on.
+[<RequireQualifiedAccess>]
+type BindGroupAddressRule =
+    /// Bound like an address this machine holds, if nothing else faults. A bind
+    /// that would succeed is refused (`BindRefusal.UnmodelledMulticast`) rather
+    /// than recorded, since nothing downstream could honour the binding.
+    | Accepted
+    /// Not an address this machine holds: `EADDRNOTAVAIL`, at
+    /// `BindFault.AddressNotLocal`.
+    | NotLocal
+    /// `EAFNOSUPPORT`, judged with the family, at `BindFault.Family`: before
+    /// the length for `AF_INET`, and after it for `AF_UNSPEC`.
+    | RejectedWithTheFamily
