@@ -240,6 +240,11 @@ type EscapeAnalysisState =
 /// <c>throw</c> of a value of a static type raises that type or a subtype. An object a call
 /// returns is of the classes the callee's <c>ret</c>s return in the instance the call reaches.
 ///
+/// The native libraries the framework ships with its CoreLib (<c>FrameworkShim</c>) are assumed to
+/// be present and to export what its P/Invokes import, so that calling one of their functions
+/// raises nothing. Were one missing, the runtime would run the program's
+/// <c>ResolvingUnmanagedDll</c> handlers, which could throw anything.
+///
 /// That holds for assemblies that agree with each other. A member or type that a body names and
 /// the loaded assembly it is looked for in lacks is reported, as the exception binding it throws,
 /// and signals that they do not. What else such a disagreement can break is not checked, and the
