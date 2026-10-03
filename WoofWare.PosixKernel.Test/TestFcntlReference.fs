@@ -11,9 +11,9 @@ open WoofWare.PosixKernel
 /// One step of the descriptor-table property.
 [<RequireQualifiedAccess>]
 type FcntlOp =
-    /// `open(2)` of the file `f`, with the access mode, `O_CLOEXEC` and
-    /// `O_SYNC` as asked.
-    | Open of access : FileAccessMode * closeOnExec : bool * synchronous : bool
+    /// `open(2)` of the file `f`, with the access mode, `O_CLOEXEC`, `O_SYNC`
+    /// and `O_NOFOLLOW` as asked.
+    | Open of access : FileAccessMode * closeOnExec : bool * synchronous : bool * noFollow : bool
     /// `pipe2(2)`, with `O_NONBLOCK` and `O_CLOEXEC` as asked.
     | Pipe of nonBlocking : bool * closeOnExec : bool
     | Dup of fd : int
@@ -63,6 +63,7 @@ module TestFcntlReference =
             NonBlocking : bool
             Synchronous : bool
             DataSynchronous : bool
+            NoFollow : bool
             Written : bool
         }
 
@@ -91,6 +92,7 @@ module TestFcntlReference =
     let private largeFileBit (r : Reference) : int = if x64 r then 0x8000 else 0x20000
     let private directBit (r : Reference) : int = if x64 r then 0x4000 else 0x10000
     let private noAtimeBit (r : Reference) : int = 0x40000
+    let private noFollowBit (r : Reference) : int = if x64 r then 0x20000 else 0x8000
 
     let private unmodelled (r : Reference) : int =
         if r.Darwin then
@@ -106,6 +108,7 @@ module TestFcntlReference =
         ||| bit d.Synchronous (syncBit r)
         ||| bit d.DataSynchronous (dsyncBit r)
         ||| bit (not r.Darwin && d.Kind = Kind.File) (largeFileBit r)
+        ||| bit (not r.Darwin && d.NoFollow) (noFollowBit r)
         ||| bit (r.Darwin && d.Written) 0x10000
 
     let private lowestFreeFrom (minimum : int) (r : Reference) : int =
@@ -134,6 +137,7 @@ module TestFcntlReference =
                 NonBlocking = false
                 Synchronous = false
                 DataSynchronous = false
+                NoFollow = false
                 Written = false
             }
 
@@ -145,7 +149,7 @@ module TestFcntlReference =
             }
 
         match op with
-        | FcntlOp.Open (access, cloexec, synchronous) ->
+        | FcntlOp.Open (access, cloexec, synchronous, noFollow) ->
             let fd = lowestFreeFrom 0 r
 
             let access =
@@ -159,6 +163,7 @@ module TestFcntlReference =
                 { fresh Kind.File access with
                     Synchronous = synchronous
                     DataSynchronous = synchronous && not r.Darwin
+                    NoFollow = noFollow
                 }
                 fd
                 cloexec
@@ -343,12 +348,13 @@ module TestFcntlReference =
             | Error refusal -> failwith $"fcntl refused: %s{FcntlRefusal.describe refusal}"
 
         match op with
-        | FcntlOp.Open (access, cloexec, synchronous) ->
+        | FcntlOp.Open (access, cloexec, synchronous, noFollow) ->
             let flags =
                 { FcntlWorld.opening access with
                     CloseOnExec = cloexec
                     Synchronous = synchronous
                     DataSynchronous = synchronous && not r.Darwin
+                    NoFollow = noFollow
                 }
 
             match OpenFlagWords.openPath flags (PathArg.ofText "f") 0o644 system with
@@ -458,7 +464,7 @@ module TestFcntlReference =
 
         Gen.frequency
             [
-                3, Gen.map3 (fun a c s -> FcntlOp.Open (a, c, s)) access bool bool
+                3, Gen.map4 (fun a c s n -> FcntlOp.Open (a, c, s, n)) access bool bool bool
                 2, Gen.map2 (fun n c -> FcntlOp.Pipe (n, c)) bool bool
                 2, Gen.map FcntlOp.Dup fd
                 3,
@@ -511,6 +517,7 @@ module TestFcntlReference =
                                     NonBlocking = false
                                     Synchronous = false
                                     DataSynchronous = false
+                                    NoFollow = false
                                     Written = false
                                 }
                                 1,
@@ -521,6 +528,7 @@ module TestFcntlReference =
                                     NonBlocking = false
                                     Synchronous = false
                                     DataSynchronous = false
+                                    NoFollow = false
                                     Written = false
                                 }
                                 2,
@@ -531,6 +539,7 @@ module TestFcntlReference =
                                     NonBlocking = false
                                     Synchronous = false
                                     DataSynchronous = false
+                                    NoFollow = false
                                     Written = false
                                 }
                             ]

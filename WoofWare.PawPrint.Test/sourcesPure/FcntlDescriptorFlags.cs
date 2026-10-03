@@ -18,7 +18,8 @@ using System.Runtime.InteropServices;
 //   * `SystemNative_FcntlSetFD`'s argument goes through the *open* flags'
 //     conversion, so PAL_O_WRONLY (1) becomes O_WRONLY (1), which the kernel
 //     reads as FD_CLOEXEC, and PAL_O_CLOEXEC (0x10) becomes the platform's
-//     O_CLOEXEC, whose bit 0 is clear, so it *clears* the flag;
+//     O_CLOEXEC, whose bit 0 is clear, so it *clears* the flag, and a bit it
+//     does not know makes the conversion -1, which sets it;
 //   * a socket from `SystemNative_Socket` has it (SOCK_CLOEXEC on Linux, a
 //     `fcntl` after the call on Darwin), and so do one managed code makes and
 //     one it accepts;
@@ -52,6 +53,7 @@ class Program
     // Interop.Sys.OpenFlags and PipeFlags.
     const int PAL_O_WRONLY = 0x0001;
     const int PAL_O_CLOEXEC = 0x0010;
+    const int PAL_UNKNOWN = 0x0400;
 
     // Interop.Sys's AddressFamily, SocketType and ProtocolType.
     const int PAL_AF_INET = 2;
@@ -86,6 +88,12 @@ class Program
         // PAL_O_CLOEXEC converts to the platform's O_CLOEXEC, which is not.
         if (SetFD(copy, PAL_O_CLOEXEC) != 0) return 12;
         if (GetFD(copy) != 0) return 13;
+
+        // A bit ConvertOpenFlags does not know makes it answer -1, which every
+        // flavour's F_SETFD reads as FD_CLOEXEC (and Darwin's as FD_CLOFORK
+        // too, so only bit 0 is compared).
+        if (SetFD(copy, PAL_UNKNOWN) != 0) return 28;
+        if ((GetFD(copy) & 1) != 1) return 29;
 
         if (Close(copy) != 0) return 14;
         if (Close(second) != 0) return 15;

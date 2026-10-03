@@ -647,23 +647,25 @@ module UnixReadWrite =
         else
             system
 
-    /// A write through the description `id` that had moved `alreadyMoved` bytes
-    /// before this step, marking the description written if the call returns
-    /// having moved any: its answer counts them, or it fails having moved some
-    /// earlier. Measured on Darwin (`fcntl-dup.c`, WRITTEN rows): a write that
-    /// returns having moved bytes marks the description, whatever it answers,
-    /// and one asleep part way does not yet.
-    let private markedAfterWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (id : OpenFileDescriptionId)
-        (alreadyMoved : int)
-        (outcome : WriteOutcome<WriteAnswer, 'Task, 'Handler>)
-        : WriteOutcome<WriteAnswer, 'Task, 'Handler>
-        =
-        let moved (answer : WriteAnswer) : bool =
-            match answer with
-            | WriteAnswer.Completed written -> written > 0L || alreadyMoved > 0
-            | WriteAnswer.Failed _ -> alreadyMoved > 0
+    /// Whether a write that had moved `alreadyMoved` bytes before this step,
+    /// and returns `answer`, returns having moved any: its answer counts them,
+    /// or it fails having moved some earlier.
+    let private returnsHavingMoved (alreadyMoved : int) (answer : WriteAnswer) : bool =
+        match answer with
+        | WriteAnswer.Completed written -> written > 0L || alreadyMoved > 0
+        | WriteAnswer.Failed _ -> alreadyMoved > 0
 
+    /// A step of a write through the description `id`, marking the description
+    /// written if the call returns and `moved` says it moved bytes. Measured on
+    /// Darwin (`fcntl-dup.c`, WRITTEN rows): a write that returns having moved
+    /// bytes marks the description, whatever it answers, and one asleep part
+    /// way does not yet.
+    let private markedAfterWrite<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (id : OpenFileDescriptionId)
+        (moved : 'Answer -> bool)
+        (outcome : WriteOutcome<'Answer, 'Task, 'Handler>)
+        : WriteOutcome<'Answer, 'Task, 'Handler>
+        =
         match outcome with
         | WriteOutcome.Returns (answer, system) when moved answer ->
             WriteOutcome.Returns (answer, markWritten id system)
@@ -2368,7 +2370,7 @@ module UnixReadWrite =
 
         match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
         | None -> outcome
-        | Some id -> outcome |> Result.map (markedAfterWrite id 0)
+        | Some id -> outcome |> Result.map (markedAfterWrite id (returnsHavingMoved 0))
 
     /// `outcome`, with the open file descriptions `held`, which the write held
     /// while it slept, released if nothing references them now: the call's
@@ -2391,6 +2393,29 @@ module UnixReadWrite =
         | WriteOutcome.WouldBlock (condition, system) -> WriteOutcome.WouldBlock (condition, release system)
         | WriteOutcome.Restarts system -> WriteOutcome.Restarts (release system)
         | WriteOutcome.ProcessEnded ended -> WriteOutcome.ProcessEnded ended
+
+    /// The description the write `task` is asleep in was made through, and
+    /// how many bytes it has moved so far; `None` once a close has ended it,
+    /// which marked the description then (`UnixDescriptor.close`).
+    let private waitingWriter<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : (OpenFileDescriptionId * int) option
+        =
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some (ParkedSyscall.PipeWrite {
+                                            Writer = SleepTarget.Waiting (description, _)
+                                            Written = written
+                                        }) -> Some (description, written)
+        | Some (ParkedSyscall.PipeWrite _)
+        | Some (ParkedSyscall.PipeRead _)
+        | Some (ParkedSyscall.Accept _)
+        | Some (ParkedSyscall.SocketWait _)
+        | Some (ParkedSyscall.Kevent _)
+        | Some (ParkedSyscall.Flock _)
+        | Some (ParkedSyscall.Poll _)
+        | Some (ParkedSyscall.KqueuePoll _)
+        | None -> None
 
     /// The write `task` is asleep in.
     let private parkedWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -2593,7 +2618,20 @@ module UnixReadWrite =
             | Some parked -> ParkedSyscall.descriptions parked
             | None -> []
 
+        // An admission that answers is the call returning.
+        let moved (written : int) (resumption : WriteResumption) : bool =
+            match resumption with
+            | WriteResumption.Answered answer -> returnsHavingMoved written answer
+            | WriteResumption.Transfer _ -> false
+
+        let marking = waitingWriter task system
+
         admitFinishWriteHolding task system
+        |> Result.map (fun outcome ->
+            match marking with
+            | Some (description, written) -> markedAfterWrite description (moved written) outcome
+            | None -> outcome
+        )
         |> Result.map (releasedAfterWrite "UnixReadWrite.admitFinishWrite" held)
 
 
@@ -2679,21 +2717,12 @@ module UnixReadWrite =
             | Some parked -> ParkedSyscall.descriptions parked
             | None -> []
 
-        // The description the write was made through and what it has moved
-        // so far, unless a close has ended it, which marked the description
-        // then (`UnixDescriptor.close`).
-        let marking =
-            match UnixTaskTable.parkedFor task system.Tasks with
-            | Some (ParkedSyscall.PipeWrite {
-                                                Writer = SleepTarget.Waiting (description, _)
-                                                Written = written
-                                            }) -> Some (description, written)
-            | _ -> None
+        let marking = waitingWriter task system
 
         finishWriteHolding task bytes system
         |> Result.map (fun outcome ->
             match marking with
-            | Some (description, written) -> markedAfterWrite description written outcome
+            | Some (description, written) -> markedAfterWrite description (returnsHavingMoved written) outcome
             | None -> outcome
         )
         |> Result.map (releasedAfterWrite "UnixReadWrite.finishWrite" held)

@@ -835,10 +835,10 @@ module TestFcntlMeasured =
             replayed |> shouldBeGreaterThan 18
 
             // The rows of calls this kernel does not make here: a socket that moves
-            // bytes (it models no peer to take them) or `send(2)`, a pipe write or
-            // flock interrupted by a signal, Darwin's conversion of a lock (which
-            // `flock` refuses), a Darwin pipe's flock (likewise), and the ended write
-            // the test below replays on its own.
+            // bytes (it models no peer to take them) or `send(2)`, Darwin's
+            // conversion of a lock (which `flock` refuses), a Darwin pipe's flock
+            // (likewise), and the rows the tests below replay on their own, with a
+            // task asleep.
             let expectedSkips =
                 [
                     "socket write"
@@ -975,3 +975,122 @@ module TestFcntlMeasured =
                 | false, Ok (SyscallAnswer.Completed _, after) ->
                     UnixWait.wakes (Set.singleton 1) after |> shouldEqual []
                 | _, other -> failwith $"%s{run.Name}, dup kept %b{keepDup}: dup2 onto the flock answered %A{other}"
+
+    /// `system` with `SIGUSR1` caught, without `SA_RESTART`, as the probe had
+    /// it, and `SIGPIPE` ignored.
+    let private catchingSigUsr1 (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        { system with
+            Process =
+                { system.Process with
+                    Signals =
+                        system.Process.Signals
+                        |> SignalState.setDisposition Signal.SIGPIPE SignalDisposition.Ignore
+                        |> SignalState.setDisposition
+                            Signal.SIGUSR1
+                            (SignalDisposition.Catch (SignalCatch.ofHandler "h"))
+                }
+        }
+
+    let private signalled (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        { system with
+            Process =
+                { system.Process with
+                    Signals =
+                        SignalState.enqueue
+                            {
+                                Signal = Signal.SIGUSR1
+                                Target = ValueSome task
+                            }
+                            system.Process.Signals
+                }
+        }
+
+    /// Measured on both (`fcntl-dup.c`, WRITTEN rows): a blocking write that
+    /// a signal ends once part of it is in returns that count, and on Darwin
+    /// marks its description, as any write returning having moved bytes does.
+    [<Test>]
+    let ``a blocking write a signal ends part way marks its description as measured`` () : unit =
+        for run in runs do
+            let measured =
+                FcntlWorld.rows "WRITTEN" run
+                |> List.find (fun row -> List.head row = "blocking pipe write interrupted part way")
+
+            let (_, w), system = FcntlWorld.pipe 0 (FcntlWorld.system run |> catchingSigUsr1)
+            let bytes = ImmutableArray.CreateRange (Array.create 200000 0uy)
+
+            let system =
+                match WriteOutcomes.admitThenWrite 1 w UserBuffer.Mapped bytes system with
+                | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+                | other -> failwith $"a write larger than the pipe: %A{other}"
+
+            let system = signalled 1 system
+            UnixWait.wakes (Set.singleton 1) system |> List.map fst |> shouldEqual [ 1 ]
+
+            let answer, system =
+                match UnixReadWrite.admitFinishWrite 1 system with
+                | Ok (WriteOutcome.Returns (WriteResumption.Answered (WriteAnswer.Completed n), system)) ->
+                    $"ok %d{n}", system
+                | other -> failwith $"%s{run.Name}: the interrupted write: %A{other}"
+
+            [
+                "blocking pipe write interrupted part way"
+                $"call %s{answer}"
+                $"after %s{FcntlWorld.statusFlags w system}"
+            ]
+            |> shouldEqual measured
+
+    /// Measured on both (`fcntl-dup.c`, WRITTEN rows): a blocking flock granted
+    /// after a wait marks its description on Darwin, as a granted flock does,
+    /// and one a signal interrupts does not.
+    [<Test>]
+    let ``a blocking flock granted after a wait, or interrupted, leaves F_GETFL as measured`` () : unit =
+        for run in runs do
+            let rows = FcntlWorld.rows "WRITTEN" run
+
+            let row (label : string) =
+                rows |> List.find (fun row -> List.head row = label)
+
+            let reading = FcntlWorld.opening FileAccessMode.ReadOnly
+
+            let parked (system : UnixSystem<int, string>) =
+                let holder, system = FcntlWorld.openWith reading "f" system
+                let fd, system = FcntlWorld.openWith reading "f" system
+                let _, system = flockOf holder 2 system
+
+                match UnixDescriptor.flock 1 fd 2 system with
+                | Ok (SyscallOutcome.WouldBlock _, system) -> holder, fd, system
+                | other -> failwith $"a contended flock: %A{other}"
+
+            // Granted after a wait.
+            let holder, fd, system = parked (FcntlWorld.system run |> catchingSigUsr1)
+            let _, system = flockOf holder 8 system
+            UnixWait.wakes (Set.singleton 1) system |> List.map fst |> shouldEqual [ 1 ]
+
+            let answer, system =
+                match UnixDescriptor.flockAcquire 1 system with
+                | Ok (SyscallOutcome.Answered answer, system) -> FcntlWorld.number answer, system
+                | other -> failwith $"%s{run.Name}: finishing the flock: %A{other}"
+
+            [
+                "blocking flock granted after a wait"
+                $"call %s{answer}"
+                $"after %s{FcntlWorld.statusFlags fd system}"
+            ]
+            |> shouldEqual (row "blocking flock granted after a wait")
+
+            // Interrupted.
+            let _, fd, system = parked (FcntlWorld.system run |> catchingSigUsr1)
+            let system = signalled 1 system
+            UnixWait.wakes (Set.singleton 1) system |> List.map fst |> shouldEqual [ 1 ]
+
+            let answer, system =
+                match UnixDescriptor.flockAcquire 1 system with
+                | Ok (SyscallOutcome.Answered answer, system) -> FcntlWorld.number answer, system
+                | other -> failwith $"%s{run.Name}: the interrupted flock: %A{other}"
+
+            [
+                "blocking flock interrupted"
+                $"call %s{answer}"
+                $"after %s{FcntlWorld.statusFlags fd system}"
+            ]
+            |> shouldEqual (row "blocking flock interrupted")
