@@ -68,10 +68,15 @@ module TestStateQueries =
                 ((initialOn platform).Machine, advances)
                 ||> List.fold (fun machine advance -> UnixMachineState.advanceClock advance machine)
 
+            let system =
+                (initialOn platform, advances)
+                ||> List.fold (fun system advance -> UnixSystem.advanceClock advance system)
+
             let uptime = UnixMachineState.nanosecondsSinceBoot machine
             uptime |> shouldEqual (List.sum advances)
+            UnixSystem.nanosecondsSinceBoot system |> shouldEqual uptime
 
-            match UnixClock.clockGettime (fullPrecisionSinceBoot platform) machine with
+            match UnixClock.clockGettime (fullPrecisionSinceBoot platform) system with
             | Ok (Ok reading) ->
                 UnixTimestamp.seconds reading * 1_000_000_000L
                 + int64 (UnixTimestamp.nanoseconds reading)
@@ -192,3 +197,51 @@ module TestStateQueries =
             match park |> Option.map (fun park -> park.Syscall) with
             | Some (ParkedSyscall.PipeRead _) -> ()
             | other -> failwith $"expected the leader to be parked in its pipe read, got %A{other}"
+
+    [<Test>]
+    let ``the system's own queries answer what its machine's and process's do`` () : unit =
+        // Away from every default the queries could be confused with, so that a
+        // query reading the wrong part of the system fails.
+        let path = AbsoluteUnixPath.parseOrFail context "/bin/client"
+
+        let entry =
+            UnixByteString.ofString "A=1" |> Result.defaultWith (fun d -> failwith $"%O{d}")
+
+        for platform in platforms do
+            let system =
+                imageOn platform
+                |> UnixBootImage.withProcessorCount 3
+                |> UnixBootImage.withEnvironment context [ entry ]
+                |> UnixBootImage.withProcessPath context (Some path)
+                |> UnixBootImage.boot
+                |> UnixSystem.advanceClock 1_234L
+
+            UnixSystem.leader system |> shouldEqual system.Leader
+            UnixSystem.tasks system |> shouldEqual system.Tasks
+            UnixSystem.platform system |> shouldEqual platform
+            UnixSystem.processorCount system |> shouldEqual 3
+            UnixSystem.environment system |> shouldEqual [ entry ]
+            UnixSystem.processPath system |> shouldEqual (Some path)
+            UnixSystem.nanosecondsSinceBoot system |> shouldEqual 1_234L
+
+            UnixSystem.signals system
+            |> shouldEqual (UnixProcessState.signals system.Process)
+
+            UnixSystem.delivered system
+            |> shouldEqual (UnixMachineState.delivered system.Machine)
+
+            // The launch table's standard streams, and a descriptor not open.
+            for fd in [ 0 ; 1 ; 2 ; 3 ] do
+                UnixSystem.descriptorTarget fd system
+                |> shouldEqual (FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors)
+
+            UnixSystem.descriptorTarget 3 system |> shouldEqual None
+
+            // And a write that reaches the client is what `delivered` reports.
+            match UnixReadWrite.write 0 1 (ImmutableArray.Create<byte> [| 7uy |]) system with
+            | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, written)) ->
+                UnixSystem.delivered written
+                |> DeliveryLog.toList
+                |> List.map (fun delivery -> List.ofSeq delivery.Bytes)
+                |> shouldEqual [ [ 7uy ] ]
+            | other -> failwith $"writing to standard output: %A{other}"

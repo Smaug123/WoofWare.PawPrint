@@ -467,6 +467,98 @@ module UnixSystem =
             bootTime
             filesystem
 
+    /// The process's first task, which it started with: its thread-group
+    /// leader. See `UnixSystem.Leader`.
+    let leader<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : 'Task
+        =
+        system.Leader
+
+    /// Every task the process has, and what each is blocked in, which
+    /// `UnixTaskTable`'s queries read.
+    let tasks<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : Map<'Task, UnixTaskState>
+        =
+        system.Tasks
+
+    /// Every write that has reached a client draining one of the machine's
+    /// pipes, oldest first. See `UnixMachineState.delivered`.
+    let delivered<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : DeliveryLog
+        =
+        UnixMachineState.delivered system.Machine
+
+    /// The process's signal state, which `SignalState`'s queries read. See
+    /// `UnixProcessState.signals`.
+    let signals<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : SignalState<'Task, 'Handler>
+        =
+        UnixProcessState.signals system.Process
+
+    /// The environment the process was started with, entry by entry, in order.
+    /// See `UnixProcessState.environment`.
+    let environment<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixByteString list
+        =
+        UnixProcessState.environment system.Process
+
+    /// The path of the executable that started the process, or `None` if it has
+    /// none. See `UnixProcessState.processPath`.
+    let processPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : AbsoluteUnixPath option
+        =
+        UnixProcessState.processPath system.Process
+
+    /// The platform the machine impersonates. See `UnixMachineState.platform`.
+    let platform<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : SimulatedUnixPlatform
+        =
+        UnixMachineState.platform system.Machine
+
+    /// The number of logical processors the machine reports to the process. See
+    /// `UnixMachineState.processorCount`.
+    let processorCount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int
+        =
+        UnixMachineState.processorCount system.Machine
+
+    /// How long the machine has been up, to the nanosecond. See
+    /// `UnixMachineState.nanosecondsSinceBoot`.
+    let nanosecondsSinceBoot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int64
+        =
+        UnixMachineState.nanosecondsSinceBoot system.Machine
+
+    /// Let `nanoseconds` pass on the machine: every clock it has moves forward
+    /// by that much. See `UnixMachineState.advanceClock`, which says what it
+    /// refuses.
+    let advanceClock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (nanoseconds : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        { system with
+            Machine = UnixMachineState.advanceClock nanoseconds system.Machine
+        }
+
+    /// What the descriptor `fd` names, or `None` if the process has no such
+    /// descriptor open.
+    let descriptorTarget<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : OpenFileTarget option
+        =
+        FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors
+
     /// The process ID, as `getpid(2)` reports it.
     ///
     /// Total, and changes nothing: `getpid` cannot fail.
@@ -1870,7 +1962,7 @@ module UnixSystem =
     /// start again from 300, skipping those still in use.
     ///
     /// Not configuration, which is `UnixBootImage`'s, but the outside world
-    /// acting on a running machine, as `UnixMachineState.advanceClock` is.
+    /// acting on a running machine, as `UnixSystem.advanceClock` is.
     ///
     /// Refuses a Darwin machine, which has no such setting; a value Linux does not
     /// accept, which is anything outside 301 to 4194304; and a value at or below a

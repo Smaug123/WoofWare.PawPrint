@@ -162,7 +162,7 @@ module SignalDispatch =
                 UnixSignal.sigaction
                     (Signal.toRawSignoUnder numbering signal)
                     (Some SignalDisposition.Default)
-                    (EmulatedKernel.unix state.Kernel)
+                    state.Kernel.System
             with
             | Ok (_, system) -> state.MapKernel (EmulatedKernel.withUnix system) |> SignalPoll.Continues
             | Error errno ->
@@ -175,9 +175,7 @@ module SignalDispatch =
             // process dies.
             let state =
                 state.MapKernel (fun kernel ->
-                    EmulatedKernel.withUnix
-                        (UnixSignal.sigreturn kernel.Leader frame.Id (EmulatedKernel.unix kernel))
-                        kernel
+                    EmulatedKernel.withUnix (UnixSignal.sigreturn kernel.Leader frame.Id kernel.System) kernel
                 )
 
             match EmulatedKernel.abort state.Kernel.Leader state.Kernel with
@@ -232,7 +230,7 @@ module SignalDispatch =
                 failwith
                     $"SignalDispatch.poll: %O{signal} is caught by System.Native's handler, but signal handling was never initialised, so the handler would write it to descriptor -1, fail, and abort() the process; PawPrint does not model that abort."
 
-        let system = EmulatedKernel.unix state.Kernel
+        let system = state.Kernel.System
         let bytes = ImmutableArray.Create (signalByte numbering signal)
 
         let refuse (what : string) : 'a =
@@ -263,8 +261,8 @@ module SignalDispatch =
                 // standard output streams, is guest-visible output, which only
                 // a step's effect streams; this poll has no step to carry one.
                 if
-                    DeliveryLog.count (UnixMachineState.delivered written.Machine)
-                    <> DeliveryLog.count (UnixMachineState.delivered system.Machine)
+                    DeliveryLog.count (UnixSystem.delivered written)
+                    <> DeliveryLog.count (UnixSystem.delivered system)
                 then
                     failwith
                         $"SignalDispatch.poll: System.Native's handler for %O{signal} writes to descriptor %d{pipe.WriteEnd}, which the guest has replaced with one of the standard output streams the host drains; PawPrint would record the byte as output without streaming it."
@@ -311,7 +309,7 @@ module SignalDispatch =
             : SignalDelivery<ThreadId, NativeSignalHandler> option * IlMachineState
             =
             let delivery, systemAfter =
-                match UnixSignal.onReturnToUser leader (EmulatedKernel.unix state.Kernel) with
+                match UnixSignal.onReturnToUser leader state.Kernel.System with
                 | Ok answer -> answer
                 | Error refusal ->
                     failwith $"SignalDispatch.poll: the kernel will not say what the leader takes: %O{refusal}"
@@ -320,7 +318,7 @@ module SignalDispatch =
             // discarding a receivable ignored signal is a state change with no
             // delivery, and dropping it would replay the discard every tick.
             let state =
-                if UnixProcessState.signals systemAfter.Process = state.Kernel.Signals then
+                if UnixSystem.signals systemAfter = state.Kernel.Signals then
                     state
                 else
                     state.MapKernel (EmulatedKernel.withUnix systemAfter)
@@ -357,7 +355,7 @@ module SignalDispatch =
 
             let state =
                 state.MapKernel (fun kernel ->
-                    EmulatedKernel.withUnix (UnixSignal.sigreturn leader frame.Id (EmulatedKernel.unix kernel)) kernel
+                    EmulatedKernel.withUnix (UnixSignal.sigreturn leader frame.Id kernel.System) kernel
                 )
 
             state |> returnToUserThen (runFrames outer)
@@ -518,7 +516,7 @@ module SignalDispatch =
             failwith
                 $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, which it was given as its signal pipe's read end, and %s{what}; the real SignalHandlerLoop then closes the descriptor and its thread exits, which PawPrint does not model."
 
-        let system = EmulatedKernel.unix state.Kernel
+        let system = state.Kernel.System
 
         let read =
             match UnixTaskTable.parkedFor dispatcher state.Kernel.Tasks with

@@ -51,7 +51,7 @@ module NativeLibcFile =
 
         // Each pathname is read out of guest memory only when the kernel
         // reaches its copy-in: flags it refuses are answered without either.
-        match UnixNamespace.cloneFileFlagsPhase flags (EmulatedKernel.unix state.Kernel) with
+        match UnixNamespace.cloneFileFlagsPhase flags state.Kernel.System with
         | Error refusal -> refused refusal
         | Ok (CloneFileScreen.Answered (answer, system)) -> answered (answer, system)
         | Ok (CloneFileScreen.NeedsSource screened) ->

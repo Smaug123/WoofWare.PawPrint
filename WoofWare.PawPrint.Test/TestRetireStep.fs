@@ -45,9 +45,12 @@ module TestRetireStep =
         { EmulatedKernel.initial with
             InstructionCostTicks = cost
             StepCounter = step
-            Machine =
-                { EmulatedKernel.initial.Machine with
-                    NanosecondsSinceBoot = clock * ClockPal.nanosecondsPerTick
+            System =
+                { EmulatedKernel.initial.System with
+                    Machine =
+                        { EmulatedKernel.initial.System.Machine with
+                            NanosecondsSinceBoot = clock * ClockPal.nanosecondsPerTick
+                        }
                 }
         }
 
@@ -115,9 +118,12 @@ module TestRetireStep =
         |> shouldEqual
             { kernel with
                 StepCounter = 12L
-                Machine =
-                    { kernel.Machine with
-                        NanosecondsSinceBoot = 507L * ClockPal.nanosecondsPerTick
+                System =
+                    { kernel.System with
+                        Machine =
+                            { kernel.System.Machine with
+                                NanosecondsSinceBoot = 507L * ClockPal.nanosecondsPerTick
+                            }
                     }
             }
 

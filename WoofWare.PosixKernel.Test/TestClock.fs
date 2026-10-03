@@ -24,10 +24,6 @@ module TestClock =
     let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
         (UnixBootImage.boot (imageOn flavour)).Machine
 
-    /// The machine of a process on `flavour` booted at `bootTime`.
-    let private bootedAt (flavour : SimulatedUnixFlavour) (bootTime : UnixTimestamp) : UnixMachineState =
-        (imageOn flavour |> UnixBootImage.withBootTime bootTime |> UnixBootImage.boot).Machine
-
     /// A value in `[low, high]`, weighted towards both ends as well as spread across
     /// the whole range: the ends are where the arithmetic can overflow, and a uniform
     /// draw over a range of 2^63 essentially never lands near them.
@@ -70,15 +66,27 @@ module TestClock =
             return UnixTimestamp.createOrFail "TestClock" seconds nanos
         }
 
-    /// A machine booted at `bootTime` which has been up for `sinceBoot` nanoseconds,
-    /// reached the only way a client can reach one.
+    /// A process on a machine booted at `bootTime` which has been up for
+    /// `sinceBoot` nanoseconds, reached the only way a client can reach one.
+    let private systemWith
+        (flavour : SimulatedUnixFlavour)
+        (bootTime : UnixTimestamp)
+        (sinceBoot : int64)
+        : UnixSystem<int, string>
+        =
+        imageOn flavour
+        |> UnixBootImage.withBootTime bootTime
+        |> UnixBootImage.boot
+        |> UnixSystem.advanceClock sinceBoot
+
+    /// The machine `systemWith` runs on.
     let private machineWith
         (flavour : SimulatedUnixFlavour)
         (bootTime : UnixTimestamp)
         (sinceBoot : int64)
         : UnixMachineState
         =
-        bootedAt flavour bootTime |> UnixMachineState.advanceClock sinceBoot
+        (systemWith flavour bootTime sinceBoot).Machine
 
     /// Any machine a client can reach: any flavour, any admissible boot instant, any uptime.
     let private reachableGen : Gen<SimulatedUnixFlavour * UnixTimestamp * int64> =
@@ -326,19 +334,19 @@ module TestClock =
 
     /// A machine whose two clocks differ in their seconds, so a reading of one cannot
     /// be mistaken for the other at any granularity.
-    let private telling (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        machineWith flavour (UnixTimestamp.ofSeconds 1_700_000_000L) 123_456_789_987L
+    let private telling (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
+        systemWith flavour (UnixTimestamp.ofSeconds 1_700_000_000L) 123_456_789_987L
 
     /// Classify an answer by which of the two clocks it read.
-    let private classify (machine : UnixMachineState) (clockId : int) : Outcome =
-        match UnixClock.clockGettime clockId machine with
+    let private classify (system : UnixSystem<int, string>) (clockId : int) : Outcome =
+        match UnixClock.clockGettime clockId system with
         | Error _ -> Outcome.Refused
         | Ok (Error UnixError.EINVAL) -> Outcome.Invalid
         | Ok (Error other) -> failwith $"clock id %d{clockId} failed with %O{other}, which no measured kernel does"
         | Ok (Ok reading) ->
-            if UnixTimestamp.seconds reading = machine.NanosecondsSinceBoot / 1_000_000_000L then
+            if UnixTimestamp.seconds reading = UnixSystem.nanosecondsSinceBoot system / 1_000_000_000L then
                 Outcome.Monotonic
-            elif UnixTimestamp.seconds reading = UnixTimestamp.seconds (UnixMachineState.realtime machine) then
+            elif UnixTimestamp.seconds reading = UnixTimestamp.seconds (UnixMachineState.realtime system.Machine) then
                 Outcome.Realtime
             else
                 failwith $"clock id %d{clockId} read %O{reading}, which is neither clock"
@@ -350,10 +358,10 @@ module TestClock =
     [<Test>]
     let ``each clock id reads the clock the measured table says, on each flavour`` () : unit =
         for flavour in flavours do
-            let machine = telling flavour
+            let system = telling flavour
 
             for clockId in sweptIds do
-                let actual = classify machine clockId
+                let actual = classify system clockId
 
                 if actual <> expected flavour clockId then
                     failwith $"%O{flavour} clock id %d{clockId}: expected %A{expected flavour clockId}, got %A{actual}"
@@ -411,7 +419,7 @@ module TestClock =
     [<Test>]
     let ``every answered clock reads exactly what its flavour reports`` () : unit =
         let property (flavour : SimulatedUnixFlavour, bootTime : UnixTimestamp, up : int64) : bool =
-            let machine = machineWith flavour bootTime up
+            let system = systemWith flavour bootTime up
 
             [ 0..16 ]
             |> List.filter (fun clockId ->
@@ -422,7 +430,7 @@ module TestClock =
                 | Outcome.Refused -> false
             )
             |> List.forall (fun clockId ->
-                match UnixClock.clockGettime clockId machine with
+                match UnixClock.clockGettime clockId system with
                 | Ok (Ok reading) -> exactNanoseconds reading = expectedReading flavour clockId bootTime up
                 | other -> failwith $"%O{flavour} clock id %d{clockId} should have answered, got %A{other}"
             )
@@ -433,10 +441,10 @@ module TestClock =
     let ``Darwin's microsecond clocks drop exactly the sub-microsecond digits`` () : unit =
         // The property above cannot tell truncation from rounding at a reading whose
         // sub-microsecond part is below 500, so pin one above it.
-        let machine =
-            machineWith SimulatedUnixFlavour.Darwin (UnixTimestamp.ofSeconds 10L) 1_000_999L
+        let system =
+            systemWith SimulatedUnixFlavour.Darwin (UnixTimestamp.ofSeconds 10L) 1_000_999L
 
-        match UnixClock.clockGettime 0 machine, UnixClock.clockGettime 6 machine, UnixClock.clockGettime 8 machine with
+        match UnixClock.clockGettime 0 system, UnixClock.clockGettime 6 system, UnixClock.clockGettime 8 system with
         | Ok (Ok realtime), Ok (Ok monotonic), Ok (Ok uptime) ->
             realtime |> shouldEqual (UnixTimestamp.createOrFail "TestClock" 10L 1_000_000)
             monotonic |> shouldEqual (UnixTimestamp.createOrFail "TestClock" 0L 1_000_000)

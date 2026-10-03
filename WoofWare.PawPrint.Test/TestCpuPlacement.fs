@@ -158,9 +158,12 @@ module TestCpuPlacement =
 
             let kernel =
                 { EmulatedKernel.initial with
-                    Machine =
-                        { EmulatedKernel.initial.Machine with
-                            ProcessorCount = count
+                    System =
+                        { EmulatedKernel.initial.System with
+                            Machine =
+                                { EmulatedKernel.initial.System.Machine with
+                                    ProcessorCount = count
+                                }
                         }
                 }
 
@@ -289,9 +292,12 @@ module TestCpuPlacement =
                 { plain with
                     StepCounter = 5678L
                     ProcessRandom = ProcessRandom.Minipal (MinipalUrandom.Open 7, Some (Lrand48.seed 0xDEADBEEFL))
-                    Machine =
-                        { plain.Machine with
-                            NanosecondsSinceBoot = 1234L * ClockPal.nanosecondsPerTick
+                    System =
+                        { plain.System with
+                            Machine =
+                                { plain.System.Machine with
+                                    NanosecondsSinceBoot = 1234L * ClockPal.nanosecondsPerTick
+                                }
                         }
                 }
 

@@ -411,7 +411,7 @@ module IlMachineThreadState =
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
-        match UnixTaskLifecycle.spawn parent thread cpu (EmulatedKernel.unix kernel) with
+        match UnixTaskLifecycle.spawn parent thread cpu kernel.System with
         | Ok (_, system) -> EmulatedKernel.withUnix system kernel
         | Error error ->
             failwith

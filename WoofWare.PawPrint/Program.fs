@@ -397,7 +397,7 @@ module Program =
         | [] -> state
         | _ ->
 
-        (state, UnixWait.wakes (Scheduler.asleepInSyscall state) (EmulatedKernel.unix state.Kernel))
+        (state, UnixWait.wakes (Scheduler.asleepInSyscall state) state.Kernel.System)
         ||> List.fold (fun s (tid, _) ->
             match (Map.find tid s.ThreadState).Status with
             | ThreadStatus.Parked -> s
@@ -410,7 +410,7 @@ module Program =
         match Scheduler.syscallWaiters state with
         | [] -> []
         | asleep ->
-            UnixWait.deadlines (Set.ofList asleep) (EmulatedKernel.unix state.Kernel)
+            UnixWait.deadlines (Set.ofList asleep) state.Kernel.System
             |> List.map ClockPal.firstTickAtOrAfter
 
     /// Every finite wait deadline currently outstanding, in no particular order

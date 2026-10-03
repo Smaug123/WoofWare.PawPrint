@@ -187,11 +187,13 @@ module UnixClock =
     /// Darwin's `CLOCK_REALTIME` and `CLOCK_MONOTONIC` report whole microseconds,
     /// dropping the finer digits. Every other answered clock reports to the
     /// nanosecond.
-    let clockGettime
+    let clockGettime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (clockId : int)
-        (machine : UnixMachineState)
+        (system : UnixSystem<'Task, 'Handler>)
         : Result<Result<UnixTimestamp, UnixError>, ClockGettimeRefusal>
         =
+        let machine = system.Machine
+
         match decode (SimulatedUnixPlatform.flavour machine.UnixPlatform) clockId with
         | ClockDecoding.Invalid -> Ok (Error UnixError.EINVAL)
         | ClockDecoding.Refused refusal -> Error refusal
