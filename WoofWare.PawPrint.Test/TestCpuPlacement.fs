@@ -286,7 +286,7 @@ module TestCpuPlacement =
             let busy =
                 { plain with
                     StepCounter = 5678L
-                    NonCryptoRandomState = 0xDEADBEEFUL
+                    ProcessRandom = ProcessRandom.Minipal (MinipalUrandom.Open 7, Some (Lrand48.seed 0xDEADBEEFL))
                     Machine =
                         { plain.Machine with
                             NanosecondsSinceBoot = 1234L * ClockPal.nanosecondsPerTick

@@ -141,3 +141,7 @@ module OpenFlagsPal =
     let directoryStream (platform : SimulatedUnixPlatform) : int =
         let numbering = numbering platform
         numbering.Directory ||| numbering.CloseOnExec
+
+    /// The flag word minipal opens `/dev/urandom` with: `O_RDONLY|O_CLOEXEC` in
+    /// `platform`'s numbering.
+    let minipalUrandom (platform : SimulatedUnixPlatform) : int = (numbering platform).CloseOnExec

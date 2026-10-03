@@ -75,6 +75,7 @@
     <Compile Include="Native\NativeSignalHandler.fs" />
     <Compile Include="Native\StartupSignalDispositions.fs" />
     <Compile Include="Native\PosixSignalShim.fs" />
+    <Compile Include="Native\ProcessRandom.fs" />
     <Compile Include="Native\ClockPal.fs" />
     <Compile Include="Native\EnvironmentPal.fs" />
     <Compile Include="Native\ClrConfigEnvironment.fs" />

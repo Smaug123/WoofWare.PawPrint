@@ -1,13 +1,11 @@
 namespace WoofWare.PawPrint
 
-/// Deterministic non-cryptographic PRNG that backs
-/// `SystemNative_GetNonCryptographicallySecureRandomBytes` and any future
-/// in-runtime consumer that wants a reproducible random stream. This is the
+/// Deterministic non-cryptographic PRNG for any in-runtime consumer that
+/// wants a reproducible random stream: the schedule fuzzer, and the
+/// userspace generator a Darwin process's libSystem keeps. This is the
 /// `splitmix64` step from Vigna's reference at
 /// <http://prng.di.unimi.it/splitmix64.c>: stateful, full-period over the
-/// 2^64 64-bit states, and famously fine for *seeding* other PRNGs (which
-/// is exactly what the BCL does here — it feeds the buffer into
-/// `Random.XoshiroImpl`, `Marvin.DefaultSeed`, `HashCode`'s seed, etc.).
+/// 2^64 64-bit states, and famously fine for *seeding* other PRNGs.
 ///
 /// Quality is intentionally non-cryptographic; that matches the entry-point
 /// name. The state being non-zero is preserved across the step (splitmix64
@@ -20,8 +18,7 @@ namespace WoofWare.PawPrint
 /// sequence" isn't actually guaranteed by the framework. Determinism across
 /// host versions is a hard requirement for WoofWare.PawPrint, so we pin a
 /// stable algorithm with a fully-specified output here. Distinct callers
-/// (the C library stream behind `Random`, the schedule fuzzer, etc.) should
-/// each hold their own `uint64` state so that one consumer's draws don't
+/// should each hold their own `uint64` state so that one consumer's draws don't
 /// perturb another's stream.
 [<RequireQualifiedAccess>]
 module NonCryptoRandom =
