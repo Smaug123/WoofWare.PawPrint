@@ -554,6 +554,8 @@ module SignalDispatch =
             refuse "is restarted by a signal, which PawPrint never directs at the dispatcher"
         | Some (Error refusal) -> refuse (ReadRefusal.describe refusal)
         | Some (Ok (ReadOutcome.Answered (ReadAnswer.Failed error), _)) -> refuse $"fails with %O{error}"
+        | Some (Ok (ReadOutcome.Answered (ReadAnswer.Drawn _), _)) ->
+            refuse "draws from the entropy pool, which a read of a pipe never does"
         | Some (Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system)) ->
 
         if bytes.Length <> 1 then

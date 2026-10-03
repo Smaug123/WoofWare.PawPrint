@@ -106,7 +106,7 @@ module ObjectLifetime =
         // which is zero for it by construction: nothing holds an entry naming
         // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
         // so the count alone would free the filesystem out from under every
-        // path. A guest can reach here with it — `close(open("/"))` is an
+        // path. A process can reach here with it — `close(open("/"))` is an
         // ordinary thing to do.
         if inode = VirtualFileSystem.root system.Machine.FileSystem then
             system
@@ -163,7 +163,8 @@ module ObjectLifetime =
         | OpenFileTarget.Epoll _
         | OpenFileTarget.Kqueue _ -> Ok system
         | OpenFileTarget.File (inode, _)
-        | OpenFileTarget.Directory (inode, _) ->
+        | OpenFileTarget.Directory (inode, _)
+        | OpenFileTarget.CharacterDevice (inode, _) ->
             // The description may have been the last reference to an inode whose
             // last name went away earlier, which is what keeps `read` on an
             // unlinked descriptor working right up until the descriptor goes.

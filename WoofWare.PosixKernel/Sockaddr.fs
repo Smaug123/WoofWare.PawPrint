@@ -18,10 +18,9 @@ namespace WoofWare.PosixKernel
 ///
 /// **Carries no byte order**, deliberately. The fields' orders are kernel ABI --
 /// `sin_port` and `sin_addr` are network order, `sin6_scope_id` is the host's --
-/// but whether a given *caller* swaps is that caller's own contract, and the two
-/// do not agree: `SystemNative_GetPort` byte-swaps where
-/// `SystemNative_GetIPv4Address` copies the address word verbatim, both sides of
-/// that call holding it in network order. An order carried here would invite an
+/// but whether a given *caller* swaps is that caller's own contract, and callers
+/// do not agree: one that hands back the port in host order and the address word
+/// verbatim swaps one network-order field and not the other. An order carried here would invite an
 /// order-normalising accessor, and the first caller to reach for one would
 /// silently acquire a swap its own contract does not have.
 type SockaddrField =

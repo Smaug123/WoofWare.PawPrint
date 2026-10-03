@@ -1,6 +1,6 @@
 namespace WoofWare.PosixKernel
 
-/// Identity of an open file description. Never guest-visible: no modelled
+/// Identity of an open file description. Never visible to a process: no modelled
 /// syscall reports one (Linux's `kcmp(2)`, which would, is not modelled), so
 /// this exists purely to let two file descriptors denote the *same* open file
 /// description rather than two equal copies of one.
@@ -32,7 +32,7 @@ type SocketId =
         | SocketId value -> string<int64> value
 
 /// Identity of one TCP connection — the kernel object a completed loopback
-/// handshake creates. Never guest-visible.
+/// handshake creates. Never visible to a process.
 ///
 /// Distinct from either endpoint's `SocketId` because a connection outlives
 /// the sockets that made it: measured, a client closed while its connection
@@ -122,14 +122,14 @@ type SocketBinding =
         /// connect performed already applied: a wildcard-bound or unbound
         /// socket that connects over loopback reads back 127.0.0.1 here.
         Endpoint : InternetEndpoint
-        /// The address the guest's own `bind(2)` gave the socket, or `None`
+        /// The address the process's own `bind(2)` gave the socket, or `None`
         /// when the binding arose implicitly (a connect or listen minted it).
         /// The kernel state Linux calls SOCK_BINDADDR_LOCK: a Linux refusal
         /// delivery reverts `Endpoint`'s address to this (the wildcard when
         /// `None`) while keeping the port — measured for all three
         /// provenances — where Darwin keeps the resolved address.
         LockedAddress : uint32 option
-        /// Whether the guest's own `bind(2)` chose the port: true only when it
+        /// Whether the process's own `bind(2)` chose the port: true only when it
         /// asked for a non-zero one. The kernel state Linux calls
         /// SOCK_BINDPORT_LOCK: a datagram `connect(AF_UNSPEC)` there keeps a
         /// locked port and drops an unlocked one, measured
@@ -209,7 +209,7 @@ type SocketPhase =
     /// A datagram socket's default peer, set by `connect(2)` on it. Filters
     /// nothing yet — no receive path exists — but re-connect re-targets it
     /// and a Linux `AF_UNSPEC` connect dissolves it back to `Idle`, both
-    /// guest-visible through the return codes.
+    /// visible to the process through the return codes.
     | DatagramPeer of peer : InternetEndpoint
 
 [<RequireQualifiedAccess>]
@@ -576,6 +576,18 @@ type OpenFileTarget =
     /// the descriptions of both its ends, and outlives either. Whether an end
     /// is still open is whether any description names it.
     | Pipe of pipe : PipeId * pipeEnd : PipeEnd
+    /// The node of a character device, opened: Linux's `/dev/null` or
+    /// `/dev/urandom`.
+    ///
+    /// No offset, because the device has none to keep: measured on Linux,
+    /// `lseek` answers 0 for every whence in 0..4 and every offset, and a read
+    /// or write moves nothing a later call could see. `pread` and `pwrite`
+    /// still check the position they are given.
+    ///
+    /// `device` is the device the inode stands for, which never changes, kept
+    /// here so that an operation on the descriptor answers without consulting
+    /// the filesystem; `UnixSystem.checkInvariants` holds the two in step.
+    | CharacterDevice of inode : InodeNumber * device : CharacterDevice
 
 /// Which transfers `open(2)`'s access mode permits: `O_RDONLY`, `O_WRONLY` or
 /// `O_RDWR`.
@@ -670,7 +682,10 @@ module OpenFileDescription =
     let object (id : OpenFileDescriptionId) (description : OpenFileDescription) : OpenFileObject =
         match description.Target with
         | OpenFileTarget.File (inode, _)
-        | OpenFileTarget.Directory (inode, _) -> OpenFileObject.File inode
+        | OpenFileTarget.Directory (inode, _)
+        // A device's node too: measured, two descriptions of `/dev/null`
+        // contend under `flock`, as two of one regular file do.
+        | OpenFileTarget.CharacterDevice (inode, _) -> OpenFileObject.File inode
         // Every epoll instance collapses to one object, because on Linux every
         // anon-inode file shares one inode and so they all contend under
         // `flock`. See `OpenFileObject.AnonymousInode`.
@@ -724,10 +739,10 @@ type FileDescriptorRegistry =
             /// The identity the next `open` will allocate. Stored and
             /// monotonic rather than derived as one past the highest live id,
             /// which would reuse the identity of a closed description. Nothing
-            /// guest-visible could tell the difference — the id is never
+            /// a process sees could tell the difference — the id is never
             /// reported by any syscall — but a replay trace could.
             /// `VirtualFileSystem.NextInode` is stored for the stronger version
-            /// of this reason, inode reuse being guest-visible.
+            /// of this reason, inode reuse being visible to a process.
             NextId : OpenFileDescriptionId
         }
 
@@ -986,6 +1001,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> description
             )
 
@@ -1108,6 +1124,40 @@ module FileDescriptorRegistry =
                         // every modelled open starts blocking.
                         NonBlocking = false
                         // `open(2)` never takes a lock.
+                        Flock = None
+                    }
+                    registry.Descriptions
+            NextId = OpenFileDescriptionId (raw + 1L)
+        }
+
+    /// Mirrors the descriptor half of `open(2)` on a character device's node:
+    /// allocate a fresh open file description of `device`, the device the node
+    /// at `inode` stands for, with `accessMode`, and the lowest non-negative
+    /// descriptor not in use to point at it.
+    ///
+    /// Total, for the reasons `openFile` is; whether the process may open the
+    /// node is decided before this is reached.
+    let internal openCharacterDevice
+        (inode : InodeNumber)
+        (device : CharacterDevice)
+        (accessMode : FileAccessMode)
+        (registry : FileDescriptorRegistry)
+        : int * FileDescriptorRegistry
+        =
+        let id = registry.NextId
+        let (OpenFileDescriptionId raw) = id
+        let fd = lowestFree registry.Fds
+
+        fd,
+        { registry with
+            Fds = Map.add fd id registry.Fds
+            Descriptions =
+                Map.add
+                    id
+                    {
+                        Target = OpenFileTarget.CharacterDevice (inode, device)
+                        AccessMode = accessMode
+                        NonBlocking = false
                         Flock = None
                     }
                     registry.Descriptions
@@ -1361,7 +1411,7 @@ module FileDescriptorRegistry =
     /// soon as they are free, so the number a waiter parked on can name an
     /// entirely different object by the time the lock becomes available.
     ///
-    /// Loudly partial in `id`, which is not a guest-reachable failure: a
+    /// Loudly partial in `id`, which no process can reach: a
     /// description a client still holds an identity for is one it must not have
     /// let `close` destroy.
     let internal flockOn
@@ -1408,7 +1458,7 @@ module FileDescriptorRegistry =
     /// either releases it), while two separate `open(2)` calls on one path hold
     /// two and therefore contend. That contention is the mechanism behind
     /// `FileShare` on Unix, and it works *within* one process, so a
-    /// single-threaded guest can observe it.
+    /// single-threaded process can observe it.
     ///
     /// Contention is between descriptions naming the same `OpenFileObject`. For
     /// a pipe launched by `ofLaunchedPipes` that set is the one description,
@@ -1498,6 +1548,9 @@ module FileDescriptorRegistry =
         | OpenFileTarget.Directory (inode, _) ->
             failwith
                 $"setOffset: fd %d{fd} names directory %O{inode}, whose position is not a byte offset (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have called setDirectoryPosition)."
+        | OpenFileTarget.CharacterDevice (inode, device) ->
+            failwith
+                $"setOffset: fd %d{fd} names %O{device} at inode %O{inode}, which keeps no offset: its `lseek` answers 0 and moves nothing (this is a bug in the caller of FileDescriptorRegistry.setOffset)."
         | OpenFileTarget.File (inode, _) ->
 
         { registry with
@@ -1551,6 +1604,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _
         | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _ ->
             failwith
                 $"setDirectoryPosition: fd %d{fd} names %O{description.Target}, which is not a directory (this is a bug in the caller of FileDescriptorRegistry.setDirectoryPosition)."
@@ -1639,6 +1693,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _ ->
             failwith
                 $"%s{operation}: %O{portId} is not an epoll instance; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.%s{operation}."
@@ -1768,6 +1823,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _ ->
             failwith
                 $"appendSocketEventReady: %O{portId} is not an epoll instance; the caller resolved it as one moments ago, so this is a bug in the caller of FileDescriptorRegistry.appendSocketEventReady."
@@ -1818,6 +1874,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _ ->
             failwith
                 $"setSocketEventReady: %O{portId} is not an epoll instance (this is a bug in the caller of FileDescriptorRegistry.setSocketEventReady, which derived the list from a different table)."
@@ -1881,6 +1938,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> description
                 | OpenFileTarget.Epoll portState ->
                     let entering =
@@ -1943,6 +2001,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.File (_, offset) ->
                     if offset < 0L then
@@ -1968,6 +2027,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.File _ -> None
             )
@@ -2007,6 +2067,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
@@ -2035,6 +2096,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Epoll portState ->
                     portState.Registrations
@@ -2056,6 +2118,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Epoll portState ->
                     let unregistered =

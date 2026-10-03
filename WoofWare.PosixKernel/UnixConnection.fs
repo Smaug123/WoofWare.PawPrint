@@ -476,9 +476,8 @@ module UnixConnection =
 
             // A specific-address listener beats the wildcard — both kernels'
             // documented most-specific-match rule. The pair can only coexist
-            // under SO_REUSEADDR, which no current guest exercises, so the
-            // preference has no observer today and is recorded for when it
-            // does.
+            // under SO_REUSEADDR, so the preference is the documented rule
+            // rather than a measured one.
             let listener =
                 match
                     listeners
@@ -532,9 +531,7 @@ module UnixConnection =
                 | Ok (clientBinding, system) ->
 
                 // Two corners a REUSEADDR-bound client can engineer, each
-                // refused because the real answer is unmeasured (no managed
-                // path reaches either: managed clients connect from fresh
-                // ephemeral ports).
+                // refused because the real answer is unmeasured.
                 if clientBinding.Endpoint = dest then
                     // A wildcard listener at P beside a reuse-bound client at
                     // 127.0.0.1:P, connecting to 127.0.0.1:P: source equals
@@ -758,7 +755,7 @@ module UnixConnection =
             | SimulatedUnixFlavour.Linux ->
                 // inet_stream_connect's order: the AF_UNSPEC branch, then
                 // the state machine, then tcp_v4_connect's length and family
-                // checks. Measured where a guest reaches it; the state arms'
+                // checks. Measured where a caller reaches it; the state arms'
                 // precedence over the argument checks is the pinned source's.
                 if family = 0 then
                     match sock.Phase with
@@ -1433,6 +1430,7 @@ module UnixConnection =
         match description.Target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (AcceptOutcome.Failed UnixError.ENOTSOCK, system)
@@ -1520,6 +1518,7 @@ module UnixConnection =
             | OpenFileTarget.Socket socketId -> socketId
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->

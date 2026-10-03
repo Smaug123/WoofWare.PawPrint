@@ -50,9 +50,9 @@ type FileStatus =
         /// field.
         ///
         /// The inode knows when it was born either way; this says whether the
-        /// *platform being simulated* would tell a guest. `None` is what a Linux
-        /// guest sees, and a client with a birth-time field writes whatever its
-        /// own runtime writes when the kernel did not supply one.
+        /// *platform being simulated* would tell a process. `None` is what a
+        /// Linux process sees, and a client with a birth-time field fills it
+        /// with its own default when the kernel did not supply one.
         BirthTime : UnixTimestamp option
         /// <summary>
         /// <c>st_dev</c>.
@@ -543,7 +543,7 @@ module UnixPathResolution =
             | InodeContent.Directory _ when (VirtualFileSystem.mountOf inode fileSystem).IsSome ->
                 Error (StatRefusal.DeviceFileSystemRoot inode)
             // `readlink` reports the target's byte length as the link's size,
-            // and a guest can see it through a file-length API.
+            // and a process can see it through `lstat`.
             | InodeContent.Symlink target ->
                 Ok (
                     int64 (UnixByteString.length (SymlinkTarget.toByteString target)),
@@ -568,7 +568,7 @@ module UnixPathResolution =
         let birthTime =
             // Withheld rather than reported when the platform has no
             // `st_birthtime`. The inode knows its birth either way; this governs
-            // only what a guest is told.
+            // only what a process is told.
             if SimulatedUnixPlatform.reportsBirthTime system.Machine.UnixPlatform then
                 Some entry.Times.Birth
             else
@@ -742,7 +742,8 @@ module UnixPathResolution =
             |> FileStatusAnswer.Reported
             |> Ok
         | Some (OpenFileTarget.File (inode, _))
-        | Some (OpenFileTarget.Directory (inode, _)) ->
+        | Some (OpenFileTarget.Directory (inode, _))
+        | Some (OpenFileTarget.CharacterDevice (inode, _)) ->
 
         match statOf inode system with
         | Some (Ok status) -> Ok (FileStatusAnswer.Reported status)
@@ -1531,7 +1532,7 @@ module UnixPathResolution =
 
         // The current directory is pinned — `UnixProcessState.heldInodes`
         // includes it — so leaving one is a reference-dropping operation, and the
-        // directory a guest `rmdir`d before stepping out of it becomes free
+        // directory a process `rmdir`d before stepping out of it becomes free
         // exactly here. Without this it would be stranded for the run.
         Ok (SyscallAnswer.Completed 0L, ObjectLifetime.forgetIfUnheld previous moved)
 
@@ -1669,7 +1670,8 @@ module UnixPathResolution =
 
             match description.Target with
             | OpenFileTarget.Directory (inode, _) -> Ok (Ok (Some (inode, true)))
-            | OpenFileTarget.File (inode, _) -> Ok (Ok (Some (inode, false)))
+            | OpenFileTarget.File (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _) -> Ok (Ok (Some (inode, false)))
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _
             | OpenFileTarget.Socket _

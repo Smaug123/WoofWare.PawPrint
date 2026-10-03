@@ -4,7 +4,7 @@ namespace WoofWare.PosixKernel
 /// Index of one of the simulated process's logical processors.
 /// </summary>
 /// <example>
-/// As reported to the guest by <c>sched_getcpu(3)</c>.
+/// As reported to a process by <c>sched_getcpu(3)</c>.
 /// </example>
 type CpuId =
     | CpuId of int
@@ -78,7 +78,7 @@ type ParkedFlock =
         /// </summary>
         Requester : OpenFileDescriptionId
         /// <summary>
-        /// The lock that the guest asked for.
+        /// The lock that the caller asked for.
         /// </summary>
         /// <remarks>
         /// This is <i>not</i> necessarily a lock which is currently held.
@@ -309,7 +309,7 @@ type UnixTaskState =
         /// A real kernel holds a blocked task's in-flight syscall arguments on
         /// its stack; this is that. Three readers, and they must agree, which is
         /// why there is one of it: the re-entry consults it rather than the
-        /// guest's argument cells, which the guest may have written since;
+        /// caller's argument cells, which the process may have written since;
         /// whatever a client polls to decide the call can be finished reads it
         /// to learn what the call is waiting for; and whatever destroys an open
         /// file description reads it, because a description a park names
@@ -340,7 +340,7 @@ module UnixTaskTable =
     ///
     /// Total, and loudly partial rather than an option: every task is added
     /// when it is created and removed only when it exits, so a name that
-    /// resolves to nothing is a client bug rather than anything a guest did.
+    /// resolves to nothing is a client bug rather than anything a process did.
     let get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
         match Map.tryFind name tasks with
         | Some task -> task
@@ -376,7 +376,7 @@ module UnixTaskTable =
     let cpuOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : CpuId =
         (get name tasks).Cpu
 
-    /// The OS thread id `name` reports to the guest.
+    /// The OS thread id `name` reports to the process.
     let osThreadIdOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : OsThreadId =
         (get name tasks).OsThreadId
 
@@ -395,7 +395,7 @@ module UnixTaskTable =
     /// Record that `name` is in `park`.
     ///
     /// Refuses to replace a park of one syscall with a park of another. A task
-    /// runs no guest code between a wake and its re-entry into the syscall it
+    /// runs no user code between a wake and its re-entry into the syscall it
     /// woke from, so the only lawful writes are onto an absent record and onto a
     /// park of the same syscall — the re-park a beaten waiter performs. Anything
     /// else means a completion path failed to clear its record, and without this

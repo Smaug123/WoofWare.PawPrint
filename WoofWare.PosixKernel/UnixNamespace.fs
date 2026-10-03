@@ -432,9 +432,6 @@ type OpenRefusal =
     /// `opendir(3)` uses it, alone with `O_RDONLY`. Nothing was read or
     /// changed.
     | UnmodelledDirectoryOpen of flags : int
-    /// The path names the node of `device`, at `inode`. This kernel opens no
-    /// description of a device yet. Nothing was read or changed.
-    | CharacterDevice of inode : InodeNumber * device : CharacterDevice
     /// This kernel will not resolve the path. Nothing was read or changed.
     | Path of PathRefusal
 
@@ -454,8 +451,6 @@ module OpenRefusal =
             $"flags 0x%x{flags} ask for access mode 3, which Linux opens (demanding the read and write permission bits) as a descriptor that can neither read nor write: read, write and flock answer EBADF, ftruncate EINVAL, and only ioctl and the calls that need no access mode succeed. This kernel's descriptions permit reading, writing or both; model the fourth before answering."
         | OpenRefusal.UnmodelledDirectoryOpen flags ->
             $"flags 0x%x{flags} ask for O_DIRECTORY with a write access mode, O_TRUNC or O_NOFOLLOW. Only O_DIRECTORY|O_RDONLY (what opendir(3) opens with) is modelled; where ENOTDIR falls among EISDIR, EACCES and ELOOP for any other combination is not."
-        | OpenRefusal.CharacterDevice (inode, device) ->
-            $"the path names inode %O{inode}, the node of %O{device}, and this kernel opens no description of a device."
         | OpenRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// `open(2)`'s flag word, in the simulated flavour's own `<fcntl.h>`
@@ -686,9 +681,8 @@ module UnixNamespace =
                 match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
                 | Some (InodeContent.Directory _) ->
                     FileDescriptorRegistry.openDirectory inode system.Process.FileDescriptors
-                | Some (InodeContent.CharacterDevice _) ->
-                    failwith
-                        $"UnixNamespace.openPath: inode %O{inode} is a character device, which this kernel opens no description for; the open should have been refused before it allocated a descriptor (this is a bug in this library)."
+                | Some (InodeContent.CharacterDevice (device, _)) ->
+                    FileDescriptorRegistry.openCharacterDevice inode device flags.Access system.Process.FileDescriptors
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
                 | None -> FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
@@ -821,7 +815,6 @@ module UnixNamespace =
                     $"UnixNamespace.openPath: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
 
         match entry.Content with
-        | InodeContent.CharacterDevice (device, _) -> Error (OpenRefusal.CharacterDevice (inode, device))
         | InodeContent.Symlink _ ->
             // Only reachable under `O_NOFOLLOW`, which is what `NoFollowFinal`
             // above selects: without it the resolver would have followed the link
@@ -845,10 +838,13 @@ module UnixNamespace =
             // `OpenExisting` on the directory itself.
             Ok (SyscallAnswer.Failed UnixError.EISDIR, system)
         | InodeContent.RegularFile _
-        | InodeContent.Directory _ ->
+        | InodeContent.Directory _
+        | InodeContent.CharacterDevice _ ->
 
         // A directory opens perfectly well for *reading*, measured on both. A
-        // caller that wants to know what it opened asks `fstat`.
+        // caller that wants to know what it opened asks `fstat`. So does a
+        // device's node, for every access mode, its permission bits checked as
+        // a file's are (`devices.c`, OPEN rows).
         let permissionBits =
             match Inode.permissions entry with
             | InodePermissions.Stored bits -> bits
@@ -904,7 +900,9 @@ module UnixNamespace =
         // inode's timestamps move and its set-ID bits go regardless. Only a
         // regular file is truncated -- a directory cannot reach here at all (the
         // arm above refuses every truncating open of one), so the match is over
-        // what the descriptor may still name rather than a filter.
+        // what the descriptor may still name rather than a filter. A device's
+        // node is left alone: measured, `O_TRUNC` opens one without moving
+        // anything `stat` reports (`devices.c`, OPEN rows).
         let truncated =
             match entry.Content with
             | InodeContent.RegularFile _ when flags.Truncate ->
@@ -1130,7 +1128,10 @@ module UnixNamespace =
                 else UnixError.EINVAL
 
         match description.Target with
-        | OpenFileTarget.File _ ->
+        | OpenFileTarget.File _
+        // ENOTDIR measured on Linux (`devices-l2.c`, GETDENTS64 rows), the one
+        // flavour that holds a device.
+        | OpenFileTarget.CharacterDevice _ ->
             let readable = FileAccessMode.permitsRead description.AccessMode
             Ok (ReadDirectoryAnswer.Failed (notADirectory readable true), system)
         | OpenFileTarget.Pipe _
@@ -1719,7 +1720,7 @@ module UnixNamespace =
             // source's own subtree, and an orphaned destination directory. The
             // verdict owes an errno for every one of those, so reaching here
             // means the verdict let something through rather than that the
-            // guest did anything unusual.
+            // caller did anything unusual.
             failwith
                 $"UnixNamespace.rename: moving \"%s{DirectoryEntryName.toEscaped sourceName}\" from inode %O{sourceDirectory} to \"%s{DirectoryEntryName.toEscaped destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
         | Ok (outcome, filesystem) ->
@@ -1752,7 +1753,7 @@ module UnixNamespace =
         )
 
     /// `rename(2)` in one call, for a caller holding both pathnames already —
-    /// every caller but the one reading them out of a guest's memory, where
+    /// every caller but the one reading them out of a process's memory, where
     /// reading the destination too early is itself observable.
     let rename<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (source : PathArgumentBytes)

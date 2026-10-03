@@ -9,9 +9,9 @@ type SimulatedUnixReleaseError =
     | Empty
     /// Longer than any `utsname.release` can hold.
     | TooLong of length : int * limit : int
-    /// The value is handed to the guest as a C string of single bytes, so a
+    /// The value is handed to a process as a C string of single bytes, so a
     /// non-ASCII character has no faithful encoding and an embedded NUL would
-    /// silently truncate what the guest sees.
+    /// silently truncate what the process sees.
     | NotPrintableAscii of index : int * character : char
 
 /// Why a combination of flavour, architecture, page size and release is not a
@@ -163,12 +163,6 @@ type GetCwdDestinationFault =
 /// with. A descriptor that fails earlier -- EBADF, ENOTSOCK -- touches the cell
 /// on neither, so this is the fault path's property rather than the failure
 /// path's in general.
-///
-/// Whether a *client* can see this is a separate question, and for the .NET PAL
-/// the answer is no: `SystemNative_GetSockName` copies the caller's length into
-/// a local `socklen_t`, passes that, and writes it back only when the call
-/// succeeded, so the kernel's store lands on the shim's stack. A client speaking
-/// raw POSIX does see it.
 [<RequireQualifiedAccess>]
 type GetSockNameFaultLength =
     /// The cell still holds what the caller put there. Darwin copies the address
@@ -223,9 +217,9 @@ module SimulatedUnixPlatform =
     /// Loosest ceiling any Unix we model imposes on `utsname.release`:
     /// macOS's `_SYS_NAMELEN` is 256 (including the NUL), while Linux's
     /// `_UTSNAME_LENGTH` is only 65. Bounded by the looser of the two rather
-    /// than per-flavour, because the limit is about what a *guest* can be
+    /// than per-flavour, because the limit is about what a *process* can be
     /// handed rather than about which kernel wrote it, and an unbounded string
-    /// could hand a guest a release no real `uname` could produce.
+    /// could hand a process a release no real `uname` could produce.
     [<Literal>]
     let private maxReleaseLength : int = 255
 
@@ -236,7 +230,7 @@ module SimulatedUnixPlatform =
         | SimulatedUnixReleaseError.TooLong (length, limit) ->
             $"release string is %d{length} characters, exceeding the %d{limit}-character limit any Unix `utsname.release` can hold"
         | SimulatedUnixReleaseError.NotPrintableAscii (index, character) ->
-            $"release string contains non-printable-ASCII character U+%04X{int character} at index %d{index}; `utsname.release` is reported to the guest as single-byte characters, so only printable ASCII round-trips faithfully"
+            $"release string contains non-printable-ASCII character U+%04X{int character} at index %d{index}; `utsname.release` is reported to a process as single-byte characters, so only printable ASCII round-trips faithfully"
 
     /// Why a combination is not a platform, for a message.
     let describeError (error : SimulatedUnixPlatformError) : string =
@@ -383,7 +377,7 @@ module SimulatedUnixPlatform =
     /// Re-check the invariant of a value that may not have come from `create`.
     /// See `FileName.assertValid`: the only value this can reject is
     /// `Unchecked.defaultof` / C# `default`, whose null release would otherwise
-    /// be handed to a guest as its `uname -r`.
+    /// be handed to a process as its `uname -r`.
     let assertValid (context : string) (platform : SimulatedUnixPlatform) : SimulatedUnixPlatform =
         // A record is a reference type, so the forged value is `null` itself
         // rather than a record with a null field — and reading `Flavour` off it
@@ -404,7 +398,7 @@ module SimulatedUnixPlatform =
     /// the two Unixes disagree.
     ///
     /// This is the choice `UnixError.toRawErrnoUnder` takes as its first argument, and
-    /// it is what lets an `ELOOP` reach a guest at all: raw 40 is `ELOOP` on
+    /// it is what lets an `ELOOP` reach a process at all: raw 40 is `ELOOP` on
     /// Linux but `EMSGSIZE` on Darwin, so the number is meaningless until
     /// something says which Unix is being impersonated. The flavour says.
     let rawErrnoNumbering (platform : SimulatedUnixPlatform) : RawErrnoNumbering =
@@ -456,12 +450,9 @@ module SimulatedUnixPlatform =
     /// socket, and on Darwin 25.6.0 a non-blocking one. Blocking listeners yield
     /// blocking sockets on both.
     ///
-    /// This is the kernel's answer and not a runtime's. A client whose own
-    /// sockets expect one answer everywhere has to normalise it -- CoreCLR's
-    /// `SystemNative_Accept` clears the flag under `#if !defined(__linux__)`,
-    /// with the comment "Our socket code expects new socket to be in blocking
-    /// mode by default" -- and that normalisation belongs to the client rather
-    /// than here.
+    /// This is the kernel's answer. A client whose own sockets expect one
+    /// answer everywhere normalises it after `accept` returns, and that
+    /// normalisation belongs to the client rather than here.
     let acceptedSocketInheritsNonBlocking (platform : SimulatedUnixPlatform) : bool =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> false
@@ -535,7 +526,7 @@ module SimulatedUnixPlatform =
     /// though a process umask is modelled: a symbolic link can only enter this
     /// filesystem through a *seed*, and a seed describes a tree some other
     /// process built, so this process's umask is not the one that applied to
-    /// it. The day a `symlink(2)` lets a guest create one, that link *is*
+    /// it. The day a `symlink(2)` lets a process create one, that link *is*
     /// created by this process and this must become a function of the process's
     /// umask — that is the trigger, not the existence of the field.
     let symlinkPermissions (platform : SimulatedUnixPlatform) : PermissionBits =
@@ -826,7 +817,7 @@ module SimulatedUnixPlatform =
     ///
     /// The numbers are measured facts about real kernels, which is why they are
     /// derived from the flavour rather than configured: a host that could set
-    /// them could describe a Unix that does not exist, and a guest would then
+    /// them could describe a Unix that does not exist, and a process would then
     /// see a `MAXSYMLINKS` no real system has. `TestVirtualFileSystemAgainstHost`
     /// pins the value for whichever flavour it is running on against that
     /// kernel's *measured* behaviour, so macOS locally and Linux in CI each
@@ -1195,8 +1186,8 @@ module SimulatedUnixPlatform =
     ///
     /// The copy-*out* direction specifically. Measured: a Darwin `getsockname`
     /// on a bound socket reports `10 02 ...`, the leading `0x10` being the
-    /// 16-byte length, so the kernel fills `sa_len` in even though nothing in a
-    /// runtime's shim writes it. `SockaddrFamilyField.OneByteAtOffsetOne`
+    /// 16-byte length, so the kernel fills `sa_len` in even though the caller
+    /// never wrote it. `SockaddrFamilyField.OneByteAtOffsetOne`
     /// describes the same byte travelling the other way, where it is a caller's
     /// own store; the two do not disagree.
     ///

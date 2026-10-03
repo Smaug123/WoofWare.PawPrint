@@ -114,7 +114,7 @@ type UnixSystemDefect<'Task> =
     | NextSocketIdNotFresh of nextSocketId : SocketId * existing : SocketId
     /// `CurrentDirectoryInode` names something the filesystem does not hold, or
     /// holds as something other than a directory — so every relative path a
-    /// guest passes would resolve from a place that is not a directory.
+    /// process passes would resolve from a place that is not a directory.
     ///
     /// Deliberately *not* "the inode is reachable from the root": a real process
     /// keeps its current directory alive after the last name for it has gone,
@@ -130,10 +130,12 @@ type UnixSystemDefect<'Task> =
     /// and one that fires too early is caught here.
     | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
     /// A description names an inode as the wrong kind of object: a
-    /// `OpenFileTarget.File` onto a directory, or an `OpenFileTarget.Directory`
-    /// onto anything else. `open` chooses the target by what it opened, so a
-    /// directory's position is always a place in its entries and never a byte
-    /// offset.
+    /// `OpenFileTarget.File` onto a directory or a device, an
+    /// `OpenFileTarget.Directory` onto anything but a directory, or an
+    /// `OpenFileTarget.CharacterDevice` onto anything but the node of the device
+    /// it names. `open` chooses the target by what it opened, so a directory's
+    /// position is always a place in its entries and never a byte offset, and a
+    /// device's operations are the driver's own.
     | DescriptionKindMismatch of description : OpenFileDescriptionId * inode : InodeNumber
     /// A socket's phase references a connection the connection table does not
     /// hold.
@@ -198,7 +200,8 @@ type UnixSystemDefect<'Task> =
     /// positive: such a call returns at once.
     | ParkedKeventCountNotPositive of task : 'Task * maxEvents : int
     /// An open file description names an object this flavour's kernel does
-    /// not have: an epoll instance under Darwin, or a kqueue under Linux.
+    /// not have: an epoll instance or a device under Darwin, or a kqueue under
+    /// Linux.
     | DescriptionNotOfFlavour of
         description : OpenFileDescriptionId *
         target : OpenFileTarget *
@@ -240,7 +243,7 @@ type UnixSystemDefect<'Task> =
     /// before it listens, and a connect looks listeners up by their binding,
     /// so this one can never be reached.
     | ListenerWithoutBinding of socket : SocketId
-    /// A bound socket holds port 0, which is how a guest *asks* for a port and
+    /// A bound socket holds port 0, which is how a process *asks* for a port and
     /// never one it is given, with one exception: a datagram socket whose
     /// Linux `connect(AF_UNSPEC)` kept a locked concrete address and dropped
     /// an unlocked port is half-bound at `address:0`, which is measured and
@@ -325,10 +328,10 @@ type UnixSystemDefect<'Task> =
 /// deciding what to say about it: the remedy is always "fix the knob you set
 /// this from", and only the caller knows what that knob is called.
 ///
-/// Every case is a host mistake rather than a guest one, which is why none of
+/// Every case is a host mistake rather than a process's, which is why none of
 /// them is a `UnixError`: there is no errno for "you seeded a filesystem that
 /// does not contain the directory you asked to start in", and answering ENOENT
-/// would blame a guest path that does not exist yet.
+/// would blame a process's path when there is no process yet.
 ///
 /// Three cases, and deliberately not five. The walk can also answer an inode
 /// the filesystem does not contain, or a directory it holds no path to — but
@@ -368,7 +371,7 @@ type CurrentDirectoryFault =
     /// The seed holds a directory entry whose name this flavour's filesystem
     /// will not bind (see `SimulatedUnixPlatform.bindableEntryNames`): on
     /// Darwin, a name that is not valid UTF-8. No kernel of that flavour could
-    /// have created it, and a guest there could not create it either.
+    /// have created it, and a process there could not create it either.
     | SeedNameNotBindable of name : DirectoryEntryName * flavour : SimulatedUnixFlavour
     /// The seed binds `dev` at its root to something other than an empty
     /// directory. The kernel mounts its device filesystem there at boot, and a
@@ -623,6 +626,7 @@ module UnixSystem =
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
@@ -659,10 +663,13 @@ module UnixSystem =
             |> List.choose (fun (id, description) ->
                 match description.Target, flavour with
                 | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Darwin
-                | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Linux ->
+                | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Linux
+                // Only Linux's devtmpfs holds a device's node.
+                | OpenFileTarget.CharacterDevice _, SimulatedUnixFlavour.Darwin ->
                     Some (UnixSystemDefect.DescriptionNotOfFlavour (id, description.Target, flavour))
                 | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Linux
                 | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Darwin
+                | OpenFileTarget.CharacterDevice _, SimulatedUnixFlavour.Linux
                 | OpenFileTarget.File _, _
                 | OpenFileTarget.Directory _, _
                 | OpenFileTarget.Socket _, _
@@ -689,6 +696,14 @@ module UnixSystem =
                     | Some (InodeContent.Directory _) -> None
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.CharacterDevice _)
+                    | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
+                | OpenFileTarget.CharacterDevice (inode, device) ->
+                    match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                    | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
+                    | Some (InodeContent.CharacterDevice (node, _)) when node = device -> None
+                    | Some (InodeContent.CharacterDevice _)
+                    | Some (InodeContent.Directory _)
+                    | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
@@ -789,6 +804,7 @@ module UnixSystem =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.Kqueue _ -> []
                 | OpenFileTarget.Epoll portState ->
@@ -842,6 +858,7 @@ module UnixSystem =
                         | OpenFileTarget.File _
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
+                        | OpenFileTarget.CharacterDevice _
                         | OpenFileTarget.Pipe _ ->
                             [
                                 UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
@@ -874,6 +891,7 @@ module UnixSystem =
                             | OpenFileTarget.Epoll _
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
+                            | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Socket _
                             | OpenFileTarget.Pipe _ ->
                                 [
@@ -898,6 +916,7 @@ module UnixSystem =
                                     | OpenFileTarget.File _
                                     | OpenFileTarget.Directory _
                                     | OpenFileTarget.Socket _
+                                    | OpenFileTarget.CharacterDevice _
                                     | OpenFileTarget.Pipe _ -> []
 
                                 let rebound =
@@ -923,6 +942,7 @@ module UnixSystem =
                                 | None -> false
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
+                            | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Pipe _
                             | OpenFileTarget.Kqueue _
                             | OpenFileTarget.Epoll _ -> false
@@ -1202,6 +1222,7 @@ module UnixSystem =
                     | OpenFileTarget.Epoll _
                     | OpenFileTarget.File _
                     | OpenFileTarget.Directory _
+                    | OpenFileTarget.CharacterDevice _
                     | OpenFileTarget.Socket _ -> None
                 )
 
@@ -1567,7 +1588,7 @@ module UnixSystem =
         // `SimulatedUnixPlatform.create` validates at construction, so a value
         // of the type is already a platform some Unix could be; this catches
         // the one value that bypasses that, the forged `Unchecked.defaultof`,
-        // whose null release would otherwise reach a guest as its `uname -r`.
+        // whose null release would otherwise reach a process as its `uname -r`.
         let platform = SimulatedUnixPlatform.assertValid "UnixSystem.initial" platform
         let flavour = SimulatedUnixPlatform.flavour platform
 
@@ -1906,7 +1927,7 @@ module UnixSystem =
     /// current directory is not such a handle: replacing it is the point.
     ///
     /// The walk is privileged and symlink-following, deliberately: this is a
-    /// host saying where its guest was launched, not a guest looking anything
+    /// host saying where its process was launched, not a process looking anything
     /// up, and a process is launched into a directory its parent had already
     /// reached. It is also the only moment the name is resolved, because after
     /// it the process holds the *directory* rather than the name.
@@ -1965,7 +1986,8 @@ module UnixSystem =
             |> List.choose (fun (id, description) ->
                 match description.Target with
                 | OpenFileTarget.File (inode, _)
-                | OpenFileTarget.Directory (inode, _) -> Some $"description %O{id} onto %O{inode}"
+                | OpenFileTarget.Directory (inode, _)
+                | OpenFileTarget.CharacterDevice (inode, _) -> Some $"description %O{id} onto %O{inode}"
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _
@@ -2049,7 +2071,7 @@ module UnixSystem =
                     // reached has a path back by construction, and
                     // `toVirtualFileSystem` asserts its own invariants besides.
                     // Checked anyway: the alternative to crashing here is a
-                    // guest whose `getcwd` reports ENOENT from its first
+                    // process whose `getcwd` reports ENOENT from its first
                     // instruction.
                     match VirtualFileSystem.pathOfDirectory inode filesystem with
                     | Some _ -> Ok inode
