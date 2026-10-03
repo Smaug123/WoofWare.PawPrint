@@ -25,6 +25,8 @@ using System;
 
 namespace Fixture;
 
+public class GenericFailure<T> : Exception { }
+
 public class Locking
 {
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.Synchronized)]
@@ -255,8 +257,12 @@ public static class Cases
 
     public static void CoreLibThrowHelper(object o) { ArgumentNullException.ThrowIfNull(o); }
 
-    // Nothing says what the parameter is at run time.
+    // The parameter holds an object of the type it is declared with, or a subtype.
     public static void ThrowsParameter(Exception e) { throw e; }
+
+    // The helper's return type spells its own type variable, but still names the exception's class.
+    public static void ThrowsGenericReturned() { throw MakeGeneric<int>(); }
+    static GenericFailure<T> MakeGeneric<T>() => new GenericFailure<T>();
 }
 
 // A static virtual is dispatched on the type argument: the default body is not what runs for
@@ -492,8 +498,14 @@ public static class MathF
             { expect "Fixture.Cases" "CallsLeaf" with
                 Excludes = [ "=System.TypeInitializationException" ]
             }
+            // A value is of the type the IL spells for it.
             { expect "Fixture.Cases" "ThrowsParameter" with
-                Unknown = Some true
+                Contains = [ "<:System.Exception" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Cases" "ThrowsGenericReturned" with
+                Contains = [ "<:Fixture.GenericFailure`1" ]
+                Unknown = Some false
             }
             { expect "Fixture.Cases" "CoreLibThrowHelper" with
                 Contains = [ "=System.ArgumentNullException" ]
@@ -1156,6 +1168,11 @@ public static class Uses
         Provider.GoneType x = null;
         return x != null;
     }
+    public static string VirtualOnLocalOfGone()
+    {
+        Provider.GoneType x = null;
+        return x.ToString();
+    }
     public static int CatchGone(int x)
     {
         try { return 1 / x; }
@@ -1279,6 +1296,8 @@ public static class Uses
                 "ListOfGone", "=System.TypeLoadException"
                 // Named by no instruction, only by the type of a local.
                 "LocalOfGone", "=System.TypeLoadException"
+                // The type of a local a `callvirt` is made on.
+                "VirtualOnLocalOfGone", "=System.TypeLoadException"
                 "CaughtLocalOfGone", "=System.TypeLoadException"
                 // Named only by a `catch` clause.
                 "CatchGone", "=System.TypeLoadException"
@@ -1323,6 +1342,7 @@ public static class Uses
                 "IsGone"
                 "ListOfGone"
                 "LocalOfGone"
+                "VirtualOnLocalOfGone"
                 "CaughtLocalOfGone"
                 "CatchGone"
                 "PassGone"
@@ -1366,6 +1386,50 @@ public static class Uses
 
         // Answering at all is the claim: it is a summary rather than a crash.
         against2 "ConstrainedReachesGonePointer" |> ignore<Set<string> * bool>
+
+    /// Methods spelling a class whose base class is in an assembly nothing has loaded yet, as
+    /// `this` or in a type token: the analysis loads it when it needs the base chain, as it loads
+    /// any other assembly.
+    [<Test>]
+    let ``a class whose base is in an assembly not yet loaded is spelled by loading it`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let source =
+            """
+namespace Derives;
+
+public class Child : System.ComponentModel.Component
+{
+    public int Divide(int a, int b) => a / b;
+}
+
+public static class Spells
+{
+    public static bool Check(object x) => x is Child;
+    public static Child Cast(object x) => (Child)x;
+    public static object Make() => new Child();
+}
+"""
+
+        let image =
+            Roslyn.compileAssembly "Derives" OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Derives.dll") (new MemoryStream (image))
+
+        // Each asked of an analysis of its own, which has loaded nothing for another.
+        let analysis, escapes =
+            EscapeAnalysis.escapes (analysisOver [ fixture ] id) (methodNamed fixture "Derives.Child" "Divide")
+
+        let shown = render analysis escapes
+
+        if escapes.Unknown || not (shown.Contains "=System.DivideByZeroException") then
+            failwith $"Child.Divide: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+        // Answering at all is the claim: it is a summary rather than a crash.
+        for name in [ "Check" ; "Cast" ; "Make" ] do
+            EscapeAnalysis.escapes (analysisOver [ fixture ] id) (methodNamed fixture "Derives.Spells" name)
+            |> ignore<EscapeAnalysisState * Escapes>
 
     /// A client whose struct has a method, called by nothing, using a type from an assembly that is
     /// not present at all. The JIT never reads that method, so a call on the struct runs.
@@ -2186,9 +2250,12 @@ public static class Uses
         /// wrapper of an exception, which a clause in an assembly that does not wrap sees as that
         /// exception.
         | ConstructedWrapperOfException
-        /// `call object Make(); nop; throw`: the `nop` stands between the `throw` and what made
-        /// its operand, so the analysis does not know the operand's type.
+        /// What `Make` returns, stored in and loaded back from an `object[]`: the analysis does not
+        /// follow what an array holds, so it does not know the operand's type.
         | Untyped
+        /// `newobj Nullable<int>(1); box Nullable<int>; throw`: boxing a nullable boxes its value, or
+        /// makes null, so what is thrown is an `Int32`, not a `Nullable<int>`.
+        | BoxedNullable
 
     /// The `catch` clause, if any, around an emitted method's raise.
     [<RequireQualifiedAccess>]
@@ -2206,6 +2273,7 @@ public static class Uses
             Raise.ReturnedWrapper
             Raise.ConstructedWrapperOfException
             Raise.Untyped
+            Raise.BoxedNullable
         ]
 
     let private clauses : Clause list =
@@ -2297,6 +2365,33 @@ public static class Uses
             |> TypeReferenceHandle.op_Implicit
 
         let objectRef = typeRef "System" "Object"
+
+        // `Nullable<int>`, and its constructor taking the value.
+        let nullableOfInt : EntityHandle =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .TypeSpecificationSignature()
+                .GenericInstantiation(typeRef "System" "Nullable`1", 1, true)
+                .AddArgument()
+                .Int32 ()
+
+            metadata.AddTypeSpecification (metadata.GetOrAddBlob blob)
+            |> TypeSpecificationHandle.op_Implicit
+
+        let nullableConstructor : EntityHandle =
+            let blob = BlobBuilder ()
+
+            BlobEncoder(blob)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (
+                    1,
+                    (fun returnType -> returnType.Void ()),
+                    (fun parameters -> parameters.AddParameter().Type().GenericTypeParameter 0)
+                )
+
+            metadata.AddMemberReference (nullableOfInt, metadata.GetOrAddString ".ctor", metadata.GetOrAddBlob blob)
+            |> MemberReferenceHandle.op_Implicit
 
         let signature (isInstance : bool) (returnsObject : bool) : BlobHandle =
             let blob = BlobBuilder ()
@@ -2391,8 +2486,22 @@ public static class Uses
                 code.Token wrapperConstructor
                 code.OpCode ILOpCode.Throw
             | Raise.Untyped ->
+                code.LoadConstantI4 1
+                code.OpCode ILOpCode.Newarr
+                code.Token objectRef
+                code.OpCode ILOpCode.Dup
+                code.LoadConstantI4 0
                 code.Call make
-                code.OpCode ILOpCode.Nop
+                code.OpCode ILOpCode.Stelem_ref
+                code.LoadConstantI4 0
+                code.OpCode ILOpCode.Ldelem_ref
+                code.OpCode ILOpCode.Throw
+            | Raise.BoxedNullable ->
+                code.LoadConstantI4 1
+                code.OpCode ILOpCode.Newobj
+                code.Token nullableConstructor
+                code.OpCode ILOpCode.Box
+                code.Token nullableOfInt
                 code.OpCode ILOpCode.Throw
 
         let addMethod (name : string) (returnsObject : bool) (body : int) : unit =
@@ -2593,11 +2702,12 @@ public static class Uses
 
             RuntimeCompatibility.wrapsNonExceptionThrows assembly |> shouldEqual wraps
 
-            // An untyped raise throws what `Raise.Returned` throws, which the runtime is already
-            // asked about; what is checked of it is how the analysis treats an unknown exception.
+            // An untyped raise throws what `Raise.Returned` throws, and a boxed nullable a boxed
+            // `Int32`, neither an exception, as the runtime is already asked about; what is checked
+            // of them is how the analysis treats an unknown exception.
             let runtime =
                 cases
-                |> List.filter (fun (raise, _, _, _) -> raise <> Raise.Untyped)
+                |> List.filter (fun (raise, _, _, _) -> raise <> Raise.Untyped && raise <> Raise.BoxedNullable)
                 |> List.map (fun (_, _, _, name) -> name)
                 |> escapingOnRealRuntime image
 
@@ -2614,7 +2724,8 @@ public static class Uses
                     $"%s{name} in an assembly that %s{wrapping}: %A{render analysis escapes}, unknown %b{escapes.Unknown}"
 
                 match raise with
-                | Raise.Untyped ->
+                | Raise.Untyped
+                | Raise.BoxedNullable ->
                     // A `rethrow` re-raises what its clause caught of an unknown exception, which
                     // is nothing for a clause for an interface, and one of the clause's type for a
                     // clause that sees only exceptions: for a type other than an ancestor of
@@ -3039,6 +3150,111 @@ public static class Holder<T> where T : IProbe
                 else
                     analysis, failures
             )
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// Callers of `Probe` through `callvirt`, with no `constrained.` prefix, whose receiver's class
+    /// the IL may or may not decide, and a `throw` whose operand two paths make.
+    let private receiverSource : string =
+        """
+using System;
+
+namespace Receivers;
+
+public class Base { public virtual int Probe(int a, int b) => unchecked(a + b); }
+public class Divides : Base { public override int Probe(int a, int b) => a / b; }
+public sealed class SealedAdds : Base { public override int Probe(int a, int b) => checked(a + b); }
+public class OpenDivides : Base { public override int Probe(int a, int b) => a / b; }
+public sealed class SealedGeneric<T> : Base { public override int Probe(int a, int b) => a / b; }
+
+public interface IProbe { int Probe(int a, int b); }
+public sealed class SealedViaInterface : IProbe { public int Probe(int a, int b) => a / b; }
+public struct ValueAdds : IProbe { public int Probe(int a, int b) => checked(a + b); }
+
+public class First : Exception { public First() : base("first") { } }
+public class Second : Exception { public Second() : base("second") { } }
+
+public static class Through
+{
+    public static int Sealed(SealedAdds x, int a, int b) => x.Probe(a, b);
+    public static int Open(OpenDivides x, int a, int b) => x.Probe(a, b);
+    public static int Generic<T>(T x, int a, int b) where T : Base => x.Probe(a, b);
+    public static SealedGeneric<T> MakeSealed<T>() => new SealedGeneric<T>();
+}
+
+public static class Runners
+{
+    public static int NewObject(int a, int b) => new Divides().Probe(a, b);
+    public static int SealedParameter(int a, int b) => Through.Sealed(new SealedAdds(), a, b);
+    public static int OpenParameter(int a, int b) => Through.Open(new OpenDivides(), a, b);
+    public static int Joined(int a, int b) => (b == 0 ? (Base)new Divides() : new SealedAdds()).Probe(a, b);
+    public static int Interface(int a, int b) => ((IProbe)new SealedViaInterface()).Probe(a, b);
+    public static int BoxedStruct(int a, int b) => ((IProbe)new ValueAdds()).Probe(a, b);
+    public static int GenericSealed(int a, int b) => Through.Generic(new SealedAdds(), a, b);
+    public static int GenericOpen(int a, int b) => Through.Generic(new OpenDivides(), a, b);
+    // The receiver's type is the callee's return type, spelled with the callee's type variable.
+    public static int GenericReturned(int a, int b) => Through.MakeSealed<int>().Probe(a, b);
+    public static int ThrowJoined(int a, int b) =>
+        throw (b == 0 ? (Exception)new First() : new Second());
+}
+"""
+
+    [<Test>]
+    let ``a callvirt runs the override of the receiver's class where the IL decides that class`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "Receivers" OutputKind.DynamicallyLinkedLibrary [] [ receiverSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Receivers.dll") (new MemoryStream (image))
+
+        let both = Set.ofList [ dividesByZero ; overflows ]
+
+        let cases =
+            [
+                "NewObject", both, DispatchClaim.Precise
+                "SealedParameter", Set.singleton overflows, DispatchClaim.Precise
+                "OpenParameter", both, DispatchClaim.Unknown
+                "Joined", both, DispatchClaim.Precise
+                "Interface", both, DispatchClaim.Precise
+                "BoxedStruct", Set.singleton overflows, DispatchClaim.Precise
+                "GenericSealed", Set.singleton overflows, DispatchClaim.Precise
+                "GenericOpen", both, DispatchClaim.Unknown
+                "GenericReturned", both, DispatchClaim.SoundOnly
+            ]
+
+        let runtime =
+            "ThrowJoined" :: (cases |> List.map (fun (name, _, _) -> name))
+            |> dispatchOnRealRuntime "Receivers" image
+
+        let analysis, failures =
+            dispatchFailures fixture "Receivers" runtime cases (analysisOver [ fixture ] id)
+
+        // A `throw` of what either arm of a join makes raises exactly what each arm makes.
+        let joined = Set.ofList [ "Receivers.First" ; "Receivers.Second" ]
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Receivers.Runners" "ThrowJoined")
+
+        let shown = render analysis escapes
+        let raised = runtime.["ThrowJoined"]
+
+        let failures =
+            if
+                raised <> joined
+                || escapes.Unknown
+                || not (joined |> Set.forall (fun ty -> shown.Contains ("=" + ty)))
+                || shown |> Set.exists (fun ty -> ty.StartsWith "<:")
+            then
+                failures
+                @ [
+                    $"ThrowJoined: %A{Set.toList shown}, unknown %b{escapes.Unknown}; the runtime raised %A{Set.toList raised}"
+                ]
+            else
+                failures
 
         match failures with
         | [] -> ()
