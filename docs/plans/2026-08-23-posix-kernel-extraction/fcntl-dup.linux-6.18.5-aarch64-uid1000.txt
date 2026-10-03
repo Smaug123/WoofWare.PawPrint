@@ -515,6 +515,7 @@ WRITTEN	blocking pipe write interrupted part way	call ok 65536	after ok 0x1
 WRITTEN	blocking pipe write asleep part way	dup's F_GETFL ok 0x1
 WRITTEN	blocking pipe write part way, ended by a close	call asleep	dup's F_GETFL ok 0x1
 WRITTEN	blocking pipe write part way, after it returned	call ok 131072	dup's F_GETFL ok 0x1
+WRITTEN	blocking pipe write completed after a drain	call ok 200000	after ok 0x1
 WRITTEN	ftruncate -1	call EINVAL	after ok 0x20002
 WRITTEN	ftruncate through O_RDONLY	call EINVAL	after ok 0x20000
 WRITTEN	ftruncate of a pipe	call EINVAL	after ok 0x1

@@ -11,7 +11,8 @@
 //          without O_CLOEXEC; one opened O_RDWR|O_SYNC; a directory opened
 //          O_RDONLY and O_RDONLY|O_DIRECTORY; a file outside the caller's
 //          ownership opened O_RDONLY ("foreign"); each end of pipe() and of
-//          pipe2() with O_NONBLOCK and with O_CLOEXEC; sockets (IPv4, IPv6
+//          pipe2() with O_NONBLOCK, with O_CLOEXEC, and (Darwin) with
+//          O_CLOFORK; sockets (IPv4, IPv6
 //          and Unix-domain stream and datagram, with SOCK_NONBLOCK and
 //          SOCK_CLOEXEC on Linux); an accepted socket, from a blocking and a
 //          non-blocking listener (and accept4 with each flag on Linux); an
@@ -24,7 +25,11 @@
 //   WRITTEN  which calls move a status word F_SETFL cannot: a write, a pwrite,
 //          an ftruncate, a zero-length write, a refused write, and an flock
 //          taken, converted, released and refused, each against a fresh
-//          regular file, with F_GETFL before and after.
+//          regular file, with F_GETFL before and after; then writes to a
+//          socket and a pipe that move some, none, or fail; a blocking pipe
+//          write interrupted part way, ended by a close part way, and
+//          completed after a reader drains it; failing truncations; and a
+//          blocking flock granted after a wait, and one interrupted.
 //   SETFD  for each bit 0..31 and the words -1 and 0: F_SETFD's answer and
 //          F_GETFD after, on a fresh regular file descriptor.
 //   CLOEXEC  where the descriptor flags go: a dup, F_DUPFD, F_DUPFD_CLOEXEC,
@@ -84,7 +89,8 @@
 //   bits no F_SETFL can change: 0x10000 (FWASWRITTEN) once a write(2) or
 //   pwrite(2) has returned having moved bytes (a socket's write too, but not
 //   its send(2); an interrupted or close-ended write that had moved some, not
-//   one asleep part way), an ftruncate(2) has succeeded, or open's O_TRUNC
+//   one asleep part way; a blocking one a drain completed, too), an
+//   ftruncate(2) has succeeded, or open's O_TRUNC
 //   has truncated a file that existed; and 0x4000 (FHASLOCK) once an flock(2)
 //   has been granted through the description, which LOCK_UN does not clear.
 //   Neither is set by a call that moved nothing or failed.
@@ -104,8 +110,9 @@
 //   descriptor from dup, F_DUPFD and dup2 has neither; F_DUPFD_CLOEXEC and
 //   dup3(O_CLOEXEC) set FD_CLOEXEC alone; dup2 of a descriptor onto itself
 //   changes nothing, and onto another descriptor of the same description
-//   clears the target's. Darwin's kqueue() is FD_CLOEXEC|FD_CLOFORK, and its
-//   F_DUPFD_CLOFORK (115) answers EBADF on an open descriptor.
+//   clears the target's. Darwin's kqueue() is FD_CLOEXEC|FD_CLOFORK, its
+//   pipe2's O_CLOFORK sets FD_CLOFORK on both ends, and its F_DUPFD_CLOFORK
+//   (115) answers EBADF on an open descriptor.
 // - F_DUPFD and F_DUPFD_CLOEXEC take the lowest free descriptor at or above
 //   the argument; a negative argument, or one at or above RLIMIT_NOFILE's soft
 //   limit, is EINVAL, a full table EMFILE, and a descriptor that is not open
@@ -162,6 +169,10 @@ static int pipe2(int p[2], int flags)
 
 #ifndef F_DUPFD_CLOFORK
 #define F_DUPFD_CLOFORK (-12345)
+#endif
+#if defined(__APPLE__) && !defined(O_CLOFORK)
+// Darwin's kernel takes it, and the Nix SDK's headers predate it.
+#define O_CLOFORK 0x08000000
 #endif
 
 static const char *en(int e)
@@ -242,6 +253,7 @@ enum kind {
     K_FILE_RDONLY_CLOEXEC, K_FILE_RDWR_CLOEXEC, K_FILE_RDWR_SYNC,
     K_DIR, K_DIR_DIRECTORY, K_FOREIGN,
     K_PIPE_R, K_PIPE_W, K_PIPE2_NB_R, K_PIPE2_NB_W, K_PIPE2_CLOEXEC_R, K_PIPE2_CLOEXEC_W,
+    K_PIPE2_CLOFORK_R, K_PIPE2_CLOFORK_W,
     K_INET_STREAM, K_INET_DGRAM, K_INET6_STREAM, K_UNIX_STREAM, K_UNIX_DGRAM,
     K_SOCK_NONBLOCK, K_SOCK_CLOEXEC,
     K_ACCEPTED, K_ACCEPTED_FROM_NONBLOCKING, K_ACCEPT4_NONBLOCK, K_ACCEPT4_CLOEXEC,
@@ -255,6 +267,7 @@ static const char *kind_names[K_COUNT] = {
     "file-rdonly-cloexec", "file-rdwr-cloexec", "file-rdwr-sync",
     "dir", "dir-o_directory", "foreign-rdonly",
     "pipe-r", "pipe-w", "pipe2-nonblock-r", "pipe2-nonblock-w", "pipe2-cloexec-r", "pipe2-cloexec-w",
+    "pipe2-clofork-r", "pipe2-clofork-w",
     "inet-stream", "inet-dgram", "inet6-stream", "unix-stream", "unix-dgram",
     "inet-stream-sock_nonblock", "inet-stream-sock_cloexec",
     "accepted", "accepted-from-nonblocking", "accept4-sock_nonblock", "accept4-sock_cloexec",
@@ -338,6 +351,14 @@ static int make(enum kind k)
     case K_PIPE2_NB_W: if (pipe2(p, O_NONBLOCK) != 0) die("pipe2"); keep(p[0]); return p[1];
     case K_PIPE2_CLOEXEC_R: if (pipe2(p, O_CLOEXEC) != 0) die("pipe2"); keep(p[1]); return p[0];
     case K_PIPE2_CLOEXEC_W: if (pipe2(p, O_CLOEXEC) != 0) die("pipe2"); keep(p[0]); return p[1];
+#ifdef __APPLE__
+    case K_PIPE2_CLOFORK_R: if (pipe2(p, O_CLOFORK) != 0) die("pipe2"); keep(p[1]); return p[0];
+    case K_PIPE2_CLOFORK_W: if (pipe2(p, O_CLOFORK) != 0) die("pipe2"); keep(p[0]); return p[1];
+#else
+    case K_PIPE2_CLOFORK_R:
+    case K_PIPE2_CLOFORK_W:
+        return -2;
+#endif
     case K_INET_STREAM: return socket(AF_INET, SOCK_STREAM, 0);
     case K_INET_DGRAM: return socket(AF_INET, SOCK_DGRAM, 0);
     case K_INET6_STREAM: return socket(AF_INET6, SOCK_STREAM, 0);
@@ -647,6 +668,21 @@ static void section_written_more(void)
            cw.rv < 0 ? en(cw.err) : num(cw.rv), word(fcntl(keep_dup, F_GETFL)));
     close(keep_dup);
     close(p[0]);
+    // A blocking write larger than the pipe, which a reader drains until it
+    // has all gone in.
+    pipe(p);
+    struct blocked_write dw = {p[1], 200000, 0, 0, 0};
+    pthread_create(&t, NULL, blocked_write_main, &dw);
+    sleep_ms(50);
+    for (int i = 0; i < 400 && !dw.done; i++) {
+        read(p[0], buf, sizeof buf);
+        sleep_ms(1);
+    }
+    pthread_join(t, NULL);
+    printf("WRITTEN\tblocking pipe write completed after a drain\tcall %s\tafter %s\n",
+           dw.rv < 0 ? en(dw.err) : num(dw.rv), word(fcntl(p[1], F_GETFL)));
+    close(p[0]);
+    close(p[1]);
     // Truncations that fail.
     seed_file("f");
     int fd = open("f", O_RDWR);

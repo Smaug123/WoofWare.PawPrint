@@ -276,9 +276,9 @@ module internal FcntlWorld =
         | Ok (AcceptOutcome.Accepted (fd, _, _), system) -> fd, system
         | other -> failwith $"accept: %A{other}"
 
-    /// A fresh descriptor of the probe's kind `kind`, or `None` for a kind
-    /// this kernel does not make on `system`'s flavour (`accept4`, which it
-    /// does not model, and every kind the flavour lacks).
+    /// A fresh descriptor of the probe's kind `kind`, or `None` for one made by
+    /// `accept4`, which this kernel does not model. Fails for a kind the probe
+    /// did not make on `system`'s flavour.
     let make (kind : string) (system : UnixSystem<int, string>) : (int * UnixSystem<int, string>) option =
         let platform = system.Machine.UnixPlatform
         let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
@@ -343,6 +343,12 @@ module internal FcntlWorld =
         | "pipe2-nonblock-w" -> pipe (nonBlock platform) system |> fun ((_, w), system) -> Some (w, system)
         | "pipe2-cloexec-r" -> pipe (closeOnExec platform) system |> fun ((r, _), system) -> Some (r, system)
         | "pipe2-cloexec-w" -> pipe (closeOnExec platform) system |> fun ((_, w), system) -> Some (w, system)
+        | "pipe2-clofork-r" when not linux ->
+            pipe OpenFlagNumbering.DarwinCloseOnFork system
+            |> fun ((r, _), system) -> Some (r, system)
+        | "pipe2-clofork-w" when not linux ->
+            pipe OpenFlagNumbering.DarwinCloseOnFork system
+            |> fun ((_, w), system) -> Some (w, system)
         | "inet-stream" -> socket SocketDomain.Inet SocketKind.Stream
         | "inet-dgram" -> socket SocketDomain.Inet SocketKind.Datagram
         | "inet6-stream" -> socket SocketDomain.Inet6 SocketKind.Stream
@@ -369,4 +375,7 @@ module internal FcntlWorld =
         | "null-rdwr" when linux -> Some (openWith (opening FileAccessMode.ReadWrite) "/dev/null" system)
         | "urandom-rdonly" when linux -> Some (openWith (opening FileAccessMode.ReadOnly) "/dev/urandom" system)
         | "urandom-rdwr" when linux -> Some (openWith (opening FileAccessMode.ReadWrite) "/dev/urandom" system)
-        | _ -> None
+        // Linux's accept4, which this kernel does not model.
+        | "accept4-sock_nonblock"
+        | "accept4-sock_cloexec" -> None
+        | other -> failwith $"the probe made a %s{other} on %O{platform}, which FcntlWorld does not make"

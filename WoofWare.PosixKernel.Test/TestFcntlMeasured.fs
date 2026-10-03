@@ -848,6 +848,7 @@ module TestFcntlMeasured =
                     "blocking pipe write asleep part way"
                     "blocking pipe write part way, ended by a close"
                     "blocking pipe write part way, after it returned"
+                    "blocking pipe write completed after a drain"
                     "blocking flock granted after a wait"
                     "blocking flock interrupted"
                     "flock of a pipe"
@@ -1094,3 +1095,49 @@ module TestFcntlMeasured =
                 $"after %s{FcntlWorld.statusFlags fd system}"
             ]
             |> shouldEqual (row "blocking flock interrupted")
+
+    /// Measured on both (`fcntl-dup.c`, WRITTEN rows): a blocking write larger
+    /// than the pipe, completed once a reader has drained it, returns its whole
+    /// count, and on Darwin marks its description.
+    [<Test>]
+    let ``a blocking write completed after a drain marks its description as measured`` () : unit =
+        for run in runs do
+            let measured =
+                FcntlWorld.rows "WRITTEN" run
+                |> List.find (fun row -> List.head row = "blocking pipe write completed after a drain")
+
+            let (r, w), system = FcntlWorld.pipe 0 (FcntlWorld.system run |> catchingSigUsr1)
+            let bytes = ImmutableArray.CreateRange (Array.create 200000 0uy)
+
+            let mutable system =
+                match WriteOutcomes.admitThenWrite 1 w UserBuffer.Mapped bytes system with
+                | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+                | other -> failwith $"a write larger than the pipe: %A{other}"
+
+            let mutable answer = None
+
+            // The leader drains; each time the writer wakes it puts in what it
+            // can, until it has put in the lot.
+            while answer.IsNone do
+                system <-
+                    match UnixReadWrite.read system.Leader r UserBuffer.Mapped 65536UL system with
+                    | Ok (ReadOutcome.Answered (ReadAnswer.Completed _), system) -> system
+                    | other -> failwith $"%s{run.Name}: draining: %A{other}"
+
+                if not (List.isEmpty (UnixWait.wakes (Set.singleton 1) system)) then
+                    match UnixReadWrite.admitFinishWrite 1 system with
+                    | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
+                        match UnixReadWrite.finishWrite 1 (ImmutableArray.Create (bytes, offset, count)) admitted with
+                        | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, after)) ->
+                            answer <- Some $"ok %d{n}"
+                            system <- after
+                        | Ok (WriteOutcome.WouldBlock (_, after)) -> system <- after
+                        | other -> failwith $"%s{run.Name}: finishing the write: %A{other}"
+                    | other -> failwith $"%s{run.Name}: resuming the write: %A{other}"
+
+            [
+                "blocking pipe write completed after a drain"
+                $"call %s{Option.get answer}"
+                $"after %s{FcntlWorld.statusFlags w system}"
+            ]
+            |> shouldEqual measured

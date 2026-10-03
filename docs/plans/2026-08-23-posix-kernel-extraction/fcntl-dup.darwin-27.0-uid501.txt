@@ -15,6 +15,8 @@ KIND	pipe2-nonblock-r	F_GETFL ok 0x4	F_GETFD ok 0x0
 KIND	pipe2-nonblock-w	F_GETFL ok 0x5	F_GETFD ok 0x0
 KIND	pipe2-cloexec-r	F_GETFL ok 0x0	F_GETFD ok 0x1
 KIND	pipe2-cloexec-w	F_GETFL ok 0x1	F_GETFD ok 0x1
+KIND	pipe2-clofork-r	F_GETFL ok 0x0	F_GETFD ok 0x2
+KIND	pipe2-clofork-w	F_GETFL ok 0x1	F_GETFD ok 0x2
 KIND	inet-stream	F_GETFL ok 0x2	F_GETFD ok 0x0
 KIND	inet-dgram	F_GETFL ok 0x2	F_GETFD ok 0x0
 KIND	inet6-stream	F_GETFL ok 0x2	F_GETFD ok 0x0
@@ -435,6 +437,7 @@ WRITTEN	blocking pipe write interrupted part way	call ok 65536	after ok 0x10001
 WRITTEN	blocking pipe write asleep part way	dup's F_GETFL ok 0x1
 WRITTEN	blocking pipe write part way, ended by a close	call EPIPE	dup's F_GETFL ok 0x10001
 WRITTEN	blocking pipe write part way, after it returned	call EPIPE	dup's F_GETFL ok 0x10001
+WRITTEN	blocking pipe write completed after a drain	call ok 200000	after ok 0x10001
 WRITTEN	ftruncate -1	call EINVAL	after ok 0x2
 WRITTEN	ftruncate through O_RDONLY	call EINVAL	after ok 0x0
 WRITTEN	ftruncate of a pipe	call EINVAL	after ok 0x1
