@@ -2319,6 +2319,35 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // FD_CLOEXEC through `SystemNative_FcntlGetFD` and
+                // `SystemNative_FcntlSetFD`, and where the descriptors the shim
+                // makes get it, under each flavour: the shim reaches it by
+                // `SOCK_CLOEXEC` and `accept4` on Linux and by a `fcntl` after
+                // the call on Darwin, so each flavour's wiring needs a run.
+                FileName = "FcntlDescriptorFlags.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                // Compared where the host is the flavour run: the answers are
+                // the same on both, but the oracle runs the host's shim.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same program under Darwin.
+                FileName = "FcntlDescriptorFlags.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The `SystemNative_Socket` rows true only under the Linux
                 // flavour — the Unix-domain sockets Darwin refuses — together
                 // with the two descriptor-level rows a differential guest cannot

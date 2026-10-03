@@ -7,7 +7,8 @@ using System.Runtime.InteropServices;
 // `SystemNative_FcntlGetFD` (pal_io.c:616, `fcntl(F_GETFD)`) and
 // `SystemNative_FcntlSetFD` (pal_io.c:609, `fcntl(F_SETFD,
 // ConvertOpenFlags(flags))`), and where the descriptors the shim makes get it
-// from. Differential: every row answers identically on Linux and macOS.
+// from. Run under each flavour (TestImpureCases), and compared with real .NET
+// where the host is that flavour; every row answers identically on both.
 //
 // Facts pinned:
 //
