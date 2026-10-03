@@ -13,7 +13,10 @@ method) may add more:
 * a `callvirt` of a method a derived class may override, on an object the IL says is exactly of one
   class (one a `newobj` made), or of a sealed class or a boxed value type, runs that class's
   implementation, found as for a `constrained.` call below; one on an object that may be of a class
-  others derive from is opaque;
+  others derive from is opaque. An object a call returns is of the classes the callee's `ret`s
+  return, in the instance the call reaches, which may be narrower than its declared return type
+  (`Encoding.UTF8` returns a field of a sealed class); a return that depends on itself is only its
+  declared type;
 * `throw null` raises the `NullReferenceException` that throwing a null does, and nothing else;
 * a `rethrow` re-raises what its `catch` clause caught: what the clause's protected block raises and
   no clause tried before it stops, of the clause's type. Something the analysis cannot name, caught
