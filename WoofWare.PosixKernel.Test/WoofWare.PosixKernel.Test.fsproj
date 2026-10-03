@@ -21,6 +21,7 @@
     <Compile Include="PathText.fs" />
     <Compile Include="OpenFlagWords.fs" />
     <Compile Include="Answered.fs" />
+    <Compile Include="PReadUnchanged.fs" />
     <Compile Include="DirectoryReading.fs" />
     <Compile Include="Owners.fs" />
     <Compile Include="LaunchedStreams.fs" />
@@ -99,6 +100,8 @@
     <Compile Include="TestDirectoryDescription.fs" />
     <Compile Include="TestDeviceFileSystem.fs" />
     <Compile Include="TestDeviceFileSystemAgainstHost.fs" />
+    <Compile Include="TestDeviceDescriptors.fs" />
+    <Compile Include="TestDeviceDescriptorsAgainstHost.fs" />
     <Compile Include="TestDirectoryReadAgainstHost.fs" />
     <Compile Include="TestPathCursor.fs" />
     <Compile Include="TestVirtualFileSystem.fs" />

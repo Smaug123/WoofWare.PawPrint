@@ -1283,7 +1283,8 @@ module TestFileDescriptorRegistry =
         | Some (OpenFileTarget.Epoll _)
         | Some (OpenFileTarget.Kqueue _)
         | Some (OpenFileTarget.Socket _)
-        | Some (OpenFileTarget.Pipe _) -> None
+        | Some (OpenFileTarget.Pipe _)
+        | Some (OpenFileTarget.CharacterDevice _) -> None
         | Some (OpenFileTarget.File (_, offset)) -> Some offset
         | Some (OpenFileTarget.Directory _) ->
             failwith $"fd %d{fd} names a directory, whose position is not a byte offset"

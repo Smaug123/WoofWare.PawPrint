@@ -367,6 +367,7 @@ module UnixPoll =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _ ->
             // A live descriptor onto the wrong kind of object. EINVAL is epoll's
             // own answer for it, and it is the last of the four screens --
@@ -453,7 +454,11 @@ module UnixPoll =
         // regular file and a directory lack.
         match targetDescription.Target with
         | OpenFileTarget.File _
-        | OpenFileTarget.Directory _ -> failed EpollCtlError.TargetNotPollable
+        | OpenFileTarget.Directory _
+        // Measured on `/dev/null` and `/dev/urandom` for ADD and MOD, through
+        // descriptors opened for reading and for writing (`devices.c`, EPOLL
+        // rows): neither driver has a poll operation either.
+        | OpenFileTarget.CharacterDevice _ -> failed EpollCtlError.TargetNotPollable
         | OpenFileTarget.Kqueue _ ->
             failwith
                 $"UnixPoll.epollCtl: fd %d{fd} names a kqueue, which a Linux-flavoured kernel cannot hold (this is a bug in the caller's state construction)."
@@ -471,6 +476,7 @@ module UnixPoll =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _ -> None
 
         match portState with
@@ -484,6 +490,7 @@ module UnixPoll =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _ -> false
 
         // The EPOLLEXCLUSIVE screen, ahead of the table (so ahead of EEXIST
@@ -580,6 +587,7 @@ module UnixPoll =
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
             | OpenFileTarget.Socket _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ -> false
 
@@ -698,6 +706,7 @@ module UnixPoll =
         | OpenFileTarget.Socket _
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _ ->
             // `do_pollfd`'s own shape: the level, filtered by the request
             // with POLLERR and POLLHUP added whatever was asked.

@@ -87,6 +87,20 @@ module CharacterDevice =
         | CharacterDevice.Null
         | CharacterDevice.URandom -> PermissionBits 0o666
 
+    /// What an `ioctl(2)` the device's Linux driver does not recognise answers:
+    /// `FIONREAD` and `TCGETS` (`tcgetattr`) among them, neither device being a
+    /// queue or a terminal. The buffer the request names is never looked at.
+    ///
+    /// Linux only: this kernel holds no device on Darwin.
+    let unrecognisedIoctl (device : CharacterDevice) : UnixError =
+        // Measured on Linux 6.18.5 (`devices-l2.c`, FIONREAD and TCGETATTR
+        // rows, through descriptors opened for reading and for writing): null
+        // has no ioctl operation, so the call is ENOTTY, while urandom's
+        // `random_ioctl` answers EINVAL for a command it does not know.
+        match device with
+        | CharacterDevice.Null -> UnixError.ENOTTY
+        | CharacterDevice.URandom -> UnixError.EINVAL
+
     /// `st_rdev` for the device's node under a kernel of `flavour`, in that
     /// flavour's `dev_t` encoding.
     ///

@@ -298,6 +298,8 @@ module TestLaunchedStreams =
             | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
                 Some (Answer.ReadBytes bytes.Length, after)
             | Ok (ReadOutcome.Answered (ReadAnswer.Failed error), after) -> Some (Answer.ReadFailed error, after)
+            | Ok (ReadOutcome.Answered (ReadAnswer.Drawn _), _) ->
+                failwith "a read of a stream drew from the entropy pool"
             // A read that sleeps, on a pipe the process made, which the
             // earlier streams had no notion of.
             | Ok (ReadOutcome.WouldBlock _, _) -> None

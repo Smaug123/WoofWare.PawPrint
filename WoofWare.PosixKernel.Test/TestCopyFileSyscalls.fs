@@ -641,7 +641,7 @@ module TestCopyFileSyscalls =
 
                 let expected =
                     match
-                        UnixReadWrite.pwrite outFd (ImmutableArray.CreateRange moved) case.DestinationOffset system
+                        UnixReadWrite.pwrite 0 outFd (ImmutableArray.CreateRange moved) case.DestinationOffset system
                     with
                     | Ok (WriteAnswer.Completed _, written) ->
                         written

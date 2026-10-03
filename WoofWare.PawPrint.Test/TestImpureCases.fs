@@ -4392,6 +4392,47 @@ module TestImpureCases =
         exn.Message |> shouldContainText "fcopyfile"
 
     [<Test>]
+    let ``System.Native's copy from /dev/urandom, which never ends, stops the run`` () : unit =
+        // The shim's read/write loop copies until a read answers 0, which
+        // /dev/urandom never does: a real process spins there for ever, and
+        // PawPrint, which would spin inside one native call, refuses. The copy
+        // from /dev/null before it ends at once.
+        let source = Assembly.getEmbeddedResourceAsString "CopyFileFromUrandomLinux.cs" assy
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "CopyFileFromUrandomLinux.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+
+        let run (argv : string list) =
+            use peImage = new MemoryStream (image)
+
+            BoundedRun.run
+                loggerFactory
+                "CopyFileFromUrandomLinux.cs"
+                (Some "CopyFileFromUrandomLinux.cs")
+                peImage
+                { HostConfig.Default dotnetRuntimes with
+                    Guest =
+                        { GuestConfig.Default dotnetRuntimes with
+                            Argv = argv
+                        }
+                }
+            |> ExpectRun.ended
+
+        // The copies that end, including the one whose first write fails.
+        match run [] with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
+        | other -> failwith $"expected a normal exit, got %O{other}"
+
+        let exn = Assert.Catch (fun () -> run [ "endless" ] |> ignore<RunOutcome>)
+
+        exn.Message |> shouldContainText "SystemNative_CopyFile"
+        exn.Message |> shouldContainText "never reaches end-of-file"
+
+    [<Test>]
     let ``a Linux kernel older than 5.3 sends System.Native's copy to sendfile, which stops the run`` () : unit =
         // `SupportsCopyFileRange` reads the release's major and minor numbers
         // and uses copy_file_range only from 5.3; below that the shim copies
