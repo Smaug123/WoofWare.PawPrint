@@ -1,0 +1,9 @@
+M	M1 queued listener twice, IN and IN	rv=1	[0] 0; [1] IN
+M	M2 queued listener and its dup, IN and IN	rv=2	[0] IN; [1] IN
+M	M12 connected client OUT twice	rv=1	[0] 0; [1] OUT
+M	M13 peer-closed client IN|OUT, then the same IN	rv=2	[0] OUT; [1] IN|HUP
+M	M13 control: peer-closed client IN|OUT alone	rv=1	[0] IN|HUP
+W	W2 empty listener HUP, a connection at 50 ms	rv=0	0	after 301 ms
+W	W5 connected client HUP, the peer closes at 50 ms	rv=1	HUP	after 55 ms
+W	W7 pipe read end holding 3, HUP, the writer closes at 50 ms	rv=0	0	after 301 ms
+W	W11 idle socket IN|OUT, poller deprioritised, CPUs busy; connect, accept, peer close	40 trials: OUT x7 IN|OUT|HUP x33

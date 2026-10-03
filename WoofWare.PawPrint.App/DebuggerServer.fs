@@ -235,6 +235,43 @@ module DebuggerServer =
                 match parked.Deadline with
                 | None -> ()
                 | Some deadline -> writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
+            | Some (ParkedSyscall.KqueuePoll parked) ->
+                // A Darwin poll waits on the kqueue it made for itself, whose
+                // filters are keyed by descriptor number rather than held by
+                // description.
+                writer.WriteString ("kind", "blockedInKqueuePoll")
+                writer.WriteStartArray "entries"
+
+                for entry in parked.Entries do
+                    writer.WriteStartObject ()
+                    writer.WriteNumber ("fd", entry.Fd)
+                    // The platform `<poll.h>` bits, as the unsigned 16 bits they are.
+                    writer.WriteNumber ("events", int (uint16 entry.Events))
+                    writer.WriteEndObject ()
+
+                writer.WriteEndArray ()
+                writer.WriteStartArray "registrations"
+
+                for (fd, filter), registration in Map.toList parked.Registrations do
+                    writer.WriteStartObject ()
+                    writer.WriteNumber ("fd", fd)
+
+                    writer.WriteString (
+                        "filter",
+                        match filter with
+                        | KqueueFilter.Read -> "read"
+                        | KqueueFilter.Write -> "write"
+                    )
+
+                    writer.WriteNumber ("entry", registration.Entry)
+                    writer.WriteBoolean ("active", List.contains (fd, filter) parked.Active)
+                    writer.WriteEndObject ()
+
+                writer.WriteEndArray ()
+
+                match parked.Deadline with
+                | None -> ()
+                | Some deadline -> writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter deadline)
             | Some (ParkedSyscall.Accept parked) ->
                 writer.WriteString ("kind", "blockedInAccept")
                 let (OpenFileDescriptionId listener) = parked.Listener

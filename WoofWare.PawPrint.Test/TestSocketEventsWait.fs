@@ -456,6 +456,7 @@ class TwoPortsOneEdge
                 | Some (ParkedSyscall.Kevent _)
                 | Some (ParkedSyscall.Flock _)
                 | Some (ParkedSyscall.Poll _)
+                | Some (ParkedSyscall.KqueuePoll _)
                 | Some (ParkedSyscall.Accept _)
                 | Some (ParkedSyscall.PipeRead _)
                 | Some (ParkedSyscall.PipeWrite _)

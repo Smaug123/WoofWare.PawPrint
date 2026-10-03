@@ -91,7 +91,8 @@ module SyscallInterruption =
         | ParkedSyscall.PipeWrite _ -> SignalRestartRule.RestartsUnderSaRestart
         | ParkedSyscall.SocketWait _
         | ParkedSyscall.Kevent _
-        | ParkedSyscall.Poll _ -> SignalRestartRule.FailsWithEintr
+        | ParkedSyscall.Poll _
+        | ParkedSyscall.KqueuePoll _ -> SignalRestartRule.FailsWithEintr
 
     /// The handler frames `task` would get, innermost first, were it to return
     /// to user mode now: empty when it would run no handler.

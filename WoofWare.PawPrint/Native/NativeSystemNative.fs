@@ -3856,7 +3856,8 @@ module NativeSystemNative =
                 // would park over the stale record and destroy the evidence.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in a socket wait. A task blocks in one syscall at a time, so the wait's completion failed to clear its record (this is an interpreter bug)."
-            | Some (ParkedSyscall.Poll _) ->
+            | Some (ParkedSyscall.Poll _)
+            | Some (ParkedSyscall.KqueuePoll _) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in a poll. A task blocks in one syscall at a time, so the poll's completion failed to clear its record (this is an interpreter bug)."
@@ -5192,6 +5193,7 @@ module NativeSystemNative =
             | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)
             | Some (ParkedSyscall.Poll _)
+            | Some (ParkedSyscall.KqueuePoll _)
             | Some (ParkedSyscall.PipeRead _)
             | Some (ParkedSyscall.PipeWrite _) ->
                 // Unreachable: a task parked in another syscall is not running
@@ -6377,7 +6379,8 @@ module NativeSystemNative =
                 // and parking over it would destroy the evidence.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in an flock. A task blocks in one syscall at a time, so the acquisition's completion failed to clear its record (this is an interpreter bug)."
-            | Some (ParkedSyscall.Poll _) ->
+            | Some (ParkedSyscall.Poll _)
+            | Some (ParkedSyscall.KqueuePoll _) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in a poll. A task blocks in one syscall at a time, so the poll's completion failed to clear its record (this is an interpreter bug)."
@@ -6602,17 +6605,18 @@ module NativeSystemNative =
                     // which guest call asked, and what a guest could do instead.
                     let reachedBy =
                         match refusal with
-                        | PollRefusal.UnmodelledFlavour _ ->
-                            // Deliberately coarser than it has to be: it precedes the
-                            // entries, so it also refuses a zero-entry poll, whose
-                            // answer is measured identical on both flavours. That row
-                            // would be a branch with no consumer, since no
-                            // Darwin-flavoured guest reaches this entry point today.
-                            " The measured Darwin rows are in docs/plans/2026-08-23-socket-poll and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c."
                         | PollRefusal.UnmodelledTarget _ ->
                             " No managed caller reaches it: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model), so this is a hand-rolled P/Invoke."
                         | PollRefusal.DeadlineBeyondClock _ ->
                             " PawPrint's virtual clock stops far short of this horizon, so the guest has been jumping it with long timed waits."
+                        // The wrapper answers EINVAL for every timeout below -1
+                        // before it reaches the kernel, so a guest never gets here
+                        // through it.
+                        | PollRefusal.UnmeasuredNegativeTimeout _ -> " This is a hand-rolled P/Invoke."
+                        | PollRefusal.UnmodelledSocket _
+                        | PollRefusal.UnmodelledVnodeWait _
+                        | PollRefusal.UnmodelledEntryCount _
+                        | PollRefusal.EventsBesideDeadline
                         | PollRefusal.Interruption _ -> ""
 
                     failwith $"%s{operation}: %s{PollRefusal.describe refusal}%s{reachedBy}"
@@ -6628,9 +6632,19 @@ module NativeSystemNative =
                         (Some (NativeLocals.PollEntries entries))
                         system
                         state
-                | Ok (PollOutcome.Failed error, _) ->
-                    failwith
-                        $"%s{operation}: the kernel's poll failed with %O{error}, which only a signal ending its sleep answers, with EINTR (this is an interpreter bug)."
+                // Any other failure is `poll(2)`'s own, which `Common_Poll`
+                // returns converted, having stored 0 through `triggered` and left
+                // every entry's `TriggeredEvents` alone, with `errno` as the
+                // kernel left it: under Darwin, EINVAL for more entries than
+                // OPEN_MAX.
+                | Ok (PollOutcome.Failed error, system) ->
+                    withErrno ctx error system state
+                    |> writeBytesThrough
+                        ctx
+                        operation
+                        (requireStorage operation "triggered" triggeredPointer)
+                        (ImmutableArray.CreateRange (Array.zeroCreate<byte> 4))
+                    |> complete (UnixErrorPal.toPal error)
                 | Ok (PollOutcome.WouldBlock _, system) ->
                     // Park re-entrantly, as `SystemNative_WaitForSocketEvents`
                     // does: the native frame stays and the caller's program counter
@@ -6672,6 +6686,12 @@ module NativeSystemNative =
                     )
 
                 settle entries (PollEventsPal.finish ctx.Thread (EmulatedKernel.unix state.Kernel))
+            | Some (ParkedSyscall.KqueuePoll parked) ->
+                if List.length parked.Entries <> int eventCount then
+                    failwith
+                        $"%s{operation}: thread %O{ctx.Thread} re-entered a poll of %d{eventCount} entries, but its park records %d{List.length parked.Entries}. A re-entry runs the same call with the same arguments (this is an interpreter bug)."
+
+                settle parked.Entries (PollEventsPal.finish ctx.Thread (EmulatedKernel.unix state.Kernel))
             | Some (ParkedSyscall.SocketWait _)
             | Some (ParkedSyscall.Kevent _)
             | Some (ParkedSyscall.Flock _)

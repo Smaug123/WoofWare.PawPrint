@@ -345,6 +345,20 @@ module GuestLocation =
                         | Some (ParkedSyscall.PipeWrite parked) ->
                             Some
                                 $"for room for %d{parked.Count - parked.Written} more of %d{parked.Count} bytes in the pipe end of open file description %O{parked.Writer}"
+                        | Some (ParkedSyscall.KqueuePoll parked) ->
+                            let watched =
+                                parked.Registrations
+                                |> Map.toList
+                                |> List.map (fun ((fd, filter), _) -> $"fd %d{fd} (%O{filter})")
+                                |> String.concat ", "
+
+                            let until =
+                                match parked.Deadline with
+                                | Some deadline -> $" until %d{deadline} ns since boot"
+                                | None -> ""
+
+                            Some
+                                $"in a poll of %d{List.length parked.Entries} entries, registered on %s{watched}%s{until}"
                         | Some (ParkedSyscall.Poll parked) ->
                             let watched =
                                 parked.Entries

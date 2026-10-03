@@ -1,0 +1,155 @@
+empty, never written	write 1	before	WR:WRITE data=16384
+empty, never written	write 1	after (rv=1)	WR:WRITE data=16383; RD:READ data=1
+empty, never written	write 0	before	WR:WRITE data=16384
+empty, never written	write 0	after (rv=0)	nothing
+empty, never written	write 512	before	WR:WRITE data=16384
+empty, never written	write 512	after (rv=512)	WR:WRITE data=15872; RD:READ data=512
+empty, never written	read 1	before	WR:WRITE data=16384
+empty, never written	read 1	after (rv=-1 Resource temporarily unavailable)	WR:WRITE data=16384
+empty, never written	read all	before	WR:WRITE data=16384
+empty, never written	read all	after (rv=-1 Resource temporarily unavailable)	WR:WRITE data=16384
+empty, never written	read 0	before	WR:WRITE data=16384
+empty, never written	read 0	after (rv=0)	WR:WRITE data=16384
+empty, never written	read 512	before	WR:WRITE data=16384
+empty, never written	read 512	after (rv=-1 Resource temporarily unavailable)	WR:WRITE data=16384
+empty, never written	close writer	before	WR:WRITE data=16384
+empty, never written	close writer	after (rv=0)	RD:WRITE+EOF data=0; RD:READ+EOF data=0
+empty, never written	close reader	before	WR:WRITE data=16384
+empty, never written	close reader	after (rv=0)	WR:WRITE+EOF data=0; WR:READ+EOF data=0
+empty, never written	clear O_NONBLOCK on RD	before	WR:WRITE data=16384
+empty, never written	clear O_NONBLOCK on RD	after (rv=0)	nothing
+empty, never written	clear O_NONBLOCK on WR	before	WR:WRITE data=16384
+empty, never written	clear O_NONBLOCK on WR	after (rv=0)	nothing
+holding 1	write 1	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	write 1	after (rv=1)	WR:WRITE data=16382; RD:READ data=2
+holding 1	write 0	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	write 0	after (rv=0)	WR:WRITE data=16383; RD:READ data=1
+holding 1	write 512	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	write 512	after (rv=512)	WR:WRITE data=15871; RD:READ data=513
+holding 1	read 1	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	read 1	after (rv=1)	WR:WRITE data=16384
+holding 1	read all	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	read all	after (rv=1)	WR:WRITE data=16384
+holding 1	read 0	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	read 0	after (rv=0)	WR:WRITE data=16383; RD:READ data=1
+holding 1	read 512	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	read 512	after (rv=1)	WR:WRITE data=16384
+holding 1	close writer	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	close writer	after (rv=0)	RD:WRITE+EOF data=0; RD:READ+EOF data=1
+holding 1	close reader	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	close reader	after (rv=0)	WR:WRITE+EOF data=0; WR:READ+EOF data=0
+holding 1	clear O_NONBLOCK on RD	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	clear O_NONBLOCK on RD	after (rv=0)	nothing
+holding 1	clear O_NONBLOCK on WR	before	RD:READ data=1; WR:WRITE data=16383
+holding 1	clear O_NONBLOCK on WR	after (rv=0)	nothing
+holding 2	write 1	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	write 1	after (rv=1)	WR:WRITE data=16381; RD:READ data=3
+holding 2	write 0	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	write 0	after (rv=0)	WR:WRITE data=16382; RD:READ data=2
+holding 2	write 512	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	write 512	after (rv=512)	WR:WRITE data=15870; RD:READ data=514
+holding 2	read 1	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	read 1	after (rv=1)	WR:WRITE data=16383; RD:READ data=1
+holding 2	read all	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	read all	after (rv=2)	WR:WRITE data=16384
+holding 2	read 0	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	read 0	after (rv=0)	WR:WRITE data=16382; RD:READ data=2
+holding 2	read 512	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	read 512	after (rv=2)	WR:WRITE data=16384
+holding 2	close writer	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	close writer	after (rv=0)	RD:WRITE+EOF data=0; RD:READ+EOF data=2
+holding 2	close reader	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	close reader	after (rv=0)	WR:WRITE+EOF data=0; WR:READ+EOF data=0
+holding 2	clear O_NONBLOCK on RD	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	clear O_NONBLOCK on RD	after (rv=0)	nothing
+holding 2	clear O_NONBLOCK on WR	before	RD:READ data=2; WR:WRITE data=16382
+holding 2	clear O_NONBLOCK on WR	after (rv=0)	nothing
+empty, written and read	write 1	before	WR:WRITE data=16384
+empty, written and read	write 1	after (rv=1)	WR:WRITE data=16383; RD:READ data=1
+empty, written and read	write 0	before	WR:WRITE data=16384
+empty, written and read	write 0	after (rv=0)	nothing
+empty, written and read	write 512	before	WR:WRITE data=16384
+empty, written and read	write 512	after (rv=512)	WR:WRITE data=15872; RD:READ data=512
+empty, written and read	read 1	before	WR:WRITE data=16384
+empty, written and read	read 1	after (rv=-1 Resource temporarily unavailable)	WR:WRITE data=16384
+empty, written and read	read all	before	WR:WRITE data=16384
+empty, written and read	read all	after (rv=-1 Resource temporarily unavailable)	WR:WRITE data=16384
+empty, written and read	read 0	before	WR:WRITE data=16384
+empty, written and read	read 0	after (rv=0)	WR:WRITE data=16384
+empty, written and read	read 512	before	WR:WRITE data=16384
+empty, written and read	read 512	after (rv=-1 Resource temporarily unavailable)	WR:WRITE data=16384
+empty, written and read	close writer	before	WR:WRITE data=16384
+empty, written and read	close writer	after (rv=0)	RD:WRITE+EOF data=0; RD:READ+EOF data=0
+empty, written and read	close reader	before	WR:WRITE data=16384
+empty, written and read	close reader	after (rv=0)	WR:WRITE+EOF data=0; WR:READ+EOF data=0
+empty, written and read	clear O_NONBLOCK on RD	before	WR:WRITE data=16384
+empty, written and read	clear O_NONBLOCK on RD	after (rv=0)	nothing
+empty, written and read	clear O_NONBLOCK on WR	before	WR:WRITE data=16384
+empty, written and read	clear O_NONBLOCK on WR	after (rv=0)	nothing
+#	filled with 65536
+full	write 1	before	RD:READ data=65536
+full	write 1	after (rv=-1 Resource temporarily unavailable)	RD:READ data=65536
+#	filled with 65536
+full	write 0	before	RD:READ data=65536
+full	write 0	after (rv=0)	RD:READ data=65536
+#	filled with 65536
+full	write 512	before	RD:READ data=65536
+full	write 512	after (rv=-1 Resource temporarily unavailable)	RD:READ data=65536
+#	filled with 65536
+full	read 1	before	RD:READ data=65536
+full	read 1	after (rv=1)	RD:READ data=65535
+#	filled with 65536
+full	read all	before	RD:READ data=65536
+full	read all	after (rv=65536)	WR:WRITE data=65536
+#	filled with 65536
+full	read 0	before	RD:READ data=65536
+full	read 0	after (rv=0)	nothing
+#	filled with 65536
+full	read 512	before	RD:READ data=65536
+full	read 512	after (rv=512)	WR:WRITE data=512; RD:READ data=65024
+#	filled with 65536
+full	close writer	before	RD:READ data=65536
+full	close writer	after (rv=0)	RD:WRITE+EOF data=0; RD:READ+EOF data=65536
+#	filled with 65536
+full	close reader	before	RD:READ data=65536
+full	close reader	after (rv=0)	WR:WRITE+EOF data=0; WR:READ+EOF data=0
+#	filled with 65536
+full	clear O_NONBLOCK on RD	before	RD:READ data=65536
+full	clear O_NONBLOCK on RD	after (rv=0)	nothing
+#	filled with 65536
+full	clear O_NONBLOCK on WR	before	RD:READ data=65536
+full	clear O_NONBLOCK on WR	after (rv=0)	nothing
+holding 1, writer closed	read 1	before	RD:READ+EOF data=1; RD:WRITE+EOF data=0
+holding 1, writer closed	read 1	after (rv=1)	RD:WRITE+EOF data=0; RD:READ+EOF data=0
+holding 1, writer closed	read all	before	RD:READ+EOF data=1; RD:WRITE+EOF data=0
+holding 1, writer closed	read all	after (rv=1)	RD:WRITE+EOF data=0; RD:READ+EOF data=0
+holding 1, writer closed	read 0	before	RD:READ+EOF data=1; RD:WRITE+EOF data=0
+holding 1, writer closed	read 0	after (rv=0)	RD:WRITE+EOF data=0; RD:READ+EOF data=1
+holding 1, writer closed	read 512	before	RD:READ+EOF data=1; RD:WRITE+EOF data=0
+holding 1, writer closed	read 512	after (rv=1)	RD:WRITE+EOF data=0; RD:READ+EOF data=0
+holding 1, writer closed	close reader	before	RD:READ+EOF data=1; RD:WRITE+EOF data=0
+holding 1, writer closed	close reader	after (rv=0)	nothing
+holding 1, writer closed	clear O_NONBLOCK on RD	before	RD:READ+EOF data=1; RD:WRITE+EOF data=0
+holding 1, writer closed	clear O_NONBLOCK on RD	after (rv=0)	nothing
+holding 512 of a fresh pipe	read 0	before	RD:READ data=512; WR:WRITE data=15872
+holding 512 of a fresh pipe	read 0	after (rv=0)	nothing
+holding 512 of a fresh pipe	write 0	before	RD:READ data=512; WR:WRITE data=15872
+holding 512 of a fresh pipe	write 0	after (rv=0)	WR:WRITE data=15872; RD:READ data=512
+empty, reader closed	write 1 (EPIPE)	before	WR:WRITE+EOF data=0; WR:READ+EOF data=0
+empty, reader closed	write 1 (EPIPE)	after (rv=-1 Broken pipe)	nothing
+empty, reader closed	write 0	before	WR:WRITE+EOF data=0; WR:READ+EOF data=0
+empty, reader closed	write 0	after (rv=-1 Broken pipe)	nothing
+empty, write end dup'd	close one of two write descriptors	before	WR:WRITE data=16384
+empty, write end dup'd	close one of two write descriptors	after (rv=0)	nothing
+empty, read end dup'd	close one of two read descriptors	before	WR:WRITE data=16384
+empty, read end dup'd	close one of two read descriptors	after (rv=0)	nothing
+blocking writer	before it starts	WR:WRITE data=16384
+blocking writer	asleep, having filled the pipe	RD:READ data=65536
+#	read 100
+blocking writer	after a read of 100 (room < 512)	RD:READ data=65536
+#	read 1000
+blocking writer	after a read of 1000	RD:READ data=65536
+#	blocking write of 70000 returned 70000
+#	read 65536
+blocking writer	after reading everything	WR:WRITE data=62172; RD:READ data=3364
+blocking writer	after it returned	nothing
