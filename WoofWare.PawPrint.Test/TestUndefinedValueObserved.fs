@@ -898,6 +898,134 @@ unsafe class Program
             )
 
     [<Test>]
+    let ``Marshalling a struct whose bool field nothing wrote ends the run at the field's conversion`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[module: SkipLocalsInit]
+
+[StructLayout(LayoutKind.Sequential)]
+struct Flagged
+{
+    public int Number;
+    public bool Flag;
+}
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        byte* raw = stackalloc byte[8];
+        *(int*)raw = 7;
+        // Byte 4, the bool, is never written. The padding after it is, since a value type's
+        // padding holds numbers only.
+        raw[5] = 0;
+        raw[6] = 0;
+        raw[7] = 0;
+        // Copying the struct only moves the bool.
+        Flagged local = *(Flagged*)raw;
+        IntPtr native = Marshal.AllocHGlobal(Marshal.SizeOf<Flagged>());
+        // The stub converts the bool to a native BOOL, which tests it.
+        Marshal.StructureToPtr(local, native, false);
+        return 0;
+    }
+}
+"""
+
+        run
+            "UndefinedMarshalledBool.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Bool
+                stackOrigins observation.Value |> shouldEqual [ 4 ]
+                expectReadByRuntime "<StructMarshalStub>" "the bool field it marshals" observation
+            )
+
+    [<Test>]
+    let ``Marshalling stops at a bool nothing wrote before converting the fields after it`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[module: SkipLocalsInit]
+
+[StructLayout(LayoutKind.Sequential)]
+struct Dated
+{
+    public bool Flag;
+    public DateTime When;
+}
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        byte* raw = stackalloc byte[16];
+        // Byte 0, the bool, is never written; its padding and the DateTime after it are.
+        for (int i = 1; i < 8; i++) raw[i] = 0;
+        *(DateTime*)(raw + 8) = new DateTime(2000, 1, 1);
+        Dated local = *(Dated*)raw;
+        IntPtr native = Marshal.AllocHGlobal(Marshal.SizeOf<Dated>());
+        Marshal.StructureToPtr(local, native, false);
+        return 0;
+    }
+}
+"""
+
+        match stoppedRunWith None "UndefinedBoolBeforeDate.cs" source with
+        | RunEnd.StoppedAtUndefinedValue (state, thread, observation) ->
+            expectReadByRuntime "<StructMarshalStub>" "the bool field it marshals" observation
+            stackOrigins observation.Value |> shouldEqual [ 0 ]
+            // CoreCLR's stub tests the bool before it reaches the DateTime, so the stub stopped
+            // before calling DateMarshaler, whose result would be on its evaluation stack.
+            state.ThreadState.[thread].MethodState.EvaluationStack.Values |> shouldEqual []
+        | other -> observed other |> ignore
+
+    [<Test>]
+    let ``Unmarshalling a native BOOL nothing wrote ends the run at its conversion`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[module: SkipLocalsInit]
+
+[StructLayout(LayoutKind.Sequential)]
+struct Flagged
+{
+    public int Number;
+    public bool Flag;
+}
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        byte* native = stackalloc byte[8];
+        *(int*)native = 7;
+        // Bytes 4 to 7, the native BOOL, are never written; the stub tests them against zero.
+        Flagged back = Marshal.PtrToStructure<Flagged>((IntPtr)native);
+        return back.Number == 7 ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedUnmarshalledBool.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.Int32
+                stackOrigins observation.Value |> shouldEqual [ 4 ; 5 ; 6 ; 7 ]
+                expectReadByRuntime "<StructMarshalStub>" "the native BOOL it unmarshals" observation
+            )
+
+    [<Test>]
     let ``A socket address with an unwritten port ends the run at the port's read`` () : unit =
         let source =
             """

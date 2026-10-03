@@ -822,6 +822,14 @@ module StructMarshalStub =
             | ReturnFrameResult.NormalReturn state -> ExecutionResult.stepped (state, WhatWeDid.Executed)
             | result -> failwith $"%s{operation}: unexpected ReturnFrameResult returning from stub frame: %A{result}"
 
+        /// The stub uses `value`, which nothing wrote, so the run stops; the driver reports it at the
+        /// state from before this step, so nothing the stub has written by now is kept.
+        let observeUndefined (what : string) (value : UndefinedValue) : ExecutionResult =
+            ExecutionResult.UndefinedValueObserved (
+                thread,
+                UndefinedValueObservation.ReadByRuntime instruction.ExecutingMethod what value
+            )
+
         /// Call a guest method whose arguments are already on this frame's evaluation stack, without
         /// returning this frame. The dispatch loop runs the callee, whose result (if any) lands on
         /// this frame's evaluation stack, and then re-enters the stub.
@@ -1122,8 +1130,13 @@ module StructMarshalStub =
                     |> callGuest convertToManaged
                 | StructMarshalFieldKind.WinBool
                 | StructMarshalFieldKind.CBool ->
+                    match readNativeScalar step native state with
+                    // The conversion tests the native value against zero.
+                    | CliType.Undefined u -> observeUndefined "the native BOOL it unmarshals" u
+                    | nativeValue ->
+
                     let isTrue =
-                        match step.Kind, readNativeScalar step native state with
+                        match step.Kind, nativeValue with
                         | StructMarshalFieldKind.WinBool, CliType.Numeric (CliNumericType.Int32 v) -> v <> 0
                         | StructMarshalFieldKind.CBool, CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim v)) ->
                             v <> 0uy
@@ -1240,15 +1253,29 @@ module StructMarshalStub =
         // a zeroed image, including when the guest handed us a dirty buffer.
         let state = clearImage plan state
 
+        // Each conversion with its position among the plan's steps.
         let conversions =
             plan.Steps
-            |> List.filter (fun step ->
+            |> List.indexed
+            |> List.filter (fun (_, step) ->
                 match step.Kind with
                 | StructMarshalFieldKind.OADate
                 | StructMarshalFieldKind.AnsiChar _ -> true
                 | StructMarshalFieldKind.CopyBytes
                 | StructMarshalFieldKind.WinBool
                 | StructMarshalFieldKind.CBool -> false
+            )
+
+        // The first bool field among `steps` that nothing wrote. CoreCLR's stub converts fields in
+        // order and its bool conversion tests the value, so a conversion after such a field never
+        // runs.
+        let undefinedBool (steps : StructMarshalStep list) : UndefinedValue option =
+            steps
+            |> List.tryPick (fun step ->
+                match step.Kind, step.Value with
+                | StructMarshalFieldKind.WinBool, CliType.Undefined u
+                | StructMarshalFieldKind.CBool, CliType.Undefined u -> Some u
+                | _ -> None
             )
 
         if completedCount > List.length conversions then
@@ -1259,7 +1286,11 @@ module StructMarshalStub =
             // Convert the next field by calling the guest's own marshaller. We do not return this
             // frame, so the dispatch loop runs the callee and then re-enters us with its result on
             // our evaluation stack.
-            let next = conversions.[completedCount]
+            let nextIndex, next = conversions.[completedCount]
+
+            match undefinedBool (List.take nextIndex plan.Steps) with
+            | Some u -> observeUndefined "the bool field it marshals" u
+            | None ->
 
             match next.Kind with
             | StructMarshalFieldKind.OADate ->
@@ -1290,6 +1321,10 @@ module StructMarshalStub =
             | StructMarshalFieldKind.CBool ->
                 failwith $"unreachable: %O{next.Kind} is not a conversion kind, but was filtered in as one"
         else
+
+        match undefinedBool plan.Steps with
+        | Some u -> observeUndefined "the bool field it marshals" u
+        | None ->
 
         // Every conversion has completed. Only now do we touch the destination with real values,
         // so a retry can never have observed a partially-written image.
