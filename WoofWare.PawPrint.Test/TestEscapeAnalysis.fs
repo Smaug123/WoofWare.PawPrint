@@ -3260,6 +3260,90 @@ public static class Runners
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
 
+    /// Callers of `Probe` through `callvirt` on what a call returns: the class of the object is
+    /// what the callee's `ret`s return, which may be narrower than its declared return type.
+    let private returnSource : string =
+        """
+namespace Returns;
+
+public class Base { public virtual int Probe(int a, int b) => unchecked(a + b); }
+public class Divides : Base { public override int Probe(int a, int b) => a / b; }
+public sealed class SealedAdds : Base { public override int Probe(int a, int b) => checked(a + b); }
+public class OpenDivides : Base { public override int Probe(int a, int b) => a / b; }
+
+// As `ArrayPool<T>.Shared` is: a getter of the pool type returning a field of a sealed subclass.
+public abstract class Pool<T>
+{
+    private static readonly SealedPool<T> s_shared = new SealedPool<T>();
+    public static Pool<T> Shared => s_shared;
+    public abstract int Probe(int a, int b);
+}
+
+public sealed class SealedPool<T> : Pool<T> { public override int Probe(int a, int b) => a / b; }
+
+public static class Sources
+{
+    private static readonly SealedAdds s_adds = new SealedAdds();
+    public static Base Field => s_adds;
+    public static Base Fresh() => new Divides();
+    public static Base Either(bool c) => c ? new Divides() : new SealedAdds();
+    public static Base Relay() => Fresh();
+    public static Base Passed(Base b) => b;
+    public static Base Recurse(int n) => n <= 0 ? new Divides() : Recurse(n - 1);
+    public static T Identity<T>(T x) => x;
+}
+
+public static class Runners
+{
+    public static int ThroughField(int a, int b) => Sources.Field.Probe(a, b);
+    public static int ThroughFresh(int a, int b) => Sources.Fresh().Probe(a, b);
+    public static int ThroughEither(int a, int b) => Sources.Either(b == 0).Probe(a, b);
+    public static int ThroughRelay(int a, int b) => Sources.Relay().Probe(a, b);
+    public static int ThroughShared(int a, int b) => Pool<int>.Shared.Probe(a, b);
+    public static int ThroughIdentitySealed(int a, int b) => Sources.Identity(new SealedAdds()).Probe(a, b);
+    public static int ThroughPassed(int a, int b) => Sources.Passed(new OpenDivides()).Probe(a, b);
+    public static int ThroughRecursion(int a, int b) => Sources.Recurse(1).Probe(a, b);
+}
+"""
+
+    [<Test>]
+    let ``a callvirt on what a call returns runs the override of the class the callee returns`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "Returns" OutputKind.DynamicallyLinkedLibrary [] [ returnSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Returns.dll") (new MemoryStream (image))
+
+        let both = Set.ofList [ dividesByZero ; overflows ]
+
+        let cases =
+            [
+                "ThroughField", Set.singleton overflows, DispatchClaim.Precise
+                "ThroughFresh", both, DispatchClaim.Precise
+                "ThroughEither", both, DispatchClaim.Precise
+                "ThroughRelay", both, DispatchClaim.Precise
+                "ThroughShared", both, DispatchClaim.Precise
+                "ThroughIdentitySealed", Set.singleton overflows, DispatchClaim.Precise
+                // The callee returns whatever it is given, which may be of any class.
+                "ThroughPassed", both, DispatchClaim.Unknown
+                // A return that depends on itself is its declared type.
+                "ThroughRecursion", both, DispatchClaim.SoundOnly
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "Returns" image
+
+        let _, failures =
+            dispatchFailures fixture "Returns" runtime cases (analysisOver [ fixture ] id)
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
     /// The receivers of the static dispatch fixture, and which of `DivideByZeroException` and
     /// `OverflowException` the `Probe` each supplies raises. A static method has no receiver object,
     /// so the type a `constrained.` prefix names decides what runs, even a class others derive from.
