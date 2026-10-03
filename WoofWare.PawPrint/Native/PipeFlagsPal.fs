@@ -22,9 +22,8 @@ module PipeFlagsPal =
     /// EINVAL without reaching the kernel.
     ///
     /// Where the shim is built without `pipe2` (as it may be on Darwin), it calls
-    /// `pipe(2)` and then sets `FD_CLOEXEC` on each end with `fcntl`. The
-    /// kernel models no per-descriptor flag, so that and `pipe2` with
-    /// `O_CLOEXEC` leave it in the same state.
+    /// `pipe(2)` and then sets `FD_CLOEXEC` on each end with `fcntl`, which
+    /// leaves the kernel in the state `pipe2` with `O_CLOEXEC` does.
     let decode (platform : SimulatedUnixPlatform) (flags : int) : int option =
         let closeOnExec =
             match SimulatedUnixPlatform.flavour platform with

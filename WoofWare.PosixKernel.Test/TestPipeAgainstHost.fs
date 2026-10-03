@@ -441,7 +441,7 @@ module TestPipeAgainstHost =
                             | Some (modelFd, hostFd, _, group) ->
                                 hostSetNonBlocking (nativeint hostFd, (if value then 1 else 0)) |> shouldEqual 0
 
-                                let answer, after = UnixSocket.setNonBlocking modelFd value system
+                                let answer, after = UnixDescriptor.setNonBlocking modelFd value system
                                 answer |> shouldEqual SetNonBlockingAnswer.Set
                                 system <- after
                                 nonBlocking <- Map.add group value nonBlocking

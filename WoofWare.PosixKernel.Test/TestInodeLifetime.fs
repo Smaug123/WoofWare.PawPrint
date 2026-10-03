@@ -472,6 +472,7 @@ module TestInodeLifetime =
                 NoFollow = false
                 CloseOnExec = true
                 Synchronous = false
+                DataSynchronous = false
                 Directory = true
             }
 

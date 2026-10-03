@@ -218,11 +218,8 @@ module KeventRefusal =
 module UnixKqueue =
 
     /// `kqueue(2)`: create a kqueue, and a descriptor onto it, the lowest one
-    /// not in use. The descriptor is blocking.
-    ///
-    /// Measured on Darwin, `kqueue()` also sets `FD_CLOEXEC`, which this kernel
-    /// does not model, since it models neither `exec` nor any per-descriptor
-    /// flag.
+    /// not in use. The description is blocking, and the descriptor has
+    /// `FD_CLOEXEC` and `FD_CLOFORK`.
     ///
     /// Under the Linux flavour every call is refused: Linux has no kqueue.
     let kqueue<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -234,9 +231,19 @@ module UnixKqueue =
         | SimulatedUnixFlavour.Darwin ->
 
         // Measured on 27.0.0 (`kqueue-kevent.c`, section A): the lowest free
-        // descriptor, O_RDWR, not O_NONBLOCK.
+        // descriptor, O_RDWR, not O_NONBLOCK; and (`fcntl-dup.c`, KIND rows)
+        // F_GETFD reports FD_CLOEXEC|FD_CLOFORK.
         let fd, registry =
             FileDescriptorRegistry.createKqueue system.Process.FileDescriptors
+            |> fun (fd, registry) ->
+                fd,
+                FileDescriptorRegistry.setFlags
+                    fd
+                    {
+                        CloseOnExec = true
+                        CloseOnFork = true
+                    }
+                    registry
 
         Ok (
             fd,

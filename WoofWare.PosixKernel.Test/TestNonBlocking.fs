@@ -7,7 +7,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSocket.setNonBlocking`, `UnixSocket.isNonBlocking`, and what
+/// `UnixDescriptor.setNonBlocking`, `UnixDescriptor.isNonBlocking`, and what
 /// `UnixSocket.socket` creates.
 ///
 /// The flag's whole subtlety is *where it lives* and *what each target does
@@ -51,7 +51,7 @@ module TestNonBlocking =
         (system : UnixSystem<int, string>)
         : SetNonBlockingAnswer * UnixSystem<int, string>
         =
-        UnixSocket.setNonBlocking fd value system
+        UnixDescriptor.setNonBlocking fd value system
 
     /// What `poll` would report for `fd` right now.
     let private readinessOf (fd : int) (system : UnixSystem<int, string>) : uint32 =
@@ -94,7 +94,7 @@ module TestNonBlocking =
         socket.ReuseAddress |> shouldEqual false
 
         // ...and it is not born non-blocking.
-        UnixSocket.isNonBlocking fd system |> shouldEqual (Some false)
+        UnixDescriptor.isNonBlocking fd system |> shouldEqual (Some false)
 
     /// Each socket gets its own identity: the counter advances, so a second
     /// socket cannot overwrite the first in the table.
@@ -140,15 +140,15 @@ module TestNonBlocking =
             }
 
         let system = set fd true system
-        UnixSocket.isNonBlocking duplicate system |> shouldEqual (Some true)
+        UnixDescriptor.isNonBlocking duplicate system |> shouldEqual (Some true)
 
         // ...and clearing it through the *other* number clears it for both.
         let system = set duplicate false system
-        UnixSocket.isNonBlocking fd system |> shouldEqual (Some false)
+        UnixDescriptor.isNonBlocking fd system |> shouldEqual (Some false)
 
     [<Test>]
     let ``a descriptor that is not open has no flag and cannot be set`` () : unit =
-        UnixSocket.isNonBlocking 99 linux |> shouldEqual None
+        UnixDescriptor.isNonBlocking 99 linux |> shouldEqual None
 
         setOrFail 99 true linux
         |> fst
@@ -179,7 +179,7 @@ module TestNonBlocking =
 
         for fd in [ socketFd ; fileFd ] do
             let after = set fd true system
-            UnixSocket.isNonBlocking fd after |> shouldEqual (Some true)
+            UnixDescriptor.isNonBlocking fd after |> shouldEqual (Some true)
 
     // ------------------------------------------------------------------
     // The standard streams
@@ -248,7 +248,7 @@ module TestNonBlocking =
                 model.[op.Index % 3] <- op.Value
 
                 fds
-                |> List.mapi (fun index fd -> UnixSocket.isNonBlocking fd system, Some model.[index % 3])
+                |> List.mapi (fun index fd -> UnixDescriptor.isNonBlocking fd system, Some model.[index % 3])
                 |> List.iter (fun (actual, expected) -> actual |> shouldEqual expected)
 
                 UnixSystem.checkInvariants system |> shouldEqual []
@@ -280,16 +280,16 @@ module TestNonBlocking =
             for fd in [ 0 ; 1 ; 2 ] do
                 let answer, after = setOrFail fd true (systemOn platform)
                 answer |> shouldEqual SetNonBlockingAnswer.Set
-                UnixSocket.isNonBlocking fd after |> shouldEqual (Some true)
+                UnixDescriptor.isNonBlocking fd after |> shouldEqual (Some true)
 
                 // Only the description `fd` names carries it: the launch
                 // shape's three streams are three descriptions.
                 for other in [ 0 ; 1 ; 2 ] |> List.filter ((<>) fd) do
-                    UnixSocket.isNonBlocking other after |> shouldEqual (Some false)
+                    UnixDescriptor.isNonBlocking other after |> shouldEqual (Some false)
 
                 let answer, after = setOrFail fd false after
                 answer |> shouldEqual SetNonBlockingAnswer.Set
-                UnixSocket.isNonBlocking fd after |> shouldEqual (Some false)
+                UnixDescriptor.isNonBlocking fd after |> shouldEqual (Some false)
 
     let private bufferGen : Gen<UserBuffer> =
         Gen.oneof
@@ -384,7 +384,7 @@ module TestNonBlocking =
             let bytes = ImmutableArray.Create<byte> (Array.init count byte)
 
             let unflag (system : UnixSystem<int, string>) =
-                match UnixSocket.setNonBlocking fd false system with
+                match UnixDescriptor.setNonBlocking fd false system with
                 | SetNonBlockingAnswer.Set, system -> system
                 | SetNonBlockingAnswer.Failed error, _ -> failwith $"could not clear the flag: %O{error}"
 
@@ -478,5 +478,5 @@ module TestNonBlocking =
 
             for value in [ true ; false ; true ] do
                 let answer, after = setOrFail portFd value system
-                UnixSocket.isNonBlocking portFd after |> shouldEqual (Some value)
+                UnixDescriptor.isNonBlocking portFd after |> shouldEqual (Some value)
                 answer |> shouldEqual expected

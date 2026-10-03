@@ -53,7 +53,7 @@ module KeventWorld =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         if nonBlocking then
-            fd, UnixSocket.setNonBlocking fd true system |> snd
+            fd, UnixDescriptor.setNonBlocking fd true system |> snd
         else
             fd, system
 

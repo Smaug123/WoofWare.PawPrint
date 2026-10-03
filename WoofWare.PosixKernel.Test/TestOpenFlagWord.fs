@@ -19,7 +19,8 @@ open WoofWare.PosixKernel
 /// - the decoder against a reference built from that table, over generated
 ///   words and exhaustively over the modelled bits;
 /// - every row the probe measured, replayed through `UnixNamespace.openPath`
-///   on a filesystem shaped like the probe's, cell by cell;
+///   on a filesystem shaped like the probe's, cell by cell, with the new
+///   descriptor's `F_GETFL` and `F_GETFD` words;
 /// - and, for every request the parsed entry point accepted before the word
 ///   was raw, the raw word against that entry point: the same answer and the
 ///   same system.
@@ -221,6 +222,10 @@ module TestOpenFlagWord =
                 NoFollow = has OpenFlagBit.NoFollow
                 CloseOnExec = has OpenFlagBit.CloseOnExec
                 Synchronous = has OpenFlagBit.Synchronous
+                DataSynchronous =
+                    match SimulatedUnixPlatform.flavour platform with
+                    | SimulatedUnixFlavour.Linux -> has OpenFlagBit.Synchronous
+                    | SimulatedUnixFlavour.Darwin -> has OpenFlagBit.DataSynchronous
                 Directory = has OpenFlagBit.Directory
             }
 
@@ -371,18 +376,12 @@ module TestOpenFlagWord =
         let created = if (size "/w/p/nx").IsSome then ",created" else ""
         truncated + created
 
-    /// A measured cell without the descriptor flags the library does not
-    /// model (`F_GETFL`, `F_GETFD`): "ok/0x8002/0x0,trunc" is "ok,trunc".
-    let private withoutDescriptorFlags (cell : string) : string =
-        if cell.StartsWith "ok/" then
-            let markers =
-                match cell.IndexOf ',' with
-                | -1 -> ""
-                | i -> cell.Substring i
-
-            "ok" + markers
-        else
-            cell
+    /// What `fcntl(fd, command)` answers, as the probe prints it.
+    let private flagWord (fd : int) (command : int) (system : UnixSystem<int, string>) : string =
+        match UnixDescriptor.fcntl fd command 0 system with
+        | Ok (SyscallAnswer.Completed word, _) -> $"0x%x{word}"
+        | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+        | Error refusal -> $"refused (%s{FcntlRefusal.describe refusal})"
 
     [<Test>]
     let ``every row the probe measured is answered as measured`` () : unit =
@@ -413,10 +412,14 @@ module TestOpenFlagWord =
                                 let modelled =
                                     match UnixNamespace.openPath row.Word (argument column) 0o644 system with
                                     | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
-                                    | Ok (SyscallAnswer.Completed _, after) -> "ok" + aftermath after
-                                    | Error refusal -> $"refused (%s{OpenRefusal.describe refusal})"
+                                    | Ok (SyscallAnswer.Completed fd, after) ->
+                                        // F_GETFL (3) and F_GETFD (1), which
+                                        // the probe printed as it closed the
+                                        // descriptor.
+                                        let fd = int fd
 
-                                let measured = withoutDescriptorFlags measured
+                                        $"ok/%s{flagWord fd 3 after}/%s{flagWord fd 1 after}" + aftermath after
+                                    | Error refusal -> $"refused (%s{OpenRefusal.describe refusal})"
 
                                 if modelled <> measured then
                                     yield
@@ -430,8 +433,14 @@ module TestOpenFlagWord =
 
     // ---------------------------------------------- against the parsed entry point
 
-    /// Every request the parsed entry point took.
-    let private everyRequest : OpenFlags list =
+    /// Every request the parsed entry point took, on `platform`: Linux's
+    /// `O_SYNC` always carries `O_DSYNC`, and Darwin's may or may not.
+    let private everyRequest (platform : SimulatedUnixPlatform) : OpenFlags list =
+        let words =
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> 127
+            | SimulatedUnixFlavour.Darwin -> 255
+
         [
             for access in
                 [
@@ -439,20 +448,26 @@ module TestOpenFlagWord =
                     FileAccessMode.WriteOnly
                     FileAccessMode.ReadWrite
                 ] do
-                for bits in 0..127 do
+                for bits in 0..words do
                     let set (i : int) = bits &&& (1 <<< i) <> 0
 
-                    yield
-                        {
-                            Access = access
-                            Create = set 0
-                            Exclusive = set 1
-                            Truncate = set 2
-                            NoFollow = set 3
-                            CloseOnExec = set 4
-                            Synchronous = set 5
-                            Directory = set 6
-                        }
+                    // Darwin's decoder admits O_DSYNC only beside O_SYNC.
+                    if not (set 7) || set 5 then
+                        yield
+                            {
+                                Access = access
+                                Create = set 0
+                                Exclusive = set 1
+                                Truncate = set 2
+                                NoFollow = set 3
+                                CloseOnExec = set 4
+                                Synchronous = set 5
+                                DataSynchronous =
+                                    match SimulatedUnixPlatform.flavour platform with
+                                    | SimulatedUnixFlavour.Linux -> set 5
+                                    | SimulatedUnixFlavour.Darwin -> set 7
+                                Directory = set 6
+                            }
         ]
 
     /// Whether the parsed entry point answered `flags` rather than throwing:
@@ -481,7 +496,7 @@ module TestOpenFlagWord =
     [<Test>]
     let ``every request the parsed entry point took decodes from its word`` () : unit =
         for platform in platforms do
-            for flags in everyRequest |> List.filter parsedEntryPointAccepted do
+            for flags in everyRequest platform |> List.filter parsedEntryPointAccepted do
                 OpenFlagWord.decode platform (OpenFlagWords.encode platform flags)
                 |> shouldEqual (OpenFlagWord.Decoding.Decoded flags)
 
@@ -502,7 +517,7 @@ module TestOpenFlagWord =
             let other = probeSystemAs stranger platform
 
             for system in [ owner ; other ] do
-                for flags in everyRequest |> List.filter parsedEntryPointAccepted do
+                for flags in everyRequest platform |> List.filter parsedEntryPointAccepted do
                     let word = OpenFlagWords.encode platform flags
 
                     for column in columns do

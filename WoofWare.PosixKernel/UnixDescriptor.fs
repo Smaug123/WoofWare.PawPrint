@@ -232,6 +232,104 @@ module CloseRefusal =
             $"the close ends the pipe write task %O{task} is asleep in through this descriptor. Measured on Darwin (close-ends-call.c sections P2-P4), that write answers EPIPE and raises SIGPIPE for the process as it returns, which it does before the close does; but %s{why}."
         | CloseRefusal.Release refusal -> DescriptionReleaseRefusal.describe refusal
 
+/// A status flag the flavour's `fcntl(F_SETFL)` would set, and this kernel
+/// does not model.
+[<RequireQualifiedAccess>]
+type UnmodelledStatusFlag =
+    /// `O_APPEND`, on both flavours.
+    | Append
+    /// `O_ASYNC` (Linux's `FASYNC`), on both flavours.
+    | Asynchronous
+    /// Linux's `O_DIRECT`.
+    | Direct
+    /// Linux's `O_NOATIME`.
+    | NoAccessTime
+
+[<RequireQualifiedAccess>]
+module UnmodelledStatusFlag =
+    /// The flag's name in the flavour's `<fcntl.h>`.
+    let name (flag : UnmodelledStatusFlag) : string =
+        match flag with
+        | UnmodelledStatusFlag.Append -> "O_APPEND"
+        | UnmodelledStatusFlag.Asynchronous -> "O_ASYNC"
+        | UnmodelledStatusFlag.Direct -> "O_DIRECT"
+        | UnmodelledStatusFlag.NoAccessTime -> "O_NOATIME"
+
+/// Why this kernel will not answer an `fcntl(2)`.
+[<RequireQualifiedAccess>]
+type FcntlRefusal =
+    /// The command is none of `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`,
+    /// `F_SETFD`, `F_GETFL` and `F_SETFL` in the flavour's numbering.
+    | UnmodelledCommand of command : int
+    /// An `F_SETFL` word would set these flags, which change what later calls
+    /// on the description do, in ways this kernel does not model.
+    | UnmodelledStatusFlags of word : int * flags : UnmodelledStatusFlag list
+    /// An `F_DUPFD` or `F_DUPFD_CLOEXEC` asked for a descriptor at or above
+    /// `minimum`, and every one up to `Int32.MaxValue` is in use.
+    | NoDescriptorAtOrAbove of minimum : int
+
+[<RequireQualifiedAccess>]
+module FcntlRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half -- which entry point asked, and what it should do instead.
+    let describe (refusal : FcntlRefusal) : string =
+        match refusal with
+        | FcntlRefusal.UnmodelledCommand command ->
+            $"fcntl command %d{command} is none of F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_SETFD, F_GETFL and F_SETFL in this flavour's numbering. Both kernels answer EBADF for a descriptor that is not open whatever the command, and that is answered; what a command they know does is not modelled."
+        | FcntlRefusal.UnmodelledStatusFlags (word, flags) ->
+            let names = flags |> List.map UnmodelledStatusFlag.name |> String.concat ", "
+            $"F_SETFL with 0x%x{word} would set %s{names}, which change what later reads and writes on the description do (or, for O_NOATIME and O_DIRECT, answer EPERM or EINVAL depending on the file's owner and filesystem), and this kernel models none of that."
+        | FcntlRefusal.NoDescriptorAtOrAbove minimum ->
+            $"every descriptor from %d{minimum} to Int32.MaxValue is in use. A real kernel bounds descriptors by RLIMIT_NOFILE, answering EINVAL for a minimum at or above it and EMFILE for a full table; this kernel models no RLIMIT_NOFILE."
+
+/// Why this kernel will not answer a `dup2(2)`.
+[<RequireQualifiedAccess>]
+type Dup2Refusal<'Task> =
+    /// The target is open, and this kernel will not close it (`refusal`): a
+    /// `dup2` onto an open descriptor closes it as `close(2)` does, sleeping
+    /// calls and all.
+    | ClosingTarget of refusal : CloseRefusal<'Task>
+
+[<RequireQualifiedAccess>]
+module Dup2Refusal =
+    /// What this kernel knows about why it cannot answer.
+    let describe (refusal : Dup2Refusal<'Task>) : string =
+        match refusal with
+        | Dup2Refusal.ClosingTarget refusal ->
+            $"the target descriptor is open, and dup2 closes it as close(2) does, which this kernel will not do here: %s{CloseRefusal.describe refusal}"
+
+/// Why this kernel will not answer a `dup3(2)`.
+[<RequireQualifiedAccess>]
+type Dup3Refusal<'Task> =
+    /// The flavour has no `dup3`.
+    | NotProvided of flavour : SimulatedUnixFlavour
+    /// As `Dup2Refusal.ClosingTarget`.
+    | ClosingTarget of refusal : CloseRefusal<'Task>
+
+[<RequireQualifiedAccess>]
+module Dup3Refusal =
+    /// What this kernel knows about why it cannot answer.
+    let describe (refusal : Dup3Refusal<'Task>) : string =
+        match refusal with
+        | Dup3Refusal.NotProvided flavour ->
+            $"this kernel is %O{flavour}-flavoured, and only Linux has dup3; no program could have made the call."
+        | Dup3Refusal.ClosingTarget refusal ->
+            $"the target descriptor is open, and dup3 closes it as close(2) does, which this kernel will not do here: %s{CloseRefusal.describe refusal}"
+
+/// What a change to a descriptor's `O_NONBLOCK` answered.
+///
+/// Store and answer are separate because for a kqueue they disagree: its bit
+/// toggles and the call still reports a failure.
+[<RequireQualifiedAccess>]
+type SetNonBlockingAnswer =
+    /// The flag is now what the caller asked for, and the call succeeded.
+    | Set
+    /// The call failed with this errno.
+    ///
+    /// The system still comes back, and the flag may have changed with it: on a
+    /// kqueue the bit toggles and the answer is `ENOTTY` anyway.
+    | Failed of error : UnixError
+
 /// What `ioctl(fd, FIONREAD, &count)` answered.
 [<RequireQualifiedAccess>]
 type BytesAvailableAnswer =
@@ -345,6 +443,44 @@ type private DescriptorFault =
     | NotOpen
     /// The descriptor names something with no file offset — a pipe; `ESPIPE`.
     | NotSeekable
+
+/// Each flavour's `<fcntl.h>` numbers for the `fcntl(2)` commands
+/// `UnixDescriptor.fcntl` models, and for `FD_CLOEXEC`.
+[<RequireQualifiedAccess>]
+module FcntlNumbering =
+    /// `F_DUPFD`, on both flavours.
+    [<Literal>]
+    let DuplicateAtOrAbove : int = 0
+
+    /// `F_GETFD`, on both flavours.
+    [<Literal>]
+    let GetDescriptorFlags : int = 1
+
+    /// `F_SETFD`, on both flavours.
+    [<Literal>]
+    let SetDescriptorFlags : int = 2
+
+    /// `F_GETFL`, on both flavours.
+    [<Literal>]
+    let GetStatusFlags : int = 3
+
+    /// `F_SETFL`, on both flavours.
+    [<Literal>]
+    let SetStatusFlags : int = 4
+
+    /// `F_DUPFD_CLOEXEC`: Linux's 1030, Darwin's 67.
+    let duplicateCloseOnExec (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 1030
+        | SimulatedUnixFlavour.Darwin -> 67
+
+    /// `FD_CLOEXEC`, on both flavours.
+    [<Literal>]
+    let CloseOnExec : int = 1
+
+    /// Darwin's `FD_CLOFORK`.
+    [<Literal>]
+    let DarwinCloseOnFork : int = 2
 
 [<RequireQualifiedAccess>]
 module UnixDescriptor =
@@ -810,8 +946,37 @@ module UnixDescriptor =
             Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
         else
 
+        let id =
+            match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+            | Some id -> id
+            | None ->
+                failwith
+                    $"UnixDescriptor.ftruncate: fd %d{fd} named a description a moment ago and is not live now (this is a bug in this library)."
+
+        // Measured on Darwin 27.0.0 (`fcntl-dup.c`, WRITTEN rows): a truncation
+        // that succeeds marks the description written, even to the length the
+        // file already had; one that fails does not.
         truncateAt inode length system
-        |> Result.map (fun system -> SyscallAnswer.Completed 0L, system)
+        |> Result.map (fun system ->
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> SyscallAnswer.Completed 0L, system
+            | SimulatedUnixFlavour.Darwin ->
+                SyscallAnswer.Completed 0L,
+                { system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors =
+                                FileDescriptorRegistry.mapStatus
+                                    id
+                                    (fun status ->
+                                        { status with
+                                            Written = true
+                                        }
+                                    )
+                                    system.Process.FileDescriptors
+                        }
+                }
+        )
 
     /// `posix_fadvise(2)`: tell the kernel how a region of `fd` will be read.
     ///
@@ -876,6 +1041,31 @@ module UnixDescriptor =
             Ok (FileAdviceAnswer.Failed UnixError.EINVAL)
         else
             Ok FileAdviceAnswer.Completed
+
+    /// Record on the description `id` that an `flock` lock has been granted to
+    /// it, under the flavour that reports that (`OpenFileStatus.Flocked`).
+    ///
+    /// Measured on Darwin 27.0.0 (`fcntl-dup.c`, WRITTEN rows): `F_GETFL` shows
+    /// 0x4000 once a lock has been granted, blocking or not, and through a dup
+    /// as well; a refused or interrupted request does not set it, and LOCK_UN
+    /// does not clear it.
+    let private recordGrant
+        (flavour : SimulatedUnixFlavour)
+        (id : OpenFileDescriptionId)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> registry
+        | SimulatedUnixFlavour.Darwin ->
+            FileDescriptorRegistry.mapStatus
+                id
+                (fun status ->
+                    { status with
+                        Flocked = true
+                    }
+                )
+                registry
 
     /// `flock(2)`, made by `task`: take, convert or release an advisory lock on
     /// `fd`'s open file description.
@@ -993,6 +1183,11 @@ module UnixDescriptor =
         // below reports from `advanced`.
         let registry, error =
             FileDescriptorRegistry.flock fd request system.Process.FileDescriptors
+
+        let registry =
+            match error, request, FileDescriptorRegistry.tryFindId fd registry with
+            | None, FlockRequest.Acquire _, Some id -> recordGrant flavour id registry
+            | _ -> registry
 
         let advanced =
             { system with
@@ -1126,6 +1321,11 @@ module UnixDescriptor =
 
         let registry, error =
             FileDescriptorRegistry.flockOn requester (FlockRequest.Acquire mode) system.Process.FileDescriptors
+
+        let registry =
+            match error with
+            | None -> recordGrant (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) requester registry
+            | Some _ -> registry
 
         let advanced =
             { system with
@@ -1710,12 +1910,44 @@ module UnixDescriptor =
         | Error refusal -> Error refusal
         | Ok signals ->
 
+        // Measured on Darwin 27.0.0 (`fcntl-dup.c`, WRITTEN rows): an ended
+        // write that had moved bytes returns having written, which marks the
+        // description it was made through, as any such write does; a dup that
+        // keeps the description shows it.
+        let fileDescriptors =
+            let endedHavingWritten =
+                endedCalls
+                |> List.exists (fun (_, ended) ->
+                    match ended with
+                    | ParkedSyscall.PipeWrite write -> write.Written > 0
+                    | ParkedSyscall.PipeRead _
+                    | ParkedSyscall.Accept _
+                    | ParkedSyscall.SocketWait _
+                    | ParkedSyscall.Kevent _
+                    | ParkedSyscall.Flock _
+                    | ParkedSyscall.Poll _
+                    | ParkedSyscall.KqueuePoll _ -> false
+                )
+
+            if endedHavingWritten then
+                FileDescriptorRegistry.mapStatus
+                    closingId
+                    (fun status ->
+                        { status with
+                            Written = true
+                        }
+                    )
+                    system.Process.FileDescriptors
+            else
+                system.Process.FileDescriptors
+
         let system =
             { system with
                 Machine = machine
                 Process =
                     { system.Process with
                         Signals = signals
+                        FileDescriptors = fileDescriptors
                     }
                 Tasks = tasks
             }
@@ -1794,3 +2026,405 @@ module UnixDescriptor =
         match ObjectLifetime.releaseDestroyed destroyed closed with
         | Error refusal -> Error (CloseRefusal.Release refusal)
         | Ok released -> Ok (SyscallAnswer.Completed 0L, released)
+
+    /// What an `fcntl(2)` command number names, among the commands modelled.
+    [<RequireQualifiedAccess>]
+    type private FcntlCommand =
+        /// `F_DUPFD`, or with `closeOnExec` `F_DUPFD_CLOEXEC`.
+        | DuplicateAtOrAbove of closeOnExec : bool
+        /// `F_GETFD`.
+        | GetDescriptorFlags
+        /// `F_SETFD`.
+        | SetDescriptorFlags
+        /// `F_GETFL`.
+        | GetStatusFlags
+        /// `F_SETFL`.
+        | SetStatusFlags
+
+    let private decodeCommand (flavour : SimulatedUnixFlavour) (command : int) : FcntlCommand option =
+        match command with
+        | FcntlNumbering.DuplicateAtOrAbove -> Some (FcntlCommand.DuplicateAtOrAbove false)
+        | FcntlNumbering.GetDescriptorFlags -> Some FcntlCommand.GetDescriptorFlags
+        | FcntlNumbering.SetDescriptorFlags -> Some FcntlCommand.SetDescriptorFlags
+        | FcntlNumbering.GetStatusFlags -> Some FcntlCommand.GetStatusFlags
+        | FcntlNumbering.SetStatusFlags -> Some FcntlCommand.SetStatusFlags
+        | command when command = FcntlNumbering.duplicateCloseOnExec flavour ->
+            Some (FcntlCommand.DuplicateAtOrAbove true)
+        | _ -> None
+
+    /// The flavour's `O_NONBLOCK`.
+    let private nonBlockingBit (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> OpenFlagNumbering.LinuxNonBlock
+        | SimulatedUnixFlavour.Darwin -> OpenFlagNumbering.DarwinNonBlock
+
+    /// The word `F_GETFL` reports for `description` on `platform`.
+    let private statusWord (platform : SimulatedUnixPlatform) (description : OpenFileDescription) : int =
+        let bit (condition : bool) (value : int) : int = if condition then value else 0
+        let status = description.Status
+
+        let accessMode =
+            match description.AccessMode with
+            | FileAccessMode.ReadOnly -> 0
+            | FileAccessMode.WriteOnly -> 1
+            | FileAccessMode.ReadWrite -> 2
+
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            let architecture = SimulatedUnixPlatform.architecture platform
+
+            // Measured (`fcntl-dup.c`, KIND rows): a 64-bit kernel's `open(2)`
+            // adds O_LARGEFILE to every description it makes, and nothing else
+            // that makes a description does.
+            let madeByOpen =
+                match description.Target with
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.CharacterDevice _ -> true
+                | OpenFileTarget.Pipe _
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Epoll _
+                | OpenFileTarget.Kqueue _ -> false
+
+            accessMode
+            ||| bit description.NonBlocking OpenFlagNumbering.LinuxNonBlock
+            ||| bit status.DataSynchronous OpenFlagNumbering.LinuxDataSynchronous
+            ||| bit status.Synchronous OpenFlagNumbering.LinuxSynchronous
+            ||| bit status.OpenedDirectory (OpenFlagNumbering.linuxDirectory architecture)
+            ||| bit status.OpenedNoFollow (OpenFlagNumbering.linuxNoFollow architecture)
+            ||| bit madeByOpen (OpenFlagNumbering.linuxLargeFile architecture)
+        | SimulatedUnixFlavour.Darwin ->
+            // Measured (`fcntl-dup.c` and `open-flags.c`): Darwin keeps neither
+            // O_DIRECTORY nor O_NOFOLLOW, and reports two bits of its own.
+            accessMode
+            ||| bit description.NonBlocking OpenFlagNumbering.DarwinNonBlock
+            ||| bit status.Synchronous OpenFlagNumbering.DarwinSynchronous
+            ||| bit status.DataSynchronous OpenFlagNumbering.DarwinDataSynchronous
+            ||| bit status.Written OpenFlagNumbering.DarwinWritten
+            ||| bit status.Flocked OpenFlagNumbering.DarwinFlocked
+
+    /// Store `update` on `system`'s descriptor table.
+    let private withRegistry<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (registry : FileDescriptorRegistry)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    /// `fcntl(fd, command, argument)`, for the commands that manage
+    /// descriptors and status flags: `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`,
+    /// `F_SETFD`, `F_GETFL` and `F_SETFL`.
+    ///
+    /// `command` and `argument` are raw, as a caller of the flavour's libc
+    /// passes them, in its `<fcntl.h>` numbering: Linux's `F_DUPFD_CLOEXEC` is
+    /// 1030 and Darwin's 67, and the status flags are numbered as `open(2)`'s.
+    ///
+    /// A descriptor that is not open is `EBADF`, whatever the command. Then:
+    ///
+    /// - `F_GETFL` answers the access mode and the status flags of the
+    ///   description: `O_NONBLOCK`, `O_SYNC` and `O_DSYNC` on both flavours;
+    ///   on Linux, `O_DIRECTORY` and `O_NOFOLLOW` as `open(2)` was given them,
+    ///   and `O_LARGEFILE` for every description `open(2)` made; on Darwin, its
+    ///   own `0x10000` once the description has been written through
+    ///   (`OpenFileStatus.Written`) and `0x4000` once a lock has been granted
+    ///   to it (`OpenFileStatus.Flocked`).
+    /// - `F_SETFL` sets `O_NONBLOCK` from `argument`, and on Darwin `O_SYNC`
+    ///   and `O_DSYNC` too, and ignores every other bit the flavour does not
+    ///   change, the access mode included; so a word `F_GETFL` reported may be
+    ///   given back. A word that would set `O_APPEND` or `O_ASYNC`, or Linux's
+    ///   `O_DIRECT` or `O_NOATIME`, is refused (`FcntlRefusal.UnmodelledStatusFlags`).
+    ///   On a Darwin kqueue the flags are stored and the call answers `ENOTTY`.
+    /// - `F_GETFD` answers the descriptor's `FD_CLOEXEC` (1), and on Darwin its
+    ///   `FD_CLOFORK` (2); `F_SETFD` sets them from those bits of `argument`
+    ///   and ignores the rest.
+    /// - `F_DUPFD` makes the lowest descriptor not in use at or above
+    ///   `argument` name the same description, with neither descriptor flag;
+    ///   `F_DUPFD_CLOEXEC` gives it `FD_CLOEXEC`. A negative `argument` is
+    ///   `EINVAL`.
+    ///
+    /// This kernel models no `RLIMIT_NOFILE`: a real one also answers `EINVAL`
+    /// for an `F_DUPFD` at or above the soft limit, and `EMFILE` for a full
+    /// table. Every other command is refused (`FcntlRefusal.UnmodelledCommand`).
+    let fcntl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (command : int)
+        (argument : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FcntlRefusal>
+        =
+        let platform = system.Machine.UnixPlatform
+        let flavour = SimulatedUnixPlatform.flavour platform
+        let registry = system.Process.FileDescriptors
+
+        // Measured on both (`fcntl-dup.c`, LIMIT rows): the descriptor is looked
+        // up before the command is read, so an unknown command on a closed
+        // descriptor is EBADF, and before F_DUPFD's argument is.
+        match FileDescriptorRegistry.tryFindWithId fd registry with
+        | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Some (id, description) ->
+
+        match decodeCommand flavour command with
+        | None -> Error (FcntlRefusal.UnmodelledCommand command)
+        | Some FcntlCommand.GetStatusFlags ->
+            Ok (SyscallAnswer.Completed (int64 (statusWord platform description)), system)
+        | Some FcntlCommand.SetStatusFlags ->
+            // Measured (`fcntl-dup.c`, SETFL rows, every bit on every kind):
+            // these are the only bits each flavour's F_SETFL changes.
+            let unmodelled =
+                match flavour with
+                | SimulatedUnixFlavour.Linux ->
+                    [
+                        OpenFlagNumbering.LinuxAppend, UnmodelledStatusFlag.Append
+                        OpenFlagNumbering.LinuxAsynchronous, UnmodelledStatusFlag.Asynchronous
+                        OpenFlagNumbering.linuxDirect (SimulatedUnixPlatform.architecture platform),
+                        UnmodelledStatusFlag.Direct
+                        OpenFlagNumbering.LinuxNoAccessTime, UnmodelledStatusFlag.NoAccessTime
+                    ]
+                | SimulatedUnixFlavour.Darwin ->
+                    [
+                        OpenFlagNumbering.DarwinAppend, UnmodelledStatusFlag.Append
+                        OpenFlagNumbering.DarwinAsynchronous, UnmodelledStatusFlag.Asynchronous
+                    ]
+                |> List.filter (fun (bit, _) -> argument &&& bit <> 0)
+                |> List.map snd
+
+            if not unmodelled.IsEmpty then
+                Error (FcntlRefusal.UnmodelledStatusFlags (argument, unmodelled))
+            else
+
+            let registry =
+                FileDescriptorRegistry.setNonBlocking fd (argument &&& nonBlockingBit flavour <> 0) registry
+
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Ok (SyscallAnswer.Completed 0L, withRegistry registry system)
+            | SimulatedUnixFlavour.Darwin ->
+
+            let registry =
+                FileDescriptorRegistry.mapStatus
+                    id
+                    (fun status ->
+                        { status with
+                            Synchronous = argument &&& OpenFlagNumbering.DarwinSynchronous <> 0
+                            DataSynchronous = argument &&& OpenFlagNumbering.DarwinDataSynchronous <> 0
+                        }
+                    )
+                    registry
+
+            // Measured: Darwin stores the flags and then asks the file to take
+            // O_NONBLOCK, which a kqueue answers ENOTTY, every time.
+            match description.Target with
+            | OpenFileTarget.Kqueue _ -> Ok (SyscallAnswer.Failed UnixError.ENOTTY, withRegistry registry system)
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Epoll _ -> Ok (SyscallAnswer.Completed 0L, withRegistry registry system)
+        | Some FcntlCommand.GetDescriptorFlags ->
+            let flags =
+                match FileDescriptorRegistry.tryFindFlags fd registry with
+                | Some flags -> flags
+                | None ->
+                    failwith
+                        $"UnixDescriptor.fcntl: fd %d{fd} named a description a moment ago and has no flags now (this is a bug in this library)."
+
+            let word =
+                match flavour with
+                | SimulatedUnixFlavour.Linux when flags.CloseOnFork ->
+                    failwith
+                        $"UnixDescriptor.fcntl: fd %d{fd} carries FD_CLOFORK under the Linux flavour, which has no such flag (this is a bug in this library)."
+                | _ ->
+                    (if flags.CloseOnExec then FcntlNumbering.CloseOnExec else 0)
+                    ||| (if flags.CloseOnFork then
+                             FcntlNumbering.DarwinCloseOnFork
+                         else
+                             0)
+
+            Ok (SyscallAnswer.Completed (int64 word), system)
+        | Some FcntlCommand.SetDescriptorFlags ->
+            // Measured (`fcntl-dup.c`, SETFD rows, every bit): Linux keeps bit
+            // 0 and Darwin bits 0 and 1, and every other bit is ignored.
+            let flags =
+                {
+                    CloseOnExec = argument &&& FcntlNumbering.CloseOnExec <> 0
+                    CloseOnFork =
+                        match flavour with
+                        | SimulatedUnixFlavour.Linux -> false
+                        | SimulatedUnixFlavour.Darwin -> argument &&& FcntlNumbering.DarwinCloseOnFork <> 0
+                }
+
+            Ok (SyscallAnswer.Completed 0L, withRegistry (FileDescriptorRegistry.setFlags fd flags registry) system)
+        | Some (FcntlCommand.DuplicateAtOrAbove closeOnExec) ->
+            if argument < 0 then
+                Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+            else
+
+            let flags =
+                { DescriptorFlags.none with
+                    CloseOnExec = closeOnExec
+                }
+
+            match FileDescriptorRegistry.dupAtOrAbove fd argument flags registry with
+            | None -> Error (FcntlRefusal.NoDescriptorAtOrAbove argument)
+            | Some (newFd, registry) -> Ok (SyscallAnswer.Completed (int64 newFd), withRegistry registry system)
+
+    /// `dup2` and `dup3` once the screens peculiar to `dup3` have passed: make
+    /// `newFd` name the description `oldFd` names, with `flags`, closing it
+    /// first if it is open.
+    let private duplicateOnto<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (oldFd : int)
+        (newFd : int)
+        (flags : DescriptorFlags)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CloseRefusal<'Task>>
+        =
+        let registry = system.Process.FileDescriptors
+
+        // Measured (`fcntl-dup.c`, DUP2 rows): a negative target, and a source
+        // that is not open, are each EBADF, and leave an open target open.
+        if newFd < 0 || (FileDescriptorRegistry.tryFindId oldFd registry).IsNone then
+            Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        elif oldFd = newFd then
+            Ok (SyscallAnswer.Completed (int64 newFd), system)
+        else
+
+        // Measured (`fcntl-dup.c`, ONTO and SLEEP rows): an open target is
+        // closed as close(2) closes it, on both flavours: its description is
+        // released if nothing else holds it, and a call asleep through it fares
+        // exactly as under close(2) (close-ends-call.c), Darwin's dup2 blocking
+        // where its close blocks. So the close is close's own.
+        let closed =
+            match FileDescriptorRegistry.tryFindId newFd registry with
+            | None -> Ok system
+            | Some _ ->
+                match close newFd system with
+                | Error refusal -> Error refusal
+                | Ok (SyscallAnswer.Completed _, system) -> Ok system
+                | Ok (SyscallAnswer.Failed error, _) ->
+                    failwith
+                        $"UnixDescriptor.dup2: closing the open target %d{newFd} answered %O{error}, but close's only errno is EBADF for a descriptor that is not open (this is a bug in this library)."
+
+        closed
+        |> Result.map (fun system ->
+            SyscallAnswer.Completed (int64 newFd),
+            withRegistry (FileDescriptorRegistry.installAt oldFd newFd flags system.Process.FileDescriptors) system
+        )
+
+    /// `dup2(2)`: make `newFd` name the open file description `oldFd` names,
+    /// with neither descriptor flag, and answer `newFd`.
+    ///
+    /// A negative `newFd`, or an `oldFd` that is not open, is `EBADF`, and
+    /// changes nothing. `dup2(fd, fd)` of an open `fd` answers `fd` and changes
+    /// nothing, its flags included. An open `newFd` is closed first as
+    /// `close(2)` closes it, with everything that does to the description it
+    /// named and to calls asleep through it, and is refused where `close` is
+    /// (`Dup2Refusal.ClosingTarget`); so is one naming the same description as
+    /// `oldFd`, whose flags the `dup2` then clears.
+    ///
+    /// This kernel models no `RLIMIT_NOFILE`; a real one also answers `EBADF`
+    /// for a `newFd` at or above the soft limit.
+    let dup2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (oldFd : int)
+        (newFd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, Dup2Refusal<'Task>>
+        =
+        duplicateOnto oldFd newFd DescriptorFlags.none system
+        |> Result.mapError Dup2Refusal.ClosingTarget
+
+    /// `dup3(2)`: `dup2`, but `flags` may carry `O_CLOEXEC` in Linux's
+    /// numbering, which gives `newFd` `FD_CLOEXEC`, and `oldFd` and `newFd`
+    /// must differ.
+    ///
+    /// Any other bit in `flags` is `EINVAL`, ahead of everything; then the same
+    /// descriptor on both sides is `EINVAL`, open or not; then `dup2`'s
+    /// answers. Refused under the Darwin flavour, which has no `dup3`.
+    let dup3<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (oldFd : int)
+        (newFd : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, Dup3Refusal<'Task>>
+        =
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin -> Error (Dup3Refusal.NotProvided SimulatedUnixFlavour.Darwin)
+        | SimulatedUnixFlavour.Linux ->
+
+        // Measured (`fcntl-dup.c`, DUP2 rows): the flags first, then the same
+        // descriptor on both sides, then dup2's EBADFs.
+        if flags &&& ~~~OpenFlagNumbering.LinuxCloseOnExec <> 0 then
+            Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        elif oldFd = newFd then
+            Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        else
+
+        let descriptorFlags =
+            { DescriptorFlags.none with
+                CloseOnExec = flags &&& OpenFlagNumbering.LinuxCloseOnExec <> 0
+            }
+
+        duplicateOnto oldFd newFd descriptorFlags system
+        |> Result.mapError Dup3Refusal.ClosingTarget
+
+    /// Set or clear `O_NONBLOCK` on the open file description `fd` names, as
+    /// `fcntl(fd, F_GETFL)` and then `fcntl(fd, F_SETFL, word)` with the bit
+    /// changed do; the flag is shared with every descriptor naming the
+    /// description.
+    ///
+    /// `EBADF` for a descriptor that is not open. On a Darwin kqueue the flag
+    /// is set and the answer is `ENOTTY` (see `SetNonBlockingAnswer.Failed`).
+    let setNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (isNonBlocking : bool)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SetNonBlockingAnswer * UnixSystem<'Task, 'Handler>
+        =
+        let bit = nonBlockingBit (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
+
+        // A word F_GETFL reported holds no flag F_SETFL refuses, since no
+        // description carries one, so neither call is refused.
+        let unrefused (operation : string) (result : Result<'a, FcntlRefusal>) : 'a =
+            match result with
+            | Ok answer -> answer
+            | Error refusal ->
+                failwith
+                    $"UnixDescriptor.setNonBlocking: %s{operation} on fd %d{fd} was refused (%s{FcntlRefusal.describe refusal}), but it carries only what F_GETFL reported (this is a bug in this library)."
+
+        match unrefused "F_GETFL" (fcntl fd FcntlNumbering.GetStatusFlags 0 system) with
+        | SyscallAnswer.Failed error, system -> SetNonBlockingAnswer.Failed error, system
+        | SyscallAnswer.Completed word, system ->
+
+        let word =
+            if isNonBlocking then
+                int word ||| bit
+            else
+                int word &&& ~~~bit
+
+        match unrefused "F_SETFL" (fcntl fd FcntlNumbering.SetStatusFlags word system) with
+        | SyscallAnswer.Completed _, system -> SetNonBlockingAnswer.Set, system
+        | SyscallAnswer.Failed error, system -> SetNonBlockingAnswer.Failed error, system
+
+    /// Whether the open file description `fd` names carries `O_NONBLOCK`, as
+    /// `fcntl(fd, F_GETFL)` reports it; `None` for a descriptor that is not
+    /// open, which `F_GETFL` answers `EBADF`.
+    let isNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool option
+        =
+        let bit = nonBlockingBit (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
+
+        match fcntl fd FcntlNumbering.GetStatusFlags 0 system with
+        | Ok (SyscallAnswer.Completed word, _) -> Some (int word &&& bit <> 0)
+        | Ok (SyscallAnswer.Failed UnixError.EBADF, _) -> None
+        | Ok (SyscallAnswer.Failed error, _) ->
+            failwith
+                $"UnixDescriptor.isNonBlocking: F_GETFL on fd %d{fd} answered %O{error}, but its only errno is EBADF (this is a bug in this library)."
+        | Error refusal ->
+            failwith
+                $"UnixDescriptor.isNonBlocking: F_GETFL on fd %d{fd} was refused (%s{FcntlRefusal.describe refusal}), but it is a modelled command (this is a bug in this library)."

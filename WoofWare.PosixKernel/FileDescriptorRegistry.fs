@@ -685,13 +685,55 @@ module FileAccessMode =
         | FileAccessMode.ReadWrite -> true
         | FileAccessMode.ReadOnly -> false
 
+/// The status an open file description carries besides its access mode,
+/// `O_NONBLOCK` and its `flock`: the rest of what `fcntl(F_GETFL)` reports.
+///
+/// Each field is kept only under the flavour whose `F_GETFL` reports it, and is
+/// `false` under the other, so that two descriptions no syscall could tell
+/// apart are equal: `OpenedDirectory` and `OpenedNoFollow` under Linux,
+/// `Written` and `Flocked` under Darwin. `UnixDescriptor.fcntl` decides which
+/// bit each is reported in.
+///
+/// `O_APPEND`, `O_ASYNC`, Linux's `O_DIRECT` and `O_NOATIME` are absent
+/// because no description this kernel makes carries them: `open(2)` refuses
+/// each of them, and so does `fcntl(F_SETFL)`.
+type OpenFileStatus =
+    {
+        /// `O_SYNC`.
+        Synchronous : bool
+        /// `O_DSYNC`.
+        DataSynchronous : bool
+        /// Whether `open(2)` was given `O_DIRECTORY`. Linux only.
+        OpenedDirectory : bool
+        /// Whether `open(2)` was given `O_NOFOLLOW`. Linux only.
+        OpenedNoFollow : bool
+        /// Whether a `write(2)` or `pwrite(2)` through this description has
+        /// returned having moved bytes, an `ftruncate(2)` through it has
+        /// succeeded, or the `open(2)` that made it truncated a file that
+        /// already existed. Darwin only.
+        Written : bool
+        /// Whether an `flock(2)` lock has ever been granted to this
+        /// description. Releasing the lock does not clear it. Darwin only.
+        Flocked : bool
+    }
+
+[<RequireQualifiedAccess>]
+module OpenFileStatus =
+    /// The status of a description nothing has yet happened to, made by a call
+    /// asking for none of these flags.
+    let none : OpenFileStatus =
+        {
+            Synchronous = false
+            DataSynchronous = false
+            OpenedDirectory = false
+            OpenedNoFollow = false
+            Written = false
+            Flocked = false
+        }
+
 /// The kernel object a file descriptor points at: POSIX's "open file
 /// description". Everything shared between file descriptors that `dup(2)`
 /// produced belongs here.
-///
-/// Of the status flags, only `O_NONBLOCK` is present: `O_APPEND` is absent
-/// because no modelled syscall can set it, `UnixNamespace.openPath` refusing
-/// both bits.
 type OpenFileDescription =
     {
         /// What this description refers to, and where in it.
@@ -701,14 +743,15 @@ type OpenFileDescription =
         AccessMode : FileAccessMode
         /// Whether `O_NONBLOCK` is set. On the description, not the
         /// descriptor — that is where POSIX keeps the status flags, and why a
-        /// `dup(2)` pair shares them. Set through `fcntl(F_SETFL)`, which is
-        /// `UnixSocket.setNonBlocking`.
+        /// `dup(2)` pair shares them. Set through `fcntl(F_SETFL)`
+        /// (`UnixDescriptor.fcntl`).
         ///
         /// Every modelled operation on every target honours a stored `true`,
-        /// or refuses where it cannot — see `UnixSocket.setNonBlocking` — so a
-        /// caller that consults this may trust it rather than re-checking the
-        /// target kind.
+        /// or refuses where it cannot, so a caller that consults this may trust
+        /// it rather than re-checking the target kind.
         NonBlocking : bool
+        /// The rest of its status flags.
+        Status : OpenFileStatus
         /// The `flock(2)` lock this description holds, if any.
         ///
         /// On the description, not on the inode: that is where POSIX puts it,
@@ -753,6 +796,39 @@ module OpenFileDescription =
         // `flock`. See `OpenFileObject.Pipe`.
         | OpenFileTarget.Pipe (pipeId, _) -> OpenFileObject.Pipe pipeId
 
+/// The flags `fcntl(F_GETFD)` reports, which belong to one descriptor rather
+/// than to the open file description it names: `dup(2)` gives the new
+/// descriptor none of them.
+///
+/// Neither changes what any modelled syscall does, since this kernel models
+/// neither `exec` nor `fork`; they are kept so that `F_GETFD` answers what
+/// `F_SETFD`, `O_CLOEXEC` and their kin set.
+type DescriptorFlags =
+    {
+        /// `FD_CLOEXEC`.
+        CloseOnExec : bool
+        /// `FD_CLOFORK`, which only Darwin has.
+        CloseOnFork : bool
+    }
+
+[<RequireQualifiedAccess>]
+module DescriptorFlags =
+    /// Neither flag, which is what `dup(2)`, `dup2(2)` and every call not
+    /// asked for a flag give a new descriptor.
+    let none : DescriptorFlags =
+        {
+            CloseOnExec = false
+            CloseOnFork = false
+        }
+
+/// One entry of the descriptor table: the open file description the
+/// descriptor names, and the descriptor's own flags.
+type private DescriptorEntry =
+    {
+        Description : OpenFileDescriptionId
+        Flags : DescriptorFlags
+    }
+
 /// In-memory model of a Unix per-process file descriptor table, and of the
 /// open file descriptions those descriptors point at.
 ///
@@ -761,8 +837,7 @@ module OpenFileDescription =
 /// allocates a fresh descriptor pointing at the same description. State that
 /// belongs to the description (offset, status flags) is therefore shared by
 /// every descriptor that names it, while the per-descriptor flags — `FD_CLOEXEC`,
-/// to which POSIX-2024 adds `FD_CLOFORK` — are not. This library models neither
-/// per-descriptor flag, because it models neither `fork` nor `exec`.
+/// to which POSIX-2024 adds `FD_CLOFORK` — are not (`DescriptorFlags`).
 ///
 /// Beware that the descriptor/description split does not exhaust kernel state.
 /// `fcntl(2)` record locks are associated with a *(process, file)* pair:
@@ -776,8 +851,8 @@ type FileDescriptorRegistry =
     private
         {
             /// The per-process descriptor table: which description each live
-            /// file descriptor names.
-            Fds : Map<int, OpenFileDescriptionId>
+            /// file descriptor names, and its flags.
+            Fds : Map<int, DescriptorEntry>
             /// The open file descriptions themselves. A description is live
             /// exactly while some descriptor in `Fds` names it or something
             /// outside this table holds it, as a real kernel keeps a file while
@@ -911,6 +986,17 @@ type FileDescriptorRegistryDefect =
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistry =
+    /// A table entry naming `id`, with neither descriptor flag.
+    let private unflagged (id : OpenFileDescriptionId) : DescriptorEntry =
+        {
+            Description = id
+            Flags = DescriptorFlags.none
+        }
+
+    /// Which description `fd` names in `fds`, if `fd` is live.
+    let private named (fd : int) (fds : Map<int, DescriptorEntry>) : OpenFileDescriptionId option =
+        Map.tryFind fd fds |> Option.map (fun entry -> entry.Description)
+
     /// A descriptor table holding exactly the descriptors in `ends`, each naming
     /// an open file description of its own onto the given end of the given
     /// pipe: the read end opened `O_RDONLY` and the write end `O_WRONLY`, as
@@ -944,7 +1030,7 @@ module FileDescriptorRegistry =
                     | PipeEnd.Write -> FileAccessMode.WriteOnly
 
                 { registry with
-                    Fds = Map.add fd id registry.Fds
+                    Fds = Map.add fd (unflagged id) registry.Fds
                     Descriptions =
                         Map.add
                             id
@@ -953,6 +1039,7 @@ module FileDescriptorRegistry =
                                 AccessMode = accessMode
                                 NonBlocking = false
                                 Flock = None
+                                Status = OpenFileStatus.none
                             }
                             registry.Descriptions
                     NextId = OpenFileDescriptionId (raw + 1L)
@@ -963,8 +1050,7 @@ module FileDescriptorRegistry =
     /// Which description `fd` names, if `fd` is live. Callers that need to know
     /// whether two descriptors share a description — rather than merely name
     /// equal ones — must compare these rather than the payloads.
-    let tryFindId (fd : int) (registry : FileDescriptorRegistry) : OpenFileDescriptionId option =
-        Map.tryFind fd registry.Fds
+    let tryFindId (fd : int) (registry : FileDescriptorRegistry) : OpenFileDescriptionId option = named fd registry.Fds
 
     /// The description `fd` names *and* its identity, if `fd` is live.
     ///
@@ -977,7 +1063,7 @@ module FileDescriptorRegistry =
         (registry : FileDescriptorRegistry)
         : (OpenFileDescriptionId * OpenFileDescription) option
         =
-        Map.tryFind fd registry.Fds
+        named fd registry.Fds
         |> Option.map (fun id ->
             match Map.tryFind id registry.Descriptions with
             | Some description -> id, description
@@ -1005,22 +1091,41 @@ module FileDescriptorRegistry =
         tryFind fd registry |> Option.map (fun description -> description.Target)
 
     /// Every live file descriptor, and the description each names.
-    let fds (registry : FileDescriptorRegistry) : Map<int, OpenFileDescriptionId> = registry.Fds
+    let fds (registry : FileDescriptorRegistry) : Map<int, OpenFileDescriptionId> =
+        registry.Fds |> Map.map (fun _ entry -> entry.Description)
+
+    /// The flags of the descriptor `fd`, if `fd` is live: what
+    /// `fcntl(F_GETFD)` reports.
+    let tryFindFlags (fd : int) (registry : FileDescriptorRegistry) : DescriptorFlags option =
+        Map.tryFind fd registry.Fds |> Option.map (fun entry -> entry.Flags)
 
     /// Every live open file description.
     let descriptions (registry : FileDescriptorRegistry) : Map<OpenFileDescriptionId, OpenFileDescription> =
         registry.Descriptions
 
-    /// Lowest non-negative integer not currently used as a file descriptor.
-    /// O(n) in the number of live fds; process fd tables are small.
-    let private lowestFree (fds : Map<int, OpenFileDescriptionId>) : int =
-        let rec scan (candidate : int) =
-            if Map.containsKey candidate fds then
-                scan (candidate + 1)
-            else
-                candidate
+    /// Lowest integer at or above `minimum`, which must be non-negative, not
+    /// currently used as a file descriptor; `None` if every one up to
+    /// `Int32.MaxValue` is. O(n) in the number of live fds; process fd tables
+    /// are small.
+    let private lowestFreeAtOrAbove (minimum : int) (fds : Map<int, DescriptorEntry>) : int option =
+        if minimum < 0 then
+            failwith
+                $"FileDescriptorRegistry.lowestFreeAtOrAbove: minimum %d{minimum} is negative, and no descriptor is (this is a bug in this library)."
 
-        scan 0
+        let rec scan (candidate : int) =
+            if not (Map.containsKey candidate fds) then Some candidate
+            elif candidate = System.Int32.MaxValue then None
+            else scan (candidate + 1)
+
+        scan minimum
+
+    /// Lowest non-negative integer not currently used as a file descriptor.
+    let private lowestFree (fds : Map<int, DescriptorEntry>) : int =
+        match lowestFreeAtOrAbove 0 fds with
+        | Some fd -> fd
+        | None ->
+            failwith
+                "FileDescriptorRegistry.lowestFree: every non-negative int is a live descriptor, which no table this library builds can reach."
 
     /// Mirrors `dup(2)`: allocate the lowest non-negative fd not in use, naming
     /// the *same* open file description as `oldFd`. No new description is
@@ -1032,7 +1137,7 @@ module FileDescriptorRegistry =
         (registry : FileDescriptorRegistry)
         : Result<int * FileDescriptorRegistry, FileDescriptorDupError>
         =
-        match Map.tryFind oldFd registry.Fds with
+        match named oldFd registry.Fds with
         | None -> Error FileDescriptorDupError.BadFd
         | Some id ->
             let newFd = lowestFree registry.Fds
@@ -1040,9 +1145,125 @@ module FileDescriptorRegistry =
             Ok (
                 newFd,
                 { registry with
-                    Fds = Map.add newFd id registry.Fds
+                    Fds = Map.add newFd (unflagged id) registry.Fds
                 }
             )
+
+    /// The `fcntl(F_DUPFD)` half of the table: a new descriptor naming the
+    /// description `oldFd` names, the lowest not in use at or above `minimum`,
+    /// with `flags`. `None` when every descriptor from `minimum` to
+    /// `Int32.MaxValue` is in use.
+    ///
+    /// Partial: `oldFd` must be live and `minimum` non-negative, which the
+    /// caller has already answered EBADF and EINVAL for.
+    let internal dupAtOrAbove
+        (oldFd : int)
+        (minimum : int)
+        (flags : DescriptorFlags)
+        (registry : FileDescriptorRegistry)
+        : (int * FileDescriptorRegistry) option
+        =
+        match named oldFd registry.Fds with
+        | None ->
+            failwith
+                $"FileDescriptorRegistry.dupAtOrAbove: fd %d{oldFd} is not live (this is a bug in the caller, which should have answered EBADF)."
+        | Some id ->
+            lowestFreeAtOrAbove minimum registry.Fds
+            |> Option.map (fun newFd ->
+                newFd,
+                { registry with
+                    Fds =
+                        Map.add
+                            newFd
+                            {
+                                Description = id
+                                Flags = flags
+                            }
+                            registry.Fds
+                }
+            )
+
+    /// The installing half of `dup2(2)`: make `newFd`, which must be free and
+    /// non-negative, name the description `oldFd` names, with `flags`.
+    ///
+    /// Partial: the caller has answered EBADF for a dead `oldFd` or a negative
+    /// `newFd`, and closed `newFd` if it was open.
+    let internal installAt
+        (oldFd : int)
+        (newFd : int)
+        (flags : DescriptorFlags)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        if newFd < 0 then
+            failwith
+                $"FileDescriptorRegistry.installAt: target %d{newFd} is negative (this is a bug in the caller, which should have answered EBADF)."
+
+        if Map.containsKey newFd registry.Fds then
+            failwith
+                $"FileDescriptorRegistry.installAt: target %d{newFd} is live (this is a bug in the caller, which should have closed it first)."
+
+        match named oldFd registry.Fds with
+        | None ->
+            failwith
+                $"FileDescriptorRegistry.installAt: fd %d{oldFd} is not live (this is a bug in the caller, which should have answered EBADF)."
+        | Some id ->
+            { registry with
+                Fds =
+                    Map.add
+                        newFd
+                        {
+                            Description = id
+                            Flags = flags
+                        }
+                        registry.Fds
+            }
+
+    /// Replace the flags of the descriptor `fd`: the table half of
+    /// `fcntl(F_SETFD)`. Partial: the caller has answered EBADF for a dead `fd`.
+    let internal setFlags
+        (fd : int)
+        (flags : DescriptorFlags)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        match Map.tryFind fd registry.Fds with
+        | None ->
+            failwith
+                $"FileDescriptorRegistry.setFlags: fd %d{fd} is not live (this is a bug in the caller, which should have answered EBADF)."
+        | Some entry ->
+            { registry with
+                Fds =
+                    Map.add
+                        fd
+                        { entry with
+                            Flags = flags
+                        }
+                        registry.Fds
+            }
+
+    /// Rewrite the status of the description `id`. Partial: `id` must be
+    /// live, which every caller has just established.
+    let internal mapStatus
+        (id : OpenFileDescriptionId)
+        (f : OpenFileStatus -> OpenFileStatus)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        match Map.tryFind id registry.Descriptions with
+        | None ->
+            failwith
+                $"FileDescriptorRegistry.mapStatus: open file description %O{id} is not present in the table (this is a bug in the caller, which resolved it moments ago)."
+        | Some description ->
+            { registry with
+                Descriptions =
+                    Map.add
+                        id
+                        { description with
+                            Status = f description.Status
+                        }
+                        registry.Descriptions
+            }
 
     /// Remove `id` from the table, and from every epoll instance's interest
     /// table. `id` must be live and no descriptor may name it.
@@ -1104,7 +1325,8 @@ module FileDescriptorRegistry =
         | None -> registry, None
         | Some description ->
             let named =
-                registry.Fds |> Map.exists (fun _ (other : OpenFileDescriptionId) -> other = id)
+                registry.Fds
+                |> Map.exists (fun _ (other : DescriptorEntry) -> other.Description = id)
 
             if named || Set.contains id heldOutsideTable then
                 registry, None
@@ -1143,7 +1365,7 @@ module FileDescriptorRegistry =
         (registry : FileDescriptorRegistry)
         : Result<FileDescriptorRegistry * OpenFileDescription option, FileDescriptorCloseError>
         =
-        match Map.tryFind fd registry.Fds with
+        match named fd registry.Fds with
         | None -> Error FileDescriptorCloseError.BadFd
         | Some id ->
             // Every kqueue registration made through this descriptor goes with
@@ -1224,7 +1446,7 @@ module FileDescriptorRegistry =
 
         fd,
         { registry with
-            Fds = Map.add fd id registry.Fds
+            Fds = Map.add fd (unflagged id) registry.Fds
             Descriptions =
                 Map.add
                     id
@@ -1236,6 +1458,7 @@ module FileDescriptorRegistry =
                         NonBlocking = false
                         // `open(2)` never takes a lock.
                         Flock = None
+                        Status = OpenFileStatus.none
                     }
                     registry.Descriptions
             NextId = OpenFileDescriptionId (raw + 1L)
@@ -1261,7 +1484,7 @@ module FileDescriptorRegistry =
 
         fd,
         { registry with
-            Fds = Map.add fd id registry.Fds
+            Fds = Map.add fd (unflagged id) registry.Fds
             Descriptions =
                 Map.add
                     id
@@ -1270,6 +1493,7 @@ module FileDescriptorRegistry =
                         AccessMode = accessMode
                         NonBlocking = false
                         Flock = None
+                        Status = OpenFileStatus.none
                     }
                     registry.Descriptions
             NextId = OpenFileDescriptionId (raw + 1L)
@@ -1293,7 +1517,7 @@ module FileDescriptorRegistry =
 
         fd,
         { registry with
-            Fds = Map.add fd id registry.Fds
+            Fds = Map.add fd (unflagged id) registry.Fds
             Descriptions =
                 Map.add
                     id
@@ -1302,6 +1526,7 @@ module FileDescriptorRegistry =
                         AccessMode = FileAccessMode.ReadOnly
                         NonBlocking = false
                         Flock = None
+                        Status = OpenFileStatus.none
                     }
                     registry.Descriptions
             NextId = OpenFileDescriptionId (raw + 1L)
@@ -1320,7 +1545,7 @@ module FileDescriptorRegistry =
 
         fd,
         { registry with
-            Fds = Map.add fd id registry.Fds
+            Fds = Map.add fd (unflagged id) registry.Fds
             Descriptions =
                 Map.add
                     id
@@ -1329,6 +1554,7 @@ module FileDescriptorRegistry =
                         AccessMode = FileAccessMode.ReadWrite
                         NonBlocking = false
                         Flock = None
+                        Status = OpenFileStatus.none
                     }
                     registry.Descriptions
             NextId = OpenFileDescriptionId (raw + 1L)
@@ -1364,8 +1590,8 @@ module FileDescriptorRegistry =
     ///
     /// The access mode is `ReadWrite`, for the reason `createEpoll`'s is: a
     /// real kqueue answers `ENXIO` to `read(2)` and `write(2)`, never `EBADF`
-    /// (measured). Measured, Darwin's kqueue is `O_RDWR`, not `O_NONBLOCK`, and
-    /// `FD_CLOEXEC`, a per-descriptor flag this library does not model.
+    /// (measured). Measured, Darwin's kqueue is `O_RDWR`, not `O_NONBLOCK`. Its
+    /// descriptor flags are `UnixKqueue.kqueue`'s to set.
     ///
     /// Total, like `createEpoll`.
     let createKqueue (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
@@ -1407,7 +1633,7 @@ module FileDescriptorRegistry =
 
         fd,
         { registry with
-            Fds = Map.add fd id registry.Fds
+            Fds = Map.add fd (unflagged id) registry.Fds
             Descriptions =
                 Map.add
                     id
@@ -1415,10 +1641,12 @@ module FileDescriptorRegistry =
                         Target = OpenFileTarget.Socket socketId
                         AccessMode = FileAccessMode.ReadWrite
                         // A `socket(2)` asked for `SOCK_NONBLOCK` sets it
-                        // afterwards, through `setNonBlocking`.
+                        // afterwards, through `setNonBlocking`, and one asked
+                        // for `SOCK_CLOEXEC` sets its flag through `setFlags`.
                         NonBlocking = false
                         // `socket(2)` takes no lock, exactly as `open(2)` does not.
                         Flock = None
+                        Status = OpenFileStatus.none
                     }
                     registry.Descriptions
             NextId = OpenFileDescriptionId (raw + 1L)
@@ -1450,7 +1678,7 @@ module FileDescriptorRegistry =
 
             fd,
             { registry with
-                Fds = Map.add fd id registry.Fds
+                Fds = Map.add fd (unflagged id) registry.Fds
                 Descriptions =
                     Map.add
                         id
@@ -1460,6 +1688,7 @@ module FileDescriptorRegistry =
                             NonBlocking = nonBlocking
                             // `pipe(2)` takes no lock.
                             Flock = None
+                            Status = OpenFileStatus.none
                         }
                         registry.Descriptions
                 NextId = OpenFileDescriptionId (raw + 1L)
@@ -1609,7 +1838,7 @@ module FileDescriptorRegistry =
         (registry : FileDescriptorRegistry)
         : FileDescriptorRegistry * FlockError option
         =
-        match Map.tryFind fd registry.Fds with
+        match named fd registry.Fds with
         | None -> registry, Some FlockError.BadFd
         | Some id -> flockOn id request registry
 
@@ -1632,7 +1861,7 @@ module FileDescriptorRegistry =
             failwith
                 $"setOffset: fd %d{fd} was asked to move to offset %d{offset}, which is negative. No kernel permits a negative file offset; the caller must reject this as EINVAL before storing it (this is a bug in the caller of FileDescriptorRegistry.setOffset)."
 
-        match Map.tryFind fd registry.Fds with
+        match named fd registry.Fds with
         | None ->
             failwith
                 $"setOffset: fd %d{fd} is not a live file descriptor, so there is no offset to move (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered EBADF)."
@@ -1689,7 +1918,7 @@ module FileDescriptorRegistry =
         : FileDescriptorRegistry
         =
         let id =
-            match Map.tryFind fd registry.Fds with
+            match named fd registry.Fds with
             | Some id -> id
             | None ->
                 failwith
@@ -1727,7 +1956,7 @@ module FileDescriptorRegistry =
     /// shared with every descriptor `dup(2)` has produced for it.
     ///
     /// Like `setOffset`, *partial* in the descriptor: the caller
-    /// (`UnixSocket.setNonBlocking`) has already answered `EBADF` for
+    /// (`UnixDescriptor.fcntl`) has already answered `EBADF` for
     /// a dead fd. Every target stores the flag, an epoll instance and a kqueue
     /// included:
     /// measured on both flavours, `F_SETFL` genuinely toggles the bit there
@@ -1736,7 +1965,7 @@ module FileDescriptorRegistry =
     /// `epoll_wait` and `kevent` block per their own timeout argument rather
     /// than per the descriptor's flags.
     let internal setNonBlocking (fd : int) (value : bool) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
-        match Map.tryFind fd registry.Fds with
+        match named fd registry.Fds with
         | None ->
             failwith
                 $"setNonBlocking: fd %d{fd} is not a live file descriptor, so there is no description to flag (this is a bug in the caller of FileDescriptorRegistry.setNonBlocking, which should have answered EBADF)."
@@ -2123,7 +2352,7 @@ module FileDescriptorRegistry =
     /// `UnixSystem.checkInvariants`'s `UnreferencedDescription`.
     let checkInvariants (registry : FileDescriptorRegistry) : FileDescriptorRegistryDefect list =
         let dangling =
-            registry.Fds
+            fds registry
             |> Map.toList
             |> List.filter (fun (_, id) -> not (Map.containsKey id registry.Descriptions))
             |> List.map FileDescriptorRegistryDefect.DanglingFd
@@ -2303,7 +2532,7 @@ module FileDescriptorRegistry =
                         state.Registrations
                         |> Map.toList
                         |> List.choose (fun ((fd, filter), _) ->
-                            match Map.tryFind fd registry.Fds with
+                            match named fd registry.Fds with
                             | None ->
                                 Some (
                                     FileDescriptorRegistryDefect.KqueueRegistrationThroughClosedDescriptor (
@@ -2384,7 +2613,7 @@ module FileDescriptorRegistry =
             : FileDescriptorRegistry
             =
             {
-                Fds = fds
+                Fds = fds |> Map.map (fun _ id -> unflagged id)
                 Descriptions = descriptions
                 NextId = nextId
             }

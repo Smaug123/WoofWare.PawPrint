@@ -167,20 +167,6 @@ module ListenRefusal =
         | ListenRefusal.EphemeralPortsExhausted (low, high) ->
             $"this socket has no address, so `listen(2)` binds it, and every port in the ephemeral range %d{low}-%d{high} is taken. Widen the range, or measure what a real kernel says here."
 
-/// What a change to a descriptor's `O_NONBLOCK` answered.
-///
-/// Store and answer are separate because for a kqueue they disagree: its bit
-/// toggles and the call still reports a failure.
-[<RequireQualifiedAccess>]
-type SetNonBlockingAnswer =
-    /// The flag is now what the caller asked for, and the call succeeded.
-    | Set
-    /// The call failed with this errno.
-    ///
-    /// The system still comes back, and the flag may have changed with it: on a
-    /// kqueue the bit toggles and the answer is `ENOTTY` anyway.
-    | Failed of error : UnixError
-
 /// What `getsockname(2)` reports about a socket's own address.
 [<RequireQualifiedAccess>]
 type GetSockNameAnswer =
@@ -895,10 +881,9 @@ module UnixSocket =
     /// All three numbers are the simulated flavour's own, as a caller of its
     /// libc would pass them: `AF_INET6` is 10 on Linux and 30 on Darwin.
     /// `socketType` may carry Linux's `SOCK_NONBLOCK`, which makes the new open
-    /// file description non-blocking, and `SOCK_CLOEXEC`, which is accepted and
-    /// has no effect here: it sets `FD_CLOEXEC`, which matters only across
-    /// `exec`, and this kernel models neither `exec` nor any per-descriptor flag.
-    /// Darwin has neither flag, and a type carrying either bit names no type.
+    /// file description non-blocking, and `SOCK_CLOEXEC`, which gives the new
+    /// descriptor `FD_CLOEXEC`. Darwin has neither flag, and a type carrying
+    /// either bit names no type.
     ///
     /// The sockets created are stream and datagram sockets in `AF_INET` and
     /// `AF_INET6` (TCP and UDP), and in `AF_UNIX` stream and datagram sockets,
@@ -922,76 +907,37 @@ module UnixSocket =
         | SocketDecoding.Refused refusal -> Error refusal
         | SocketDecoding.Fails error -> Ok (Error error)
         | SocketDecoding.Creates (socketDomain, kind, socketProtocol, nonBlocking) ->
-            Ok (Ok (allocate socketDomain kind socketProtocol nonBlocking system))
+            let fd, system = allocate socketDomain kind socketProtocol nonBlocking system
 
-    /// `fcntl(F_SETFL)`'s `O_NONBLOCK` half: put the flag on the open file
-    /// description `fd` names.
-    ///
-    /// The flag lands on the *description*, where POSIX keeps the status flags,
-    /// so a `dup` of the descriptor sees it too.
-    ///
-    /// Every target takes it. A socket's `accept` and `connect` consult it, and
-    /// each transfer that lands must too. Both kernels give it no effect on a
-    /// regular file or a device, so an operation there that never looks is
-    /// right not to. A wait on an epoll instance or a kqueue blocks per its own
-    /// timeout argument, never per this flag. On a kqueue the flag is set and
-    /// the call answers `ENOTTY` (see `SetNonBlockingAnswer.Failed`).
-    let setNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (fd : int)
-        (isNonBlocking : bool)
-        (system : UnixSystem<'Task, 'Handler>)
-        : SetNonBlockingAnswer * UnixSystem<'Task, 'Handler>
-        =
-        let stored (system : UnixSystem<'Task, 'Handler>) : UnixSystem<'Task, 'Handler> =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.setNonBlocking fd isNonBlocking system.Process.FileDescriptors
-                    }
-            }
+            // Only Linux has `SOCK_CLOEXEC`; the Darwin decoder has refused
+            // every type carrying its bit.
+            let closeOnExec =
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> socketType &&& LinuxSockCloExec <> 0
+                | SimulatedUnixFlavour.Darwin -> false
 
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
-        | None -> SetNonBlockingAnswer.Failed UnixError.EBADF, system
-        // Store, and then report: measured, the bit toggles on both, and the
-        // answers differ -- Linux succeeds on an epoll instance (6.18.5) where
-        // Darwin reports ENOTTY on a kqueue *with the bit toggled anyway*, in
-        // both directions (through `fcntl(F_GETFL)` and then `fcntl(F_SETFL)`,
-        // macOS 26). Neither wait takes its
-        // blocking behaviour from the flag: `epoll_wait` and `kevent` block per
-        // their own timeout argument.
-        | Some (OpenFileTarget.Epoll _) -> SetNonBlockingAnswer.Set, stored system
-        | Some (OpenFileTarget.Kqueue _) -> SetNonBlockingAnswer.Failed UnixError.ENOTTY, stored system
-        | Some (OpenFileTarget.Pipe _) ->
-            // Measured on both ends, on both flavours (pipe-states.c and
-            // `TestPipeAgainstHost`): `F_SETFL` answers 0 and
-            // the flag governs whether a read or write that would wait answers
-            // EAGAIN instead. Likewise on the three standard streams of a
-            // process launched onto pipes (stdio-nonblock.c), where `F_GETFL`
-            // reads the flag back.
-            SetNonBlockingAnswer.Set, stored system
-        | Some (OpenFileTarget.File _)
-        | Some (OpenFileTarget.Directory _)
-        | Some (OpenFileTarget.Socket _) -> SetNonBlockingAnswer.Set, stored system
-        // Measured on Linux (`devices.c`, FCNTL rows): `F_SETFL` answers 0 on
-        // `/dev/null` and `/dev/urandom`, and a read afterwards answers what it
-        // did before, neither device ever having anything to wait for.
-        | Some (OpenFileTarget.CharacterDevice _) -> SetNonBlockingAnswer.Set, stored system
+            if closeOnExec then
+                let registry =
+                    FileDescriptorRegistry.setFlags
+                        fd
+                        { DescriptorFlags.none with
+                            CloseOnExec = true
+                        }
+                        system.Process.FileDescriptors
 
-    /// `fcntl(F_GETFL)`'s `O_NONBLOCK` half: whether the open file description
-    /// `fd` names carries the flag.
-    ///
-    /// `None` for a descriptor that is not live, which a caller reports as
-    /// `EBADF`.
-    ///
-    /// Changes nothing: a read of a status flag is a question.
-    let isNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (fd : int)
-        (system : UnixSystem<'Task, 'Handler>)
-        : bool option
-        =
-        FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors
-        |> Option.map (fun description -> description.NonBlocking)
+                Ok (
+                    Ok (
+                        fd,
+                        { system with
+                            Process =
+                                { system.Process with
+                                    FileDescriptors = registry
+                                }
+                        }
+                    )
+                )
+            else
+                Ok (Ok (fd, system))
 
     /// `bind(2)` past the copy: what it answers for the sockaddr `copied`
     /// decodes to, on `fd`, which `admitSockaddrCopy` has taken as far as the

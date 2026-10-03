@@ -223,6 +223,7 @@ module TestDirectoryReadAgainstHost =
             NoFollow = false
             CloseOnExec = false
             Synchronous = false
+            DataSynchronous = false
             Directory = false
         }
 

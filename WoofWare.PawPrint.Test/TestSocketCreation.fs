@@ -334,7 +334,7 @@ module TestSocketCreation =
             sprintf "%O" socket.Protocol |> shouldEqual expectedProtocol
             // The shim's `SOCK_CLOEXEC` has nothing to change, and nothing asked
             // for `SOCK_NONBLOCK`.
-            UnixSocket.isNonBlocking fd system |> shouldEqual (Some false)
+            UnixDescriptor.isNonBlocking fd system |> shouldEqual (Some false)
         | other -> failwith $"expected a socket, got %A{other}"
 
     /// The `socket(2)` arguments the shim passes, stated independently of the
