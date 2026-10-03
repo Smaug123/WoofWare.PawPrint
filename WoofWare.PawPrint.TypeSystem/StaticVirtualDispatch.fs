@@ -3,6 +3,17 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 
+/// The implementation of a static virtual interface member that a `constrained.` type supplies.
+[<RequireQualifiedAccess>]
+type ConstrainedStaticImplementation =
+    /// This implementation, instantiated, and the handle of the type declaring it.
+    | Runs of
+        WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
+        declaringType : ConcreteTypeHandle
+    /// The most specific default body is this reabstraction, as for
+    /// `VirtualImplementation.Reabstracted`: a call throws `EntryPointNotFoundException`.
+    | Reabstracted of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+
 /// Which method a `constrained.` call of a static virtual interface method runs, given the type the
 /// prefix names, as CoreCLR's `MethodTable::ResolveVirtualStaticMethod` (methodtable.cpp) decides
 /// it for such a call, variance allowed.
@@ -21,7 +32,9 @@ open Microsoft.Extensions.Logging
 ///    exactly the call's instantiation are a conflict, but of two for variance-compatible ones the
 ///    first runs. The search meets interfaces in order (the constrained type itself if it is an
 ///    interface, then each type's interface map from the constrained type up its base chain), and
-///    a more specific body takes the place of the first one it displaces.
+///    a more specific body takes the place of the first one it displaces. An abstract MethodImpl,
+///    a reabstraction, competes like any other body, and if it is the one that runs, the call
+///    throws `EntryPointNotFoundException`.
 ///
 /// CoreCLR falls back to the method's own body after that, which no type admitting the interface
 /// reaches: the search in 2 finds that body wherever the interface or a compatible instantiation of
@@ -87,7 +100,9 @@ module StaticVirtualDispatch =
     ///
     /// `Ambiguous` where no MethodImpl on the chain implements the method and two default bodies
     /// for exactly the call's instantiation are equally specific, which the call throws
-    /// `AmbiguousImplementationException` for; `NotOverridden` where nothing implements it, which
+    /// `AmbiguousImplementationException` for; `Reabstracted` where the default body the call would
+    /// run is a reabstraction, which it throws `EntryPointNotFoundException` for (measured: on a
+    /// class and on a value type alike); `NotOverridden` where nothing implements it, which
     /// for a type CoreCLR loads and a call it compiles cannot happen. `constrained` must be a type
     /// with a TypeDef row.
     let resolve
@@ -221,7 +236,13 @@ module StaticVirtualDispatch =
         // 2. A default body, exactly and then allowing variance.
         let fromDefault (state : TypeSystemState) (allowVariance : bool) =
             match defaultBody loggerFactory dotnetRuntimeDirs baseClassTypes allowVariance constrained method state with
-            | state, DefaultBody.Unique candidate -> state, Some (found state candidate.Interface candidate.Body)
+            | state, DefaultBody.Unique candidate ->
+                match candidate.Body.Body with
+                | MethodBody.Abstract -> state, Some (VirtualImplementation.Reabstracted candidate.Body)
+                | MethodBody.Il _
+                | MethodBody.InternalCall
+                | MethodBody.PInvoke
+                | MethodBody.RuntimeProvided _ -> state, Some (found state candidate.Interface candidate.Body)
             | state, DefaultBody.Conflict candidates ->
                 state, Some (VirtualImplementation.Ambiguous (candidates |> List.map _.Body))
             | state, DefaultBody.NotFound -> state, None
@@ -235,8 +256,8 @@ module StaticVirtualDispatch =
         | state, None -> state, VirtualImplementation.NotOverridden
 
     /// Resolve a `constrained.`-prefixed reference to a static abstract interface member down to
-    /// the implementation the constrained type supplies, returning it alongside its declaring
-    /// type's handle.
+    /// the implementation the constrained type supplies, or to the reabstraction that stands in
+    /// its place.
     ///
     /// Shared by `constrained. call` and `constrained. ldftn`, which pick their target the same
     /// way: CoreCLR routes both through `getCallInfo` with the constrained token, and the switch
@@ -262,9 +283,7 @@ module StaticVirtualDispatch =
         (methodToCall : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
         (concretizedMethod : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : TypeSystemState)
-        : TypeSystemState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
-          ConcreteTypeHandle
+        : TypeSystemState * ConstrainedStaticImplementation
         =
         let methodDeclAssy =
             state._LoadedAssemblies.ByDefinitionName methodToCall.DeclaringAssemblyFullName
@@ -310,15 +329,23 @@ module StaticVirtualDispatch =
                 opName
                 methodToCall.Name
         | VirtualImplementation.Unmodelled reason -> failwith $"%s{opName}: %s{reason}"
+        | VirtualImplementation.Reabstracted reabstraction when not reabstraction.IsStatic ->
+            failwith
+                $"%s{opName}: resolved non-static reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}"
+        | VirtualImplementation.Reabstracted reabstraction ->
+            state, ConstrainedStaticImplementation.Reabstracted reabstraction
         | VirtualImplementation.Found implementation when not implementation.Definition.IsStatic ->
             failwith
                 $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Definition.Owner}::%s{implementation.Definition.Name}"
         | VirtualImplementation.Found implementation ->
-            MethodConcretisation.concretizeMethodWithAllGenerics
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                implementation.TypeGenerics
-                implementation.Definition
-                implementation.MethodGenerics
-                state
+            let state, implementation, declaringType =
+                MethodConcretisation.concretizeMethodWithAllGenerics
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    implementation.TypeGenerics
+                    implementation.Definition
+                    implementation.MethodGenerics
+                    state
+
+            state, ConstrainedStaticImplementation.Runs (implementation, declaringType)
