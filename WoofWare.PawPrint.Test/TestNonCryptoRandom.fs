@@ -144,7 +144,8 @@ module TestNonCryptoRandom =
                 UnixSystem.defaultUnixPlatform
                 UnixSystem.pipedStandardStreams
                 (ThreadId 0)
-                (CpuId 0))
+                (CpuId 0)
+             |> UnixBootImage.boot)
                 .Machine.EntropyPool
 
         // And that seed is part of PawPrint's replay contract, because every

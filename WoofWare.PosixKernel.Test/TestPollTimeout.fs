@@ -52,6 +52,7 @@ module TestPollTimeout =
     let private world : int * UnixSystem<int, string> =
         let system =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let system = Tasks.spawn task system
 

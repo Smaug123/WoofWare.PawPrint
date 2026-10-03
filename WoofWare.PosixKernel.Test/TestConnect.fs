@@ -28,17 +28,21 @@ module TestConnect =
         SimulatedUnixPlatform.internetAddressFamily
 
     /// A simulated process on the flavour asked for, before anything has
-    /// happened to it.
-    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+    /// happened to it, on a machine with no local routes, booted from an image
+    /// `configure` configured.
+    let private systemOnWith
+        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
+        (platform : SimulatedUnixPlatform)
+        : UnixSystem<int, string>
+        =
+        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.withLocalAddresses UnixSystem.defaultLocalAddresses []
+        |> configure
+        |> UnixBootImage.boot
 
-        { system with
-            Machine =
-                { system.Machine with
-                    LocalRoutes = []
-                }
-        }
+    /// A simulated process on the flavour asked for, before anything has
+    /// happened to it, on a machine with no local routes.
+    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> = systemOnWith id platform
 
 
     let private platforms : SimulatedUnixPlatform list =
@@ -486,15 +490,14 @@ module TestConnect =
         let holder =
             streamSocket (boundAt (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 40000us)) SocketPhase.Idle
 
-        let _, system = withSocket (SocketId 0L) holder (systemOn platform)
+        let _, system =
+            withSocket
+                (SocketId 0L)
+                holder
+                (systemOnWith (UnixBootImage.withEphemeralPortRange (40000us, 40000us)) platform)
 
         let fd, system =
             withSocket (SocketId 1L) (streamSocket None SocketPhase.Idle) system
-
-        let system =
-            { system with
-                Machine = UnixMachineState.withEphemeralPortRange (40000us, 40000us) system.Machine
-            }
 
         refusedBy fd (Some (inetFamily platform)) (Some (loopback 5000us)) system
         |> shouldEqual (ConnectRefusal.EphemeralPortsExhausted (40000us, 40000us))

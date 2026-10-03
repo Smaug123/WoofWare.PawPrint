@@ -36,6 +36,7 @@ module TestSuppliedPipe =
             (Map.add 0 (LaunchDescriptor.Supplied bytes) UnixSystem.pipedStandardStreams)
             0
             (CpuId 0)
+        |> UnixBootImage.boot
 
     /// A read of `count` from descriptor 0, which must be answered.
     let private read (count : int) (system : UnixSystem<int, string>) : ReadAnswer * UnixSystem<int, string> =

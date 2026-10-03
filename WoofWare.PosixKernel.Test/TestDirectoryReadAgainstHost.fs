@@ -307,6 +307,7 @@ module TestDirectoryReadAgainstHost =
                 try
                     let system : UnixSystem<int, string> =
                         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                        |> UnixBootImage.boot
 
                     let system =
                         Answered.mkdir (PathArg.ofPath (rooted "d")) 0o755 system
@@ -594,6 +595,7 @@ module TestDirectoryReadAgainstHost =
             try
                 let system : UnixSystem<int, string> =
                     UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                    |> UnixBootImage.boot
 
                 let fd, system =
                     Answered.openPath creating (rooted "f") 0o644 system |> completed "creat f"

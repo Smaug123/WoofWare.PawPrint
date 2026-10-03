@@ -137,7 +137,8 @@ module TestCloneFile =
 
     let private later : int64 = 5_000_000_000L
 
-    let private systemOn
+    let private systemOnWith
+        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
         (platform : SimulatedUnixPlatform)
         (credentials : Credentials)
         (vfs : VirtualFileSystem)
@@ -145,6 +146,9 @@ module TestCloneFile =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials context credentials
+            |> configure
+            |> UnixBootImage.boot
 
         { system with
             Machine =
@@ -156,7 +160,14 @@ module TestCloneFile =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
-        |> UnixSystem.withCredentials context credentials
+
+    let private systemOn
+        (platform : SimulatedUnixPlatform)
+        (credentials : Credentials)
+        (vfs : VirtualFileSystem)
+        : UnixSystem<int, string>
+        =
+        systemOnWith id platform credentials vfs
 
     let private clone
         (source : string)
@@ -364,8 +375,7 @@ module TestCloneFile =
                     vfs
 
             let system =
-                systemOn SimulatedUnixPlatform.macOsArm64 u501 vfs
-                |> UnixSystem.withUmask context (mode 0o777)
+                systemOnWith (UnixBootImage.withUmask context (mode 0o777)) SimulatedUnixPlatform.macOsArm64 u501 vfs
 
             let now = UnixMachineState.realtime system.Machine
 
@@ -407,7 +417,7 @@ module TestCloneFile =
         |> Result.map fst
         |> shouldEqual (Error (CloneFileRefusal.DirectorySource (inodeAt tree "/d")))
 
-        clone "f" "new" 0x4 (UnixSystem.withCredentials context Owners.root darwin)
+        clone "f" "new" 0x4 (systemOn SimulatedUnixPlatform.macOsArm64 Owners.root tree)
         |> Result.map fst
         |> shouldEqual (Error CloneFileRefusal.PrivilegedCaller)
 
@@ -422,9 +432,7 @@ module TestCloneFile =
         |> shouldEqual (Error (CloneFileRefusal.UnmodelledFlavour SimulatedUnixFlavour.Linux))
 
         let nfs =
-            { darwin with
-                Machine = UnixMachineState.withMount (Some EmulatedMount.Nfs) darwin.Machine
-            }
+            systemOnWith (UnixBootImage.withMount (Some EmulatedMount.Nfs)) SimulatedUnixPlatform.macOsArm64 u501 tree
 
         clone "f" "new" 0x4 nfs
         |> Result.map fst

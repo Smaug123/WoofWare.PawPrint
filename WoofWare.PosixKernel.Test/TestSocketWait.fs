@@ -26,6 +26,7 @@ module TestSocketWait =
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         { system with
             Machine =

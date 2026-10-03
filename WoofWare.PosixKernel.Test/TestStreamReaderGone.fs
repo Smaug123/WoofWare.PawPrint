@@ -57,6 +57,7 @@ module TestStreamReaderGone =
         : UnixSystem<int, string>
         =
         UnixSystem.initial platform (launch gone) 0 (CpuId 0)
+        |> UnixBootImage.boot
         |> Tasks.spawn 1
         |> withSigPipe disposition
 
@@ -291,7 +292,8 @@ module TestStreamReaderGone =
             for disposition in dispositions do
                 let system =
                     UnixSystem.initial platform (launch (Set.singleton 1)) 0 (CpuId 0)
-                    |> UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" 1)
+                    |> UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" 1)
+                    |> UnixBootImage.boot
                     |> withSigPipe disposition
 
                 match WriteOutcomes.admitThenWrite system.Leader 1 UserBuffer.Mapped (payload 0 5) system with

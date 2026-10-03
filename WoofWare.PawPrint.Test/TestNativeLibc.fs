@@ -34,6 +34,7 @@ module TestNativeLibc =
         : UnixSystem<int, NativeSignalHandler>
         =
         UnixSystem.initial (platformOf numbering) UnixSystem.pipedStandardStreams leader (CpuId 0)
+        |> UnixBootImage.boot
         |> StartupSignalDispositions.install "test" numbering inheritedIgnores
 
     let private initial (numbering : SignalNumbering) : UnixSystem<int, NativeSignalHandler> =
@@ -622,22 +623,16 @@ module TestNativeLibc =
 
     [<Test>]
     let ``inherited ignores are set as the process is created`` () : unit =
-        EmulatedKernel.createInheritingSignalIgnores
-            "test"
-            (Set.singleton Signal.SIGHUP)
-            SimulatedUnixPlatform.linuxX64
-            StandardStreamsConfig.piped
+        EmulatedKernel.image SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped
+        |> EmulatedKernel.bootInheritingSignalIgnores "test" (Set.singleton Signal.SIGHUP)
         |> EmulatedKernel.unix
         |> KernelSignals.disposition Signal.SIGHUP
         |> shouldEqual SignalDisposition.Ignore
 
         let exn =
             Assert.Throws (fun () ->
-                EmulatedKernel.createInheritingSignalIgnores
-                    "the context"
-                    (Set.singleton Signal.SIGTERM)
-                    SimulatedUnixPlatform.linuxX64
-                    StandardStreamsConfig.piped
+                EmulatedKernel.image SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped
+                |> EmulatedKernel.bootInheritingSignalIgnores "the context" (Set.singleton Signal.SIGTERM)
                 |> ignore<EmulatedKernel>
             )
 

@@ -35,8 +35,9 @@ module TestCpuPlacement =
     let private rotationFrom (seed : int) : int = abs (seed % 100_000)
 
     let private kernelWith (count : int) : EmulatedKernel =
-        EmulatedKernel.initial
-        |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount count)
+        EmulatedKernel.initialImage
+        |> UnixBootImage.withProcessorCount count
+        |> EmulatedKernel.boot
 
     let private cpuIndex (CpuId.CpuId i : CpuId) : int = i
 
@@ -111,9 +112,10 @@ module TestCpuPlacement =
             let configured = countFrom countSeed
 
             let kernel =
-                EmulatedKernel.initial
-                |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 1)
+                EmulatedKernel.initialImage
+                |> UnixBootImage.withProcessorCount 1
                 |> EmulatedKernel.withEnvironment "test" [ $"DOTNET_PROCESSOR_COUNT=%d{configured}" ]
+                |> EmulatedKernel.boot
 
             let cpu =
                 cpuIndex (EmulatedKernel.cpuForRotation (rotationFrom rotationSeed) kernel)
@@ -185,7 +187,7 @@ module TestCpuPlacement =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
-        |> fun state -> state.MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount count))
+        |> fun state -> state.MapKernel (fun _ -> kernelWith count)
 
     let private cpuOf (thread : ThreadId) (state : IlMachineState) : CpuId =
         UnixTaskTable.cpuOf thread state.Kernel.Tasks

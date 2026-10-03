@@ -173,8 +173,9 @@ module TestMonotonicTimestamp =
             platforms
             |> List.forall (fun platform ->
                 let shifted =
-                    (EmulatedKernel.create platform StandardStreamsConfig.piped
+                    (EmulatedKernel.image platform StandardStreamsConfig.piped
                      |> EmulatedKernel.withWallClockEpochMs epochMs
+                     |> EmulatedKernel.boot
                      |> EmulatedKernel.withVirtualClockTicks clockMs)
                         .Machine
 

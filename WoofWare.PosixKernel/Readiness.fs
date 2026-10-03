@@ -334,7 +334,7 @@ module DarwinReadiness =
     /// and explained from XNU's source, in `kevent-write-data.c`.
     ///
     /// Loudly partial: the machine must be Darwin-flavoured, with a
-    /// `TcpSendSpace` that `UnixMachineState.withTcpSendSpace` admits, and the
+    /// `TcpSendSpace` that `UnixBootImage.withTcpSendSpace` admits, and the
     /// socket one `modelsSocket` admits, connected or refused, which are the
     /// states in which its WRITE filter is ready.
     let sendBufferSpace (socket : SocketDescription) (machine : UnixMachineState) : int64 =
@@ -351,7 +351,7 @@ module DarwinReadiness =
             || sendSpace > UnixMachineState.darwinSocketBufferMax
         then
             failwith
-                $"DarwinReadiness.sendBufferSpace: the machine's TcpSendSpace is %d{sendSpace}, which UnixMachineState.withTcpSendSpace refuses on Darwin (this is a bug in a caller that assembled the machine by hand)."
+                $"DarwinReadiness.sendBufferSpace: the machine's TcpSendSpace is %d{sendSpace}, which UnixBootImage.withTcpSendSpace refuses on Darwin (this is a bug in a caller that assembled the machine by hand)."
 
         if not (modelsSocket socket) then
             failwith

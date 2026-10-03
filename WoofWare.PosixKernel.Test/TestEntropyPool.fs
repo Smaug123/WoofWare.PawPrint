@@ -160,6 +160,7 @@ module TestEntropyPool =
     let ``the default seed's first bytes`` () : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let bytes, _ = EntropyPool.draw 16 system.Machine.EntropyPool
         hex bytes |> shouldEqual "21a2be4a9ff6b02c8989142347031794"
@@ -167,5 +168,6 @@ module TestEntropyPool =
         // The flavour does not choose the seed.
         let darwin : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         darwin.Machine.EntropyPool |> shouldEqual system.Machine.EntropyPool

@@ -390,7 +390,7 @@ module FileSystemStatistics =
     /// `EmulatedFileSystemType.isReportableUnder`), naming `context` as the
     /// caller that was handed the pair.
     ///
-    /// `UnixSystem.initial` and `UnixMachineState.withMount` keep the pair
+    /// `UnixSystem.initial` and `UnixBootImage.withMount` keep the pair
     /// coherent, but a machine record assembled field by field bypasses both.
     let assertCoherent (context : string) (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : unit =
         let flavour = SimulatedUnixPlatform.flavour platform

@@ -528,6 +528,8 @@ module TestPermissionStanding =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials context credentials
+            |> UnixBootImage.boot
 
         { system with
             Machine =
@@ -539,7 +541,6 @@ module TestPermissionStanding =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
-        |> UnixSystem.withCredentials context credentials
 
     let private path (p : string) : UnixPath = UnixPath.parseOrFail context p
 

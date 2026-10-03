@@ -20,6 +20,18 @@ type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         Leader : 'Task
     }
 
+/// A simulated process and the machine it runs on before either has run: what
+/// `UnixSystem.initial` makes, which the setters in `UnixBootImage` configure
+/// and `UnixBootImage.boot` turns into the `UnixSystem` that syscalls take.
+///
+/// Opaque, so that the only way to the system inside it is `boot`, after which
+/// no setter applies.
+type UnixBootImage<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    internal
+        {
+            System : UnixSystem<'Task, 'Handler>
+        }
+
 /// What the entry point returns, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
 type SyscallAnswer =

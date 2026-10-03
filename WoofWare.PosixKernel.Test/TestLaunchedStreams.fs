@@ -270,7 +270,9 @@ module TestLaunchedStreams =
     /// A process launched with `UnixSystem.pipedStandardStreams`, ignoring
     /// SIGPIPE.
     let private initialSystem (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system = UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let system =
+            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         { system with
             Process =
@@ -407,6 +409,7 @@ module TestLaunchedStreams =
     let private edgesAfter (writes : int list) : bool * bool list =
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let port, system =
             match UnixPoll.epollCreate1 0 system with
@@ -461,6 +464,7 @@ module TestLaunchedStreams =
     let ``standard input and output may be registered with epoll, and a pipe the process made may not`` () : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let port, system =
             match UnixPoll.epollCreate1 0 system with
@@ -496,6 +500,7 @@ module TestLaunchedStreams =
         for platform in platforms do
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let input, output, error = pipeOf 0 system, pipeOf 1 system, pipeOf 2 system
 
@@ -520,6 +525,7 @@ module TestLaunchedStreams =
         for platform in platforms do
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let output = pipeOf 1 system
             let pipe = UnixMachineState.pipe output system.Machine

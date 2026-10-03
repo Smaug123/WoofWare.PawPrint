@@ -169,6 +169,7 @@ module TestEntropyAgainstHost =
 
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let flagsToTry : uint32 list = [ 0u .. 16u ] @ [ 0x8000_0000u ; UInt32.MaxValue ]
 
@@ -259,6 +260,7 @@ module TestEntropyAgainstHost =
 
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let lengths : uint64 list =
             [

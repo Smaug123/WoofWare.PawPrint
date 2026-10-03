@@ -72,6 +72,7 @@ module TestSocketSyscallAgainstHost =
 
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let numbering =
                 match flavour with

@@ -108,6 +108,7 @@ module TestDeliveryLog =
         let property (platform : SimulatedUnixPlatform, writes : (int * int) list) : unit =
             let initial : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let final, reference =
                 ((initial, ImmutableArray<Delivery>.Empty), List.indexed writes)

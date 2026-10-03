@@ -39,6 +39,7 @@ module TestUnixWait =
     let private world : UnixSystem<int, string> * int * OpenFileDescriptionId * OpenFileDescriptionId =
         let system =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let lockerFd, registry =
             FileDescriptorRegistry.createEpoll system.Process.FileDescriptors

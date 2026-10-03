@@ -439,6 +439,8 @@ module TestAccess =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials context credentials
+            |> UnixBootImage.boot
 
         { system with
             Machine =
@@ -450,7 +452,6 @@ module TestAccess =
                     CurrentDirectoryInode = inodeAt vfs cwd
                 }
         }
-        |> UnixSystem.withCredentials context credentials
 
     /// What an `access`-family call answered, as the probe printed it.
     let private answered (result : Result<SyscallAnswer, AccessRefusal>) : string =

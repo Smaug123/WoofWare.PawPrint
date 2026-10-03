@@ -44,7 +44,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// stale. That derivation is also what makes the path the **physical**
         /// one, every symlink resolved away, which is what `getcwd(3)` reports
         /// and so not necessarily the spelling a client passed to
-        /// `UnixSystem.withFileSystemAndCurrentDirectory`.
+        /// `UnixBootImage.withFileSystemAndCurrentDirectory`.
         ///
         /// Derived when the kernel is built, by the one setter that takes the
         /// current directory and the filesystem together — so this is not a
@@ -71,7 +71,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// the truth about a simulated process by default, because this library
         /// models no `exec(2)`: nothing started this process from a file, and the
         /// emulated filesystem contains no image of it. Contrast
-        /// `UnixMachineState.withMount`, whose `None` *does* mean "derive one from
+        /// `UnixBootImage.withMount`, whose `None` *does* mean "derive one from
         /// the flavour".
         ///
         /// Not resolved against `FileSystem`. Real `realpath` succeeds only if
@@ -92,7 +92,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// thread. Held at the width the platform's `umask(2)` stores
         /// (`SimulatedUnixPlatform.umaskStoredBits`): never above 0o777 on Linux.
         /// The process replaces it with `UnixSystem.umask`, and a client sets
-        /// the one it starts with using `UnixSystem.withUmask`; both keep it at
+        /// the one it starts with using `UnixBootImage.withUmask`; both keep it at
         /// that width.
         ///
         /// Deliberately *not* consulted for seed entries. A seed describes a
@@ -104,7 +104,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// The ID `getpid(2)` reports for the simulated process.
         ///
         /// Fixed for the whole run: a process keeps its ID from `fork` to exit.
-        /// `UnixSystem.withProcessId` sets it before the process has created a
+        /// `UnixBootImage.withProcessId` sets it before the process has created a
         /// thread.
         ProcessId : ProcessId
         /// Pure data model of the simulated process's signal dispositions,
@@ -116,40 +116,12 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// Whether the process writes a core dump when a signal whose default
         /// action dumps core kills it. Fixed for the whole run: this library
         /// models no `setrlimit(2)`; a client sets it once with
-        /// `UnixProcessState.withCoreDumps`.
+        /// `UnixBootImage.withCoreDumps`.
         CoreDumps : CoreDumps
     }
 
 [<RequireQualifiedAccess>]
 module UnixProcessState =
-
-    /// Set the path to the executable that started the simulated process, or
-    /// `None` to report that it has none. `None` is preserved rather than
-    /// defaulted; see `UnixProcessState.ProcessPath`.
-    ///
-    /// `context` prefixes the rejection a forged path earns, and is the client's
-    /// to choose: the host that has to fix one knows it by whatever name the
-    /// client's own configuration gives it, not by this field's.
-    let withProcessPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (path : AbsoluteUnixPath option)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : UnixProcessState<'Task, 'Handler>
-        =
-        { proc with
-            ProcessPath = path |> Option.map (AbsoluteUnixPath.assertValid context)
-        }
-
-    /// Set whether the process writes a core dump when a signal whose default
-    /// action dumps core kills it. See `UnixProcessState.CoreDumps`.
-    let withCoreDumps<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (coreDumps : CoreDumps)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : UnixProcessState<'Task, 'Handler>
-        =
-        { proc with
-            CoreDumps = coreDumps
-        }
 
     /// Whether the simulated process is exempt from the permission rules a kernel
     /// applies to everyone else. This is `Credentials.privilege` of its
@@ -169,22 +141,6 @@ module UnixProcessState =
         : CallerPrivilege
         =
         Credentials.privilege proc.Credentials
-
-    /// Set the environment the simulated process was started with, replacing
-    /// whatever it held. The entries are kept in the order given, duplicates and
-    /// all; see `UnixProcessState.Environment`.
-    ///
-    /// `context` prefixes the rejection a forged entry earns; see
-    /// `withProcessPath` for why the client supplies it.
-    let withEnvironment<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (env : UnixByteString list)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : UnixProcessState<'Task, 'Handler>
-        =
-        { proc with
-            Environment = env |> List.map (UnixByteString.assertValid context)
-        }
 
     /// The environment the process was started with, entry by entry, in order.
     /// See `UnixProcessState.Environment`.

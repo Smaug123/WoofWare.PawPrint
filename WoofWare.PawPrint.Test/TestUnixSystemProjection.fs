@@ -26,13 +26,12 @@ module TestUnixSystemProjection =
     /// Its leader is a thread no process would have as one, because PawPrint's
     /// leader is always `ThreadId 0`; nothing here reads it but the projection.
     let private distinctive : EmulatedKernel =
-        EmulatedKernel.initial
-        |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4)
-        |> EmulatedKernel.mapUnix (
-            UnixSystem.withCredentials
-                "test"
-                (Credentials.ofIds (UserId.parseOrFail "test" 7u) (GroupId.parseOrFail "test" 9u) [])
-        )
+        EmulatedKernel.initialImage
+        |> UnixBootImage.withProcessorCount 4
+        |> UnixBootImage.withCredentials
+            "test"
+            (Credentials.ofIds (UserId.parseOrFail "test" 7u) (GroupId.parseOrFail "test" 9u) [])
+        |> EmulatedKernel.boot
         |> KernelTasks.ensure (ThreadId 3)
         |> fun kernel ->
             { kernel with
@@ -93,7 +92,10 @@ module TestUnixSystemProjection =
                     | Error error -> failwith $"spawn failed: %O{error}"
 
                 {
-                    Machine = UnixMachineState.withProcessorCount 5 spawned.Machine
+                    Machine =
+                        { spawned.Machine with
+                            ProcessorCount = 5
+                        }
                     Process =
                         { spawned.Process with
                             Credentials =
@@ -128,7 +130,10 @@ module TestUnixSystemProjection =
 
             let stepped =
                 { stepped with
-                    Machine = UnixMachineState.withProcessorCount count stepped.Machine
+                    Machine =
+                        { stepped.Machine with
+                            ProcessorCount = count
+                        }
                 }
 
             let after = EmulatedKernel.withUnix stepped before
@@ -137,6 +142,8 @@ module TestUnixSystemProjection =
             && after.Process = before.Process
             && after.Tasks = before.Tasks
             && after.Leader = before.Leader
-            && after.Machine = UnixMachineState.withProcessorCount count before.Machine
+            && after.Machine = { before.Machine with
+                                   ProcessorCount = count
+                               }
 
         Check.QuickThrowOnFailure property

@@ -28,9 +28,10 @@ module TestMinipalRandom =
     let private linuxPlatforms : SimulatedUnixPlatform list =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.linuxArm64 ]
 
-    /// A fresh Linux kernel whose pool starts at `seed`.
-    let private linuxAt (platform : SimulatedUnixPlatform) (seed : uint64) : EmulatedKernel =
-        let kernel = EmulatedKernel.create platform StandardStreamsConfig.piped
+    /// A process booted from `image`, whose entropy pool is seeded with
+    /// `seed`.
+    let private bootedWithPool (image : UnixBootImage<ThreadId, NativeSignalHandler>) (seed : uint64) : EmulatedKernel =
+        let kernel = EmulatedKernel.boot image
 
         { kernel with
             Machine =
@@ -38,6 +39,10 @@ module TestMinipalRandom =
                     EntropyPool = EntropyPool.ofSeed seed
                 }
         }
+
+    /// A fresh kernel on `platform` whose pool starts at `seed`.
+    let private linuxAt (platform : SimulatedUnixPlatform) (seed : uint64) : EmulatedKernel =
+        bootedWithPool (EmulatedKernel.image platform StandardStreamsConfig.piped) seed
 
     let private genLength : Gen<int> =
         Gen.oneof [ Gen.choose (0, 24) ; Gen.choose (250, 270) ; Gen.choose (0, 1100) ]
@@ -212,9 +217,11 @@ module TestMinipalRandom =
         : unit
         =
         let property (seed : uint64) (epochSeconds : int64) (lengths : int list) : unit =
-            let start = linuxAt SimulatedUnixPlatform.linuxX64 seed
-
-            let start = EmulatedKernel.withWallClockEpochMs (epochSeconds * 1000L + 999L) start
+            let start =
+                bootedWithPool
+                    (EmulatedKernel.image SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped
+                     |> EmulatedKernel.withWallClockEpochMs (epochSeconds * 1000L + 999L))
+                    seed
 
             let actual, _ =
                 lengths
@@ -340,7 +347,8 @@ module TestMinipalRandom =
                 UnixEntropy.getEntropy
                     UserBuffer.Mapped
                     32UL
-                    (UnixSystem.initial platform UnixSystem.pipedStandardStreams (ThreadId 0) (CpuId 0))
+                    (UnixSystem.initial platform UnixSystem.pipedStandardStreams (ThreadId 0) (CpuId 0)
+                     |> UnixBootImage.boot)
             with
             | Ok (GetEntropyAnswer.Completed draw, system) -> EntropyDraw.bytes draw, system
             | other -> failwith $"%A{other}"

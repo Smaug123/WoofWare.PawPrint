@@ -144,6 +144,7 @@ module TestSocketCreation =
         | Ok (domain, socketType, protocol) ->
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             match UnixSocket.socket domain socketType protocol system with
             | Ok (Ok _) -> "Ok"
@@ -314,6 +315,7 @@ module TestSocketCreation =
 
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let domain, socketType, protocol =
             match SocketArgumentsPal.socketArguments platform family kind protocol with
@@ -493,6 +495,7 @@ module TestSocketCreation =
                                     socketType
                                     protocol
                                     (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                                     |> UnixBootImage.boot
                                     : UnixSystem<int, string>)
                             with
                             | Ok (Error error) -> Some (UnixErrorPal.toPal error)

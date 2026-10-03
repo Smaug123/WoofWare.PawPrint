@@ -61,7 +61,9 @@ module TestBlockingAccept =
     /// port 5000: its descriptor.
     let private world (platform : SimulatedUnixPlatform) : int * UnixSystem<int, string> =
         let system =
-            (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0), [ 1..6 ])
+            (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+             |> UnixBootImage.boot,
+             [ 1..6 ])
             ||> List.fold (fun system name -> Tasks.ensure name system)
 
         listenerAt 5000us system

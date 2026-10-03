@@ -36,6 +36,7 @@ module TestUnixTaskLifecycle =
     let private world (platform : SimulatedUnixPlatform) : UnixSystem<int, string> * OpenFileDescriptionId =
         let system =
             UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let create =
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
