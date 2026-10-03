@@ -1,0 +1,148 @@
+# Linux 6.18.5 aarch64
+G stream family=0                fresh     len 0..1: EINVAL local=0.0.0.0:0 peer=no
+G stream family=0                fresh     len 2..128: OK local=0.0.0.0:0 peer=no
+G stream family=0                fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+G stream family=1                fresh     len 0..15: EINVAL local=0.0.0.0:0 peer=no
+G stream family=1                fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0 peer=no
+G stream family=1                fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+G stream family=2                fresh     len 0..15: EINVAL local=0.0.0.0:0 peer=no
+G stream family=2                fresh     len 16..128: ECONNREFUSED local=0.0.0.0:new peer=no
+G stream family=2                fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+G stream family=3                fresh     len 0..15: EINVAL local=0.0.0.0:0 peer=no
+G stream family=3                fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0 peer=no
+G stream family=3                fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+G stream family=30               fresh     len 0..15: EINVAL local=0.0.0.0:0 peer=no
+G stream family=30               fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0 peer=no
+G stream family=30               fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+G stream family=255              fresh     len 0..15: EINVAL local=0.0.0.0:0 peer=no
+G stream family=255              fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0 peer=no
+G stream family=255              fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+G stream family=258              fresh     len 0..15: EINVAL local=0.0.0.0:0 peer=no
+G stream family=258              fresh     len 16..128: EAFNOSUPPORT local=0.0.0.0:0 peer=no
+G stream family=258              fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+U stream AF_UNSPEC 127.0.0.1:lst fresh     len 0..1: EINVAL local=0.0.0.0:0 peer=no
+U stream AF_UNSPEC 127.0.0.1:lst fresh     len 2..128: OK local=0.0.0.0:0 peer=no
+U stream AF_UNSPEC 127.0.0.1:lst fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+U stream AF_UNSPEC zero          fresh     len 0..1: EINVAL local=0.0.0.0:0 peer=no
+U stream AF_UNSPEC zero          fresh     len 2..128: OK local=0.0.0.0:0 peer=no
+U stream AF_UNSPEC zero          fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer fresh     len 0..1: EINVAL local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer fresh     len 2..128: OK local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC zero           fresh     len 0..1: EINVAL local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC zero           fresh     len 2..128: OK local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC zero           fresh     len 129..300: EINVAL local=0.0.0.0:0 peer=no
+U stream AF_UNSPEC 127.0.0.1:lst bound     len 0..1: EINVAL local=127.0.0.1:same peer=no
+U stream AF_UNSPEC 127.0.0.1:lst bound     len 2..128: OK local=127.0.0.1:same peer=no
+U stream AF_UNSPEC 127.0.0.1:lst bound     len 129..300: EINVAL local=127.0.0.1:same peer=no
+U stream AF_UNSPEC zero          bound     len 0..1: EINVAL local=127.0.0.1:same peer=no
+U stream AF_UNSPEC zero          bound     len 2..128: OK local=127.0.0.1:same peer=no
+U stream AF_UNSPEC zero          bound     len 129..300: EINVAL local=127.0.0.1:same peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer bound     len 0..1: EINVAL local=127.0.0.1:same peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer bound     len 2..128: OK local=127.0.0.1:0 peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer bound     len 129..300: EINVAL local=127.0.0.1:same peer=no
+U dgram AF_UNSPEC zero           bound     len 0..1: EINVAL local=127.0.0.1:same peer=no
+U dgram AF_UNSPEC zero           bound     len 2..128: OK local=127.0.0.1:0 peer=no
+U dgram AF_UNSPEC zero           bound     len 129..300: EINVAL local=127.0.0.1:same peer=no
+U stream AF_UNSPEC 127.0.0.1:lst wildbound len 0..1: EINVAL local=0.0.0.0:same peer=no
+U stream AF_UNSPEC 127.0.0.1:lst wildbound len 2..128: OK local=0.0.0.0:same peer=no
+U stream AF_UNSPEC 127.0.0.1:lst wildbound len 129..300: EINVAL local=0.0.0.0:same peer=no
+U stream AF_UNSPEC zero          wildbound len 0..1: EINVAL local=0.0.0.0:same peer=no
+U stream AF_UNSPEC zero          wildbound len 2..128: OK local=0.0.0.0:same peer=no
+U stream AF_UNSPEC zero          wildbound len 129..300: EINVAL local=0.0.0.0:same peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer wildbound len 0..1: EINVAL local=0.0.0.0:same peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer wildbound len 2..128: OK local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer wildbound len 129..300: EINVAL local=0.0.0.0:same peer=no
+U dgram AF_UNSPEC zero           wildbound len 0..1: EINVAL local=0.0.0.0:same peer=no
+U dgram AF_UNSPEC zero           wildbound len 2..128: OK local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC zero           wildbound len 129..300: EINVAL local=0.0.0.0:same peer=no
+U stream AF_UNSPEC 127.0.0.1:lst connected len 0..1: EINVAL local=127.0.0.1:same peer=yes
+U stream AF_UNSPEC 127.0.0.1:lst connected len 2..128: OK local=0.0.0.0:same peer=no
+U stream AF_UNSPEC 127.0.0.1:lst connected len 129..300: EINVAL local=127.0.0.1:same peer=yes
+U stream AF_UNSPEC zero          connected len 0..1: EINVAL local=127.0.0.1:same peer=yes
+U stream AF_UNSPEC zero          connected len 2..128: OK local=0.0.0.0:same peer=no
+U stream AF_UNSPEC zero          connected len 129..300: EINVAL local=127.0.0.1:same peer=yes
+U dgram AF_UNSPEC 127.0.0.1:peer connected len 0..1: EINVAL local=127.0.0.1:same peer=yes
+U dgram AF_UNSPEC 127.0.0.1:peer connected len 2..128: OK local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC 127.0.0.1:peer connected len 129..300: EINVAL local=127.0.0.1:same peer=yes
+U dgram AF_UNSPEC zero           connected len 0..1: EINVAL local=127.0.0.1:same peer=yes
+U dgram AF_UNSPEC zero           connected len 2..128: OK local=0.0.0.0:0 peer=no
+U dgram AF_UNSPEC zero           connected len 129..300: EINVAL local=127.0.0.1:same peer=yes
+U stream AF_UNSPEC 127.0.0.1:lst listening len 0..1: EINVAL local=127.0.0.1:same peer=no
+U stream AF_UNSPEC 127.0.0.1:lst listening len 2..128: OK local=127.0.0.1:same peer=no
+U stream AF_UNSPEC 127.0.0.1:lst listening len 129..300: EINVAL local=127.0.0.1:same peer=no
+U stream AF_UNSPEC zero          listening len 0..1: EINVAL local=127.0.0.1:same peer=no
+U stream AF_UNSPEC zero          listening len 2..128: OK local=127.0.0.1:same peer=no
+U stream AF_UNSPEC zero          listening len 129..300: EINVAL local=127.0.0.1:same peer=no
+Z stream AF_INET   0.0.0.0:0     fresh    : ECONNREFUSED local=0.0.0.0:new peer=no
+Z stream AF_INET   0.0.0.0:0     bound    : ECONNREFUSED local=127.0.0.1:same peer=no
+Z stream AF_INET   0.0.0.0:0     wildbound: ECONNREFUSED local=0.0.0.0:same peer=no
+Z stream AF_INET   0.0.0.0:0     connected: EISCONN local=127.0.0.1:same peer=yes
+Z stream AF_INET   0.0.0.0:0     listening: EISCONN local=127.0.0.1:same peer=no
+Z stream AF_INET   127.0.0.1:0   fresh    : ECONNREFUSED local=0.0.0.0:new peer=no
+Z stream AF_INET   127.0.0.1:0   bound    : ECONNREFUSED local=127.0.0.1:same peer=no
+Z stream AF_INET   127.0.0.1:0   wildbound: ECONNREFUSED local=0.0.0.0:same peer=no
+Z stream AF_INET   127.0.0.1:0   connected: EISCONN local=127.0.0.1:same peer=yes
+Z stream AF_INET   127.0.0.1:0   listening: EISCONN local=127.0.0.1:same peer=no
+Z stream AF_INET   0.0.0.0:lst   fresh    : OK local=127.0.0.1:new peer=yes
+Z stream AF_INET   0.0.0.0:lst   bound    : OK local=127.0.0.1:same peer=yes
+Z stream AF_INET   0.0.0.0:lst   wildbound: OK local=127.0.0.1:same peer=yes
+Z stream AF_INET   0.0.0.0:lst   connected: EISCONN local=127.0.0.1:same peer=yes
+Z stream AF_INET   0.0.0.0:lst   listening: EISCONN local=127.0.0.1:same peer=no
+Z stream AF_INET   127.0.0.1:lst fresh    : OK local=127.0.0.1:new peer=yes
+Z stream AF_INET   127.0.0.1:lst bound    : OK local=127.0.0.1:same peer=yes
+Z stream AF_INET   127.0.0.1:lst wildbound: OK local=127.0.0.1:same peer=yes
+Z stream AF_INET   127.0.0.1:lst connected: EISCONN local=127.0.0.1:same peer=yes
+Z stream AF_INET   127.0.0.1:lst listening: EISCONN local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 0.0.0.0:0     fresh    : OK local=0.0.0.0:0 peer=no
+Z stream AF_UNSPEC 0.0.0.0:0     bound    : OK local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 0.0.0.0:0     wildbound: OK local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 0.0.0.0:0     connected: OK local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 0.0.0.0:0     listening: OK local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 127.0.0.1:0   fresh    : OK local=0.0.0.0:0 peer=no
+Z stream AF_UNSPEC 127.0.0.1:0   bound    : OK local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 127.0.0.1:0   wildbound: OK local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 127.0.0.1:0   connected: OK local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 127.0.0.1:0   listening: OK local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 0.0.0.0:lst   fresh    : OK local=0.0.0.0:0 peer=no
+Z stream AF_UNSPEC 0.0.0.0:lst   bound    : OK local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 0.0.0.0:lst   wildbound: OK local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 0.0.0.0:lst   connected: OK local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 0.0.0.0:lst   listening: OK local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 127.0.0.1:lst fresh    : OK local=0.0.0.0:0 peer=no
+Z stream AF_UNSPEC 127.0.0.1:lst bound    : OK local=127.0.0.1:same peer=no
+Z stream AF_UNSPEC 127.0.0.1:lst wildbound: OK local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 127.0.0.1:lst connected: OK local=0.0.0.0:same peer=no
+Z stream AF_UNSPEC 127.0.0.1:lst listening: OK local=127.0.0.1:same peer=no
+Z dgram  AF_INET   0.0.0.0:0     fresh    : OK local=127.0.0.1:new peer=no
+Z dgram  AF_INET   0.0.0.0:0     bound    : OK local=127.0.0.1:same peer=no
+Z dgram  AF_INET   0.0.0.0:0     wildbound: OK local=127.0.0.1:same peer=no
+Z dgram  AF_INET   0.0.0.0:0     connected: OK local=127.0.0.1:same peer=no
+Z dgram  AF_INET   127.0.0.1:0   fresh    : OK local=127.0.0.1:new peer=no
+Z dgram  AF_INET   127.0.0.1:0   bound    : OK local=127.0.0.1:same peer=no
+Z dgram  AF_INET   127.0.0.1:0   wildbound: OK local=127.0.0.1:same peer=no
+Z dgram  AF_INET   127.0.0.1:0   connected: OK local=127.0.0.1:same peer=no
+Z dgram  AF_INET   0.0.0.0:lst   fresh    : OK local=127.0.0.1:new peer=yes
+Z dgram  AF_INET   0.0.0.0:lst   bound    : OK local=127.0.0.1:same peer=yes
+Z dgram  AF_INET   0.0.0.0:lst   wildbound: OK local=127.0.0.1:same peer=yes
+Z dgram  AF_INET   0.0.0.0:lst   connected: OK local=127.0.0.1:same peer=yes
+Z dgram  AF_INET   127.0.0.1:lst fresh    : OK local=127.0.0.1:new peer=yes
+Z dgram  AF_INET   127.0.0.1:lst bound    : OK local=127.0.0.1:same peer=yes
+Z dgram  AF_INET   127.0.0.1:lst wildbound: OK local=127.0.0.1:same peer=yes
+Z dgram  AF_INET   127.0.0.1:lst connected: OK local=127.0.0.1:same peer=yes
+Z dgram  AF_UNSPEC 0.0.0.0:0     fresh    : OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 0.0.0.0:0     bound    : OK local=127.0.0.1:0 peer=no
+Z dgram  AF_UNSPEC 0.0.0.0:0     wildbound: OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 0.0.0.0:0     connected: OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 127.0.0.1:0   fresh    : OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 127.0.0.1:0   bound    : OK local=127.0.0.1:0 peer=no
+Z dgram  AF_UNSPEC 127.0.0.1:0   wildbound: OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 127.0.0.1:0   connected: OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 0.0.0.0:lst   fresh    : OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 0.0.0.0:lst   bound    : OK local=127.0.0.1:0 peer=no
+Z dgram  AF_UNSPEC 0.0.0.0:lst   wildbound: OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 0.0.0.0:lst   connected: OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 127.0.0.1:lst fresh    : OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 127.0.0.1:lst bound    : OK local=127.0.0.1:0 peer=no
+Z dgram  AF_UNSPEC 127.0.0.1:lst wildbound: OK local=0.0.0.0:0 peer=no
+Z dgram  AF_UNSPEC 127.0.0.1:lst connected: OK local=0.0.0.0:0 peer=no

@@ -168,11 +168,8 @@ type ConnectRefusal =
     /// `AF_UNSPEC` on a Linux stream socket in a phase other than idle, whose
     /// `tcp_disconnect` consequences are unmeasured.
     | LinuxUnspecOnPhase of socket : SocketId * phase : SocketPhase
-    /// `AF_UNSPEC` on a listening Darwin stream socket, unmeasured.
-    | DarwinUnspecOnListener of socket : SocketId
-    /// `AF_UNSPEC` with a declared length other than the measured one.
-    | UnspecDeclaredLength of flavour : SimulatedUnixFlavour * kind : SocketKind * declaredLength : int * measured : int
-    /// A datagram connect to the wildcard address, whose remapping is unmeasured.
+    /// A datagram connect to the wildcard address, which this library does not
+    /// model.
     | DatagramConnectToWildcard of socket : SocketId
 
 [<RequireQualifiedAccess>]
@@ -211,17 +208,8 @@ module ConnectRefusal =
             $"destination %s{InternetEndpoint.toString destination} is bound but nothing is listening there, and Darwin *drops* such a SYN rather than answering RST: the connect pends on the client's retransmission schedule (a blocking one was measured to stall into ETIMEDOUT), which this library cannot honour deterministically. Listen on the destination socket, or connect to a fully closed port."
         | ConnectRefusal.LinuxUnspecOnPhase (socket, phase) ->
             $"AF_UNSPEC on stream socket %O{socket} in %A{phase} under Linux runs tcp_disconnect, whose consequences for this phase (a connected socket's peer, a listener's queue) are unmeasured and unmodelled."
-        | ConnectRefusal.DarwinUnspecOnListener socket ->
-            $"AF_UNSPEC on listening stream socket %O{socket} under Darwin is unmeasured (the measured EOPNOTSUPP row used an AF_INET destination), so measure it rather than extrapolating."
-        | ConnectRefusal.UnspecDeclaredLength (flavour, kind, declaredLength, measured) ->
-            let extent =
-                match flavour, kind with
-                | SimulatedUnixFlavour.Linux, SocketKind.Datagram -> $"only %d{measured} and above are"
-                | _ -> $"only %d{measured} is"
-
-            $"AF_UNSPEC with a declared length of %d{declaredLength} on a %O{flavour} %O{kind} socket is unmeasured (%s{extent}), so measure it rather than guessing."
         | ConnectRefusal.DatagramConnectToWildcard socket ->
-            $"a datagram connect from socket %O{socket} to 0.0.0.0 is unmeasured (the kernels remap it, but which address the peer filter then holds was not probed), so measure it rather than guessing."
+            $"a datagram connect from socket %O{socket} to 0.0.0.0 is not modelled. Measured (sockaddr-connect-ladder.c, section Z), both kernels connect it to 127.0.0.1 at the given port, binding the socket there, and a port of 0 is EADDRNOTAVAIL on Darwin and a peer-less success on Linux; model that before connecting there."
 
 [<RequireQualifiedAccess>]
 module UnixConnection =
@@ -824,43 +812,81 @@ module UnixConnection =
                     // Measured, including against an AF_UNSPEC destination.
                     fail UnixError.EISCONN
                 | SocketPhase.Listening _ ->
-                    if family = 0 then
-                        Error (ConnectRefusal.DarwinUnspecOnListener socketId)
-                    else
-                        // Measured: EOPNOTSUPP, where Linux answers EISCONN.
-                        fail UnixError.EOPNOTSUPP
+                    // Measured: EOPNOTSUPP, where Linux answers EISCONN, for
+                    // AF_INET and AF_UNSPEC alike (`sockaddr-connect-ladder.c`,
+                    // U and Z).
+                    fail UnixError.EOPNOTSUPP
                 | SocketPhase.DatagramPeer _ ->
                     failwith
                         "UnixConnection.connectSocket: a stream socket holds SocketPhase.DatagramPeer. this kernel's socket invariants forbid that pairing, so this is a bug in the caller's state construction."
                 | SocketPhase.Idle ->
 
-                if family = 0 then
-                    // Measured at the exact sockaddr_in length:
-                    // EADDRNOTAVAIL, and the socket stays usable. Other
-                    // lengths are unmeasured.
-                    if declaredLength <> exactSize then
-                        Error (
-                            ConnectRefusal.UnspecDeclaredLength (
-                                SimulatedUnixFlavour.Darwin,
-                                SocketKind.Stream,
-                                declaredLength,
-                                exactSize
-                            )
-                        )
-                    else
-                        fail UnixError.EADDRNOTAVAIL
-                else
-
-                match lengthVerdict with
-                | BindLengthVerdict.Invalid -> fail UnixError.EINVAL
-                | BindLengthVerdict.RejectedBeforeCopy _
-                | BindLengthVerdict.Accepted ->
-
-                if family <> SimulatedUnixPlatform.internetAddressFamily then
+                // Measured (`sockaddr-connect-ladder.c`, G and U): the family
+                // is judged before the length, so any family but AF_UNSPEC and
+                // AF_INET is EAFNOSUPPORT at every length the copy takes, and
+                // binds nothing. AF_UNSPEC is then read exactly as AF_INET.
+                if family <> 0 && family <> SimulatedUnixPlatform.internetAddressFamily then
                     fail UnixError.EAFNOSUPPORT
                 else
 
+                // From here a socket with no address is bound to the wildcard
+                // and an ephemeral port before the length or the port is
+                // judged, and a failure keeps that binding: measured on a
+                // fresh socket, EINVAL at a length other than 16 and
+                // EADDRNOTAVAIL for port 0 each leave `0.0.0.0:<ephemeral>`.
+                // A connect that gets past both resolves its source as
+                // `attemptStream` does.
+                let failBound
+                    (error : UnixError)
+                    : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+                    =
+                    match sock.Binding with
+                    | Some _ -> fail error
+                    | None ->
+                        let candidate (port : uint16) : SocketBinding =
+                            {
+                                Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                                // No bind(2) ran.
+                                LockedAddress = None
+                                LockedPort = false
+                            }
+
+                        match
+                            UnixMachineState.allocateEphemeralPort
+                                EphemeralPortUse.Reserve
+                                socketId
+                                sock
+                                candidate
+                                system.Machine
+                        with
+                        | None -> Error (ConnectRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
+                        | Some (binding, machine) ->
+                            failed
+                                error
+                                { system with
+                                    Machine =
+                                        { machine with
+                                            Sockets =
+                                                Map.add
+                                                    socketId
+                                                    { sock with
+                                                        Binding = Some binding
+                                                    }
+                                                    machine.Sockets
+                                        }
+                                }
+
+                match lengthVerdict with
+                | BindLengthVerdict.Invalid -> failBound UnixError.EINVAL
+                | BindLengthVerdict.RejectedBeforeCopy _
+                | BindLengthVerdict.Accepted ->
+
                 match destination with
+                // Measured (`sockaddr-connect-ladder.c`, Z): a port of 0 is
+                // EADDRNOTAVAIL whatever the address, before the address is
+                // looked up -- to 0.0.0.0, 127.0.0.1, 127.0.0.2 and 8.8.8.8
+                // alike.
+                | Some dest when dest.Port = 0us -> failBound UnixError.EADDRNOTAVAIL
                 | Some dest -> attemptStream dest
                 | None ->
                     failwith
@@ -885,19 +911,10 @@ module UnixConnection =
             if family = 0 then
                 match flavour with
                 | SimulatedUnixFlavour.Linux ->
-                    if declaredLength < exactSize then
-                        Error (
-                            ConnectRefusal.UnspecDeclaredLength (
-                                SimulatedUnixFlavour.Linux,
-                                SocketKind.Datagram,
-                                declaredLength,
-                                exactSize
-                            )
-                        )
-                    else
-
-                    // Linux's `udp_disconnect`, connected or not (measured
-                    // both ways, `docs/probes/udp-connect/dissolve.py`): the
+                    // Linux's `udp_disconnect`, connected or not, at every
+                    // length the copy takes from 2 (measured both ways,
+                    // `docs/probes/udp-connect/dissolve.py`, and at every
+                    // length by `sockaddr-connect-ladder.c`, U): the
                     // peer filter goes; the address reverts to the wildcard
                     // unless `bind(2)` locked a concrete one; the port is
                     // dropped unless `bind(2)` chose it. So `0.0.0.0:5555`
@@ -953,18 +970,18 @@ module UnixConnection =
                                     }
                             }
                 | SimulatedUnixFlavour.Darwin ->
-                    if declaredLength <> exactSize then
-                        Error (
-                            ConnectRefusal.UnspecDeclaredLength (
-                                SimulatedUnixFlavour.Darwin,
-                                SocketKind.Datagram,
-                                declaredLength,
-                                exactSize
-                            )
-                        )
-                    else
+                    // Measured (`sockaddr-connect-ladder.c`, U): EINVAL at
+                    // every length the copy takes but 16, EAFNOSUPPORT at 16,
+                    // and the disconnect below happens either way.
+                    let error =
+                        match lengthVerdict with
+                        | BindLengthVerdict.Accepted -> UnixError.EAFNOSUPPORT
+                        | BindLengthVerdict.Invalid -> UnixError.EINVAL
+                        | BindLengthVerdict.RejectedBeforeCopy _ ->
+                            failwith
+                                "UnixConnection.connectSocket: a length the copy rejects outright reached the datagram AF_UNSPEC rule, though the datagram arm answers it first (this is a bug in this library)."
 
-                    // EAFNOSUPPORT with and without a peer set (measured), but
+                    // The answer with and without a peer set (measured), but
                     // not before the disconnect has happened: a connected
                     // socket loses its peer and its local address reverts to
                     // the wildcard, port kept, whatever `bind(2)` locked --
@@ -973,7 +990,7 @@ module UnixConnection =
                     match sock.Phase, sock.Binding with
                     | SocketPhase.DatagramPeer _, Some binding ->
                         failed
-                            UnixError.EAFNOSUPPORT
+                            error
                             { system with
                                 Machine =
                                     { system.Machine with
@@ -997,7 +1014,7 @@ module UnixConnection =
                     | SocketPhase.DatagramPeer _, None ->
                         failwith
                             "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is a bug in this library, or in a caller that assembled the state by hand."
-                    | _, _ -> fail UnixError.EAFNOSUPPORT
+                    | _, _ -> fail error
             else
 
             match lengthVerdict with
