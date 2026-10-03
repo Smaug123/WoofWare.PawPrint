@@ -1274,26 +1274,40 @@ module EscapeAnalysis =
             | state, Some (spelling, spelledIn) -> state, objectOf exact spelling spelledIn
             | state, None -> state, StackValue.Unknown
 
-        let this =
+        let state, this =
             if method.IsStatic then
-                []
+                state, []
             else
-                let declaringAssembly, declaring =
-                    definitionOf state method.RequiredDeclaringType.Identity
+                let identity = method.RequiredDeclaringType.Identity
+                let valueType = state.BaseTypes.ValueType.Identity
 
-                if LoadedTypeInfo.isValueType state.BaseTypes state.TypeSystem._LoadedAssemblies declaring then
+                // Walking the base chain loads whatever assembly it passes through.
+                let state, derivesFromValueType = derivesFrom state identity valueType
+
+                if
+                    derivesFromValueType
+                    && identity <> valueType
+                    && identity <> state.BaseTypes.Enum.Identity
+                then
                     // `this` is a managed pointer to the value.
-                    [ StackValue.Unknown ]
+                    state, [ StackValue.Unknown ]
                 else
-                    [
-                        objectOf
-                            false
-                            (LoadedTypeInfo.typeInfoToTypeDefn'
-                                state.BaseTypes
-                                state.TypeSystem._LoadedAssemblies
-                                declaring)
-                            declaringAssembly.DefinitionFullName
-                    ]
+                    // The class, instantiated with its own type parameters, which are the body's.
+                    let _, declaring = definitionOf state identity
+                    let named = TypeDefn.FromDefinition (identity, SignatureTypeKind.Class)
+
+                    let spelling =
+                        if declaring.Generics.IsEmpty then
+                            named
+                        else
+                            TypeDefn.GenericInstantiation (
+                                named,
+                                declaring.Generics
+                                |> Seq.mapi (fun index _ -> TypeDefn.GenericTypeParameter index)
+                                |> ImmutableArray.CreateRange
+                            )
+
+                    state, [ objectOf false spelling identity.AssemblyFullName ]
 
         let arguments = this @ (method.Signature.ParameterTypes |> List.map ofOwnSpelling)
 
@@ -2272,6 +2286,12 @@ module EscapeAnalysis =
         | Instantiation.Open, _
         | _, None -> state, DispatchOutcome.Undecided
         | Instantiation.Closed (namedTypeArguments, namedMethodArguments), Some (typeArguments, methodArguments) ->
+
+        // A type that fails to bind fails the body that spells it before the call runs, which the
+        // facts of that body report.
+        match concretizable state (assemblyOf state spelledIn) spelling with
+        | state, false -> state, DispatchOutcome.Undecided
+        | state, true ->
 
         let state, receiver =
             concretize state spelledIn typeArguments methodArguments spelling

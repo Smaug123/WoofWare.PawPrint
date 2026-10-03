@@ -1158,6 +1158,11 @@ public static class Uses
         Provider.GoneType x = null;
         return x != null;
     }
+    public static string VirtualOnLocalOfGone()
+    {
+        Provider.GoneType x = null;
+        return x.ToString();
+    }
     public static int CatchGone(int x)
     {
         try { return 1 / x; }
@@ -1281,6 +1286,8 @@ public static class Uses
                 "ListOfGone", "=System.TypeLoadException"
                 // Named by no instruction, only by the type of a local.
                 "LocalOfGone", "=System.TypeLoadException"
+                // The type of a local a `callvirt` is made on.
+                "VirtualOnLocalOfGone", "=System.TypeLoadException"
                 "CaughtLocalOfGone", "=System.TypeLoadException"
                 // Named only by a `catch` clause.
                 "CatchGone", "=System.TypeLoadException"
@@ -1325,6 +1332,7 @@ public static class Uses
                 "IsGone"
                 "ListOfGone"
                 "LocalOfGone"
+                "VirtualOnLocalOfGone"
                 "CaughtLocalOfGone"
                 "CatchGone"
                 "PassGone"
@@ -1368,6 +1376,36 @@ public static class Uses
 
         // Answering at all is the claim: it is a summary rather than a crash.
         against2 "ConstrainedReachesGonePointer" |> ignore<Set<string> * bool>
+
+    /// An instance method of a class whose base class is in an assembly nothing has loaded yet:
+    /// the analysis loads it when it needs the base chain, as it loads any other assembly.
+    [<Test>]
+    let ``an instance method is analysed when its class's base is in an assembly not yet loaded`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let source =
+            """
+namespace Derives;
+
+public class Child : System.ComponentModel.Component
+{
+    public int Divide(int a, int b) => a / b;
+}
+"""
+
+        let image =
+            Roslyn.compileAssembly "Derives" OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Derives.dll") (new MemoryStream (image))
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes (analysisOver [ fixture ] id) (methodNamed fixture "Derives.Child" "Divide")
+
+        let shown = render analysis escapes
+
+        if escapes.Unknown || not (shown.Contains "=System.DivideByZeroException") then
+            failwith $"Child.Divide: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
 
     /// A client whose struct has a method, called by nothing, using a type from an assembly that is
     /// not present at all. The JIT never reads that method, so a call on the struct runs.
