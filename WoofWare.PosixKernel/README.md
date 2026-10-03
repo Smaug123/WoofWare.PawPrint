@@ -101,6 +101,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigreturn`, and the signals a task takes as it returns to user mode |
 | `UnixClock` | `clock_gettime` |
 | `UnixEntropy` | `getrandom`, `getentropy` |
+| `UnixCredentials` | `getresuid`, `getresgid`, `setresuid`, `setresgid`, `setgroups` |
 | `UnixTaskLifecycle` | starting a thread, a thread exiting, `exit_group` |
 | `UnixSystem` | `getpid`, `umask` |
 
