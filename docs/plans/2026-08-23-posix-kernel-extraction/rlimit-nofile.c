@@ -23,6 +23,9 @@
 //   Darwin 27.0.0, the shell this was run from          1048576  unlimited
 //     (an application raised it)
 //
+// Darwin as root is not measured: this machine's sudo needs a password, so
+// what a root daemon starts with has not been observed.
+//
 // So the kernel's own default is 1024 on Linux (INR_OPEN_CUR, which PAM's
 // login path keeps) and launchd's is 256 on Darwin. Container runtimes and
 // applications raise the limit; only a parent that lowers it starts a process

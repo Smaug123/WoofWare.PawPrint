@@ -152,6 +152,52 @@ module TestDescriptorBound =
             | Error (AcceptRefusal.DescriptorLimit refusal) -> refusal |> shouldEqual (refusalAt bound bound)
             | other -> failwith $"%s{run.Name}: finishing the accept on a full table: %A{other}"
 
+    /// `UnixConnection.acceptConnection`, which skips `accept`'s screens, fails
+    /// loudly on a full table rather than handing out a descriptor at the
+    /// bound.
+    [<Test>]
+    let ``acceptConnection on a full table fails`` () : unit =
+        for run in runs do
+            let bound = SimulatedUnixPlatform.descriptorBound run.Platform
+            let system = FcntlWorld.system run
+
+            let file, system =
+                FcntlWorld.openWith (FcntlWorld.opening FileAccessMode.ReadOnly) "f" system
+
+            let listening, system = FcntlWorld.listener 5000us false system
+
+            let client, system =
+                NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+            let system = FcntlWorld.connect client 5000us system
+
+            let listener =
+                match FileDescriptorRegistry.tryFindTarget listening system.Process.FileDescriptors with
+                | Some (OpenFileTarget.Socket socketId) -> socketId
+                | other -> failwith $"%s{run.Name}: descriptor %d{listening} names %A{other}, not a socket"
+
+            let full =
+                ([ client + 1 .. bound - 1 ], system)
+                ||> List.foldBack (fun target system ->
+                    match UnixDescriptor.dup2 file target system with
+                    | Ok (SyscallAnswer.Completed _, system) -> system
+                    | other -> failwith $"filling the table at %d{target}: %A{other}"
+                )
+
+            let e =
+                Assert.Throws<exn> (fun () -> UnixConnection.acceptConnection listener full |> ignore<_>)
+
+            e.Message |> shouldContainText $"at or above %d{bound}"
+
+            let oneLeft =
+                match UnixDescriptor.close (bound - 1) full with
+                | Ok (SyscallAnswer.Completed _, system) -> system
+                | other -> failwith $"%s{run.Name}: closing %d{bound - 1}: %A{other}"
+
+            let fd, _, after = UnixConnection.acceptConnection listener oneLeft
+            fd |> shouldEqual (bound - 1)
+            UnixSystem.checkInvariants after |> shouldEqual []
+
     /// `UnixSystem.step`'s `Dup` carries the refusal.
     [<Test>]
     let ``step refuses a dup at the bound`` () : unit =
