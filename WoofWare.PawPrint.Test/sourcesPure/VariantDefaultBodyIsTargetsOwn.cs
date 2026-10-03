@@ -32,6 +32,18 @@ public interface IOverridesObject : IContra<object> { int IContra<object>.M() =>
 public class ExactBeatsVariantOverride : IOverridesObject, IContra<string> { }
 public class OnlyVariantOverride : IOverridesObject { }
 
+// Searching with variance, every compatible candidate is weighed for specificity before the first is
+// taken. `IContra<Exception>`'s own default body is found first, but `IOverridesObject` casts to
+// `IContra<Exception>`, so its override is more specific and is what runs.
+public class OverrideMoreSpecificThanFirst : IContra<Exception>, IOverridesObject { }
+
+// Two instantiations of one interface are equally specific when searching with variance, though
+// `IName<object>` casts to `IName<Exception>`, so the first in the receiver's interface map runs, and
+// its instantiation is the one the body sees.
+public interface IName<in T> { string Name() => typeof(T).Name; }
+public class ExceptionThenObject : IName<Exception>, IName<object> { }
+public class ObjectThenException : IName<object>, IName<Exception> { }
+
 public static class Program
 {
     static int Base<T>(T x) where T : IBase<object> => x.Probe();
@@ -52,6 +64,9 @@ public static class Program
         if (((IContra<string>)new ExactBeatsVariantOverride()).M() != 70) return 9;
         if (((IContra<string>)new OnlyVariantOverride()).M() != 80) return 10;
         if (((IContra<object>)new ExactBeatsVariantOverride()).M() != 80) return 11;
+        if (((IContra<ArgumentException>)new OverrideMoreSpecificThanFirst()).M() != 80) return 12;
+        if (((IName<ArgumentException>)new ExceptionThenObject()).Name() != "Exception") return 13;
+        if (((IName<ArgumentException>)new ObjectThenException()).Name() != "Object") return 14;
         return 0;
     }
 }
