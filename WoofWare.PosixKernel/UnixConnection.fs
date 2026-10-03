@@ -168,9 +168,10 @@ type ConnectRefusal =
     /// `AF_UNSPEC` on a Linux stream socket in a phase other than idle, whose
     /// `tcp_disconnect` consequences are unmeasured.
     | LinuxUnspecOnPhase of socket : SocketId * phase : SocketPhase
-    /// A datagram connect to the wildcard address, which this library does not
-    /// model.
-    | DatagramConnectToWildcard of socket : SocketId
+    /// A datagram connect to the broadcast address or a multicast group that
+    /// would succeed. This library models no group membership and no
+    /// interface to broadcast on, so it does not record such a peer.
+    | DatagramGroupDestination of socket : SocketId * destination : InternetEndpoint
 
 [<RequireQualifiedAccess>]
 module ConnectRefusal =
@@ -208,8 +209,8 @@ module ConnectRefusal =
             $"destination %s{InternetEndpoint.toString destination} is bound but nothing is listening there, and Darwin *drops* such a SYN rather than answering RST: the connect pends on the client's retransmission schedule (a blocking one was measured to stall into ETIMEDOUT), which this library cannot honour deterministically. Listen on the destination socket, or connect to a fully closed port."
         | ConnectRefusal.LinuxUnspecOnPhase (socket, phase) ->
             $"AF_UNSPEC on stream socket %O{socket} in %A{phase} under Linux runs tcp_disconnect, whose consequences for this phase (a connected socket's peer, a listener's queue) are unmeasured and unmodelled."
-        | ConnectRefusal.DatagramConnectToWildcard socket ->
-            $"a datagram connect from socket %O{socket} to 0.0.0.0 is not modelled. Measured (sockaddr-connect-ladder.c, section Z), both kernels connect it to 127.0.0.1 at the given port, binding the socket there, and a port of 0 is EADDRNOTAVAIL on Darwin and a peer-less success on Linux; model that before connecting there."
+        | ConnectRefusal.DatagramGroupDestination (socket, destination) ->
+            $"datagram socket %O{socket} would connect to %s{InternetEndpoint.toString destination}, a broadcast or multicast destination. This kernel models no group membership and no interface to broadcast on, so it does not record such a peer. Model multicast and broadcast before connecting to either."
 
 [<RequireQualifiedAccess>]
 module UnixConnection =
@@ -791,6 +792,10 @@ module UnixConnection =
                 else
 
                 match destination with
+                // Measured (`sockaddr-dgram-connect.c`, D and M): a broadcast
+                // or multicast destination is ENETUNREACH, at every length
+                // from 16 and whatever the port, before anything binds.
+                | Some dest when SimulatedUnixPlatform.isBroadcastOrMulticast dest.Address -> fail UnixError.ENETUNREACH
                 | Some dest -> attemptStream dest
                 | None ->
                     failwith
@@ -826,6 +831,22 @@ module UnixConnection =
                 // AF_INET is EAFNOSUPPORT at every length the copy takes, and
                 // binds nothing. AF_UNSPEC is then read exactly as AF_INET.
                 if family <> 0 && family <> SimulatedUnixPlatform.internetAddressFamily then
+                    fail UnixError.EAFNOSUPPORT
+                else
+
+                // A broadcast or multicast destination is EAFNOSUPPORT too,
+                // judged with the family and binding nothing: for AF_INET
+                // before the length, reading `sin_addr` with every byte past
+                // the copy as zero, and for AF_UNSPEC only at 16. Measured
+                // (`sockaddr-dgram-connect.c`, D and M), the rule
+                // `SimulatedUnixPlatform.bindGroupAddressRule` states for a
+                // stream socket's `bind(2)`.
+                let groupDestination =
+                    SimulatedUnixPlatform.isBroadcastOrMulticast copied.ZeroFilledAddress
+                    && (family = SimulatedUnixPlatform.internetAddressFamily
+                        || lengthVerdict = BindLengthVerdict.Accepted)
+
+                if groupDestination then
                     fail UnixError.EAFNOSUPPORT
                 else
 
@@ -908,6 +929,42 @@ module UnixConnection =
                 failwith
                     $"UnixConnection.connectSocket: a datagram socket holds %A{phase}. this kernel's socket invariants forbid that pairing, so this is a bug in the caller's state construction."
 
+            // Darwin disconnects a connected datagram socket before it judges
+            // anything the copy holds, so every connect whose length the copy
+            // takes leaves it disconnected, whatever it answers (a success then
+            // connects it again): its peer goes and its local address reverts
+            // to the wildcard, port kept, whatever `bind(2)` locked --
+            // `127.0.0.1:5556` reads back `0.0.0.0:5556`. Measured
+            // (`sockaddr-connect-ladder.c`, U, and `sockaddr-dgram-connect.c`,
+            // L and D).
+            let disconnectedFirst : UnixSystem<'Task, 'Handler> =
+                match flavour, sock.Phase, sock.Binding with
+                | SimulatedUnixFlavour.Darwin, SocketPhase.DatagramPeer _, Some binding ->
+                    { system with
+                        Machine =
+                            { system.Machine with
+                                Sockets =
+                                    Map.add
+                                        socketId
+                                        { sock with
+                                            Binding =
+                                                Some
+                                                    { binding with
+                                                        Endpoint =
+                                                            { binding.Endpoint with
+                                                                Address = InternetEndpoint.WildcardAddress
+                                                            }
+                                                    }
+                                            Phase = SocketPhase.Idle
+                                        }
+                                        system.Machine.Sockets
+                            }
+                    }
+                | SimulatedUnixFlavour.Darwin, SocketPhase.DatagramPeer _, None ->
+                    failwith
+                        "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is a bug in this library, or in a caller that assembled the state by hand."
+                | _ -> system
+
             if family = 0 then
                 match flavour with
                 | SimulatedUnixFlavour.Linux ->
@@ -982,58 +1039,110 @@ module UnixConnection =
                                 "UnixConnection.connectSocket: a length the copy rejects outright reached the datagram AF_UNSPEC rule, though the datagram arm answers it first (this is a bug in this library)."
 
                     // The answer with and without a peer set (measured), but
-                    // not before the disconnect has happened: a connected
-                    // socket loses its peer and its local address reverts to
-                    // the wildcard, port kept, whatever `bind(2)` locked --
-                    // `127.0.0.1:5556` reads back `0.0.0.0:5556`. An
-                    // unconnected one is left as it was.
-                    match sock.Phase, sock.Binding with
-                    | SocketPhase.DatagramPeer _, Some binding ->
-                        failed
-                            error
-                            { system with
-                                Machine =
-                                    { system.Machine with
-                                        Sockets =
-                                            Map.add
-                                                socketId
-                                                { sock with
-                                                    Binding =
-                                                        Some
-                                                            { binding with
-                                                                Endpoint =
-                                                                    { binding.Endpoint with
-                                                                        Address = InternetEndpoint.WildcardAddress
-                                                                    }
-                                                            }
-                                                    Phase = SocketPhase.Idle
-                                                }
-                                                system.Machine.Sockets
-                                    }
-                            }
-                    | SocketPhase.DatagramPeer _, None ->
-                        failwith
-                            "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is a bug in this library, or in a caller that assembled the state by hand."
-                    | _, _ -> fail error
+                    // not before the disconnect has happened.
+                    failed error disconnectedFirst
             else
 
+            // Linux binds a datagram socket with no port to the wildcard and an
+            // ephemeral port before it judges the length or the family, for
+            // every family but AF_UNSPEC, and a failure keeps that binding;
+            // Darwin binds nothing, and disconnects first. Measured
+            // (`sockaddr-dgram-connect.c`, B, D and L).
+            let failPrepared
+                (error : UnixError)
+                : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+                =
+                match flavour with
+                | SimulatedUnixFlavour.Darwin -> failed error disconnectedFirst
+                | SimulatedUnixFlavour.Linux ->
+                    match sock.Binding with
+                    | Some binding when binding.Endpoint.Port <> 0us -> fail error
+                    | existing ->
+                        // A half-bound socket keeps its address and gains a
+                        // port, as `inet_autobind` does for it on success.
+                        let candidate (port : uint16) : SocketBinding =
+                            match existing with
+                            | Some binding ->
+                                { binding with
+                                    Endpoint =
+                                        { binding.Endpoint with
+                                            Port = port
+                                        }
+                                }
+                            | None ->
+                                {
+                                    Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                                    // No bind(2) ran.
+                                    LockedAddress = None
+                                    LockedPort = false
+                                }
+
+                        match
+                            UnixMachineState.allocateEphemeralPort
+                                EphemeralPortUse.Reserve
+                                socketId
+                                sock
+                                candidate
+                                system.Machine
+                        with
+                        | None -> Error (ConnectRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
+                        | Some (binding, machine) ->
+                            failed
+                                error
+                                { system with
+                                    Machine =
+                                        { machine with
+                                            Sockets =
+                                                Map.add
+                                                    socketId
+                                                    { sock with
+                                                        Binding = Some binding
+                                                    }
+                                                    machine.Sockets
+                                        }
+                                }
+
             match lengthVerdict with
-            | BindLengthVerdict.Invalid -> fail UnixError.EINVAL
+            | BindLengthVerdict.Invalid -> failPrepared UnixError.EINVAL
             | BindLengthVerdict.RejectedBeforeCopy _
             | BindLengthVerdict.Accepted ->
 
             if family <> SimulatedUnixPlatform.internetAddressFamily then
-                fail UnixError.EAFNOSUPPORT
+                failPrepared UnixError.EAFNOSUPPORT
             else
 
             match destination with
             | None ->
                 failwith
                     "UnixConnection.connectSocket: the declared length passed the AF_INET verdict but the copy held no destination, though a length that passes it reaches `sin_addr` (this is a bug in this library)."
+            // Measured (`sockaddr-dgram-connect.c`, D): Darwin answers a port
+            // of 0 with EADDRNOTAVAIL whatever the address, before it looks
+            // the address up. Linux connects it, to no peer `getpeername(2)`
+            // can read.
+            | Some dest when dest.Port = 0us && flavour = SimulatedUnixFlavour.Darwin ->
+                failPrepared UnixError.EADDRNOTAVAIL
             | Some dest ->
 
-            if dest.Address = InternetEndpoint.WildcardAddress then
-                Error (ConnectRefusal.DatagramConnectToWildcard socketId)
+            // A wildcard destination means loopback: measured on both, and
+            // the source resolved for it is 127.0.0.1.
+            let dest =
+                if dest.Address = InternetEndpoint.WildcardAddress then
+                    { dest with
+                        Address = InternetEndpoint.LoopbackAddress
+                    }
+                else
+                    dest
+
+            if SimulatedUnixPlatform.isBroadcastOrMulticast dest.Address then
+                // Measured (`sockaddr-dgram-connect.c`, D and M): Linux answers
+                // the broadcast address with EACCES, `SO_BROADCAST` being off
+                // (this library models no way to set it); every other such
+                // connect succeeds, aimed at a group or a broadcast this
+                // library cannot carry.
+                if flavour = SimulatedUnixFlavour.Linux && dest.Address = System.UInt32.MaxValue then
+                    failPrepared UnixError.EACCES
+                else
+                    Error (ConnectRefusal.DatagramGroupDestination (socketId, dest))
             elif not (destinationIsLocal dest.Address) then
                 Error (ConnectRefusal.DestinationNotLocal (dest, SocketKind.Datagram))
             else

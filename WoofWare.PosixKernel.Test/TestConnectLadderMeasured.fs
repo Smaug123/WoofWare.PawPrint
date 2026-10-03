@@ -19,9 +19,8 @@ open WoofWare.PosixKernel
 /// and each row's range is expanded into the calls it stands for.
 ///
 /// Every row must be answered as measured, except those this kernel refuses on
-/// purpose (`refusedOnPurpose`) and those it does not yet answer as measured
-/// (`knownGaps`). Both lists are asserted exactly, so a row that changes
-/// either way is reported.
+/// purpose (`refusedOnPurpose`). That list is asserted exactly, so a row that
+/// changes either way is reported.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestConnectLadderMeasured =
@@ -261,32 +260,6 @@ module TestConnectLadderMeasured =
             ]
         | _ -> []
 
-    /// Rows this kernel does not yet answer as measured, by probe line, with
-    /// what it answers instead: an AF_INET datagram `connect` to the wildcard
-    /// address or to port 0. Gaps to close, each a row of the probe.
-    let private knownGaps (flavour : string) : (string * string) list =
-        let toWildcard =
-            [
-                for destination in [ "0.0.0.0:0" ; "0.0.0.0:lst" ] do
-                    for state in [ "fresh" ; "bound" ; "wildbound" ; "connected" ] do
-                        $"Z dgram AF_INET %s{destination} %s{state}", "refused:DatagramConnectToWildcard"
-            ]
-
-        match flavour with
-        | "darwin" ->
-            // Measured EADDRNOTAVAIL, and a connected socket's peer goes first.
-            toWildcard
-            @ [
-                "Z dgram AF_INET 127.0.0.1:0 fresh", "OK local=127.0.0.1:new peer=no"
-                "Z dgram AF_INET 127.0.0.1:0 bound", "OK local=127.0.0.1:same peer=no"
-                "Z dgram AF_INET 127.0.0.1:0 wildbound", "OK local=127.0.0.1:same peer=no"
-                "Z dgram AF_INET 127.0.0.1:0 connected", "OK local=127.0.0.1:same peer=no"
-                for destination in [ "127.0.0.2:0" ; "8.8.8.8:0" ] do
-                    for state in [ "fresh" ; "bound" ; "wildbound" ; "connected" ] do
-                        $"Z dgram AF_INET %s{destination} %s{state}", "refused:DestinationNotLocal"
-            ]
-        | _ -> toWildcard
-
     /// Every mismatch, one per probe line, with the distinct answers this
     /// kernel gave across the calls that line stands for.
     let private mismatches (platform : SimulatedUnixPlatform) (all : Call list) : (string * string) list =
@@ -307,7 +280,7 @@ module TestConnectLadderMeasured =
         let actual = mismatches platform all |> Set.ofList
 
         let allowed =
-            refusedOnPurpose flavour @ knownGaps flavour
+            refusedOnPurpose flavour
             |> List.map (fun (line, answer) -> Regex.Replace (line, " +", " "), answer)
             |> Set.ofList
 
