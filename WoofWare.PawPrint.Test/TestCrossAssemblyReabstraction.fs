@@ -145,6 +145,8 @@ public static class Cases
 
     public static int StaticOnValueType() => Static<SS>();
 
+    public static int InterfaceCallOnNewObject() => ((IFoo)new C()).Frob();
+
     public static int CaseInterfaceCall() =>
         Expect<EntryPointNotFoundException>(() => ThroughInterface(new C()));
 

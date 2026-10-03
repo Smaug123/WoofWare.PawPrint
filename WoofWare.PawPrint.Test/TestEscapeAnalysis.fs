@@ -4086,7 +4086,13 @@ public static class Runners
         let analysis = analysisOver [ library ; entry ] id
 
         let failures =
-            (([], analysis), [ "ConstrainedOnValueType" ; "ConstrainedOnSealedClass" ; "StaticOnValueType" ])
+            (([], analysis),
+             [
+                 "ConstrainedOnValueType"
+                 "ConstrainedOnSealedClass"
+                 "StaticOnValueType"
+                 "InterfaceCallOnNewObject"
+             ])
             ||> List.fold (fun (failures, analysis) methodName ->
                 let analysis, escapes =
                     EscapeAnalysis.escapes analysis (methodNamed entry "ReabstractionEntry.Cases" methodName)

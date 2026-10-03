@@ -2467,7 +2467,7 @@ module EscapeAnalysis =
             )
         | Some (VirtualImplementation.Reabstracted _) ->
             state,
-            ConstrainedOutcome.Raises (ThrownType.Exactly (corelibType state "System" "EntryPointNotFoundException"))
+            DispatchOutcome.Raises (ThrownType.Exactly (corelibType state "System" "EntryPointNotFoundException"))
         | Some (VirtualImplementation.Found runs) ->
             match runs.Definition.TryMetadata with
             | None -> state, DispatchOutcome.Undecided
