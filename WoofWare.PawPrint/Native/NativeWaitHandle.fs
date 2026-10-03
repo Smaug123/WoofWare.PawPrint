@@ -414,13 +414,16 @@ module NativeWaitHandle =
     /// `GetPinnableReference` + `conv.u`. Each element is therefore a
     /// `WaitHandlePtr`-tagged native int, which has no bit pattern: the read
     /// has to come back as a whole typed cell or the identity is lost.
+    ///
+    /// `Error` with the first handle nothing wrote: a `SafeWaitHandle` made from such an `IntPtr`
+    /// carries it into the array unread, and the wait uses every handle it is given.
     let private readWaitHandleArray
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
         (count : int)
-        : WaitHandleId list
+        : Result<WaitHandleId list, UndefinedValue>
         =
         let intPtrConcreteType = requiredIntPtrConcreteType operation baseClassTypes state
 
@@ -433,20 +436,25 @@ module NativeWaitHandle =
         // typed cell — its cell-aligned fast path (`readStackMemoryBytesAs`) returns a
         // non-byte-addressable cell as-is when a same-shaped cell starts at the offset — which is
         // why this steps a byte view rather than reinterpreting the buffer.
-        [ 0 .. count - 1 ]
-        |> List.map (fun index ->
+        let rec readFrom (index : int) (acc : WaitHandleId list) : Result<WaitHandleId list, UndefinedValue> =
+            if index >= count then
+                Ok (List.rev acc)
+            else
+
             let elementPtr =
                 ManagedPointerByteView.addByteOffset state intPtrConcreteType (index * stride) ptr
 
-            let element =
+            match
                 IlMachineState.readManagedByrefBytesAs
                     baseClassTypes
                     state
                     (ManagedPointerSource.requireAddressed elementPtr)
                     (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+            with
+            | CliType.Undefined u -> Error u
+            | element -> readFrom (index + 1) (waitHandleOfArgument $"%s{operation} (handle #%d{index})" element :: acc)
 
-            waitHandleOfArgument $"%s{operation} (handle #%d{index})" element
-        )
+        readFrom 0 []
 
     /// Decode the `IntPtr*` handle-array argument. The BCL never passes null
     /// here (an empty array throws `ArgumentException` in `WaitMultiple`
@@ -669,8 +677,11 @@ module NativeWaitHandle =
             let waitAll = boolOfBoolArgument operation "waitAll" instruction.Arguments.[2]
             let timeout = NativeCall.int32Argument operation instruction.Arguments.[3]
 
-            let handles =
-                readWaitHandleArray operation ctx.BaseClassTypes state arrayPtr numHandles
+            match readWaitHandleArray operation ctx.BaseClassTypes state arrayPtr numHandles with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the handles it waits on" u
+                |> Some
+            | Ok handles ->
 
             // The PAL forces `fWAll = false` when there is a single handle
             // ("makes no difference when nCount is 1"). We do not need to

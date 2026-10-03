@@ -816,23 +816,36 @@ module NativeDelegate =
             if instruction.Arguments.Length <> 5 then
                 failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
 
-            let readObjectHandle (argIndex : int) (argName : string) : ManagedHeapAddress option =
+            let readObjectHandle
+                (argIndex : int)
+                (argName : string)
+                : Result<ManagedHeapAddress option, UndefinedValue>
+                =
                 NativeCall.objectHandleOnStackTarget operation state argName instruction.Arguments.[argIndex]
                 |> ManagedPointerSource.requireAddressed
                 |> IlMachineState.readManagedByref ctx.BaseClassTypes state
                 |> CliType.unwrapPrimitiveLikeDeep
                 |> function
-                    | CliType.ObjectRef target -> target
+                    | CliType.ObjectRef target -> Ok target
+                    | CliType.Undefined u -> Error u
                     | other -> failwith $"%s{operation}: expected %s{argName} to be an object reference, got %O{other}"
 
             let delegateAddr =
-                readObjectHandle 0 "d"
-                |> Option.defaultWith (fun () ->
+                match readObjectHandle 0 "d" with
+                | Ok (Some addr) -> addr
+                | Ok None ->
                     failwith
                         $"%s{operation}: the delegate is null, but every caller allocates it with Delegate.InternalAlloc immediately before reaching this QCall"
-                )
+                | Error u ->
+                    failwith
+                        $"%s{operation}: the delegate is the undefined value %O{u}, but every caller allocates it with Delegate.InternalAlloc immediately before reaching this QCall"
 
-            let targetAddr = readObjectHandle 1 "target"
+            // Every caller hands the target over unread, so it may be a reference nothing wrote.
+            match readObjectHandle 1 "target" with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the target it binds the delegate to" u
+                |> Some
+            | Ok targetAddr ->
 
             // CoreCLR asserts this (comdelegate.cpp:1134, "Assert to track down VS#458689"): a
             // delegate closed over itself would be a cycle the invocation path cannot unpick.
