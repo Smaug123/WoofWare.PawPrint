@@ -1322,6 +1322,26 @@ module TestImpureCases =
                 )
         }
 
+    /// `SocketConnectPortZero.cs` under `platform`: a managed `Socket.Connect`
+    /// to port 0, which exits 0 for Linux's ECONNREFUSED and 100 for Darwin's
+    /// EADDRNOTAVAIL (`sockaddr-connect-ladder.c`, section Z).
+    let private socketConnectPortZeroCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketConnectPortZero.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1481,6 +1501,8 @@ module TestImpureCases =
             closeEndsCallCase "CloseEndsSleepingAccept.cs" SimulatedUnixPlatform.macOsArm64
             closeEndsCallCase "CloseEndsSleepingPipeTransfer.cs" SimulatedUnixPlatform.linuxX64
             closeEndsCallCase "CloseEndsSleepingPipeTransfer.cs" SimulatedUnixPlatform.macOsArm64
+            socketConnectPortZeroCase SimulatedUnixPlatform.linuxX64
+            socketConnectPortZeroCase SimulatedUnixPlatform.macOsArm64
             processIdCase None
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.
