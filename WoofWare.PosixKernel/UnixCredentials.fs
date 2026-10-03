@@ -207,8 +207,10 @@ module UnixCredentials =
     // was cleared by exactly those successful calls that changed its effective
     // user or group ID, with `fs.suid_dumpable` at its default of 0. Linux sets
     // the flag from that sysctl, which this kernel does not model, so a process
-    // that writes core dumps is refused; one that writes none goes on writing
-    // none whatever the sysctl says.
+    // that writes core dumps is refused. One that writes none goes on writing
+    // none whatever the sysctl says: `CoreDumps.Suppressed` is a suppression
+    // the dumpable flag does not decide (the process started dumpable, and a
+    // flag set again by a later change cannot lift an `RLIMIT_CORE` of 0).
     let private keepCoreDumps<'Id, 'Task, 'Handler when 'Id : equality and 'Task : comparison and 'Handler : equality>
         (effectiveBefore : 'Id)
         (effectiveAfter : 'Id)
