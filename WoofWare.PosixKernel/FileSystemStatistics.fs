@@ -8,7 +8,7 @@ type PseudoFileSystem =
     | Pipe
     /// `sockfs`, where every socket lives.
     | Socket
-    /// `anon_inodefs`, where an epoll port and an eventfd live.
+    /// `anon_inodefs`, where an epoll instance and an eventfd live.
     | AnonymousInode
 
 /// Why this kernel does not state a filesystem's block size and name limit.
@@ -437,7 +437,7 @@ module FileSystemStatistics =
                     | PseudoFileSystem.AnonymousInode -> 0x09041934L
 
                 // Measured on both Linux kernels, for both pipe ends, three
-                // kinds of socket, an epoll port and an eventfd: every field but
+                // kinds of socket, an epoll instance and an eventfd: every field but
                 // the fsid is a fact of the filesystem's type.
                 FileSystemStatistics.Linux
                     {

@@ -6,7 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixPoll.epollWait` and `UnixPoll.finishSocketWait`: the argument screens,
+/// `UnixPoll.epollWait` and `UnixPoll.finishEpollWait`: the argument screens,
 /// the timeout, the park and its finish, and which of several waiters on one
 /// port an event wakes.
 ///
@@ -50,10 +50,10 @@ module TestEpollWait =
     let private withTask (name : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         Tasks.ensure name system
 
-    let private createPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+    let private createEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         match UnixPoll.epollCreate1 0 system with
         | Ok (Ok (fd, system)) -> fd, system
-        | other -> failwith $"expected a port, got %A{other}"
+        | other -> failwith $"expected an epoll instance, got %A{other}"
 
     /// A Linux-flavoured system with tasks 1 to 6 registered, a listening socket
     /// with an empty accept queue, and a port holding one edge-triggered
@@ -106,7 +106,7 @@ module TestEpollWait =
                     }
             }
 
-        let portFd, system = createPort system
+        let portFd, system = createEpoll system
 
         let system =
             match
@@ -179,9 +179,7 @@ module TestEpollWait =
         if alreadyReady then
             system
         else
-            withRegistry
-                (FileDescriptorRegistry.appendSocketEventReady portId key system.Process.FileDescriptors)
-                system
+            withRegistry (FileDescriptorRegistry.appendEpollReady portId key system.Process.FileDescriptors) system
 
     /// The connection is taken by someone else: the listener's level drops, and
     /// the pending entry goes stale.
@@ -219,12 +217,12 @@ module TestEpollWait =
         | other -> failwith $"expected a park, got %A{other}"
 
     let private finishes (system : UnixSystem<int, string>) : (uint64 * uint32) list * UnixSystem<int, string> =
-        match UnixPoll.finishSocketWait task system with
+        match UnixPoll.finishEpollWait task system with
         | Ok (EpollWaitOutcome.Answered events, finished) -> events, finished
         | other -> failwith $"expected the wait to finish, got %A{other}"
 
     let private reparks (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match UnixPoll.finishSocketWait task system with
+        match UnixPoll.finishEpollWait task system with
         | Ok (EpollWaitOutcome.WouldBlock _, parked) -> parked
         | other -> failwith $"expected the wait to park again, got %A{other}"
 
@@ -382,7 +380,7 @@ module TestEpollWait =
                 UnixTaskTable.parkedFor task answered.Tasks |> shouldEqual None
                 // The walk consumed the stale entry even though it delivered nothing.
                 pendingEntries answered |> shouldEqual 0
-                answered |> shouldEqual (snd (SocketEventPort.drain portId 8 stale))
+                answered |> shouldEqual (snd (EpollReadyList.drain portId 8 stale))
             | other -> failwith $"expected no events, got %A{other}"
 
         Check.One (config, Prop.forAll (Arb.fromGen start) property)
@@ -402,7 +400,7 @@ module TestEpollWait =
             |> shouldEqual (
                 Interruptible.condition (
                     WakeCondition.AnyOf (
-                        WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable portId),
+                        WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable portId),
                         [ WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ]
                     )
                 )
@@ -440,22 +438,22 @@ module TestEpollWait =
 
             condition
             |> shouldEqual (
-                Interruptible.condition (WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable portId))
+                Interruptible.condition (WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable portId))
             )
 
             UnixWait.deadlines (Set.singleton task) parked |> shouldEqual []
 
             match UnixTaskTable.parkedFor task parked.Tasks with
-            | Some (ParkedSyscall.SocketWait wait) ->
+            | Some (ParkedSyscall.EpollWait wait) ->
                 wait
                 |> shouldEqual
                     {
-                        Port = portId
+                        Epoll = portId
                         MaxEvents = 8
                         Buffer = UserBuffer.Mapped
                         Deadline = None
                     }
-            | other -> failwith $"expected a socket wait, got %A{other}"
+            | other -> failwith $"expected an epoll_wait, got %A{other}"
 
             // However long it has slept.
             woken (after 1_000_000_000_000L parked) |> shouldEqual None
@@ -470,7 +468,7 @@ module TestEpollWait =
             let ready = parked |> after (min elapsed (deadline - 1L)) |> signal
 
             woken ready
-            |> shouldEqual (Some (Set.singleton (WakePrimitive.SocketEventDeliverable portId)))
+            |> shouldEqual (Some (Set.singleton (WakePrimitive.EpollEventDeliverable portId)))
 
             let events, finished = finishes ready
             events |> shouldEqual delivered
@@ -491,7 +489,7 @@ module TestEpollWait =
                 Some (
                     Set.ofList
                         [
-                            WakePrimitive.SocketEventDeliverable portId
+                            WakePrimitive.EpollEventDeliverable portId
                             WakePrimitive.DeadlinePassed deadline
                         ]
                 )
@@ -512,7 +510,7 @@ module TestEpollWait =
         let ready = parked |> after 1L |> signal
 
         woken ready
-        |> shouldEqual (Some (Set.singleton (WakePrimitive.SocketEventDeliverable portId)))
+        |> shouldEqual (Some (Set.singleton (WakePrimitive.EpollEventDeliverable portId)))
 
         // Someone else takes the connection before the woken waiter runs.
         let stale = unready ready
@@ -545,7 +543,7 @@ module TestEpollWait =
         exn.Message |> shouldContainText "is parked"
 
         let exn =
-            Assert.Throws<exn> (fun () -> UnixPoll.finishSocketWait task idle |> ignore)
+            Assert.Throws<exn> (fun () -> UnixPoll.finishEpollWait task idle |> ignore)
 
         exn.Message |> shouldContainText "is not parked"
 
@@ -592,13 +590,13 @@ module TestEpollWait =
                 | other -> failwith $"expected a park, got %A{other}"
 
             match UnixTaskTable.parkedFor task parked.Tasks with
-            | Some (ParkedSyscall.SocketWait wait) -> wait.Buffer |> shouldEqual buffer
-            | other -> failwith $"expected a socket wait, got %A{other}"
+            | Some (ParkedSyscall.EpollWait wait) -> wait.Buffer |> shouldEqual buffer
+            | other -> failwith $"expected an epoll_wait, got %A{other}"
 
-            UnixPoll.finishSocketWait task (signal parked) |> shouldEqual (Error refusal)
+            UnixPoll.finishEpollWait task (signal parked) |> shouldEqual (Error refusal)
 
             // Timing out copies nothing, so it answers.
-            match UnixPoll.finishSocketWait task (after (5L * nanosecondsPerMillisecond) parked) with
+            match UnixPoll.finishEpollWait task (after (5L * nanosecondsPerMillisecond) parked) with
             | Ok (EpollWaitOutcome.Answered [], finished) ->
                 UnixTaskTable.parkedFor task finished.Tasks |> shouldEqual None
             | other -> failwith $"expected the wait to time out, got %A{other}"
@@ -658,7 +656,7 @@ module TestEpollWait =
             let ports, system =
                 ((idle, []), pending)
                 ||> List.fold (fun (system, ports) isPending ->
-                    let fd, system = createPort system
+                    let fd, system = createEpoll system
                     let id = idOf fd system
 
                     let registry =
@@ -674,7 +672,7 @@ module TestEpollWait =
 
                     let registry =
                         if isPending then
-                            FileDescriptorRegistry.appendSocketEventReady id stdinKey registry
+                            FileDescriptorRegistry.appendEpollReady id stdinKey registry
                         else
                             registry
 
@@ -687,9 +685,9 @@ module TestEpollWait =
                 ||> List.fold (fun system park ->
                     UnixWait.park
                         park.Waiter
-                        (ParkedSyscall.SocketWait
+                        (ParkedSyscall.EpollWait
                             {
-                                Port = ports.[park.Port]
+                                Epoll = ports.[park.Port]
                                 MaxEvents = 1
                                 Buffer = UserBuffer.Mapped
                                 Deadline = park.Deadline
@@ -704,7 +702,7 @@ module TestEpollWait =
                 |> List.choose (fun (name, state) ->
                     match state.Parked with
                     | Some {
-                               Syscall = ParkedSyscall.SocketWait wait
+                               Syscall = ParkedSyscall.EpollWait wait
                                Ordinal = ordinal
                            } -> Some (name, wait, ordinal)
                     | _ -> None
@@ -721,11 +719,11 @@ module TestEpollWait =
 
             let finishingOn (portId : OpenFileDescriptionId) : bool =
                 parkedTasks
-                |> List.exists (fun (name, wait, _) -> not (Set.contains name asleep) && wait.Port = portId)
+                |> List.exists (fun (name, wait, _) -> not (Set.contains name asleep) && wait.Epoll = portId)
 
             let lastAsleepOn (portId : OpenFileDescriptionId) : int =
                 parkedTasks
-                |> List.filter (fun (name, wait, _) -> Set.contains name asleep && wait.Port = portId)
+                |> List.filter (fun (name, wait, _) -> Set.contains name asleep && wait.Epoll = portId)
                 |> List.maxBy (fun (_, _, ordinal) -> ordinal)
                 |> fun (name, _, _) -> name
 
@@ -740,13 +738,13 @@ module TestEpollWait =
                         | _ -> None
 
                     let event =
-                        if isPending wait.Port then
-                            Some (WakePrimitive.SocketEventDeliverable wait.Port)
+                        if isPending wait.Epoll then
+                            Some (WakePrimitive.EpollEventDeliverable wait.Epoll)
                         else
                             None
 
                     let chosen =
-                        event.IsSome && not (finishingOn wait.Port) && lastAsleepOn wait.Port = name
+                        event.IsSome && not (finishingOn wait.Epoll) && lastAsleepOn wait.Epoll = name
 
                     if expired.IsSome || chosen then
                         Some (name, Set.ofList (Option.toList expired @ Option.toList event))

@@ -117,7 +117,14 @@ module TestSyscallInterruption =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let system =
-            match UnixSocket.bind listener UserBuffer.Mapped 16u inetFamily (Some (loopback 5000us)) system with
+            match
+                CopyIn.bind
+                    listener
+                    UserBuffer.Mapped
+                    16u
+                    (CopyIn.inet (UnixSystem.platform system) (loopback 5000us))
+                    system
+            with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"binding the listener: %A{other}"
 
@@ -277,7 +284,14 @@ module TestSyscallInterruption =
             let client, system =
                 NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-            match UnixConnection.connect client UserBuffer.Mapped 16u inetFamily (Some (loopback 5000us)) system with
+            match
+                CopyIn.connect
+                    client
+                    UserBuffer.Mapped
+                    16u
+                    (CopyIn.inet (UnixSystem.platform system) (loopback 5000us))
+                    system
+            with
             | Ok (ConnectOutcome.Completed, system) -> system
             | other -> failwith $"connecting: %A{other}"
 
@@ -318,7 +332,7 @@ module TestSyscallInterruption =
             | Error (PollRefusal.Interruption refusal) -> Ending.Refused refusal, system
             | other -> unexpected other
         | Sleep.EpollWait _ ->
-            match UnixPoll.finishSocketWait task system with
+            match UnixPoll.finishEpollWait task system with
             | Ok (EpollWaitOutcome.Answered (_ :: _), system) -> Ending.Completed, system
             | Ok (EpollWaitOutcome.Answered [], system) -> Ending.TimedOut, system
             | Ok (EpollWaitOutcome.Failed UnixError.EINTR, system) -> Ending.Eintr, system

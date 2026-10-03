@@ -33,13 +33,13 @@ type UnixMachineState =
             /// and never reused, for the same replay-trace reason as
             /// `NextSocketId`.
             NextConnectionId : ConnectionId
-            /// The ordinal the next committed socket event registration records
+            /// The ordinal the next committed event registration records
             /// as its `RegisteredAt`, whether an epoll instance's
             /// (`EpollRegistration`) or a kqueue's (`KqueueRegistration`).
             /// Monotonic, and bumped only when an `EPOLL_CTL_ADD` or the first
             /// `EV_ADD` of a kqueue registration commits, so a failed `epoll_ctl`
             /// leaves the kernel exactly as it found it.
-            NextSocketEventRegistrationOrdinal : int64
+            NextEventRegistrationOrdinal : int64
             /// The ordinal the next park of any task records as its
             /// `TaskPark.Ordinal`. Monotonic, and bumped only by `UnixWait.park`.
             ///
@@ -452,7 +452,7 @@ module UnixMachineState =
                 }
             | SocketKind.SeqPacket ->
                 failwith
-                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. The kind is reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD through `UnixPoll.changeSocketEventRegistration` (the registration screen rejects only regular files, so a socket of any kind is admitted) and `UnixPoll.poll` (which needs no registration at all). On Linux `poll(2)` reports OUT|HUP|WRNORM|WRBAND for a fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c, and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c for the WRNORM and WRBAND bits). That row is the whole answer only while `listen`, `connect` and `accept` keep refusing the kind (their `UnmeasuredKind` refusals), which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those operations reopens every other phase for it. It is still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before answering, since answering here makes epoll delivery answer too."
+                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. The kind is reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD through `UnixPoll.epollCtl` (the registration screen rejects only regular files, so a socket of any kind is admitted) and `UnixPoll.poll` (which needs no registration at all). On Linux `poll(2)` reports OUT|HUP|WRNORM|WRBAND for a fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c, and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c for the WRNORM and WRBAND bits). That row is the whole answer only while `listen`, `connect` and `accept` keep refusing the kind (their `UnmeasuredKind` refusals), which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those operations reopens every other phase for it. It is still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before answering, since answering here makes epoll delivery answer too."
         | SocketPhase.EstablishedPendingReport connectionId
         | SocketPhase.Established connectionId ->
             // With the peer alive and no receive path modelled, both ends

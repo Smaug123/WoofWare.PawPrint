@@ -120,7 +120,7 @@ module AccessRefusal =
         | AccessRefusal.UnmeasuredExecution (inode, refusal) ->
             $"executing inode %O{inode}: %s{ExecutionRefusal.describe refusal}"
         | AccessRefusal.UnmodelledDescriptor fd ->
-            $"fd %d{fd} names neither a directory nor a regular file, and the call would start from it. What a kernel answers for a pipe (the standard streams among them), a socket or a socket event port there has not been measured."
+            $"fd %d{fd} names neither a directory nor a regular file, and the call would start from it. What a kernel answers for a pipe (the standard streams among them), a socket or an event queue there has not been measured."
         | AccessRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// What screening `faccessat(2)`'s mode word and flag word came to.

@@ -241,9 +241,6 @@ module SocketFuzz =
     /// uses real ephemeral ports instead; port numbers are never compared.
     let private listenerPortBase : uint16 = 20000us
 
-    let private inetFamily : int option =
-        Some SimulatedUnixPlatform.internetAddressFamily
-
     type private ExecState =
         {
             Kernel : UnixSystem<int, string>
@@ -385,7 +382,14 @@ module SocketFuzz =
             let socketId = socketIdOfSlot client state
 
             let outcome, kernel =
-                match UnixConnection.connectSocket socketId true 16u inetFamily (Some endpoint) state.Kernel with
+                match
+                    UnixConnection.connectSocket
+                        socketId
+                        true
+                        16u
+                        (CopyIn.inetCopy (UnixSystem.platform state.Kernel) endpoint)
+                        state.Kernel
+                with
                 | Ok answer -> answer
                 | Error refusal -> raise (ModelRefusal (ConnectRefusal.describe refusal))
 
@@ -409,8 +413,9 @@ module SocketFuzz =
                         socketId
                         true
                         16u
-                        inetFamily
-                        (Some (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 1us))
+                        (CopyIn.inetCopy
+                            (UnixSystem.platform state.Kernel)
+                            (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 1us))
                         state.Kernel
                 with
                 | Ok answer -> answer
@@ -518,12 +523,12 @@ module SocketFuzz =
             // cannot disagree; asked here because a generated sequence drives
             // the port through phases no hand-written row reaches.
             let system = state.Kernel
-            let predicted = SocketEventPort.hasDeliverableEvent portId system
-            let delivered, system = SocketEventPort.drain portId maxEvents system
+            let predicted = EpollReadyList.hasDeliverableEvent portId system
+            let delivered, system = EpollReadyList.drain portId maxEvents system
 
             if List.isEmpty delivered = predicted then
                 failwith
-                    $"INTERPRETER-DRIVER BUG: SocketEventPort.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
+                    $"INTERPRETER-DRIVER BUG: EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
 
             let kernel = system
 
@@ -630,7 +635,7 @@ module SocketFuzz =
 
     // --- Generation ---
 
-    /// The phase of one shadow *socket* (or event port). Slots alias sockets
+    /// The phase of one shadow *socket* (or epoll instance). Slots alias sockets
     /// — a dup shares the socket — so the phase lives here and every slot of
     /// the socket sees a change at once.
     ///

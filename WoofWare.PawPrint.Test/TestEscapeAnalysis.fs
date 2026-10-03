@@ -4307,3 +4307,51 @@ public static class Runners
 
         if not escapes.Unknown && not (shown.Contains "=System.DivideByZeroException") then
             failwith $"Run.Go: %A{Set.toList shown}, unknown false; lacks DivideByZeroException"
+
+    /// `TestCrossAssemblyReabstraction` runs the same images, and pins that the real runtime throws
+    /// `EntryPointNotFoundException` from each of these calls.
+    [<Test>]
+    let ``a constrained call landing on a reabstraction raises EntryPointNotFoundException`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let compiled =
+            CrossAssemblyHarness.compileAssemblies
+                [
+                    TestCrossAssemblyReabstraction.libraryBefore
+                    TestCrossAssemblyReabstraction.entryAssembly
+                    TestCrossAssemblyReabstraction.libraryAfter
+                ]
+
+        let read (name : string) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (compiled.[name]))
+
+        let library = read TestCrossAssemblyReabstraction.libraryName
+        let entry = read TestCrossAssemblyReabstraction.entryName
+
+        let analysis = analysisOver [ library ; entry ] id
+
+        let failures =
+            (([], analysis),
+             [
+                 "ConstrainedOnValueType"
+                 "ConstrainedOnSealedClass"
+                 "StaticOnValueType"
+                 "InterfaceCallOnNewObject"
+             ])
+            ||> List.fold (fun (failures, analysis) methodName ->
+                let analysis, escapes =
+                    EscapeAnalysis.escapes analysis (methodNamed entry "ReabstractionEntry.Cases" methodName)
+
+                let shown = render analysis escapes
+
+                if escapes.Unknown || not (shown.Contains "=System.EntryPointNotFoundException") then
+                    $"Cases.%s{methodName}: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected EntryPointNotFoundException, and nothing unknown"
+                    :: failures,
+                    analysis
+                else
+                    failures, analysis
+            )
+            |> fst
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" (List.rev failures))

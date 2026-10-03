@@ -8,7 +8,7 @@ open WoofWare.PosixKernel
 ///
 /// The tier that reaches what `sourcesPure/SocketPoll.cs` cannot: every bit of
 /// Linux's own `<poll.h>` alphabet (a guest reaches `poll` through the shim,
-/// which asks for six bits and hands back six) and the socket-event-port
+/// which asks for six bits and hands back six) and the epoll-instance
 /// entry (no managed caller polls one). A poll that sleeps is
 /// `TestPollTimeout`'s, and a Darwin-flavoured poll is `TestDarwinPoll`'s.
 [<TestFixture>]
@@ -466,7 +466,7 @@ module TestPoll =
     /// `epoll_ctl` screens the targets it accepts, and `poll(2)` accepts any
     /// descriptor.
     [<Test>]
-    let ``an entry naming a socket event port is refused`` () : unit =
+    let ``an entry naming an epoll instance is refused`` () : unit =
         let portFd, registry =
             FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
 

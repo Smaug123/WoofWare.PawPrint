@@ -59,9 +59,9 @@ module TestSocketWait =
 
     let private task : int = 1
 
-    /// A system with the flavour's event port open -- an epoll instance or a
+    /// A system with the flavour's event queue open -- an epoll instance or a
     /// kqueue -- and the descriptor onto it.
-    let private withPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+    let private withEventQueue (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux ->
             match UnixPoll.epollCreate1 0 system with
@@ -118,7 +118,7 @@ module TestSocketWait =
 
         let parkedOn (system : UnixSystem<int, string>) : Waited =
             match UnixTaskTable.parkedFor task system.Tasks with
-            | Some (ParkedSyscall.SocketWait wait) -> Waited.Parked (wait.Port, wait.MaxEvents)
+            | Some (ParkedSyscall.EpollWait wait) -> Waited.Parked (wait.Epoll, wait.MaxEvents)
             | Some (ParkedSyscall.Kevent wait) -> Waited.Parked (wait.Kqueue, wait.MaxEvents)
             | other -> failwith $"expected a wait's park, got %A{other}"
 
@@ -203,12 +203,12 @@ module TestSocketWait =
     /// where `epoll_wait` with `maxevents == 0` is EINVAL.
     [<Test>]
     let ``a zero event count splits by flavour`` () : unit =
-        let linuxFd, linux = withPort (systemOn SimulatedUnixPlatform.linuxX64)
+        let linuxFd, linux = withEventQueue (systemOn SimulatedUnixPlatform.linuxX64)
 
         wait linuxFd 0 UserBuffer.Mapped linux
         |> shouldEqual (Waited.Failed UnixError.EINVAL)
 
-        let darwinFd, darwin = withPort (systemOn SimulatedUnixPlatform.macOsArm64)
+        let darwinFd, darwin = withEventQueue (systemOn SimulatedUnixPlatform.macOsArm64)
 
         wait darwinFd 0 UserBuffer.Mapped darwin |> shouldEqual Waited.NoEvents
 
@@ -220,7 +220,7 @@ module TestSocketWait =
         (platform : SimulatedUnixPlatform, _size : int, cap : int, _limit : uint64)
         : unit
         =
-        let fd, linux = withPort (systemOn platform)
+        let fd, linux = withEventQueue (systemOn platform)
 
         wait fd cap UserBuffer.Mapped linux
         |> shouldEqual (Waited.Parked (OpenFileDescriptionId 3L, cap))
@@ -233,7 +233,7 @@ module TestSocketWait =
     /// 65521 across [1, INT_MAX].
     [<Test>]
     let ``kqueue does not cap the event count`` () : unit =
-        let darwinFd, darwin = withPort (systemOn SimulatedUnixPlatform.macOsArm64)
+        let darwinFd, darwin = withEventQueue (systemOn SimulatedUnixPlatform.macOsArm64)
 
         for count in [ 134_217_728 ; 178_956_971 ; System.Int32.MaxValue ] do
             wait darwinFd count UserBuffer.Mapped darwin
@@ -246,7 +246,7 @@ module TestSocketWait =
     /// unscreened, so either kernel can be asked one.
     [<TestCaseSource(nameof platforms)>]
     let ``a negative event count is answered as zero is`` (platform : SimulatedUnixPlatform) : unit =
-        let fd, system = withPort (systemOn platform)
+        let fd, system = withEventQueue (systemOn platform)
 
         for descriptor in [ fd ; 99 ] do
             for buffer in [ UserBuffer.Mapped ; wild ] do
@@ -274,7 +274,7 @@ module TestSocketWait =
     /// merely-unmapped userspace address passes and the wait then sleeps.
     [<Test>]
     let ``only epoll screens the buffer`` () : unit =
-        let linuxFd, linux = withPort (systemOn SimulatedUnixPlatform.linuxX64)
+        let linuxFd, linux = withEventQueue (systemOn SimulatedUnixPlatform.linuxX64)
 
         wait linuxFd 8 wild linux |> shouldEqual (Waited.Failed UnixError.EFAULT)
 
@@ -282,7 +282,7 @@ module TestSocketWait =
         wait linuxFd 8 (UserBuffer.Unmapped 4096UL) linux
         |> shouldEqual (Waited.Parked (OpenFileDescriptionId 3L, 8))
 
-        let darwinFd, darwin = withPort (systemOn SimulatedUnixPlatform.macOsArm64)
+        let darwinFd, darwin = withEventQueue (systemOn SimulatedUnixPlatform.macOsArm64)
 
         wait darwinFd 8 wild darwin
         |> shouldEqual (Waited.Parked (OpenFileDescriptionId 3L, 8))
@@ -294,7 +294,7 @@ module TestSocketWait =
     let ``epoll screens count, then buffer, then object kind`` () : unit =
         let system = systemOn SimulatedUnixPlatform.linuxX64
         let socketFd, system = withSocket system
-        let portFd, system = withPort system
+        let portFd, system = withEventQueue system
 
         // Count beats buffer: a zero count on a port with an unscreenable
         // buffer is EINVAL, not EFAULT.
@@ -319,7 +319,7 @@ module TestSocketWait =
         (platform : SimulatedUnixPlatform, size : int, _cap : int, limit : uint64)
         : unit
         =
-        let fd, linux = withPort (systemOn platform)
+        let fd, linux = withEventQueue (systemOn platform)
 
         // A base one element below the limit: room for one event, not for two.
         let base' = limit - uint64 size
@@ -346,12 +346,12 @@ module TestSocketWait =
     /// guess, and a guest-visible one.
     [<Test>]
     let ``an addressless buffer is refused only where the flavour screens`` () : unit =
-        let linuxFd, linux = withPort (systemOn SimulatedUnixPlatform.linuxX64)
+        let linuxFd, linux = withEventQueue (systemOn SimulatedUnixPlatform.linuxX64)
 
         UnixPoll.epollWait task linuxFd 8 UserBuffer.Addressless -1 (Tasks.ensure task linux)
         |> shouldEqual (Error (EpollWaitRefusal.Buffer BufferRefusal.AddresslessAtScreen))
 
-        let darwinFd, darwin = withPort (systemOn SimulatedUnixPlatform.macOsArm64)
+        let darwinFd, darwin = withEventQueue (systemOn SimulatedUnixPlatform.macOsArm64)
 
         wait darwinFd 8 UserBuffer.Addressless darwin
         |> shouldEqual (Waited.Parked (OpenFileDescriptionId 3L, 8))
@@ -361,7 +361,7 @@ module TestSocketWait =
     /// delivery rather than here.
     [<TestCaseSource(nameof platforms)>]
     let ``an opaque buffer passes the screen`` (platform : SimulatedUnixPlatform) : unit =
-        let fd, system = withPort (systemOn platform)
+        let fd, system = withEventQueue (systemOn platform)
 
         wait fd 8 UserBuffer.Opaque system
         |> shouldEqual (Waited.Parked (OpenFileDescriptionId 3L, 8))

@@ -31,10 +31,15 @@ type VirtualImplementation =
     /// `AmbiguousImplementationException` (`MethodTable::FindDefaultInterfaceImplementation`,
     /// methodtable.cpp, through `ThrowAmbiguousResolutionException`). These are the candidates.
     | Ambiguous of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+    /// The most specific default interface body is this abstract MethodImpl: an interface more
+    /// specific than the one declaring the method *reabstracts* it, as `IBar : IFoo` declaring
+    /// `abstract int IFoo.Frob();` over `IFoo`'s default body does. The call throws
+    /// `EntryPointNotFoundException` (`MethodTable::FindDispatchImpl`, methodtable.cpp, through
+    /// `ThrowEntryPointNotFoundException`).
+    | Reabstracted of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
     /// The receiver's default interface bodies decide the call in a way this does not model, for
     /// the reason given: a conflict at a variant interface's exact instantiation, where whether
-    /// CoreCLR throws depends on how the JIT compiled the call; or a most specific body that is a
-    /// reabstraction.
+    /// CoreCLR throws depends on how the JIT compiled the call.
     | Unmodelled of reason : string
 
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
@@ -870,10 +875,17 @@ module ConcreteVirtualDispatch =
         let foundDefault (state : TypeSystemState) (candidate : DefaultInterfaceImplementation.Candidate) =
             match candidate.Body.Body with
             | MethodBody.Abstract ->
-                state,
-                VirtualImplementation.Unmodelled
-                    $"the most specific default body of %s{methodToCall.Name} is %s{MethodOwner.describe candidate.Body.Owner}'s reabstraction of it, for which CoreCLR's `FindDispatchImpl` fails the call; PawPrint does not raise that failure"
-            | _ ->
+                logger.LogDebug (
+                    "The most specific default interface body is the reabstraction {DeclaringTypeName}.{MethodName}",
+                    candidate.Body.RequiredDeclaringType.Name,
+                    candidate.Body.Name
+                )
+
+                state, VirtualImplementation.Reabstracted candidate.Body
+            | MethodBody.Il _
+            | MethodBody.InternalCall
+            | MethodBody.PInvoke
+            | MethodBody.RuntimeProvided _ ->
                 logger.LogDebug (
                     "Found default interface body {DeclaringTypeName}.{MethodName}",
                     candidate.Body.RequiredDeclaringType.Name,
@@ -1105,6 +1117,9 @@ module ConcreteVirtualDispatch =
     /// which asks whether `T` itself supplies the method rather than inheriting it.
     ///
     /// `Unmodelled` for the default-body outcomes `VirtualImplementation.Unmodelled` lists.
+    ///
+    /// `Reabstracted`, and never `NotOverridden`, where the most specific default body is a
+    /// reabstraction, so a caller must not fall back to the method the call names.
     ///
     /// `methodToCall` must be an instance method: a static virtual is `StaticVirtualDispatch`'s.
     let tryResolveVirtualImplementation

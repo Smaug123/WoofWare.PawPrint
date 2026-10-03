@@ -11,8 +11,8 @@ open WoofWare.PosixKernel
 /// The oracle flattens a condition into the list of primitives it mentions with an
 /// explicit work stack, and decides each primitive from a truth table this file states
 /// by construction, where `WakeCondition.satisfied` recurses over the tree and asks the
-/// kernel. The world is built so that every primitive's answer is known: two socket
-/// event ports, which share one anonymous inode and so contend under `flock`, with an
+/// kernel. The world is built so that every primitive's answer is known: two epoll
+/// instances, which share one anonymous inode and so contend under `flock`, with an
 /// exclusive lock held through the first; neither port has anything to deliver;
 /// two kqueues, the first with a ready listener queued and the second drained;
 /// the standard streams, whose readiness is the launch shape's; and two tasks,
@@ -79,7 +79,9 @@ module TestWakeCondition =
         let loopback = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
 
         let system =
-            match UnixSocket.bind listenerFd UserBuffer.Mapped 16u inet (Some loopback) system with
+            match
+                CopyIn.bind listenerFd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) loopback) system
+            with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"binding the listener: %A{other}"
 
@@ -92,7 +94,9 @@ module TestWakeCondition =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let system =
-            match UnixConnection.connect clientFd UserBuffer.Mapped 16u inet (Some loopback) system with
+            match
+                CopyIn.connect clientFd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) loopback) system
+            with
             | Ok (ConnectOutcome.Completed, system) -> system
             | other -> failwith $"connecting: %A{other}"
 
@@ -158,8 +162,8 @@ module TestWakeCondition =
             WakePrimitive.FlockGrantable (locker, FlockMode.Shared), true
             WakePrimitive.FlockGrantable (blocked, FlockMode.Exclusive), false
             WakePrimitive.FlockGrantable (blocked, FlockMode.Shared), false
-            WakePrimitive.SocketEventDeliverable locker, false
-            WakePrimitive.SocketEventDeliverable blocked, false
+            WakePrimitive.EpollEventDeliverable locker, false
+            WakePrimitive.EpollEventDeliverable blocked, false
             // The launch shape's standard streams: stdin presents HUP alone,
             // stdout OUT and WRNORM.
             WakePrimitive.DescriptorReady (idOf 1 system, 0x0004u), true
@@ -196,7 +200,7 @@ module TestWakeCondition =
         | WakePrimitive.SignalDeliverable -> waiter = signalled
         | WakePrimitive.EndedByClose
         | WakePrimitive.FlockGrantable _
-        | WakePrimitive.SocketEventDeliverable _
+        | WakePrimitive.EpollEventDeliverable _
         | WakePrimitive.KqueueDrained _
         | WakePrimitive.KqueueEventDeliverable _
         | WakePrimitive.KqueuePollReportable
@@ -410,7 +414,7 @@ module TestWakeCondition =
                         | WakePrimitive.DeadlinePassed deadline -> Some deadline
                         | WakePrimitive.EndedByClose
                         | WakePrimitive.FlockGrantable _
-                        | WakePrimitive.SocketEventDeliverable _
+                        | WakePrimitive.EpollEventDeliverable _
                         | WakePrimitive.KqueueDrained _
                         | WakePrimitive.KqueueEventDeliverable _
                         | WakePrimitive.KqueuePollReportable
@@ -437,9 +441,9 @@ module TestWakeCondition =
                     Requester = blocked
                     Mode = FlockMode.Exclusive
                 }
-            ParkedSyscall.SocketWait
+            ParkedSyscall.EpollWait
                 {
-                    Port = locker
+                    Epoll = locker
                     MaxEvents = 1
                     Buffer = UserBuffer.Mapped
                     Deadline = None

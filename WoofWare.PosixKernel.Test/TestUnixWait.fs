@@ -8,7 +8,7 @@ open WoofWare.PosixKernel
 
 /// Park order, and which parked tasks a system wakes.
 ///
-/// The socket-event half of `UnixWait.wakes` lives in `TestUnixSystemStep` and
+/// The epoll half of `UnixWait.wakes` lives in `TestUnixSystemStep` and
 /// `TestEpollWait`, beside the port fixtures that can make a port deliverable.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -34,7 +34,7 @@ module TestUnixWait =
     let private withTask (name : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         Tasks.ensure name system
 
-    /// Two socket event ports, which contend under `flock` because they share one
+    /// Two epoll instances, which contend under `flock` because they share one
     /// anonymous inode, with an exclusive lock held through `locker`; and tasks 1 to 4.
     let private world : UnixSystem<int, string> * int * OpenFileDescriptionId * OpenFileDescriptionId =
         let system =
@@ -80,9 +80,9 @@ module TestUnixWait =
     /// both kinds of park are in the table at once.
     let private parkOfTask (task : int) : ParkedSyscall =
         if task <= 2 then
-            ParkedSyscall.SocketWait
+            ParkedSyscall.EpollWait
                 {
-                    Port = blocked
+                    Epoll = blocked
                     MaxEvents = 1
                     Buffer = UserBuffer.Mapped
                     Deadline = None

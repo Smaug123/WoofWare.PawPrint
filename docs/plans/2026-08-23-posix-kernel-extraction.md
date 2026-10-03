@@ -4097,6 +4097,20 @@ practice, not only in the unit test — mutating the handler so that a `Family` 
 reads an endpoint kills `sourcesPure/SocketConnect.cs` and `SocketConnectLinux.cs`
 through this failwith, because those guests connect at a declared length of 4.
 
+**Revisited 2026-10-03 (audit item #14): the second call now takes the bytes.** What the
+list above rejects is the *single-call* shape, in which the client reads before the
+kernel has said it reads. Keeping the admission and changing only what the second call
+takes gives the library the decoding without that hazard: `SockaddrCopyAdmission.Transfer`
+carries the length alone, and `bind`, `connect` and `connectSocket` take exactly the bytes
+it names and decode the family, port and address themselves
+(`SimulatedUnixPlatform.decodeInternetSockaddr`). `SockaddrCopyFields` and its consistency
+check are gone; a check that the client passed exactly the copy's bytes takes its place,
+for the same reason. The client reads every admitted byte rather than only the fields,
+because both kernels copy them all and a fault anywhere in them is EFAULT; where PawPrint
+cannot decide that its storage holds that many, it refuses. The options and the
+measurements behind them (`sockaddr-decoding.c`) are in Patrick's
+`pawprint-kernel-design/sockaddr-decoding-options.md`, option A.
+
 `SockaddrFamilyField.reachedBy` is the one arithmetic that both the kernel's copy rule
 and the shim's own field screen need, so it lives in the library and PawPrint's
 `sockaddrFamilyIsInBounds` delegates to it. The rest of `SockaddrOffsets` stays in

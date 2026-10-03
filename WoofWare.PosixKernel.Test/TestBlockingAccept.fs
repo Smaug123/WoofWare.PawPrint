@@ -49,7 +49,9 @@ module TestBlockingAccept =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let system =
-            match UnixSocket.bind fd UserBuffer.Mapped 16u inetFamily (Some (loopback port)) system with
+            match
+                CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) (loopback port)) system
+            with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"binding the listener at port %d{port}: %A{other}"
 
@@ -73,7 +75,9 @@ module TestBlockingAccept =
         let fd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-        match UnixConnection.connect fd UserBuffer.Mapped 16u inetFamily (Some (loopback port)) system with
+        match
+            CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) (loopback port)) system
+        with
         | Ok (ConnectOutcome.Completed, system) -> system
         | other -> failwith $"connecting to port %d{port}: %A{other}"
 
@@ -584,7 +588,9 @@ module TestBlockingAccept =
         let fd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-        match UnixConnection.connect fd UserBuffer.Mapped 16u inetFamily (Some (loopback port)) system with
+        match
+            CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) (loopback port)) system
+        with
         | Ok (outcome, _) -> outcome
         | Error refusal -> failwith $"connecting to port %d{port}: %A{refusal}"
 
@@ -1103,7 +1109,12 @@ module TestBlockingAccept =
                     client |> shouldEqual (lowestFree reference)
 
                     match
-                        UnixConnection.connect client UserBuffer.Mapped 16u inetFamily (Some (loopback 5000us)) created
+                        CopyIn.connect
+                            client
+                            UserBuffer.Mapped
+                            16u
+                            (CopyIn.inet (UnixSystem.platform created) (loopback 5000us))
+                            created
                     with
                     | Ok (ConnectOutcome.Completed, after) when reference.Alive ->
                         system <- after

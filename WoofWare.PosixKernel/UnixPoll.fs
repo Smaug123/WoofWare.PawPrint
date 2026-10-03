@@ -7,7 +7,7 @@ namespace WoofWare.PosixKernel
 /// answer to give.
 [<RequireQualifiedAccess>]
 type PollRefusal =
-    /// The entry names a socket event port, which this kernel does not answer
+    /// The entry names an event queue, which this kernel does not answer
     /// `poll(2)` for: under Linux an epoll instance, whatever was asked; under
     /// Darwin a kqueue asked for a bit that registers `EVFILT_READ` on it.
     ///
@@ -75,7 +75,7 @@ module PollRefusal =
     let describe (refusal : PollRefusal) : string =
         match refusal with
         | PollRefusal.UnmodelledTarget fd ->
-            $"fd %d{fd} names a socket event port (an epoll instance, or a kqueue asked for a read bit), which this kernel does not answer `poll(2)` for. A port's own readiness depends on re-reading what it has queued, and what that leaves queued is unmeasured; model that before answering."
+            $"fd %d{fd} names an event queue (an epoll instance, or a kqueue asked for a read bit), which this kernel does not answer `poll(2)` for. An event queue's own readiness depends on re-reading what it has queued, and what that leaves queued is unmeasured; model that before answering."
         | PollRefusal.UnmodelledSocket (fd, domain, kind) ->
             $"fd %d{fd} is a %O{kind} socket in %O{domain}, and the entry asks for a bit that registers a kqueue filter on it. This kernel models those filters for IPv4 and IPv6 stream sockets only: what activates a datagram socket's filters is not modelled, and a Unix-domain socket's are not measured."
         | PollRefusal.UnmodelledVnodeWait fd ->
@@ -120,7 +120,7 @@ type EpollWaitOutcome =
     ///
     /// The call as first made changes nothing when it fails. A finishing call
     /// fails only with `EINTR`, when a signal with a handler interrupts the
-    /// wait, and what its walk of the port consumed stays consumed.
+    /// wait, and what its walk of the epoll instance consumed stays consumed.
     | Failed of error : UnixError
     /// `epoll_wait` returned these events, in delivery order: each the
     /// registration's `data` and the `events` written for it, in Linux's
@@ -129,7 +129,7 @@ type EpollWaitOutcome =
     | Answered of events : (uint64 * uint32) list
     /// `epoll_wait` did not return. The calling task is parked, and sleeps
     /// until `WakeCondition.satisfied` of this condition is non-empty and
-    /// `UnixWait.wakes` wakes it; then `UnixPoll.finishSocketWait` finishes the
+    /// `UnixWait.wakes` wakes it; then `UnixPoll.finishEpollWait` finishes the
     /// call.
     | WouldBlock of WakeCondition
 
@@ -147,7 +147,7 @@ type EpollWaitRefusal =
     /// Linux answers EFAULT only when the first event's copy faults, and a
     /// real buffer can be partly mapped; which of the walked entries stay
     /// pending after a fault is unmeasured.
-    | UnmeasuredCopyOutFault of port : OpenFileDescriptionId
+    | UnmeasuredCopyOutFault of epoll : OpenFileDescriptionId
     /// Nothing is deliverable, and the timeout ends past the last instant the
     /// machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`, an
     /// `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
@@ -166,8 +166,8 @@ module EpollWaitRefusal =
         | EpollWaitRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and epoll_wait exists on Linux only. This flavour's counterpart is kevent (UnixKqueue.kevent)."
         | EpollWaitRefusal.Buffer refusal -> BufferRefusal.describe refusal
-        | EpollWaitRefusal.UnmeasuredCopyOutFault port ->
-            $"the socket event port %O{port} has events to deliver, so this call copies them out -- but the buffer is unmapped, so that copy faults. Which of the events the walk took stay pending after the fault, and whether the call answers EFAULT or the count copied before it, are unmeasured."
+        | EpollWaitRefusal.UnmeasuredCopyOutFault epoll ->
+            $"the epoll instance %O{epoll} has events to deliver, so this call copies them out -- but the buffer is unmapped, so that copy faults. Which of the events the walk took stay pending after the fault, and whether the call answers EFAULT or the count copied before it, are unmeasured."
         | EpollWaitRefusal.DeadlineBeyondClock (now, timeoutMilliseconds) ->
             $"the machine has been up for %d{now} ns and the timeout is %d{timeoutMilliseconds}ms, which ends past the last nanosecond the monotonic clock can represent. Linux's source saturates such a deadline, making the wait infinite, but that is unmeasured."
         | EpollWaitRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
@@ -206,11 +206,11 @@ type EpollCtlError =
     /// The target fd is not a live descriptor; `EBADF`.
     | BadTargetFd
     /// The target supports no poll -- a regular file or a directory; `EPERM`.
-    /// Ahead of the not-a-port check, so a file as both port and target is
+    /// Ahead of the not-an-epoll-instance check, so a file as both epoll instance and target is
     /// `EPERM`.
     | TargetNotPollable
     /// `epfd` is not an epoll instance, or `epfd` and the target name the same
-    /// open file description (a `dup` of the port included); `EINVAL`.
+    /// open file description (a `dup` of the epoll instance included); `EINVAL`.
     | NotAnEventPort
     /// The event carries `EPOLLEXCLUSIVE` where it is not permitted: on
     /// `EPOLL_CTL_MOD`, or on `EPOLL_CTL_ADD` with an epoll instance as the
@@ -270,11 +270,11 @@ type EpollCtlRefusal =
     /// An `EPOLL_CTL_ADD` whose target is itself an epoll instance.
     ///
     /// Linux accepts one, subject to a loop check and a nesting depth of at
-    /// most four ports (`ELOOP` beyond either). This library does not model
-    /// what a nested port reports or how a wake propagates through it.
+    /// most four epoll instances (`ELOOP` beyond either). This library does not model
+    /// what a nested epoll instance reports or how a wake propagates through it.
     | NestedPort of targetFd : int
-    /// The event carries `EPOLLEXCLUSIVE`, which changes which of several ports
-    /// on one target a wake reaches. This library's wakes reach every port.
+    /// The event carries `EPOLLEXCLUSIVE`, which changes which of several epoll instances
+    /// on one target a wake reaches. This library's wakes reach every epoll instance.
     | Exclusive
     /// The event carries `EPOLLONESHOT`, which disarms the registration once it
     /// has reported. This library's registrations stay armed.
@@ -283,7 +283,7 @@ type EpollCtlRefusal =
     /// with `CAP_BLOCK_SUSPEND` on a kernel built with power management, and
     /// silently clears it otherwise; this library models neither.
     | WakeUp
-    /// The event lacks `EPOLLET`, asking to be level-triggered. This port
+    /// The event lacks `EPOLLET`, asking to be level-triggered. This library's epoll
     /// models edge-triggered registrations only: a wait consumes every entry it
     /// walks and never re-arms a still-ready one, so a wait after a partly
     /// drained level would sleep where a real `epoll_wait` returns again.
@@ -304,9 +304,9 @@ module EpollCtlRefusal =
         | EpollCtlRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and epoll_ctl exists on Linux only. This flavour's counterpart is a kevent changelist (UnixKqueue.kevent)."
         | EpollCtlRefusal.NestedPort targetFd ->
-            $"fd %d{targetFd} is itself an epoll instance. Linux would register it (subject to a loop check and a nesting depth of four, both ELOOP), but what a nested port reports and how a wake propagates through one are not modelled."
+            $"fd %d{targetFd} is itself an epoll instance. Linux would register it (subject to a loop check and a nesting depth of four, both ELOOP), but what a nested epoll instance reports and how a wake propagates through one are not modelled."
         | EpollCtlRefusal.Exclusive ->
-            "the event carries EPOLLEXCLUSIVE, and the registration would succeed. An exclusive registration changes which of several ports on one target a wake reaches, and this library's wakes reach every port. Model wake-one delivery before answering."
+            "the event carries EPOLLEXCLUSIVE, and the registration would succeed. An exclusive registration changes which of several epoll instances on one target a wake reaches, and this library's wakes reach every epoll instance. Model wake-one delivery before answering."
         | EpollCtlRefusal.OneShot ->
             "the event carries EPOLLONESHOT, and the registration would succeed. A one-shot registration disarms once it has reported until a MOD re-arms it, and this library's registrations stay armed. Model disarming before answering."
         | EpollCtlRefusal.WakeUp ->
@@ -314,7 +314,7 @@ module EpollCtlRefusal =
         | EpollCtlRefusal.PipeTarget targetFd ->
             $"fd %d{targetFd} is an end of a pipe the process made, and the registration would succeed. An edge-triggered registration is made pending by the wakes its target signals, and which reads, writes and closes signal a pipe's waiters, with which events, is unmeasured: Linux's pipe_write, for one, wakes readers on every write once a waiter has polled the pipe, not only on the write that makes it non-empty. poll(2) on a pipe is answered; measure the pipe's wakes before registering one."
         | EpollCtlRefusal.LevelTriggered ->
-            "the event lacks EPOLLET, asking to be level-triggered, and the registration would succeed. This port models edge-triggered registrations only: the ready list is consumed as it is drained and a still-ready entry is never re-armed, so a wait after a partly drained level would sleep where a real epoll_wait returns again. Register with EPOLLET, or model level-triggering before answering."
+            "the event lacks EPOLLET, asking to be level-triggered, and the registration would succeed. This library's epoll models edge-triggered registrations only: the ready list is consumed as it is drained and a still-ready entry is never re-armed, so a wait after a partly drained level would sleep where a real epoll_wait returns again. Register with EPOLLET, or model level-triggering before answering."
 
 [<RequireQualifiedAccess>]
 module UnixPoll =
@@ -340,7 +340,7 @@ module UnixPoll =
         // the buffer, then is-it-an-epoll-instance.
         match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
         | None -> Ok (Error UnixError.EBADF)
-        | Some (port, description) ->
+        | Some (epoll, description) ->
 
         let architecture = SimulatedUnixPlatform.architecture system.Machine.UnixPlatform
 
@@ -392,7 +392,7 @@ module UnixPoll =
         | OpenFileTarget.Kqueue _ ->
             failwith
                 $"UnixPoll.epollWait: fd %d{fd} names a kqueue, which a Linux-flavoured kernel cannot hold (this is a bug in the caller's state construction)."
-        | OpenFileTarget.Epoll _ -> Ok (Ok port)
+        | OpenFileTarget.Epoll _ -> Ok (Ok epoll)
 
     /// `epoll_ctl(2)`: apply `op` to the interest table of the epoll instance
     /// `epfd` names, for the target `fd` names, with the `event` the caller
@@ -455,7 +455,7 @@ module UnixPoll =
 
         match FileDescriptorRegistry.tryFindWithId epfd registry with
         | None -> failed EpollCtlError.BadPortFd
-        | Some (portId, portDescription) ->
+        | Some (epollId, epollDescription) ->
 
         match FileDescriptorRegistry.tryFindWithId fd registry with
         | None -> failed EpollCtlError.BadTargetFd
@@ -478,10 +478,10 @@ module UnixPoll =
         | OpenFileTarget.Pipe _ ->
 
         // One kernel test, `f.file == tf.file || !is_file_epoll(f.file)`, so
-        // one answer: a `dup` of the port as target is this, not success.
-        let portState =
-            match portDescription.Target with
-            | OpenFileTarget.Epoll portState when portId <> targetId -> Some portState
+        // one answer: a `dup` of the epoll instance as target is this, not success.
+        let epollState =
+            match epollDescription.Target with
+            | OpenFileTarget.Epoll epollState when epollId <> targetId -> Some epollState
             | OpenFileTarget.Epoll _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.File _
@@ -490,9 +490,9 @@ module UnixPoll =
             | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _ -> None
 
-        match portState with
+        match epollState with
         | None -> failed EpollCtlError.NotAnEventPort
-        | Some portState ->
+        | Some epollState ->
 
         let targetIsPort =
             match targetDescription.Target with
@@ -525,16 +525,16 @@ module UnixPoll =
         then
             failed EpollCtlError.ExclusiveNotPermitted
         // Where Linux runs its loop and depth checks, which cannot fail on any
-        // table this library builds (it never holds a nested port) but which
+        // table this library builds (it never holds a nested epoll instance) but which
         // precede EEXIST in the kernel.
         elif op = add && targetIsPort then
             Error (EpollCtlRefusal.NestedPort fd)
         else
 
         let key = fd, targetId
-        let registered = Map.containsKey key portState.Registrations
+        let registered = Map.containsKey key epollState.Registrations
 
-        // The modes this port does not model, refused only where the call
+        // The modes this library's epoll does not model, refused only where the call
         // would otherwise commit.
         let unmodelledMode : EpollCtlRefusal option =
             if exclusive then
@@ -564,15 +564,13 @@ module UnixPoll =
         // registration pending at that moment (measured rows E, I and K), and
         // a MOD of an entry already pending leaves its place alone (row L).
         let pendIfReady (system : UnixSystem<'Task, 'Handler>) : UnixSystem<'Task, 'Handler> =
-            let alreadyPending = List.contains key portState.Ready
+            let alreadyPending = List.contains key epollState.Ready
 
             if
                 not alreadyPending
                 && LinuxReadiness.ofDescription targetId system &&& stored <> 0u
             then
-                withRegistry
-                    (FileDescriptorRegistry.appendSocketEventReady portId key system.Process.FileDescriptors)
-                    system
+                withRegistry (FileDescriptorRegistry.appendEpollReady epollId key system.Process.FileDescriptors) system
             else
                 system
 
@@ -615,7 +613,7 @@ module UnixPoll =
                 Error (EpollCtlRefusal.PipeTarget fd)
             else
 
-            let ordinal = system.Machine.NextSocketEventRegistrationOrdinal
+            let ordinal = system.Machine.NextEventRegistrationOrdinal
 
             let registration =
                 {
@@ -625,10 +623,10 @@ module UnixPoll =
                 }
 
             let system =
-                { withRegistry (FileDescriptorRegistry.addEpollRegistration portId key registration registry) system with
+                { withRegistry (FileDescriptorRegistry.addEpollRegistration epollId key registration registry) system with
                     Machine =
                         { system.Machine with
-                            NextSocketEventRegistrationOrdinal = ordinal + 1L
+                            NextEventRegistrationOrdinal = ordinal + 1L
                         }
                 }
 
@@ -637,7 +635,7 @@ module UnixPoll =
             if registered then
                 Ok (
                     EpollCtlAnswer.Changed,
-                    withRegistry (FileDescriptorRegistry.removeEpollRegistration portId key registry) system
+                    withRegistry (FileDescriptorRegistry.removeEpollRegistration epollId key registry) system
                 )
             else
                 failed EpollCtlError.NotRegistered
@@ -653,7 +651,7 @@ module UnixPoll =
             // No stored mask here carries EPOLLEXCLUSIVE, whose MOD the kernel
             // would answer EINVAL, because an exclusive ADD is refused.
             let system =
-                withRegistry (FileDescriptorRegistry.modifyEpollRegistration portId key stored data registry) system
+                withRegistry (FileDescriptorRegistry.modifyEpollRegistration epollId key stored data registry) system
 
             Ok (EpollCtlAnswer.Changed, pendIfReady system)
         else
@@ -1324,7 +1322,7 @@ module UnixPoll =
         | SimulatedUnixFlavour.Linux ->
 
         // Measured on 6.18.5 (`epoll-wait.c`, section A): 0 and EPOLL_CLOEXEC
-        // create a port; every other single bit, EPOLL_CLOEXEC beside any other
+        // create an epoll instance; every other single bit, EPOLL_CLOEXEC beside any other
         // bit, -1 and INT_MIN are EINVAL.
         if flags &&& ~~~EpollCreateFlags.CloseOnExec <> 0 then
             Ok (Error UnixError.EINVAL)
@@ -1347,7 +1345,7 @@ module UnixPoll =
     /// Whether the events `delivered` can be copied out to `buffer`: a call
     /// that delivers nothing copies nothing, and so never looks at the buffer.
     let private copyOut
-        (port : OpenFileDescriptionId)
+        (epoll : OpenFileDescriptionId)
         (buffer : UserBuffer)
         (delivered : (uint64 * uint32) list)
         : Result<unit, EpollWaitRefusal>
@@ -1357,15 +1355,15 @@ module UnixPoll =
         else
             match buffer with
             | UserBuffer.Mapped -> Ok ()
-            | UserBuffer.Unmapped _ -> Error (EpollWaitRefusal.UnmeasuredCopyOutFault port)
+            | UserBuffer.Unmapped _ -> Error (EpollWaitRefusal.UnmeasuredCopyOutFault epoll)
             | UserBuffer.Opaque -> Error (EpollWaitRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
             | UserBuffer.Addressless -> Error (EpollWaitRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
 
-    /// Park `task` in a wait on the socket event port `port` for up to
+    /// Park `task` in a wait on the epoll instance `epoll` for up to
     /// `maxEvents` events, until `deadline`.
-    let private parkSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private parkEpollWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
-        (port : OpenFileDescriptionId)
+        (epoll : OpenFileDescriptionId)
         (maxEvents : int)
         (buffer : UserBuffer)
         (deadline : int64 option)
@@ -1373,9 +1371,9 @@ module UnixPoll =
         : EpollWaitOutcome * UnixSystem<'Task, 'Handler>
         =
         let parked =
-            ParkedSyscall.SocketWait
+            ParkedSyscall.EpollWait
                 {
-                    Port = port
+                    Epoll = epoll
                     MaxEvents = maxEvents
                     Buffer = buffer
                     Deadline = deadline
@@ -1394,15 +1392,15 @@ module UnixPoll =
     /// `EINVAL` for a descriptor that is not an epoll instance. A failure
     /// changes nothing.
     ///
-    /// Delivery walks the port's pending registrations in order, reporting each
+    /// Delivery walks the epoll instance's pending registrations in order, reporting each
     /// one whose target is still ready and consuming each one walked, stale or
-    /// not (see `SocketEventPort.drain`). A wait that finds something answers it
+    /// not (see `EpollReadyList.drain`). A wait that finds something answers it
     /// whatever the timeout. One that finds nothing answers no events at once
     /// for a timeout of 0; parks `task` for a positive timeout until an event is
     /// deliverable or `milliseconds` have passed on the machine's monotonic
     /// clock; and parks it until an event is deliverable for any negative
     /// timeout, which is infinite. A parked wait is finished with
-    /// `finishSocketWait`. The walk's consumption stands whether or not the call
+    /// `finishEpollWait`. The walk's consumption stands whether or not the call
     /// then sleeps.
     ///
     /// A call that delivers events copies them out to `buffer`, which must be
@@ -1410,7 +1408,7 @@ module UnixPoll =
     /// whose bytes it cannot hold (see `EpollWaitRefusal`). A call that delivers
     /// nothing never looks at the buffer past the screen.
     ///
-    /// Of several tasks parked on one port, one event wakes one of them (see
+    /// Of several tasks parked on one epoll instance, one event wakes one of them (see
     /// `UnixWait.wakes`).
     ///
     /// `task` must not already be parked. Under the Darwin flavour every call
@@ -1427,7 +1425,7 @@ module UnixPoll =
         match UnixTaskTable.parkedFor task system.Tasks with
         | Some parked ->
             failwith
-                $"UnixPoll.epollWait: task %O{task} is parked in %A{parked}, and is issuing an epoll_wait. A task blocks in one syscall at a time; a parked wait is finished with `finishSocketWait` (this is a bug in the client)."
+                $"UnixPoll.epollWait: task %O{task} is parked in %A{parked}, and is issuing an epoll_wait. A task blocks in one syscall at a time; a parked wait is finished with `finishEpollWait` (this is a bug in the client)."
         | None ->
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
@@ -1437,15 +1435,15 @@ module UnixPoll =
         match admitEpollWait epfd maxEvents buffer system with
         | Error refusal -> Error (EpollWaitRefusal.Buffer refusal)
         | Ok (Error error) -> Ok (EpollWaitOutcome.Failed error, system)
-        | Ok (Ok port) ->
+        | Ok (Ok epoll) ->
 
-        let delivered, system = SocketEventPort.drain port maxEvents system
+        let delivered, system = EpollReadyList.drain epoll maxEvents system
 
         // Measured (`epoll-wait.c`, sections B and C): a wait that finds
         // something answers at once whatever the timeout, and one that finds
         // nothing answers at once for a timeout of 0.
         if not (List.isEmpty delivered) || milliseconds = 0 then
-            copyOut port buffer delivered
+            copyOut epoll buffer delivered
             |> Result.map (fun () -> EpollWaitOutcome.Answered delivered, system)
         else
 
@@ -1453,24 +1451,24 @@ module UnixPoll =
 
         match relativeDeadline now milliseconds with
         | Error () -> Error (EpollWaitRefusal.DeadlineBeyondClock (now, milliseconds))
-        | Ok deadline -> Ok (parkSocketWait task port maxEvents buffer deadline system)
+        | Ok deadline -> Ok (parkEpollWait task epoll maxEvents buffer deadline system)
 
-    let private finishSocketWaitHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private finishEpollWaitHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<EpollWaitOutcome * UnixSystem<'Task, 'Handler>, EpollWaitRefusal>
         =
         let parked =
             match UnixTaskTable.parkedFor task system.Tasks with
-            | Some (ParkedSyscall.SocketWait parked) -> parked
+            | Some (ParkedSyscall.EpollWait parked) -> parked
             | Some other ->
                 failwith
-                    $"UnixPoll.finishSocketWait: task %O{task} is parked in %A{other}, not in a socket event wait, so there is no wait to finish (this is a bug in the client)."
+                    $"UnixPoll.finishEpollWait: task %O{task} is parked in %A{other}, not in an epoll_wait, so there is no wait to finish (this is a bug in the client)."
             | None ->
                 failwith
-                    $"UnixPoll.finishSocketWait: task %O{task} is not parked, so there is no wait to finish. Only a task `epollWait` answered `WouldBlock` finishes here (this is a bug in the client)."
+                    $"UnixPoll.finishEpollWait: task %O{task} is not parked, so there is no wait to finish. Only a task `epollWait` answered `WouldBlock` finishes here (this is a bug in the client)."
 
-        let delivered, system = SocketEventPort.drain parked.Port parked.MaxEvents system
+        let delivered, system = EpollReadyList.drain parked.Epoll parked.MaxEvents system
 
         let timedOut =
             match parked.Deadline with
@@ -1489,7 +1487,7 @@ module UnixPoll =
         if not (List.isEmpty delivered) || timedOut then
             SyscallInterruption.beforeCompleting task system
             |> Result.mapError EpollWaitRefusal.Interruption
-            |> Result.bind (fun () -> copyOut parked.Port parked.Buffer delivered)
+            |> Result.bind (fun () -> copyOut parked.Epoll parked.Buffer delivered)
             |> Result.map (fun () -> EpollWaitOutcome.Answered delivered, finished)
         else
 
@@ -1498,15 +1496,15 @@ module UnixPoll =
         | Ok (Some SyscallInterruption.Eintr) -> Ok (EpollWaitOutcome.Failed UnixError.EINTR, finished)
         | Ok (Some SyscallInterruption.Restart) ->
             failwith
-                "UnixPoll.finishSocketWait: a socket event wait restarted after a signal, where `SyscallInterruption.ruleOf` says one never restarts (this is a bug in this library)."
-        | Ok None -> Ok (parkSocketWait task parked.Port parked.MaxEvents parked.Buffer parked.Deadline system)
+                "UnixPoll.finishEpollWait: an epoll_wait restarted after a signal, where `SyscallInterruption.ruleOf` says one never restarts (this is a bug in this library)."
+        | Ok None -> Ok (parkEpollWait task parked.Epoll parked.MaxEvents parked.Buffer parked.Deadline system)
 
-    /// Finish the wait on a socket event port that `task` is parked in: walk
-    /// the port again, as a woken real wait does, and answer.
+    /// Finish the wait on an epoll instance that `task` is parked in: walk
+    /// the epoll instance again, as a woken real wait does, and answer.
     ///
-    /// Delivers from the port the call was made on and with the `maxEvents` it
+    /// Delivers from the epoll instance the call was made on and with the `maxEvents` it
     /// was made with, not whatever the caller's arguments hold now: the parked
-    /// call holds the port's open file description, which outlives its last
+    /// call holds the epoll instance's open file description, which outlives its last
     /// descriptor until the call returns, and goes then.
     ///
     /// Answers the events it finds, whether or not the deadline has passed or a
@@ -1514,16 +1512,16 @@ module UnixPoll =
     /// an expired deadline both holding as the waiter runs report the event);
     /// no events when the deadline has passed, whether or not a signal is
     /// pending; `Failed EINTR` when a signal with a handler interrupts it; and
-    /// otherwise re-parks the task on the same port and deadline, since
+    /// otherwise re-parks the task on the same epoll instance and deadline, since
     /// whatever woke it has gone again. A re-park goes to the back of park
-    /// order, which puts it first in line for the port's next event. An answer
+    /// order, which puts it first in line for the epoll instance's next event. An answer
     /// clears the park.
     ///
     /// Delivering events copies them out to the buffer the call was made with;
     /// see `epollWait` for the buffers that refuses.
     ///
-    /// `task` must be parked in a socket event wait.
-    let finishSocketWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `task` must be parked in an `epoll_wait`.
+    let finishEpollWait<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<EpollWaitOutcome * UnixSystem<'Task, 'Handler>, EpollWaitRefusal>
@@ -1533,10 +1531,10 @@ module UnixPoll =
             | Some parked -> ParkedSyscall.descriptions parked
             | None -> []
 
-        // The call's reference to the port goes as it returns, and with it the
-        // port, if no descriptor names it any more (`open-file-references.c`
+        // The call's reference to the epoll instance goes as it returns, and with it the
+        // epoll instance, if no descriptor names it any more (`open-file-references.c`
         // section E).
-        finishSocketWaitHolding task system
+        finishEpollWaitHolding task system
         |> Result.map (fun (outcome, after) ->
-            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixPoll.finishSocketWait" held after
+            outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixPoll.finishEpollWait" held after
         )

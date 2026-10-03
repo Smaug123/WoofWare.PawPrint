@@ -170,15 +170,22 @@ module TestSzArrayInterfaceDispatch =
         : IlMachineState *
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> option
         =
-        IlMachineStateExecution.tryResolveVirtualImplementation
-            loggerFactory
-            bct
-            unusedThread
-            concretizedMethod.Generics
-            concretizedMethod
-            dispatchTypeHandle
-            true
-            state
+        let state, resolved =
+            IlMachineStateExecution.tryResolveVirtualImplementation
+                loggerFactory
+                bct
+                unusedThread
+                concretizedMethod.Generics
+                concretizedMethod
+                dispatchTypeHandle
+                true
+                state
+
+        match resolved with
+        | IlMachineStateExecution.ResolvedVirtualCall.Runs implementation -> state, Some implementation
+        | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> state, None
+        | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted reabstraction ->
+            failwith $"%s{concretizedMethod.Name} resolved to the reabstraction %s{reabstraction.Name}"
 
     let private objectHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Object

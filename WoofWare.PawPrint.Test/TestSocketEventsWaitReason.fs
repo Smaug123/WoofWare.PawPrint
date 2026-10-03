@@ -14,7 +14,7 @@ open WoofWare.PawPrint
 /// What they pin is the set of answers the status is *obliged* to give: two exhaustive
 /// classifiers in `ThreadStatus`, the scheduler's treatment of an unrecognised blocked state, and
 /// the diagnostic rendering. The status carries no payload, so *which* port a waiter waits on is
-/// not observable from here at all — that lives in the kernel's `ParkedSocketWait`, and
+/// not observable from here at all — that lives in the kernel's `ParkedEpollWait`, and
 /// `TestSocketEventsWait` is where the derivation from it is pinned. The absence of a deadline
 /// field remains a design property no test can observe, and is enforced by review.
 [<TestFixture>]

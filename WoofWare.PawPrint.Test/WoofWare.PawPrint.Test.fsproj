@@ -164,6 +164,7 @@
     <Compile Include="TestCrossAssemblyFnPtrOverload.fs" />
     <Compile Include="TestCrossAssemblyOverloadTokenSpace.fs" />
     <Compile Include="TestCrossAssemblyTypeForwarding.fs" />
+    <Compile Include="TestCrossAssemblyReabstraction.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestUnsafeAccessorModifierStrip.fs" />

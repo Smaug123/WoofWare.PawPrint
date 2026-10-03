@@ -167,17 +167,17 @@ type UnixSystemDefect<'Task> =
     /// A connection in the table has an identity at or above the next one to
     /// allocate, so a future connect would mint a duplicate.
     | NextConnectionIdNotFresh of nextConnectionId : ConnectionId * existing : ConnectionId
-    /// A socket event registration, an epoll instance's or a kqueue's, records
+    /// An event registration, an epoll instance's or a kqueue's, records
     /// an ADD ordinal at or above the
     /// next one to mint, so some future ADD would repeat it — and the
     /// ordinal's whole job is to order same-signal ties, which a repeat
     /// leaves unspecified.
-    | SocketEventRegistrationOrdinalNotFresh of next : int64 * port : OpenFileDescriptionId * registeredAt : int64
-    /// Two socket event registrations record the same ADD ordinal. Ordinals
+    | EventRegistrationOrdinalNotFresh of next : int64 * queue : OpenFileDescriptionId * registeredAt : int64
+    /// Two event registrations record the same ADD ordinal. Ordinals
     /// are minted from one monotonic counter, so a duplicate means two ADDs
     /// were stamped with one mint — and a same-signal tie between the pair
     /// would have no measured order.
-    | DuplicateSocketEventRegistrationOrdinal of registeredAt : int64
+    | DuplicateEventRegistrationOrdinal of registeredAt : int64
     /// A task is parked on an open file description the table does not hold,
     /// so its wait can never be satisfied, and asking `WakeCondition.satisfied`
     /// about it crashes. A park holds what it names until the call returns, so
@@ -191,8 +191,8 @@ type UnixSystemDefect<'Task> =
     | UnreferencedDescription of description : OpenFileDescriptionId
     /// A task is parked in an `epoll_wait` on a description that is not an
     /// epoll instance, which no wait could have produced and which
-    /// `SocketEventPort.hasDeliverableEvent` crashes on.
-    | ParkedSocketWaitOnNonPort of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// `EpollReadyList.hasDeliverableEvent` crashes on.
+    | ParkedEpollWaitOnNonEpoll of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
     /// A task is parked in a `kevent` on a description that is not a kqueue,
     /// which no wait could have produced and on which `WakeCondition.satisfied`
     /// crashes.
@@ -217,9 +217,9 @@ type UnixSystemDefect<'Task> =
         description : OpenFileDescriptionId *
         target : OpenFileTarget *
         flavour : SimulatedUnixFlavour
-    /// A task is parked in a `poll` watching a socket event port, which `poll`
+    /// A task is parked in a `poll` watching an event queue, which `poll`
     /// refuses before it parks and whose readiness is not modelled.
-    | ParkedPollOnSocketEventPort of task : 'Task * description : OpenFileDescriptionId
+    | ParkedPollOnEventQueue of task : 'Task * description : OpenFileDescriptionId
     /// A task's parked `poll` watches `fd` on the description it named when
     /// the call went to sleep, and `fd` now names `current` instead. `close`
     /// refuses to close a descriptor a parked poll watches, so this is a park
@@ -1091,7 +1091,7 @@ module UnixSystem =
             system.Process.FileDescriptors
             |> FileDescriptorRegistry.descriptions
             |> Map.toList
-            |> List.collect (fun (portId, description) ->
+            |> List.collect (fun (queueId, description) ->
                 match description.Target with
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
@@ -1101,20 +1101,20 @@ module UnixSystem =
                 | OpenFileTarget.Kqueue state ->
                     state.Registrations
                     |> Map.toList
-                    |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
-                | OpenFileTarget.Epoll portState ->
-                    portState.Registrations
+                    |> List.map (fun (_, registration) -> queueId, registration.RegisteredAt)
+                | OpenFileTarget.Epoll epollState ->
+                    epollState.Registrations
                     |> Map.toList
-                    |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
+                    |> List.map (fun (_, registration) -> queueId, registration.RegisteredAt)
             )
 
         let ordinalFreshness =
             registrationOrdinals
-            |> List.filter (fun (_, registeredAt) -> registeredAt >= system.Machine.NextSocketEventRegistrationOrdinal)
-            |> List.map (fun (portId, registeredAt) ->
-                UnixSystemDefect.SocketEventRegistrationOrdinalNotFresh (
-                    system.Machine.NextSocketEventRegistrationOrdinal,
-                    portId,
+            |> List.filter (fun (_, registeredAt) -> registeredAt >= system.Machine.NextEventRegistrationOrdinal)
+            |> List.map (fun (queueId, registeredAt) ->
+                UnixSystemDefect.EventRegistrationOrdinalNotFresh (
+                    system.Machine.NextEventRegistrationOrdinal,
+                    queueId,
                     registeredAt
                 )
             )
@@ -1123,7 +1123,7 @@ module UnixSystem =
             registrationOrdinals
             |> List.countBy snd
             |> List.filter (fun (_, count) -> count > 1)
-            |> List.map (fun (registeredAt, _) -> UnixSystemDefect.DuplicateSocketEventRegistrationOrdinal registeredAt)
+            |> List.map (fun (registeredAt, _) -> UnixSystemDefect.DuplicateEventRegistrationOrdinal registeredAt)
 
         // Each task's park against the descriptor table. A park names what the
         // task waits on, and the wake reads the description back; the park
@@ -1167,9 +1167,9 @@ module UnixSystem =
                         []
                     else
                         [ UnixSystemDefect.ParkedOnAbsentDescription (task, parked.Requester) ]
-                | Some (ParkedSyscall.SocketWait wait) ->
-                    match Map.tryFind wait.Port descriptions with
-                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, wait.Port) ]
+                | Some (ParkedSyscall.EpollWait wait) ->
+                    match Map.tryFind wait.Epoll descriptions with
+                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, wait.Epoll) ]
                     | Some description ->
                         match description.Target with
                         | OpenFileTarget.Epoll _ -> []
@@ -1180,7 +1180,7 @@ module UnixSystem =
                         | OpenFileTarget.CharacterDevice _
                         | OpenFileTarget.Pipe _ ->
                             [
-                                UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
+                                UnixSystemDefect.ParkedEpollWaitOnNonEpoll (task, wait.Epoll, description.Target)
                             ]
                 | Some (ParkedSyscall.Kevent wait) ->
                     let count =
@@ -1231,7 +1231,7 @@ module UnixSystem =
                                     match description.Target with
                                     | OpenFileTarget.Kqueue _
                                     | OpenFileTarget.Epoll _ ->
-                                        [ UnixSystemDefect.ParkedPollOnSocketEventPort (task, watched) ]
+                                        [ UnixSystemDefect.ParkedPollOnEventQueue (task, watched) ]
                                     | OpenFileTarget.File _
                                     | OpenFileTarget.Directory _
                                     | OpenFileTarget.Socket _
@@ -2038,7 +2038,7 @@ module UnixSystem =
                             PipeDevice = UnixMachineState.defaultPipeDevice flavour
                             Connections = Map.empty
                             NextConnectionId = ConnectionId 0L
-                            NextSocketEventRegistrationOrdinal = 0L
+                            NextEventRegistrationOrdinal = 0L
                             NextParkOrdinal = ParkOrdinal 0L
                             ThreadIds = threadIds
                             NextSocketId = SocketId 0L
