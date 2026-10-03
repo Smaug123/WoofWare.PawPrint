@@ -361,6 +361,7 @@ module SocketFuzz =
                                                 {
                                                     Backlog = 8
                                                     Queue = []
+                                                    Drained = false
                                                 }
                                     }
                                     state.Kernel.Machine.Sockets

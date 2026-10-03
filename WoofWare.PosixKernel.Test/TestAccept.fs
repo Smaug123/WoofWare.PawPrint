@@ -144,6 +144,7 @@ module TestAccept =
                     {
                         Backlog = 8
                         Queue = connections
+                        Drained = false
                     }
             )
 
@@ -222,6 +223,7 @@ module TestAccept =
                       {
                           Backlog = 8
                           Queue = connections
+                          Drained = false
                       }
               ) with
                 ReuseAddress = true
@@ -489,13 +491,14 @@ module TestAccept =
         | Ok (AcceptOutcome.WouldBlock condition, _) ->
             condition
             |> shouldEqual (
-                Interruptible.condition (
-                    WakeCondition.Primitive (
-                        WakePrimitive.AcceptQueueNonEmpty (
-                            FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                Interruptible.closable
+                    [
+                        WakeCondition.Primitive (
+                            WakePrimitive.AcceptQueueNonEmpty (
+                                FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                            )
                         )
-                    )
-                )
+                    ]
             )
         | other -> failwith $"expected the accept to park, got %A{other}"
 

@@ -1,0 +1,105 @@
+A1 close rv=0 took=0ms
+A1 accepter rv=-1 errno=ECONNABORTED
+A2 close rv=0 took=0ms
+A2 accepter rv=-1 errno=ECONNABORTED
+A2 later non-blocking accept through B, after a connect: rv=fd errno=0
+A2 later blocking accept through B, a connect 50 ms in rv=-1 errno=ECONNABORTED
+A3 close rv=0 took=0ms
+A3 first accepter on A rv=-1 errno=ECONNABORTED
+A3 second accepter on A rv=-1 errno=ECONNABORTED
+A4 close rv=0 took=0ms
+A4 accepter on A, after the close rv=-1 errno=ECONNABORTED
+A4 accepter on B, after the close rv=-1 errno=ECONNABORTED
+A4 accepter on A, after a connect rv=-1 errno=ECONNABORTED
+A4 accepter on B, after a connect rv=-1 errno=ECONNABORTED
+A5 close rv=0 took=0ms
+A5 accepter on A rv=-1 errno=ECONNABORTED
+A5 poll of B asleep
+A6 close rv=0 took=0ms
+A6 accepter on A rv=-1 errno=ECONNABORTED
+A6 kevent of B asleep
+A7a (the ended accepter) rv=-1 errno=ECONNABORTED
+A7a non-blocking accept through B, empty queue: rv=-1 errno=EAGAIN
+A7b (the ended accepter) rv=-1 errno=ECONNABORTED
+A7b blocking accept through B, empty queue, 100 ms in asleep
+A7b the same, 100 ms after a connect rv=-1 errno=ECONNABORTED
+A7b then a non-blocking accept through B: rv=fd errno=0
+A7c (the ended accepter) rv=-1 errno=ECONNABORTED
+A7c blocking accept through B, a connection queued rv=fd errno=0
+A7d (the ended accepter) rv=-1 errno=ECONNABORTED
+A7d blocking accept through B, 100 ms in asleep
+A7d the same, 100 ms after SIGUSR1 rv=-1 errno=ECONNABORTED
+A7d final rv=-1 errno=ECONNABORTED
+A7d SA_RESTART (the ended accepter) rv=-1 errno=ECONNABORTED
+A7d SA_RESTART blocking accept through B, 100 ms in asleep
+A7d SA_RESTART the same, 100 ms after SIGUSR1 rv=-1 errno=ECONNABORTED
+A7d SA_RESTART final rv=-1 errno=ECONNABORTED
+A7e (the ended accepter) rv=-1 errno=ECONNABORTED
+A7e blocking accept through a fresh dup C of B, 100 ms in asleep
+A7e the same, after a connect rv=-1 errno=ECONNABORTED
+A7g (the ended accepter) rv=-1 errno=ECONNABORTED
+A7g trial 0: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=-1 errno=ECONNABORTED
+A7g second asleep
+A7g (the ended accepter) rv=-1 errno=ECONNABORTED
+A7g trial 1: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=-1 errno=ECONNABORTED
+A7g second asleep
+A7g (the ended accepter) rv=-1 errno=ECONNABORTED
+A7g trial 2: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=-1 errno=ECONNABORTED
+A7g second asleep
+A7g (the ended accepter) rv=-1 errno=ECONNABORTED
+A7g trial 3: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=-1 errno=ECONNABORTED
+A7g second asleep
+A7g (the ended accepter) rv=-1 errno=ECONNABORTED
+A7g trial 4: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=-1 errno=ECONNABORTED
+A7g second asleep
+A7h (the ended accepter) rv=-1 errno=ECONNABORTED
+A7h listen(B, 16) again: rv=0 errno=0
+A7h blocking accept through B after the second listen, 100 ms in asleep
+A7h the same, after a connect rv=-1 errno=ECONNABORTED
+A7f (the ended accepter) rv=-1 errno=ECONNABORTED
+A7f poll(POLLIN|POLLOUT, 0) of B, empty queue: rv=0 revents=0
+A7f the same, a connection queued: rv=1 revents=0x1
+P1 close rv=0 took=0ms
+P1 reader on A rv=0 errno=0
+P1 later read through B, 3 bytes held rv=3 errno=0
+P2 close rv=0 took=0ms
+P2 sigpipe=main held_before_close=65536 held_after=65536
+P2 writer on A rv=-1 errno=EPIPE
+P2 later 1-byte write through B, room made: rv=1 errno=0
+P3 close rv=0 took=0ms
+P3 sigpipe=main held_before_close=65536 held_after=65536
+P3 writer on A rv=-1 errno=EPIPE
+P4 B kept close rv=0 took=0ms
+P4 B kept sigpipe=main held_before_close=65536 held_after=65536
+P4 B kept writer on A rv=-1 errno=EPIPE
+P4 no dup close rv=0 took=0ms
+P4 no dup sigpipe=main held_before_close=65536 held_after=65536
+P4 no dup writer on A rv=-1 errno=EPIPE
+P5 close rv=0 took=0ms
+P5 first reader on A rv=0 errno=0
+P5 second reader on A rv=0 errno=0
+P6 close rv=0 took=0ms
+P6 reader on A, after the close rv=0 errno=0
+P6 reader on B, after the close asleep
+P6 reader on A, after 3 bytes rv=0 errno=0
+P6 reader on B, after 3 bytes rv=3 errno=0
+P7 close rv=0 took=0ms
+P7 writer on A, after the close rv=-1 errno=EPIPE
+P7 writer on B, after the close asleep
+P7 sigpipe=main (count 1)
+P7 writer on A, after room rv=-1 errno=EPIPE
+P7 writer on B, after room rv=1 errno=0
+P8 reader close rv=0 took=0ms
+P8 reader: before atime=-0 mtime=-0 ctime=-0; after atime=1009 mtime=-0 ctime=-0 (ms from start, close ~1000)
+P8 reader on A rv=0 errno=0
+P8 writer close rv=0 took=0ms
+P8 writer: before atime=-0 mtime=-0 ctime=-0; after atime=-0 mtime=1008 ctime=1008 (ms from start, close ~1000)
+P8 writer on A rv=-1 errno=EPIPE
+P9 close rv=0 took=0ms
+P9 reader on A rv=0 errno=0
+P9 poll of B asleep

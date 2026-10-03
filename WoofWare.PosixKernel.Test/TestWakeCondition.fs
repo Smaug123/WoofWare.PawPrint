@@ -194,6 +194,7 @@ module TestWakeCondition =
         match primitive with
         | WakePrimitive.DeadlinePassed deadline -> clock >= deadline
         | WakePrimitive.SignalDeliverable -> waiter = signalled
+        | WakePrimitive.EndedByClose
         | WakePrimitive.FlockGrantable _
         | WakePrimitive.SocketEventDeliverable _
         | WakePrimitive.KqueueDrained _
@@ -407,6 +408,7 @@ module TestWakeCondition =
                     |> List.choose (fun primitive ->
                         match primitive with
                         | WakePrimitive.DeadlinePassed deadline -> Some deadline
+                        | WakePrimitive.EndedByClose
                         | WakePrimitive.FlockGrantable _
                         | WakePrimitive.SocketEventDeliverable _
                         | WakePrimitive.KqueueDrained _

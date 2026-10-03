@@ -184,6 +184,7 @@ module TestListen =
                         {
                             Backlog = 8
                             Queue = queued
+                            Drained = false
                         }))
                 (systemOn platform)
 
@@ -273,6 +274,7 @@ module TestListen =
                             {
                                 Backlog = 8
                                 Queue = []
+                                Drained = false
                             }))
                     (systemOn platform)
 

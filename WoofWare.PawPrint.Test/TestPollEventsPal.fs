@@ -398,6 +398,7 @@ module TestPollEventsPal =
                         {
                             Backlog = 1
                             Queue = []
+                            Drained = false
                         })
                 withSocket
                     SocketDomain.Inet
@@ -406,6 +407,7 @@ module TestPollEventsPal =
                         {
                             Backlog = 1
                             Queue = [ ConnectionId 9L ]
+                            Drained = false
                         })
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.EstablishedPendingReport connection)

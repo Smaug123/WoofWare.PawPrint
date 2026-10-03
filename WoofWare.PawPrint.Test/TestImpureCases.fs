@@ -1284,6 +1284,37 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of a guest in which one thread closes the only
+    /// descriptor another's blocking call was made through, under `platform`:
+    /// `CloseEndsSleepingAccept.cs` or `CloseEndsSleepingPipeTransfer.cs`. Each
+    /// exits 0 for Linux's answer, the call sleeping on, and 100 for Darwin's,
+    /// the call ended at the close (`close-ends-call.c`). The assertion here is
+    /// that no task is left asleep and no signal pending, every SIGPIPE raised
+    /// having been ignored by the runtime.
+    let private closeEndsCallCase (fileName : string) (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = fileName
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                    state.Kernel.Tasks
+                    |> Map.forall (fun _ task -> task.Parked.IsNone)
+                    |> shouldEqual true
+                )
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1439,6 +1470,10 @@ module TestImpureCases =
             socketUnconnectedTransferCase SimulatedUnixPlatform.macOsArm64
             pipeReaderLeavesCase SimulatedUnixPlatform.linuxX64
             pipeReaderLeavesCase SimulatedUnixPlatform.macOsArm64
+            closeEndsCallCase "CloseEndsSleepingAccept.cs" SimulatedUnixPlatform.linuxX64
+            closeEndsCallCase "CloseEndsSleepingAccept.cs" SimulatedUnixPlatform.macOsArm64
+            closeEndsCallCase "CloseEndsSleepingPipeTransfer.cs" SimulatedUnixPlatform.linuxX64
+            closeEndsCallCase "CloseEndsSleepingPipeTransfer.cs" SimulatedUnixPlatform.macOsArm64
             processIdCase None
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.

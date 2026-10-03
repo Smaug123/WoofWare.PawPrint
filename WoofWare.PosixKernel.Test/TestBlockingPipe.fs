@@ -154,6 +154,9 @@ module TestBlockingPipe =
     type private Park =
         {
             Call : Call
+            /// The descriptor the call was made through; `None` once a close of
+            /// it has ended the call, under Darwin.
+            Through : int option
             Ordinal : int
             /// The client has woken it, and not yet finished it.
             Woken : bool
@@ -197,9 +200,11 @@ module TestBlockingPipe =
             |> Map.toList
             |> List.map (fun (_, (pipeEnd, description)) -> description, pipeEnd)
 
+        // A call a Darwin close has ended holds nothing.
         let held =
             r.Parks
             |> Map.toList
+            |> List.filter (fun (_, park) -> park.Through.IsSome)
             |> List.map (fun (_, park) -> descriptionOf park.Call, endOfCall park.Call)
 
         Map.ofList (named @ held)
@@ -210,13 +215,14 @@ module TestBlockingPipe =
     let private payload (index : int) (count : int) : byte list =
         List.init count (fun i -> byte ((index * 37 + i) % 251))
 
-    let private park (task : int) (call : Call) (r : Reference) : Reference =
+    let private park (task : int) (fd : int) (call : Call) (r : Reference) : Reference =
         { r with
             Parks =
                 Map.add
                     task
                     {
                         Call = call
+                        Through = Some fd
                         Ordinal = r.NextOrdinal
                         Woken = false
                         ReadsSeen = r.Reads
@@ -256,7 +262,7 @@ module TestBlockingPipe =
             elif r.NonBlocking.[description] then
                 Seen.Failed UnixError.EAGAIN, r
             else
-                Seen.Sleeps, park task (Call.Reading (description, count, mapped)) r
+                Seen.Sleeps, park task fd (Call.Reading (description, count, mapped)) r
 
     let private referenceWrite
         (task : int)
@@ -298,7 +304,7 @@ module TestBlockingPipe =
                 if nonBlocking then
                     Seen.Failed UnixError.EAGAIN, r
                 else
-                    Seen.Sleeps, park task (Call.Writing (description, bytes, 0, mapped)) r
+                    Seen.Sleeps, park task fd (Call.Writing (description, bytes, 0, mapped)) r
             elif not mapped then
                 Seen.Failed UnixError.EFAULT,
                 { r with
@@ -308,6 +314,7 @@ module TestBlockingPipe =
                 Seen.Sleeps,
                 park
                     task
+                    fd
                     (Call.Writing (description, bytes, takes, mapped))
                     { r with
                         Buffer = grown
@@ -370,7 +377,8 @@ module TestBlockingPipe =
 
         asleep
         |> List.filter (fun (task, park) ->
-            Set.contains task r.Signalled
+            park.Through.IsNone
+            || Set.contains task r.Signalled
             || (
                 match park.Call with
                 | Call.Reading _ -> not (endOpen PipeEnd.Write r)
@@ -420,6 +428,10 @@ module TestBlockingPipe =
         let givesUp = not r.Linux && r.NonBlocking.[descriptionOf park.Call]
 
         match park.Call with
+        // Ended by a Darwin close: end of file, or EPIPE whatever was put in
+        // (`close-ends-call.c` sections P1-P5), whatever has happened since.
+        | Call.Reading _ when park.Through.IsNone -> Seen.ReadBytes [], answered task r
+        | Call.Writing _ when park.Through.IsNone -> Seen.Failed UnixError.EPIPE, answered task r
         | Call.Reading (_, count, mapped) ->
             if held r.Buffer > 0 || not (endOpen PipeEnd.Write r) then
                 if signalled && not r.Linux then
@@ -478,7 +490,7 @@ module TestBlockingPipe =
                             Parks =
                                 Map.add
                                     task
-                                    {
+                                    { park with
                                         Call = Call.Writing (description, payload, written, mapped)
                                         Woken = false
                                         Ordinal = r.NextOrdinal
@@ -574,7 +586,10 @@ module TestBlockingPipe =
             |> returnToUser task
         | other -> failwith $"returning task %d{task} to user mode: %A{other}"
 
-    let private opGen : Gen<BlockingPipeOp> =
+    /// `weights` are the frequencies of a read, a write, a close, a dup, a
+    /// change of `O_NONBLOCK`, a signal, a wake and a finish.
+    let private opGenWeighted (weights : int * int * int * int * int * int * int * int) : Gen<BlockingPipeOp> =
+        let reads, writes, closes, dups, nonBlocking, signals, wakes, finishes = weights
         let task = Gen.elements tasks
         let fd = Gen.choose (0, 4)
 
@@ -606,7 +621,7 @@ module TestBlockingPipe =
 
         Gen.frequency
             [
-                5,
+                reads,
                 gen {
                     let! t = task
                     let! fd = fd
@@ -614,7 +629,7 @@ module TestBlockingPipe =
                     let! m = mapped
                     return BlockingPipeOp.Read (t, fd, c, m)
                 }
-                5,
+                writes,
                 gen {
                     let! t = task
                     let! fd = fd
@@ -622,13 +637,21 @@ module TestBlockingPipe =
                     let! m = mapped
                     return BlockingPipeOp.Write (t, fd, c, m)
                 }
-                1, Gen.map BlockingPipeOp.Close fd
-                1, Gen.map BlockingPipeOp.Dup fd
-                1, Gen.map2 (fun fd v -> BlockingPipeOp.SetNonBlocking (fd, v)) fd (Gen.elements [ true ; false ])
-                2, Gen.map BlockingPipeOp.Signal task
-                6, Gen.constant BlockingPipeOp.Wake
-                8, Gen.map BlockingPipeOp.Finish task
+                closes, Gen.map BlockingPipeOp.Close fd
+                dups, Gen.map BlockingPipeOp.Dup fd
+                nonBlocking,
+                Gen.map2 (fun fd v -> BlockingPipeOp.SetNonBlocking (fd, v)) fd (Gen.elements [ true ; false ])
+                signals, Gen.map BlockingPipeOp.Signal task
+                wakes, Gen.constant BlockingPipeOp.Wake
+                finishes, Gen.map BlockingPipeOp.Finish task
             ]
+
+    let private opGen : Gen<BlockingPipeOp> = opGenWeighted (5, 5, 1, 1, 1, 2, 6, 8)
+
+    /// Weighted towards transfers asleep through several descriptors and the
+    /// closes that end them, which `opGen` reaches only now and then.
+    let private closingOpGen : Gen<BlockingPipeOp> =
+        opGenWeighted (4, 4, 4, 4, 1, 1, 6, 8)
 
     /// The label `covered` records for a call that came to `seen`.
     let private label (flavour : string) (what : string) (seen : Seen) : string =
@@ -824,10 +847,32 @@ module TestBlockingPipe =
                         )
 
                     // Linux's sleeping call holds its description, so no close
-                    // ends it (`pipe-blocking.c` section K); Darwin's ends when
-                    // the descriptor it sleeps through closes, which the model
-                    // does not follow, so every close onto it is refused.
-                    let refused = holder.IsSome && not linux
+                    // ends it (`pipe-blocking.c` section K); Darwin's ends every
+                    // call made through the descriptor closed
+                    // (`close-ends-call.c` sections P1-P7), unless something
+                    // had already woken one, which is refused.
+                    let through =
+                        if linux then
+                            []
+                        else
+                            reference.Parks
+                            |> Map.toList
+                            |> List.filter (fun (_, park) -> park.Through = Some fd)
+                            |> List.map fst
+
+                    let woken (task : int) =
+                        let park = reference.Parks.[task]
+
+                        Set.contains task reference.Signalled
+                        || (
+                            match park.Call with
+                            | Call.Reading _ -> held reference.Buffer > 0
+                            | Call.Writing (description, payload, written, _) ->
+                                wouldResume payload written reference > 0
+                                || (reference.NonBlocking.[description] && reference.Reads > park.ReadsSeen)
+                        )
+
+                    let refusedFor = through |> List.filter woken |> List.tryHead
 
                     if holder.IsSome && linux then
                         if
@@ -837,10 +882,15 @@ module TestBlockingPipe =
                         then
                             cover "Linux close: the last descriptor onto a sleeping call's description"
 
-                    match UnixDescriptor.close fd system with
-                    | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer (_, task)) when refused ->
-                        Some task |> shouldEqual (holder |> Option.map snd)
-                    | Ok (answer, after) when not refused ->
+                    match refusedFor, UnixDescriptor.close fd system with
+                    | Some task, Error (CloseRefusal.DarwinWokenTransfer (description, refused)) ->
+                        refused |> shouldEqual task
+
+                        description
+                        |> shouldEqual libraryDescription.[descriptionOf reference.Parks.[task].Call]
+
+                        cover "Darwin close: refused, the transfer woken"
+                    | None, Ok (answer, after) ->
                         answer
                         |> shouldEqual (
                             if Map.containsKey fd reference.Fds then
@@ -849,13 +899,39 @@ module TestBlockingPipe =
                                 SyscallAnswer.Failed UnixError.EBADF
                         )
 
+                        if not (List.isEmpty through) then
+                            for task in through do
+                                match reference.Parks.[task].Call with
+                                | Call.Reading _ -> cover "Darwin close: ends a read"
+                                | Call.Writing _ -> cover "Darwin close: ends a write"
+
+                            if
+                                reference.Parks
+                                |> Map.exists (fun _ park ->
+                                    park.Through.IsSome
+                                    && park.Through <> Some fd
+                                    && Some (descriptionOf park.Call) = (Map.tryFind fd reference.Fds |> Option.map snd)
+                                )
+                            then
+                                cover "Darwin close: ends a transfer, one through a dup sleeping on"
+
                         system <- after
 
                         reference <-
                             { reference with
                                 Fds = Map.remove fd reference.Fds
+                                Parks =
+                                    (reference.Parks, through)
+                                    ||> List.fold (fun parks task ->
+                                        Map.add
+                                            task
+                                            { parks.[task] with
+                                                Through = None
+                                            }
+                                            parks
+                                    )
                             }
-                    | other -> failwith $"%s{where}: close expected refused=%b{refused}, got %A{other}"
+                    | expected, other -> failwith $"%s{where}: close expected refusal for %A{expected}, got %A{other}"
                 | BlockingPipeOp.Dup fd ->
                     let answer, after = UnixDescriptor.dup fd system
 
@@ -956,6 +1032,9 @@ module TestBlockingPipe =
 
                     let what =
                         match call, seen with
+                        | Call.Reading _, _ when reference.Parks.[task].Through.IsNone -> "finish read ended by a close"
+                        | Call.Writing _, _ when reference.Parks.[task].Through.IsNone ->
+                            "finish write ended by a close"
                         | Call.Writing (_, payload, written, _), Seen.Wrote n when
                             int n < List.length payload && int n = written
                             ->
@@ -1044,6 +1123,15 @@ module TestBlockingPipe =
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
 
+        let closingGen =
+            Gen.zip
+                (ArbMap.defaults |> ArbMap.generate<bool>)
+                (Gen.choose (0, 80)
+                 |> Gen.bind (fun length -> Gen.listOfLength length closingOpGen))
+            |> Gen.map (fun (restart, ops) -> SimulatedUnixPlatform.macOsArm64, restart, ops)
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen closingGen) property)
+
         // The outcomes a run of this size reaches dozens of times over. The
         // rarer endings of a sleeping call, which need a particular state
         // and signal at once, are enumerated by the table test below.
@@ -1065,6 +1153,12 @@ module TestBlockingPipe =
                 "Linux wake: fewer than could proceed"
                 "Darwin finish read: refused"
                 "Darwin finish write: refused"
+                "Darwin close: ends a read"
+                "Darwin close: ends a write"
+                "Darwin close: ends a transfer, one through a dup sleeping on"
+                "Darwin close: refused, the transfer woken"
+                "Darwin finish read ended by a close: end of file"
+                "Darwin finish write ended by a close: EPIPE"
             ]
 
         let missing = required |> List.filter (fun label -> not (covered.ContainsKey label))
@@ -1587,30 +1681,314 @@ module TestBlockingPipe =
                 )
             | Error refusal -> failwith $"%A{refusal}"
 
-    /// `pipe-blocking.c` section K on Darwin: closing the descriptor a transfer
-    /// sleeps through ends it at once, which this kernel does not model, and
-    /// the park does not record which descriptor that was, so every close onto
-    /// the description is refused.
+    /// `task` asleep in a read of up to 16 bytes through `fd`.
+    let private readerAsleepThrough (task : int) (fd : int) (system : UnixSystem<int, string>) =
+        match UnixReadWrite.read task fd UserBuffer.Mapped 16UL system with
+        | Ok (ReadOutcome.WouldBlock _, system) -> system
+        | other -> failwith $"expected task %d{task}'s read through fd %d{fd} to sleep, got %A{other}"
+
+    let private dupped (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        match UnixDescriptor.dup fd system with
+        | SyscallAnswer.Completed newFd, system -> int newFd, system
+        | other -> failwith $"dup of %d{fd}: %A{other}"
+
+    /// Measured (`close-ends-call.c`, sections P1-P5, and `pipe-blocking.c`
+    /// section K): on Darwin, closing the descriptor a sleeping transfer was
+    /// made through ends it at once, and every other made through it: a read
+    /// with end of file, a write with EPIPE whatever it had put in, leaving the
+    /// bytes in the pipe, and raising SIGPIPE for the process. The call holds
+    /// nothing once the close returns, so with no `dup` its end is gone then;
+    /// with one, a later call through the `dup` is answered normally.
     [<Test>]
-    let ``Darwin: closing any descriptor onto a pipe end a transfer sleeps through is refused`` () : unit =
-        let system = pipeHolding SimulatedUnixPlatform.macOsArm64 false 0 |> readerAsleep
+    let ``Darwin: closing the descriptor a transfer was made through ends every transfer made through it`` () : unit =
+        let platform = SimulatedUnixPlatform.macOsArm64
+
+        for keepDup in [ false ; true ] do
+            // Two readers through the read end.
+            let system =
+                pipeHolding platform false 0
+                |> Tasks.spawn 2
+                |> readerAsleep
+                |> readerAsleepThrough 2 3
+
+            let reader =
+                FileDescriptorRegistry.tryFindId 3 system.Process.FileDescriptors |> Option.get
+
+            let duplicate, system = if keepDup then dupped 3 system else -1, system
+            let system = closed 3 system
+            UnixSystem.checkInvariants system |> shouldEqual []
+            descriptionExists reader system |> shouldEqual keepDup
+
+            UnixWait.wakes (Set.ofList [ sleeper ; 2 ]) system
+            |> List.map fst
+            |> shouldEqual [ sleeper ; 2 ]
+
+            let system =
+                (system, [ sleeper ; 2 ])
+                ||> List.fold (fun system task ->
+                    match UnixReadWrite.finishRead task system with
+                    | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) when bytes.IsEmpty -> system
+                    | other ->
+                        failwith
+                            $"dup kept %b{keepDup}: expected task %d{task}'s read to end at end of file, got %A{other}"
+                )
+
+            UnixSystem.checkInvariants system |> shouldEqual []
+
+            if keepDup then
+                let system = leaderWrites 3 system
+
+                match ReadOutcomes.read duplicate UserBuffer.Mapped 16UL system with
+                | Ok (ReadAnswer.Completed bytes, _) -> List.ofSeq bytes |> shouldEqual (payload 3 3)
+                | other -> failwith $"a later read through the dup: %A{other}"
+
+            // A write of one byte into a full pipe, and one of 70000 bytes into
+            // an empty one that has put 65536 in.
+            for count, prefill in [ 1, 65536 ; 70000, 0 ] do
+                let system = pipeHolding platform false prefill |> writerAsleep count
+
+                let writer =
+                    FileDescriptorRegistry.tryFindId 4 system.Process.FileDescriptors |> Option.get
+
+                let duplicate, system = if keepDup then dupped 4 system else -1, system
+                let system = closed 4 system
+                UnixSystem.checkInvariants system |> shouldEqual []
+                descriptionExists writer system |> shouldEqual keepDup
+
+                UnixWait.wakes (Set.singleton sleeper) system
+                |> List.map fst
+                |> shouldEqual [ sleeper ]
+
+                let system =
+                    match libraryFinishWrite sleeper (payload 7 count) system with
+                    | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, raised, system)) ->
+                        raised
+                        |> shouldEqual
+                            {
+                                Signal = Signal.SIGPIPE
+                                Target = ValueNone
+                            }
+
+                        system
+                    | other ->
+                        failwith
+                            $"dup kept %b{keepDup}, a write of %d{count}: expected EPIPE and SIGPIPE, got %A{other}"
+
+                UnixSystem.checkInvariants system |> shouldEqual []
+
+                let pipe =
+                    match FileDescriptorRegistry.tryFindTarget 3 system.Process.FileDescriptors with
+                    | Some (OpenFileTarget.Pipe (pipeId, _)) -> UnixMachineState.pipe pipeId system.Machine
+                    | other -> failwith $"%A{other}"
+
+                PipeBuffer.held pipe.Buffer |> shouldEqual 65536
+
+                if keepDup then
+                    let system = leaderReads 4096 system
+
+                    match
+                        WriteOutcomes.admitThenWrite
+                            sleeper
+                            duplicate
+                            UserBuffer.Mapped
+                            (ImmutableArray.CreateRange (payload 5 1))
+                            system
+                    with
+                    | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, _)) -> ()
+                    | other -> failwith $"a later write through the dup: %A{other}"
+
+    /// The condition a sleeping call was handed as it went to sleep still says
+    /// when a close ends it, once the description it named has gone with the
+    /// close.
+    [<Test>]
+    let ``Darwin: the condition a transfer slept on holds once a close has ended it`` () : unit =
+        let system = pipeHolding SimulatedUnixPlatform.macOsArm64 false 0
+
+        let condition, system =
+            match UnixReadWrite.read sleeper 3 UserBuffer.Mapped 16UL system with
+            | Ok (ReadOutcome.WouldBlock condition, system) -> condition, system
+            | other -> failwith $"expected the read to sleep, got %A{other}"
 
         let reader =
             FileDescriptorRegistry.tryFindId 3 system.Process.FileDescriptors |> Option.get
 
-        match UnixDescriptor.close 3 system with
-        | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer (description, task)) ->
-            (description, task) |> shouldEqual (reader, sleeper)
-        | other -> failwith $"%A{other}"
+        WakeCondition.satisfied sleeper condition system |> shouldEqual Set.empty
 
-        let duplicate, system =
-            match UnixDescriptor.dup 3 system with
-            | SyscallAnswer.Completed fd, system -> int fd, system
+        let system = closed 3 system
+        descriptionExists reader system |> shouldEqual false
+
+        WakeCondition.satisfied sleeper condition system
+        |> shouldEqual (Set.singleton WakePrimitive.EndedByClose)
+
+    /// Measured (`close-ends-call.c`, sections P6 and P7, and `pipe-blocking.c`
+    /// section K): a transfer asleep through a `dup` of the descriptor closed
+    /// sleeps on, and finishes normally.
+    [<Test>]
+    let ``Darwin: a transfer asleep through a dup of the descriptor closed sleeps on`` () : unit =
+        let system =
+            pipeHolding SimulatedUnixPlatform.macOsArm64 false 0
+            |> Tasks.spawn 2
+            |> readerAsleep
+
+        let duplicate, system = dupped 3 system
+        let system = readerAsleepThrough 2 duplicate system |> closed 3
+
+        UnixWait.wakes (Set.ofList [ sleeper ; 2 ]) system
+        |> List.map fst
+        |> shouldEqual [ sleeper ]
+
+        let system =
+            match UnixReadWrite.finishRead sleeper system with
+            | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) when bytes.IsEmpty -> system
+            | other -> failwith $"expected end of file, got %A{other}"
+
+        let system = leaderWrites 3 system
+        UnixWait.wakes (Set.singleton 2) system |> List.map fst |> shouldEqual [ 2 ]
+
+        match UnixReadWrite.finishRead 2 system with
+        | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
+            List.ofSeq bytes |> shouldEqual (payload 3 3)
+            UnixSystem.checkInvariants system |> shouldEqual []
+        | other -> failwith $"expected the bytes, got %A{other}"
+
+        // And the same for a closed dup, the sleeper's own descriptor kept.
+        let system = pipeHolding SimulatedUnixPlatform.macOsArm64 false 0 |> readerAsleep
+        let duplicate, system = dupped 3 system
+        let system = closed duplicate system
+        UnixWait.wakes (Set.singleton sleeper) system |> shouldEqual []
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+    /// A transfer that something besides the close had woken: bytes, room, a
+    /// signal, or a read at which a non-blocking writer gives up. Which of the
+    /// two Darwin answers is unmeasured, so the close is refused. The reader
+    /// left with no writer, and the writer with no reader, would answer as the
+    /// close does, so those are served.
+    [<Test>]
+    let ``Darwin: closing the descriptor of a woken transfer is refused, unless it would answer alike`` () : unit =
+        let platform = SimulatedUnixPlatform.macOsArm64
+
+        let refused (fd : int) (system : UnixSystem<int, string>) =
+            let description =
+                FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+
+            match UnixDescriptor.close fd system with
+            | Error (CloseRefusal.DarwinWokenTransfer (refusedOn, task)) ->
+                (refusedOn, task) |> shouldEqual (description, sleeper)
+            | other -> failwith $"expected the close of fd %d{fd} to be refused, got %A{other}"
+
+        pipeHolding platform false 0 |> readerAsleep |> leaderWrites 1 |> refused 3
+        pipeHolding platform false 0 |> readerAsleep |> signalled |> refused 3
+
+        pipeHolding platform false 65536
+        |> writerAsleep 1
+        |> leaderReads 4096
+        |> refused 4
+
+        pipeHolding platform false 65536 |> writerAsleep 1 |> signalled |> refused 4
+
+        pipeHolding platform false 65536
+        |> writerAsleep 1000
+        |> fun system -> UnixSocket.setNonBlocking 4 true system |> snd
+        |> leaderReads 1
+        |> refused 4
+
+        let system = pipeHolding platform false 0 |> readerAsleep |> closed 4 |> closed 3
+
+        match UnixReadWrite.finishRead sleeper system with
+        | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), _) when bytes.IsEmpty -> ()
+        | other -> failwith $"expected end of file, got %A{other}"
+
+        let system =
+            pipeHolding platform false 65536 |> writerAsleep 1 |> closed 3 |> closed 4
+
+        match libraryFinishWrite sleeper (payload 7 1) system with
+        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, _)) -> ()
+        | other -> failwith $"expected EPIPE, got %A{other}"
+
+    /// The write a close ends returns before the close does, raising SIGPIPE
+    /// for the process then: under the disposition the signal has at the
+    /// close, whatever it has by the time the writer's task finishes. One that
+    /// would end the process is refused, a close having no way to say so.
+    [<Test>]
+    let ``Darwin: the close raises an ended write's SIGPIPE under the disposition it has then`` () : unit =
+        let withSigpipe (disposition : SignalDisposition<string>) (system : UnixSystem<int, string>) =
+            { system with
+                Process =
+                    { system.Process with
+                        Signals = SignalState.setDisposition Signal.SIGPIPE disposition system.Process.Signals
+                    }
+            }
+
+        let asleep () =
+            pipeHolding SimulatedUnixPlatform.macOsArm64 false 65536 |> writerAsleep 1
+
+        // Ignored at the close, and the default by the finish: discarded.
+        let system = asleep () |> closed 4 |> withSigpipe SignalDisposition.Default
+        SignalState.pending system.Process.Signals |> shouldEqual []
+
+        match libraryFinishWrite sleeper (payload 7 1) system with
+        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, after)) ->
+            SignalState.pending after.Process.Signals |> shouldEqual []
+        | other -> failwith $"expected EPIPE, the process carrying on, got %A{other}"
+
+        // Caught: pending for the process from the close on.
+        let system =
+            asleep ()
+            |> withSigpipe (SignalDisposition.Catch (SignalCatch.ofHandler "h"))
+            |> closed 4
+
+        SignalState.pending system.Process.Signals
+        |> List.map (fun pending -> pending.Signal, pending.Target)
+        |> shouldEqual [ Signal.SIGPIPE, ValueNone ]
+
+        // The default at the close: the process would end.
+        match UnixDescriptor.close 4 (asleep () |> withSigpipe SignalDisposition.Default) with
+        | Error (CloseRefusal.DarwinEndedWriteSignal (task, EndedWriteSignalRefusal.TerminatesProcess)) ->
+            task |> shouldEqual sleeper
+        | other -> failwith $"expected the close to be refused, got %A{other}"
+
+    /// Measured (`close-ends-call.c`, section P8): the ending moves the pipe's
+    /// timestamps at the close, as the call's return does, and the finish later
+    /// moves nothing.
+    [<Test>]
+    let ``Darwin: the close moves the timestamps of the transfer it ends`` () : unit =
+        let later (system : UnixSystem<int, string>) =
+            { system with
+                Machine = UnixMachineState.advanceClock 1_000_000_000L system.Machine
+            }
+
+        let times (fd : int) (system : UnixSystem<int, string>) =
+            match UnixPathResolution.fstat fd system with
+            | Ok (FileStatusAnswer.Reported status) ->
+                status.AccessTime, status.ModificationTime, status.StatusChangeTime
             | other -> failwith $"%A{other}"
 
-        match UnixDescriptor.close duplicate system with
-        | Error (CloseRefusal.DarwinPipeDescriptorWithTransfer _) -> ()
-        | other -> failwith $"closing a dup: %A{other}"
+        let platform = SimulatedUnixPlatform.macOsArm64
+
+        // The reader: the read end's atime.
+        let system = pipeHolding platform false 0 |> later |> readerAsleep |> later
+        let duplicate, system = dupped 3 system
+        let system = closed 3 system
+        let closedAt = UnixMachineState.realtime system.Machine
+        let access, _, _ = times duplicate system
+        access |> shouldEqual closedAt
+
+        match UnixReadWrite.finishRead sleeper (later system) with
+        | Ok (_, after) -> times duplicate after |> shouldEqual (times duplicate system)
+        | other -> failwith $"%A{other}"
+
+        // The writer: the write end's mtime and ctime.
+        let system = pipeHolding platform false 65536 |> later |> writerAsleep 1 |> later
+        let duplicate, system = dupped 4 system
+        let system = closed 4 system
+        let closedAt = UnixMachineState.realtime system.Machine
+        let _, modification, change = times duplicate system
+        (modification, change) |> shouldEqual (closedAt, closedAt)
+
+        match libraryFinishWrite sleeper (payload 7 1) (later system) with
+        | Ok (WriteOutcome.ReturnsRaising (_, _, after)) ->
+            times duplicate after |> shouldEqual (times duplicate system)
+        | other -> failwith $"%A{other}"
 
     [<Test>]
     let ``a sleeping transfer moves Darwin's timestamps when it ends, and not while it sleeps`` () : unit =

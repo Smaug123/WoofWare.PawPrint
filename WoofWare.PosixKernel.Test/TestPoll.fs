@@ -199,6 +199,7 @@ module TestPoll =
                         {
                             Backlog = 8
                             Queue = []
+                            Drained = false
                         }),
                 0x0000s
                 "IPv4 TCP, listening, queue nonempty",
@@ -209,6 +210,7 @@ module TestPoll =
                         {
                             Backlog = 8
                             Queue = [ queued ]
+                            Drained = false
                         }),
                 0x0041s
                 "IPv4 TCP, established, peer alive",
@@ -327,6 +329,7 @@ module TestPoll =
                     {
                         Backlog = 1
                         Queue = [ ConnectionId 0L ]
+                        Drained = false
                     })
                 linux
 

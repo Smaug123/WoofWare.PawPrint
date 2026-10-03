@@ -414,6 +414,7 @@ module TestKeventWriteData =
                         {
                             Backlog = 1
                             Queue = []
+                            Drained = false
                         }),
                 darwinMachine None
                 "does not model",

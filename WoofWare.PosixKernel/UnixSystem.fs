@@ -250,6 +250,26 @@ type UnixSystemDefect<'Task> =
     /// socket, which no accept could have produced and on which
     /// `WakeCondition.satisfied` crashes.
     | ParkedAcceptOnNonListener of task : 'Task * description : OpenFileDescriptionId
+    /// A task is asleep in an `accept` on a listener a close has drained
+    /// (`ListenState.Drained`): the close that drains a listener ends every
+    /// accept asleep on it, and `accept` refuses to sleep on one.
+    | ParkedAcceptOnDrainedListener of task : 'Task * description : OpenFileDescriptionId
+    /// Under Darwin, a task is asleep in an `accept` or a pipe transfer made
+    /// through `fd`, which no longer names the description the call sleeps on
+    /// (`current` is what it names now). Closing that descriptor ends the call,
+    /// so this is a park recorded without the syscall or a descriptor closed
+    /// around it.
+    | ParkedCallDescriptorRebound of
+        task : 'Task *
+        fd : int *
+        description : OpenFileDescriptionId *
+        current : OpenFileDescriptionId option
+    /// Under Linux, a task's `accept` or pipe transfer records that a close has
+    /// ended it (`SleepTarget.EndedByClose`), which only Darwin's close does.
+    | ParkedCallEndedByCloseUnderLinux of task : 'Task
+    /// Under Linux, a listener records that a close has drained it
+    /// (`ListenState.Drained`), which only Darwin's close does.
+    | ListenerDrainedUnderLinux of socket : SocketId
     /// A task is asleep in a pipe `read` or `write` through a description that
     /// names something other than the pipe end the call needs, which no such
     /// call could have produced and on which `WakeCondition.satisfied` crashes.
@@ -826,6 +846,20 @@ module UnixSystem =
                     None
             )
 
+        let drainedUnderLinux =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> []
+            | SimulatedUnixFlavour.Linux ->
+                system.Machine.Sockets
+                |> Map.toList
+                |> List.choose (fun (socketId, socket) ->
+                    match socket.Phase with
+                    | SocketPhase.Listening {
+                                                Drained = true
+                                            } -> Some (UnixSystemDefect.ListenerDrainedUnderLinux socketId)
+                    | _ -> None
+                )
+
         let connectionFreshness =
             system.Machine.Connections
             |> Map.toList
@@ -880,6 +914,30 @@ module UnixSystem =
         let parks =
             let descriptions =
                 FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+
+            let darwin =
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> false
+                | SimulatedUnixFlavour.Darwin -> true
+
+            // Under Darwin a close of the descriptor a sleeping accept or pipe
+            // transfer was made through ends the call, so while it sleeps the
+            // descriptor still names what it sleeps on. Under Linux the close
+            // leaves it asleep, and the number is not consulted.
+            let enteredThrough (task : 'Task) (fd : int) (description : OpenFileDescriptionId) =
+                match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                | Some current when current = description -> []
+                | _ when not darwin -> []
+                | current ->
+                    [
+                        UnixSystemDefect.ParkedCallDescriptorRebound (task, fd, description, current)
+                    ]
+
+            let endedByClose (task : 'Task) =
+                if darwin then
+                    []
+                else
+                    [ UnixSystemDefect.ParkedCallEndedByCloseUnderLinux task ]
 
             system.Tasks
             |> Map.toList
@@ -1034,29 +1092,33 @@ module UnixSystem =
 
                     registrations @ active
                 | Some (ParkedSyscall.Accept accept) ->
-                    match Map.tryFind accept.Listener descriptions with
-                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, accept.Listener) ]
+                    match accept.Listener with
+                    | SleepTarget.EndedByClose _ -> endedByClose task
+                    | SleepTarget.Waiting (listener, fd) ->
+
+                    match Map.tryFind listener descriptions with
+                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, listener) ]
                     | Some description ->
                         let listening =
                             match description.Target with
                             | OpenFileTarget.Socket socketId ->
                                 match Map.tryFind socketId system.Machine.Sockets with
                                 | Some {
-                                           Phase = SocketPhase.Listening _
-                                       } -> true
+                                           Phase = SocketPhase.Listening listenState
+                                       } -> Some listenState.Drained
                                 | Some _
-                                | None -> false
+                                | None -> None
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
                             | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Pipe _
                             | OpenFileTarget.Kqueue _
-                            | OpenFileTarget.Epoll _ -> false
+                            | OpenFileTarget.Epoll _ -> None
 
-                        if listening then
-                            []
-                        else
-                            [ UnixSystemDefect.ParkedAcceptOnNonListener (task, accept.Listener) ]
+                        match listening with
+                        | None -> [ UnixSystemDefect.ParkedAcceptOnNonListener (task, listener) ]
+                        | Some true -> [ UnixSystemDefect.ParkedAcceptOnDrainedListener (task, listener) ]
+                        | Some false -> enteredThrough task fd listener
                 | Some (ParkedSyscall.PipeRead read) ->
                     let progress =
                         if read.Count > 0 then
@@ -1065,13 +1127,16 @@ module UnixSystem =
                             [ UnixSystemDefect.ParkedPipeTransferProgress (task, read.Count, 0) ]
 
                     let target =
-                        match Map.tryFind read.Reader descriptions with
-                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, read.Reader) ]
+                        match read.Reader with
+                        | SleepTarget.EndedByClose _ -> endedByClose task
+                        | SleepTarget.Waiting (reader, fd) ->
+
+                        match Map.tryFind reader descriptions with
+                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, reader) ]
                         | Some description ->
                             match description.Target with
-                            | OpenFileTarget.Pipe (_, PipeEnd.Read) -> []
-                            | target ->
-                                [ UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, read.Reader, target) ]
+                            | OpenFileTarget.Pipe (_, PipeEnd.Read) -> enteredThrough task fd reader
+                            | target -> [ UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, reader, target) ]
 
                     progress @ target
                 | Some (ParkedSyscall.PipeWrite write) ->
@@ -1084,15 +1149,16 @@ module UnixSystem =
                             ]
 
                     let target =
-                        match Map.tryFind write.Writer descriptions with
-                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, write.Writer) ]
+                        match write.Writer with
+                        | SleepTarget.EndedByClose _ -> endedByClose task
+                        | SleepTarget.Waiting (writer, fd) ->
+
+                        match Map.tryFind writer descriptions with
+                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, writer) ]
                         | Some description ->
                             match description.Target with
-                            | OpenFileTarget.Pipe (_, PipeEnd.Write) -> []
-                            | target ->
-                                [
-                                    UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, write.Writer, target)
-                                ]
+                            | OpenFileTarget.Pipe (_, PipeEnd.Write) -> enteredThrough task fd writer
+                            | target -> [ UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, writer, target) ]
 
                     progress @ target
             )
@@ -1452,6 +1518,7 @@ module UnixSystem =
         @ orphanConnections
         @ duplicateQueued
         @ phaseKindMismatches
+        @ drainedUnderLinux
         @ connectionFreshness
         @ ordinalFreshness
         @ ordinalDuplicates

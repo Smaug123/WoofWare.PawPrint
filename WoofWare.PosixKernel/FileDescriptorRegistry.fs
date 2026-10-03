@@ -154,6 +154,15 @@ type ListenState =
         /// dequeues from the head. Measured on both flavours: accept returns
         /// connections in the order the connects completed.
         Queue : ConnectionId list
+        /// Under Darwin, whether a close of the descriptor an `accept(2)` asleep
+        /// on this listener was made through has ended every accept asleep on
+        /// it. Never under Linux.
+        ///
+        /// It stays so for as long as the socket listens, a second `listen(2)`
+        /// included: a later accept that finds a connection queued takes it,
+        /// but one that would sleep answers `ECONNABORTED` as soon as anything
+        /// wakes it, a connection or a signal.
+        Drained : bool
     }
 
 /// Whether a refused connection's error is still waiting to be reported. The
