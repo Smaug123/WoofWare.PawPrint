@@ -1026,6 +1026,63 @@ unsafe class Program
             )
 
     [<Test>]
+    let ``Binding to a socket address with an unwritten byte ends the run at the copy-in`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Socket")]
+    static extern int Socket(int addressFamily, int socketType, int protocolType, IntPtr* createdSocket);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Bind")]
+    static extern int Bind(IntPtr socket, int protocolType, byte* socketAddress, int socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetAddressFamily")]
+    static extern int SetAddressFamily(byte* socketAddress, int socketAddressLen, int addressFamily);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetPort")]
+    static extern int SetPort(byte* socketAddress, int socketAddressLen, ushort port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetIPv4Address")]
+    static extern int SetIPv4Address(byte* socketAddress, int socketAddressLen, uint address);
+
+    static int Main(string[] args)
+    {
+        IntPtr fd;
+        // AF_INET, SOCK_STREAM and IPPROTO_TCP in the shim's numbering.
+        if (Socket(2, 1, 6, &fd) != 0) return 1;
+
+        byte* address = stackalloc byte[16];
+        if (SetAddressFamily(address, 16, 2) != 0) return 2;
+        if (SetPort(address, 16, 0) != 0) return 3;
+        if (SetIPv4Address(address, 16, 0x0100007F) != 0) return 4;
+        // Bytes 8 to 15, `sin_zero`, are never written; bind copies all 16 in.
+        return Bind(fd, 6, address, 16) == 0 ? 0 : 5;
+    }
+}
+"""
+
+        run
+            "UndefinedBoundAddress.cs"
+            source
+            (fun observation ->
+                let origins = stackOrigins observation.Value
+                origins |> List.isEmpty |> shouldEqual false
+
+                origins
+                |> List.forall (fun offset -> 8 <= offset && offset < 16)
+                |> shouldEqual true
+
+                expectReadByRuntime "Bind" "the socket address it binds" observation
+            )
+
+    [<Test>]
     let ``A socket address with an unwritten port ends the run at the port's read`` () : unit =
         let source =
             """
