@@ -281,23 +281,35 @@ module TestConnectDestinationMeasured =
     let ``every Darwin row is answered as measured`` () : unit =
         check "darwin" SimulatedUnixPlatform.macOsArm64
 
-    /// `sockaddr-dgram-reconnect.c`'s rows: a datagram socket bound to an
-    /// interface address, connected to a socket there or not, connecting to
-    /// loopback. Darwin's disconnect resets a connected one's address, so it
-    /// connects from 127.0.0.1; Linux keeps the interface address. The probe's
-    /// interface address stands here as 10.0.0.5, an address the machine holds.
+    /// `sockaddr-dgram-reconnect.c`'s rows: a socket bound to an interface
+    /// address connecting to 127.0.0.1 and to 0.0.0.0 -- a datagram socket,
+    /// connected to a socket there before or not, and a stream socket. Darwin's
+    /// disconnect resets a connected datagram socket's address, so it connects
+    /// from 127.0.0.1; Linux keeps the interface address. A wildcard
+    /// destination is the socket's own interface address on Linux and
+    /// 127.0.0.1 on Darwin. The probe's interface address stands here as
+    /// 10.0.0.5, an address the machine holds.
     let private reconnect (flavour : string) (platform : SimulatedUnixPlatform) : unit =
         let iface = 0x0A000005u
 
         let row =
-            Regex @"^R (?<state>[\w-]+)\s+to (?<dest>[\d.]+)\s*: (?<ans>\w+) local=(?<addr>[\w.]+) port=(?<port>\w+)$"
+            Regex
+                @"^(?<kind>[RS]) (?<state>[\w-]+)\s+to (?<dest>[\d.]+)\s*: (?<ans>\w+) local=(?<addr>[\w.]+) port=(?<port>\w+) peer=(?<peer>[\w.]+)$"
 
         let rows =
             resource $"sockaddr-dgram-reconnect.%s{flavour}.txt"
             |> Array.toList
             |> List.filter (fun line -> not (line.StartsWith "#"))
 
-        rows |> List.length |> shouldEqual 4
+        rows |> List.length |> shouldEqual 6
+
+        let name (address : uint32) : string =
+            if address = iface then
+                "iface"
+            elif address = InternetEndpoint.LoopbackAddress then
+                "127.0.0.1"
+            else
+                dotted address
 
         for line in rows do
             let m = row.Match line
@@ -310,8 +322,14 @@ module TestConnectDestinationMeasured =
                 |> UnixBootImage.withLocalAddresses [ InternetEndpoint.LoopbackAddress ; iface ] []
                 |> UnixBootImage.boot
 
-            let udp (system : UnixSystem<int, string>) =
-                NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
+            let create (kind : SocketKind) (system : UnixSystem<int, string>) =
+                let protocol =
+                    if kind = SocketKind.Stream then
+                        SocketProtocol.Tcp
+                    else
+                        SocketProtocol.Udp
+
+                NewSocket.create SocketDomain.Inet kind protocol system
 
             let bindTo fd (endpoint : InternetEndpoint) system =
                 match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
@@ -321,9 +339,28 @@ module TestConnectDestinationMeasured =
             let connectTo fd (endpoint : InternetEndpoint) system =
                 CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system
 
-            let peer, system = udp system
+            let kind =
+                if m.Groups.["kind"].Value = "S" then
+                    SocketKind.Stream
+                else
+                    SocketKind.Datagram
+
+            // Somewhere to connect to at the interface address, and, at port
+            // 6000 on the wildcard, a socket of the call's own kind.
+            let peer, system = create SocketKind.Datagram system
             let peerAt, system = bindTo peer (InternetEndpoint.ofParts iface 0us) system
-            let fd, system = udp system
+            let target, system = create kind system
+            let _, system = bindTo target (InternetEndpoint.ofParts 0u 6000us) system
+
+            let system =
+                if kind = SocketKind.Stream then
+                    match UnixSocket.listen target 8 system with
+                    | Ok (ListenAnswer.Listening _, system) -> system
+                    | other -> failwith $"%s{line}: listen answered %A{other}"
+                else
+                    system
+
+            let fd, system = create kind system
             let bound, system = bindTo fd (InternetEndpoint.ofParts iface 0us) system
 
             let system =
@@ -342,18 +379,18 @@ module TestConnectDestinationMeasured =
             match connectTo fd destination system with
             | Ok (ConnectOutcome.Completed, after) ->
                 m.Groups.["ans"].Value |> shouldEqual "OK"
-                let now = local (socketOf fd after)
+                let socket = socketOf fd after
+                let now = local socket
 
-                let address =
-                    if now.Address = iface then
-                        "iface"
-                    elif now.Address = InternetEndpoint.LoopbackAddress then
-                        "127.0.0.1"
-                    else
-                        dotted now.Address
+                let peerName =
+                    match socket.Phase with
+                    | SocketPhase.Established connection ->
+                        name (UnixMachineState.connection connection after.Machine).ServerAddress.Address
+                    | SocketPhase.DatagramPeer endpoint -> name endpoint.Address
+                    | _ -> "none"
 
-                (address, (if now.Port = bound.Port then "same" else "other"))
-                |> shouldEqual (m.Groups.["addr"].Value, m.Groups.["port"].Value)
+                (name now.Address, (if now.Port = bound.Port then "same" else "other"), peerName)
+                |> shouldEqual (m.Groups.["addr"].Value, m.Groups.["port"].Value, m.Groups.["peer"].Value)
             | other -> failwith $"%s{line}: answered %A{other}"
 
     [<Test>]

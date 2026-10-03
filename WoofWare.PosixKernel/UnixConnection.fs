@@ -280,6 +280,29 @@ module UnixConnection =
                     }
             }
 
+        // A wildcard destination: Linux aims at the socket's own local
+        // address when it has a concrete one, and at loopback otherwise; Darwin
+        // aims at loopback. Measured for stream and datagram sockets alike
+        // (`sockaddr-dgram-reconnect.c`, and `sockaddr-dgram-connect.c`, D, for
+        // a socket with no concrete address).
+        let resolveWildcard (dest : InternetEndpoint) : InternetEndpoint =
+            if dest.Address <> InternetEndpoint.WildcardAddress then
+                dest
+            else
+
+            let address =
+                match flavour, sock.Binding with
+                | SimulatedUnixFlavour.Linux, Some binding when
+                    binding.Endpoint.Address <> InternetEndpoint.WildcardAddress
+                    ->
+                    binding.Endpoint.Address
+                | SimulatedUnixFlavour.Linux, _
+                | SimulatedUnixFlavour.Darwin, _ -> InternetEndpoint.LoopbackAddress
+
+            { dest with
+                Address = address
+            }
+
         let destinationIsLocal (address : uint32) : bool =
             List.contains address system.Machine.LocalAddresses
             || system.Machine.LocalRoutes |> List.exists (Ipv4Prefix.contains address)
@@ -414,15 +437,7 @@ module UnixConnection =
             (dest : InternetEndpoint)
             : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
-            // A wildcard destination means loopback: measured on both,
-            // connect to 0.0.0.0:port reaches a loopback listener.
-            let dest =
-                if dest.Address = InternetEndpoint.WildcardAddress then
-                    { dest with
-                        Address = InternetEndpoint.LoopbackAddress
-                    }
-                else
-                    dest
+            let dest = resolveWildcard dest
 
             if not (destinationIsLocal dest.Address) then
                 Error (ConnectRefusal.DestinationNotLocal (dest, SocketKind.Stream))
@@ -1134,15 +1149,7 @@ module UnixConnection =
                 failPrepared UnixError.EADDRNOTAVAIL
             | Some dest ->
 
-            // A wildcard destination means loopback: measured on both, and
-            // the source resolved for it is 127.0.0.1.
-            let dest =
-                if dest.Address = InternetEndpoint.WildcardAddress then
-                    { dest with
-                        Address = InternetEndpoint.LoopbackAddress
-                    }
-                else
-                    dest
+            let dest = resolveWildcard dest
 
             if SimulatedUnixPlatform.isBroadcastOrMulticast dest.Address then
                 // Measured (`sockaddr-dgram-connect.c`, D and M): Linux answers

@@ -8,8 +8,14 @@
 // loopback, so the rows print it as "iface". For each of: bound to it and not
 // connected; bound to it and connected to a datagram socket on it; the call
 // connects to 127.0.0.1:Q and to 0.0.0.0:Q, Q a datagram socket on loopback.
-// Each row prints the errno and the local address afterwards ("iface",
-// "127.0.0.1" or "0.0.0.0") with whether its port is the one bound.
+// Each row prints the errno, the local address afterwards ("iface",
+// "127.0.0.1" or "0.0.0.0") with whether its port is the one bound, and the
+// address getpeername reads ("none" if it reads none).
+//
+// Then the same for a stream socket bound to the interface address, connecting
+// to 127.0.0.1:L and to 0.0.0.0:L, L a port a listener holds on the wildcard,
+// so that a connection to either address is accepted and the peer shows which
+// address the kernel aimed at.
 //
 // Build and run, from this directory:
 //   Darwin: nix develop -c clang -Wall -o /tmp/sdr sockaddr-dgram-reconnect.c && /tmp/sdr
@@ -20,7 +26,9 @@
 // platform agreeing; outputs beside this file. A socket that was not connected
 // keeps the interface address on both. A connected one keeps it on Linux, and
 // on Darwin connects from 127.0.0.1, port kept: the disconnect reverts its
-// address to the wildcard, and the connect resolves the source afresh.
+// address to the wildcard, and the connect resolves the source afresh. A
+// connect to 0.0.0.0 reaches the socket's own interface address on Linux, for
+// stream and datagram sockets alike, and 127.0.0.1 on Darwin.
 #define _GNU_SOURCE
 #include <arpa/inet.h>
 #include <errno.h>
@@ -54,9 +62,26 @@ static uint16_t bound_port(int s)
     return ntohs(a.sin_port);
 }
 
-static int udp_on(uint32_t address_net)
+static const char *name_of(uint32_t address_net, uint32_t iface)
 {
-    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    return address_net == iface                       ? "iface"
+           : address_net == htonl(INADDR_LOOPBACK) ? "127.0.0.1"
+           : address_net == 0                      ? "0.0.0.0"
+                                                   : "other";
+}
+
+static const char *peer_of(int s, uint32_t iface)
+{
+    struct sockaddr_in p;
+    socklen_t len = sizeof p;
+    if (getpeername(s, (struct sockaddr *)&p, &len) != 0)
+        return "none";
+    return name_of(p.sin_addr.s_addr, iface);
+}
+
+static int on(int type, uint32_t address_net)
+{
+    int s = socket(AF_INET, type, 0);
     struct sockaddr_in a = at(address_net, 0);
     if (bind(s, (struct sockaddr *)&a, sizeof a) != 0) {
         perror("bind");
@@ -64,6 +89,8 @@ static int udp_on(uint32_t address_net)
     }
     return s;
 }
+
+static int udp_on(uint32_t address_net) { return on(SOCK_DGRAM, address_net); }
 
 int main(void)
 {
@@ -118,13 +145,31 @@ int main(void)
             struct sockaddr_in after;
             socklen_t len = sizeof after;
             getsockname(s, (struct sockaddr *)&after, &len);
-            const char *addr = after.sin_addr.s_addr == iface                       ? "iface"
-                               : after.sin_addr.s_addr == htonl(INADDR_LOOPBACK) ? "127.0.0.1"
-                               : after.sin_addr.s_addr == 0                      ? "0.0.0.0"
-                                                                                 : "other";
-            printf("R %-13s to %-9s: %s local=%s port=%s\n", connected ? "connected" : "not-connected",
-                   dests[d].name, e ? strerror(e) : "OK", addr, ntohs(after.sin_port) == port ? "same" : "other");
+            printf("R %-13s to %-9s: %s local=%s port=%s peer=%s\n", connected ? "connected" : "not-connected",
+                   dests[d].name, e ? strerror(e) : "OK", name_of(after.sin_addr.s_addr, iface),
+                   ntohs(after.sin_port) == port ? "same" : "other", peer_of(s, iface));
             close(s);
         }
+
+    int listener = on(SOCK_STREAM, htonl(INADDR_ANY));
+    listen(listener, 8);
+    uint16_t L = bound_port(listener);
+    for (int d = 0; d < 2; d++) {
+        int s = on(SOCK_STREAM, iface);
+        uint16_t port = bound_port(s);
+        struct sockaddr_in to = at(dests[d].address, L);
+        int r = connect(s, (struct sockaddr *)&to, sizeof to);
+        int e = r == 0 ? 0 : errno;
+        struct sockaddr_in after;
+        socklen_t len = sizeof after;
+        getsockname(s, (struct sockaddr *)&after, &len);
+        printf("S %-13s to %-9s: %s local=%s port=%s peer=%s\n", "not-connected", dests[d].name,
+               e ? strerror(e) : "OK", name_of(after.sin_addr.s_addr, iface),
+               ntohs(after.sin_port) == port ? "same" : "other", peer_of(s, iface));
+        close(s);
+        int a = accept(listener, NULL, NULL);
+        if (a >= 0)
+            close(a);
+    }
     return 0;
 }
