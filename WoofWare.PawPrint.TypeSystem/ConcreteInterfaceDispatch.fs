@@ -285,14 +285,17 @@ module ConcreteInterfaceDispatch =
 
     /// The interface method a MethodImpl declaration names, together with the interface instantiation
     /// it names it on -- closed, and read in the vocabulary of the owner's generic definition, whose
-    /// substitution is `ownerSubstitution`; `None` when the declaration is not an interface instance method, which makes
-    /// the row a vtable write (see `ConcreteMethodTable.contentVtableOfDefinition`) or a static virtual
-    /// implementation (resolved through MethodImpl rows by the caller, not through this map).
-    let private interfaceMethodImplDeclaration
+    /// substitution is `ownerSubstitution`. Only static interface methods are named when `statics`
+    /// is set, and only instance ones when not; `None` when the declaration is not an interface method
+    /// of that kind. An instance declaration that is not an interface method makes the row a vtable
+    /// write (see `ConcreteMethodTable.contentVtableOfDefinition`); a static one implements a static
+    /// virtual, which `StaticVirtualDispatch` reads the rows for, and which is not in this map.
+    let internal interfaceMethodImplDeclaration
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
+        (statics : bool)
         (state : TypeSystemState)
         (ownerTy : ConcreteType<ConcreteTypeHandle>)
         (ownerDescription : string)
@@ -332,7 +335,7 @@ module ConcreteInterfaceDispatch =
         | MetadataToken.MethodDef handle ->
             let method = assembly.Methods.[handle]
 
-            if method.IsStatic then
+            if method.IsStatic <> statics then
                 state, None
             else
 
@@ -366,7 +369,7 @@ module ConcreteInterfaceDispatch =
                 failwith $"%s{operation}: a MethodImpl on %s{ownerDescription} names a field as its declaration"
             | MemberSignature.Method signature ->
 
-            if not signature.Header.Get.IsInstance then
+            if signature.Header.Get.IsInstance = statics then
                 state, None
             else
 
@@ -392,7 +395,7 @@ module ConcreteInterfaceDispatch =
                 let state, matches =
                     ((state, []), interfaceTypeInfo.Methods)
                     ||> List.fold (fun (state, acc) candidate ->
-                        if candidate.Name <> memberRef.PrettyName || candidate.IsStatic then
+                        if candidate.Name <> memberRef.PrettyName || candidate.IsStatic <> statics then
                             state, acc
                         else
 
@@ -438,7 +441,7 @@ module ConcreteInterfaceDispatch =
                     )
                 | [] ->
                     failwith
-                        $"%s{operation}: a MethodImpl on %s{ownerDescription} declares an implementation of %s{memberRef.PrettyName} on %s{interfaceTypeInfo.Namespace}.%s{interfaceTypeInfo.Name}, which declares no instance method of that name and signature; CoreCLR rejects this type at load time"
+                        $"%s{operation}: a MethodImpl on %s{ownerDescription} declares an implementation of %s{memberRef.PrettyName} on %s{interfaceTypeInfo.Namespace}.%s{interfaceTypeInfo.Name}, which declares no method of that name, signature and staticness; CoreCLR rejects this type at load time"
             | _ ->
                 // A ModuleRef or MethodDef parent (the vararg case) cannot name an interface method.
                 state, None
@@ -449,7 +452,7 @@ module ConcreteInterfaceDispatch =
     /// The method a MethodImpl body names, which must be one the owner itself declares. A MethodDef
     /// row is that method; a MemberRef is resolved against the owner's own methods by name and
     /// signature in its open vocabulary, as `EnumerateMethodImpls` normalises one.
-    let private methodImplBody
+    let internal methodImplBody
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -833,6 +836,7 @@ module ConcreteInterfaceDispatch =
                         dotnetRuntimeDirs
                         baseClassTypes
                         operation
+                        false
                         state
                         ty
                         owner.Description

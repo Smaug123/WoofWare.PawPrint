@@ -42,10 +42,14 @@ What lives here:
   and MethodImpls, the dispatch map, default interface bodies, variance, and the methods the
   runtime supplies for an SZ array's implicit interfaces, or that the call is ambiguous because
   more than one default body is most specific, or that it is not modelled, where default bodies
-  conflict through a variant interface; and which implementation of a static abstract interface
-  member a `constrained.` type supplies. It names the method it chooses and the generic arguments it
+  conflict through a variant interface. It names the method it chooses and the generic arguments it
   runs with, and leaves instantiating that method to `MethodConcretisation`: CoreCLR reads a
   method's locals only when it compiles the method.
+* `StaticVirtualDispatch` — which method a `constrained.` call of a static virtual interface method
+  runs, as CoreCLR's `MethodTable::ResolveVirtualStaticMethod` decides it, by its own rules rather
+  than virtual dispatch's: a MethodImpl on the constrained type's chain, exactly before through
+  variance, then the most specific default body, found by identity and never by name, exactly
+  before through variance, or that the call is ambiguous.
 * `TypeAssignability` — whether a value of one closed type can be stored where another is
   expected, as CoreCLR's `CanCastTo` decides it: the base chain, interfaces, variance, and the
   array rules.

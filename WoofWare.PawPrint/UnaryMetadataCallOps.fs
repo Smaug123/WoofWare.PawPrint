@@ -429,7 +429,7 @@ module internal UnaryMetadataCallOps =
             | false, _ -> None
         | _ -> None
 
-    /// `ConcreteVirtualDispatch.resolveConstrainedStaticInterfaceMethod` against the machine's type
+    /// `StaticVirtualDispatch.resolveConstrainedStaticInterfaceMethod` against the machine's type
     /// system.
     let resolveConstrainedStaticInterfaceMethod
         (opName : string)
@@ -443,7 +443,7 @@ module internal UnaryMetadataCallOps =
           ConcreteTypeHandle
         =
         let typeSystem, implementation, declaringTypeHandle =
-            ConcreteVirtualDispatch.resolveConstrainedStaticInterfaceMethod
+            StaticVirtualDispatch.resolveConstrainedStaticInterfaceMethod
                 ctx.LoggerFactory
                 state.DotnetRuntimeDirs
                 ctx.BaseClassTypes
