@@ -11,10 +11,10 @@ open WoofWare.PawPrint
 /// the analysis cannot name may arise, which is what makes <c>Escapes.Unknown</c> true.
 [<RequireQualifiedAccess>]
 type Opacity =
-    /// A <c>callvirt</c> to a method that may be overridden: the method named may not be the one
-    /// that runs. That includes a <c>constrained.</c> call whose type does not decide it: an
-    /// instance method's on a class that may be derived from, or a type variable of a definition
-    /// analysed for every instantiation at once.
+    /// A <c>callvirt</c> to a method that may be overridden, on an object whose class the IL does not
+    /// decide: the method named may not be the one that runs. That includes a <c>constrained.</c>
+    /// call whose type does not decide it: an instance method's on a class that may be derived from,
+    /// or a type variable of a definition analysed for every instantiation at once.
     | VirtualCall
     /// <c>calli</c>, or a call through a dynamic method's scope: no metadata names the target.
     | IndirectCall
@@ -68,6 +68,18 @@ type internal Callee =
         Spelling : CalleeSpelling
     }
 
+/// A type a body spells for an object a `callvirt` is made on.
+type internal Receiver =
+    {
+        /// The type, as the body spells it: a type variable in it is the body's.
+        Spelling : TypeDefn
+        /// The full name of the assembly whose metadata spells it.
+        SpelledIn : string
+        /// Whether the object's class is exactly this type, rather than this type or one derived
+        /// from it.
+        Exact : bool
+    }
+
 /// A call instruction, as far as the body says.
 [<RequireQualifiedAccess>]
 type internal CallSite =
@@ -77,6 +89,9 @@ type internal CallSite =
     /// which a `constrained.` prefix naming this type, a token of the calling body's assembly,
     /// directs: the type decides what runs.
     | Constrained of constrainedType : MetadataToken * Callee
+    /// A `callvirt` of a method a derived type may override, with no `constrained.` prefix, on an
+    /// object that is null or of one of these types: each type's class decides what runs on it.
+    | Virtual of receivers : Receiver list * Callee
 
 /// What one method body does by itself: the exceptions it raises, the places it cannot see
 /// through, and the methods it calls, each at the IL offset where it happens, so that the body's
@@ -97,13 +112,6 @@ type internal LocalFacts =
         /// instantiation), and what taking and releasing a synchronized method's monitor throws.
         OutsideBody : Set<OutsideBodyFact>
     }
-
-/// What a `throw` is handed, as far as the instruction before it says.
-[<RequireQualifiedAccess>]
-type internal ThrowOperand =
-    | Object of ThrownType
-    | Null
-    | Untyped
 
 /// What a `rethrow` re-raises of one thing its clause's protected block raised.
 [<RequireQualifiedAccess>]
@@ -153,14 +161,14 @@ type internal MethodInstance =
         Arguments : Instantiation
     }
 
-/// What a `constrained.` call does in one instance of the method making it.
+/// What a call dispatched on a receiver's type does in one instance of the method making it.
 [<RequireQualifiedAccess>]
-type internal ConstrainedOutcome =
+type internal DispatchOutcome =
     /// It calls this instance.
     | Reaches of MethodInstance
     /// It throws this instead of calling anything.
     | Raises of ThrownType
-    /// The type the prefix names does not decide what runs.
+    /// The receiver's type does not decide what runs.
     | Undecided
 
 /// What one instance of a method calls, each at the IL offset of the call: the instances it
@@ -213,6 +221,11 @@ type EscapeAnalysisState =
 /// An interface cast or an array store calls <c>IDynamicInterfaceCastable.IsInterfaceImplemented</c>
 /// on an object whose class implements it. That is assumed to throw nothing but the
 /// <c>InvalidCastException</c> its documentation asks for.
+///
+/// The IL is assumed to be well typed: a value held where the IL spells a type (an argument, a
+/// local, a field, a call's result) is of that type, as the JIT assumes when it devirtualises. So a
+/// <c>callvirt</c> on an object of a sealed class runs that class's implementation, and a
+/// <c>throw</c> of a value of a static type raises that type or a subtype.
 ///
 /// That holds for assemblies that agree with each other. A member or type that a body names and
 /// the loaded assembly it is looked for in lacks is reported, as the exception binding it throws,
@@ -850,6 +863,25 @@ module EscapeAnalysis =
         | MethodReturnType.Void -> signature.ParameterTypes
         | MethodReturnType.Returns ty -> ty :: signature.ParameterTypes
 
+    /// Whether a spelling mentions a type variable of the body that spells it.
+    let rec private mentionsTypeVariable (spelling : TypeDefn) : bool =
+        match spelling with
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _ -> true
+        | TypeDefn.GenericInstantiation (root, arguments) ->
+            mentionsTypeVariable root || Seq.exists mentionsTypeVariable arguments
+        | TypeDefn.Array (element, _)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.Pinned element -> mentionsTypeVariable element
+        | TypeDefn.Modified modified -> mentionsTypeVariable modified.Unmodified
+        | TypeDefn.FunctionPointer signature -> signatureTypes signature |> List.exists mentionsTypeVariable
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.Void -> false
+
     /// Does every type reference that instantiating a spelling reads name a type? As
     /// `spellingBindFailure`, and through a function pointer's signature as well, whose types
     /// TypeSystem instantiates although the JIT binds none of them.
@@ -1158,6 +1190,254 @@ module EscapeAnalysis =
             returnTypeOfCall state assembly assembly.MethodSpecs.[handle].Method
         | _ -> state, None
 
+    /// A type definition as a body spells it, instantiated with its own type parameters, and
+    /// whether it is a value type. Deciding that walks the base chain, which loads whatever assembly
+    /// it passes through.
+    let private spelledDefinition
+        (state : EscapeAnalysisState)
+        (identity : ResolvedTypeIdentity)
+        : EscapeAnalysisState * TypeDefn * bool
+        =
+        let valueType = state.BaseTypes.ValueType.Identity
+        let state, derivesFromValueType = derivesFrom state identity valueType
+
+        let isValueType =
+            derivesFromValueType
+            && identity <> valueType
+            && identity <> state.BaseTypes.Enum.Identity
+
+        let kind =
+            if isValueType then
+                SignatureTypeKind.ValueType
+            else
+                SignatureTypeKind.Class
+
+        let _, definition = definitionOf state identity
+        let named = TypeDefn.FromDefinition (identity, kind)
+
+        let spelling =
+            if definition.Generics.IsEmpty then
+                named
+            else
+                TypeDefn.GenericInstantiation (
+                    named,
+                    definition.Generics
+                    |> Seq.mapi (fun index _ -> TypeDefn.GenericTypeParameter index)
+                    |> ImmutableArray.CreateRange
+                )
+
+        state, spelling, isValueType
+
+    /// The type a type token of a body of `assembly` names, as that body spells it, with the full
+    /// name of the assembly whose metadata spells it; `None` for a token that does not bind, or a
+    /// definition or reference naming a generic type, whose type variables would not be the body's.
+    let private spelledType
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (token : MetadataToken)
+        : EscapeAnalysisState * (TypeDefn * string) option
+        =
+        let ofDefinition (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) =
+            let _, definition = definitionOf state identity
+
+            if definition.Generics.IsEmpty then
+                let state, spelling, _ = spelledDefinition state identity
+                state, Some (spelling, identity.AssemblyFullName)
+            else
+                state, None
+
+        match token with
+        | MetadataToken.TypeDefinition _
+        | MetadataToken.TypeReference _
+        | MetadataToken.TypeSpecification _ ->
+            match bindToken state assembly token with
+            | state, _, _ :: _ -> state, None
+            | state, _, [] ->
+                match token with
+                | MetadataToken.TypeSpecification handle ->
+                    state, Some (assembly.TypeSpecs.[handle].Signature, assembly.DefinitionFullName)
+                | MetadataToken.TypeDefinition handle -> ofDefinition state assembly.TypeDefs.[handle].Identity
+                | MetadataToken.TypeReference handle ->
+                    match resolveTypeRef state assembly assembly.TypeRefs.[handle] with
+                    | state, Some identity -> ofDefinition state identity
+                    | state, None -> state, None
+                | _ -> state, None
+        | _ -> state, None
+
+    /// What a body of `method`, which may be one the VM substitutes for its own, spells for each
+    /// source of a value on its evaluation stack, for `StackValues.analyse`. A token at an
+    /// instruction whose index is in `unbound` failed to bind, and spells nothing.
+    let private bodySpellingsOf
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (body : MethodInstructions<TypeDefn>)
+        (unbound : Set<int>)
+        : EscapeAnalysisState * BodySpellings
+        =
+        let spellings = System.Collections.Generic.List<SpelledType> ()
+
+        let objectOf (exact : bool) (inBodyContext : bool) (spelling : TypeDefn) (spelledIn : string) : StackValue =
+            match TypeDefn.stripCustomModifiers spelling with
+            | TypeDefn.Byref _
+            | TypeDefn.Pointer _
+            | TypeDefn.Pinned _
+            | TypeDefn.FunctionPointer _
+            | TypeDefn.Void -> StackValue.Unknown
+            | _ ->
+                spellings.Add
+                    {
+                        Type = spelling
+                        SpelledIn = spelledIn
+                        InBodyContext = inBodyContext
+                    }
+
+                let index = spellings.Count - 1
+
+                let spelled =
+                    if exact then
+                        SpelledObject.Exactly index
+                    else
+                        SpelledObject.Within index
+
+                StackValue.Objects (Set.singleton spelled)
+
+        // A type a signature spells in the body's own assembly, but in the context of the member
+        // it belongs to: a type variable in it is not the body's.
+        let ofMemberSignature (spelling : TypeDefn) : StackValue =
+            objectOf false (not (mentionsTypeVariable spelling)) spelling assembly.DefinitionFullName
+
+        let ofOwnSpelling (spelling : TypeDefn) : StackValue =
+            objectOf false true spelling assembly.DefinitionFullName
+
+        let ofTypeToken (exact : bool) (state : EscapeAnalysisState) (token : MetadataToken) =
+            match spelledType state assembly token with
+            | state, Some (spelling, spelledIn) ->
+                // A nullable type named by `box`, `isinst` or `castclass` stands for the value it
+                // holds, boxed, or null (ECMA-335 III.4.1, III.4.3, III.4.6).
+                match nominalIdentity state (assemblyOf state spelledIn) spelling with
+                | state, Some identity when identity = state.BaseTypes.Nullable.Identity -> state, StackValue.Unknown
+                | state, _ -> state, objectOf exact true spelling spelledIn
+            | state, None -> state, StackValue.Unknown
+
+        let state, this =
+            if method.IsStatic then
+                state, []
+            else
+                let identity = method.RequiredDeclaringType.Identity
+
+                // The declaring type's own type parameters are the body's.
+                match spelledDefinition state identity with
+                // `this` is a managed pointer to the value.
+                | state, _, true -> state, [ StackValue.Unknown ]
+                | state, spelling, false -> state, [ objectOf false true spelling identity.AssemblyFullName ]
+
+        let arguments = this @ (method.Signature.ParameterTypes |> List.map ofOwnSpelling)
+
+        let locals =
+            body.LocalVars
+            |> Option.map (Seq.map ofOwnSpelling >> List.ofSeq)
+            |> Option.defaultValue []
+
+        let string =
+            objectOf true true (TypeDefn.PrimitiveType PrimitiveType.String) state.BaseTypes.Corelib.DefinitionFullName
+
+        let state, tokens =
+            ((state, Map.empty), List.indexed body.Instructions)
+            ||> List.fold (fun (state, tokens) (index, (op, offset)) ->
+                let state, value =
+                    match op with
+                    | _ when unbound.Contains index -> state, None
+                    | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt),
+                                               MetadataOperand.FromMetadata token) ->
+                        let rec returned (token : MetadataToken) : MethodReturnType<TypeDefn> option =
+                            match token with
+                            | MetadataToken.MethodDef handle -> Some assembly.Methods.[handle].Signature.ReturnType
+                            | MetadataToken.MemberReference handle ->
+                                match assembly.Members.[handle].Signature with
+                                | MemberSignature.Method signature -> Some signature.ReturnType
+                                | MemberSignature.Field _ -> None
+                            | MetadataToken.MethodSpecification handle -> returned assembly.MethodSpecs.[handle].Method
+                            | _ -> None
+
+                        match returned token.Token with
+                        | Some (MethodReturnType.Returns ty) -> state, Some (ofMemberSignature ty)
+                        | _ -> state, None
+                    | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj, MetadataOperand.FromMetadata token) ->
+                        let parent =
+                            match token.Token with
+                            | MetadataToken.MethodDef handle ->
+                                Some (
+                                    MetadataToken.TypeDefinition
+                                        assembly.Methods.[handle].RequiredDeclaringType.Identity.TypeDefinition.Get
+                                )
+                            | MetadataToken.MemberReference handle -> Some assembly.Members.[handle].Parent
+                            | _ -> None
+
+                        match parent with
+                        | Some parent ->
+                            let state, value = ofTypeToken true state parent
+                            state, Some value
+                        | None -> state, None
+                    | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Ldfld | UnaryMetadataTokenIlOp.Ldsfld),
+                                               MetadataOperand.FromMetadata token) ->
+                        match token.Token with
+                        | MetadataToken.FieldDefinition handle ->
+                            state, Some (ofMemberSignature assembly.Fields.[handle].Signature)
+                        | MetadataToken.MemberReference handle ->
+                            match assembly.Members.[handle].Signature with
+                            | MemberSignature.Field (_, ty) -> state, Some (ofMemberSignature ty)
+                            | MemberSignature.Method _ -> state, None
+                        | _ -> state, None
+                    | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Castclass | UnaryMetadataTokenIlOp.Isinst | UnaryMetadataTokenIlOp.Unbox_Any | UnaryMetadataTokenIlOp.Ldobj | UnaryMetadataTokenIlOp.Ldelem | UnaryMetadataTokenIlOp.Box),
+                                               MetadataOperand.FromMetadata token) ->
+                        let state, value = ofTypeToken false state token.Token
+                        state, Some value
+                    | _ -> state, None
+
+                match value with
+                | Some value -> state, Map.add offset value tokens
+                | None -> state, tokens
+            )
+
+        let state, caught =
+            ((state, Map.empty), body.ExceptionRegions)
+            ||> Seq.fold (fun (state, caught) region ->
+                match region with
+                | ExceptionRegion.Catch (ExceptionCatchType.FromMetadata token, offsets) ->
+                    let state, value = ofTypeToken false state token
+                    state, Map.add offsets.HandlerOffset value caught
+                | _ -> state, caught
+            )
+
+        let binding = GenericBinding.AtDefinition
+
+        let effects =
+            StackShape.effectInputs
+                {
+                    Arguments = ImmutableArray.CreateRange (List.replicate arguments.Length SlotShape.Other)
+                    Locals = ImmutableArray.CreateRange (List.replicate locals.Length SlotShape.Other)
+                    ReturnsValue =
+                        (StackShapeTokens.returnShape
+                            assembly
+                            binding
+                            GenericSubstitution.None
+                            method.Signature.ReturnType)
+                            .IsSome
+                    Tokens = StackShapeTokens.ofBody assembly binding (StackFlow.reachable body) body
+                }
+
+        state,
+        {
+            Spellings = List.ofSeq spellings
+            Arguments = arguments
+            Locals = locals
+            String = string
+            Tokens = tokens
+            Caught = caught
+            Effects = effects
+        }
+
     let private opaqueFromEntry (reason : Opacity) : LocalFacts =
         {
             Raises = []
@@ -1249,11 +1529,6 @@ module EscapeAnalysis =
         | Runs.Il (body, selfCall) ->
 
         let ops = body.Instructions |> Array.ofList
-
-        // Offsets some branch or handler can land on: a `throw` at one of these may be reached
-        // from somewhere other than the instruction above it, so that instruction is not
-        // necessarily what produced its operand.
-        let entered = ControlFlow.landedOn body
 
         // Inside a type initializer, touching the type it initializes cannot trigger it: the CLI
         // lets the initializing thread straight through (ECMA-335 I.8.9.5). Only for a non-generic
@@ -1404,6 +1679,9 @@ module EscapeAnalysis =
         let folder
             (targets : Map<int, CallTarget>)
             (unbound : Set<int>)
+            (spellings : SpelledType[])
+            (objectsAt : int -> int -> SpelledObject list option)
+            (calleeArguments : int -> int option)
             (
                 state : EscapeAnalysisState,
                 raises : (int * ThrownType) list,
@@ -1441,38 +1719,38 @@ module EscapeAnalysis =
 
                     state, raises, opaque
 
-            // 2. What the instruction throws explicitly.
+            // 2. What the instruction throws explicitly: each object its operand may be. A null one
+            // raises only the fault `OpcodeFaults` names for `throw`.
             let state, raises, opaque =
                 match op with
                 | IlOp.Nullary NullaryIlOp.Throw ->
-                    let previous =
-                        if index > 0 && not (entered.Contains offset) then
-                            Some (fst ops.[index - 1])
-                        else
-                            None
+                    let state, thrown =
+                        match objectsAt offset 0 with
+                        | None -> state, None
+                        | Some objects ->
+                            ((state, Some []), objects)
+                            ||> List.fold (fun (state, thrown) object ->
+                                match thrown, object with
+                                | None, _ -> state, None
+                                | Some thrown, SpelledObject.Null -> state, Some thrown
+                                | Some thrown, (SpelledObject.Exactly index | SpelledObject.Within index) ->
+                                    let spelling = spellings.[index]
 
-                    let state, operand =
-                        match previous with
-                        | Some (IlOp.Nullary NullaryIlOp.LdNull) -> state, ThrowOperand.Null
-                        | Some (IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Newobj,
-                                                         MetadataOperand.FromMetadata token)) ->
-                            match callTarget state assembly token.Token with
-                            | state, CallTarget.Method constructor ->
-                                state,
-                                ThrowOperand.Object (ThrownType.Exactly (declaringTypeOf state constructor.Callee))
-                            | state, _ -> state, ThrowOperand.Untyped
-                        | Some (IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt),
-                                                         MetadataOperand.FromMetadata token)) ->
-                            match returnTypeOfCall state assembly token.Token with
-                            | state, Some ty -> state, ThrowOperand.Object (ThrownType.SubtypeOf ty)
-                            | state, None -> state, ThrowOperand.Untyped
-                        | _ -> state, ThrowOperand.Untyped
+                                    match
+                                        nominalIdentity state (assemblyOf state spelling.SpelledIn) spelling.Type
+                                    with
+                                    | state, None -> state, None
+                                    | state, Some identity ->
+                                        match object with
+                                        | SpelledObject.Exactly _ ->
+                                            state, Some (ThrownType.Exactly identity :: thrown)
+                                        | _ -> state, Some (ThrownType.SubtypeOf identity :: thrown)
+                            )
 
-                    match operand with
-                    | ThrowOperand.Object thrown -> state, (offset, thrown) :: raises, opaque
-                    // The fault `OpcodeFaults` names for `throw` is all a null operand raises.
-                    | ThrowOperand.Null -> state, raises, opaque
-                    | ThrowOperand.Untyped -> state, raises, (offset, Opacity.UntypedThrow) :: opaque
+                    match thrown with
+                    | Some thrown ->
+                        state, (thrown |> List.distinct |> List.map (fun thrown -> offset, thrown)) @ raises, opaque
+                    | None -> state, raises, (offset, Opacity.UntypedThrow) :: opaque
                 | _ -> state, raises, opaque
 
             // 3. What the instruction calls.
@@ -1565,7 +1843,46 @@ module EscapeAnalysis =
                             match constrainedPrefix index with
                             | Some (prefix, constrainedType) when not (unbound.Contains prefix) ->
                                 state, raises, opaque, (offset, CallSite.Constrained (constrainedType, callee)) :: calls
-                            | _ -> state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
+                            | Some _ -> state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
+                            | None ->
+                                // A `callvirt` dispatches on its receiver, below the arguments.
+                                let receivers =
+                                    match call, calleeArguments offset with
+                                    | UnaryMetadataTokenIlOp.Callvirt, Some arguments when arguments > 0 ->
+                                        objectsAt offset (arguments - 1)
+                                        |> Option.bind (fun objects ->
+                                            let spelled =
+                                                objects
+                                                |> List.choose (fun object ->
+                                                    match object with
+                                                    | SpelledObject.Null -> None
+                                                    | SpelledObject.Exactly index -> Some (spellings.[index], true)
+                                                    | SpelledObject.Within index -> Some (spellings.[index], false)
+                                                )
+
+                                            // A type a member's signature spells has that member's
+                                            // type variables, which no instance of this body binds.
+                                            if
+                                                spelled |> List.forall (fun (spelling, _) -> spelling.InBodyContext)
+                                            then
+                                                spelled
+                                                |> List.map (fun (spelling, exact) ->
+                                                    {
+                                                        Spelling = spelling.Type
+                                                        SpelledIn = spelling.SpelledIn
+                                                        Exact = exact
+                                                    }
+                                                )
+                                                |> Some
+                                            else
+                                                None
+                                        )
+                                    | _ -> None
+
+                                match receivers with
+                                | Some receivers ->
+                                    state, raises, opaque, (offset, CallSite.Virtual (receivers, callee)) :: calls
+                                | None -> state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
                         else
                             state, raises, opaque, (offset, CallSite.Direct callee) :: calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)), _ ->
@@ -1633,6 +1950,23 @@ module EscapeAnalysis =
             ((state, Map.empty, Set.empty, localFailures), [ 0 .. ops.Length - 1 ])
             ||> List.fold bind
 
+        // Which objects each slot of the stack may hold, by the types the body spells.
+        let state, bodySpellings = bodySpellingsOf state assembly method body unbound
+        let values = StackValues.analyse bodySpellings body
+        let spellings = Array.ofList bodySpellings.Spellings
+
+        let objectsAt (offset : int) (fromTop : int) : SpelledObject list option =
+            match Map.tryFind offset values.Entry with
+            | Some stack when fromTop < stack.Length ->
+                match List.item fromTop stack with
+                | StackValue.Objects objects -> Some (Set.toList objects)
+                | StackValue.Unknown -> None
+            | _ -> None
+
+        let calleeArguments (offset : int) : int option =
+            Map.tryFind offset bodySpellings.Effects.Callees
+            |> Option.map (fun arity -> arity.Arguments)
+
         // What each call to a capability query returns on this CPU, which decides a branch on it.
         let constants =
             ops
@@ -1655,7 +1989,7 @@ module EscapeAnalysis =
             ((state, [], [], []), [ 0 .. ops.Length - 1 ])
             ||> List.fold (fun acc index ->
                 if executed.Contains (snd ops.[index]) then
-                    folder targets unbound acc index
+                    folder targets unbound spellings objectsAt calleeArguments acc index
                 else
                     acc
             )
@@ -1704,25 +2038,6 @@ module EscapeAnalysis =
     /// deeper instantiation each time, so the instances reachable from one call are unbounded; one
     /// nested deeper than this is analysed as the open definition instead.
     let private instantiationDepthLimit : int = 8
-
-    /// Whether a spelling mentions a type variable of the body that spells it.
-    let rec private mentionsTypeVariable (spelling : TypeDefn) : bool =
-        match spelling with
-        | TypeDefn.GenericTypeParameter _
-        | TypeDefn.GenericMethodParameter _ -> true
-        | TypeDefn.GenericInstantiation (root, arguments) ->
-            mentionsTypeVariable root || Seq.exists mentionsTypeVariable arguments
-        | TypeDefn.Array (element, _)
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element
-        | TypeDefn.Pointer element
-        | TypeDefn.Byref element
-        | TypeDefn.Pinned element -> mentionsTypeVariable element
-        | TypeDefn.Modified modified -> mentionsTypeVariable modified.Unmodified
-        | TypeDefn.FunctionPointer signature -> signatureTypes signature |> List.exists mentionsTypeVariable
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.Void -> false
 
     /// The type arguments a call's token spells, over the calling body's type variables.
     let rec private spelledArguments (assembly : DumpedAssembly) (token : MetadataToken) : TypeDefn list =
@@ -1973,33 +2288,23 @@ module EscapeAnalysis =
         },
         binds
 
-    /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
-    /// the type the prefix names decides it, which it does for a value type and for a sealed class
-    /// (ECMA-335 III.2.1). Undecided where an instance of a derived class may receive the call, or
-    /// the type is not known.
-    let private constrainedInstance
+    /// What a call of `callee` dispatched on a receiver of the type `spelling` does, when the body
+    /// of `assembly` making it runs as `caller`; `spelledIn` names the assembly whose metadata
+    /// spells the type. The type decides it where the receiver's class is exactly that type
+    /// (`exact`), and otherwise for a value type and for a sealed class, as for a `constrained.`
+    /// prefix naming it (ECMA-335 III.2.1). Undecided where an instance of a derived class may
+    /// receive the call, or the type is not known.
+    let private dispatchOn
         (state : EscapeAnalysisState)
         (assembly : DumpedAssembly)
         (caller : Instantiation)
-        (constrainedType : MetadataToken)
+        (spelling : TypeDefn)
+        (spelledIn : string)
+        (exact : bool)
         (callee : Callee)
-        : EscapeAnalysisState * ConstrainedOutcome
+        : EscapeAnalysisState * DispatchOutcome
         =
         let state, named = calleeInstance state assembly caller callee
-
-        let typeSystem, spelling, spellingAssembly =
-            TypeSystemState.resolveTypeMetadataToken
-                state.LoggerFactory
-                state.RuntimeDirs
-                state.BaseTypes
-                state.TypeSystem
-                assembly
-                constrainedType
-
-        let state =
-            { state with
-                TypeSystem = typeSystem
-            }
 
         let context =
             match caller with
@@ -2012,11 +2317,17 @@ module EscapeAnalysis =
 
         match named.Arguments, context with
         | Instantiation.Open, _
-        | _, None -> state, ConstrainedOutcome.Undecided
+        | _, None -> state, DispatchOutcome.Undecided
         | Instantiation.Closed (namedTypeArguments, namedMethodArguments), Some (typeArguments, methodArguments) ->
 
+        // A type that fails to bind fails the body that spells it before the call runs, which the
+        // facts of that body report.
+        match concretizable state (assemblyOf state spelledIn) spelling with
+        | state, false -> state, DispatchOutcome.Undecided
+        | state, true ->
+
         let state, receiver =
-            concretize state spellingAssembly.DefinitionFullName typeArguments methodArguments spelling
+            concretize state spelledIn typeArguments methodArguments spelling
 
         let _, definition = methodOf state named.Definition
 
@@ -2050,7 +2361,7 @@ module EscapeAnalysis =
                 state, false
 
         if not binds then
-            state, ConstrainedOutcome.Undecided
+            state, DispatchOutcome.Undecided
         else
 
         let typeSystem, concretized, declaringType =
@@ -2134,7 +2445,7 @@ module EscapeAnalysis =
                         else
                             typeSystem, None
                     | typeSystem, decided -> typeSystem, Some decided
-                elif receiverType.TypeAttributes.HasFlag TypeAttributes.Sealed then
+                elif exact || receiverType.TypeAttributes.HasFlag TypeAttributes.Sealed then
                     let typeSystem, decided = dispatchedOn typeSystem
                     typeSystem, Some decided
                 else
@@ -2148,23 +2459,49 @@ module EscapeAnalysis =
         match runs with
         | None
         | Some VirtualImplementation.NotOverridden
-        | Some (VirtualImplementation.Unmodelled _) -> state, ConstrainedOutcome.Undecided
+        | Some (VirtualImplementation.Unmodelled _) -> state, DispatchOutcome.Undecided
         | Some (VirtualImplementation.Ambiguous _) ->
             state,
-            ConstrainedOutcome.Raises (
+            DispatchOutcome.Raises (
                 ThrownType.Exactly (corelibType state "System.Runtime" "AmbiguousImplementationException")
             )
         | Some (VirtualImplementation.Found runs) ->
             match runs.Definition.TryMetadata with
-            | None -> state, ConstrainedOutcome.Undecided
+            | None -> state, DispatchOutcome.Undecided
             | Some facts ->
                 let key =
                     MethodKey.make (assemblyOf state runs.Definition.DeclaringAssemblyFullName) facts.Handle
 
                 state,
-                ConstrainedOutcome.Reaches (
+                DispatchOutcome.Reaches (
                     instanceOf state key (List.ofSeq runs.TypeGenerics) (List.ofSeq runs.MethodGenerics)
                 )
+
+    /// What a `constrained.` call does, when the body of `assembly` making it runs as `caller`, if
+    /// the type the prefix names decides it (`dispatchOn`).
+    let private constrainedInstance
+        (state : EscapeAnalysisState)
+        (assembly : DumpedAssembly)
+        (caller : Instantiation)
+        (constrainedType : MetadataToken)
+        (callee : Callee)
+        : EscapeAnalysisState * DispatchOutcome
+        =
+        let typeSystem, spelling, spellingAssembly =
+            TypeSystemState.resolveTypeMetadataToken
+                state.LoggerFactory
+                state.RuntimeDirs
+                state.BaseTypes
+                state.TypeSystem
+                assembly
+                constrainedType
+
+        let state =
+            { state with
+                TypeSystem = typeSystem
+            }
+
+        dispatchOn state assembly caller spelling spellingAssembly.DefinitionFullName false callee
 
     /// What `instance` calls, from the facts of its definition.
     let private callsOf
@@ -2175,6 +2512,41 @@ module EscapeAnalysis =
         =
         let assembly = assemblyOf state instance.Definition.AssemblyFullName
 
+        // What a dispatched call raises by landing on `reached` rather than on what the body names.
+        // A static method's call runs its declaring type's initializer, which may fail; the facts
+        // leave that to the type dispatch lands on. And no token of this body names the method
+        // dispatch lands on, so binding none of them runs its module's initializer: that runs when
+        // the method first binds into its own module, out of this call.
+        let landingRaises (state : EscapeAnalysisState) (callee : Callee) (reached : MethodInstance) : ThrownType list =
+            if
+                (isStaticVirtual state callee.Callee
+                 && hasTypeInitializer state (declaringTypeOf state reached.Definition))
+                || (reached.Definition.AssemblyFullName <> instance.Definition.AssemblyFullName
+                    && hasModuleInitializer state reached.Definition.AssemblyFullName)
+            then
+                [ ThrownType.Exactly (corelibException state "TypeInitializationException") ]
+            else
+                []
+
+        // Fold the outcomes of dispatching one call into what the instance calls: undecided if any
+        // receiver leaves it so.
+        let dispatched offset callee (state, callees, raises, undecided) (outcomes : DispatchOutcome list) =
+            if outcomes |> List.contains DispatchOutcome.Undecided then
+                state, callees, raises, (offset, Opacity.VirtualCall) :: undecided
+            else
+                ((state, callees, raises, undecided), List.distinct outcomes)
+                ||> List.fold (fun (state, callees, raises, undecided) outcome ->
+                    match outcome with
+                    | DispatchOutcome.Reaches reached ->
+                        let raises =
+                            (landingRaises state callee reached |> List.map (fun thrown -> offset, thrown))
+                            @ raises
+
+                        state, (offset, reached) :: callees, raises, undecided
+                    | DispatchOutcome.Raises thrown -> state, callees, (offset, thrown) :: raises, undecided
+                    | DispatchOutcome.Undecided -> state, callees, raises, (offset, Opacity.VirtualCall) :: undecided
+                )
+
         let state, callees, raises, undecided =
             ((state, [], [], []), facts.Calls)
             ||> List.fold (fun (state, callees, raises, undecided) (offset, site) ->
@@ -2183,29 +2555,29 @@ module EscapeAnalysis =
                     let state, reached = calleeInstance state assembly instance.Arguments callee
                     state, (offset, reached) :: callees, raises, undecided
                 | CallSite.Constrained (constrainedType, callee) ->
-                    match constrainedInstance state assembly instance.Arguments constrainedType callee with
-                    | state, ConstrainedOutcome.Reaches reached ->
-                        // A static method's call runs its declaring type's initializer, which may
-                        // fail; the facts leave that to the type dispatch lands on. And no token of
-                        // this body names the method dispatch lands on, so binding none of them
-                        // runs its module's initializer: that runs when the method first binds into
-                        // its own module, out of this call.
-                        let raises =
-                            if
-                                (isStaticVirtual state callee.Callee
-                                 && hasTypeInitializer state (declaringTypeOf state reached.Definition))
-                                || (reached.Definition.AssemblyFullName <> instance.Definition.AssemblyFullName
-                                    && hasModuleInitializer state reached.Definition.AssemblyFullName)
-                            then
-                                (offset, ThrownType.Exactly (corelibException state "TypeInitializationException"))
-                                :: raises
-                            else
-                                raises
+                    let state, outcome =
+                        constrainedInstance state assembly instance.Arguments constrainedType callee
 
-                        state, (offset, reached) :: callees, raises, undecided
-                    | state, ConstrainedOutcome.Raises thrown -> state, callees, (offset, thrown) :: raises, undecided
-                    | state, ConstrainedOutcome.Undecided ->
-                        state, callees, raises, (offset, Opacity.VirtualCall) :: undecided
+                    dispatched offset callee (state, callees, raises, undecided) [ outcome ]
+                | CallSite.Virtual (receivers, callee) ->
+                    // A null receiver raises what `callvirt` itself does, and calls nothing.
+                    let state, outcomes =
+                        ((state, []), receivers)
+                        ||> List.fold (fun (state, outcomes) receiver ->
+                            let state, outcome =
+                                dispatchOn
+                                    state
+                                    assembly
+                                    instance.Arguments
+                                    receiver.Spelling
+                                    receiver.SpelledIn
+                                    receiver.Exact
+                                    callee
+
+                            state, outcome :: outcomes
+                        )
+
+                    dispatched offset callee (state, callees, raises, undecided) outcomes
             )
 
         state,

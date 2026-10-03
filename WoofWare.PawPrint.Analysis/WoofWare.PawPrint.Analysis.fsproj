@@ -18,6 +18,7 @@
 
     <ItemGroup>
         <Compile Include="Escapes.fs" />
+        <Compile Include="StackValues.fs" />
         <Compile Include="EscapeAnalysis.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
