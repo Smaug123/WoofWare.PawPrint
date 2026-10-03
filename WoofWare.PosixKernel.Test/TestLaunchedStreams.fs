@@ -434,7 +434,7 @@ module TestLaunchedStreams =
             | other -> failwith $"%A{other}"
 
         let reported (system : UnixSystem<int, string>) : bool * UnixSystem<int, string> =
-            let rows, system = SocketEventPort.drain portId 4 system
+            let rows, system = EpollReadyList.drain portId 4 system
             not rows.IsEmpty, system
 
         let atAdd, system = reported system

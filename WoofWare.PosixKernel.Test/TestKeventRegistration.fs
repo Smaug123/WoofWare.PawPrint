@@ -434,7 +434,7 @@ module TestKeventRegistration =
         let model =
             {
                 Kqueues = kqueueStates [ kq1 ; kq2 ] system
-                NextOrdinal = system.Machine.NextSocketEventRegistrationOrdinal
+                NextOrdinal = system.Machine.NextEventRegistrationOrdinal
             }
 
         let listenerSocket = Option.get (socketOf listener system)
@@ -588,8 +588,7 @@ module TestKeventRegistration =
 
             kqueueStates [ kq1 ; kq2 ] system |> shouldEqual model.Kqueues
 
-            system.Machine.NextSocketEventRegistrationOrdinal
-            |> shouldEqual model.NextOrdinal
+            system.Machine.NextEventRegistrationOrdinal |> shouldEqual model.NextOrdinal
 
             UnixSystem.checkInvariants system |> shouldEqual []
 
@@ -1045,13 +1044,13 @@ module TestKeventRegistration =
 
         // Ordinal 0 was never minted in this system.
         forged honest
-        |> shouldEqual [ UnixSystemDefect.SocketEventRegistrationOrdinalNotFresh (0L, kqueueId, 0L) ]
+        |> shouldEqual [ UnixSystemDefect.EventRegistrationOrdinalNotFresh (0L, kqueueId, 0L) ]
 
         let system =
             { system with
                 Machine =
                     { system.Machine with
-                        NextSocketEventRegistrationOrdinal = 1L
+                        NextEventRegistrationOrdinal = 1L
                     }
             }
 

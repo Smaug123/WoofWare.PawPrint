@@ -16,8 +16,8 @@ namespace WoofWare.PosixKernel
 ///
 /// Answers for the socket phases `UnixMachineState.socketReadinessLevel`
 /// answers, both ends of a pipe, and regular files, directories and character
-/// devices (which epoll will not register, but `poll` answers). A socket
-/// event port is refused: what either waiter reports for one is not modelled.
+/// devices (which epoll will not register, but `poll` answers). An epoll
+/// instance is refused: what either waiter reports for one is not modelled.
 [<RequireQualifiedAccess>]
 module LinuxReadiness =
 
@@ -135,56 +135,56 @@ module LinuxReadiness =
 /// What an `epoll` instance would report if a wait on it were re-polled now,
 /// and what draining one does.
 ///
-/// The *consumer* half of the port model. The producer half -- seeding the
+/// The *consumer* half of the epoll model. The producer half -- seeding the
 /// pending list when a registration is added or modified, and signalling a
 /// registration when its target's level changes -- belongs to the operations
 /// that make those changes: `UnixPoll.epollCtl`, and the socket operations in
 /// `UnixConnection`.
 [<RequireQualifiedAccess>]
-module SocketEventPort =
+module EpollReadyList =
 
-    /// Each pending entry of the port, in delivery order, with what it would
+    /// Each pending entry of the epoll instance, in delivery order, with what it would
     /// report if `epoll_wait` re-polled it right now: the target's current
     /// readiness restricted to the registration's stored mask.
     let private annotatedReady<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (portState : SocketEventPortState)
+        (epollState : EpollState)
         (system : UnixSystem<'Task, 'Handler>)
         : ((int * OpenFileDescriptionId) * EpollRegistration * uint32) list
         =
-        portState.Ready
+        epollState.Ready
         |> List.map (fun (_, targetId as key) ->
             let registration =
-                match Map.tryFind key portState.Registrations with
+                match Map.tryFind key epollState.Registrations with
                 | Some registration -> registration
                 | None ->
                     failwith
-                        $"SocketEventPort.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
+                        $"EpollReadyList.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.EpollReadyEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
 
             let reported = LinuxReadiness.ofDescription targetId system &&& registration.Events
 
             key, registration, reported
         )
 
-    /// Whether an `epoll_wait` on the port `portId` names would return at
+    /// Whether an `epoll_wait` on the epoll instance `epollId` names would return at
     /// least one event right now — the wake condition a parked waiter is
     /// polled against, and by construction the same question `drain` answers,
     /// because both read the same annotated walk.
     ///
-    /// Loudly partial in `portId`, exactly as a parked `flock`'s wake condition
-    /// is: a task parked on a port holds it until its call returns, so the
-    /// port cannot have gone while something waits on it. Asking about a port
-    /// that has gone means a park was ended or the port destroyed some other
+    /// Loudly partial in `epollId`, exactly as a parked `flock`'s wake condition
+    /// is: a task parked on an epoll instance holds it until its call returns, so the
+    /// epoll instance cannot have gone while something waits on it. Asking about an epoll instance
+    /// that has gone means a park was ended or the epoll instance destroyed some other
     /// way, and neither answer is honest: `true` wakes the waiter into an
     /// `EBADF` no kernel produces, and `false` sleeps for ever.
     let hasDeliverableEvent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (portId : OpenFileDescriptionId)
+        (epollId : OpenFileDescriptionId)
         (system : UnixSystem<'Task, 'Handler>)
         : bool
         =
-        match Map.tryFind portId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        match Map.tryFind epollId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
         | None ->
             failwith
-                $"SocketEventPort.hasDeliverableEvent: %O{portId} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
+                $"EpollReadyList.hasDeliverableEvent: %O{epollId} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
         | Some description ->
 
         match description.Target with
@@ -195,12 +195,12 @@ module SocketEventPort =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
-                $"SocketEventPort.hasDeliverableEvent: %O{portId} is not an epoll instance, so no wait can be parked on it (this is a bug in the caller of SocketEventPort.hasDeliverableEvent)."
-        | OpenFileTarget.Epoll portState ->
-            annotatedReady portState system
+                $"EpollReadyList.hasDeliverableEvent: %O{epollId} is not an epoll instance, so no wait can be parked on it (this is a bug in the caller of EpollReadyList.hasDeliverableEvent)."
+        | OpenFileTarget.Epoll epollState ->
+            annotatedReady epollState system
             |> List.exists (fun (_, _, reported) -> reported <> 0u)
 
-    /// Drain the port as one `epoll_wait(maxevents = maxCount)` would: walk
+    /// Drain the epoll instance as one `epoll_wait(maxevents = maxCount)` would: walk
     /// the pending entries in order, re-polling each; report the ones whose
     /// re-poll is nonempty, silently drop the stale ones, and stop once
     /// `maxCount` events are reported — every walked entry is consumed, and
@@ -212,22 +212,22 @@ module SocketEventPort =
     /// numbering (`EpollEvents`) -- and the system with the walked entries
     /// consumed.
     ///
-    /// Loudly partial in `portId`: callers hold a live port description in
+    /// Loudly partial in `epollId`: callers hold a live epoll instance's description in
     /// hand.
     let drain<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (portId : OpenFileDescriptionId)
+        (epollId : OpenFileDescriptionId)
         (maxCount : int)
         (system : UnixSystem<'Task, 'Handler>)
         : (uint64 * uint32) list * UnixSystem<'Task, 'Handler>
         =
         if maxCount <= 0 then
             failwith
-                $"SocketEventPort.drain: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is a bug in the caller of SocketEventPort.drain."
+                $"EpollReadyList.drain: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is a bug in the caller of EpollReadyList.drain."
 
-        match Map.tryFind portId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        match Map.tryFind epollId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
         | None ->
             failwith
-                $"SocketEventPort.drain: %O{portId} names no live open file description (this is a bug in the caller of SocketEventPort.drain)."
+                $"EpollReadyList.drain: %O{epollId} names no live open file description (this is a bug in the caller of EpollReadyList.drain)."
         | Some description ->
 
         match description.Target with
@@ -238,8 +238,8 @@ module SocketEventPort =
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
-                $"SocketEventPort.drain: %O{portId} is not an epoll instance (this is a bug in the caller of SocketEventPort.drain)."
-        | OpenFileTarget.Epoll portState ->
+                $"EpollReadyList.drain: %O{epollId} is not an epoll instance (this is a bug in the caller of EpollReadyList.drain)."
+        | OpenFileTarget.Epoll epollState ->
 
         let rec walk
             (delivered : (uint64 * uint32) list)
@@ -256,14 +256,14 @@ module SocketEventPort =
                 else
                     walk ((registration.Data, reported) :: delivered) rest
 
-        let delivered, surviving = walk [] (annotatedReady portState system)
+        let delivered, surviving = walk [] (annotatedReady epollState system)
 
         delivered,
         { system with
             Process =
                 { system.Process with
                     FileDescriptors =
-                        FileDescriptorRegistry.setSocketEventReady portId surviving system.Process.FileDescriptors
+                        FileDescriptorRegistry.setEpollReady epollId surviving system.Process.FileDescriptors
                 }
         }
 
@@ -705,8 +705,8 @@ module KqueueQueue =
     /// right now: the question a task waiting in `kevent` on it is polled
     /// against, and the one `drain` answers by reporting.
     ///
-    /// Loudly partial in `kqueue`, as `SocketEventPort.hasDeliverableEvent` is
-    /// in its port: a task parked on a kqueue holds it until its call returns,
+    /// Loudly partial in `kqueue`, as `EpollReadyList.hasDeliverableEvent` is
+    /// in its epoll instance: a task parked on a kqueue holds it until its call returns,
     /// so the kqueue cannot have gone while something waits on it.
     let hasDeliverableEvent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (kqueue : OpenFileDescriptionId)
@@ -819,7 +819,7 @@ module SocketWake =
 
     /// The key an epoll wake for `wake` carries, in Linux's `<sys/epoll.h>`
     /// numbering, or `None` for an unkeyed wake (see
-    /// `FileDescriptorRegistry.signalSocketEventPorts`).
+    /// `FileDescriptorRegistry.signalEpollInstances`).
     let epollKey (wake : SocketWake) : uint32 option =
         match wake with
         // A data-ready wake, keyed with what `sock_def_readable` passes its
@@ -870,7 +870,7 @@ module SocketWake =
                 Process =
                     { system.Process with
                         FileDescriptors =
-                            FileDescriptorRegistry.signalSocketEventPorts
+                            FileDescriptorRegistry.signalEpollInstances
                                 (UnixProcessState.descriptionsNamingSocket socketId system.Process)
                                 (epollKey wake)
                                 system.Process.FileDescriptors

@@ -115,7 +115,7 @@ class Program
             else
                 match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
                 | Some (ParkedSyscall.Flock parked) -> Some parked
-                | Some (ParkedSyscall.SocketWait _)
+                | Some (ParkedSyscall.EpollWait _)
                 | Some (ParkedSyscall.Kevent _)
                 | Some (ParkedSyscall.Poll _)
                 | Some (ParkedSyscall.KqueuePoll _)

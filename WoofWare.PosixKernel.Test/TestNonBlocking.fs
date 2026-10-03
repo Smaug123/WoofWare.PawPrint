@@ -445,9 +445,9 @@ module TestNonBlocking =
     // The event port, where store and answer come apart
     // ------------------------------------------------------------------
 
-    /// The flavour's event port: an epoll instance or a kqueue, and the
+    /// The flavour's event queue: an epoll instance or a kqueue, and the
     /// descriptor onto it.
-    let private withPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+    let private withEventQueue (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux ->
             match UnixPoll.epollCreate1 0 system with
@@ -474,7 +474,7 @@ module TestNonBlocking =
             ]
 
         for platform, expected in rows do
-            let portFd, system = withPort (systemOn platform)
+            let portFd, system = withEventQueue (systemOn platform)
 
             for value in [ true ; false ; true ] do
                 let answer, after = setOrFail portFd value system

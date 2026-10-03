@@ -43,28 +43,28 @@ module TestSocketTable =
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | Ok (SyscallAnswer.Completed _, system) -> Ok system
 
-    /// `SocketEventPort.drain` against a kernel, with the claim its two readers
+    /// `EpollReadyList.drain` against a kernel, with the claim its two readers
     /// exist to satisfy checked on every call: the predicate a parked waiter is
     /// polled against and the drain its woken handler performs read the same
     /// annotated walk, so a drain reports something exactly when the predicate
     /// said it would.
-    let private deliverSocketEvents
+    let private deliverEpollEvents
         (portId : OpenFileDescriptionId)
         (maxCount : int)
         (kernel : UnixSystem<int, string>)
         : (uint64 * uint32) list * UnixSystem<int, string>
         =
-        let predicted = SocketEventPort.hasDeliverableEvent portId kernel
-        let delivered, system = SocketEventPort.drain portId maxCount kernel
+        let predicted = EpollReadyList.hasDeliverableEvent portId kernel
+        let delivered, system = EpollReadyList.drain portId maxCount kernel
 
         if List.isEmpty delivered = predicted then
             failwith
-                $"SocketEventPort.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
+                $"EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
 
         delivered, system
 
-    let private hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
-        SocketEventPort.hasDeliverableEvent portId kernel
+    let private hasDeliverableEpollEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
+        EpollReadyList.hasDeliverableEvent portId kernel
 
     let private linuxReadiness (targetId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : uint32 =
         LinuxReadiness.ofDescription targetId kernel
@@ -1086,26 +1086,25 @@ module TestSocketTable =
             { kernel with
                 Machine =
                     { kernel.Machine with
-                        NextSocketEventRegistrationOrdinal = 1L
+                        NextEventRegistrationOrdinal = 1L
                     }
             }
 
-        hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        hasDeliverableEpollEvents (OpenFileDescriptionId 50L) kernel
         |> shouldEqual false
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
 
         outcome |> shouldEqual ConnectOutcome.Completed
 
-        hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
-        |> shouldEqual true
+        hasDeliverableEpollEvents (OpenFileDescriptionId 50L) kernel |> shouldEqual true
 
-        let delivered, kernel = deliverSocketEvents (OpenFileDescriptionId 50L) 8 kernel
+        let delivered, kernel = deliverEpollEvents (OpenFileDescriptionId 50L) 8 kernel
 
         delivered |> shouldEqual [ 0xBEEFUL, EpollEvents.In ]
 
         // Consumed: nothing further until the next edge.
-        hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        hasDeliverableEpollEvents (OpenFileDescriptionId 50L) kernel
         |> shouldEqual false
 
     [<Test>]
