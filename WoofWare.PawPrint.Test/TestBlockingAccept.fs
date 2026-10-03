@@ -113,8 +113,8 @@ static class Sys
         | other -> failwith $"expected the guest to exit, got %O{other}"
 
     /// Accepts through a `dup` of the listener, and nothing ever connects. The listener is fd 3
-    /// on description 3, the dup fd 4 on the same description: a park that recorded the
-    /// descriptor would say 4.
+    /// on description 3, the dup fd 4 on the same description, so the park records description
+    /// 3 entered through descriptor 4.
     let private neverConnectedSource : string =
         """
 using System;
@@ -180,7 +180,8 @@ class NeverConnected
 
     let private deadlock = lazy (runToDeadlock ())
 
-    /// The park names the listener's open file description, the destination the call was entered
+    /// The park names the listener's open file description and the descriptor the call was made
+    /// through, the destination the call was entered
     /// with, and the length the shim copied out of the guest's cell; the thread keeps the native
     /// frame, with nothing pushed on it, so that a wake re-enters the handler.
     [<Test>]
@@ -201,7 +202,7 @@ class NeverConnected
             Some (
                 ParkedSyscall.Accept
                     {
-                        Listener = SleepTarget.Waiting (OpenFileDescriptionId 3L, 3)
+                        Listener = SleepTarget.Waiting (OpenFileDescriptionId 3L, 4)
                         Destination = UserBuffer.Mapped
                         DeclaredLength = 16u
                     }
