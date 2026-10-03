@@ -94,18 +94,13 @@ type BindAnswer =
 type BindRefusal =
     /// The screens every sockaddr-taking call shares had no answer.
     | Copy of SockaddrCopyRefusal
-    /// The caller asked to bind a broadcast or multicast address.
+    /// The caller asked to bind a broadcast or multicast address, and the bind
+    /// would succeed.
     ///
-    /// Refused rather than answered, and refused *late*: a fault this platform
-    /// ranks ahead of the address is one this kernel does know the answer to,
-    /// and reporting it is better than refusing. Only when the address itself is
-    /// what the platform would rule on does the gap bite.
-    ///
-    /// Multicast is not modelled -- there is no group membership and no
-    /// interface to receive on -- and the real rule is not one rule: measured,
-    /// Linux takes such an address on a stream socket, Darwin answers
-    /// `EAFNOSUPPORT` there, and Darwin's answer depends on the socket's kind
-    /// besides.
+    /// Refused rather than recorded: this library models no group membership
+    /// and no interface to receive or broadcast on, so nothing downstream could
+    /// honour the binding. Every bind of such an address that fails is answered
+    /// with its measured errno; see `SimulatedUnixPlatform.bindGroupAddressRule`.
     | UnmodelledMulticast of socket : SocketId * address : uint32
     /// The bind asked for any free port and every port in the ephemeral range is
     /// taken.
@@ -122,7 +117,7 @@ module BindRefusal =
         match refusal with
         | BindRefusal.Copy refusal -> SockaddrCopyRefusal.describe refusal
         | BindRefusal.UnmodelledMulticast (socket, address) ->
-            $"socket %O{socket} asked to bind %s{InternetEndpoint.toString (InternetEndpoint.ofParts address 0us)}, a broadcast or multicast address. This kernel models no multicast -- there is no group membership and no interface to receive on -- and the real rule is not one rule: measured, Linux takes such an address on a stream socket, Darwin answers EAFNOSUPPORT there, and Darwin's answer depends on the socket's kind besides. Model multicast before binding one."
+            $"socket %O{socket} asked to bind %s{InternetEndpoint.toString (InternetEndpoint.ofParts address 0us)}, a broadcast or multicast address, and the bind would succeed. This kernel models no group membership and no interface to receive or broadcast on, so nothing could honour such a binding. Model multicast and broadcast before binding either."
         | BindRefusal.EphemeralPortsExhausted (low, high) ->
             $"every port in the ephemeral range %d{low}-%d{high} is taken, so this bind of port 0 has no answer. A real kernel reports EADDRINUSE, but that has not been measured under this allocator and inventing it would be a guess. Widen the range, or measure the real answer."
 
@@ -1038,23 +1033,45 @@ module UnixSocket =
                 declaredLength
             <> BindLengthVerdict.Accepted
 
+        // Darwin's stream bind rules out a broadcast or multicast address with
+        // the family (`SimulatedUnixPlatform.bindGroupAddressRule`), reading
+        // `sin_addr` with every byte past the copy as zero.
+        let groupAddressRejectedWithTheFamily =
+            SimulatedUnixPlatform.bindGroupAddressRule platform socket.Kind copied.ZeroFilledAddress = Some
+                BindGroupAddressRule.RejectedWithTheFamily
+
         let familyFault =
             match family with
             // Unreadable: no family to disagree with, and the length fault fires
             // instead.
             | None -> false
-            | Some family when family = SimulatedUnixPlatform.internetAddressFamily -> false
+            | Some family when family = SimulatedUnixPlatform.internetAddressFamily ->
+                // Measured (`sockaddr-bind-ladder.c`, M): at every length the
+                // copy takes from 5, so before the length is judged.
+                groupAddressRejectedWithTheFamily
             | Some 0 ->
                 // AF_UNSPEC is two different rules. Linux accepts the blob only
                 // when the address is all-zero, and answers EAFNOSUPPORT
                 // otherwise; Darwin reads the address and port out of it and
-                // binds them, exactly as for AF_INET. Both measured.
+                // binds them, exactly as for AF_INET, except that it judges a
+                // group address only once the length has passed. All measured
+                // (`sockaddr-bind-ladder.c`, M and Z).
                 match SimulatedUnixPlatform.flavour platform with
-                | SimulatedUnixFlavour.Darwin -> false
+                | SimulatedUnixFlavour.Darwin -> groupAddressRejectedWithTheFamily && not lengthFault
                 | SimulatedUnixFlavour.Linux ->
                     match endpoint with
                     | Some endpoint -> endpoint.Address <> InternetEndpoint.WildcardAddress
                     | None -> false
+            // Darwin's datagram bind takes `AF_INET6`'s number on an IPv4
+            // socket and reads the blob as a `sockaddr_in`, at every length and
+            // in every state (`sockaddr-bind-ladder.c`, G, S and Z); its stream
+            // bind and Linux's answer EAFNOSUPPORT.
+            | Some family when
+                family = SimulatedUnixPlatform.internetV6AddressFamily platform
+                && SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Darwin
+                && socket.Kind = SocketKind.Datagram
+                ->
+                false
             | Some _ -> true
 
         let candidate =
@@ -1076,6 +1093,7 @@ module UnixSocket =
             | Some endpoint ->
                 SimulatedUnixPlatform.bindAddressFaults
                     platform
+                    socket.Kind
                     system.Machine.LocalAddresses
                     system.Machine.LocalRoutes
                     endpoint.Address
@@ -1118,9 +1136,9 @@ module UnixSocket =
             |> Set.ofList
 
         match SimulatedUnixPlatform.firstBindFault platform faults, endpoint with
-        | Some BindFault.AddressNotLocal, Some endpoint when
-            SimulatedUnixPlatform.isBroadcastOrMulticast endpoint.Address
-            ->
+        // A group address the platform would bind: refused at the point the bind
+        // would succeed, since every failure before it has a measured answer.
+        | None, Some endpoint when SimulatedUnixPlatform.isBroadcastOrMulticast endpoint.Address ->
             Error (BindRefusal.UnmodelledMulticast (socketId, endpoint.Address))
         | fault, _ ->
 
