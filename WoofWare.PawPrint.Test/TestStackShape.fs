@@ -698,7 +698,7 @@ module TestStackShape =
 
         let body, at = layOutWithBranches regions ops [ 0, 2 ]
 
-        StackShape.reachable body
+        StackFlow.reachable body
         |> shouldEqual (Set.ofList [ at.[0] ; at.[2] ; at.[3] ; at.[4] ])
 
         // The dead call has no token shape, and no one asks for it.
@@ -2181,6 +2181,57 @@ module TestStackShape =
         callRefusals |> shouldBeGreaterThan 0
         argumentRefusals |> shouldBeGreaterThan 0
         comparedPromotions |> shouldBeGreaterThan 0
+
+    [<Test>]
+    let ``a lattice whose widening converts nothing types the joins a folded branch reaches`` () : unit =
+        let mutable refusedThenTyped = 0
+
+        let property (statements : Statement list) : unit =
+            let body, _, tokens = layOutStatements Set.empty statements
+
+            let inputs =
+                { inputs [ other ] [ other ] false with
+                    Tokens = tokens
+                }
+
+            let refusing = StackShape.analyse inputs body
+
+            let lenient =
+                StackFlow.analyse
+                    { StackShape.lattice inputs with
+                        WideningConverts = false
+                    }
+                    (StackShape.effectInputs inputs)
+                    body
+
+            lenient.Invalid
+            |> Map.iter (fun offset error ->
+                match error with
+                | StackShapeError.WidthDependsOnFoldedBranch _ ->
+                    failwith $"a lattice whose widening converts nothing refused the join at offset %d{offset}"
+                | _ -> ()
+            )
+
+            // A refusal only takes typing away: whatever the refusing analysis types, the lenient
+            // one types alike, and widens alike.
+            for KeyValue (offset, entry) in refusing.Entry do
+                lenient.Entry.[offset] |> shouldEqual entry
+
+                Map.tryFind offset lenient.Widened
+                |> shouldEqual (Map.tryFind offset refusing.Promotions)
+
+            // And each refused join is one the lenient analysis types, widened.
+            for KeyValue (offset, error) in refusing.Invalid do
+                match error with
+                | StackShapeError.WidthDependsOnFoldedBranch _ ->
+                    lenient.Entry.ContainsKey offset |> shouldEqual true
+                    lenient.Widened.ContainsKey offset |> shouldEqual true
+                    refusedThenTyped <- refusedThenTyped + 1
+                | _ -> ()
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen genStatements) property)
+
+        refusedThenTyped |> shouldBeGreaterThan 0
 
     // ---------- The interpreter's refusal of a float32 entering an untyped block ----------
 
