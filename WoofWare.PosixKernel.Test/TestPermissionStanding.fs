@@ -528,6 +528,8 @@ module TestPermissionStanding =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials context credentials
+            |> UnixBootImage.boot
 
         { system with
             Machine =
@@ -539,7 +541,6 @@ module TestPermissionStanding =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
-        |> UnixSystem.withCredentials context credentials
 
     let private path (p : string) : UnixPath = UnixPath.parseOrFail context p
 
@@ -1074,7 +1075,7 @@ module TestPermissionStanding =
         let changes : (string * (int -> UnixSystem<int, string> -> UnixSystem<int, string>)) list =
             [
                 "write", (fun fd system -> WriteOutcomes.write fd one system |> ok |> snd)
-                "pwrite", (fun fd system -> UnixReadWrite.pwrite fd one 0L system |> ok |> snd)
+                "pwrite", (fun fd system -> UnixReadWrite.pwrite 0 fd one 0L system |> ok |> snd)
                 "ftruncate", (fun fd system -> UnixDescriptor.ftruncate fd 0L system |> ok |> snd)
             ]
 
@@ -1128,7 +1129,7 @@ module TestPermissionStanding =
         | Error refusal -> refusal |> shouldEqual (WriteRefusal.UnmeasuredSetIdChange (inode, written))
         | Ok (answer, _) -> failwith $"write answered %A{answer}"
 
-        match UnixReadWrite.pwrite fd one 0L opened with
+        match UnixReadWrite.pwrite 0 fd one 0L opened with
         | Error refusal -> refusal |> shouldEqual (PWriteRefusal.UnmeasuredSetIdChange (inode, written))
         | Ok (answer, _) -> failwith $"pwrite answered %A{answer}"
 
@@ -1365,7 +1366,7 @@ module TestPermissionStanding =
 
                 [
                     WriteOutcomes.write fd one opened |> refused
-                    UnixReadWrite.pwrite fd one 0L opened |> refused
+                    UnixReadWrite.pwrite 0 fd one 0L opened |> refused
                     UnixDescriptor.ftruncate fd 0L opened |> refused
                     UnixDescriptor.ftruncate fd 4L opened |> refused
                 ]

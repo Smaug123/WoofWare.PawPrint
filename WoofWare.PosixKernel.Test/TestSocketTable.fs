@@ -33,6 +33,7 @@ module TestSocketTable =
 
     let private initialSystem : UnixSystem<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
     /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
     /// guest; an errno comes back, because that is an answer.
@@ -72,6 +73,7 @@ module TestSocketTable =
     /// for a descriptor table built wholly by hand.
     let private unlaunchedSystem : UnixSystem<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
+        |> UnixBootImage.boot
 
     /// A kernel whose socket table and descriptor table are built by hand, so
     /// that `checkInvariants` has something unsound to reject. Every operation
@@ -611,6 +613,7 @@ module TestSocketTable =
                                 {
                                     Backlog = 8
                                     Queue = queue
+                                    Drained = false
                                 }
                     }
                 ]
@@ -764,6 +767,7 @@ module TestSocketTable =
                                 {
                                     Backlog = backlog
                                     Queue = []
+                                    Drained = false
                                 }
                     }
                 for i in 1..clients -> int64 i, someSocket
@@ -1071,6 +1075,7 @@ module TestSocketTable =
                                 {
                                     Backlog = 8
                                     Queue = []
+                                    Drained = false
                                 }
                     }
                     1L, someSocket
@@ -1334,6 +1339,7 @@ module TestSocketTable =
                                 {
                                     Backlog = 8
                                     Queue = [ ConnectionId 5L ]
+                                    Drained = false
                                 }
                     }
                 ]
@@ -1415,6 +1421,7 @@ module TestSocketTable =
                                 {
                                     Backlog = 8
                                     Queue = [ ConnectionId 0L ; ConnectionId 0L ]
+                                    Drained = false
                                 }
                     }
                 ]

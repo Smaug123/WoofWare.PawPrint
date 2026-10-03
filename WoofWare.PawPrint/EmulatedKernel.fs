@@ -551,17 +551,14 @@ type CopyFileRangeSupport =
 /// shaped emulation) without disturbing the rest of the state model.
 type EmulatedKernel =
     {
-        /// See `UnixProcessState`.
+        /// The POSIX process this kernel runs, and the machine it runs on: see
+        /// `UnixSystem`. Its one task to begin with is the thread `Main` runs
+        /// on, `ThreadId 0`.
         ///
         /// Never read field by field: PawPrint is a client of the kernel, and
         /// learns what it holds through the syscalls and the queries
-        /// `UnixProcessState` provides, as the members below do.
-        Process : UnixProcessState<ThreadId, NativeSignalHandler>
-        /// The POSIX machine this process is running on: see `UnixMachineState`.
-        ///
-        /// Never read field by field, for the reason `Process` gives; the
-        /// queries are `UnixMachineState`'s.
-        Machine : UnixMachineState
+        /// `UnixSystem` provides, as the members below do.
+        System : UnixSystem<ThreadId, NativeSignalHandler>
         /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
         /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
         /// `SetLastError = true` P/Invoke's stub copies the system error here once the
@@ -597,46 +594,20 @@ type EmulatedKernel =
         /// frame and is reclaimed at frame exit), native-heap blocks outlive
         /// the frames that allocate them.
         NativeMemoryPool : NativeMemoryPool
-        /// State of the C library's own non-cryptographic generator, which
-        /// `SystemNative_GetNonCryptographicallySecureRandomBytes` draws from.
-        /// Userspace state rather than kernel state: CoreCLR's shim answers that
-        /// entry point with `arc4random_buf` where libc has it, a generator
-        /// private to the process, so the stream is not the kernel's entropy
-        /// pool in `Machine`. It is splitmix64, advanced by
-        /// `NonCryptoRandom.drawBytes` and seeded from
-        /// `NonCryptoRandom.initialState`.
-        ///
-        /// A seeded generator rather than a constant because CoreLib's consumers
-        /// need real-looking bytes: `new Random()` retries until its seed is
-        /// non-zero, so an all-zero answer would hang at construction.
-        ///
-        /// A separate stream from the kernel pool, which is what backs
-        /// `Guid.NewGuid`, so that a guest's `new Random()`, `HashCode` seed or
-        /// Marvin seed never shifts the GUIDs a recorded run observed. That is
-        /// why the shim's other path is not modelled: where libc lacks
-        /// `arc4random_buf` it XORs `lrand48` over bytes read from the kernel,
-        /// which here would mean drawing from the pool. Seeded distinctly from
-        /// the pool too, so a fresh process's two streams do not start with the
-        /// same bytes.
-        NonCryptoRandomState : uint64
+        /// What the process's C runtime keeps for random bytes, which the
+        /// two `SystemNative_Get*RandomBytes` entry points draw on: see
+        /// `ProcessRandom`. Userspace state rather than kernel state, like
+        /// `PosixSignalShim`; what it reads from, a descriptor or
+        /// `getentropy(2)`, is the kernel's.
+        ProcessRandom : ProcessRandom
         /// System.Native's own signal state: see `PosixSignalShim`. Userspace
-        /// state rather than kernel state, like `NonCryptoRandomState`: the
-        /// shim keeps it in its own globals, and no syscall reports it.
+        /// state rather than kernel state, like `ProcessRandom`: the shim keeps
+        /// it in its own globals, and no syscall reports it.
         PosixSignalShim : PosixSignalShim
         /// System.Native's cached answer to whether it may use
         /// `copy_file_range(2)`: see `CopyFileRangeSupport`. Userspace state,
         /// like `PosixSignalShim`.
         CopyFileRangeSupport : CopyFileRangeSupport
-        /// Every task the kernel knows about, by the thread that is it.
-        ///
-        /// Exactly the live threads: `checkTaskInvariants` reports a thread with
-        /// no task or a task with no thread. An absent key is therefore a bug
-        /// rather than a default, which is what lets `UnixTaskState` be total.
-        Tasks : Map<ThreadId, UnixTaskState>
-        /// The process's first task, which `create` makes: always `ThreadId 0`,
-        /// the thread `IlMachineState.addThread` runs `Main` on. See
-        /// `UnixSystem.Leader`.
-        Leader : ThreadId
         /// Registry of `System.Threading.LowLevelMonitor` instances minted by
         /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
         /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
@@ -761,22 +732,31 @@ type EmulatedKernel =
     /// write, in the order it wrote them: the kernel's deliveries to the pipes
     /// PawPrint drains, labelled by stream.
     member this.OutputLog : ImmutableArray<OutputLogEntry> =
-        StandardStreams.outputLog (UnixMachineState.delivered this.Machine)
+        StandardStreams.outputLog (UnixSystem.delivered this.System)
+
+    /// Every task the kernel knows about, by the thread that is it.
+    ///
+    /// Exactly the live threads: `checkTaskInvariants` reports a thread with
+    /// no task or a task with no thread. An absent key is therefore a bug
+    /// rather than a default, which is what lets `UnixTaskState` be total.
+    member this.Tasks : Map<ThreadId, UnixTaskState> = UnixSystem.tasks this.System
+
+    /// The process's first task: always `ThreadId 0`, the thread
+    /// `IlMachineState.addThread` runs `Main` on. See `UnixSystem.leader`.
+    member this.Leader : ThreadId = UnixSystem.leader this.System
 
 
     /// The environment the simulated process was started with: see
     /// `UnixProcessState.Environment`.
-    member this.Environment : UnixByteString list =
-        UnixProcessState.environment this.Process
+    member this.Environment : UnixByteString list = UnixSystem.environment this.System
 
     /// The path of the executable that started the simulated process: see
     /// `UnixProcessState.ProcessPath`.
-    member this.ProcessPath : AbsoluteUnixPath option =
-        UnixProcessState.processPath this.Process
+    member this.ProcessPath : AbsoluteUnixPath option = UnixSystem.processPath this.System
 
     /// The simulated process's signal state, which `SignalState`'s queries read.
     member this.Signals : SignalState<ThreadId, NativeSignalHandler> =
-        UnixProcessState.signals this.Process
+        UnixSystem.signals this.System
 
     /// The virtual clock in 100 ns ticks (`ClockPal.nanosecondsPerTick`): the
     /// machine's uptime, which PawPrint only ever advances by whole ticks, so
@@ -800,7 +780,7 @@ type EmulatedKernel =
     /// matching jump in `StepCounter` (which would skew the spurious-wakeup
     /// schedule).
     member this.VirtualClockTicks : int64 =
-        let nanoseconds = UnixMachineState.nanosecondsSinceBoot this.Machine
+        let nanoseconds = UnixSystem.nanosecondsSinceBoot this.System
 
         if nanoseconds % ClockPal.nanosecondsPerTick <> 0L then
             failwith
@@ -811,11 +791,10 @@ type EmulatedKernel =
     /// The number of logical processors the machine reports: see
     /// `UnixMachineState.ProcessorCount`, and `EmulatedKernel.effectiveProcessorCount`
     /// for the number the guest observes.
-    member this.ProcessorCount : int = UnixMachineState.processorCount this.Machine
+    member this.ProcessorCount : int = UnixSystem.processorCount this.System
 
     /// The platform the simulated process runs on, fixed when the kernel was made.
-    member this.UnixPlatform : SimulatedUnixPlatform =
-        UnixMachineState.platform this.Machine
+    member this.UnixPlatform : SimulatedUnixPlatform = UnixSystem.platform this.System
 
 /// A way this kernel's own tables disagree with the POSIX system underneath
 /// them — a state no kernel could be in, and which `EmulatedKernel` exists to
@@ -862,53 +841,30 @@ type EmulatedKernelDefect =
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
 
-    /// Apply an operation to the POSIX machine this process runs on. Those
-    /// operations live in `UnixMachineState`, which takes that machine rather
-    /// than the kernel.
-    let mapMachine (f : UnixMachineState -> UnixMachineState) (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Machine = f kernel.Machine
-        }
-
-    /// This kernel's POSIX half, as `UnixSystem.step` and its per-syscall
-    /// siblings want it. Allocates: `EmulatedKernel` stores the three parts
-    /// flat, and this assembles a view of them.
-    let unix (kernel : EmulatedKernel) : UnixSystem<ThreadId, NativeSignalHandler> =
-        {
-            Machine = kernel.Machine
-            Process = kernel.Process
-            Tasks = kernel.Tasks
-            Leader = kernel.Leader
-        }
-
     /// The path of the directory the simulated process is standing in, as
     /// `SystemNative_GetCwd` reports it — or `None` if no path reaches it, which
     /// is the state a process is left in when its directory is removed out from
     /// under it. See `UnixPathResolution.currentDirectoryPath`.
     let currentDirectoryPath (kernel : EmulatedKernel) : AbsoluteUnixPath option =
-        UnixPathResolution.currentDirectoryPath (unix kernel)
+        UnixPathResolution.currentDirectoryPath kernel.System
 
-    /// Put back a POSIX half a syscall answered from. Total in both directions
-    /// with `unix`, which `TestUnixSystemProjection` asserts: a syscall's answer
+    /// Put back the POSIX system a syscall answered from: a syscall's answer
     /// is lost if a caller forgets this, and gained twice if a caller writes
     /// back a system it did not step.
     let withUnix (system : UnixSystem<ThreadId, NativeSignalHandler>) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            Machine = system.Machine
-            Process = system.Process
-            Tasks = system.Tasks
-            Leader = system.Leader
+            System = system
         }
 
-    /// Apply an operation that spans this kernel's whole POSIX half. Those
-    /// operations live in `UnixSystem`, which takes the three parts as one
-    /// record rather than the kernel.
+    /// Apply an operation to this kernel's POSIX system. Those operations live
+    /// in `UnixSystem` and the syscall families, which take the system rather
+    /// than the kernel.
     let mapUnix
         (f : UnixSystem<ThreadId, NativeSignalHandler> -> UnixSystem<ThreadId, NativeSignalHandler>)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
-        withUnix (f (unix kernel)) kernel
+        withUnix (f kernel.System) kernel
 
     /// Environment entries every simulated process starts with, ahead of
     /// whatever the host configures; see `withEnvironment` for how the two
@@ -1021,59 +977,84 @@ module EmulatedKernel =
 
 
 
-    /// A freshly-minted simulated process on a machine of the given platform,
-    /// as PawPrint starts one, with its standard streams launched as
-    /// `standardStreams` says (see `StandardStreams.launch`), and started as
-    /// though its launcher had left `inheritedIgnores` ignored (read under the
-    /// platform's numbering), as `nohup` leaves SIGHUP. The platform, the launch
-    /// and the inherited ignores are fixed here for the kernel's life: every
-    /// field derived from the platform is derived once, by this constructor and
-    /// the setters that read it back, and a process's inherited ignores are
-    /// fixed before any of its own code runs.
+    /// The boot image of a simulated process on a machine of the given
+    /// platform, as PawPrint starts one: its standard streams launched as
+    /// `standardStreams` says (see `StandardStreams.launch`), its one task the
+    /// thread `Main` will run on, `ThreadId 0`, on processor 0, and the
+    /// environment `defaultEnvironment`. Configure it with the setters in
+    /// `UnixBootImage` and the ones here that take an image, then `boot` it.
     ///
-    /// Its one task is the thread `Main` will run on, `ThreadId 0`, on processor 0:
     /// `IlMachineState.addThread` gives that thread its first frame, and every
     /// other thread is created by a running one.
     ///
-    /// The POSIX half is `UnixSystem.initial`'s, entropy pool included; what is
-    /// added here is the CoreCLR-shaped state no POSIX kernel has, the signal
-    /// dispositions a CoreCLR process has installed by Main
-    /// (`StartupSignalDispositions.install`, which says which inherited ignores
-    /// the runtime keeps, which it replaces, and which it refuses; `context`
-    /// prefixes that refusal), and the environment, which PawPrint pins
-    /// rather than inherits. The environment is
-    /// stated rather than left to the library because it is part of PawPrint's
-    /// replay contract: a change to the library's default must not silently
-    /// change what a recorded trace observes. The entropy pool's seed,
-    /// `UnixSystem.defaultEntropySeed`, is part of the same contract, and
-    /// PawPrint's tests pin it rather than a second copy of the value.
-    let createInheritingSignalIgnores
-        (context : string)
-        (inheritedIgnores : Set<Signal>)
+    /// The environment is stated rather than left to the library because it is
+    /// part of PawPrint's replay contract: a change to the library's default
+    /// must not silently change what a recorded trace observes. The entropy
+    /// pool's seed, `UnixSystem.defaultEntropySeed`, is part of the same
+    /// contract, and PawPrint's tests pin it rather than a second copy of the
+    /// value.
+    let image
         (platform : SimulatedUnixPlatform)
         (standardStreams : StandardStreamsConfig)
-        : EmulatedKernel
+        : UnixBootImage<ThreadId, NativeSignalHandler>
         =
         // Processor 0 is where the CPU rotation puts the first thread it places
         // (`cpuForRotation 0`), which is this one.
-        let system : UnixSystem<ThreadId, NativeSignalHandler> =
-            UnixSystem.initial platform (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0)
+        UnixSystem.initial platform (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0)
+        |> UnixBootImage.withEnvironment
+            "EmulatedKernel.defaultEnvironment"
+            (encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment)
+
+    /// Boot `image` as PawPrint starts a process, as though its launcher had
+    /// left `inheritedIgnores` ignored (read under the platform's numbering),
+    /// as `nohup` leaves SIGHUP. A process's inherited ignores are fixed
+    /// before any of its own code runs.
+    ///
+    /// What is added to the POSIX half here is what a CoreCLR process has done
+    /// by the time `Main` runs: the signal dispositions it has installed
+    /// (`StartupSignalDispositions.install`, which says which inherited ignores
+    /// the runtime keeps, which it replaces, and which it refuses; `context`
+    /// prefixes that refusal), and its C runtime's random-number state.
+    let bootInheritingSignalIgnores
+        (context : string)
+        (inheritedIgnores : Set<Signal>)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : EmulatedKernel
+        =
+        let system = UnixBootImage.boot image
+        let platform = UnixSystem.platform system
+
+        let system =
+            system
             |> StartupSignalDispositions.install
                 context
                 (SimulatedUnixPlatform.signalNumbering platform)
                 inheritedIgnores
+
+        // What the C runtime has before `main`. Darwin's `libSystem_initializer`
+        // seeds its generator with one `getentropy(32)` (measured, by
+        // interposing `getentropy` in a process that asked for no random
+        // bytes); Linux's minipal opens nothing until it is first asked.
+        let processRandom, system =
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> ProcessRandom.Minipal (MinipalUrandom.Unopened, None), system
+            | SimulatedUnixFlavour.Darwin ->
+                match UnixEntropy.getEntropy UserBuffer.Mapped 32UL system with
+                | Ok (GetEntropyAnswer.Completed draw, system) ->
+                    ProcessRandom.LibSystem (LibSystemRandom.ofSeed (EntropyDraw.bytes draw)), system
+                | other ->
+                    failwith
+                        $"%s{context}: libSystem's getentropy(32) into storage it owns did not answer 32 bytes: %A{other} (this is a bug in the kernel library)."
 
         {
             InstructionCostTicks = defaultInstructionCostTicks
             LastPInvokeError = Map.empty
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
-            NonCryptoRandomState = NonCryptoRandom.initialState
+            ProcessRandom = processRandom
             PosixSignalShim = PosixSignalShim.initial
             CopyFileRangeSupport = CopyFileRangeSupport.Unprobed
             DirectoryStreamFds = Map.empty
-            Tasks = system.Tasks
-            Leader = system.Leader
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -1084,21 +1065,19 @@ module EmulatedKernel =
             ClockJitter = ClockJitterStrategy.Disabled
             StepCounter = 0L
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
-            Machine = system.Machine
-            Process =
-                system.Process
-                |> UnixProcessState.withEnvironment
-                    "EmulatedKernel.defaultEnvironment"
-                    (encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment)
+            System = system
         }
 
-    /// `createInheritingSignalIgnores` for a process whose launcher left no
+    /// `bootInheritingSignalIgnores` for a process whose launcher left no
     /// signal ignored.
+    let boot (image : UnixBootImage<ThreadId, NativeSignalHandler>) : EmulatedKernel =
+        bootInheritingSignalIgnores "EmulatedKernel.boot" Set.empty image
+
+    /// A process booted from `image` on `platform`, configured no further.
     let create (platform : SimulatedUnixPlatform) (standardStreams : StandardStreamsConfig) : EmulatedKernel =
-        createInheritingSignalIgnores "EmulatedKernel.create" Set.empty platform standardStreams
+        image platform standardStreams |> boot
 
-
-    /// `create` on `UnixSystem.defaultUnixPlatform`, the platform a host that
+    /// `image` on `UnixSystem.defaultUnixPlatform`, the platform a host that
     /// configures nothing gets, with its standard streams
     /// `StandardStreamsConfig.piped`.
     ///
@@ -1107,19 +1086,11 @@ module EmulatedKernel =
     /// through `SystemNative_GetUnixRelease` (the macOS CoreLib uses
     /// `Interop.libobjc.GetOperatingSystemVersion` instead), and it is what
     /// PawPrint's CI runs on.
-    let initial : EmulatedKernel =
-        create UnixSystem.defaultUnixPlatform StandardStreamsConfig.piped
+    let initialImage : UnixBootImage<ThreadId, NativeSignalHandler> =
+        image UnixSystem.defaultUnixPlatform StandardStreamsConfig.piped
 
-    /// Apply an operation to the simulated process's own state. Those operations
-    /// live in `UnixProcessState`, which takes that state rather than the kernel.
-    let mapProcess
-        (f : UnixProcessState<ThreadId, NativeSignalHandler> -> UnixProcessState<ThreadId, NativeSignalHandler>)
-        (kernel : EmulatedKernel)
-        : EmulatedKernel
-        =
-        { kernel with
-            Process = f kernel.Process
-        }
+    /// `initialImage`, booted.
+    let initial : EmulatedKernel = boot initialImage
 
     /// Set the environment the simulated process was started with: every
     /// `defaultEnvironment` entry whose name no entry of `entries` supplies, in
@@ -1137,7 +1108,12 @@ module EmulatedKernel =
     /// from. Rejecting rather than dropping, because a variable that silently
     /// failed to arrive would show up as the guest taking a different branch much
     /// later.
-    let withEnvironment (context : string) (entries : string list) (kernel : EmulatedKernel) : EmulatedKernel =
+    let withEnvironment
+        (context : string)
+        (entries : string list)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
         let entries = encodeEnvironment context entries
         let supplied = entries |> List.map EnvironmentPal.entryName |> Set.ofList
 
@@ -1145,11 +1121,11 @@ module EmulatedKernel =
             encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment
             |> List.filter (fun entry -> not (Set.contains (EnvironmentPal.entryName entry) supplied))
 
-        mapProcess (UnixProcessState.withEnvironment context (defaults @ entries)) kernel
+        UnixBootImage.withEnvironment context (defaults @ entries) image
 
     /// Set the filesystem the guest sees, and the directory the simulated
     /// process starts in, together: see
-    /// `UnixSystem.withFileSystemAndCurrentDirectory`, which does the work and
+    /// `UnixBootImage.withFileSystemAndCurrentDirectory`, which does the work and
     /// which says why the two are one operation.
     ///
     /// Crashes rather than answering when the directory is not one a process
@@ -1165,8 +1141,8 @@ module EmulatedKernel =
         (owner : InodeOwner)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
-        (kernel : EmulatedKernel)
-        : EmulatedKernel
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
         =
         // Named for this kernel's own knob before the library sees it, so a
         // host that forged one is told which field it set rather than which
@@ -1176,11 +1152,8 @@ module EmulatedKernel =
 
         let described = AbsoluteUnixPath.toEscaped directory
 
-        match
-            unix kernel
-            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt owner seed directory
-        with
-        | Ok system -> withUnix system kernel
+        match UnixBootImage.withFileSystemAndCurrentDirectory createdAt owner seed directory image with
+        | Ok image -> image
         | Error (CurrentDirectoryFault.DoesNotResolve error) ->
             failwith
                 $"EmulatedKernel.CurrentDirectory: \"%s{described}\" does not resolve in KernelConfig.FileSystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
@@ -1242,7 +1215,11 @@ module EmulatedKernel =
     /// epoch. Rejects a value outside `[0, ClockPal.maxWallClockEpochMs]` at the
     /// boundary, rather than letting it reach a guest that would receive a silently
     /// corrupt `DateTime` from `DateTime.UtcNow`'s unvalidated ctor.
-    let withWallClockEpochMs (epochMs : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+    let withWallClockEpochMs
+        (epochMs : int64)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
         if epochMs < 0L then
             failwith
                 $"WallClockEpochMs must be non-negative (PawPrint does not model a simulated process booting before the Unix epoch); got %d{epochMs}"
@@ -1251,8 +1228,7 @@ module EmulatedKernel =
             failwith
                 $"WallClockEpochMs must be at most %d{ClockPal.maxWallClockEpochMs} (9999-12-31T23:59:59.999Z, the last instant System.DateTime can represent); got %d{epochMs}"
 
-        kernel
-        |> mapMachine (UnixMachineState.withBootTime (UnixTimestamp.ofMillisecondsSinceEpoch epochMs))
+        UnixBootImage.withBootTime (UnixTimestamp.ofMillisecondsSinceEpoch epochMs) image
 
 
 
@@ -1283,13 +1259,9 @@ module EmulatedKernel =
     /// The checks `withVirtualClockTicks` and `retireStep` share: shared so that the fused
     /// per-instruction advance cannot drift from the general setter's contract.
     let validateVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : unit =
-        // Checked independently of the monotonicity comparison below, which on its own would
-        // wave through a negative target whenever the current value is more negative still —
-        // reachable because a machine assembled by record-copy never passed through here.
-        if ticks < 0L then
-            failwith
-                $"virtual clock would be set to %d{ticks} ticks; simulated uptime starts at zero and cannot be negative"
-
+        // The machine's uptime starts at zero and only `UnixSystem.advanceClock` moves it, which
+        // refuses to move it backwards, so a target below the current value is the only way to ask
+        // for a negative one.
         if ticks < kernel.VirtualClockTicks then
             failwith
                 $"virtual clock would move backwards, from %d{kernel.VirtualClockTicks} to %d{ticks} ticks; it is monotonic by construction and every guest-visible clock derives from it"
@@ -1316,7 +1288,7 @@ module EmulatedKernel =
         validateVirtualClockTicks ticks kernel
 
         kernel
-        |> mapMachine (UnixMachineState.advanceClock ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick))
+        |> mapUnix (UnixSystem.advanceClock ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick))
 
     /// Retire one interpreted instruction: bump `StepCounter` by one and charge
     /// `InstructionCostTicks` of virtual time, subject to exactly the checks `withVirtualClockTicks`
@@ -1339,10 +1311,8 @@ module EmulatedKernel =
 
         { kernel with
             StepCounter = kernel.StepCounter + 1L
-            Machine =
-                UnixMachineState.advanceClock
-                    ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick)
-                    kernel.Machine
+            System =
+                UnixSystem.advanceClock ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick) kernel.System
         }
 
 
@@ -1422,17 +1392,6 @@ module EmulatedKernel =
         | Some count when count > 0 && count <= maxConfiguredProcessorCount -> count
         | _ -> kernel.ProcessorCount
 
-    /// Apply an operation to the tasks this kernel knows about. Those operations
-    /// live in `UnixTaskTable`, which takes the table rather than the kernel.
-    let mapTasks
-        (f : Map<ThreadId, UnixTaskState> -> Map<ThreadId, UnixTaskState>)
-        (kernel : EmulatedKernel)
-        : EmulatedKernel
-        =
-        { kernel with
-            Tasks = f kernel.Tasks
-        }
-
     /// The system error (errno on Unix, `GetLastError` on Windows) `thread` would read.
     /// 0 for a thread that has had none reported to it, which is what a fresh thread sees.
     let lastSystemErrorFor (thread : ThreadId) (kernel : EmulatedKernel) : int =
@@ -1510,12 +1469,11 @@ module EmulatedKernel =
 
         let count = effectiveProcessorCount kernel
 
-        // `withProcessorCount` rejects non-positive counts and
-        // `effectiveProcessorCount` only ever returns a positive configured
-        // value or `kernel.ProcessorCount`, but a kernel built by record-copy
-        // can bypass the setter. Assert at the point of use rather than
-        // dividing by zero, mirroring what `NativeEnvironment` does before
-        // handing the count to the guest.
+        // Unreachable: `UnixBootImage.withProcessorCount` refuses a count
+        // below 1, and `effectiveProcessorCount` only ever returns a positive
+        // configured value or that count. Asserted rather than dividing by
+        // zero, mirroring what `NativeEnvironment` does before handing the
+        // count to the guest.
         if count < 1 then
             failwith
                 $"effective ProcessorCount is %d{count}, but must be at least 1 for a simulated thread to be placed on a processor"
@@ -1571,7 +1529,7 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : ConnectOutcome * EmulatedKernel
         =
-        match UnixConnection.connectSocket socketId nonBlocking declaredLength family destination (unix kernel) with
+        match UnixConnection.connectSocket socketId nonBlocking declaredLength family destination kernel.System with
         | Ok (outcome, system) -> outcome, withUnix system kernel
         | Error refusal -> failwith $"EmulatedKernel.connectSocket: %s{ConnectRefusal.describe refusal}"
 
@@ -1583,7 +1541,7 @@ module EmulatedKernel =
     /// fixtures that hold an `EmulatedKernel`: writing `unix` in and `withUnix`
     /// back out at each would be this function, copied.
     let acceptConnection (socketId : SocketId) (kernel : EmulatedKernel) : int * TcpConnection * EmulatedKernel =
-        let fd, connection, system = UnixConnection.acceptConnection socketId (unix kernel)
+        let fd, connection, system = UnixConnection.acceptConnection socketId kernel.System
         fd, connection, withUnix system kernel
 
     /// `UnixTaskLifecycle.exitThread` through this kernel: `thread` has finished,
@@ -1599,7 +1557,7 @@ module EmulatedKernel =
         // 0 is what glibc's `start_thread` passes to the thread-exit syscall once
         // the thread's start routine has returned. Only a last task's status is ever
         // read, and that is refused below.
-        match UnixTaskLifecycle.exitThread thread 0 (unix kernel) with
+        match UnixTaskLifecycle.exitThread thread 0 kernel.System with
         | Ok (TaskOutcome.Continues system) -> withUnix system kernel
         | Ok (TaskOutcome.ProcessEnded ended) ->
             failwith
@@ -1614,7 +1572,7 @@ module EmulatedKernel =
     /// latched exit code to `exit`, once `Main` has returned and the foreground
     /// threads have finished, or at once from `Environment.Exit`.
     let exitGroup (thread : ThreadId) (status : int32) (kernel : EmulatedKernel) : ProcessTermination =
-        (UnixTaskLifecycle.exitGroup thread status (unix kernel)).Termination
+        (UnixTaskLifecycle.exitGroup thread status kernel.System).Termination
 
     /// `abort(3)`, called by `thread` at the end of CoreCLR's `PROCAbort`, which is
     /// how the runtime ends a process that failed fast or let an exception escape.
@@ -1622,7 +1580,7 @@ module EmulatedKernel =
     ///
     /// Fails loudly if the process survives, or dies of anything but SIGABRT.
     let abort (thread : ThreadId) (kernel : EmulatedKernel) : ProcessTermination =
-        let system = unix kernel
+        let system = kernel.System
 
         // `PROCAbort` first restores the dispositions CoreCLR's own handlers
         // replaced (`SEHCleanupSignals`), and `abort` unblocks SIGABRT and raises
@@ -1729,7 +1687,7 @@ module EmulatedKernel =
     /// repeats neither. The latter takes a `pinned` argument, which is what
     /// `ObjectLifetime.pinnedInodes` computes, so a caller wanting the whole picture
     /// pairs this with
-    /// `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes (unix kernel))`.
+    /// `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes kernel.System)`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         let dispatcher =
             match PosixSignalShim.signalThread kernel.PosixSignalShim with
@@ -1743,7 +1701,7 @@ module EmulatedKernel =
             |> Set.toList
             |> List.map EmulatedKernelDefect.HandlerFramesBetweenInstructions
 
-        (UnixSystem.checkInvariants (unix kernel) |> List.map EmulatedKernelDefect.System)
+        (UnixSystem.checkInvariants kernel.System |> List.map EmulatedKernelDefect.System)
         @ dispatcher
         @ frames
 
@@ -1949,8 +1907,14 @@ type KernelConfig =
         EphemeralPortRange : (uint16 * uint16) option
         /// The `somaxconn` sysctl, or `None` for the flavour's measured
         /// default (4096 on Linux, 128 on Darwin): the ceiling `listen(2)`
-        /// clamps its backlog to. See `UnixMachineState.withSoMaxConn`.
+        /// clamps its backlog to. See `UnixBootImage.withSoMaxConn`.
         SoMaxConn : int option
+        /// Darwin's `net.inet.tcp.sendspace` sysctl, the send buffer a new TCP
+        /// socket starts with, or `None` for the flavour's measured default
+        /// (131072 on Darwin). A kqueue's `EVFILT_WRITE` reports the buffer's
+        /// free space. Only `None` is admitted on Linux, which reads nothing
+        /// of it. See `UnixBootImage.withTcpSendSpace`.
+        TcpSendSpace : int option
         /// Linux's `fs.protected_symlinks`, `fs.protected_regular` and
         /// `fs.protected_fifos` sysctls, which forbid following another user's
         /// symbolic link, or opening another user's file with `O_CREAT`, in a
@@ -2034,6 +1998,7 @@ type KernelConfig =
             Mount = None
             EphemeralPortRange = None
             SoMaxConn = None
+            TcpSendSpace = None
             ProtectedFiles = ProtectedFiles.off
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
@@ -2067,14 +2032,15 @@ module KernelConfig =
 
         go entries
 
-    /// The kernel a host configuration describes: a fresh kernel on the
+    /// The kernel a host configuration describes: a boot image on the
     /// configured platform, with every other field applied through its own
-    /// `EmulatedKernel` setter, so the validation those setters perform (e.g.
+    /// setter before it boots, so the validation those setters perform (e.g.
     /// rejecting a non-positive processor count) also guards the
-    /// configuration path.
+    /// configuration path. `pid_max`, which a sysctl may change on a running
+    /// machine, is written just after boot, before the process runs anything.
     ///
     /// The platform is the constructor's argument rather than a setter's,
-    /// because the fields it fixes (`SoMaxConn`'s and `Mount`'s
+    /// because the fields it fixes (`SoMaxConn`'s, `TcpSendSpace`'s and `Mount`'s
     /// defaults, the limits the current directory is admitted under) would
     /// otherwise be stale for whichever platform was set last.
     let toKernel (config : KernelConfig) : EmulatedKernel =
@@ -2096,25 +2062,17 @@ module KernelConfig =
                 (config.SupplementaryGroups
                  |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups"))
 
-        EmulatedKernel.createInheritingSignalIgnores
-            "KernelConfig.InheritedSignalIgnores"
-            config.InheritedSignalIgnores
-            platform
-            config.StandardStreams
-        |> EmulatedKernel.mapProcess (UnixProcessState.withCoreDumps config.CoreDumps)
+        EmulatedKernel.image platform config.StandardStreams
+        |> UnixBootImage.withCoreDumps config.CoreDumps
         |> EmulatedKernel.withEnvironment "KernelConfig.Environment" config.Environment
-        |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount config.ProcessorCount)
-        |> EmulatedKernel.mapMachine (fun machine ->
+        |> UnixBootImage.withProcessorCount config.ProcessorCount
+        |> fun image ->
             match config.UserAddressLimit with
-            | None -> machine
-            | Some limit -> UnixMachineState.withUserAddressLimit limit machine
-        )
-        |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
-        |> EmulatedKernel.withClockJitter config.ClockJitter
-        |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
+            | None -> image
+            | Some limit -> UnixBootImage.withUserAddressLimit limit image
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
-        |> EmulatedKernel.mapMachine (UnixMachineState.withMount config.Mount)
-        |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
+        |> UnixBootImage.withMount config.Mount
+        |> UnixBootImage.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath
         // The configured user and group, named here rather than read back off
         // the process, which only takes them below. Every entry is given its
         // owner before the seed is realised, so that the library's default
@@ -2125,36 +2083,40 @@ module KernelConfig =
              |> Option.defaultValue (InodeOwner.ofProcess credentials))
             (stateSeedOwners (InodeOwner.ofProcess credentials) config.FileSystem)
             config.CurrentDirectory
-        |> EmulatedKernel.mapUnix (UnixSystem.withCredentials "KernelConfig" credentials)
-        |> EmulatedKernel.mapMachine (
-            UnixMachineState.withEphemeralPortRange (
-                config.EphemeralPortRange
-                |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour)
-            )
+        |> UnixBootImage.withCredentials "KernelConfig" credentials
+        |> UnixBootImage.withEphemeralPortRange (
+            config.EphemeralPortRange
+            |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour)
         )
-        |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.SoMaxConn)
-        |> EmulatedKernel.mapMachine (
-            UnixMachineState.withProtectedFiles "KernelConfig.ProtectedFiles" config.ProtectedFiles
-        )
-        |> EmulatedKernel.mapMachine (UnixMachineState.withLocalAddresses config.LocalAddresses config.LocalRoutes)
-        |> EmulatedKernel.mapUnix (UnixSystem.withUmask "KernelConfig.Umask" config.Umask)
-        // The process ID before `pid_max`: the default `pid_max` is the largest
-        // Linux has, so any process ID a Linux kernel could have is admitted here,
-        // and `withPidMax` then refuses a `pid_max` at or below it.
-        |> EmulatedKernel.mapUnix (UnixSystem.withProcessId "KernelConfig.ProcessId" config.ProcessId)
-        |> EmulatedKernel.mapUnix (fun system ->
-            match config.PidMax with
-            | None -> system
-            | Some pidMax -> UnixSystem.withPidMax "KernelConfig.PidMax" pidMax system
-        )
-        |> EmulatedKernel.mapUnix (fun system ->
+        |> UnixBootImage.withSoMaxConn config.SoMaxConn
+        |> UnixBootImage.withTcpSendSpace config.TcpSendSpace
+        |> UnixBootImage.withProtectedFiles "KernelConfig.ProtectedFiles" config.ProtectedFiles
+        |> UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes
+        |> UnixBootImage.withUmask "KernelConfig.Umask" config.Umask
+        |> UnixBootImage.withProcessId "KernelConfig.ProcessId" config.ProcessId
+        |> fun image ->
             match flavour, config.LeaderThreadId with
-            | SimulatedUnixFlavour.Linux, None -> system
+            | SimulatedUnixFlavour.Linux, None -> image
             | SimulatedUnixFlavour.Linux, Some _ ->
                 failwith
                     "KernelConfig.LeaderThreadId: on Linux the leader's thread ID is the process ID; set KernelConfig.ProcessId instead."
             | SimulatedUnixFlavour.Darwin, id ->
                 let id = id |> Option.defaultValue (uint64 (ProcessId.toInt32 config.ProcessId))
 
-                UnixSystem.withLeaderThreadId "KernelConfig.LeaderThreadId" id system
+                UnixBootImage.withLeaderThreadId "KernelConfig.LeaderThreadId" id image
+        |> EmulatedKernel.bootInheritingSignalIgnores
+            "KernelConfig.InheritedSignalIgnores"
+            config.InheritedSignalIgnores
+        // `pid_max` is a sysctl the machine's administrator writes, here before
+        // the process has run anything. The process ID was set before it: the
+        // machine boots with the largest `pid_max` Linux has, so any process ID
+        // a Linux kernel could have is admitted, and the write then refuses a
+        // `pid_max` at or below it.
+        |> EmulatedKernel.mapUnix (fun system ->
+            match config.PidMax with
+            | None -> system
+            | Some pidMax -> UnixSystem.writePidMaxSysctl "KernelConfig.PidMax" pidMax system
         )
+        |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
+        |> EmulatedKernel.withClockJitter config.ClockJitter
+        |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration

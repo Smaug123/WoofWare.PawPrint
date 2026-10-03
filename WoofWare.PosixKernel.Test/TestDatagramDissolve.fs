@@ -26,12 +26,13 @@ module TestDatagramDissolve =
     let private wildcard : uint32 = InternetEndpoint.WildcardAddress
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
+        let system : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        { system with
-            Machine = UnixMachineState.withEphemeralPortRange (40000us, 40009us) system.Machine
-        }
+
+        system
+        |> UnixBootImage.withEphemeralPortRange (40000us, 40009us)
+        |> UnixBootImage.boot
 
     let private socketOf (fd : int) (system : UnixSystem<int, string>) : SocketId =
         match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with

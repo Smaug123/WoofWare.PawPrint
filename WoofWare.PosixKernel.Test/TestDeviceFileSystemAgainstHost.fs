@@ -30,6 +30,7 @@ module TestDeviceFileSystemAgainstHost =
 
     let private booted (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
         UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
     let private modelStatus (system : UnixSystem<int, string>) (path : string) : Result<FileStatusAnswer, StatRefusal> =
         UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofText path) system

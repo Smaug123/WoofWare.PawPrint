@@ -338,13 +338,40 @@ module GuestLocation =
                         | Some (ParkedSyscall.Flock parked) ->
                             Some $"for a lock on open file description %O{parked.Requester}, %O{parked.Mode}"
                         | Some (ParkedSyscall.Accept parked) ->
-                            Some $"for a connection on the listener of open file description %O{parked.Listener}"
+                            match parked.Listener with
+                            | SleepTarget.Waiting (listener, fd) ->
+                                Some
+                                    $"for a connection on the listener of open file description %O{listener}, entered through fd %d{fd}"
+                            | SleepTarget.EndedByClose socket ->
+                                Some $"in an accept on socket %O{socket}, which a close has ended with ECONNABORTED"
                         | Some (ParkedSyscall.PipeRead parked) ->
-                            Some
-                                $"for up to %d{parked.Count} bytes from the pipe end of open file description %O{parked.Reader}"
+                            match parked.Reader with
+                            | SleepTarget.Waiting (reader, fd) ->
+                                Some
+                                    $"for up to %d{parked.Count} bytes from the pipe end of open file description %O{reader}, entered through fd %d{fd}"
+                            | SleepTarget.EndedByClose pipe ->
+                                Some $"in a read of pipe %O{pipe}, which a close has ended at end of file"
                         | Some (ParkedSyscall.PipeWrite parked) ->
+                            match parked.Writer with
+                            | SleepTarget.Waiting (writer, fd) ->
+                                Some
+                                    $"for room for %d{parked.Count - parked.Written} more of %d{parked.Count} bytes in the pipe end of open file description %O{writer}, entered through fd %d{fd}"
+                            | SleepTarget.EndedByClose pipe ->
+                                Some $"in a write into pipe %O{pipe}, which a close has ended with EPIPE"
+                        | Some (ParkedSyscall.KqueuePoll parked) ->
+                            let watched =
+                                parked.Registrations
+                                |> Map.toList
+                                |> List.map (fun ((fd, filter), _) -> $"fd %d{fd} (%O{filter})")
+                                |> String.concat ", "
+
+                            let until =
+                                match parked.Deadline with
+                                | Some deadline -> $" until %d{deadline} ns since boot"
+                                | None -> ""
+
                             Some
-                                $"for room for %d{parked.Count - parked.Written} more of %d{parked.Count} bytes in the pipe end of open file description %O{parked.Writer}"
+                                $"in a poll of %d{List.length parked.Entries} entries, registered on %s{watched}%s{until}"
                         | Some (ParkedSyscall.Poll parked) ->
                             let watched =
                                 parked.Entries

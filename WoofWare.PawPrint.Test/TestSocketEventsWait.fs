@@ -198,9 +198,11 @@ class WaitsOnADuplicatedPort
     /// alternative to refusing is to skip that thread silently — parking it for ever with no
     /// diagnostic beyond an eventual deadlock naming a wait nothing is watching.
     ///
-    /// Reached by taking the record away from a genuinely parked thread rather than by
-    /// building the state by hand, because that is the shape a real regression would have: a
-    /// clear-on-the-wrong-path, or a park that wrote the status without the record.
+    /// Reached by finishing a genuinely parked thread's wait in the kernel without telling the
+    /// scheduler, because that is the shape a real regression would have: a completion on the
+    /// wrong path, which clears the record and leaves the status. A caught signal is what lets
+    /// the finishing call return (`EINTR`) on a port nothing will make ready, and is discarded
+    /// afterwards.
     [<Test>]
     let ``a socket waiter whose record has gone is refused`` () : unit =
         let prepared, _ = deadlock.Force ()
@@ -208,7 +210,34 @@ class WaitsOnADuplicatedPort
 
         let stripped =
             { prepared with
-                State = prepared.State.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.unpark thread))
+                State =
+                    prepared.State.MapKernel (fun kernel ->
+                        let numbering =
+                            SimulatedUnixPlatform.signalNumbering (UnixSystem.platform kernel.System)
+
+                        let caught =
+                            kernel.System
+                            |> KernelSignals.setDisposition
+                                Signal.SIGUSR1
+                                (SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative))
+
+                        let interrupted =
+                            match
+                                UnixSignal.pthreadKill thread (Signal.toRawSignoUnder numbering Signal.SIGUSR1) caught
+                            with
+                            | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                            | other -> failwith $"sending SIGUSR1 answered %A{other}"
+
+                        match UnixPoll.finishSocketWait thread interrupted with
+                        | Ok (EpollWaitOutcome.Failed UnixError.EINTR, system) ->
+                            // The signal has done its work; ignoring it discards it, so the
+                            // step below meets the waiter rather than the signal.
+                            system
+                            |> KernelSignals.setDisposition Signal.SIGUSR1 SignalDisposition.Ignore
+                            |> KernelSignals.setDisposition Signal.SIGUSR1 SignalDisposition.Default
+                            |> fun system -> EmulatedKernel.withUnix system kernel
+                        | other -> failwith $"expected the wait to be interrupted, got %A{other}"
+                    )
             }
 
         let _messages, loggerFactory =
@@ -456,6 +485,7 @@ class TwoPortsOneEdge
                 | Some (ParkedSyscall.Kevent _)
                 | Some (ParkedSyscall.Flock _)
                 | Some (ParkedSyscall.Poll _)
+                | Some (ParkedSyscall.KqueuePoll _)
                 | Some (ParkedSyscall.Accept _)
                 | Some (ParkedSyscall.PipeRead _)
                 | Some (ParkedSyscall.PipeWrite _)
@@ -633,13 +663,13 @@ class ClosesAParkedPort
         | RunOutcome.NormalExit (state, _, _) ->
             state.LatchedExitCode |> shouldEqual 2
 
-            let unix = EmulatedKernel.unix state.Kernel
+            let unix = state.Kernel.System
 
             let ports =
-                unix.Tasks
+                UnixSystem.tasks unix
                 |> Map.toList
                 |> List.choose (fun (_, task) ->
-                    match task.Parked with
+                    match UnixTaskState.park task with
                     | Some {
                                Syscall = ParkedSyscall.SocketWait wait
                            } -> Some wait.Port
@@ -649,11 +679,11 @@ class ClosesAParkedPort
             // The waiter is still parked, on a port no descriptor names and the park keeps.
             List.length ports |> shouldEqual 1
 
-            FileDescriptorRegistry.descriptions unix.Process.FileDescriptors
+            FileDescriptorRegistry.descriptions (UnixSystem.fileDescriptors unix)
             |> Map.containsKey ports.Head
             |> shouldEqual true
 
-            FileDescriptorRegistry.fds unix.Process.FileDescriptors
+            FileDescriptorRegistry.fds (UnixSystem.fileDescriptors unix)
             |> Map.exists (fun _ id -> id = ports.Head)
             |> shouldEqual false
         | other -> failwith $"expected the guest to exit, got %O{other}"

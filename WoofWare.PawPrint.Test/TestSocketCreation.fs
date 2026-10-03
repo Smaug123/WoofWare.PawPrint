@@ -144,6 +144,7 @@ module TestSocketCreation =
         | Ok (domain, socketType, protocol) ->
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             match UnixSocket.socket domain socketType protocol system with
             | Ok (Ok _) -> "Ok"
@@ -314,6 +315,7 @@ module TestSocketCreation =
 
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let domain, socketType, protocol =
             match SocketArgumentsPal.socketArguments platform family kind protocol with
@@ -323,8 +325,8 @@ module TestSocketCreation =
         match UnixSocket.socket domain socketType protocol system with
         | Ok (Ok (fd, system)) ->
             let socket =
-                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
-                | Some (OpenFileTarget.Socket socketId) -> UnixMachineState.socket socketId system.Machine
+                match FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors system) with
+                | Some (OpenFileTarget.Socket socketId) -> UnixSystem.socket socketId system
                 | other -> failwith $"descriptor %d{fd} names %A{other}"
 
             sprintf "%O" socket.Domain |> shouldEqual expectedDomain
@@ -493,6 +495,7 @@ module TestSocketCreation =
                                     socketType
                                     protocol
                                     (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                                     |> UnixBootImage.boot
                                     : UnixSystem<int, string>)
                             with
                             | Ok (Error error) -> Some (UnixErrorPal.toPal error)

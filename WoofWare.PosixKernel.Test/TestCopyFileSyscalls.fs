@@ -76,7 +76,8 @@ module TestCopyFileSyscalls =
             )
             (VirtualFileSystem.empty epoch (owner 0u 0u))
 
-    let private systemOn
+    let private systemOnWith
+        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
         (platform : SimulatedUnixPlatform)
         (credentials : Credentials)
         (vfs : VirtualFileSystem)
@@ -84,6 +85,9 @@ module TestCopyFileSyscalls =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials context credentials
+            |> configure
+            |> UnixBootImage.boot
 
         { system with
             Machine =
@@ -95,7 +99,14 @@ module TestCopyFileSyscalls =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
-        |> UnixSystem.withCredentials context credentials
+
+    let private systemOn
+        (platform : SimulatedUnixPlatform)
+        (credentials : Credentials)
+        (vfs : VirtualFileSystem)
+        : UnixSystem<int, string>
+        =
+        systemOnWith id platform credentials vfs
 
     let private inodeAt (system : UnixSystem<int, string>) (fileName : string) : InodeNumber =
         match
@@ -213,11 +224,17 @@ module TestCopyFileSyscalls =
         | "fd9999" -> 9999, system
         | other -> failwith $"unknown kind %s{other}"
 
-    let private kindsSystem () : UnixSystem<int, string> =
-        systemOn
+    let private kindsSystemWith
+        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
+        : UnixSystem<int, string>
+        =
+        systemOnWith
+            configure
             SimulatedUnixPlatform.linuxX64
             root
             (filesystem [ "ksrc", owner 0u 0u, 0o644, "hello" ; "kdst", owner 0u 0u, 0o644, "" ])
+
+    let private kindsSystem () : UnixSystem<int, string> = kindsSystemWith id
 
     /// The probe's two kinds matrices as it printed them on tmpfs: the lines
     /// starting "in=" between the tmpfs run's header and the ext4 run's, whose
@@ -339,10 +356,7 @@ module TestCopyFileSyscalls =
         UnixDescriptor.fileClone outFd inFd darwin
         |> shouldEqual (Error (FileCloneRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
-        let nfs =
-            { kindsSystem () with
-                Machine = (kindsSystem ()).Machine |> UnixMachineState.withMount (Some EmulatedMount.Nfs)
-            }
+        let nfs = kindsSystemWith (UnixBootImage.withMount (Some EmulatedMount.Nfs))
 
         let inFd, nfs = opened "ksrc" FileAccessMode.ReadOnly nfs
         let outFd, nfs = opened "kdst" FileAccessMode.WriteOnly nfs
@@ -641,7 +655,7 @@ module TestCopyFileSyscalls =
 
                 let expected =
                     match
-                        UnixReadWrite.pwrite outFd (ImmutableArray.CreateRange moved) case.DestinationOffset system
+                        UnixReadWrite.pwrite 0 outFd (ImmutableArray.CreateRange moved) case.DestinationOffset system
                     with
                     | Ok (WriteAnswer.Completed _, written) ->
                         written

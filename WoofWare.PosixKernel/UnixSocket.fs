@@ -530,6 +530,7 @@ module UnixSocket =
         match description.Target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> answered (UnixError.ENOTSOCK)
@@ -958,10 +959,10 @@ module UnixSocket =
     ///
     /// Every target takes it. A socket's `accept` and `connect` consult it, and
     /// each transfer that lands must too. Both kernels give it no effect on a
-    /// regular file, so an operation there that never looks is right not to. A
-    /// wait on an epoll instance or a kqueue blocks per its own timeout
-    /// argument, never per this flag. On a kqueue the flag is set and the call
-    /// answers `ENOTTY` (see `SetNonBlockingAnswer.Failed`).
+    /// regular file or a device, so an operation there that never looks is
+    /// right not to. A wait on an epoll instance or a kqueue blocks per its own
+    /// timeout argument, never per this flag. On a kqueue the flag is set and
+    /// the call answers `ENOTTY` (see `SetNonBlockingAnswer.Failed`).
     let setNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (isNonBlocking : bool)
@@ -999,6 +1000,10 @@ module UnixSocket =
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
         | Some (OpenFileTarget.Socket _) -> SetNonBlockingAnswer.Set, stored system
+        // Measured on Linux (`devices.c`, FCNTL rows): `F_SETFL` answers 0 on
+        // `/dev/null` and `/dev/urandom`, and a read afterwards answers what it
+        // did before, neither device ever having anything to wait for.
+        | Some (OpenFileTarget.CharacterDevice _) -> SetNonBlockingAnswer.Set, stored system
 
     /// `fcntl(F_GETFL)`'s `O_NONBLOCK` half: whether the open file description
     /// `fd` names carries the flag.
@@ -1245,6 +1250,7 @@ module UnixSocket =
         match target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (ListenAnswer.Failed UnixError.ENOTSOCK, system)
@@ -1325,6 +1331,7 @@ module UnixSocket =
                     {
                         Backlog = backlog
                         Queue = []
+                        Drained = false
                     }
 
         let system =
@@ -1382,6 +1389,7 @@ module UnixSocket =
         match target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
@@ -1476,6 +1484,7 @@ module UnixSocket =
         | None -> Error UnixError.EBADF
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
+        | Some (OpenFileTarget.CharacterDevice _)
         | Some (OpenFileTarget.Pipe _)
         | Some (OpenFileTarget.Kqueue _)
         | Some (OpenFileTarget.Epoll _) -> Error UnixError.ENOTSOCK

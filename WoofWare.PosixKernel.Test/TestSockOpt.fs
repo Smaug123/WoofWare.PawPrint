@@ -46,6 +46,7 @@ module TestSockOpt =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let socketFd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
@@ -425,6 +426,7 @@ module TestSockOpt =
                     {
                         Backlog = 5
                         Queue = []
+                        Drained = false
                     },
                 false
                 SocketPhase.Established (ConnectionId 0L), false
@@ -477,6 +479,7 @@ module TestSockOpt =
                 {
                     Backlog = 5
                     Queue = queue
+                    Drained = false
                 }
 
         for platform in platforms do
@@ -528,6 +531,7 @@ module TestSockOpt =
                     for protocol in [ SocketProtocol.Default ; SocketProtocol.Tcp ; SocketProtocol.Udp ] do
                         let system : UnixSystem<int, string> =
                             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                            |> UnixBootImage.boot
 
                         let rawDomain, rawKind, rawProtocol =
                             NewSocket.arguments platform domain kind protocol
@@ -826,6 +830,7 @@ module TestSockOpt =
         for platform in platforms do
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let a, system = stream system
             let system = ReuseAddress.set true a system |> boundAt a (loopback port)
@@ -843,6 +848,7 @@ module TestSockOpt =
         for platform in platforms do
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let a, system = stream system
             let system = boundAt a (loopback port) system
@@ -861,6 +867,7 @@ module TestSockOpt =
         for platform in platforms do
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let a, system = stream system
             let system = ReuseAddress.set true a system |> boundAt a (wildcard port)
@@ -882,6 +889,7 @@ module TestSockOpt =
     let ``Linux's listen reads SO_REUSEADDR as setsockopt last left it`` () : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let a, system = stream system
         let system = ReuseAddress.set true a system |> boundAt a (loopback 40000us)

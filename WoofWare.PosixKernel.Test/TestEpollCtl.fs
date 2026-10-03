@@ -32,6 +32,7 @@ module TestEpollCtl =
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         { system with
             Machine =
@@ -281,6 +282,7 @@ module TestEpollCtl =
                     {
                         Backlog = 64
                         Queue = []
+                        Drained = false
                     })
                 system
         | "udp" -> withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle system
@@ -516,6 +518,7 @@ module TestEpollCtl =
                         {
                             Backlog = 8
                             Queue = []
+                            Drained = false
                         }),
                 0x0000u
                 "IPv4 TCP, listening, queue nonempty",
@@ -526,6 +529,7 @@ module TestEpollCtl =
                         {
                             Backlog = 8
                             Queue = [ queued ]
+                            Drained = false
                         }),
                 0x0041u
                 "IPv4 TCP, established, peer alive",

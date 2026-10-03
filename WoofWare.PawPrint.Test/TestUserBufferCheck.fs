@@ -143,8 +143,9 @@ module TestUserBufferCheck =
     // ------------------------------------------------- the platforms' answers
 
     let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
-        EmulatedKernel.create platform StandardStreamsConfig.piped
-        |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit limit)
+        EmulatedKernel.image platform StandardStreamsConfig.piped
+        |> UnixBootImage.withUserAddressLimit limit
+        |> EmulatedKernel.boot
 
     /// macOS performs no up-front check at all: measured, every address at
     /// every size reads 0 from a descriptor with nothing to transfer. So a
@@ -152,8 +153,8 @@ module TestUserBufferCheck =
     /// refused rather than silently ignored.
     [<Test>]
     let ``Darwin checks at copy time`` () : unit =
-        UnixMachineState.userBufferCheck
-            (EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 StandardStreamsConfig.piped).Machine
+        UnixSystem.userBufferCheck
+            (EmulatedKernel.create SimulatedUnixPlatform.macOsArm64 StandardStreamsConfig.piped).System
         |> shouldEqual UserBufferCheck.AtCopyTime
 
         for limit in [ 1UL ; ObservedUserAddressLimit.Arm64FortyEightBit ; UInt64.MaxValue ] do
@@ -174,7 +175,7 @@ module TestUserBufferCheck =
             ]
 
         for platform, limit in observed do
-            UnixMachineState.userBufferCheck (kernelOn platform limit).Machine
+            UnixSystem.userBufferCheck (kernelOn platform limit).System
             |> shouldEqual (UserBufferCheck.BeforeOperation limit)
 
         // Every observed value is a real `TASK_SIZE_MAX`, so each is either a
@@ -206,7 +207,7 @@ module TestUserBufferCheck =
                 UnixPlatform = platform
             }
             |> KernelConfig.toKernel
-            |> fun kernel -> UnixMachineState.userBufferCheck kernel.Machine
+            |> fun kernel -> UnixSystem.userBufferCheck kernel.System
 
         checkOn SimulatedUnixPlatform.linuxX64
         |> shouldEqual (UserBufferCheck.BeforeOperation ObservedUserAddressLimit.X64FourLevelPaging)
@@ -221,7 +222,7 @@ module TestUserBufferCheck =
             UserAddressLimit = Some ObservedUserAddressLimit.X64FiveLevelPaging
         }
         |> KernelConfig.toKernel
-        |> fun kernel -> UnixMachineState.userBufferCheck kernel.Machine
+        |> fun kernel -> UnixSystem.userBufferCheck kernel.System
         |> shouldEqual (UserBufferCheck.BeforeOperation ObservedUserAddressLimit.X64FiveLevelPaging)
 
     /// The rows that separate x86-64's `TASK_SIZE_MAX` from arm64's. Getting
@@ -230,8 +231,8 @@ module TestUserBufferCheck =
     [<Test>]
     let ``Linux refuses a range that leaves the user address space`` () : unit =
         let check =
-            UnixMachineState.userBufferCheck
-                (kernelOn SimulatedUnixPlatform.linuxX64 ObservedUserAddressLimit.X64FourLevelPaging).Machine
+            UnixSystem.userBufferCheck
+                (kernelOn SimulatedUnixPlatform.linuxX64 ObservedUserAddressLimit.X64FourLevelPaging).System
 
         let faults (address : uint64) (length : uint64) : bool =
             UserBufferCheck.faultsBeforeOperation check address length
@@ -332,7 +333,7 @@ module TestUserBufferCheck =
     let private faultsBeforeOperation (kernel : EmulatedKernel) (buffer : BufferPointer) (bufferSize : int) : bool =
         match
             UserBufferCheck.faultsBeforeOperationFor
-                (UnixMachineState.userBufferCheck kernel.Machine)
+                (UnixSystem.userBufferCheck kernel.System)
                 (BufferPointer.toUserBuffer buffer)
                 (uint64 bufferSize)
         with

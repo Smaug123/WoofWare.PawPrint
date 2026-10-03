@@ -19,6 +19,18 @@ module TestWaitHandle =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 200
 
+    /// A seed for a script's own `System.Random`, drawn from the whole range so
+    /// that each run tries fresh scripts: FsCheck sizes an integer generator,
+    /// so at the default end size `NonNegativeInt` yields only 0 to 100, and
+    /// every run would try some of the same 101 scripts per thread count. A
+    /// seed has no meaningful shrink, since a smaller seed is a different
+    /// script rather than a simpler one, so it is given no shrinker.
+    let private genScriptSeed : Gen<int> = Gen.choose (0, System.Int32.MaxValue)
+
+    /// A thread count up to `maxThreads`, and a script seed.
+    let private threadsAndScript (maxThreads : int) : Arbitrary<int * int> =
+        Gen.zip (Gen.choose (1, maxThreads)) genScriptSeed |> Arb.fromGen
+
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -904,18 +916,24 @@ module TestWaitHandle =
         // Generators kept small so the script stays scrutable but covers
         // the interesting interleavings (fast-path acquires, parking, and
         // releases that wake K of N waiters).
-        let property (NonNegativeInt initialRaw) (PositiveInt maximumRaw) (PositiveInt threadCountRaw) : bool =
-            let maximum = 1 + (maximumRaw % 10)
-            let initial = min initialRaw maximum
-            let threadCount = 1 + (threadCountRaw % 6)
+        let inputs : Gen<int * int * int * int> =
+            gen {
+                let! maximum = Gen.choose (1, 10)
+                let! initial = Gen.choose (0, maximum)
+                let! threadCount = Gen.choose (1, 6)
+                let! seed = genScriptSeed
+                return initial, maximum, threadCount, seed
+            }
+
+        let property (initial : int, maximum : int, threadCount : int, seed : int) : bool =
             let threads = [ 0 .. threadCount - 1 ] |> List.map ThreadId
             let state = baseState () |> withThreads threads
             let id, state = WaitHandle.createSemaphore initial maximum state
 
-            // Drive a fixed-length pseudo-random script using a
-            // deterministic seed so any failure shrinks reproducibly.
+            // Drive a fixed-length pseudo-random script from the drawn seed, so
+            // that a failing case's reported inputs replay it.
             let scriptLen = 40
-            let mutable rng = System.Random (initial * 31 + maximum * 17 + threadCount)
+            let rng = System.Random seed
             let mutable state = state
             let mutable totalWaited = 0
             let mutable totalReleased = 0
@@ -946,7 +964,7 @@ module TestWaitHandle =
 
             invariantOk && conservation && sem.Maximum = maximum
 
-        Check.One (config, property)
+        Check.One (config, Prop.forAll (Arb.fromGen inputs) property)
 
     // -------------------------------------------------------------------
     // Mutex — create, re-entrancy, FIFO direct handoff, abandoned flag
@@ -1920,9 +1938,8 @@ module TestWaitHandle =
 
     [<Test>]
     let ``Property: Manual event invariant Signaled implies empty WaitQueue holds across any script`` () : unit =
-        let property (PositiveInt threadCountRaw) (NonNegativeInt seedRaw) : bool =
-            let threadCount = 1 + (threadCountRaw % 6)
-            let rng = System.Random seedRaw
+        let property (threadCount : int, seed : int) : bool =
+            let rng = System.Random seed
             let scriptLen = 30
 
             let threads = [ 0 .. threadCount - 1 ] |> List.map ThreadId
@@ -1944,13 +1961,12 @@ module TestWaitHandle =
             // Signaled ⇒ WaitQueue = []
             not e.Signaled || e.WaitQueue = []
 
-        Check.One (config, property)
+        Check.One (config, Prop.forAll (threadsAndScript 6) property)
 
     [<Test>]
     let ``Property: Auto event invariant Signaled implies empty WaitQueue holds across any script`` () : unit =
-        let property (PositiveInt threadCountRaw) (NonNegativeInt seedRaw) : bool =
-            let threadCount = 1 + (threadCountRaw % 6)
-            let rng = System.Random seedRaw
+        let property (threadCount : int, seed : int) : bool =
+            let rng = System.Random seed
             let scriptLen = 30
 
             let threads = [ 0 .. threadCount - 1 ] |> List.map ThreadId
@@ -1971,7 +1987,7 @@ module TestWaitHandle =
             let e = runEventScript EventResetMode.Auto false threadCount script
             not e.Signaled || e.WaitQueue = []
 
-        Check.One (config, property)
+        Check.One (config, Prop.forAll (threadsAndScript 6) property)
 
     // -------------------------------------------------------------------
     // waitMultiple / tryWaitMultiple — the WaitAny / WaitAll state machine
@@ -2396,9 +2412,8 @@ module TestWaitHandle =
         // that failed to walk past an unsatisfiable wait-all, a wake that
         // forgot to dequeue from the waiter's other queues, or a grant that
         // left a woken thread queued would each break it.
-        let property (PositiveInt threadCountRaw) (NonNegativeInt seedRaw) : bool =
-            let threadCount = 1 + (threadCountRaw % 4)
-            let rng = System.Random seedRaw
+        let property (threadCount : int, seed : int) : bool =
+            let rng = System.Random seed
             let threads = [ 0 .. threadCount - 1 ] |> List.map ThreadId
 
             let state = baseState () |> withFramedThreads threads
@@ -2508,4 +2523,4 @@ module TestWaitHandle =
             script |> List.fold step state |> ignore
             true
 
-        Check.One (config, property)
+        Check.One (config, Prop.forAll (threadsAndScript 4) property)

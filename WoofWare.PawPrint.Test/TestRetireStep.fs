@@ -42,13 +42,9 @@ module TestRetireStep =
             Error ()
 
     let private kernelWith (clock : int64) (cost : int64) (step : int64) : EmulatedKernel =
-        { EmulatedKernel.initial with
+        { EmulatedKernel.withVirtualClockTicks clock EmulatedKernel.initial with
             InstructionCostTicks = cost
             StepCounter = step
-            Machine =
-                { EmulatedKernel.initial.Machine with
-                    NanosecondsSinceBoot = clock * ClockPal.nanosecondsPerTick
-                }
         }
 
     /// Clock and cost both in the ordinary range: `retireStep` must produce exactly the kernel the
@@ -112,14 +108,12 @@ module TestRetireStep =
         let actual = EmulatedKernel.retireStep kernel
 
         actual
-        |> shouldEqual
+        |> shouldEqual (
             { kernel with
                 StepCounter = 12L
-                Machine =
-                    { kernel.Machine with
-                        NanosecondsSinceBoot = 507L * ClockPal.nanosecondsPerTick
-                    }
             }
+            |> EmulatedKernel.withVirtualClockTicks 507L
+        )
 
     /// A cost of zero freezes the clock and a negative one rewinds it. A record-copy can write
     /// either past `withInstructionCostTicks`, so `retireStep` must answer them exactly as the

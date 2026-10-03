@@ -52,6 +52,7 @@ module TestPollTimeout =
     let private world : int * UnixSystem<int, string> =
         let system =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let system = Tasks.spawn task system
 
@@ -80,6 +81,7 @@ module TestPollTimeout =
                         {
                             Backlog = 8
                             Queue = []
+                            Drained = false
                         }
             }
 
@@ -119,6 +121,7 @@ module TestPollTimeout =
                                         {
                                             Backlog = 8
                                             Queue = queue
+                                            Drained = false
                                         }
                             }
                             system.Machine.Sockets
@@ -530,14 +533,3 @@ module TestPollTimeout =
             let exn = Assert.Throws<exn> (fun () -> UnixWait.park task other parked |> ignore)
 
             exn.Message |> shouldContainText "without clearing the first"
-
-    [<Test>]
-    let ``a Darwin-flavoured poll with a timeout is refused, as every Darwin poll is`` () : unit =
-        let darwin =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-
-        let darwin = Tasks.spawn task darwin
-
-        for milliseconds in [ -1 ; 0 ; 10 ] do
-            UnixPoll.poll task [ entry 1 pollIn ] milliseconds darwin
-            |> shouldEqual (Error (PollRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))

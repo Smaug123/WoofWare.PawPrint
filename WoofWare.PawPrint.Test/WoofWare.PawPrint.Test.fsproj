@@ -120,6 +120,7 @@
     <Compile Include="TestRawRootFieldLayoutDisplacement.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestOpcodeFaults.fs" />
+    <Compile Include="TestStackEffect.fs" />
     <Compile Include="TestStackShape.fs" />
     <Compile Include="TestControlFlow.fs" />
     <Compile Include="TestStackShapeDynamicScope.fs" />
@@ -249,7 +250,6 @@
     <Compile Include="KernelSyscall.fs" />
     <Compile Include="TestDirectoryStreamFds.fs" />
     <Compile Include="TestTaskState.fs" />
-        <Compile Include="TestUnixSystemProjection.fs" />
     <Compile Include="TestFlockBlocking.fs" />
     <Compile Include="TestFlockPark.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />
@@ -321,6 +321,7 @@
     <Compile Include="TestVirtualMethodSlots.fs" />
     <Compile Include="TestInterfaceDispatchMap.fs" />
     <Compile Include="TestFabricatedInterfaceMethodImpl.fs" />
+    <Compile Include="TestFabricatedDefaultBodyOrder.fs" />
     <Compile Include="TestFabricatedAbstractMethodCall.fs" />
     <Compile Include="TestMethodAtSlotShapes.fs" />
     <Compile Include="TestFabricatedVtableLayout.fs" />

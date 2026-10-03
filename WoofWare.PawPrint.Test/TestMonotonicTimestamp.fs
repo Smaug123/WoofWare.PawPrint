@@ -33,7 +33,8 @@ module TestMonotonicTimestamp =
     /// The machine a simulated process boots with. The two flavours read
     /// different clocks for these entry points, and every property here holds of
     /// both; see `flavours`.
-    let private initialMachine : UnixMachineState = EmulatedKernel.initial.Machine
+    let private initialMachine : UnixSystem<ThreadId, NativeSignalHandler> =
+        EmulatedKernel.initial.System
 
     /// Fold an arbitrary int64 into `[0, bound]`. Deliberately not `abs`, which
     /// throws on `Int64.MinValue` — a value FsCheck does generate.
@@ -47,10 +48,14 @@ module TestMonotonicTimestamp =
         EmulatedKernel.create platform StandardStreamsConfig.piped
         |> EmulatedKernel.withVirtualClockTicks clockTicks
 
-    let private machineOn (platform : SimulatedUnixPlatform) (clockTicks : int64) : UnixMachineState =
-        (kernelOn platform clockTicks).Machine
+    let private machineOn
+        (platform : SimulatedUnixPlatform)
+        (clockTicks : int64)
+        : UnixSystem<ThreadId, NativeSignalHandler>
+        =
+        (kernelOn platform clockTicks).System
 
-    let private machineWith (clockTicks : int64) : UnixMachineState =
+    let private machineWith (clockTicks : int64) : UnixSystem<ThreadId, NativeSignalHandler> =
         machineOn SimulatedUnixPlatform.linuxX64 clockTicks
 
     /// Both flavours, which read different clocks for the same entry points:
@@ -173,10 +178,11 @@ module TestMonotonicTimestamp =
             platforms
             |> List.forall (fun platform ->
                 let shifted =
-                    (EmulatedKernel.create platform StandardStreamsConfig.piped
+                    (EmulatedKernel.image platform StandardStreamsConfig.piped
                      |> EmulatedKernel.withWallClockEpochMs epochMs
+                     |> EmulatedKernel.boot
                      |> EmulatedKernel.withVirtualClockTicks clockMs)
-                        .Machine
+                        .System
 
                 ClockPal.monotonicTimestampNanos shifted = ClockPal.monotonicTimestampNanos (
                     machineOn platform clockMs
@@ -300,7 +306,7 @@ module TestMonotonicTimestamp =
             kernelOn SimulatedUnixPlatform.linuxX64 EmulatedKernel.maxVirtualClockTicks
 
         // The horizon itself is legal: a reading can still be derived from it.
-        ClockPal.monotonicTimestampNanos atHorizon.Machine |> shouldBeGreaterThan 0L
+        ClockPal.monotonicTimestampNanos atHorizon.System |> shouldBeGreaterThan 0L
 
         let beyond () =
             EmulatedKernel.withVirtualClockTicks (EmulatedKernel.maxVirtualClockTicks + 1L) atHorizon
@@ -324,40 +330,17 @@ module TestMonotonicTimestamp =
         Assert.Throws<Exception> (TestDelegate backwards) |> ignore<Exception>
 
     [<Test>]
-    let ``the clock writer rejects negative targets even when moving forwards`` () : unit =
-        // The monotonicity check alone waves this through: -10,000 is *greater* than -20,000, so
-        // the move is forwards and only an independent non-negativity check catches it. Reachable
-        // because a kernel assembled by record-copy never passed through the writer. Left
-        // untested, the writer would enforce a narrower range than its own doc comment claims.
-        let negativeKernel =
-            { EmulatedKernel.initial with
-                Machine =
-                    { EmulatedKernel.initial.Machine with
-                        NanosecondsSinceBoot = -20_000L * ClockPal.nanosecondsPerTick
-                    }
-            }
-
-        let forwardsButNegative () =
-            EmulatedKernel.withVirtualClockTicks -10_000L negativeKernel
-            |> ignore<EmulatedKernel>
-
-        Assert.Throws<Exception> (TestDelegate forwardsButNegative) |> ignore<Exception>
-
-    [<Test>]
     let ``a clock advanced by part of a tick is refused rather than rounded`` () : unit =
         // PawPrint advances the kernel's clock only by whole ticks, which is what makes every
         // tick-denominated reading exact. A kernel whose clock something else advanced by a
         // fraction of one would read back rounded, so the view refuses it instead.
         let kernel =
-            EmulatedKernel.initial
-            |> EmulatedKernel.mapMachine (UnixMachineState.advanceClock 150L)
+            EmulatedKernel.initial |> EmulatedKernel.mapUnix (UnixSystem.advanceClock 150L)
 
         let read () =
             kernel.VirtualClockTicks |> ignore<int64>
 
         Assert.Throws<Exception> (TestDelegate read) |> ignore<Exception>
 
-        (EmulatedKernel.initial
-         |> EmulatedKernel.mapMachine (UnixMachineState.advanceClock 200L))
-            .VirtualClockTicks
+        (EmulatedKernel.initial |> EmulatedKernel.mapUnix (UnixSystem.advanceClock 200L)).VirtualClockTicks
         |> shouldEqual 2L

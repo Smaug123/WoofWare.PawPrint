@@ -16,13 +16,22 @@ module TestUnixSignal =
     let private flavours : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
-    let private systemOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
+    let private systemOnWith
+        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
+        (flavour : SimulatedUnixFlavour)
+        : UnixSystem<int, string>
+        =
         UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> configure
+        |> UnixBootImage.boot
+
+    let private systemOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> = systemOnWith id flavour
 
     let private linux : UnixSystem<int, string> = systemOn SimulatedUnixFlavour.Linux
 
-    let private withPid (pid : int32) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixSystem.withProcessId "test" (ProcessId.parseOrFail "test" pid) system
+    /// A Linux process booted with `pid`.
+    let private linuxWithPid (pid : int32) : UnixSystem<int, string> =
+        systemOnWith (UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" pid)) SimulatedUnixFlavour.Linux
 
     let private self : int32 = ProcessId.toInt32 (UnixSystem.processId linux)
 
@@ -68,12 +77,7 @@ module TestUnixSignal =
         // SIGQUIT dumps core on both flavours; SIGTERM on neither.
         for flavour in flavours do
             for coreDumps in [ CoreDumps.Suppressed ; CoreDumps.Written ] do
-                let system =
-                    let system = systemOn flavour
-
-                    { system with
-                        Process = UnixProcessState.withCoreDumps coreDumps system.Process
-                    }
+                let system = systemOnWith (UnixBootImage.withCoreDumps coreDumps) flavour
 
                 let death (signo : int) : ProcessTermination =
                     match UnixSignal.kill self signo system with
@@ -123,12 +127,12 @@ module TestUnixSignal =
             |> shouldEqual (Error (KillRefusal.ProcessGroup pid))
 
         // The same pid is the caller's own once the process is configured with it.
-        UnixSignal.kill (self + 1) 0 (withPid (self + 1) linux)
-        |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues (withPid (self + 1) linux))))
+        UnixSignal.kill (self + 1) 0 (linuxWithPid (self + 1))
+        |> shouldEqual (Ok (Ok (KillOutcome.ProcessContinues (linuxWithPid (self + 1)))))
 
     [<Test>]
     let ``kill by an init process is refused`` () : unit =
-        let init = withPid 1 linux
+        let init = linuxWithPid 1
 
         UnixSignal.kill 1 9 init |> shouldEqual (Error KillRefusal.InitProcess)
 
@@ -174,12 +178,7 @@ module TestUnixSignal =
             }
 
         let property (flavour : SimulatedUnixFlavour, signo : int, coreDumps : CoreDumps) : unit =
-            let system =
-                let system = systemOn flavour
-
-                { system with
-                    Process = UnixProcessState.withCoreDumps coreDumps system.Process
-                }
+            let system = systemOnWith (UnixBootImage.withCoreDumps coreDumps) flavour
 
             let valid = signo >= 0 && signo <= highestSigno flavour
 

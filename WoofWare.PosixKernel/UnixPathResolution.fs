@@ -742,7 +742,8 @@ module UnixPathResolution =
             |> FileStatusAnswer.Reported
             |> Ok
         | Some (OpenFileTarget.File (inode, _))
-        | Some (OpenFileTarget.Directory (inode, _)) ->
+        | Some (OpenFileTarget.Directory (inode, _))
+        | Some (OpenFileTarget.CharacterDevice (inode, _)) ->
 
         match statOf inode system with
         | Some (Ok status) -> Ok (FileStatusAnswer.Reported status)
@@ -1669,7 +1670,8 @@ module UnixPathResolution =
 
             match description.Target with
             | OpenFileTarget.Directory (inode, _) -> Ok (Ok (Some (inode, true)))
-            | OpenFileTarget.File (inode, _) -> Ok (Ok (Some (inode, false)))
+            | OpenFileTarget.File (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _) -> Ok (Ok (Some (inode, false)))
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _
             | OpenFileTarget.Socket _
@@ -1755,7 +1757,7 @@ module UnixPathResolution =
     /// Without <c>AT_EACCESS</c> the path is walked, and the inode judged, with the process's
     /// <i>real</i> user and group (see <c>Credentials.realIdsAsEffective</c>); with it, with
     /// the effective ones, as every other syscall is. On Darwin the two are always the
-    /// same, since <c>UnixSystem.withCredentials</c> admits no Darwin process whose real
+    /// same, since <c>UnixBootImage.withCredentials</c> admits no Darwin process whose real
     /// and effective IDs differ.
     ///
     /// Answers 0 or the errno, and changes nothing: measured on both, it moves no

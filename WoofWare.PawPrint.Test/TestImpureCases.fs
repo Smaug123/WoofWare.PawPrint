@@ -390,6 +390,26 @@ module TestImpureCases =
             // ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
             // such a path directly in the meantime.
             currentDirectoryCase "/héllo/中文/🐶"
+            {
+                // Managed async connect, accept, send and receive over loopback on a
+                // Darwin kernel. Parked: the connect and the accept work
+                // (`SocketAsyncConnectDarwin.cs` carries them), but the send and
+                // receive need data transfer on a connection -- SystemNative_Send
+                // and SystemNative_Receive, and a receive path in the kernel --
+                // which this kernel does not model: it stops at "Unimplemented
+                // native method ... SystemNative_Receive" (measured). Un-park when
+                // it does.
+                FileName = "SocketAsyncSendReceiveDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -458,7 +478,7 @@ module TestImpureCases =
 
     /// The signals whose disposition is System.Native's handler.
     let private caughtBySystemNative (state : IlMachineState) : Set<Signal> =
-        KernelSignals.dispositions (EmulatedKernel.unix state.Kernel)
+        KernelSignals.dispositions state.Kernel.System
         |> Map.filter (fun _ disposition ->
             match disposition with
             | SignalDisposition.Catch action -> action.Handler = NativeSignalHandler.SystemNative
@@ -808,7 +828,7 @@ module TestImpureCases =
     let private assertClosedFdLeftNoOrphan (state : IlMachineState) : unit =
         state.Kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
-        VirtualFileSystem.checkInvariants Set.empty state.Kernel.Machine.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty (UnixSystem.fileSystem state.Kernel.System)
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
@@ -894,7 +914,7 @@ module TestImpureCases =
     /// called `ObjectLifetime.forgetIfUnheld` would pass every other assertion
     /// in this slice.
     let private assertRmDirLeftNoOrphan (state : IlMachineState) : unit =
-        VirtualFileSystem.checkInvariants Set.empty state.Kernel.Machine.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty (UnixSystem.fileSystem state.Kernel.System)
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
@@ -913,7 +933,7 @@ module TestImpureCases =
         kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
         // The three inherited standard streams and nothing else.
-        FileDescriptorRegistry.fds kernel.Process.FileDescriptors
+        FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.System)
         |> Map.count
         |> shouldEqual 3
 
@@ -924,7 +944,7 @@ module TestImpureCases =
         NativeMemoryPool.liveBlockCount kernel.NativeMemoryPool
         |> shouldBeSmallerThan 20
 
-        VirtualFileSystem.checkInvariants Set.empty kernel.Machine.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty (UnixSystem.fileSystem kernel.System)
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
@@ -954,9 +974,9 @@ module TestImpureCases =
     /// `DirectoryContent.Parent` naming an inode the graph no longer contains.
     let private assertRmDirOrphanChainSurvives (state : IlMachineState) : unit =
         let kernel = state.Kernel
-        let filesystem = kernel.Machine.FileSystem
+        let filesystem = (UnixSystem.fileSystem kernel.System)
         let root = VirtualFileSystem.root filesystem
-        let pinned = ObjectLifetime.pinnedInodes (EmulatedKernel.unix kernel)
+        let pinned = ObjectLifetime.pinnedInodes kernel.System
 
         let survivors =
             VirtualFileSystem.inodes filesystem
@@ -977,7 +997,8 @@ module TestImpureCases =
             failwith
                 $"expected exactly two orphaned inodes to survive -- the removed current directory and its removed parent -- but %d{other.Length} did: %A{other}. Freeing the parent would leave the orphan's \"..\" dangling; freeing neither means the cascade never fires."
 
-        List.contains kernel.Process.CurrentDirectoryInode orphaned |> shouldEqual true
+        List.contains (UnixSystem.currentDirectoryInode kernel.System) orphaned
+        |> shouldEqual true
 
         for inode in orphaned do
             Set.contains inode pinned |> shouldEqual true
@@ -1027,8 +1048,8 @@ module TestImpureCases =
     /// bound.
     let private assertUnlinkReapedExactlyOne (state : IlMachineState) : unit =
         let kernel = state.Kernel
-        let filesystem = kernel.Machine.FileSystem
-        let pinned = ObjectLifetime.pinnedInodes (EmulatedKernel.unix kernel)
+        let filesystem = (UnixSystem.fileSystem kernel.System)
+        let pinned = ObjectLifetime.pinnedInodes kernel.System
 
         let survivors =
             VirtualFileSystem.inodes filesystem
@@ -1161,11 +1182,11 @@ module TestImpureCases =
             ExpectsUnhandledException = false
             AssertTerminalState =
                 Some (fun state ->
-                    let machine = (EmulatedKernel.unix state.Kernel).Machine
+                    let system = state.Kernel.System
 
                     // Only the standard streams' pipes are left, which the
                     // guest was launched with and still holds.
-                    machine.Pipes
+                    UnixSystem.pipes system
                     |> Map.forall (fun _ pipe ->
                         match pipe.Origin with
                         | PipeOrigin.Launched _ -> true
@@ -1174,8 +1195,14 @@ module TestImpureCases =
                     |> shouldEqual true
 
                     // The launch made three pipes and the guest two, so the
-                    // next is the sixth.
-                    machine.NextPipeId |> shouldEqual (PipeId 5L)
+                    // next one made is the sixth.
+                    match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                    | Ok (Pipe2Answer.Created _, after) ->
+                        Set.difference
+                            (UnixSystem.pipes after |> Map.keys |> Set.ofSeq)
+                            (UnixSystem.pipes system |> Map.keys |> Set.ofSeq)
+                        |> shouldEqual (Set.singleton (PipeId 5L))
+                    | other -> failwith $"making one more pipe: %A{other}"
                 )
         }
 
@@ -1224,7 +1251,7 @@ module TestImpureCases =
                 Some (fun state ->
                     SignalState.pending state.Kernel.Signals |> shouldEqual []
 
-                    (EmulatedKernel.unix state.Kernel).Machine.Pipes
+                    (UnixSystem.pipes state.Kernel.System)
                     |> Map.forall (fun _ pipe ->
                         match pipe.Origin with
                         | PipeOrigin.Launched _ -> true
@@ -1259,7 +1286,38 @@ module TestImpureCases =
                     SignalState.pending state.Kernel.Signals |> shouldEqual []
 
                     state.Kernel.Tasks
-                    |> Map.forall (fun _ task -> task.Parked.IsNone)
+                    |> Map.forall (fun thread _ -> (UnixTaskTable.parkedFor thread state.Kernel.Tasks).IsNone)
+                    |> shouldEqual true
+                )
+        }
+
+    /// Build one registration of a guest in which one thread closes the only
+    /// descriptor another's blocking call was made through, under `platform`:
+    /// `CloseEndsSleepingAccept.cs` or `CloseEndsSleepingPipeTransfer.cs`. Each
+    /// exits 0 for Linux's answer, the call sleeping on, and 100 for Darwin's,
+    /// the call ended at the close (`close-ends-call.c`). The assertion here is
+    /// that no task is left asleep and no signal pending, every SIGPIPE raised
+    /// having been ignored by the runtime.
+    let private closeEndsCallCase (fileName : string) (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = fileName
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                    state.Kernel.Tasks
+                    |> Map.forall (fun _ task -> (UnixTaskState.park task).IsNone)
                     |> shouldEqual true
                 )
         }
@@ -1419,6 +1477,10 @@ module TestImpureCases =
             socketUnconnectedTransferCase SimulatedUnixPlatform.macOsArm64
             pipeReaderLeavesCase SimulatedUnixPlatform.linuxX64
             pipeReaderLeavesCase SimulatedUnixPlatform.macOsArm64
+            closeEndsCallCase "CloseEndsSleepingAccept.cs" SimulatedUnixPlatform.linuxX64
+            closeEndsCallCase "CloseEndsSleepingAccept.cs" SimulatedUnixPlatform.macOsArm64
+            closeEndsCallCase "CloseEndsSleepingPipeTransfer.cs" SimulatedUnixPlatform.linuxX64
+            closeEndsCallCase "CloseEndsSleepingPipeTransfer.cs" SimulatedUnixPlatform.macOsArm64
             processIdCase None
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.
@@ -1467,9 +1529,9 @@ module TestImpureCases =
                     )
             }
             {
-                // The replay contract for the two random streams: under the
-                // default configuration these bytes are what every run hands
-                // the guest. The guest's header says what each row reads. A
+                // The replay contract for the two random entry points: under
+                // the default configuration these bytes are what every run
+                // hands the guest. The guest's header says what each row reads. A
                 // change here changes every `Guid.NewGuid` and `new Random()`
                 // a recorded trace observed, so it is never a test to update
                 // in passing.
@@ -1498,21 +1560,51 @@ module TestImpureCases =
 
                         hex.Length |> shouldEqual (2 * 88)
 
+                        // Each row is reproduced outside PawPrint by
+                        // docs/plans/2026-08-23-posix-kernel-extraction/entropy-streams-default.py,
+                        // from the pool's splitmix64 at `UnixSystem.defaultEntropySeed`,
+                        // glibc's lrand48 after `srand48(0)` (the clock starts
+                        // at the epoch and has not reached a second), and
+                        // CoreLib's xoshiro256**.
                         rows
                         |> shouldEqual
                             [
-                                // `Guid.NewGuid()`
+                                // `Guid.NewGuid()`: the pool's first 16 bytes.
                                 "21a2be4a9ff6b04c8989142347031794"
-                                // `new Random()`, then `Next()` twice
-                                "a053172130583170"
+                                // `new Random()`, then `Next()` twice: seeded with
+                                // the pool's next 32 bytes XOR lrand48.
+                                "84047026f637fd28"
                                 // `SystemNative_GetCryptographicallySecureRandomBytes`
-                                "03fe9d60505955dd0028b1de50b1afdbb62c446c2e9b787e"
+                                "e4a7fbf850d15909ea9edb3cf11673a9680052f95882cd74"
                                 // `SystemNative_GetNonCryptographicallySecureRandomBytes`
-                                "eaa27e740c9fcb53e132451fbe9a822c3cab16c93a1384c5"
+                                "3190ca8ed60c980af5341a9ba230b2ffb265b8fe253fd6fe"
                                 // `Guid.NewGuid()`
-                                "c4f8e4c736561e44a4a7fbf850d15909"
+                                "05394f5285586f49b6b2a36c38561daf"
                             ]
                     )
+            }
+            {
+                // minipal's /dev/urandom descriptor is the guest's to see and to
+                // close; the guest's header says what each check reads.
+                FileName = "MinipalUrandomDescriptorLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A secure read that writes part of the buffer and then fails,
+                // under the non-secure entry point, whose mask then goes over the
+                // buffer as it stands; the guest's header says how.
+                FileName = "MinipalPartialReadLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
             }
             {
                 // Reads every field `SystemNative_Stat`/`LStat` write, through a
@@ -2315,9 +2407,83 @@ module TestImpureCases =
                 AssertTerminalState =
                     Some (fun state ->
                         state.Kernel.Tasks
-                        |> Map.forall (fun _ task -> task.Parked.IsNone)
+                        |> Map.forall (fun thread _ -> (UnixTaskTable.parkedFor thread state.Kernel.Tasks).IsNone)
                         |> shouldEqual true
                     )
+            }
+            {
+                // Registrations on a Darwin process's kqueue through the shim:
+                // what a listener, a connected socket, a refused one and a peer's
+                // close report, converted to SocketEvents, and a removal of what
+                // is not registered. Every row measured on Darwin 27.0.0 by
+                // kevent-register.c.
+                FileName = "KqueueRegistrationDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no descriptor number or port, only results,
+                // counts, data and SocketEvents. Its send-buffer sizes are the
+                // defaults of a macOS host's net.inet.tcp.sendspace and lo0 MTU,
+                // which a host that changed either would not report.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Managed AcceptAsync over loopback on a Darwin kernel:
+                // SocketAsyncEngine registers the listener with its kqueue and waits
+                // for its READ to report each connection.
+                FileName = "SocketAsyncAcceptDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no port number, only that the two ends of
+                // each connection agree.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Managed ConnectAsync and AcceptAsync over loopback on a Darwin
+                // kernel, one connect completing and one refused, with no data
+                // carried. Each completes through SocketPal.TryCompleteConnect,
+                // which polls the socket for POLLOUT before reading SO_ERROR.
+                FileName = "SocketAsyncConnectDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts no port number, only that the ends agree and
+                // which SocketError the refusal raises.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `SystemNative_Poll`'s Darwin-flavour rows: Darwin's poll is built
+                // over kqueue, so nothing is reported unasked, a descriptor named
+                // twice reports into the later entry, and a reported HUP suppresses
+                // OUT. Every row measured on Darwin 27.0.0 by poll-darwin.c.
+                FileName = "SocketPollDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts revents and counts, and no descriptor number
+                // or port.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
             }
             {
                 // The event-buffer stride under the epoll backend, seen through the
@@ -3524,9 +3690,14 @@ module TestImpureCases =
                 AssertTerminalState =
                     Some (fun state ->
                         let _, expected =
-                            MinipalRandom.secureRandomBytes "test" 16 (KernelConfig.toKernel KernelConfig.Default)
+                            MinipalRandom.coreClrSecureRandomBytes
+                                "test"
+                                (ThreadId 0)
+                                16
+                                (KernelConfig.toKernel KernelConfig.Default)
 
-                        state.Kernel.Machine.EntropyPool |> shouldEqual expected.Machine.EntropyPool
+                        (UnixSystem.entropyPool state.Kernel.System)
+                        |> shouldEqual (UnixSystem.entropyPool expected.System)
                     )
             }
             {
@@ -4390,6 +4561,47 @@ module TestImpureCases =
 
         exn.Message |> shouldContainText "SystemNative_CopyFile"
         exn.Message |> shouldContainText "fcopyfile"
+
+    [<Test>]
+    let ``System.Native's copy from /dev/urandom, which never ends, stops the run`` () : unit =
+        // The shim's read/write loop copies until a read answers 0, which
+        // /dev/urandom never does: a real process spins there for ever, and
+        // PawPrint, which would spin inside one native call, refuses. The copy
+        // from /dev/null before it ends at once.
+        let source = Assembly.getEmbeddedResourceAsString "CopyFileFromUrandomLinux.cs" assy
+        let image = Roslyn.compile [ source ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "CopyFileFromUrandomLinux.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
+
+        let run (argv : string list) =
+            use peImage = new MemoryStream (image)
+
+            BoundedRun.run
+                loggerFactory
+                "CopyFileFromUrandomLinux.cs"
+                (Some "CopyFileFromUrandomLinux.cs")
+                peImage
+                { HostConfig.Default dotnetRuntimes with
+                    Guest =
+                        { GuestConfig.Default dotnetRuntimes with
+                            Argv = argv
+                        }
+                }
+            |> ExpectRun.ended
+
+        // The copies that end, including the one whose first write fails.
+        match run [] with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
+        | other -> failwith $"expected a normal exit, got %O{other}"
+
+        let exn = Assert.Catch (fun () -> run [ "endless" ] |> ignore<RunOutcome>)
+
+        exn.Message |> shouldContainText "SystemNative_CopyFile"
+        exn.Message |> shouldContainText "never reaches end-of-file"
 
     [<Test>]
     let ``a Linux kernel older than 5.3 sends System.Native's copy to sendfile, which stops the run`` () : unit =

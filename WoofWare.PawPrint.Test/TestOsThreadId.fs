@@ -282,7 +282,7 @@ module TestOsThreadId =
 
         idOf (ThreadId 0) state |> shouldEqual 2897490UL
 
-        UnixSystem.processId (EmulatedKernel.unix state.Kernel)
+        UnixSystem.processId state.Kernel.System
         |> shouldEqual UnixSystem.defaultProcessId
 
         let state, first =

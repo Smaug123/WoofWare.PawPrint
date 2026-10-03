@@ -63,6 +63,13 @@ type Syscall =
     /// `clonefile(2)`. The pathnames are their arguments' bytes, which this
     /// kernel copies in at the points it measured; `flags` is raw.
     | CloneFile of source : PathArgumentBytes * destination : PathArgumentBytes * flags : int
+    /// `setresuid(2)`. `None` is `(uid_t)-1`: leave that ID as it is.
+    | SetResUid of real : UserId option * effective : UserId option * saved : UserId option
+    /// `setresgid(2)`. `None` is `(gid_t)-1`: leave that ID as it is.
+    | SetResGid of real : GroupId option * effective : GroupId option * saved : GroupId option
+    /// `setgroups(2)` of a list of `size` groups, whose words are as the caller
+    /// read them.
+    | SetGroups of size : int * words : GroupListWords
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
@@ -86,6 +93,9 @@ type SyscallRefusal<'Task> =
     | CopyFileRange of CopyFileRangeRefusal
     | FileClone of FileCloneRefusal
     | CloneFile of CloneFileRefusal
+    /// `setresuid(2)` and `setresgid(2)` alike.
+    | SetIds of SetIdsRefusal
+    | SetGroups of SetGroupsRefusal
 
 /// A way this system's tables disagree with each other — a state no kernel
 /// could be in, and which the operations here exist to keep unreachable.
@@ -130,10 +140,12 @@ type UnixSystemDefect<'Task> =
     /// and one that fires too early is caught here.
     | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
     /// A description names an inode as the wrong kind of object: a
-    /// `OpenFileTarget.File` onto a directory, or an `OpenFileTarget.Directory`
-    /// onto anything else. `open` chooses the target by what it opened, so a
-    /// directory's position is always a place in its entries and never a byte
-    /// offset.
+    /// `OpenFileTarget.File` onto a directory or a device, an
+    /// `OpenFileTarget.Directory` onto anything but a directory, or an
+    /// `OpenFileTarget.CharacterDevice` onto anything but the node of the device
+    /// it names. `open` chooses the target by what it opened, so a directory's
+    /// position is always a place in its entries and never a byte offset, and a
+    /// device's operations are the driver's own.
     | DescriptionKindMismatch of description : OpenFileDescriptionId * inode : InodeNumber
     /// A socket's phase references a connection the connection table does not
     /// hold.
@@ -155,7 +167,8 @@ type UnixSystemDefect<'Task> =
     /// A connection in the table has an identity at or above the next one to
     /// allocate, so a future connect would mint a duplicate.
     | NextConnectionIdNotFresh of nextConnectionId : ConnectionId * existing : ConnectionId
-    /// A socket event registration records an ADD ordinal at or above the
+    /// A socket event registration, an epoll instance's or a kqueue's, records
+    /// an ADD ordinal at or above the
     /// next one to mint, so some future ADD would repeat it — and the
     /// ordinal's whole job is to order same-signal ties, which a repeat
     /// leaves unspecified.
@@ -198,7 +211,8 @@ type UnixSystemDefect<'Task> =
     /// positive: such a call returns at once.
     | ParkedKeventCountNotPositive of task : 'Task * maxEvents : int
     /// An open file description names an object this flavour's kernel does
-    /// not have: an epoll instance under Darwin, or a kqueue under Linux.
+    /// not have: an epoll instance or a device under Darwin, or a kqueue under
+    /// Linux.
     | DescriptionNotOfFlavour of
         description : OpenFileDescriptionId *
         target : OpenFileTarget *
@@ -215,10 +229,47 @@ type UnixSystemDefect<'Task> =
         fd : int *
         watched : OpenFileDescriptionId *
         current : OpenFileDescriptionId option
+    /// A task's parked Darwin `poll` registers a filter through `fd`, which is
+    /// not open (`target` is `None`) or names something other than a socket
+    /// whose filters are modelled or a pipe. Closing a descriptor removes its
+    /// registrations, a poll registers on nothing else, and a regular file's
+    /// filters are always ready, so they report before the call can sleep.
+    | ParkedKqueuePollRegistrationTarget of task : 'Task * fd : int * target : OpenFileTarget option
+    /// A task's parked Darwin `poll` attributes the registration `key` to
+    /// entry `entry`, which the call does not have.
+    | ParkedKqueuePollEntryOutOfRange of task : 'Task * key : (int * KqueueFilter) * entry : int
+    /// A task's parked Darwin `poll` lists `key` as activated where the list
+    /// may not hold it: `key` is not registered, is listed twice, or is not a
+    /// socket's filter (see `ParkedKqueuePoll.Active`).
+    | ParkedKqueuePollActiveMalformed of task : 'Task * key : (int * KqueueFilter)
+    /// A task's parked Darwin `poll` registers the socket filter `key`, which is
+    /// ready, and does not list it as activated: whatever made it ready did not
+    /// activate it, so the call would sleep through what a real one wakes for.
+    | ParkedKqueuePollActivationMissed of task : 'Task * key : (int * KqueueFilter)
     /// A task is parked in an `accept` on a description that is not a listening
     /// socket, which no accept could have produced and on which
     /// `WakeCondition.satisfied` crashes.
     | ParkedAcceptOnNonListener of task : 'Task * description : OpenFileDescriptionId
+    /// A task is asleep in an `accept` on a listener a close has drained
+    /// (`ListenState.Drained`): the close that drains a listener ends every
+    /// accept asleep on it, and `accept` refuses to sleep on one.
+    | ParkedAcceptOnDrainedListener of task : 'Task * description : OpenFileDescriptionId
+    /// Under Darwin, a task is asleep in an `accept` or a pipe transfer made
+    /// through `fd`, which no longer names the description the call sleeps on
+    /// (`current` is what it names now). Closing that descriptor ends the call,
+    /// so this is a park recorded without the syscall or a descriptor closed
+    /// around it.
+    | ParkedCallDescriptorRebound of
+        task : 'Task *
+        fd : int *
+        description : OpenFileDescriptionId *
+        current : OpenFileDescriptionId option
+    /// Under Linux, a task's `accept` or pipe transfer records that a close has
+    /// ended it (`SleepTarget.EndedByClose`), which only Darwin's close does.
+    | ParkedCallEndedByCloseUnderLinux of task : 'Task
+    /// Under Linux, a listener records that a close has drained it
+    /// (`ListenState.Drained`), which only Darwin's close does.
+    | ListenerDrainedUnderLinux of socket : SocketId
     /// A task is asleep in a pipe `read` or `write` through a description that
     /// names something other than the pipe end the call needs, which no such
     /// call could have produced and on which `WakeCondition.satisfied` crashes.
@@ -321,7 +372,7 @@ type UnixSystemDefect<'Task> =
     | ProtectedFilesNotOfFlavour of protection : ProtectedFiles * flavour : SimulatedUnixFlavour
 
 /// Why the directory a host named cannot be the one a simulated process starts
-/// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
+/// in. `UnixBootImage.withFileSystemAndCurrentDirectory` returns one instead of
 /// deciding what to say about it: the remedy is always "fix the knob you set
 /// this from", and only the caller knows what that knob is called.
 ///
@@ -387,7 +438,7 @@ module UnixSystem =
     /// The directory and its nodes have the modes a measured devtmpfs and devfs
     /// report: 0755 and 0555 respectively for the directory, 0666 for each
     /// node.
-    let private mountDeviceFileSystem
+    let internal mountDeviceFileSystem
         (mount : DeviceFileSystemMount)
         (bootTime : UnixTimestamp)
         (filesystem : VirtualFileSystem)
@@ -415,6 +466,224 @@ module UnixSystem =
             devices
             bootTime
             filesystem
+
+    /// The process's first task, which it started with: its thread-group
+    /// leader. See `UnixSystem.Leader`.
+    let leader<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : 'Task
+        =
+        system.Leader
+
+    /// Every task the process has, and what each is blocked in, which
+    /// `UnixTaskTable`'s queries read.
+    let tasks<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : Map<'Task, UnixTaskState>
+        =
+        system.Tasks
+
+    /// Every write that has reached a client draining one of the machine's
+    /// pipes, oldest first. See `UnixMachineState.delivered`.
+    let delivered<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : DeliveryLog
+        =
+        UnixMachineState.delivered system.Machine
+
+    /// The process's signal state, which `SignalState`'s queries read. See
+    /// `UnixProcessState.signals`.
+    let signals<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : SignalState<'Task, 'Handler>
+        =
+        UnixProcessState.signals system.Process
+
+    /// The environment the process was started with, entry by entry, in order.
+    /// See `UnixProcessState.environment`.
+    let environment<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixByteString list
+        =
+        UnixProcessState.environment system.Process
+
+    /// The path of the executable that started the process, or `None` if it has
+    /// none. See `UnixProcessState.processPath`.
+    let processPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : AbsoluteUnixPath option
+        =
+        UnixProcessState.processPath system.Process
+
+    /// The platform the machine impersonates. See `UnixMachineState.platform`.
+    let platform<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : SimulatedUnixPlatform
+        =
+        UnixMachineState.platform system.Machine
+
+    /// The number of logical processors the machine reports to the process. See
+    /// `UnixMachineState.processorCount`.
+    let processorCount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int
+        =
+        UnixMachineState.processorCount system.Machine
+
+    /// How long the machine has been up, to the nanosecond. See
+    /// `UnixMachineState.nanosecondsSinceBoot`.
+    let nanosecondsSinceBoot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int64
+        =
+        UnixMachineState.nanosecondsSinceBoot system.Machine
+
+    /// Let `nanoseconds` pass on the machine: every clock it has moves forward
+    /// by that much. See `UnixMachineState.advanceClock`, which says what it
+    /// refuses.
+    let advanceClock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (nanoseconds : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        { system with
+            Machine = UnixMachineState.advanceClock nanoseconds system.Machine
+        }
+
+    /// The process's descriptor table, which `FileDescriptorRegistry`'s queries
+    /// read: every descriptor it holds, and the open file description each
+    /// names.
+    let fileDescriptors<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileDescriptorRegistry
+        =
+        system.Process.FileDescriptors
+
+    /// The machine's filesystem, which `VirtualFileSystem`'s queries read.
+    let fileSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : VirtualFileSystem
+        =
+        system.Machine.FileSystem
+
+    /// The inode of the directory the process is standing in. See
+    /// `UnixProcessState.CurrentDirectoryInode`; the path `getcwd(3)` reports is
+    /// `UnixPathResolution.currentDirectoryPath`.
+    let currentDirectoryInode<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : InodeNumber
+        =
+        system.Process.CurrentDirectoryInode
+
+    /// Who the process is: all six of its IDs, and its supplementary groups.
+    let credentials<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : Credentials
+        =
+        system.Process.Credentials
+
+    /// The process's file-mode creation mask, without replacing it as `umask`
+    /// does.
+    let fileModeCreationMask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : PermissionBits
+        =
+        system.Process.Umask
+
+    /// The machine's entropy pool, from which every random-bytes syscall draws.
+    let entropyPool<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : EntropyPool
+        =
+        system.Machine.EntropyPool
+
+    /// The range a `bind(2)` of port 0 draws from, inclusive at both ends.
+    let ephemeralPortRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : uint16 * uint16
+        =
+        system.Machine.EphemeralPortRange
+
+    /// The machine's `somaxconn` sysctl. See `UnixMachineState.SoMaxConn`.
+    let soMaxConn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int
+        =
+        system.Machine.SoMaxConn
+
+    /// The mount the machine's root filesystem claims to be. See
+    /// `UnixMachineState.Mount`.
+    let mount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : EmulatedMount
+        =
+        system.Machine.Mount
+
+    /// The machine's `fs.protected_*` sysctls. See
+    /// `UnixMachineState.ProtectedFiles`.
+    let protectedFiles<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : ProtectedFiles
+        =
+        system.Machine.ProtectedFiles
+
+    /// Every pipe with an end open, by identity. See `UnixMachineState.Pipes`.
+    let pipes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : Map<PipeId, PipeState>
+        =
+        system.Machine.Pipes
+
+    /// The realtime clock's reading, to the nanosecond. See
+    /// `UnixMachineState.realtime`.
+    let realtime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixTimestamp
+        =
+        UnixMachineState.realtime system.Machine
+
+    /// Whether, and where, the machine's kernel screens a read or write buffer
+    /// before performing the operation. See `UnixMachineState.userBufferCheck`.
+    let userBufferCheck<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UserBufferCheck
+        =
+        UnixMachineState.userBufferCheck system.Machine
+
+    /// The socket `socketId` names. Loudly partial, as
+    /// `UnixMachineState.socket` is.
+    let socket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SocketDescription
+        =
+        UnixMachineState.socket socketId system.Machine
+
+    /// The pipe `pipeId` names. Loudly partial, as `UnixMachineState.pipe` is.
+    let pipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (pipeId : PipeId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : PipeState
+        =
+        UnixMachineState.pipe pipeId system.Machine
+
+    /// How ready the socket `socketId` is. See
+    /// `UnixMachineState.socketReadinessLevel`.
+    let socketReadinessLevel<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ReadinessLevel
+        =
+        UnixMachineState.socketReadinessLevel socketId system.Machine
+
+    /// What the descriptor `fd` names, or `None` if the process has no such
+    /// descriptor open.
+    let descriptorTarget<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : OpenFileTarget option
+        =
+        FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors
 
     /// The process ID, as `getpid(2)` reports it.
     ///
@@ -590,6 +859,18 @@ module UnixSystem =
             UnixNamespace.cloneFile source destination flags system
             |> answered
             |> Result.mapError SyscallRefusal.CloneFile
+        | Syscall.SetResUid (real, effective, saved) ->
+            UnixCredentials.setresuid real effective saved system
+            |> answered
+            |> Result.mapError SyscallRefusal.SetIds
+        | Syscall.SetResGid (real, effective, saved) ->
+            UnixCredentials.setresgid real effective saved system
+            |> answered
+            |> Result.mapError SyscallRefusal.SetIds
+        | Syscall.SetGroups (size, words) ->
+            UnixCredentials.setgroups size words system
+            |> answered
+            |> Result.mapError SyscallRefusal.SetGroups
 
     /// Every way this system's tables disagree with each other: the socket table
     /// and the pipe table against the descriptor table, each pipe and the pipe
@@ -623,6 +904,7 @@ module UnixSystem =
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
@@ -659,10 +941,13 @@ module UnixSystem =
             |> List.choose (fun (id, description) ->
                 match description.Target, flavour with
                 | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Darwin
-                | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Linux ->
+                | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Linux
+                // Only Linux's devtmpfs holds a device's node.
+                | OpenFileTarget.CharacterDevice _, SimulatedUnixFlavour.Darwin ->
                     Some (UnixSystemDefect.DescriptionNotOfFlavour (id, description.Target, flavour))
                 | OpenFileTarget.Epoll _, SimulatedUnixFlavour.Linux
                 | OpenFileTarget.Kqueue _, SimulatedUnixFlavour.Darwin
+                | OpenFileTarget.CharacterDevice _, SimulatedUnixFlavour.Linux
                 | OpenFileTarget.File _, _
                 | OpenFileTarget.Directory _, _
                 | OpenFileTarget.Socket _, _
@@ -689,6 +974,14 @@ module UnixSystem =
                     | Some (InodeContent.Directory _) -> None
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.CharacterDevice _)
+                    | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
+                | OpenFileTarget.CharacterDevice (inode, device) ->
+                    match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                    | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
+                    | Some (InodeContent.CharacterDevice (node, _)) when node = device -> None
+                    | Some (InodeContent.CharacterDevice _)
+                    | Some (InodeContent.Directory _)
+                    | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
@@ -771,6 +1064,20 @@ module UnixSystem =
                     None
             )
 
+        let drainedUnderLinux =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> []
+            | SimulatedUnixFlavour.Linux ->
+                system.Machine.Sockets
+                |> Map.toList
+                |> List.choose (fun (socketId, socket) ->
+                    match socket.Phase with
+                    | SocketPhase.Listening {
+                                                Drained = true
+                                            } -> Some (UnixSystemDefect.ListenerDrainedUnderLinux socketId)
+                    | _ -> None
+                )
+
         let connectionFreshness =
             system.Machine.Connections
             |> Map.toList
@@ -789,8 +1096,12 @@ module UnixSystem =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
-                | OpenFileTarget.Pipe _
-                | OpenFileTarget.Kqueue _ -> []
+                | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Pipe _ -> []
+                | OpenFileTarget.Kqueue state ->
+                    state.Registrations
+                    |> Map.toList
+                    |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
                 | OpenFileTarget.Epoll portState ->
                     portState.Registrations
                     |> Map.toList
@@ -822,6 +1133,30 @@ module UnixSystem =
             let descriptions =
                 FileDescriptorRegistry.descriptions system.Process.FileDescriptors
 
+            let darwin =
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> false
+                | SimulatedUnixFlavour.Darwin -> true
+
+            // Under Darwin a close of the descriptor a sleeping accept or pipe
+            // transfer was made through ends the call, so while it sleeps the
+            // descriptor still names what it sleeps on. Under Linux the close
+            // leaves it asleep, and the number is not consulted.
+            let enteredThrough (task : 'Task) (fd : int) (description : OpenFileDescriptionId) =
+                match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                | Some current when current = description -> []
+                | _ when not darwin -> []
+                | current ->
+                    [
+                        UnixSystemDefect.ParkedCallDescriptorRebound (task, fd, description, current)
+                    ]
+
+            let endedByClose (task : 'Task) =
+                if darwin then
+                    []
+                else
+                    [ UnixSystemDefect.ParkedCallEndedByCloseUnderLinux task ]
+
             system.Tasks
             |> Map.toList
             |> List.collect (fun (task, state) ->
@@ -842,6 +1177,7 @@ module UnixSystem =
                         | OpenFileTarget.File _
                         | OpenFileTarget.Directory _
                         | OpenFileTarget.Socket _
+                        | OpenFileTarget.CharacterDevice _
                         | OpenFileTarget.Pipe _ ->
                             [
                                 UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
@@ -874,6 +1210,7 @@ module UnixSystem =
                             | OpenFileTarget.Epoll _
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
+                            | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Socket _
                             | OpenFileTarget.Pipe _ ->
                                 [
@@ -898,6 +1235,7 @@ module UnixSystem =
                                     | OpenFileTarget.File _
                                     | OpenFileTarget.Directory _
                                     | OpenFileTarget.Socket _
+                                    | OpenFileTarget.CharacterDevice _
                                     | OpenFileTarget.Pipe _ -> []
 
                                 let rebound =
@@ -908,29 +1246,97 @@ module UnixSystem =
 
                                 target @ rebound
                     )
+                | Some (ParkedSyscall.KqueuePoll poll) ->
+                    let entries = List.length poll.Entries
+
+                    let socketOf (fd : int) : SocketId option =
+                        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                        | Some (OpenFileTarget.Socket socketId) -> Some socketId
+                        | Some _
+                        | None -> None
+
+                    let registrations =
+                        poll.Registrations
+                        |> Map.toList
+                        |> List.collect (fun ((fd, filter as key), registration) ->
+                            let target =
+                                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                                | Some (OpenFileTarget.Socket socketId) as target ->
+                                    match Map.tryFind socketId system.Machine.Sockets with
+                                    | Some socket when DarwinReadiness.modelsSocket socket ->
+                                        if
+                                            not (List.contains key poll.Active)
+                                            && Option.isSome (DarwinReadiness.ofSocket filter socketId system.Machine)
+                                        then
+                                            [ UnixSystemDefect.ParkedKqueuePollActivationMissed (task, key) ]
+                                        else
+                                            []
+                                    | Some _
+                                    | None ->
+                                        [ UnixSystemDefect.ParkedKqueuePollRegistrationTarget (task, fd, target) ]
+                                | Some (OpenFileTarget.Pipe _) -> []
+                                | target -> [ UnixSystemDefect.ParkedKqueuePollRegistrationTarget (task, fd, target) ]
+
+                            let entry =
+                                if registration.Entry >= 0 && registration.Entry < entries then
+                                    []
+                                else
+                                    [
+                                        UnixSystemDefect.ParkedKqueuePollEntryOutOfRange (
+                                            task,
+                                            key,
+                                            registration.Entry
+                                        )
+                                    ]
+
+                            target @ entry
+                        )
+
+                    let active =
+                        poll.Active
+                        |> List.indexed
+                        |> List.choose (fun (index, (fd, _ as key)) ->
+                            let repeated = poll.Active |> List.take index |> List.contains key
+
+                            if
+                                repeated
+                                || not (Map.containsKey key poll.Registrations)
+                                || Option.isNone (socketOf fd)
+                            then
+                                Some (UnixSystemDefect.ParkedKqueuePollActiveMalformed (task, key))
+                            else
+                                None
+                        )
+
+                    registrations @ active
                 | Some (ParkedSyscall.Accept accept) ->
-                    match Map.tryFind accept.Listener descriptions with
-                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, accept.Listener) ]
+                    match accept.Listener with
+                    | SleepTarget.EndedByClose _ -> endedByClose task
+                    | SleepTarget.Waiting (listener, fd) ->
+
+                    match Map.tryFind listener descriptions with
+                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, listener) ]
                     | Some description ->
                         let listening =
                             match description.Target with
                             | OpenFileTarget.Socket socketId ->
                                 match Map.tryFind socketId system.Machine.Sockets with
                                 | Some {
-                                           Phase = SocketPhase.Listening _
-                                       } -> true
+                                           Phase = SocketPhase.Listening listenState
+                                       } -> Some listenState.Drained
                                 | Some _
-                                | None -> false
+                                | None -> None
                             | OpenFileTarget.File _
                             | OpenFileTarget.Directory _
+                            | OpenFileTarget.CharacterDevice _
                             | OpenFileTarget.Pipe _
                             | OpenFileTarget.Kqueue _
-                            | OpenFileTarget.Epoll _ -> false
+                            | OpenFileTarget.Epoll _ -> None
 
-                        if listening then
-                            []
-                        else
-                            [ UnixSystemDefect.ParkedAcceptOnNonListener (task, accept.Listener) ]
+                        match listening with
+                        | None -> [ UnixSystemDefect.ParkedAcceptOnNonListener (task, listener) ]
+                        | Some true -> [ UnixSystemDefect.ParkedAcceptOnDrainedListener (task, listener) ]
+                        | Some false -> enteredThrough task fd listener
                 | Some (ParkedSyscall.PipeRead read) ->
                     let progress =
                         if read.Count > 0 then
@@ -939,13 +1345,16 @@ module UnixSystem =
                             [ UnixSystemDefect.ParkedPipeTransferProgress (task, read.Count, 0) ]
 
                     let target =
-                        match Map.tryFind read.Reader descriptions with
-                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, read.Reader) ]
+                        match read.Reader with
+                        | SleepTarget.EndedByClose _ -> endedByClose task
+                        | SleepTarget.Waiting (reader, fd) ->
+
+                        match Map.tryFind reader descriptions with
+                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, reader) ]
                         | Some description ->
                             match description.Target with
-                            | OpenFileTarget.Pipe (_, PipeEnd.Read) -> []
-                            | target ->
-                                [ UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, read.Reader, target) ]
+                            | OpenFileTarget.Pipe (_, PipeEnd.Read) -> enteredThrough task fd reader
+                            | target -> [ UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, reader, target) ]
 
                     progress @ target
                 | Some (ParkedSyscall.PipeWrite write) ->
@@ -958,15 +1367,16 @@ module UnixSystem =
                             ]
 
                     let target =
-                        match Map.tryFind write.Writer descriptions with
-                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, write.Writer) ]
+                        match write.Writer with
+                        | SleepTarget.EndedByClose _ -> endedByClose task
+                        | SleepTarget.Waiting (writer, fd) ->
+
+                        match Map.tryFind writer descriptions with
+                        | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, writer) ]
                         | Some description ->
                             match description.Target with
-                            | OpenFileTarget.Pipe (_, PipeEnd.Write) -> []
-                            | target ->
-                                [
-                                    UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, write.Writer, target)
-                                ]
+                            | OpenFileTarget.Pipe (_, PipeEnd.Write) -> enteredThrough task fd writer
+                            | target -> [ UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, writer, target) ]
 
                     progress @ target
             )
@@ -1202,6 +1612,7 @@ module UnixSystem =
                     | OpenFileTarget.Epoll _
                     | OpenFileTarget.File _
                     | OpenFileTarget.Directory _
+                    | OpenFileTarget.CharacterDevice _
                     | OpenFileTarget.Socket _ -> None
                 )
 
@@ -1325,6 +1736,7 @@ module UnixSystem =
         @ orphanConnections
         @ duplicateQueued
         @ phaseKindMismatches
+        @ drainedUnderLinux
         @ connectionFreshness
         @ ordinalFreshness
         @ ordinalDuplicates
@@ -1347,7 +1759,7 @@ module UnixSystem =
     /// end-to-end, and because a fixed default is a prerequisite for
     /// replayability.
     /// A client that wants to exercise multi-processor code paths raises it with
-    /// `UnixMachineState.withProcessorCount`.
+    /// `UnixBootImage.withProcessorCount`.
     [<Literal>]
     let defaultProcessorCount : int = 1
 
@@ -1356,7 +1768,7 @@ module UnixSystem =
     /// commonest `TASK_SIZE_MAX` of the platform's architecture, which is
     /// four-level paging on x86-64 and a 48-bit virtual address on arm64. A client
     /// simulating a machine with a different address-space width sets it with
-    /// `UnixMachineState.withUserAddressLimit`.
+    /// `UnixBootImage.withUserAddressLimit`.
     let defaultUserBufferCheck (platform : SimulatedUnixPlatform) : UserBufferCheck =
         if SimulatedUnixPlatform.screensUserBufferUpFront platform then
             match SimulatedUnixPlatform.architecture platform with
@@ -1393,7 +1805,7 @@ module UnixSystem =
     /// executable before first asking for its path.
     ///
     /// A client that wants a particular executable sets it with
-    /// `UnixProcessState.withProcessPath`.
+    /// `UnixBootImage.withProcessPath`.
     let defaultProcessPath : AbsoluteUnixPath option = None
 
     /// The range `bind(2)` draws from when asked for port 0, on a machine of
@@ -1433,7 +1845,7 @@ module UnixSystem =
     /// Instead the first interactive user each flavour creates: 1000 on the
     /// Ubuntu-shaped Linux, and 501 on macOS (measured, `id -u` of the first
     /// account on a macOS 26 machine, 2026-09-08). A client that wants root says
-    /// so with `UnixSystem.withCredentials`.
+    /// so with `UnixBootImage.withCredentials`.
     let defaultUserId (flavour : SimulatedUnixFlavour) : UserId =
         match flavour with
         | SimulatedUnixFlavour.Linux -> UserId.parseOrFail "UnixSystem.defaultUserId" 1000u
@@ -1458,7 +1870,7 @@ module UnixSystem =
     /// manager sets, and because it is the mask the existing seed defaults were
     /// written against (`SeedEntry.defaultPermsForRegularFile` is 0o666 with
     /// these bits cleared). Measured as the mask a process inherits on both
-    /// flavours. A client chooses otherwise with `UnixSystem.withUmask`, and
+    /// flavours. A client chooses otherwise with `UnixBootImage.withUmask`, and
     /// the process itself with `umask`.
     let defaultUmask : PermissionBits =
         PermissionBits.parseOrFail "UnixSystem.defaultUmask" 0o022
@@ -1467,7 +1879,7 @@ module UnixSystem =
     /// signal kills it: never, as under an `RLIMIT_CORE` of 0. A dump is a
     /// file the simulated process would leave behind, which a client has to
     /// ask for. A client chooses otherwise with
-    /// `UnixProcessState.withCoreDumps`.
+    /// `UnixBootImage.withCoreDumps`.
     let defaultCoreDumps : CoreDumps = CoreDumps.Suppressed
 
     /// Process ID a freshly-minted simulated process reports: 4242.
@@ -1491,12 +1903,13 @@ module UnixSystem =
     /// constant nobody chose for its bits is the least arbitrary one.
     ///
     /// A client whose recorded runs must replay bit-for-bit depends on this
-    /// value, because every byte the pool hands out follows from it.
+    /// value, because every byte the pool hands out follows from it. A client
+    /// chooses another with `UnixBootImage.withEntropySeed`.
     let defaultEntropySeed : uint64 = 0x243F6A8885A308D3UL
 
     /// The `pid_max` a freshly-minted Linux machine has: 4194304, the most Linux
     /// allows, so that thread IDs are reused only after that many have been
-    /// handed out. A client chooses otherwise with `withPidMax`.
+    /// handed out. The administrator chooses otherwise with `writePidMaxSysctl`.
     ///
     /// A Darwin machine has no such setting.
     let defaultPidMax : int32 =
@@ -1526,9 +1939,10 @@ module UnixSystem =
                 2, LaunchDescriptor.Drained
             ]
 
-    /// A simulated process on a machine of the given platform, before anything
-    /// has happened to it: no sockets, no connections, an empty filesystem, and
-    /// only the descriptors `launch` gives it open.
+    /// The boot image of a simulated process on a machine of the given platform:
+    /// no sockets, no connections, an empty filesystem, and only the
+    /// descriptors `launch` gives it open. Configure it with the setters in
+    /// `UnixBootImage`, then `UnixBootImage.boot` it for its first syscall.
     ///
     /// Each entry of `launch` is a descriptor the launcher set up before the
     /// process started, at that number: a pipe end of its own, whose other end
@@ -1539,10 +1953,10 @@ module UnixSystem =
     /// It has one task, `leader`, on the logical processor `leaderCpu`. The
     /// leader's thread ID is the process ID, `defaultProcessId`: on Linux because
     /// it always is, and on Darwin as the start of a quiet machine's counter,
-    /// which a client moves with `withLeaderThreadId`.
+    /// which a client moves with `UnixBootImage.withLeaderThreadId`.
     ///
-    /// The three fields the platform *fixes* are derived from it rather than
-    /// taken as arguments — `SoMaxConn`, `Mount`, and the platform
+    /// The fields the platform *fixes* are derived from it rather than
+    /// taken as arguments — `SoMaxConn`, `TcpSendSpace`, `Mount`, and the platform
     /// itself — because a machine whose flavour and those disagree is one no
     /// real system could be: `EmulatedFileSystemType.isReportableUnder` says
     /// outright that a Darwin kernel never reports tmpfs. Building the record
@@ -1554,15 +1968,15 @@ module UnixSystem =
     /// default machine of that flavour reports, not facts of its kernel image.
     /// The buffer check is the platform's default too, though its limit is a
     /// property of the machine's paging depth rather than of its kernel. All of
-    /// these are configuration a caller overrides
-    /// by record-update or the setters, which is also how a caller supplies a
-    /// non-empty filesystem or a different address list.
+    /// these are configuration a caller overrides with the setters in
+    /// `UnixBootImage`, which is also how a caller supplies a non-empty
+    /// filesystem or a different address list.
     let initial<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (platform : SimulatedUnixPlatform)
         (launch : Map<int, LaunchDescriptor>)
         (leader : 'Task)
         (leaderCpu : CpuId)
-        : UnixSystem<'Task, 'Handler>
+        : UnixBootImage<'Task, 'Handler>
         =
         // `SimulatedUnixPlatform.create` validates at construction, so a value
         // of the type is already a platform some Unix could be; this catches
@@ -1610,166 +2024,77 @@ module UnixSystem =
             )
 
         {
-            Machine =
+            System =
                 {
-                    Sockets = Map.empty
-                    Pipes = launched |> List.map (fun (_, pipeId, _, pipe) -> pipeId, pipe) |> Map.ofList
-                    NextPipeId = PipeId (int64 (List.length launched))
-                    Delivered = DeliveryLog.empty
-                    // Any start would do; one, because no filesystem hands out
-                    // inode 0.
-                    NextPipeInode = InodeNumber 1L
-                    PipeDevice = UnixMachineState.defaultPipeDevice flavour
-                    Connections = Map.empty
-                    NextConnectionId = ConnectionId 0L
-                    NextSocketEventRegistrationOrdinal = 0L
-                    NextParkOrdinal = ParkOrdinal 0L
-                    ThreadIds = threadIds
-                    NextSocketId = SocketId 0L
-                    NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
-                    EphemeralPortRange = defaultEphemeralPortRange flavour
-                    SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
-                    LocalAddresses = defaultLocalAddresses
-                    LocalRoutes = defaultLocalRoutes
-                    NanosecondsSinceBoot = 0L
-                    BootTime = UnixTimestamp.epoch
-                    EntropyPool = EntropyPool.ofSeed defaultEntropySeed
-                    ProcessorCount = defaultProcessorCount
-                    UserBufferCheck = defaultUserBufferCheck platform
-                    UnixPlatform = platform
-                    FileSystem = filesystem
-                    Mount = EmulatedMount.defaultFor flavour
-                    DeviceMount = deviceMount
-                    ProtectedFiles = ProtectedFiles.off
+                    Machine =
+                        {
+                            Sockets = Map.empty
+                            Pipes = launched |> List.map (fun (_, pipeId, _, pipe) -> pipeId, pipe) |> Map.ofList
+                            NextPipeId = PipeId (int64 (List.length launched))
+                            Delivered = DeliveryLog.empty
+                            // Any start would do; one, because no filesystem hands out
+                            // inode 0.
+                            NextPipeInode = InodeNumber 1L
+                            PipeDevice = UnixMachineState.defaultPipeDevice flavour
+                            Connections = Map.empty
+                            NextConnectionId = ConnectionId 0L
+                            NextSocketEventRegistrationOrdinal = 0L
+                            NextParkOrdinal = ParkOrdinal 0L
+                            ThreadIds = threadIds
+                            NextSocketId = SocketId 0L
+                            NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
+                            EphemeralPortRange = defaultEphemeralPortRange flavour
+                            SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
+                            TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
+                            LocalAddresses = defaultLocalAddresses
+                            LocalRoutes = defaultLocalRoutes
+                            NanosecondsSinceBoot = 0L
+                            BootTime = UnixTimestamp.epoch
+                            EntropyPool = EntropyPool.ofSeed defaultEntropySeed
+                            ProcessorCount = defaultProcessorCount
+                            UserBufferCheck = defaultUserBufferCheck platform
+                            UnixPlatform = platform
+                            FileSystem = filesystem
+                            Mount = EmulatedMount.defaultFor flavour
+                            DeviceMount = deviceMount
+                            ProtectedFiles = ProtectedFiles.off
+                        }
+                    Process =
+                        {
+                            FileDescriptors =
+                                launched
+                                |> List.map (fun (fd, pipeId, pipeEnd, _) -> fd, (pipeId, pipeEnd))
+                                |> Map.ofList
+                                |> FileDescriptorRegistry.ofLaunchedPipes
+                            Environment = []
+                            // The default current directory is the root, which every filesystem
+                            // has and no operation can remove, so the pair starts consistent
+                            // whatever else a host goes on to set.
+                            CurrentDirectoryInode = VirtualFileSystem.root filesystem
+                            ProcessPath = defaultProcessPath
+                            Credentials = defaultCredentials flavour
+                            Umask = defaultUmask
+                            ProcessId = defaultProcessId
+                            Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
+                            CoreDumps = defaultCoreDumps
+                        }
+                    Tasks = UnixTaskTable.add leader leaderCpu leaderThreadId Map.empty
+                    Leader = leader
                 }
-            Process =
-                {
-                    FileDescriptors =
-                        launched
-                        |> List.map (fun (fd, pipeId, pipeEnd, _) -> fd, (pipeId, pipeEnd))
-                        |> Map.ofList
-                        |> FileDescriptorRegistry.ofLaunchedPipes
-                    Environment = []
-                    // The default current directory is the root, which every filesystem
-                    // has and no operation can remove, so the pair starts consistent
-                    // whatever else a host goes on to set.
-                    CurrentDirectoryInode = VirtualFileSystem.root filesystem
-                    ProcessPath = defaultProcessPath
-                    Credentials = defaultCredentials flavour
-                    Umask = defaultUmask
-                    ProcessId = defaultProcessId
-                    Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
-                    CoreDumps = defaultCoreDumps
-                }
-            Tasks = UnixTaskTable.add leader leaderCpu leaderThreadId Map.empty
-            Leader = leader
         }
 
-    // The process's leader and the only task it has, failing with `context` if it
-    // has created a thread, even one that has since exited: every setter below is
-    // a boot-time setting, and moving the counter back after a thread has taken an
-    // id would hand that id out again.
-    let private soleTask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixTaskState
-        =
-        let leader = UnixTaskTable.get system.Leader system.Tasks
-
-        if
-            system.Tasks.Count <> 1
-            || not (ThreadIdAllocator.untouchedSince leader.OsThreadId system.Machine.ThreadIds)
-        then
-            failwith
-                $"%s{context}: the process has created a thread, but this can only be set before any thread has been created."
-
-        leader
-
-    /// Set the ID `getpid(2)` reports for the simulated process. On Linux this is
-    /// also the leader's thread ID, and the thread IDs the process's threads get
-    /// follow on from it.
-    ///
-    /// `context` prefixes the rejection a configuration earns; see
-    /// `withCredentials`.
-    ///
-    /// Refuses a process that has already created a thread, and on Linux a
-    /// process ID that is not below the machine's `pid_max`.
-    let withProcessId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (pid : ProcessId)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        let pid = ProcessId.assertValid context pid
-        let leader = soleTask context system
-
-        let tasks, machine =
-            match system.Machine.ThreadIds with
-            | ThreadIdAllocator.Linux (_, pidMax) ->
-                let leaderThreadId, threadIds = ThreadIdAllocator.startLinux context pidMax pid
-
-                Map.add
-                    system.Leader
-                    { leader with
-                        OsThreadId = leaderThreadId
-                    }
-                    system.Tasks,
-                { system.Machine with
-                    ThreadIds = threadIds
-                }
-            | ThreadIdAllocator.Darwin _ -> system.Tasks, system.Machine
-
-        { system with
-            Machine = machine
-            Process =
-                { system.Process with
-                    ProcessId = pid
-                }
-            Tasks = tasks
-        }
-
-    /// Set the leader's thread ID on Darwin, where it is unrelated to the process
-    /// ID; the IDs the process's threads get follow on from it.
-    ///
-    /// Refuses a Linux machine, where the leader's thread ID is the process ID
-    /// (set that with `withProcessId`); a process that has already created a
-    /// thread; and 0.
-    let withLeaderThreadId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (id : uint64)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        match system.Machine.ThreadIds with
-        | ThreadIdAllocator.Linux _ ->
-            failwith
-                $"%s{context}: on Linux the leader's thread ID is the process ID, so it cannot be set apart from it; set the process ID instead."
-        | ThreadIdAllocator.Darwin _ ->
-
-        let leader = soleTask context system
-        let leaderThreadId, threadIds = ThreadIdAllocator.startDarwin context id
-
-        { system with
-            Machine =
-                { system.Machine with
-                    ThreadIds = threadIds
-                }
-            Tasks =
-                Map.add
-                    system.Leader
-                    { leader with
-                        OsThreadId = leaderThreadId
-                    }
-                    system.Tasks
-        }
-
-    /// Set Linux's `pid_max`: thread IDs are below it, and once they reach it they
+    /// The machine's administrator writes Linux's `kernel.pid_max` sysctl
+    /// (through `/proc/sys`), which a sysctl allows at any time, the machine
+    /// running or not: thread IDs are below it, and once they reach it they
     /// start again from 300, skipping those still in use.
+    ///
+    /// Not configuration, which is `UnixBootImage`'s, but the outside world
+    /// acting on a running machine, as `UnixSystem.advanceClock` is.
     ///
     /// Refuses a Darwin machine, which has no such setting; a value Linux does not
     /// accept, which is anything outside 301 to 4194304; and a value at or below a
     /// live task's thread ID.
-    let withPidMax<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let writePidMaxSysctl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (context : string)
         (pidMax : int32)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1794,293 +2119,3 @@ module UnixSystem =
                     ThreadIds = threadIds
                 }
         }
-
-    /// Set who the simulated process is.
-    ///
-    /// `context` prefixes the rejection a configuration earns, and is the
-    /// client's to choose, so a host that has to fix one is told the name its
-    /// own configuration gives it.
-    ///
-    /// Refuses more supplementary groups than the platform's
-    /// `SimulatedUnixPlatform.supplementaryGroupLimit`, which no process on it
-    /// could hold. On Darwin it also refuses credentials whose real, effective
-    /// and saved IDs are not all the same: which of them a Darwin kernel
-    /// consults has not been measured, so this library does not model such a
-    /// process there.
-    let withCredentials<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (credentials : Credentials)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        let platform = system.Machine.UnixPlatform
-        let count = List.length credentials.SupplementaryGroups
-        let limit = SimulatedUnixPlatform.supplementaryGroupLimit platform
-
-        if count > limit then
-            failwith
-                $"%s{context}: %d{count} supplementary groups is more than the %d{limit} a process can hold on %O{SimulatedUnixPlatform.flavour platform} (setgroups(2) answers EINVAL above NGROUPS_MAX)."
-
-        match SimulatedUnixPlatform.flavour platform with
-        | SimulatedUnixFlavour.Linux -> ()
-        | SimulatedUnixFlavour.Darwin ->
-            // Measuring it needs a process that can change its user ID, which is
-            // root, and none has been available on Darwin.
-            let usersAgree =
-                credentials.RealUser = credentials.EffectiveUser
-                && credentials.SavedUser = credentials.EffectiveUser
-
-            let groupsAgree =
-                credentials.RealGroup = credentials.EffectiveGroup
-                && credentials.SavedGroup = credentials.EffectiveGroup
-
-            if not (usersAgree && groupsAgree) then
-                failwith
-                    $"%s{context}: the credentials %O{credentials} have real, effective and saved IDs that differ, which this library does not model on Darwin: which of them a Darwin kernel consults has not been measured. Give all three the same user ID and the same group ID."
-
-        { system with
-            Process =
-                { system.Process with
-                    Credentials = credentials
-                }
-        }
-
-    /// Set the file-mode creation mask the simulated process starts with: the
-    /// one its parent left it, which it can read and replace with `umask`.
-    ///
-    /// `context` prefixes the rejection a configuration earns; see
-    /// `withCredentials` for why the client supplies it.
-    ///
-    /// Refuses a mask with a bit the platform's `umask(2)` never stores
-    /// (`SimulatedUnixPlatform.umaskStoredBits`): on Linux, any of 0o7000. No
-    /// parent could have left such a mask, so it names a process that cannot
-    /// exist.
-    let withUmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (umask : PermissionBits)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        let umask = PermissionBits.assertValid context umask
-        let platform = system.Machine.UnixPlatform
-        let stored = SimulatedUnixPlatform.umaskStoredBits platform
-
-        if PermissionBits.toInt umask &&& ~~~(PermissionBits.toInt stored) <> 0 then
-            failwith
-                $"%s{context}: the mask 0o%04o{PermissionBits.toInt umask} holds a bit %O{SimulatedUnixPlatform.flavour platform}'s umask(2) never stores (it keeps only 0o%04o{PermissionBits.toInt stored}), so no process there could have it."
-
-        { system with
-            Process =
-                { system.Process with
-                    Umask = umask
-                }
-        }
-
-    /// Realise `seed` as this system's filesystem and start the simulated
-    /// process in `directory`, together.
-    ///
-    /// One operation rather than two because neither answer is well-formed
-    /// without the other: a current directory is an inode of *this* filesystem,
-    /// and a filesystem replaces every inode number the previous one handed
-    /// out.
-    ///
-    /// Takes the moment explicitly rather than reading
-    /// the machine's realtime clock, so that the result does not depend
-    /// on whether the caller happened to set the clock before or after the
-    /// filesystem — an ordering dependence between two `with` functions is
-    /// exactly the kind of thing that works until someone reorders the calls.
-    ///
-    /// The system's own platform decides whether the *path the caller wrote*
-    /// is one a process on that flavour could name at all, through its
-    /// `NAME_MAX`: 255 CJK characters is a legal directory name on Darwin and
-    /// too long on Linux. It is a check on that path and not on the graph —
-    /// the seed itself is realised without consulting any limit, so a
-    /// filesystem may perfectly well contain a directory whose name the
-    /// current directory could not spell.
-    ///
-    /// A **boot-time** operation: it crashes if the process still holds any
-    /// handle onto the filesystem being replaced — an open descriptor onto a
-    /// file or directory — because the new filesystem hands out its own inode
-    /// numbers, and such a handle would afterwards name a graph that no longer
-    /// exists or, undetectably, whatever the new one gave the same number. The
-    /// current directory is not such a handle: replacing it is the point.
-    ///
-    /// The walk is privileged and symlink-following, deliberately: this is a
-    /// host saying where its process was launched, not a process looking anything
-    /// up, and a process is launched into a directory its parent had already
-    /// reached. It is also the only moment the name is resolved, because after
-    /// it the process holds the *directory* rather than the name.
-    ///
-    /// So this records the inode alone. The path `getcwd` owes is derived from
-    /// it, which is what makes that path the physical one with every symlink
-    /// resolved away — measured on both kernels, `chdir("outer/lnk")` with
-    /// `lnk -> inner` is followed by `getcwd() == ".../outer/inner"`.
-    ///
-    /// `defaultOwner` owns the root and every seed entry that states no owner
-    /// of its own; see `VirtualFileSystem.ofFileSystemSeed`. It is an argument
-    /// rather than read off the process, so that the result does not depend on
-    /// whether the caller set the credentials before or after the filesystem.
-    let withFileSystemAndCurrentDirectory<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (createdAt : UnixTimestamp)
-        (defaultOwner : InodeOwner)
-        (seed : Map<DirectoryEntryName, SeedEntry>)
-        (directory : AbsoluteUnixPath)
-        (system : UnixSystem<'Task, 'Handler>)
-        : Result<UnixSystem<'Task, 'Handler>, CurrentDirectoryFault>
-        =
-        // The directory is admitted under the platform the process will run
-        // on, which is the system's own: `NAME_MAX` counts bytes on Linux and
-        // UTF-16 code units on Darwin, so a name one flavour admits is one the
-        // other refuses.
-        let platform = system.Machine.UnixPlatform
-
-        // Asserted here as well as by any caller that names its own knob: this
-        // is a package boundary, so the precondition cannot be left to the one
-        // client that happens to check it today.
-        let directory =
-            AbsoluteUnixPath.assertValid "UnixSystem.withFileSystemAndCurrentDirectory" directory
-
-        // A precondition on the *system*, not on the arguments, and the reason
-        // this is a boot-time operation: a new filesystem hands out its own
-        // inode numbers, so a handle onto the old graph would afterwards dangle
-        // or -- worse -- silently name an unrelated object given the same
-        // number. `checkInvariants` reports the first as `DanglingOpenInode`
-        // and cannot see the second at all, so this refuses rather than
-        // producing a system whose corruption is only sometimes detectable.
-        //
-        // Counted as *holders*, never as a set of inode numbers with the
-        // current directory subtracted out. The current directory is exempt
-        // because this operation replaces it, not because its inode number is;
-        // a descriptor or stream onto that same inode -- `opendir(".")` -- is a
-        // holder like any other, and subtracting the value would erase it from
-        // the reckoning along with the field that is genuinely exempt.
-        //
-        // Both holder kinds are read here rather than through
-        // `UnixProcessState.heldInodes`, which answers a set for the reaper's
-        // reachability question and so cannot distinguish them.
-        let strandedDescriptions =
-            system.Process.FileDescriptors
-            |> FileDescriptorRegistry.descriptions
-            |> Map.toList
-            |> List.choose (fun (id, description) ->
-                match description.Target with
-                | OpenFileTarget.File (inode, _)
-                | OpenFileTarget.Directory (inode, _) -> Some $"description %O{id} onto %O{inode}"
-                | OpenFileTarget.Kqueue _
-                | OpenFileTarget.Epoll _
-                | OpenFileTarget.Socket _
-                | OpenFileTarget.Pipe _ -> None
-            )
-
-        match strandedDescriptions with
-        | [] -> ()
-        | stranded ->
-            let listed = String.concat "; " stranded
-
-            failwith
-                $"UnixSystem.withFileSystemAndCurrentDirectory: the process still holds %d{List.length stranded} handle(s) onto the current filesystem (%s{listed}). Replacing the filesystem would leave them naming a graph that no longer exists, or silently naming whatever the new one gives the same inode number. This is a boot-time operation; close them first, or build the system with the filesystem it is to run on."
-
-        let limits = SimulatedUnixPlatform.pathLimits platform
-        let bindable = SimulatedUnixPlatform.bindableEntryNames platform
-        let flavour = SimulatedUnixPlatform.flavour platform
-
-        // Every name in the seed, under this flavour's NAME_MAX and then its
-        // rule for which names it binds -- the order a binding checks them in --
-        // before the graph is built: a name a kernel could never have created
-        // is not one its filesystem can hold. The first offender in `Map`
-        // order, which is the order the seed is realised in.
-        let rec firstImpossibleName (entries : Map<DirectoryEntryName, SeedEntry>) : CurrentDirectoryFault option =
-            entries
-            |> Map.toSeq
-            |> Seq.tryPick (fun (name, entry) ->
-                // A forged name is refused with the seed's context, as
-                // `ofFileSystemSeed` would refuse it, rather than reaching the
-                // measurement as a null.
-                let name =
-                    DirectoryEntryName.assertValid "UnixSystem.withFileSystemAndCurrentDirectory seed" name
-
-                if not (PathLimits.nameWithinLimit limits name) then
-                    Some (CurrentDirectoryFault.SeedNameTooLong (name, flavour))
-                elif not (BindableEntryNames.admits bindable name) then
-                    Some (CurrentDirectoryFault.SeedNameNotBindable (name, flavour))
-                else
-                    match entry with
-                    | SeedEntry.Directory (children, _, _) -> firstImpossibleName children
-                    | SeedEntry.File _
-                    | SeedEntry.Symlink _ -> None
-            )
-
-        match firstImpossibleName seed with
-        | Some fault -> Error fault
-        | None ->
-
-        match
-            VirtualFileSystem.ofFileSystemSeed createdAt defaultOwner seed
-            |> mountDeviceFileSystem system.Machine.DeviceMount createdAt
-        with
-        | Error (MountFault.CoveredEntryNotAnEmptyDirectory name) ->
-            Error (CurrentDirectoryFault.SeedCoversDeviceFileSystem name)
-        | Ok filesystem ->
-
-        let root = VirtualFileSystem.root filesystem
-
-        let located =
-            match
-                PathWalk.resolveExisting
-                    limits
-                    // Root, so that no directory's search bit refuses the walk:
-                    // it is privilege that exempts a caller, whoever owns what.
-                    (Credentials.ofIds
-                        UserId.root
-                        (GroupId.parseOrFail "UnixSystem.withFileSystemAndCurrentDirectory" 0u)
-                        [])
-                    // The host names where the process starts; no process follows
-                    // a link to get there, so no sysctl screens one.
-                    SymlinkProtection.Off
-                    root
-                    SymlinkPolicy.Follow
-                    (UnixPath.ofAbsolute directory)
-                    filesystem
-            with
-            | Ok inode ->
-                match VirtualFileSystem.tryGetContent inode filesystem with
-                | Some (InodeContent.Directory _) ->
-                    // The walk started at the root, so a directory it
-                    // reached has a path back by construction, and
-                    // `toVirtualFileSystem` asserts its own invariants besides.
-                    // Checked anyway: the alternative to crashing here is a
-                    // process whose `getcwd` reports ENOENT from its first
-                    // instruction.
-                    match VirtualFileSystem.pathOfDirectory inode filesystem with
-                    | Some _ -> Ok inode
-                    | None ->
-                        failwith
-                            $"UnixSystem.withFileSystemAndCurrentDirectory: \"%s{AbsoluteUnixPath.toEscaped directory}\" resolved to inode %O{inode}, but no path from the root reaches it. This is a bug in this library."
-                | Some (InodeContent.RegularFile _)
-                | Some (InodeContent.CharacterDevice _) -> Error CurrentDirectoryFault.NotADirectory
-                | Some (InodeContent.Symlink _) ->
-                    // `SymlinkPolicy.Follow` never finishes on one; `chdir` says
-                    // the same of the same walk.
-                    failwith
-                        $"UnixSystem.withFileSystemAndCurrentDirectory: the walk resolved \"%s{AbsoluteUnixPath.toEscaped directory}\" to inode %O{inode}, which is a symbolic link -- but it ran under SymlinkPolicy.Follow, which never finishes on one (this is a bug in this library)."
-                | None ->
-                    failwith
-                        $"UnixSystem.withFileSystemAndCurrentDirectory: resolving \"%s{AbsoluteUnixPath.toEscaped directory}\" gave inode %O{inode}, which the filesystem does not contain. This is a bug in this library; run VirtualFileSystem.checkInvariants."
-            | Error (PathFailure.Errno UnixError.ENAMETOOLONG) ->
-                Error (CurrentDirectoryFault.TooLong (SimulatedUnixPlatform.flavour platform))
-            | Error (PathFailure.Errno error) -> Error (CurrentDirectoryFault.DoesNotResolve error)
-            | Error (PathFailure.Refused refusal) -> Error (CurrentDirectoryFault.Path refusal)
-
-        located
-        |> Result.map (fun inode ->
-            { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
-                Process =
-                    { system.Process with
-                        CurrentDirectoryInode = inode
-                    }
-            }
-        )

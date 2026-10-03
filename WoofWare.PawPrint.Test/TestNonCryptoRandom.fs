@@ -135,63 +135,39 @@ module TestNonCryptoRandom =
         Check.One (propertyConfig, property)
 
     [<Test>]
-    let ``EmulatedKernel.initial seeds NonCryptoRandomState from NonCryptoRandom.initialState`` () : unit =
-        // The C library's stream is PawPrint's own, and its seed is part of
-        // the replay contract: pin it so a regression here is detected before
-        // it changes the bytes every `Random`/`HashCode`/Marvin seed draws.
-        EmulatedKernel.initial.NonCryptoRandomState
-        |> shouldEqual NonCryptoRandom.initialState
-
-        NonCryptoRandom.initialState |> shouldEqual 0x9E3779B97F4A7C15UL
-
-    [<Test>]
     let ``EmulatedKernel.initial's entropy pool is the library's, at the pinned seed`` () : unit =
         // One source of truth: PawPrint boots the pool `UnixSystem.initial`
         // boots, rather than restating the seed.
-        EmulatedKernel.initial.Machine.EntropyPool
-        |> shouldEqual
-            (UnixSystem.initial<ThreadId, NativeSignalHandler>
+        (UnixSystem.entropyPool EmulatedKernel.initial.System)
+        |> shouldEqual (
+            UnixSystem.initial<ThreadId, NativeSignalHandler>
                 UnixSystem.defaultUnixPlatform
                 UnixSystem.pipedStandardStreams
                 (ThreadId 0)
-                (CpuId 0))
-                .Machine.EntropyPool
+                (CpuId 0)
+            |> UnixBootImage.boot
+            |> UnixSystem.entropyPool
+        )
 
         // And that seed is part of PawPrint's replay contract, because every
         // `Guid.NewGuid` draws from the pool.
-        EmulatedKernel.initial.Machine.EntropyPool
+        (UnixSystem.entropyPool EmulatedKernel.initial.System)
         |> shouldEqual (EntropyPool.ofSeed 0x243F6A8885A308D3UL)
 
     [<Test>]
-    let ``EmulatedKernel.initial's pool and C library stream emit different bytes`` () : unit =
-        // `SystemNative_GetCryptographicallySecureRandomBytes` draws from the
-        // kernel pool and its non-crypto sibling from the C library's stream,
-        // so that non-crypto consumers (`new Random()`, `HashCode`, Marvin)
-        // can't shift the bytes `Guid.NewGuid` observes. Seeding the two alike
-        // would have them emit identical byte sequences from a fresh kernel,
-        // which is both surprising and a sign the streams got merged.
-        let pool, _ = MinipalRandom.secureRandomBytes "test" 64 EmulatedKernel.initial
-
-        let libc, _ =
-            NonCryptoRandom.drawBytes 64 EmulatedKernel.initial.NonCryptoRandomState
-
-        Seq.toArray pool |> shouldNotEqual libc
-
-    [<Test>]
-    let ``the kernel pool and the C library stream are the same generator`` () : unit =
+    let ``the kernel pool and PawPrint's splitmix64 are the same generator`` () : unit =
         // Two copies of splitmix64, one in each project that cannot see the
         // other. A seed must name the same byte stream in both, or one of them
         // is not splitmix64.
         let property (seed : uint64) (count : byte) : bool =
             let kernel =
-                { EmulatedKernel.initial with
-                    Machine =
-                        { EmulatedKernel.initial.Machine with
-                            EntropyPool = EntropyPool.ofSeed seed
-                        }
-                }
+                EmulatedKernel.initialImage
+                |> UnixBootImage.withEntropySeed seed
+                |> EmulatedKernel.boot
 
-            let pool, _ = MinipalRandom.secureRandomBytes "test" (int count) kernel
+            let pool, _ =
+                MinipalRandom.coreClrSecureRandomBytes "test" (ThreadId 0) (int count) kernel
+
             let libc, _ = NonCryptoRandom.drawBytes (int count) seed
             Seq.toArray pool = libc
 

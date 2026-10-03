@@ -138,6 +138,7 @@ module TestDirectoryDescription =
     let private withDirectory (platform : SimulatedUnixPlatform) (names : string list) : int * UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
             |> makeDirectory "d"
 
         let system =
@@ -204,6 +205,7 @@ module TestDirectoryDescription =
         for platform in platforms do
             let system =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
                 |> makeDirectory "d"
                 |> makeDirectory "d/sub"
 
@@ -533,6 +535,7 @@ module TestDirectoryDescription =
 
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
                 |> createFile "f"
 
             let readable, system = openAt reading "f" system
@@ -595,6 +598,7 @@ module TestDirectoryDescription =
         for platform in platforms do
             let system =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
                 |> makeDirectory "d"
                 |> createFile "d/a"
 
@@ -607,6 +611,7 @@ module TestDirectoryDescription =
         for platform in platforms do
             let system =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
                 |> createFile "f"
 
             match Answered.openPath directoryReading (rooted "f") 0 system with
@@ -634,6 +639,7 @@ module TestDirectoryDescription =
         for platform in platforms do
             let system =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
                 |> makeDirectory "d"
 
             for flags in unmodelled do
@@ -650,6 +656,7 @@ module TestDirectoryDescription =
         for platform in platforms do
             let system =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
                 |> makeDirectory "d"
 
             let word =
@@ -701,6 +708,7 @@ module TestDirectoryDescription =
     let ``a description's kind must match the inode it names`` () : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
             |> makeDirectory "d"
             |> createFile "f"
 

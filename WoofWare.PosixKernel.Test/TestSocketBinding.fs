@@ -19,14 +19,29 @@ module TestSocketBinding =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    /// A seed for a walk's own `System.Random`, drawn from the whole range so
+    /// that each run walks fresh sequences: FsCheck sizes an integer generator,
+    /// so at the default end size `NonNegativeInt` yields only 0 to 100, and
+    /// every run would walk some of the same 101 sequences. A seed has no meaningful shrink, since a smaller seed is a
+    /// different walk rather than a simpler one, so it is given no shrinker.
+    let private walkSeed : Arbitrary<int> =
+        Arb.fromGen (Gen.choose (0, System.Int32.MaxValue))
+
     let private platforms =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
-    /// The machine a simulated process boots with. Nothing the port allocator
-    /// does is flavour-dependent, so the flavour here is arbitrary; every row
-    /// that *is* flavour-dependent names its platform.
-    let private initialSystem : UnixSystem<int, string> =
+    /// The boot image of a simulated process. Nothing the port allocator does
+    /// is flavour-dependent, so the flavour here is arbitrary; every row that
+    /// *is* flavour-dependent names its platform.
+    let private initialImage : UnixBootImage<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+    let private initialSystem : UnixSystem<int, string> =
+        UnixBootImage.boot initialImage
+
+    /// The machine of a system booted with the ephemeral port range `range`.
+    let private machineWithPortRange (range : uint16 * uint16) : UnixMachineState =
+        (initialImage |> UnixBootImage.withEphemeralPortRange range |> UnixBootImage.boot).Machine
 
     let private endpoint (address : uint32) (port : uint16) : InternetEndpoint = InternetEndpoint.ofParts address port
 
@@ -121,6 +136,7 @@ module TestSocketBinding =
             {
                 Backlog = 8
                 Queue = []
+                Drained = false
             }
 
     let private establishedPhase = SocketPhase.Established (ConnectionId 0L)
@@ -341,7 +357,7 @@ module TestSocketBinding =
 
     [<Test>]
     let ``an ephemeral port is in range, free, and a function of the kernel alone`` () : unit =
-        let property (NonNegativeInt seed : NonNegativeInt) : bool =
+        let property (seed : int) : bool =
             let rng = System.Random seed
             let low = uint16 (1024 + rng.Next 1000)
             let high = low + uint16 (rng.Next 50)
@@ -349,9 +365,7 @@ module TestSocketBinding =
             // An arbitrary subset of the range is already taken.
             let taken = [ low..high ] |> List.filter (fun _ -> rng.Next 3 = 0) |> Set.ofList
 
-            let machine =
-                UnixMachineState.withEphemeralPortRange (low, high) initialSystem.Machine
-                |> withTaken taken
+            let machine = machineWithPortRange (low, high) |> withTaken taken
 
             match reserve machine with
             | Some (port, machine') ->
@@ -370,14 +384,13 @@ module TestSocketBinding =
                 // Only when the range really is exhausted.
                 [ low..high ] |> List.forall (fun port -> Set.contains port taken)
 
-        Check.One (propertyConfig, property)
+        Check.One (propertyConfig, Prop.forAll walkSeed property)
 
     /// Successive allocations do not repeat, which is what stops a bind of port
     /// 0 from handing two sockets one port before either has been recorded.
     [<Test>]
     let ``successive allocations advance`` () : unit =
-        let machine =
-            UnixMachineState.withEphemeralPortRange (40000us, 40004us) initialSystem.Machine
+        let machine = machineWithPortRange (40000us, 40004us)
 
         let rec take (n : int) (machine : UnixMachineState) (acc : uint16 list) : uint16 list =
             if n = 0 then
@@ -394,8 +407,7 @@ module TestSocketBinding =
     /// ...and wrap rather than running off the end.
     [<Test>]
     let ``allocation wraps at the top of the range`` () : unit =
-        let machine =
-            UnixMachineState.withEphemeralPortRange (40000us, 40001us) initialSystem.Machine
+        let machine = machineWithPortRange (40000us, 40001us)
 
         let _, machine = (reserve machine).Value
         let _, machine = (reserve machine).Value
@@ -405,8 +417,7 @@ module TestSocketBinding =
     [<Test>]
     let ``an exhausted range is refused rather than looping`` () : unit =
         let machine =
-            UnixMachineState.withEphemeralPortRange (40000us, 40010us) initialSystem.Machine
-            |> withTaken [ 40000us .. 40010us ]
+            machineWithPortRange (40000us, 40010us) |> withTaken [ 40000us .. 40010us ]
 
         reserve machine |> shouldEqual None
 
@@ -432,10 +443,7 @@ module TestSocketBinding =
     let ``an empty or zero-based ephemeral range is refused`` () : unit =
         let shouldFail (low : uint16) (high : uint16) (substring : string) : unit =
             let exn =
-                Assert.Throws<System.Exception> (fun () ->
-                    UnixMachineState.withEphemeralPortRange (low, high) initialSystem.Machine
-                    |> ignore<UnixMachineState>
-                )
+                Assert.Throws<System.Exception> (fun () -> machineWithPortRange (low, high) |> ignore<UnixMachineState>)
 
             exn.Message |> shouldContainText substring
 

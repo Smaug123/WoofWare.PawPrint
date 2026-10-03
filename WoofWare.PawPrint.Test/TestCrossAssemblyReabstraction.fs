@@ -143,6 +143,8 @@ public static class Cases
 
     public static int ConstrainedOnSealedClass() => Constrained(new SealedC());
 
+    public static int StaticOnValueType() => Static<SS>();
+
     public static int CaseInterfaceCall() =>
         Expect<EntryPointNotFoundException>(() => ThroughInterface(new C()));
 
@@ -325,12 +327,9 @@ public static class Program
     [<Test>]
     let ``a reabstraction through variance throws`` () : unit = agrees "CaseVariantReabstraction" 0
 
-    /// PawPrint's exact pass also accepts `IVDefBaz`'s body for `IVDef<string>`, which CoreCLR's
-    /// considers only once variance is allowed, so it sees two most specific bodies and declines to
-    /// choose between them.
     [<Test>]
     let ``a reabstraction in the exact pass hides a body the variance pass would find`` () : unit =
-        refuses "CaseExactReabstractionBeforeVariance" 0 [ "through a variant interface" ]
+        agrees "CaseExactReabstractionBeforeVariance" 0
 
     [<Test>]
     let ``a reabstraction reached only through variance does not hide an exact body`` () : unit =

@@ -207,7 +207,7 @@ module IntrinsicBody =
             )
 
     let private canReturn (body : MethodInstructions<TypeDefn>) : bool =
-        StackShape.reachable body
+        StackFlow.reachable body
         |> Set.exists (fun offset ->
             match body.Locations.[offset] with
             | IlOp.Nullary NullaryIlOp.Ret -> true

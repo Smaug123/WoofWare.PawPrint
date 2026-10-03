@@ -169,6 +169,7 @@ module TestEntropyAgainstHost =
 
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
 
             let flagsToTry : uint32 list = [ 0u .. 16u ] @ [ 0x8000_0000u ; UInt32.MaxValue ]
 
@@ -180,7 +181,7 @@ module TestEntropyAgainstHost =
                                 hostAnswer (int64 (getrandom (address storage where, unativeint count, flags)))
 
                             let modelled =
-                                match UnixEntropy.getRandom (classify where) count flags system with
+                                match UnixEntropy.getRandom 0 (classify where) count flags system with
                                 | Ok (GetRandomAnswer.Completed draw, _) -> Ok (int64 (EntropyDraw.count draw))
                                 | Ok (GetRandomAnswer.Failed error, _) ->
                                     Error (
@@ -259,6 +260,7 @@ module TestEntropyAgainstHost =
 
         let system : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let lengths : uint64 list =
             [

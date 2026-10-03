@@ -1,0 +1,102 @@
+A1 close rv=0 took=0ms
+A1 accepter asleep
+A2 close rv=0 took=0ms
+A2 accepter asleep
+A2 later non-blocking accept through B, after a connect: rv=fd errno=0
+A2 later blocking accept through B, a connect 50 ms in rv=fd errno=0
+A3 close rv=0 took=0ms
+A3 first accepter on A asleep
+A3 second accepter on A asleep
+A4 close rv=0 took=0ms
+A4 accepter on A, after the close asleep
+A4 accepter on B, after the close asleep
+A4 accepter on A, after a connect rv=fd errno=0
+A4 accepter on B, after a connect asleep
+A5 close rv=0 took=0ms
+A5 accepter on A asleep
+A5 poll of B asleep
+A7a (the ended accepter) asleep
+A7a non-blocking accept through B, empty queue: rv=-1 errno=EAGAIN
+A7b (the ended accepter) asleep
+A7b blocking accept through B, empty queue, 100 ms in asleep
+A7b the same, 100 ms after a connect rv=fd errno=0
+A7b then a non-blocking accept through B: rv=-1 errno=EAGAIN
+A7c (the ended accepter) asleep
+A7c blocking accept through B, a connection queued rv=fd errno=0
+A7d (the ended accepter) asleep
+A7d blocking accept through B, 100 ms in asleep
+A7d the same, 100 ms after SIGUSR1 rv=-1 errno=EINTR
+A7d final rv=-1 errno=EINTR
+A7d SA_RESTART (the ended accepter) asleep
+A7d SA_RESTART blocking accept through B, 100 ms in asleep
+A7d SA_RESTART the same, 100 ms after SIGUSR1 asleep
+A7d SA_RESTART final asleep
+A7e (the ended accepter) asleep
+A7e blocking accept through a fresh dup C of B, 100 ms in asleep
+A7e the same, after a connect rv=fd errno=0
+A7g (the ended accepter) asleep
+A7g trial 0: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=fd errno=0
+A7g second asleep
+A7g (the ended accepter) asleep
+A7g trial 1: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=fd errno=0
+A7g second asleep
+A7g (the ended accepter) asleep
+A7g trial 2: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=fd errno=0
+A7g second asleep
+A7g (the ended accepter) asleep
+A7g trial 3: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=fd errno=0
+A7g second asleep
+A7g (the ended accepter) asleep
+A7g trial 4: two blocking accepts through B, one connect: first returned, second asleep
+A7g first rv=fd errno=0
+A7g second asleep
+A7h (the ended accepter) asleep
+A7h listen(B, 16) again: rv=0 errno=0
+A7h blocking accept through B after the second listen, 100 ms in asleep
+A7h the same, after a connect rv=fd errno=0
+A7f (the ended accepter) asleep
+A7f poll(POLLIN|POLLOUT, 0) of B, empty queue: rv=0 revents=0
+A7f the same, a connection queued: rv=1 revents=0x1
+P1 close rv=0 took=0ms
+P1 reader on A asleep
+P1 later read through B, 3 bytes held rv=3 errno=0
+P2 close rv=0 took=0ms
+P2 sigpipe=none held_before_close=65536 held_after=65536
+P2 writer on A asleep
+P2 later 1-byte write through B, room made: rv=1 errno=0
+P3 close rv=0 took=0ms
+P3 sigpipe=none held_before_close=65536 held_after=65536
+P3 writer on A asleep
+P4 B kept close rv=0 took=0ms
+P4 B kept sigpipe=none held_before_close=65536 held_after=65536
+P4 B kept writer on A asleep
+P4 no dup close rv=0 took=0ms
+P4 no dup sigpipe=none held_before_close=65536 held_after=65536
+P4 no dup writer on A asleep
+P5 close rv=0 took=0ms
+P5 first reader on A asleep
+P5 second reader on A asleep
+P6 close rv=0 took=0ms
+P6 reader on A, after the close asleep
+P6 reader on B, after the close asleep
+P6 reader on A, after 3 bytes rv=3 errno=0
+P6 reader on B, after 3 bytes asleep
+P7 close rv=0 took=0ms
+P7 writer on A, after the close asleep
+P7 writer on B, after the close asleep
+P7 sigpipe=none (count 0)
+P7 writer on A, after room rv=1 errno=0
+P7 writer on B, after room asleep
+P8 reader close rv=0 took=0ms
+P8 reader: before atime=-1 mtime=-1 ctime=-1; after atime=-1 mtime=-1 ctime=-1 (ms from start, close ~1000)
+P8 reader on A asleep
+P8 writer close rv=0 took=0ms
+P8 writer: before atime=-4 mtime=-4 ctime=-4; after atime=-4 mtime=-4 ctime=-4 (ms from start, close ~1000)
+P8 writer on A asleep
+P9 close rv=0 took=0ms
+P9 reader on A asleep
+P9 poll of B asleep

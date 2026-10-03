@@ -40,6 +40,7 @@ module TestUnixSystemInitial =
 
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         system.Machine.SoMaxConn |> shouldEqual expected
 
@@ -54,6 +55,7 @@ module TestUnixSystemInitial =
 
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         system.Machine.Mount |> shouldEqual expected
 
@@ -70,16 +72,16 @@ module TestUnixSystemInitial =
     /// is carried as given.
     [<TestCaseSource(nameof platforms)>]
     let ``withSoMaxConn None takes the machine's own flavour's default`` (platform : SimulatedUnixPlatform) : unit =
-        let system : UnixSystem<int, string> =
+        let image : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let flavour = SimulatedUnixPlatform.flavour platform
 
-        let configured = system.Machine |> UnixMachineState.withSoMaxConn (Some 7)
-        configured.SoMaxConn |> shouldEqual 7
+        let configured = image |> UnixBootImage.withSoMaxConn (Some 7)
+        (UnixBootImage.boot configured).Machine.SoMaxConn |> shouldEqual 7
 
-        // Back to the default, from a machine that no longer carries it.
-        (configured |> UnixMachineState.withSoMaxConn None).SoMaxConn
+        // Back to the default, from an image that no longer carries it.
+        (configured |> UnixBootImage.withSoMaxConn None |> UnixBootImage.boot).Machine.SoMaxConn
         |> shouldEqual (UnixMachineState.defaultSoMaxConn flavour)
 
     /// The platform is fixed at construction and nothing validates it later,
@@ -93,6 +95,7 @@ module TestUnixSystemInitial =
                     UnixSystem.pipedStandardStreams
                     0
                     (CpuId 0)
+                |> UnixBootImage.boot
                 |> ignore<UnixSystem<int, string>>
             )
 
@@ -102,6 +105,7 @@ module TestUnixSystemInitial =
     let ``the platform asked for is the platform reported`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         system.Machine.UnixPlatform |> shouldEqual platform
 
@@ -116,7 +120,8 @@ module TestUnixSystemInitial =
     [<Test>]
     let ``the buffer check follows the platform's architecture`` () : unit =
         let checkOn (platform : SimulatedUnixPlatform) : UserBufferCheck =
-            (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0))
+            (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+             |> UnixBootImage.boot)
                 .Machine.UserBufferCheck
 
         checkOn SimulatedUnixPlatform.linuxX64
@@ -147,6 +152,7 @@ module TestUnixSystemInitial =
 
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         system.Machine.EphemeralPortRange |> shouldEqual (uint16 low, uint16 high)
         system.Machine.NextEphemeralPort |> shouldEqual (uint16 low)
@@ -167,6 +173,7 @@ module TestUnixSystemInitial =
     let ``both clocks boot at zero on every flavour`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         system.Machine.NanosecondsSinceBoot |> shouldEqual 0L
         system.Machine.BootTime |> shouldEqual UnixTimestamp.epoch
@@ -182,6 +189,7 @@ module TestUnixSystemInitial =
     let ``the first ephemeral port drawn is the bottom of the range`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let socket : SocketDescription =
             {
@@ -230,6 +238,7 @@ module TestUnixSystemInitial =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         system.Process.CurrentDirectoryInode
         |> shouldEqual (VirtualFileSystem.root system.Machine.FileSystem)
@@ -243,6 +252,7 @@ module TestUnixSystemInitial =
     let ``a fresh system is sound`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         UnixSystem.checkInvariants system |> shouldEqual []
 
@@ -253,6 +263,7 @@ module TestUnixSystemInitial =
     let ``only the standard streams are open`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         for fd, pipeEnd, client in
             [
@@ -302,7 +313,7 @@ module TestUnixSystemInitial =
 
         let property (launch : Map<int, LaunchDescriptor>, platform : SimulatedUnixPlatform) : unit =
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform launch 0 (CpuId 0)
+                UnixSystem.initial platform launch 0 (CpuId 0) |> UnixBootImage.boot
 
             let registry = system.Process.FileDescriptors
 
@@ -384,6 +395,7 @@ module TestUnixSystemInitial =
                     (Map.ofList [ -1, LaunchDescriptor.Drained ])
                     0
                     (CpuId 0)
+                |> UnixBootImage.boot
                 |> ignore
             )
 

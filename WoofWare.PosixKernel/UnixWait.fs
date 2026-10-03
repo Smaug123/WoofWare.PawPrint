@@ -26,7 +26,7 @@ module UnixWait =
     /// Refuses to replace a park of one syscall with a park of another, and
     /// otherwise accepts a re-park of the same syscall, which moves the task to
     /// the back of park order.
-    let park<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal park<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (parked : ParkedSyscall)
         (system : UnixSystem<'Task, 'Handler>)
@@ -66,8 +66,9 @@ module UnixWait =
     /// queues wake none while any task parked on the same queue has been woken
     /// and has not yet finished its call (that is, is parked but not in
     /// `asleep`), since that task will take it. The end of a pipe closing
-    /// wakes every waiter on the other end, under either flavour, and a close
-    /// that drains a kqueue wakes every waiter in `kevent` on it.
+    /// wakes every waiter on the other end, under either flavour; and an event
+    /// to report, or a close that drains a kqueue, wakes every waiter in
+    /// `kevent` on it.
     ///
     /// A woken task is owed no success: several waiters for one lock all wake,
     /// and all but one find it taken again and re-park.
@@ -134,7 +135,7 @@ module UnixWait =
         // descriptor each was entered through. And the waiters on one kqueue
         // showed no fixed order when an event arrived
         // (`signal-interrupt-requeue.c`, section C), which is every sleeper
-        // waking to race; a kqueue here holds no registration to deliver one.
+        // waking to race.
         //
         // Waiters on an `flock` are the opposite, deliberately: a release
         // wakes every blocker and they race, as `flock(2)` does, and which of
@@ -178,9 +179,12 @@ module UnixWait =
             | WakePrimitive.PipeReadWhileNonBlocking _
             | WakePrimitive.FlockGrantable _
             | WakePrimitive.KqueueDrained _
+            | WakePrimitive.KqueueEventDeliverable _
+            | WakePrimitive.KqueuePollReportable
             | WakePrimitive.DescriptorReady _
             | WakePrimitive.DeadlinePassed _
-            | WakePrimitive.SignalDeliverable -> None
+            | WakePrimitive.SignalDeliverable
+            | WakePrimitive.EndedByClose -> None
 
         let finishing : Set<ExclusiveWaitQueue> =
             system.Tasks
@@ -193,15 +197,24 @@ module UnixWait =
                     | Some {
                                Syscall = ParkedSyscall.SocketWait wait
                            } -> Some (ExclusiveWaitQueue.SocketEventPort wait.Port)
+                    // A call a close has ended waits on no queue.
                     | Some {
                                Syscall = ParkedSyscall.Accept accept
-                           } -> Some (ExclusiveWaitQueue.Listener accept.Listener)
+                           } ->
+                        SleepTarget.description accept.Listener
+                        |> Option.map ExclusiveWaitQueue.Listener
                     | Some {
                                Syscall = ParkedSyscall.PipeRead read
-                           } when linux -> pipeOf read.Reader |> Option.map ExclusiveWaitQueue.PipeReaders
+                           } when linux ->
+                        SleepTarget.description read.Reader
+                        |> Option.bind pipeOf
+                        |> Option.map ExclusiveWaitQueue.PipeReaders
                     | Some {
                                Syscall = ParkedSyscall.PipeWrite write
-                           } when linux -> pipeOf write.Writer |> Option.map ExclusiveWaitQueue.PipeWriters
+                           } when linux ->
+                        SleepTarget.description write.Writer
+                        |> Option.bind pipeOf
+                        |> Option.map ExclusiveWaitQueue.PipeWriters
                     | Some {
                                Syscall = ParkedSyscall.Flock _
                            }
@@ -210,6 +223,9 @@ module UnixWait =
                            }
                     | Some {
                                Syscall = ParkedSyscall.Poll _
+                           }
+                    | Some {
+                               Syscall = ParkedSyscall.KqueuePoll _
                            }
                     | Some {
                                Syscall = ParkedSyscall.PipeRead _

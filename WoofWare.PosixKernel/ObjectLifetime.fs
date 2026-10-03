@@ -163,7 +163,8 @@ module ObjectLifetime =
         | OpenFileTarget.Epoll _
         | OpenFileTarget.Kqueue _ -> Ok system
         | OpenFileTarget.File (inode, _)
-        | OpenFileTarget.Directory (inode, _) ->
+        | OpenFileTarget.Directory (inode, _)
+        | OpenFileTarget.CharacterDevice (inode, _) ->
             // The description may have been the last reference to an inode whose
             // last name went away earlier, which is what keeps `read` on an
             // unlinked descriptor working right up until the descriptor goes.
@@ -311,15 +312,12 @@ module ObjectLifetime =
             }
 
         // The FIN's edge, raised now that the survivor's level is the
-        // half-closed one. The signal filters by each registration's interest,
-        // so a survivor nobody watches — or one watched only for conditions the
+        // half-closed one. An epoll registration is queued by its interest and
+        // a kqueue registration activated only if its filter is then ready, so
+        // a survivor nobody watches — or one watched only for conditions the
         // half-closed level does not meet — records nothing.
         (released, establishedSurvivors)
-        ||> List.fold (fun system survivor ->
-            { system with
-                Process = UnixProcessState.signalSocketStateChange survivor system.Process
-            }
-        )
+        ||> List.fold (fun system survivor -> SocketWake.signal survivor SocketWake.PeerFin system)
         |> Ok
 
     /// Destroy each of `descriptions` that nothing references any more — no

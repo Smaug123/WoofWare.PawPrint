@@ -34,9 +34,6 @@ module TestDeviceFileSystem =
             Group = GroupId.parseOrFail context 0u
         }
 
-    let private asRoot (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixSystem.withCredentials context (Credentials.ofIds UserId.root (GroupId.parseOrFail context 0u) []) system
-
     let private reading : OpenFlags =
         {
             Access = FileAccessMode.ReadOnly
@@ -55,10 +52,15 @@ module TestDeviceFileSystem =
             Create = true
         }
 
-    /// A machine booted at `bootTime` whose root, owned by root as a real one
-    /// is, holds a file `f` and a directory `d`, and whose process is the
-    /// flavour's default unprivileged user.
-    let private bootedAt (platform : SimulatedUnixPlatform) (bootTime : UnixTimestamp) : UnixSystem<int, string> =
+    /// A machine booted at `bootTime` from an image `configure` configured,
+    /// whose root, owned by root as a real one is, holds a file `f` and a
+    /// directory `d`.
+    let private bootedAtWith
+        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
+        (platform : SimulatedUnixPlatform)
+        (bootTime : UnixTimestamp)
+        : UnixSystem<int, string>
+        =
         let seed =
             Map.ofList
                 [
@@ -66,15 +68,29 @@ module TestDeviceFileSystem =
                     name "d", SeedEntry.Directory (Map.empty, PermissionBits.parseOrFail context 0o777, None)
                 ]
 
-        let system : UnixSystem<int, string> =
+        let image : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> configure
 
-        match UnixSystem.withFileSystemAndCurrentDirectory bootTime rootOwner seed AbsoluteUnixPath.root system with
-        | Ok system -> system
+        match UnixBootImage.withFileSystemAndCurrentDirectory bootTime rootOwner seed AbsoluteUnixPath.root image with
+        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"booting failed: %A{fault}"
+
+    /// A machine booted at `bootTime` whose root, owned by root as a real one
+    /// is, holds a file `f` and a directory `d`, and whose process is the
+    /// flavour's default unprivileged user.
+    let private bootedAt (platform : SimulatedUnixPlatform) (bootTime : UnixTimestamp) : UnixSystem<int, string> =
+        bootedAtWith id platform bootTime
 
     let private booted (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         bootedAt platform (UnixTimestamp.ofSeconds 1_700_000_000L)
+
+    /// `booted`, with the process root rather than the default user.
+    let private bootedAsRoot (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        bootedAtWith
+            (UnixBootImage.withCredentials context (Credentials.ofIds UserId.root (GroupId.parseOrFail context 0u) []))
+            platform
+            (UnixTimestamp.ofSeconds 1_700_000_000L)
 
     let private stat (path : string) (system : UnixSystem<int, string>) : Result<FileStatusAnswer, StatRefusal> =
         UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText path) system
@@ -291,7 +307,7 @@ module TestDeviceFileSystem =
         // Measured on Linux as uid 1000 and as root alike, whether or not the
         // source exists and whether or not the destination is a name a real
         // devtmpfs holds.
-        for system in [ booted linux ; asRoot (booted linux) ] do
+        for system in [ booted linux ; bootedAsRoot linux ] do
             let rename (source : string) (destination : string) =
                 UnixNamespace.rename (PathArg.ofText source) (PathArg.ofText destination) system
 
@@ -314,7 +330,7 @@ module TestDeviceFileSystem =
     let ``the mount point itself follows the measured rows`` () : unit =
         // The root is root's, mode 0755: uid 1000 may not change its names.
         let unprivileged = booted linux
-        let root = asRoot unprivileged
+        let root = bootedAsRoot linux
 
         let removal (result : Result<SyscallAnswer * UnixSystem<int, string>, RemovalRefusal>) =
             match result with
@@ -358,7 +374,7 @@ module TestDeviceFileSystem =
     let ``a path ending in a dot component is on the filesystem it was taken from`` () : unit =
         // Linux's parent walk stops before the last component, so "/dev/.." and
         // "/dev/." are on the device filesystem whatever they reach.
-        for system in [ booted linux ; asRoot (booted linux) ] do
+        for system in [ booted linux ; bootedAsRoot linux ] do
             for source in [ "/dev/.." ; "/dev/." ] do
                 match UnixNamespace.rename (PathArg.ofText source) (PathArg.ofText "/d/x") system with
                 | Ok answer -> failed answer |> shouldEqual (Some UnixError.EXDEV)
@@ -376,13 +392,13 @@ module TestDeviceFileSystem =
         let unprivileged = booted linux
 
         let sticky =
-            match UnixPathResolution.chmod (PathArg.ofText "/") 0o1777 (asRoot unprivileged) with
+            match UnixPathResolution.chmod (PathArg.ofText "/") 0o1777 (bootedAsRoot linux) with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"chmod / as root: %A{other}"
 
+        // Root then gives up its privilege for an ordinary user's IDs.
         let sticky =
-            UnixSystem.withCredentials
-                context
+            Become.fully
                 (Credentials.ofIds (UserId.parseOrFail context 1000u) (GroupId.parseOrFail context 1000u) [])
                 sticky
 
@@ -395,14 +411,14 @@ module TestDeviceFileSystem =
         | Error (RenameRefusal.MountPoint _) -> ()
         | other -> failwith $"renaming /dev in a sticky root: expected a refusal, got %A{other}"
 
-        match UnixNamespace.rename (PathArg.ofText "/dev") (PathArg.ofText "/d/dev") (asRoot unprivileged) with
+        match UnixNamespace.rename (PathArg.ofText "/dev") (PathArg.ofText "/d/dev") (bootedAsRoot linux) with
         | Error (RenameRefusal.MountPoint _) -> ()
         | other -> failwith $"moving /dev to another directory: expected a refusal, got %A{other}"
 
     [<Test>]
     let ``no name in the device filesystem is created, removed or moved`` () : unit =
         let unprivileged = booted linux
-        let root = asRoot unprivileged
+        let root = bootedAsRoot linux
 
         // Its root is root's, mode 0755: uid 1000 is refused by the bits.
         match UnixNamespace.unlink (PathArg.ofText "/dev/null") unprivileged with
@@ -476,10 +492,6 @@ module TestDeviceFileSystem =
     let ``a device node is a node, whatever asks`` () : unit =
         let system = booted linux
 
-        match OpenFlagWords.openPath reading (PathArg.ofText "/dev/urandom") 0 system with
-        | Error (OpenRefusal.CharacterDevice (_, CharacterDevice.URandom)) -> ()
-        | other -> failwith $"open /dev/urandom: expected a refusal until devices open, got %A{other}"
-
         match
             OpenFlagWords.openPath
                 { reading with
@@ -510,7 +522,7 @@ module TestDeviceFileSystem =
         | Ok answer -> failed answer |> shouldEqual (Some UnixError.EPERM)
         | Error refusal -> failwith $"refused: %s{ChModRefusal.describe refusal}"
 
-        match UnixPathResolution.chmod (PathArg.ofText "/dev/null") 0o600 (asRoot system) with
+        match UnixPathResolution.chmod (PathArg.ofText "/dev/null") 0o600 (bootedAsRoot linux) with
         | Ok (SyscallAnswer.Completed 0L, changed) -> (reported "/dev/null" changed).Mode |> shouldEqual 0o020600
         | other -> failwith $"chmod /dev/null as root: %A{other}"
 
@@ -523,20 +535,22 @@ module TestDeviceFileSystem =
 
             UnixSystem.checkInvariants (
                 UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> UnixBootImage.boot
             )
             |> shouldEqual []
 
     [<Test>]
     let ``a seed's empty dev is the directory the mount covers, and a populated one is refused`` () : unit =
-        let system : UnixSystem<int, string> =
+        let system : UnixBootImage<int, string> =
             UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let epoch = UnixTimestamp.ofSeconds 0L
 
         let emptyDev = Map.ofList [ name "dev", SeedEntry.directory Map.empty ]
 
-        match UnixSystem.withFileSystemAndCurrentDirectory epoch rootOwner emptyDev AbsoluteUnixPath.root system with
-        | Ok booted ->
+        match UnixBootImage.withFileSystemAndCurrentDirectory epoch rootOwner emptyDev AbsoluteUnixPath.root system with
+        | Ok image ->
+            let booted = UnixBootImage.boot image
             (reported "/dev/null" booted).Mode |> shouldEqual 0o020666
             UnixSystem.checkInvariants booted |> shouldEqual []
         | Error fault -> failwith $"an empty dev was refused: %A{fault}"
@@ -546,7 +560,7 @@ module TestDeviceFileSystem =
                 SeedEntry.directory (Map.ofList [ name "x", SeedEntry.file ImmutableArray.Empty ])
                 SeedEntry.file ImmutableArray.Empty
             ] do
-            UnixSystem.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystemAndCurrentDirectory
                 epoch
                 rootOwner
                 (Map.ofList [ name "dev", populated ])

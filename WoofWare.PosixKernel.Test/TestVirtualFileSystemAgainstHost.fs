@@ -883,6 +883,7 @@ module TestVirtualFileSystemAgainstHost =
     let private modelReadLink (vfs : VirtualFileSystem) (relative : string) (capacity : int) : Result<int, int> =
         let system : UnixSystem<int, string> =
             UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         let system =
             { system with
@@ -2871,13 +2872,20 @@ module TestVirtualFileSystemAgainstHost =
 
     /// A system at this host's flavour and privilege, holding `vfs`.
     let private renameModelSystem (vfs : VirtualFileSystem) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
-            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
-
         let userId =
             match hostPrivilege () with
             | CallerPrivilege.Privileged -> 0u
             | CallerPrivilege.Unprivileged -> 1000u
+
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials
+                "renameModelSystem"
+                (Credentials.ofIds
+                    (UserId.parseOrFail "renameModelSystem" userId)
+                    (GroupId.parseOrFail "renameModelSystem" userId)
+                    [])
+            |> UnixBootImage.boot
 
         { system with
             Machine =
@@ -2889,12 +2897,6 @@ module TestVirtualFileSystemAgainstHost =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
-        |> UnixSystem.withCredentials
-            "renameModelSystem"
-            (Credentials.ofIds
-                (UserId.parseOrFail "renameModelSystem" userId)
-                (GroupId.parseOrFail "renameModelSystem" userId)
-                [])
 
     let private compareRenameRefusal (source : string) (destination : string) : RenameRefusal * RenameRefusal =
         let unique = Guid.NewGuid().ToString "N"
@@ -3185,13 +3187,20 @@ module TestVirtualFileSystemAgainstHost =
         |> Some
 
     let private modelChDirOutcome (vfs : VirtualFileSystem) (relative : string) : ChDirOutcome =
-        let system : UnixSystem<int, string> =
-            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
-
         let userId =
             match hostPrivilege () with
             | CallerPrivilege.Privileged -> 0u
             | CallerPrivilege.Unprivileged -> 1000u
+
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials
+                "chdir model"
+                (Credentials.ofIds
+                    (UserId.parseOrFail "chdir model" userId)
+                    (GroupId.parseOrFail "chdir model" userId)
+                    [])
+            |> UnixBootImage.boot
 
         let system =
             { system with
@@ -3204,12 +3213,6 @@ module TestVirtualFileSystemAgainstHost =
                         CurrentDirectoryInode = VirtualFileSystem.root vfs
                     }
             }
-            |> UnixSystem.withCredentials
-                "chdir model"
-                (Credentials.ofIds
-                    (UserId.parseOrFail "chdir model" userId)
-                    (GroupId.parseOrFail "chdir model" userId)
-                    [])
 
         match Answered.chdir (PathArg.ofPath (UnixPath.parseOrFail "test" relative)) system with
         | SyscallAnswer.Completed 0L, moved ->

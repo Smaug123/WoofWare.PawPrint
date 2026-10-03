@@ -19,9 +19,22 @@ module TestBind =
     let private epoch : UnixTimestamp = UnixTimestamp.ofMillisecondsSinceEpoch 0L
 
     /// A simulated process on the flavour asked for, before anything has
+    /// happened to it, booted with `credentials` if there are any.
+    let private systemOnAs
+        (credentials : Credentials option)
+        (platform : SimulatedUnixPlatform)
+        : UnixSystem<int, string>
+        =
+        let image = UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+        match credentials with
+        | None -> image
+        | Some credentials -> UnixBootImage.withCredentials context credentials image
+        |> UnixBootImage.boot
+
+    /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
-    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> = systemOnAs None platform
 
 
     let private platforms : SimulatedUnixPlatform list =
@@ -75,9 +88,17 @@ module TestBind =
                 }
         }
 
+    /// A fresh unbound TCP socket, and the descriptor onto it, in a process
+    /// booted with `credentials` if there are any.
+    let private streamAs
+        (credentials : Credentials option)
+        (platform : SimulatedUnixPlatform)
+        : int * UnixSystem<int, string>
+        =
+        withSocket (SocketId 0L) (socketOfKind SocketKind.Stream SocketPhase.Idle) (systemOnAs credentials platform)
+
     /// A fresh unbound TCP socket, and the descriptor onto it.
-    let private stream (platform : SimulatedUnixPlatform) : int * UnixSystem<int, string> =
-        withSocket (SocketId 0L) (socketOfKind SocketKind.Stream SocketPhase.Idle) (systemOn platform)
+    let private stream (platform : SimulatedUnixPlatform) : int * UnixSystem<int, string> = streamAs None platform
 
     let private bindOrFail
         (fd : int)
@@ -194,11 +215,10 @@ module TestBind =
         |> fst
         |> shouldEqual (BindAnswer.Bound (loopback 1024us))
 
-        let asRoot =
-            system
-            |> UnixSystem.withCredentials "test" (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
+        let rootFd, asRoot =
+            streamAs (Some (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])) platform
 
-        bindOrFail fd (loopback 1023us) asRoot
+        bindOrFail rootFd (loopback 1023us) asRoot
         |> fst
         |> shouldEqual (BindAnswer.Bound (loopback 1023us))
 
@@ -216,15 +236,13 @@ module TestBind =
             ]
 
         for real, effective, saved, expected in rows do
-            let fd, system = stream SimulatedUnixPlatform.linuxX64
-
             let credentials =
                 { Credentials.ofIds (UserId.parseOrFail context effective) (GroupId.parseOrFail context 1000u) [] with
                     RealUser = UserId.parseOrFail context real
                     SavedUser = UserId.parseOrFail context saved
                 }
 
-            let system = system |> UnixSystem.withCredentials context credentials
+            let fd, system = streamAs (Some credentials) SimulatedUnixPlatform.linuxX64
 
             bindOrFail fd (loopback 80us) system |> fst |> shouldEqual expected
 

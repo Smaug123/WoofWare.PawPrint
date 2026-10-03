@@ -1,6 +1,7 @@
 namespace WoofWare.PosixKernel.Test
 
 open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
@@ -22,6 +23,14 @@ module TestEphemeralPorts =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 200
 
+    /// A seed for a walk's own `System.Random`, drawn from the whole range so
+    /// that each run walks fresh sequences: FsCheck sizes an integer generator,
+    /// so at the default end size `NonNegativeInt` yields only 0 to 100, and
+    /// every run would walk some of the same 101 sequences. A seed has no meaningful shrink, since a smaller seed is a
+    /// different walk rather than a simpler one, so it is given no shrinker.
+    let private walkSeed : Arbitrary<int> =
+        Arb.fromGen (Gen.choose (0, System.Int32.MaxValue))
+
     let private platforms : SimulatedUnixPlatform list =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
@@ -37,12 +46,11 @@ module TestEphemeralPorts =
     /// A fresh system whose ephemeral range is `low..high`, so that the
     /// allocator wraps within a test.
     let private systemOn (platform : SimulatedUnixPlatform) (low : uint16, high : uint16) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
+        let system : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-        { system with
-            Machine = UnixMachineState.withEphemeralPortRange (low, high) system.Machine
-        }
+
+        system |> UnixBootImage.withEphemeralPortRange (low, high) |> UnixBootImage.boot
 
     let private newStream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
@@ -527,7 +535,7 @@ module TestEphemeralPorts =
         (platform : SimulatedUnixPlatform)
         : unit
         =
-        let property (NonNegativeInt seed : NonNegativeInt) : bool =
+        let property (seed : int) : bool =
             let rng = System.Random seed
             let system = systemOn platform (40000us, 40000us + uint16 (rng.Next 4))
             let listener0, system = listener (listenerPort 0) system
@@ -582,4 +590,4 @@ module TestEphemeralPorts =
 
             true
 
-        Check.One (propertyConfig, property)
+        Check.One (propertyConfig, Prop.forAll walkSeed property)

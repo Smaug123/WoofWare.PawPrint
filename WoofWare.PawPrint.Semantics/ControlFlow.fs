@@ -107,7 +107,7 @@ module ControlFlow =
     /// handler entry also lands on, pops that value, so only the successor the value chooses is
     /// followed. Every other conditional branch keeps both successors.
     ///
-    /// Unlike <c>StackShape.reachable</c>, which is the graph CoreCLR's importer builds and holds
+    /// Unlike <c>StackFlow.reachable</c>, which is the graph CoreCLR's importer builds and holds
     /// every handler, this is what a run can execute; it over-approximates that, and never omits
     /// an offset a run executes.
     /// </remarks>

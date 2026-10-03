@@ -23,6 +23,7 @@ module TestListen =
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
 
     let private platforms : SimulatedUnixPlatform list =
@@ -183,6 +184,7 @@ module TestListen =
                         {
                             Backlog = 8
                             Queue = queued
+                            Drained = false
                         }))
                 (systemOn platform)
 
@@ -272,6 +274,7 @@ module TestListen =
                             {
                                 Backlog = 8
                                 Queue = []
+                                Drained = false
                             }))
                     (systemOn platform)
 

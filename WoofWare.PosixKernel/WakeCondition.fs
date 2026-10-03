@@ -40,6 +40,12 @@ type WakePrimitive =
     /// a `close(2)` of a descriptor a `kevent` wait on it was entered through
     /// has ended every wait on it (see `KqueueState.Drained`).
     | KqueueDrained of kqueue : OpenFileDescriptionId
+    /// A wait for events on the kqueue the open file description `kqueue`
+    /// names would report at least one now (`KqueueQueue.hasDeliverableEvent`).
+    ///
+    /// Every waiter on one kqueue wakes for it, and the first to finish takes
+    /// what it reports; the rest wait again.
+    | KqueueEventDeliverable of kqueue : OpenFileDescriptionId
     /// The open file description `description` presents at least one of
     /// `conditions`, in the numbering `<poll.h>` and `<sys/epoll.h>` share, as
     /// `LinuxReadiness.ofDescription` reads its level.
@@ -48,6 +54,18 @@ type WakePrimitive =
     /// `POLLERR` and `POLLHUP` a poll reports unasked. It never waits on a
     /// socket event port, whose level is not modelled.
     | DescriptorReady of description : OpenFileDescriptionId * conditions : uint32
+    /// The Darwin `poll` the waiting task is asleep in would report something
+    /// were it to scan the kqueue it made for itself now
+    /// (`KqueuePoll.reportable`).
+    ///
+    /// Names no kernel object, as `SignalDeliverable` names none: the kqueue
+    /// is the waiter's own, kept in its park (`ParkedKqueuePoll`). Holds only
+    /// once a scan would add something to some entry's `revents`: a filter
+    /// activated whose report would add nothing does not wake the waiter here,
+    /// where a real kernel wakes it to find nothing and sleep again, having
+    /// consumed the registration. Answering when the waiter next scans is the
+    /// schedule in which it had not yet run.
+    | KqueuePollReportable
     /// The listening socket the open file description `listener` names holds a
     /// completed connection in its accept queue.
     ///
@@ -88,6 +106,15 @@ type WakePrimitive =
     /// What a write of at most `PIPE_BUF` bytes waits for besides room for all
     /// of it, which `PipeHasRoom` is.
     | PipeReadWhileNonBlocking of writer : OpenFileDescriptionId * reads : int64
+    /// Under Darwin, a close has ended the blocking `accept`, pipe `read` or
+    /// pipe `write` the waiting task is asleep in (`SleepTarget.EndedByClose`).
+    ///
+    /// Names no kernel object, as `SignalDeliverable` names none: the call
+    /// holds none any more, and what it answers is in the waiter's own park.
+    /// Every wait of those three calls waits for it, so that a condition handed
+    /// out as the call went to sleep still says when the close ends it. Never
+    /// holds under Linux, whose close leaves such a call asleep.
+    | EndedByClose
     /// The machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`)
     /// has reached `nanosecondsSinceBoot`.
     ///
@@ -153,6 +180,36 @@ module WakeCondition =
                 failwith
                     $"WakeCondition.satisfied: a task waits on open file description %O{description} for %A{primitive}, but the description names %A{target} rather than the %A{pipeEnd} end of a pipe (this is a bug in the caller that recorded the park)."
 
+    /// Whether a close has ended the call `task` is asleep in.
+    let private endedByClose<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        match
+            Map.tryFind task system.Tasks
+            |> Option.bind UnixTaskState.park
+            |> Option.map (fun park -> park.Syscall)
+        with
+        | Some (ParkedSyscall.Accept {
+                                         Listener = SleepTarget.EndedByClose _
+                                     })
+        | Some (ParkedSyscall.PipeRead {
+                                           Reader = SleepTarget.EndedByClose _
+                                       })
+        | Some (ParkedSyscall.PipeWrite {
+                                            Writer = SleepTarget.EndedByClose _
+                                        }) -> true
+        | Some (ParkedSyscall.Accept _)
+        | Some (ParkedSyscall.PipeRead _)
+        | Some (ParkedSyscall.PipeWrite _)
+        | Some (ParkedSyscall.SocketWait _)
+        | Some (ParkedSyscall.Kevent _)
+        | Some (ParkedSyscall.Flock _)
+        | Some (ParkedSyscall.Poll _)
+        | Some (ParkedSyscall.KqueuePoll _)
+        | None -> false
+
     // A primitive that names a description no longer in the table has had its
     // wait broken underneath it: see `satisfied`.
     let private holds<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -177,6 +234,8 @@ module WakeCondition =
                     registry
                 |> not
         | WakePrimitive.SocketEventDeliverable port -> SocketEventPort.hasDeliverableEvent port system
+        | WakePrimitive.KqueueEventDeliverable kqueue -> KqueueQueue.hasDeliverableEvent kqueue system
+        | WakePrimitive.KqueuePollReportable -> KqueuePoll.reportable task system
         | WakePrimitive.KqueueDrained kqueue ->
             match
                 FileDescriptorRegistry.descriptions system.Process.FileDescriptors
@@ -190,6 +249,7 @@ module WakeCondition =
                 | OpenFileTarget.Kqueue state -> state.Drained
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.Epoll _ ->
@@ -225,6 +285,7 @@ module WakeCondition =
                         $"WakeCondition.satisfied: a task is parked in an accept on socket %O{socketId}, which is in %A{phase} rather than listening. Nothing takes a live listener out of listening, so the park was recorded on a socket that was never one (this is a bug in the caller that recorded it)."
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->
@@ -252,6 +313,9 @@ module WakeCondition =
                 && (FileDescriptorRegistry.descriptions system.Process.FileDescriptors).[writer].NonBlocking
         | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
         | WakePrimitive.SignalDeliverable -> SyscallInterruption.wakes task system
+        // `satisfied` answers a call a close has ended before it asks any
+        // primitive, so this is asked only of one no close has ended.
+        | WakePrimitive.EndedByClose -> false
 
     /// The primitives of `condition`, the wake condition of `task`, which hold of
     /// `system`: empty exactly when the syscall that parked on it would get no
@@ -277,21 +341,40 @@ module WakeCondition =
     /// and it fails loudly rather than answering: the honest answers are
     /// "grantable", which wakes the task into an `EBADF` no kernel produces,
     /// and "not yet", which sleeps forever.
-    let rec satisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    ///
+    /// A task whose call a close has ended (`WakePrimitive.EndedByClose`)
+    /// answers that primitive alone: the call holds nothing any more, and the
+    /// descriptions its other primitives name may have gone with the close.
+    let satisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (condition : WakeCondition)
         (system : UnixSystem<'Task, 'Handler>)
         : Set<WakePrimitive>
         =
-        match condition with
-        | WakeCondition.Primitive primitive ->
-            if holds task primitive system then
-                Set.singleton primitive
+        let rec primitives (condition : WakeCondition) : WakePrimitive list =
+            match condition with
+            | WakeCondition.Primitive primitive -> [ primitive ]
+            | WakeCondition.AnyOf (first, rest) -> primitives first @ List.collect primitives rest
+
+        let rec live (condition : WakeCondition) : Set<WakePrimitive> =
+            match condition with
+            | WakeCondition.Primitive primitive ->
+                if holds task primitive system then
+                    Set.singleton primitive
+                else
+                    Set.empty
+            | WakeCondition.AnyOf (first, rest) ->
+                (live first, rest)
+                ||> List.fold (fun acc condition -> Set.union acc (live condition))
+
+        if endedByClose task system then
+            if List.contains WakePrimitive.EndedByClose (primitives condition) then
+                Set.singleton WakePrimitive.EndedByClose
             else
-                Set.empty
-        | WakeCondition.AnyOf (first, rest) ->
-            (satisfied task first system, rest)
-            ||> List.fold (fun acc condition -> Set.union acc (satisfied task condition system))
+                failwith
+                    $"WakeCondition.satisfied: a close has ended the call task %O{task} is asleep in, and it was asked about %A{condition}, which does not wait for that, so is not the wake condition of the call (this is a bug in the caller)."
+        else
+            live condition
 
     /// Every deadline in `condition`, in nanoseconds since boot, one per
     /// `DeadlinePassed` it contains.
@@ -304,6 +387,8 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.FlockGrantable _)
         | WakeCondition.Primitive (WakePrimitive.SocketEventDeliverable _)
         | WakeCondition.Primitive (WakePrimitive.KqueueDrained _)
+        | WakeCondition.Primitive (WakePrimitive.KqueueEventDeliverable _)
+        | WakeCondition.Primitive WakePrimitive.KqueuePollReportable
         | WakeCondition.Primitive (WakePrimitive.DescriptorReady _)
         | WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty _)
         | WakeCondition.Primitive (WakePrimitive.PipeHasBytes _)
@@ -311,7 +396,8 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.PipeHasRoom _)
         | WakeCondition.Primitive (WakePrimitive.PipeReadEndClosed _)
         | WakeCondition.Primitive (WakePrimitive.PipeReadWhileNonBlocking _)
-        | WakeCondition.Primitive WakePrimitive.SignalDeliverable -> []
+        | WakeCondition.Primitive WakePrimitive.SignalDeliverable
+        | WakeCondition.Primitive WakePrimitive.EndedByClose -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
 
     /// What the task holding `parked` is waiting for: what its syscall waits
@@ -329,6 +415,8 @@ module WakeCondition =
     /// the two disagreeing: a client cannot park a task on one object while
     /// polling for another, because the thing polled *is* the thing parked on.
     let ofPark (parked : ParkedSyscall) : WakeCondition =
+        let ended = WakeCondition.Primitive WakePrimitive.EndedByClose
+
         let own : WakeCondition list =
             match parked with
             | ParkedSyscall.Flock parked ->
@@ -347,13 +435,19 @@ module WakeCondition =
                         WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline)
                     ]
             | ParkedSyscall.Kevent wait ->
-                // No event can end it: the kqueue holds no registration, since
-                // `kevent` refuses every change.
+                let deliverable =
+                    WakeCondition.Primitive (WakePrimitive.KqueueEventDeliverable wait.Kqueue)
+
                 let drained = WakeCondition.Primitive (WakePrimitive.KqueueDrained wait.Kqueue)
 
                 match wait.Deadline with
-                | None -> [ drained ]
-                | Some deadline -> [ drained ; WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ]
+                | None -> [ deliverable ; drained ]
+                | Some deadline ->
+                    [
+                        deliverable
+                        drained
+                        WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline)
+                    ]
             | ParkedSyscall.Poll poll ->
                 let watched =
                     poll.Entries
@@ -373,21 +467,39 @@ module WakeCondition =
                     |> Option.toList
 
                 watched @ deadline
+            | ParkedSyscall.KqueuePoll poll ->
+                let deadline =
+                    poll.Deadline
+                    |> Option.map (WakePrimitive.DeadlinePassed >> WakeCondition.Primitive)
+                    |> Option.toList
+
+                WakeCondition.Primitive WakePrimitive.KqueuePollReportable :: deadline
             | ParkedSyscall.Accept accept ->
-                // No deadline: `SO_RCVTIMEO`, which bounds a Linux accept, is an
-                // option `setsockopt` refuses to set.
-                [ WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty accept.Listener) ]
+                match accept.Listener with
+                | SleepTarget.EndedByClose _ -> [ ended ]
+                | SleepTarget.Waiting (listener, _) ->
+                    // No deadline: `SO_RCVTIMEO`, which bounds a Linux accept, is an
+                    // option `setsockopt` refuses to set.
+                    [ WakeCondition.Primitive (WakePrimitive.AcceptQueueNonEmpty listener) ; ended ]
             | ParkedSyscall.PipeRead read ->
-                [
-                    WakeCondition.Primitive (WakePrimitive.PipeHasBytes read.Reader)
-                    WakeCondition.Primitive (WakePrimitive.PipeWriteEndClosed read.Reader)
-                ]
+                match read.Reader with
+                | SleepTarget.EndedByClose _ -> [ ended ]
+                | SleepTarget.Waiting (reader, _) ->
+                    [
+                        WakeCondition.Primitive (WakePrimitive.PipeHasBytes reader)
+                        WakeCondition.Primitive (WakePrimitive.PipeWriteEndClosed reader)
+                        ended
+                    ]
             | ParkedSyscall.PipeWrite write ->
-                [
-                    WakeCondition.Primitive (WakePrimitive.PipeHasRoom (write.Writer, write.Count, write.Written))
-                    WakeCondition.Primitive (WakePrimitive.PipeReadEndClosed write.Writer)
-                    WakeCondition.Primitive (WakePrimitive.PipeReadWhileNonBlocking (write.Writer, write.ReadsSeen))
-                ]
+                match write.Writer with
+                | SleepTarget.EndedByClose _ -> [ ended ]
+                | SleepTarget.Waiting (writer, _) ->
+                    [
+                        WakeCondition.Primitive (WakePrimitive.PipeHasRoom (writer, write.Count, write.Written))
+                        WakeCondition.Primitive (WakePrimitive.PipeReadEndClosed writer)
+                        WakeCondition.Primitive (WakePrimitive.PipeReadWhileNonBlocking (writer, write.ReadsSeen))
+                        ended
+                    ]
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

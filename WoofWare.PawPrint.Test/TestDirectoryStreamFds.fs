@@ -31,12 +31,13 @@ module TestDirectoryStreamFds =
         Map.ofList [ name "dir", SeedEntry.directory Map.empty ]
 
     let private kernel () : EmulatedKernel =
-        EmulatedKernel.initial
+        EmulatedKernel.initialImage
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             createdAt
             (InodeOwner.ofProcess (UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux))
             seed
             (absolute "/")
+        |> EmulatedKernel.boot
 
     /// Everything `SystemNative_OpenDir` does to kernel state: the library opens
     /// the directory, and the client allocates the native block standing in for
@@ -48,7 +49,7 @@ module TestDirectoryStreamFds =
                     (OpenFlagsPal.directoryStream kernel.UnixPlatform)
                     (PathArgumentBytes.Bytes (UnixPath.toByteString (UnixPath.parseOrFail "test" "/dir")))
                     0
-                    (EmulatedKernel.unix kernel)
+                    kernel.System
             with
             | Ok (SyscallAnswer.Completed fd, system) -> int fd, system
             | other -> failwith $"could not open the directory: %O{other}"
@@ -77,7 +78,7 @@ module TestDirectoryStreamFds =
     let private positionOf (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryPosition =
         let fd = EmulatedKernel.directoryStreamFd block kernel
 
-        match FileDescriptorRegistry.tryFindTarget fd kernel.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors kernel.System) with
         | Some (OpenFileTarget.Directory (_, position)) -> position
         | other -> failwith $"the stream's fd %d{fd} names %O{other}, not a directory"
 
@@ -130,7 +131,7 @@ module TestDirectoryStreamFds =
         kernel.DirectoryStreamFds |> shouldBeEmpty
 
         // `fcntl(F_GETFL)` of a closed descriptor is EBADF.
-        UnixSocket.isNonBlocking fd (EmulatedKernel.unix kernel) |> shouldEqual None
+        UnixSocket.isNonBlocking fd kernel.System |> shouldEqual None
 
     [<Test>]
     let ``a DIR* this kernel never issued is refused loudly`` () : unit =

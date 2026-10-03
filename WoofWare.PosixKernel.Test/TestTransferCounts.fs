@@ -69,16 +69,16 @@ module TestTransferCounts =
             SimulatedUnixPlatform.macOsArm64, None
         ]
 
-    let internal systemOn (platform : SimulatedUnixPlatform, limit : uint64 option) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
+    let internal imageOn (platform : SimulatedUnixPlatform, limit : uint64 option) : UnixBootImage<int, string> =
+        let image : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         match limit with
-        | None -> system
-        | Some limit ->
-            { system with
-                Machine = UnixMachineState.withUserAddressLimit limit system.Machine
-            }
+        | None -> image
+        | Some limit -> image |> UnixBootImage.withUserAddressLimit limit
+
+    let internal systemOn (machine : SimulatedUnixPlatform * uint64 option) : UnixSystem<int, string> =
+        imageOn machine |> UnixBootImage.boot
 
     let private contentOf (length : int) : byte[] =
         Array.init length (fun i -> byte (i + 1))
@@ -401,6 +401,7 @@ module TestTransferCounts =
             match result with
             | Ok (ReadAnswer.Completed bytes, position) -> Ok (Ok (List.ofSeq bytes), position)
             | Ok (ReadAnswer.Failed error, position) -> Ok (Error error, position)
+            | Ok (ReadAnswer.Drawn _, _) -> failwith "a read of a file drew from the entropy pool"
             | Error refusal -> Error refusal
 
         normalise expected = normalise actual
@@ -449,7 +450,7 @@ module TestTransferCounts =
                     | _, Error refusal -> Error refusal
 
             let actual =
-                match UnixReadWrite.pread fd case.Buffer case.Count offset system with
+                match PReadUnchanged.pread fd case.Buffer case.Count offset system with
                 | Ok answer -> Ok (answer, 0L)
                 | Error refusal -> Error refusal
 
@@ -509,7 +510,7 @@ module TestTransferCounts =
             let actual =
                 // A pwrite's admission says what a write's does, but for the
                 // sleeping write, which a file never makes.
-                match UnixReadWrite.admitPWrite fd case.Buffer case.Count offset system with
+                match UnixReadWrite.admitPWrite 0 fd case.Buffer case.Count offset system with
                 | Ok (PWriteAdmission.Answered answer) -> Ok (WriteAdmission.Answered answer)
                 | Ok (PWriteAdmission.Transfer count) -> Ok (WriteAdmission.Transfer count)
                 | Error (PWriteRefusal.Buffer refusal) -> Error refusal
@@ -604,7 +605,7 @@ module TestTransferCounts =
                 (machine, length, "write", outcome (WriteOutcomes.write fd bytes system))
                 |> shouldEqual (machine, length, "write", expected)
 
-                (machine, length, "pwrite", outcome (UnixReadWrite.pwrite fd bytes nearTop system))
+                (machine, length, "pwrite", outcome (UnixReadWrite.pwrite 0 fd bytes nearTop system))
                 |> shouldEqual (machine, length, "pwrite", expected)
 
         for machine, length, expected in
@@ -620,7 +621,7 @@ module TestTransferCounts =
             (machine, length, "write", outcome (WriteOutcomes.write fd bytes system))
             |> shouldEqual (machine, length, "write", expected)
 
-            (machine, length, "pwrite", outcome (UnixReadWrite.pwrite fd bytes Int64.MaxValue system))
+            (machine, length, "pwrite", outcome (UnixReadWrite.pwrite 0 fd bytes Int64.MaxValue system))
             |> shouldEqual (machine, length, "pwrite", expected)
 
     // --------------------------------------- the descriptors, as measured
@@ -759,11 +760,13 @@ module TestTransferCounts =
             match ReadOutcomes.read fd buffer count system with
             | Ok (ReadAnswer.Failed error, _) -> Seen.Errno error
             | Ok (ReadAnswer.Completed bytes, _) -> Seen.Moved bytes.Length
+            | Ok (ReadAnswer.Drawn _, _) -> failwith "a read drew from the entropy pool"
             | Error _ -> Seen.Refused
         | "pread" ->
-            match UnixReadWrite.pread fd buffer count 0L system with
+            match PReadUnchanged.pread fd buffer count 0L system with
             | Ok (ReadAnswer.Failed error) -> Seen.Errno error
             | Ok (ReadAnswer.Completed bytes) -> Seen.Moved bytes.Length
+            | Ok (ReadAnswer.Drawn _) -> failwith "a pread drew from the entropy pool"
             | Error _ -> Seen.Refused
         | "write" ->
             // `SIGPIPE` ignored, so that a write raising it returns.
@@ -797,7 +800,7 @@ module TestTransferCounts =
             | Ok other -> failwith $"unexpected write outcome %A{other}"
             | Error _ -> Seen.Refused
         | "pwrite" ->
-            match UnixReadWrite.admitPWrite fd buffer count 0L system with
+            match UnixReadWrite.admitPWrite 0 fd buffer count 0L system with
             | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) -> Seen.Errno error
             | Ok (PWriteAdmission.Answered (WriteAnswer.Completed written)) -> Seen.Moved (int written)
             | Ok (PWriteAdmission.Transfer count) -> Seen.Moved count
@@ -911,12 +914,10 @@ module TestTransferCounts =
             (count : uint64)
             : Seen
             =
-            let system = systemOn (platform, None)
-
             let system =
-                { system with
-                    Machine = UnixMachineState.withMount (Some (EmulatedMount.defaultOf fileSystem)) system.Machine
-                }
+                imageOn (platform, None)
+                |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fileSystem))
+                |> UnixBootImage.boot
 
             let fd, registry =
                 FileDescriptorRegistry.openDirectory rootInode system.Process.FileDescriptors
@@ -932,6 +933,7 @@ module TestTransferCounts =
             match ReadOutcomes.read fd UserBuffer.Mapped count system with
             | Ok (ReadAnswer.Failed error, _) -> Seen.Errno error
             | Ok (ReadAnswer.Completed bytes, _) -> Seen.Moved bytes.Length
+            | Ok (ReadAnswer.Drawn _, _) -> failwith "a read of a directory drew from the entropy pool"
             | Error (ReadRefusal.ScannedDirectoryPosition _) -> Seen.Refused
             | Error other -> failwith $"unexpected refusal %A{other}"
 
@@ -1004,9 +1006,10 @@ module TestTransferCounts =
                         }
                 }
 
-            match UnixReadWrite.pread fd UserBuffer.Mapped count offset system with
+            match PReadUnchanged.pread fd UserBuffer.Mapped count offset system with
             | Ok (ReadAnswer.Failed error) -> Seen.Errno error
             | Ok (ReadAnswer.Completed bytes) -> Seen.Moved bytes.Length
+            | Ok (ReadAnswer.Drawn _) -> failwith "a pread of a file drew from the entropy pool"
             | Error other -> failwith $"unexpected refusal %A{other}"
 
         let eisdir = Seen.Errno UnixError.EISDIR
@@ -1144,7 +1147,7 @@ module TestTransferCountsLarge =
         exn.Message |> shouldContainText "one call moves"
 
         let exn =
-            Assert.Throws<Exception> (fun () -> UnixReadWrite.pwrite fd bytes 0L system |> ignore)
+            Assert.Throws<Exception> (fun () -> UnixReadWrite.pwrite 0 fd bytes 0L system |> ignore)
 
         exn.Message |> shouldContainText "one call moves"
 

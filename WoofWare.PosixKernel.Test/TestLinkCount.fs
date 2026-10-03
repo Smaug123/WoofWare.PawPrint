@@ -74,15 +74,16 @@ module TestLinkCount =
 
     /// A fresh system on `platform`, its filesystem the flavour's default.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
+        let system : UnixBootImage<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
 
         let fsType =
             EmulatedFileSystemType.defaultFor (SimulatedUnixPlatform.flavour platform)
 
-        { system with
-            Machine = UnixMachineState.withMount (Some (EmulatedMount.defaultOf fsType)) system.Machine
-        }
+        system
+        |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+        |> UnixBootImage.boot
 
     let private applyToModel
         (held : Map<string, int>, system : UnixSystem<int, string>)

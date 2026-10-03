@@ -37,6 +37,7 @@ module TestUmask =
 
     let private fresh (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixBootImage.boot
 
     /// The bits the probe found each flavour keeps: `stored = argument & width`,
     /// with 0 mismatches over every 12-bit argument by both routes, and every
@@ -215,15 +216,19 @@ module TestUmask =
                 let storable = bits &&& ~~~(measuredWidth platform) = 0
 
                 if storable then
-                    let system = fresh platform |> UnixSystem.withUmask context (mode bits)
+                    let system =
+                        UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                        |> UnixBootImage.withUmask context (mode bits)
+                        |> UnixBootImage.boot
+
                     system.Process.Umask |> shouldEqual (mode bits)
                     UnixSystem.checkInvariants system |> shouldEqual []
                 else
                     let exn =
                         Assert.Throws<exn> (fun () ->
-                            fresh platform
-                            |> UnixSystem.withUmask "the client's name for it" (mode bits)
-                            |> ignore<UnixSystem<int, string>>
+                            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                            |> UnixBootImage.withUmask "the client's name for it" (mode bits)
+                            |> ignore<UnixBootImage<int, string>>
                         )
 
                     exn.Message.StartsWith ("the client's name for it: ", System.StringComparison.Ordinal)

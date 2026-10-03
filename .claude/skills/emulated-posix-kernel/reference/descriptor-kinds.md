@@ -7,11 +7,12 @@ are facts about *upstream source being misleading*.
 | descriptor kind | owned by |
 | --- | --- |
 | epoll instance (`epoll_create1`) | `TestLSeek` for the whence rows; `TestFileDescriptorRegistry`: `two socket event ports are two descriptions but one flock object`; `TestEpollCreate1`; `sourcesImpure/SocketEventPortLinux.cs` and `sourcesImpure/SocketEventsWaitLinux.cs` for the guest-visible answers |
-| kqueue (`kqueue`) | `TestKqueue`; `sourcesImpure/SocketEventPortDarwin.cs`, `sourcesImpure/SocketEventsWaitDarwin.cs` and `sourcesImpure/KqueueWaitDarwin.cs` for the guest-visible answers |
+| kqueue (`kqueue`) | `TestKqueue`, `TestKeventMeasured` and `TestKeventRegistration`; `sourcesImpure/SocketEventPortDarwin.cs`, `sourcesImpure/SocketEventsWaitDarwin.cs`, `sourcesImpure/KqueueWaitDarwin.cs`, `sourcesImpure/KqueueRegistrationDarwin.cs` and `sourcesImpure/SocketAsyncAcceptDarwin.cs` for the guest-visible answers |
 | socket | `TestFileDescriptorRegistry`: `two sockets are two descriptions and two flock objects`, `dup of a socket names the same socket`; `sourcesImpure/SocketCreate{Linux,Darwin}.cs`; `read`/`write` with no peer in `TestUnconnectedSocketTransfer` and `sourcesImpure/SocketUnconnectedTransfer.cs` |
 | the creatable socket triples | `TestSocketCreation` against `socketMatrix/{linux,darwin}.tsv` |
 | standard streams, regular files, directories | `TestVirtualFileSystem` and `TestVirtualFileSystemAgainstHost` |
 | pipe (`pipe2`) | `TestPipe` and `TestPipeAgainstHost`; `sourcesImpure/PipeRaw.cs` for the wiring |
+| `/dev/null`, `/dev/urandom` (Linux) | `TestDeviceDescriptors` and `TestDeviceDescriptorsAgainstHost` |
 
 ## Three things reading the kernel source gets wrong
 

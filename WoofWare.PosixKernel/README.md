@@ -39,17 +39,22 @@ Converting those to and from a client's own encoding is the client's business.
 
 ## Using it
 
-The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`:
+The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three parts:
 
-* `Machine` (`UnixMachineState`): the filesystem, sockets, connections and pipes, the clock, the entropy pool, and the platform being simulated;
-* `Process` (`UnixProcessState`): the descriptor table, credentials, umask, current directory, environment and signal state;
-* `Tasks`: the process's tasks, and what each is blocked in, if anything.
+* the machine (`UnixMachineState`): the filesystem, sockets, connections and pipes, the clock, the entropy pool, and the platform being simulated;
+* the process (`UnixProcessState`): the descriptor table, credentials, umask, current directory, environment and signal state;
+* the tasks (`UnixTaskState`): the process's tasks, and what each is blocked in, if anything.
+
+Those records are opaque outside the library.
+A client reads a system through `UnixSystem`'s queries, such as `leader`, `tasks`, `signals`, `fileDescriptors`, `delivered` and `descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described below.
 
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
 
-`UnixSystem.initial` builds a process that has not done anything yet.
-Configure it before its first syscall with the setters, such as `UnixSystem.withCredentials`, `UnixSystem.withFileSystemAndCurrentDirectory`, `UnixMachineState.withBootTime` and `UnixProcessState.withEnvironment`.
+`UnixSystem.initial` builds the *boot image* of a process that has not done anything yet: a `UnixBootImage`, which no syscall takes.
+Configure it with the setters in the `UnixBootImage` module, such as `withCredentials`, `withFileSystemAndCurrentDirectory`, `withBootTime` and `withEnvironment`, then `UnixBootImage.boot` it to get the `UnixSystem` its first syscall takes.
+Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
+What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixSystem.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
 
 ```fsharp
 open WoofWare.PosixKernel
@@ -61,9 +66,11 @@ let path (text : string) : PathArgumentBytes =
 
 // A process on a Linux x86-64 machine, before anything has happened to it:
 // a filesystem holding nothing but /dev, and descriptors 0, 1 and 2 as pipes. It has one task,
-// which this client names 0, on logical processor 0.
+// which this client names 0, on logical processor 0, and runs as root.
 let system : UnixSystem<int, unit> =
     UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+    |> UnixBootImage.withCredentials "example" (Credentials.ofIds UserId.root (GroupId.parseOrFail "example" 0u) [])
+    |> UnixBootImage.boot
 
 let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
     match UnixSystem.step 0 (Syscall.MkDir (path "/tmp", 0o755)) system with
@@ -72,7 +79,7 @@ let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
         printfn "mkdir returned %d" result
         system
     | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
-        let numbering = SimulatedUnixPlatform.rawErrnoNumbering system.Machine.UnixPlatform
+        let numbering = SimulatedUnixPlatform.rawErrnoNumbering (UnixSystem.platform system)
         printfn "mkdir failed with errno %d" (UnixError.toRawErrnoUnder numbering error)
         system
     | Ok (SyscallOutcome.WouldBlock _, _)
@@ -101,6 +108,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigreturn`, and the signals a task takes as it returns to user mode |
 | `UnixClock` | `clock_gettime` |
 | `UnixEntropy` | `getrandom`, `getentropy` |
+| `UnixCredentials` | `getresuid`, `getresgid`, `setresuid`, `setresgid`, `setgroups` |
 | `UnixTaskLifecycle` | starting a thread, a thread exiting, `exit_group` |
 | `UnixSystem` | `getpid`, `umask` |
 
@@ -143,6 +151,7 @@ The filesystem type is chosen separately (currently tmpfs, APFS or NFS), from th
 
 The kernel mounts a device filesystem over `/dev` at boot, as a real one does.
 On Linux it is a devtmpfs holding a node for each device the kernel has a driver for (`/dev/null` and `/dev/urandom`); since a real devtmpfs holds hundreds, any other name in it is refused rather than answered ENOENT, and so are listing it and adding or removing a name in it.
+Opening a node gives a descriptor whose syscalls are the driver's: `/dev/null` reads nothing and swallows every write, and `/dev/urandom` reads from the same entropy pool `getrandom` draws on.
 On Darwin it is devfs, which is not modelled, so any path that reaches `/dev` is refused.
 
 WoofWare.PosixKernel is intended to be fully POSIX-compliant eventually.

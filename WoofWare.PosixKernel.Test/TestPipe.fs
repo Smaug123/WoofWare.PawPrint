@@ -39,8 +39,11 @@ module TestPipe =
             SimulatedUnixPlatform.macOsArm64
         ]
 
-    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+    let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> =
         UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        imageOn platform |> UnixBootImage.boot
 
     let private flavourOf (system : UnixSystem<int, string>) : SimulatedUnixFlavour =
         SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
@@ -450,7 +453,7 @@ module TestPipe =
 
                         let parked =
                             {
-                                Writer = writer
+                                Writer = SleepTarget.Waiting (writer, fd)
                                 Buffer = buffer
                                 Count = count
                                 Written = takes
@@ -540,7 +543,10 @@ module TestPipe =
                         let parked =
                             {
                                 Reader =
-                                    FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                                    SleepTarget.Waiting (
+                                        FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get,
+                                        fd
+                                    )
                                 Buffer = buffer
                                 Count = count
                             }
@@ -810,10 +816,11 @@ module TestPipe =
     [<Test>]
     let ``fstat of a Linux pipe: 0600 FIFO, one inode for both ends, the pipe device, and nothing moves`` () : unit =
         let system =
-            systemOn SimulatedUnixPlatform.linuxX64
-            |> UnixSystem.withCredentials
+            imageOn SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withCredentials
                 "test"
                 (Credentials.ofIds (UserId.parseOrFail "test" 1234u) (GroupId.parseOrFail "test" 99u) [])
+            |> UnixBootImage.boot
 
         let (r, w), system = pipeOrFail 0 system
         let (r2, w2), system = pipeOrFail 0 system
@@ -1106,13 +1113,13 @@ module TestPipe =
                 | SimulatedUnixFlavour.Linux -> UnixError.ESPIPE
                 | SimulatedUnixFlavour.Darwin -> UnixError.EBADF
 
-            UnixReadWrite.pread r UserBuffer.Mapped 1UL 0L system
+            PReadUnchanged.pread r UserBuffer.Mapped 1UL 0L system
             |> shouldEqual (Ok (ReadAnswer.Failed UnixError.ESPIPE))
 
-            UnixReadWrite.pread w UserBuffer.Mapped 1UL 0L system
+            PReadUnchanged.pread w UserBuffer.Mapped 1UL 0L system
             |> shouldEqual (Ok (ReadAnswer.Failed tie))
 
-            match UnixReadWrite.admitPWrite r UserBuffer.Mapped 1UL 0L system with
+            match UnixReadWrite.admitPWrite 0 r UserBuffer.Mapped 1UL 0L system with
             | Ok (PWriteAdmission.Answered (WriteAnswer.Failed error)) -> error |> shouldEqual tie
             | other -> failwith $"%O{platform}: %A{other}"
 
@@ -1509,16 +1516,22 @@ module TestPipe =
         defectsOf forged
         |> shouldEqual [ UnixSystemDefect.PipeDeviceNotOfFlavour (5L, SimulatedUnixFlavour.Darwin) ]
 
-        Assert.Throws<System.Exception> (fun () -> UnixMachineState.withPipeDevice (Some 5L) darwin.Machine |> ignore)
+        Assert.Throws<System.Exception> (fun () ->
+            UnixBootImage.withPipeDevice (Some 5L) (imageOn SimulatedUnixPlatform.macOsArm64)
+            |> ignore
+        )
         |> ignore
 
+        let pipeDeviceBootedWith (device : int64 option) : int64 =
+            (imageOn SimulatedUnixPlatform.linuxX64
+             |> UnixBootImage.withPipeDevice device
+             |> UnixBootImage.boot)
+                .Machine.PipeDevice
+
+        pipeDeviceBootedWith (Some 42L) |> shouldEqual 42L
+        pipeDeviceBootedWith None |> shouldEqual 0xcL
+
         let linux, _ = withPipe SimulatedUnixPlatform.linuxX64
-
-        (UnixMachineState.withPipeDevice (Some 42L) linux.Machine).PipeDevice
-        |> shouldEqual 42L
-
-        (UnixMachineState.withPipeDevice None linux.Machine).PipeDevice
-        |> shouldEqual 0xcL
 
         let negative =
             { linux with

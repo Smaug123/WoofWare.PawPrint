@@ -29,8 +29,8 @@ module TestSystemTimeAsTicks =
     /// The machine a simulated process boots with, on Linux, whose realtime
     /// clock reports to the nanosecond. Darwin's reports whole microseconds, and
     /// has its own tests below.
-    let private initialMachine : UnixMachineState =
-        (EmulatedKernel.create SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped).Machine
+    let private initialMachine : UnixSystem<ThreadId, NativeSignalHandler> =
+        (EmulatedKernel.create SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped).System
 
     /// Fold an arbitrary int64 into `[0, bound]`. Deliberately not `abs`, which
     /// throws on `Int64.MinValue` — a value FsCheck does generate.
@@ -43,19 +43,25 @@ module TestSystemTimeAsTicks =
     /// millisecond offset, which is the unit a host configures it in, while the
     /// clock is in the 100 ns ticks PawPrint counts it in. Reached through the
     /// setters `KernelConfig.toKernel` and the driver loop use.
-    let private machineOn (platform : SimulatedUnixPlatform) (epochMs : int64) (clockTicks : int64) : UnixMachineState =
-        (EmulatedKernel.create platform StandardStreamsConfig.piped
+    let private machineOn
+        (platform : SimulatedUnixPlatform)
+        (epochMs : int64)
+        (clockTicks : int64)
+        : UnixSystem<ThreadId, NativeSignalHandler>
+        =
+        (EmulatedKernel.image platform StandardStreamsConfig.piped
          |> EmulatedKernel.withWallClockEpochMs epochMs
+         |> EmulatedKernel.boot
          |> EmulatedKernel.withVirtualClockTicks clockTicks)
-            .Machine
+            .System
 
-    let private machineWith (epochMs : int64) (clockTicks : int64) : UnixMachineState =
+    let private machineWith (epochMs : int64) (clockTicks : int64) : UnixSystem<ThreadId, NativeSignalHandler> =
         machineOn SimulatedUnixPlatform.linuxX64 epochMs clockTicks
 
     /// The guest-visible instant, computed exactly as CoreLib does but through
     /// the range-*checking* `DateTime` ctor, so a reading the private ctor would
     /// have silently corrupted surfaces here as an exception instead.
-    let private guestUtcNow (machine : UnixMachineState) : DateTime =
+    let private guestUtcNow (machine : UnixSystem<ThreadId, NativeSignalHandler>) : DateTime =
         DateTime (DateTime.UnixEpoch.Ticks + ClockPal.systemTimeAsTicks machine, DateTimeKind.Utc)
 
     /// Draw an epoch (ms) and a virtual-clock reading (100 ns ticks) whose
@@ -214,7 +220,7 @@ module TestSystemTimeAsTicks =
             let machine = machineWith epochMs clockTicks
 
             let ticks = ClockPal.systemTimeAsTicks machine
-            let stamp = UnixMachineState.realtime machine
+            let stamp = UnixSystem.realtime machine
 
             // Reassembled with the BCL's own arithmetic rather than by inverting
             // the implementation's division.
@@ -235,7 +241,7 @@ module TestSystemTimeAsTicks =
 
     [<Test>]
     let ``a default kernel stamps inodes at the Unix epoch`` () =
-        UnixMachineState.realtime initialMachine |> shouldEqual UnixTimestamp.epoch
+        UnixSystem.realtime initialMachine |> shouldEqual UnixTimestamp.epoch
 
     /// Did the thunk complete, rather than failing the way PawPrint reports a
     /// violated kernel invariant?
@@ -252,7 +258,7 @@ module TestSystemTimeAsTicks =
             let representable = epochMs >= 0L && epochMs <= maxEpochMs
 
             let accepted =
-                succeeds (fun () -> EmulatedKernel.withWallClockEpochMs epochMs EmulatedKernel.initial)
+                succeeds (fun () -> EmulatedKernel.withWallClockEpochMs epochMs EmulatedKernel.initialImage)
 
             accepted = representable
 
@@ -308,5 +314,5 @@ module TestSystemTimeAsTicks =
     /// on Darwin: only `clock_gettime` reports whole microseconds.
     [<Test>]
     let ``the Darwin flavour stamps inodes to the tick`` () =
-        UnixMachineState.realtime (machineOn SimulatedUnixPlatform.macOsArm64 0L 17L)
+        UnixSystem.realtime (machineOn SimulatedUnixPlatform.macOsArm64 0L 17L)
         |> shouldEqual (UnixTimestamp.createOrFail "TestSystemTimeAsTicks" 0L 1_700)

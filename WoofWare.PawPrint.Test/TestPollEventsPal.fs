@@ -220,134 +220,37 @@ module TestPollEventsPal =
     // The composition `SystemNative_Poll` answers with.
     // ---------------------------------------------------------------------
 
-    /// The task the polls here are made by.
-    let private poller : int = 1
-
-    let private linux : UnixSystem<int, string> =
-        let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-
-        let system =
-            match UnixTaskLifecycle.spawn system.Leader poller (CpuId 0) system with
-            | Ok (_, system) -> system
-            | Error error -> failwith $"spawning the poller failed with %O{error}"
-
-        { system with
-            Machine =
-                { system.Machine with
-                    LocalRoutes = []
+    /// Every combination of the five conditions a descriptor's level states.
+    let private everyLevel : ReadinessLevel list =
+        [
+            for bits in 0..31 ->
+                {
+                    In = bits &&& 0x01 <> 0
+                    Out = bits &&& 0x02 <> 0
+                    RdHup = bits &&& 0x04 <> 0
+                    Hup = bits &&& 0x08 <> 0
+                    Err = bits &&& 0x10 <> 0
                 }
-        }
+        ]
 
-    let private withSocket
-        (domain : SocketDomain)
-        (kind : SocketKind)
-        (phase : SocketPhase)
-        (system : UnixSystem<int, string>)
-        : int * UnixSystem<int, string>
-        =
-        let socketId = system.Machine.NextSocketId
-        let (SocketId raw) = socketId
+    /// `level` as Linux's `<poll.h>` numbers it, which below 0x10000 is
+    /// `<sys/epoll.h>`'s numbering.
+    let private linuxBits (level : ReadinessLevel) : int16 =
+        (if level.In then EpollEvents.In else 0u)
+        ||| (if level.Out then EpollEvents.Out else 0u)
+        ||| (if level.RdHup then EpollEvents.RdHup else 0u)
+        ||| (if level.Hup then EpollEvents.Hup else 0u)
+        ||| (if level.Err then EpollEvents.Err else 0u)
+        |> int16
 
-        let socket =
-            {
-                Domain = domain
-                Kind = kind
-                Protocol =
-                    match domain, kind with
-                    | SocketDomain.Unix, _ -> SocketProtocol.Default
-                    | _, SocketKind.Stream -> SocketProtocol.Tcp
-                    | _, _ -> SocketProtocol.Udp
-                Binding = None
-                ReuseAddress = false
-                Phase = phase
-            }
-
-        let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
-
-        fd,
-        { system with
-            Machine =
-                { system.Machine with
-                    Sockets = Map.add socketId socket system.Machine.Sockets
-                    NextSocketId = SocketId (raw + 1L)
-                }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
-
-    let private withFile
-        (accessMode : FileAccessMode)
-        (system : UnixSystem<int, string>)
-        : int * UnixSystem<int, string>
-        =
-        let fd, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) accessMode system.Process.FileDescriptors
-
-        fd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
-
-    /// What `SystemNative_Poll` answered for one entry before the library spoke
-    /// Linux's own alphabet: the six-bit projection of the epoll level, as the
-    /// guest-visible behaviour this composition must keep bit for bit. `IN` and
-    /// `OUT` when asked for; `ERR` and `HUP` whatever was asked; `PRI` never;
-    /// `NVAL` alone for a descriptor that is not open; nothing for a negative
-    /// one.
+    /// What `SystemNative_Poll` answered for one entry at `level` before the
+    /// library spoke Linux's own alphabet: the six-bit projection of the level,
+    /// as the guest-visible behaviour this composition must keep bit for bit.
+    /// `IN` and `OUT` when asked for; `ERR` and `HUP` whatever was asked;
+    /// `PRI` never.
     ///
     /// `pal` is the pinned `PollEvents` values, read once by the caller.
-    let private sixBitProjection
-        (pal : Map<string, int16>)
-        (system : UnixSystem<int, string>)
-        (fd : int)
-        (palEvents : int16)
-        : int16
-        =
-        if fd < 0 then
-            0s
-        else
-
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
-        | None -> pal.["PAL_POLLNVAL"]
-        | Some (_, description) ->
-
-        let level =
-            match description.Target with
-            | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId system.Machine
-            | OpenFileTarget.File _
-            | OpenFileTarget.Directory _ ->
-                { ReadinessLevel.none with
-                    In = true
-                    Out = true
-                }
-            | OpenFileTarget.Epoll _
-            | OpenFileTarget.Kqueue _ -> failwith "TestPollEventsPal: no row polls a socket event port."
-            | OpenFileTarget.Pipe (pipeId, _) ->
-                // The standard streams of a process launched onto pipes: input
-                // whose writer has gone and supplied nothing, and output a
-                // client drains.
-                match (UnixMachineState.pipe pipeId system.Machine).Origin with
-                | PipeOrigin.Launched (_, ClientEnd.WriteEndClosed) ->
-                    { ReadinessLevel.none with
-                        Hup = true
-                    }
-                | PipeOrigin.Launched (_, ClientEnd.Draining) ->
-                    { ReadinessLevel.none with
-                        Out = true
-                    }
-                | PipeOrigin.Launched (_, ClientEnd.Supplying _) ->
-                    failwith "TestPollEventsPal: no row launches a guest with bytes on its standard input."
-                | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed) ->
-                    failwith "TestPollEventsPal: no row launches a guest with an output stream whose reader has gone."
-                | PipeOrigin.Made _ -> failwith "TestPollEventsPal: no row polls a pipe the guest made."
-
+    let private sixBitProjection (pal : Map<string, int16>) (level : ReadinessLevel) (palEvents : int16) : int16 =
         (if level.In && palEvents &&& pal.["PAL_POLLIN"] <> 0s then
              pal.["PAL_POLLIN"]
          else
@@ -359,96 +262,36 @@ module TestPollEventsPal =
         ||| (if level.Err then pal.["PAL_POLLERR"] else 0s)
         ||| (if level.Hup then pal.["PAL_POLLHUP"] else 0s)
 
-    /// Every PAL request mask, all 65536 of them, over one descriptor onto each
-    /// object and phase the kernel answers `poll` for (plus a descriptor that
-    /// is not open and a negative one): the composition answers exactly what
-    /// the six-bit projection answers, and the same count.
+    /// Every PAL request mask, all 65536 of them, at every level: converted in,
+    /// answered as Linux's `do_pollfd` answers (the level restricted to what
+    /// was asked, plus `POLLERR` and `POLLHUP`; see `LinuxReadiness`), and
+    /// converted out, each entry reports exactly what the six-bit projection
+    /// reported. An entry reports something to the PAL exactly when it reports
+    /// something to the kernel's caller, so `poll(2)`'s count, which the shim
+    /// passes on unconverted, counts the PAL's reports.
     [<Test>]
     let ``the PAL composition answers exactly what the six-bit projection answered`` () : unit =
-        let connection = ConnectionId 7L
-
-        let adders : (UnixSystem<int, string> -> int * UnixSystem<int, string>) list =
-            [
-                fun system -> 0, system
-                fun system -> 1, system
-                fun system -> 2, system
-                fun system -> 99, system
-                fun system -> -1, system
-                withFile FileAccessMode.ReadOnly
-                withFile FileAccessMode.ReadWrite
-                withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.Idle
-                withSocket SocketDomain.Inet6 SocketKind.Stream SocketPhase.Idle
-                withSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle
-                withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle
-                withSocket SocketDomain.Unix SocketKind.Datagram SocketPhase.Idle
-                withSocket
-                    SocketDomain.Inet
-                    SocketKind.Datagram
-                    (SocketPhase.DatagramPeer
-                        {
-                            Address = 0x7F000001u
-                            Port = 5555us
-                        })
-                withSocket
-                    SocketDomain.Inet
-                    SocketKind.Stream
-                    (SocketPhase.Listening
-                        {
-                            Backlog = 1
-                            Queue = []
-                        })
-                withSocket
-                    SocketDomain.Inet
-                    SocketKind.Stream
-                    (SocketPhase.Listening
-                        {
-                            Backlog = 1
-                            Queue = [ ConnectionId 9L ]
-                        })
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.EstablishedPendingReport connection)
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (ConnectionId 8L))
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending)
-            ]
-
-        let fds, system =
-            adders
-            |> List.fold
-                (fun (fds, system) add ->
-                    let fd, system = add system
-                    fd :: fds, system
-                )
-                ([], linux)
-
-        let fds = List.rev fds
         let pal = pinnedPollEvents ()
+        let alwaysReported = platform.["POLLERR"] ||| platform.["POLLHUP"]
 
         let mismatches =
             [
-                for raw in 0..0xFFFF do
-                    let palEvents = int16 (uint16 raw)
-                    let expected = fds |> List.map (fun fd -> sixBitProjection pal system fd palEvents)
-                    let expectedCount = expected |> List.filter (fun r -> r <> 0s) |> List.length
+                for level in everyLevel do
+                    for raw in 0..0xFFFF do
+                        let palEvents = int16 (uint16 raw)
 
-                    match
-                        PollEventsPal.pollConverted
-                            poller
-                            (PollEventsPal.convert (fds |> List.map (fun fd -> fd, palEvents)))
-                            0
-                            system
-                    with
-                    | Error refusal -> yield $"PAL events 0x%04x{raw}: refused: %s{PollRefusal.describe refusal}"
-                    | Ok (PollOutcome.WouldBlock condition, _) ->
-                        yield $"PAL events 0x%04x{raw}: parked at timeout 0 on %A{condition}"
-                    | Ok (PollOutcome.Failed error, _) -> yield $"PAL events 0x%04x{raw}: failed with %O{error}"
-                    | Ok (PollOutcome.Answered (reported, count), _) ->
-                        for fd, expected, reported in List.zip3 fds expected reported do
-                            if expected <> reported then
-                                yield
-                                    $"PAL events 0x%04x{raw}, fd %d{fd}: expected 0x%04x{uint16 expected}, got 0x%04x{uint16 reported}"
+                        let kernel =
+                            linuxBits level &&& (PollEventsPal.toPlatform palEvents ||| alwaysReported)
 
-                        if count <> expectedCount then
-                            yield $"PAL events 0x%04x{raw}: expected count %d{expectedCount}, got %d{count}"
+                        let reported = PollEventsPal.ofPlatform kernel
+                        let expected = sixBitProjection pal level palEvents
+
+                        if reported <> expected then
+                            yield
+                                $"%A{level}, PAL events 0x%04x{raw}: expected 0x%04x{uint16 expected}, got 0x%04x{uint16 reported}"
+
+                        if (kernel <> 0s) <> (reported <> 0s) then
+                            yield $"%A{level}, PAL events 0x%04x{raw}: the kernel reported 0x%04x{uint16 kernel}"
             ]
 
         mismatches |> List.truncate 20 |> shouldEqual []

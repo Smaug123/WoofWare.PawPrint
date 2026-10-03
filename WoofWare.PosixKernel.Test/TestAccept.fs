@@ -27,6 +27,7 @@ module TestAccept =
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.boot
 
         { system with
             Machine =
@@ -143,6 +144,7 @@ module TestAccept =
                     {
                         Backlog = 8
                         Queue = connections
+                        Drained = false
                     }
             )
 
@@ -221,6 +223,7 @@ module TestAccept =
                       {
                           Backlog = 8
                           Queue = connections
+                          Drained = false
                       }
               ) with
                 ReuseAddress = true
@@ -488,13 +491,14 @@ module TestAccept =
         | Ok (AcceptOutcome.WouldBlock condition, _) ->
             condition
             |> shouldEqual (
-                Interruptible.condition (
-                    WakeCondition.Primitive (
-                        WakePrimitive.AcceptQueueNonEmpty (
-                            FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                Interruptible.closable
+                    [
+                        WakeCondition.Primitive (
+                            WakePrimitive.AcceptQueueNonEmpty (
+                                FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                            )
                         )
-                    )
-                )
+                    ]
             )
         | other -> failwith $"expected the accept to park, got %A{other}"
 
