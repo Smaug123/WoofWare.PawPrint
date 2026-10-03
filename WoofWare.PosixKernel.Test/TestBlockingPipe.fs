@@ -1905,6 +1905,48 @@ module TestBlockingPipe =
         | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, _)) -> ()
         | other -> failwith $"expected EPIPE, got %A{other}"
 
+    /// The write a close ends returns before the close does, raising SIGPIPE
+    /// for the process then: under the disposition the signal has at the
+    /// close, whatever it has by the time the writer's task finishes. One that
+    /// would end the process is refused, a close having no way to say so.
+    [<Test>]
+    let ``Darwin: the close raises an ended write's SIGPIPE under the disposition it has then`` () : unit =
+        let withSigpipe (disposition : SignalDisposition<string>) (system : UnixSystem<int, string>) =
+            { system with
+                Process =
+                    { system.Process with
+                        Signals = SignalState.setDisposition Signal.SIGPIPE disposition system.Process.Signals
+                    }
+            }
+
+        let asleep () =
+            pipeHolding SimulatedUnixPlatform.macOsArm64 false 65536 |> writerAsleep 1
+
+        // Ignored at the close, and the default by the finish: discarded.
+        let system = asleep () |> closed 4 |> withSigpipe SignalDisposition.Default
+        SignalState.pending system.Process.Signals |> shouldEqual []
+
+        match libraryFinishWrite sleeper (payload 7 1) system with
+        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, after)) ->
+            SignalState.pending after.Process.Signals |> shouldEqual []
+        | other -> failwith $"expected EPIPE, the process carrying on, got %A{other}"
+
+        // Caught: pending for the process from the close on.
+        let system =
+            asleep ()
+            |> withSigpipe (SignalDisposition.Catch (SignalCatch.ofHandler "h"))
+            |> closed 4
+
+        SignalState.pending system.Process.Signals
+        |> List.map (fun pending -> pending.Signal, pending.Target)
+        |> shouldEqual [ Signal.SIGPIPE, ValueNone ]
+
+        // The default at the close: the process would end.
+        match UnixDescriptor.close 4 (asleep () |> withSigpipe SignalDisposition.Default) with
+        | Error (CloseRefusal.DarwinEndedWriteSignal (task, EndedWriteSignalRefusal.TerminatesProcess)) ->
+            task |> shouldEqual sleeper
+        | other -> failwith $"expected the close to be refused, got %A{other}"
+
     /// Measured (`close-ends-call.c`, section P8): the ending moves the pipe's
     /// timestamps at the close, as the call's return does, and the finish later
     /// moves nothing.

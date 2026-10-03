@@ -2376,15 +2376,21 @@ module UnixReadWrite =
             // Measured on Darwin 27.0.0 (`close-ends-call.c`, sections P2-P4
             // and P7): EPIPE, whatever the write had put in, and SIGPIPE, which
             // ran on the main thread as it does for a write into a pipe with no
-            // reader. The close moved the write end's mtime and ctime as it
-            // ended the call (section P8).
-            broken
-                (WriteResumption.Answered (WriteAnswer.Failed UnixError.EPIPE))
-                task
-                (BrokenWriteTarget.Pipe pipeId)
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
+            // reader. The close generated the signal and moved the write end's
+            // mtime and ctime as it ended the call (section P8): the write had
+            // returned before the close did.
+            Ok (
+                WriteOutcome.ReturnsRaising (
+                    WriteResumption.Answered (WriteAnswer.Failed UnixError.EPIPE),
+                    {
+                        Signal = Signal.SIGPIPE
+                        Target = ValueNone
+                    },
+                    { system with
+                        Tasks = UnixTaskTable.unpark task system.Tasks
+                    }
+                )
+            )
         | SleepTarget.Waiting (writer, fd) ->
 
         let pipeId = parkedPipe "admitFinishWrite" task writer PipeEnd.Write system
@@ -2489,9 +2495,10 @@ module UnixReadWrite =
     ///   description has since become non-blocking gives up, answering the
     ///   count it had put in, or `EAGAIN` if none.
     /// - **A close has ended it** (`SleepTarget.EndedByClose`, under Darwin):
-    ///   `EPIPE` whatever it had put in, raising `SIGPIPE` as a write with no
-    ///   reader does, whatever the pipe holds by now and whatever signal is
-    ///   pending; the close moved the timestamps and released the write end.
+    ///   `EPIPE` whatever it had put in, whatever the pipe holds by now and
+    ///   whatever signal is pending, reported as raising `SIGPIPE`, which the
+    ///   close generated as it moved the timestamps and released the write
+    ///   end.
     ///
     /// Under Linux the first two beat a pending signal, whose handlers run as
     /// the call returns; under Darwin a kernel answers whichever reached the

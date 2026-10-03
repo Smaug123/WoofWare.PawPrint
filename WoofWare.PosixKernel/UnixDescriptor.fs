@@ -145,6 +145,19 @@ module TruncationRefusal =
         | TruncationRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             $"truncating inode %O{inode}: %s{SetIdChangeRefusal.describe refusal}"
 
+/// Why a Darwin close that ends a sleeping pipe `write` cannot be answered: the
+/// write raises `SIGPIPE` for the process as it returns, before the close does,
+/// and what that signal does is something a close has no way to report.
+[<RequireQualifiedAccess>]
+type EndedWriteSignalRefusal =
+    /// `SIGPIPE`'s disposition is the default, so the signal ends the process.
+    | TerminatesProcess
+    /// The process is process ID 1, and what an init process does with a
+    /// signal it has no handler for is not modelled.
+    | InitProcess
+    /// Which task would take the signal is not modelled.
+    | Receiver of SignalReceiverRefusal
+
 /// Why this kernel will not close a descriptor.
 ///
 /// Generic in what names a task because most of them are about a task parked
@@ -188,6 +201,10 @@ type CloseRefusal<'Task> =
     /// with `EPIPE`, and which of the close and what had already woken the
     /// call it answers is unmeasured.
     | DarwinWokenTransfer of description : OpenFileDescriptionId * task : 'Task
+    /// The close would end the pipe `write` `task` is asleep in, under the
+    /// Darwin flavour, and the `SIGPIPE` that write raises as it returns is one
+    /// this kernel cannot answer (`refusal`).
+    | DarwinEndedWriteSignal of task : 'Task * refusal : EndedWriteSignalRefusal
 
 [<RequireQualifiedAccess>]
 module CloseRefusal =
@@ -202,6 +219,17 @@ module CloseRefusal =
             $"task %O{task} is parked in a poll(2) watching fd %d{fd}. Measured on Linux (poll-timeout.c), the sleeping poll keeps the file it found: the close does not wake it, the closed file can still wake it (a datagram sent to a closed UDP socket's address did), and when it wakes it looks the number up again, answering POLLNVAL if the number is free and the new file's readiness if another open took the number. This kernel keeps the file alive, but a poll woken by that file and finding nothing under the number sleeps again until the file's next wake-up, an edge, where this kernel's wake conditions are levels: the poll would be woken again at once, for ever."
         | CloseRefusal.DarwinWokenTransfer (description, task) ->
             $"task %O{task} is asleep in a read or write of the pipe end of open file description %O{description}, made through this descriptor, and the call has something besides the close to answer: bytes, room, a signal, or a read to give up at. Measured on Darwin (close-ends-call.c sections P1-P7), closing the descriptor a sleeping read or write was made through ends it, a read with end of file and a write with EPIPE; which of that and what had already woken the call a kernel answers is unmeasured: no probe has held a woken call off the CPU until a close, since Darwin has no SCHED_FIFO, and a woken call in a stopped process finishes in the kernel all the same (pipe-blocking.c section N4)."
+        | CloseRefusal.DarwinEndedWriteSignal (task, refusal) ->
+            let why =
+                match refusal with
+                | EndedWriteSignalRefusal.TerminatesProcess ->
+                    "SIGPIPE's disposition is the default, so it ends the process, which a close has no answer to report"
+                | EndedWriteSignalRefusal.InitProcess ->
+                    "the process is process ID 1, and what an init process does with a signal it has no handler for is not modelled"
+                | EndedWriteSignalRefusal.Receiver refusal ->
+                    $"which task would take the signal is not modelled (%A{refusal})"
+
+            $"the close ends the pipe write task %O{task} is asleep in through this descriptor. Measured on Darwin (close-ends-call.c sections P2-P4), that write answers EPIPE and raises SIGPIPE for the process as it returns, which it does before the close does; but %s{why}."
         | CloseRefusal.Release refusal -> DescriptionReleaseRefusal.describe refusal
 
 /// What `ioctl(fd, FIONREAD, &count)` answered.
@@ -1358,8 +1386,9 @@ module UnixDescriptor =
     /// such a call has, so an ended call holds nothing from the close on
     /// (`SleepTarget.EndedByClose`): the description goes at the close if no
     /// descriptor names it, the pipe's timestamps move as the call's return
-    /// moves them, and the task, still parked, learns its answer from its
-    /// finishing call. A pipe transfer that something had already woken is
+    /// moves them, an ended write's `SIGPIPE` is generated for the process
+    /// (refused where that would end the process, `CloseRefusal.DarwinEndedWriteSignal`),
+    /// and the task, still parked, learns its answer from its finishing call. A pipe transfer that something had already woken is
     /// refused (`CloseRefusal.DarwinWokenTransfer`).
     ///
     /// `FileDescriptorRegistry.dropDescriptor` cannot do this itself: the
@@ -1638,9 +1667,56 @@ module UnixDescriptor =
                         $"UnixDescriptor.close: task %O{task} was parked a moment ago and is not now (this is a bug in this library)."
             )
 
+        // Measured (`close-ends-call.c` sections P2-P4 and P7): each write the
+        // close ends raises SIGPIPE for the process as it returns, which is
+        // before the close returns, so the signal's disposition is the one it
+        // has now, whatever it is by the time the write's task finishes.
+        let signalled =
+            (Ok system.Process.Signals, endedCalls)
+            ||> List.fold (fun signals (task, ended) ->
+                match signals, ended with
+                | Error refusal, _ -> Error refusal
+                | Ok signals,
+                  ParkedSyscall.PipeWrite {
+                                              Writer = SleepTarget.EndedByClose _
+                                          } ->
+                    if ProcessId.toInt32 system.Process.ProcessId = 1 then
+                        Error (CloseRefusal.DarwinEndedWriteSignal (task, EndedWriteSignalRefusal.InitProcess))
+                    else
+
+                    match
+                        SignalState.generate
+                            system.Process.CoreDumps
+                            system.Leader
+                            (tasks |> Map.keys |> Set.ofSeq)
+                            {
+                                Signal = Signal.SIGPIPE
+                                Target = ValueNone
+                            }
+                            signals
+                    with
+                    | Ok (SignalGeneration.ProcessContinues signals) -> Ok signals
+                    | Ok (SignalGeneration.ProcessTerminated _) ->
+                        Error (CloseRefusal.DarwinEndedWriteSignal (task, EndedWriteSignalRefusal.TerminatesProcess))
+                    | Ok (SignalGeneration.ProcessStopped (signal, _)) ->
+                        failwith
+                            $"UnixDescriptor.close: generating %O{signal} for a pipe write the close ended stopped the process, but SIGPIPE's default is to terminate on every flavour (this is a bug in this library)."
+                    | Error refusal ->
+                        Error (CloseRefusal.DarwinEndedWriteSignal (task, EndedWriteSignalRefusal.Receiver refusal))
+                | Ok signals, _ -> Ok signals
+            )
+
+        match signalled with
+        | Error refusal -> Error refusal
+        | Ok signals ->
+
         let system =
             { system with
                 Machine = machine
+                Process =
+                    { system.Process with
+                        Signals = signals
+                    }
                 Tasks = tasks
             }
 

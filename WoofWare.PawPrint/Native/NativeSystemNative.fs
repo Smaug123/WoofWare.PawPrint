@@ -505,6 +505,8 @@ module NativeSystemNative =
                 "Accept the connection or close the client before closing the listener."
             | CloseRefusal.PolledDescriptor _ ->
                 "Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
+            | CloseRefusal.DarwinEndedWriteSignal _ ->
+                "The runtime ignores SIGPIPE, so a guest reaches this only by setting its disposition itself; model a close that can end the process before closing a pipe end under a sleeping write then."
             | CloseRefusal.DarwinWokenTransfer _ ->
                 "Measure which of the close and what had woken it a Darwin read or write answers when the descriptor it was made through closes before it runs, or configure a Linux platform."
 
