@@ -63,6 +63,13 @@ type Syscall =
     /// `clonefile(2)`. The pathnames are their arguments' bytes, which this
     /// kernel copies in at the points it measured; `flags` is raw.
     | CloneFile of source : PathArgumentBytes * destination : PathArgumentBytes * flags : int
+    /// `setresuid(2)`. `None` is `(uid_t)-1`: leave that ID as it is.
+    | SetResUid of real : UserId option * effective : UserId option * saved : UserId option
+    /// `setresgid(2)`. `None` is `(gid_t)-1`: leave that ID as it is.
+    | SetResGid of real : GroupId option * effective : GroupId option * saved : GroupId option
+    /// `setgroups(2)` of a list of `size` groups, whose words are as the caller
+    /// read them.
+    | SetGroups of size : int * words : GroupListWords
 
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
@@ -86,6 +93,9 @@ type SyscallRefusal<'Task> =
     | CopyFileRange of CopyFileRangeRefusal
     | FileClone of FileCloneRefusal
     | CloneFile of CloneFileRefusal
+    /// `setresuid(2)` and `setresgid(2)` alike.
+    | SetIds of SetIdsRefusal
+    | SetGroups of SetGroupsRefusal
 
 /// A way this system's tables disagree with each other — a state no kernel
 /// could be in, and which the operations here exist to keep unreachable.
@@ -611,6 +621,18 @@ module UnixSystem =
             UnixNamespace.cloneFile source destination flags system
             |> answered
             |> Result.mapError SyscallRefusal.CloneFile
+        | Syscall.SetResUid (real, effective, saved) ->
+            UnixCredentials.setresuid real effective saved system
+            |> answered
+            |> Result.mapError SyscallRefusal.SetIds
+        | Syscall.SetResGid (real, effective, saved) ->
+            UnixCredentials.setresgid real effective saved system
+            |> answered
+            |> Result.mapError SyscallRefusal.SetIds
+        | Syscall.SetGroups (size, words) ->
+            UnixCredentials.setgroups size words system
+            |> answered
+            |> Result.mapError SyscallRefusal.SetGroups
 
     /// Every way this system's tables disagree with each other: the socket table
     /// and the pipe table against the descriptor table, each pipe and the pipe
