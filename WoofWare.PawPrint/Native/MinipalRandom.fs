@@ -113,7 +113,7 @@ module MinipalRandom =
                 failwith
                     $"%s{operation}: getrandom of %d{remaining} bytes was refused: %s{GetRandomRefusal.describe refusal}"
 
-        let system = fill (EmulatedKernel.unix kernel)
+        let system = fill kernel.System
         builder.MoveToImmutable (), EmulatedKernel.withUnix system kernel
 
     /// Linux's `CLOCK_REALTIME_COARSE`, which glibc's `time` reads.
@@ -134,13 +134,7 @@ module MinipalRandom =
 
         // `open("/dev/urandom", O_RDONLY | O_CLOEXEC)`, retried on EINTR, which
         // an open of a device never answers here.
-        match
-            UnixNamespace.openPath
-                (OpenFlagsPal.minipalUrandom kernel.UnixPlatform)
-                urandomPath
-                0
-                (EmulatedKernel.unix kernel)
-        with
+        match UnixNamespace.openPath (OpenFlagsPal.minipalUrandom kernel.UnixPlatform) urandomPath 0 kernel.System with
         | Error refusal -> failwith $"%s{operation}: open(/dev/urandom) was refused: %s{OpenRefusal.describe refusal}"
         | Ok (SyscallAnswer.Completed fd, system) ->
             let kernel = EmulatedKernel.withUnix system kernel
@@ -229,7 +223,7 @@ module MinipalRandom =
                 failwith
                     $"%s{operation}: read of fd %d{fd} restarted, though it never slept (this is a bug in the kernel library)."
 
-        let error, system = fill true (EmulatedKernel.unix kernel)
+        let error, system = fill true kernel.System
         let kernel = EmulatedKernel.withUnix system kernel
 
         match error with
@@ -275,7 +269,7 @@ module MinipalRandom =
             match lrand48 with
             | Some state -> state
             | None ->
-                match UnixClock.clockGettime clockRealtimeCoarse kernel.Machine with
+                match UnixClock.clockGettime clockRealtimeCoarse kernel.System with
                 | Ok (Ok now) -> Lrand48.seed (UnixTimestamp.seconds now)
                 | other ->
                     failwith

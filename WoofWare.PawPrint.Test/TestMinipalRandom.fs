@@ -31,14 +31,7 @@ module TestMinipalRandom =
     /// A process booted from `image`, whose entropy pool is seeded with
     /// `seed`.
     let private bootedWithPool (image : UnixBootImage<ThreadId, NativeSignalHandler>) (seed : uint64) : EmulatedKernel =
-        let kernel = EmulatedKernel.boot image
-
-        { kernel with
-            Machine =
-                { kernel.Machine with
-                    EntropyPool = EntropyPool.ofSeed seed
-                }
-        }
+        image |> UnixBootImage.withEntropySeed seed |> EmulatedKernel.boot
 
     /// A fresh kernel on `platform` whose pool starts at `seed`.
     let private linuxAt (platform : SimulatedUnixPlatform) (seed : uint64) : EmulatedKernel =
@@ -62,7 +55,7 @@ module TestMinipalRandom =
         | ProcessRandom.LibSystem _ -> failwith "a Linux kernel holds libSystem's generator"
 
     let private openFds (kernel : EmulatedKernel) : int list =
-        FileDescriptorRegistry.fds kernel.Process.FileDescriptors
+        FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.System)
         |> Map.keys
         |> List.ofSeq
 
@@ -128,7 +121,7 @@ module TestMinipalRandom =
                 fd |> shouldEqual (List.max (openFds start) + 1)
                 openFds kernel |> shouldEqual (openFds start @ [ fd ])
 
-                match UnixPathResolution.fstat fd (EmulatedKernel.unix kernel) with
+                match UnixPathResolution.fstat fd kernel.System with
                 | Ok (FileStatusAnswer.Reported status) ->
                     status.Mode |> shouldEqual 0o020666
                     status.SpecialFileDevice |> shouldEqual 265L
@@ -152,7 +145,7 @@ module TestMinipalRandom =
         let fd = (descriptorOf kernel).Value
 
         let kernel =
-            match UnixDescriptor.close fd (EmulatedKernel.unix kernel) with
+            match UnixDescriptor.close fd kernel.System with
             | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"close: %A{other}"
 
@@ -162,7 +155,9 @@ module TestMinipalRandom =
         |> shouldEqual (SecureRandomFill.Failed (ImmutableArray.Empty, UnixError.EBADF))
         // minipal keeps the number, and the pool did not move.
         descriptorOf after |> shouldEqual (Some fd)
-        after.Machine.EntropyPool |> shouldEqual kernel.Machine.EntropyPool
+
+        (UnixSystem.entropyPool after.System)
+        |> shouldEqual (UnixSystem.entropyPool kernel.System)
 
     [<Test>]
     let ``a request for no bytes still opens the descriptor and reads it once`` () : unit =
@@ -172,7 +167,7 @@ module TestMinipalRandom =
         let fd = (descriptorOf kernel).Value
 
         let kernel =
-            match UnixDescriptor.close fd (EmulatedKernel.unix kernel) with
+            match UnixDescriptor.close fd kernel.System with
             | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"close: %A{other}"
 
@@ -187,7 +182,7 @@ module TestMinipalRandom =
 
         // Close it, and let the next open take its number: /dev/null.
         let system =
-            match UnixDescriptor.close fd (EmulatedKernel.unix kernel) with
+            match UnixDescriptor.close fd kernel.System with
             | Ok (SyscallAnswer.Completed _, system) -> system
             | other -> failwith $"close: %A{other}"
 
@@ -281,7 +276,7 @@ module TestMinipalRandom =
         let fd = (descriptorOf kernel).Value
 
         let kernel =
-            match UnixDescriptor.close fd (EmulatedKernel.unix kernel) with
+            match UnixDescriptor.close fd kernel.System with
             | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"close: %A{other}"
 
@@ -304,16 +299,11 @@ module TestMinipalRandom =
 
             let expected, system =
                 if length = 0 then
-                    [||], EmulatedKernel.unix kernel
+                    [||], kernel.System
                 else
 
                 match
-                    UnixEntropy.getRandom
-                        thread
-                        UserBuffer.Mapped
-                        (uint64 length)
-                        GetRandomFlags.Insecure
-                        (EmulatedKernel.unix kernel)
+                    UnixEntropy.getRandom thread UserBuffer.Mapped (uint64 length) GetRandomFlags.Insecure kernel.System
                 with
                 | Ok (GetRandomAnswer.Completed draw, system) -> Seq.toArray (EntropyDraw.bytes draw), system
                 | other -> failwith $"%A{other}"
@@ -353,7 +343,8 @@ module TestMinipalRandom =
             | Ok (GetEntropyAnswer.Completed draw, system) -> EntropyDraw.bytes draw, system
             | other -> failwith $"%A{other}"
 
-        kernel.Machine.EntropyPool |> shouldEqual booted.Machine.EntropyPool
+        (UnixSystem.entropyPool kernel.System)
+        |> shouldEqual (UnixSystem.entropyPool booted)
 
         let property (draws : (int * int) list) : unit =
             let actual, after =
@@ -388,8 +379,7 @@ module TestMinipalRandom =
 
             actual |> shouldEqual expected
             // No syscall, so no descriptor and no pool movement.
-            after.Machine |> shouldEqual kernel.Machine
-            after.Process |> shouldEqual kernel.Process
+            after.System |> shouldEqual kernel.System
 
         Check.One (
             propertyConfig,
@@ -405,7 +395,7 @@ module TestMinipalRandom =
         let kernel = linuxAt SimulatedUnixPlatform.linuxX64 7UL
 
         let system =
-            match UnixSignal.pthreadKill thread 18 (EmulatedKernel.unix kernel) with
+            match UnixSignal.pthreadKill thread 18 kernel.System with
             | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
             | other -> failwith $"pthread_kill: %A{other}"
 

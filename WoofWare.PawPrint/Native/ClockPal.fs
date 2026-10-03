@@ -85,12 +85,17 @@ module ClockPal =
 
     /// Read `clockId`, which the real shim reads for `entryPoint` and so must be a
     /// clock the kernel answers: the shim asserts rather than handle a failure.
-    let private read (entryPoint : string) (clockId : int) (machine : UnixMachineState) : UnixTimestamp =
-        match UnixClock.clockGettime clockId machine with
+    let private read<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (entryPoint : string)
+        (clockId : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixTimestamp
+        =
+        match UnixClock.clockGettime clockId system with
         | Ok (Ok reading) -> reading
         | Ok (Error error) ->
             failwith
-                $"%s{entryPoint}: clock_gettime(%d{clockId}) failed with %O{error} on %O{UnixMachineState.platform machine}. The real shim reads this clock unconditionally; PawPrint has chosen a clock id the simulated flavour does not have."
+                $"%s{entryPoint}: clock_gettime(%d{clockId}) failed with %O{error} on %O{UnixSystem.platform system}. The real shim reads this clock unconditionally; PawPrint has chosen a clock id the simulated flavour does not have."
         | Error refusal ->
             failwith
                 $"%s{entryPoint}: the kernel will not answer clock_gettime(%d{clockId}): %s{ClockGettimeRefusal.describe refusal} The real shim reads this clock, so PawPrint cannot answer without it."
@@ -104,12 +109,15 @@ module ClockPal =
     /// clock advance and the next are equal, so it is not a source of unique
     /// values. Real `clock_gettime(CLOCK_REALTIME)` makes no uniqueness guarantee
     /// either.
-    let systemTimeAsTicks (machine : UnixMachineState) : int64 =
-        let reading = read "SystemNative_GetSystemTimeAsTicks" clockRealtime machine
+    let systemTimeAsTicks<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int64
+        =
+        let reading = read "SystemNative_GetSystemTimeAsTicks" clockRealtime system
         let seconds = UnixTimestamp.seconds reading
 
-        // The kernel refuses a boot instant before the epoch, so this is a
-        // machine assembled without `withBootTime`.
+        // Unreachable: the kernel refuses a boot instant before the epoch, and
+        // its clocks only move forwards.
         if seconds < 0L then
             failwith
                 $"SystemNative_GetSystemTimeAsTicks: the realtime clock reads %O{reading}, before the Unix epoch, which PawPrint does not model a simulated process observing."
@@ -137,13 +145,16 @@ module ClockPal =
     ///
     /// Not offset by the boot instant: the monotonic clock counts from boot, and
     /// CoreLib only ever subtracts two readings of it.
-    let monotonicTimestampNanos (machine : UnixMachineState) : int64 =
+    let monotonicTimestampNanos<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int64
+        =
         let clockId =
-            match SimulatedUnixPlatform.flavour (UnixMachineState.platform machine) with
+            match SimulatedUnixPlatform.flavour (UnixSystem.platform system) with
             | SimulatedUnixFlavour.Linux -> linuxClockMonotonic
             | SimulatedUnixFlavour.Darwin -> darwinClockUptimeRaw
 
-        let reading = read "SystemNative_GetTimestamp" clockId machine
+        let reading = read "SystemNative_GetTimestamp" clockId system
 
         // Both clocks report to the nanosecond, so this is the machine's uptime
         // exactly, which is an int64 of nanoseconds and so cannot overflow here.
@@ -156,20 +167,23 @@ module ClockPal =
     /// Always exactly `monotonicTimestampNanos` truncated to milliseconds, as
     /// upstream: a guest comparing `Environment.TickCount64` against a
     /// `Stopwatch` must not see them disagree about how much time has passed.
-    let lowResolutionTimestampMs (machine : UnixMachineState) : int64 =
+    let lowResolutionTimestampMs<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int64
+        =
         let entryPoint = "SystemNative_GetLowResolutionTimestamp"
 
         // The arithmetic follows `minipal_lowres_ticks` on each flavour: Linux
         // converts the timespec field by field, Darwin divides
         // `clock_gettime_nsec_np`'s nanoseconds.
-        match SimulatedUnixPlatform.flavour (UnixMachineState.platform machine) with
+        match SimulatedUnixPlatform.flavour (UnixSystem.platform system) with
         | SimulatedUnixFlavour.Linux ->
-            let reading = read entryPoint linuxClockMonotonicCoarse machine
+            let reading = read entryPoint linuxClockMonotonicCoarse system
 
             UnixTimestamp.seconds reading * 1000L
             + int64 (UnixTimestamp.nanoseconds reading) / nanosecondsPerMillisecond
         | SimulatedUnixFlavour.Darwin ->
-            let reading = read entryPoint darwinClockUptimeRaw machine
+            let reading = read entryPoint darwinClockUptimeRaw system
 
             (UnixTimestamp.seconds reading * nanosecondsPerSecond
              + int64 (UnixTimestamp.nanoseconds reading))

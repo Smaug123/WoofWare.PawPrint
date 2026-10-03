@@ -10,219 +10,221 @@ open System.Collections.Immutable
 ///
 /// Everything here is state any client of a POSIX simulator would have.
 type UnixMachineState =
-    {
-        /// Every socket the simulated process owns, by identity.
-        ///
-        /// Separate from `FileDescriptors` because a socket's lifetime is not
-        /// a descriptor's: an `OpenFileTarget.Socket` holds only the
-        /// `SocketId`, and this is what it names. Every entry has exactly one
-        /// description naming it, enforced in two halves: at least one by
-        /// `UnixSystem.checkInvariants` (`UnreferencedSocket`), at most one by
-        /// `FileDescriptorRegistry.checkInvariants` (`DuplicateSocketId`). A
-        /// connection awaiting `accept(2)` is a `TcpConnection` in
-        /// `Connections`, not a socket, precisely so this rule can stay
-        /// strict.
-        Sockets : Map<SocketId, SocketDescription>
-        /// Every TCP connection the simulated kernel holds: established ends
-        /// referenced from a socket's `SocketPhase`, and completed
-        /// connections waiting in some listener's accept queue. An entry is
-        /// removed when nothing references it any more (`UnixDescriptor.close`).
-        Connections : Map<ConnectionId, TcpConnection>
-        /// The identity the next completed connect will allocate. Monotonic
-        /// and never reused, for the same replay-trace reason as
-        /// `NextSocketId`.
-        NextConnectionId : ConnectionId
-        /// The ordinal the next committed socket event registration records
-        /// as its `RegisteredAt`, whether an epoll instance's
-        /// (`EpollRegistration`) or a kqueue's (`KqueueRegistration`).
-        /// Monotonic, and bumped only when an `EPOLL_CTL_ADD` or the first
-        /// `EV_ADD` of a kqueue registration commits, so a failed `epoll_ctl`
-        /// leaves the kernel exactly as it found it.
-        NextSocketEventRegistrationOrdinal : int64
-        /// The ordinal the next park of any task records as its
-        /// `TaskPark.Ordinal`. Monotonic, and bumped only by `UnixWait.park`.
-        ///
-        /// The machine's rather than a process's, because what a kernel orders
-        /// by park is a wait queue on a kernel object, and processes can share
-        /// one.
-        NextParkOrdinal : ParkOrdinal
-        /// Where the next thread's id comes from: see `ThreadIdAllocator`.
-        ///
-        /// The machine's rather than a process's, because on both flavours the
-        /// counter is shared by every process on the machine. Set by
-        /// `UnixSystem.initial`, `UnixBootImage.withProcessId`,
-        /// `UnixBootImage.withLeaderThreadId` and `UnixSystem.writePidMaxSysctl`, and
-        /// advanced only by `UnixTaskLifecycle.spawn`.
-        ThreadIds : ThreadIdAllocator
-        /// The port a `bind(2)` of port 0 will try first.
-        ///
-        /// A counter rather than a draw from the seeded PRNG. Which port an
-        /// ephemeral bind picks is unspecified — Linux randomises within its
-        /// range and Darwin ascends — so this kernel owes a process only *a* free
-        /// port, and a trace whose ports read 32768, 32769, 32770 is far easier
-        /// to follow than one whose ports are scattered. A program may depend on
-        /// nothing about the value but that it is non-zero and unprivileged,
-        /// which is all the two real kernels agree on.
-        NextEphemeralPort : uint16
-        /// Range `NextEphemeralPort` sweeps, inclusive at both ends. Host
-        /// configuration; see `UnixSystem.defaultEphemeralPortRange`.
-        EphemeralPortRange : uint16 * uint16
-        /// The value of the `somaxconn` sysctl (`net.core.somaxconn` on
-        /// Linux, `kern.ipc.somaxconn` on Darwin): the ceiling `listen(2)`
-        /// clamps its backlog to before the accept-queue capacity is derived.
-        /// Host configuration with a per-flavour default; see
-        /// `UnixBootImage.withSoMaxConn` for the measured clamp rules.
-        SoMaxConn : int
-        /// The send buffer a new TCP socket starts with, in bytes: Darwin's
-        /// `net.inet.tcp.sendspace` sysctl, and Linux's `net.ipv4.tcp_wmem`
-        /// default. Host configuration with a per-flavour default; see
-        /// `UnixBootImage.withTcpSendSpace`. Only the Darwin flavour reads
-        /// it, through `DarwinReadiness.sendBufferSpace`.
-        TcpSendSpace : int
-        /// The IPv4 addresses this machine holds. Host configuration; see
-        /// `UnixSystem.defaultLocalAddresses`.
-        LocalAddresses : uint32 list
-        /// Prefixes this machine has a local route to, which Linux will bind any
-        /// address inside and Darwin ignores. See
-        /// `UnixSystem.defaultLocalRoutes`.
-        LocalRoutes : Ipv4Prefix list
-        /// Every pipe with an end open, by identity: an end the simulated
-        /// process holds, or one the client holds (`PipeState.heldByClient`).
-        ///
-        /// Separate from the descriptor table for the reason `Sockets` is: an
-        /// `OpenFileTarget.Pipe` holds only the `PipeId`, and both ends' descriptions
-        /// name the one pipe. A pipe is in the table exactly while one of its
-        /// ends is open (`UnixSystem.checkInvariants` states both halves), and
-        /// `UnixDescriptor.close` removes it with the last one.
-        Pipes : Map<PipeId, PipeState>
-        /// The identity the next pipe will be given, by `UnixPipe.pipe2`.
-        /// Monotonic and never reused, for the replay-trace reason
-        /// `NextSocketId` gives.
-        NextPipeId : PipeId
-        /// Every write that reached a client draining a pipe, oldest first: the
-        /// bytes the outside world has received from the process.
-        ///
-        /// A client reads what its own ends received by filtering on
-        /// `Delivery.Endpoint`. One log rather than one per endpoint, so that
-        /// the order of writes across endpoints is kept: a process writing to
-        /// its output, then its error stream, then its output again is read
-        /// back in that order. It grows without bound: a process that writes
-        /// gigabytes costs that much memory.
-        Delivered : DeliveryLog
-        /// The inode number the next pipe end will be given, as `fstat(2)`
-        /// reports it. Monotonic and never reused: a process can compare the
-        /// numbers two descriptors report to decide whether they name one pipe,
-        /// so a reused number would make a dead pipe and a live one look the
-        /// same.
-        NextPipeInode : InodeNumber
-        /// The `st_dev` every end of every pipe reports.
-        ///
-        /// On Linux this is the anonymous device the kernel gave its pipe
-        /// filesystem at boot, which depends on what else was mounted before
-        /// it: configuration of this machine rather than a fact of the kernel.
-        /// On Darwin it is 0 for every pipe on every machine (measured, 27.0.0).
-        /// See `UnixBootImage.withPipeDevice`.
-        PipeDevice : int64
-        /// The identity the next `UnixSocket.socket` will allocate.
-        ///
-        /// Monotonic, and never reused: no syscall reports a
-        /// `SocketId`, but a replay trace does, and reuse would make two
-        /// distinct sockets indistinguishable in it.
-        NextSocketId : SocketId
-        /// Time since this machine booted, in nanoseconds: what its monotonic
-        /// clocks read. Never negative.
-        ///
-        /// Nothing in this library moves it. The client decides how fast its
-        /// simulated machine runs and when time passes, and says so through
-        /// `UnixMachineState.advanceClock`, the only way it changes; between two
-        /// advances every clock stands still, so readings taken between them all
-        /// name the same instant.
-        NanosecondsSinceBoot : int64
-        /// What the realtime clock read when this machine booted. The realtime
-        /// clock reads this plus `NanosecondsSinceBoot`.
-        ///
-        /// So the two clocks cannot drift apart, and the realtime clock never
-        /// steps or slews on its own as a real one does under NTP or
-        /// `settimeofday`. Set by `UnixBootImage.withBootTime`, which says
-        /// what it admits.
-        BootTime : UnixTimestamp
-        /// The kernel's entropy pool, which every random-bytes syscall draws
-        /// from: `getrandom(2)` on Linux, `getentropy(2)` on Darwin. Seeded
-        /// by `UnixSystem.initial` from `UnixSystem.defaultEntropySeed`.
-        EntropyPool : EntropyPool
-        /// Number of logical processors the machine reports to the simulated
-        /// process. Deliberately a value in kernel state rather than a host
-        /// read: a host read would make a replay depend on the machine that
-        /// produced it. Programs size thread pools, partition work, and stripe
-        /// arrays off this number, so letting the host leak in here would change
-        /// their *control flow* between runs — the single worst kind of
-        /// nondeterminism for a simulation whose purpose is bit-for-bit replay.
-        ///
-        /// Defaults to `UnixSystem.defaultProcessorCount`; a client chooses a
-        /// different value with `UnixBootImage.withProcessorCount`, which
-        /// refuses anything below 1, since programs divide by it.
-        ProcessorCount : int
-        /// Whether this machine's kernel screens a read or write buffer before
-        /// it performs the operation, and if so the greatest value
-        /// `address + length` may take: the machine's `TASK_SIZE_MAX`.
-        ///
-        /// Whether it screens is the platform's
-        /// `SimulatedUnixPlatform.screensUserBufferUpFront`. The limit is
-        /// configuration rather than a constant derived from the platform,
-        /// because it varies by *machine* as well as by architecture: 2^47 less
-        /// a page with four-level paging on x86-64, 2^56 less a page with
-        /// five-level, 2^48 on a 48-bit-VA arm64. Two GitHub runners of the same
-        /// image were measured disagreeing, so no value derived from the kernel
-        /// could be right everywhere.
-        ///
-        /// `UnixSystem.initial` sets the platform's default, and
-        /// `UnixBootImage.withUserAddressLimit` another limit the platform's
-        /// architecture has. `UnixSystem.checkInvariants` reports a check that
-        /// disagrees with the platform (`UnixSystemDefect.UserBufferCheckNotOfPlatform`).
-        UserBufferCheck : UserBufferCheck
-        /// Unix-shaped platform identity the simulated process reports, as
-        /// observed through `uname(2)`, and the flavour every other
-        /// platform-dependent answer follows.
-        ///
-        /// Fixed for the whole run: `UnixSystem.initial` takes it and nothing
-        /// changes it afterwards, so a process cannot observe it changing
-        /// under it.
-        UnixPlatform : SimulatedUnixPlatform
-        /// The simulated process's filesystem: every inode a process can reach
-        /// through the path syscalls.
-        ///
-        /// Set by `UnixBootImage.withFileSystemAndCurrentDirectory`, and changed by
-        /// the syscalls that write, create or truncate. It is emulated kernel
-        /// state rather than anything read from the host, for the usual reason:
-        /// a filesystem read from the host would make a replay depend on the
-        /// machine that produced it, and programs branch on what they find.
-        FileSystem : VirtualFileSystem
-        /// The mount `FileSystem`'s root filesystem claims to be: its type and
-        /// what `statfs(2)` reports about it (see `FileSystemStatistics.ofMount`). Its type also
-        /// decides a directory's `st_size`, and where `lseek(2)` with
-        /// `SEEK_END` lands on a directory.
-        ///
-        /// Fixed for the run: this library models no `mount(2)`, so nothing
-        /// a process does can change it. Derived from the flavour by
-        /// `UnixSystem.initial` and set only by `withMount`, which refuses a
-        /// type this machine's flavour cannot report.
-        Mount : EmulatedMount
-        /// The filesystem mounted at `/dev`, which the kernel mounts at boot
-        /// over the root's entry `dev`. What `stat(2)` and `statfs(2)` report
-        /// about it and the device nodes on it comes from here.
-        ///
-        /// Fixed for the run, and derived from the flavour by
-        /// `UnixSystem.initial`.
-        DeviceMount : DeviceFileSystemMount
-        /// Linux's `fs.protected_symlinks`, `fs.protected_regular` and
-        /// `fs.protected_fifos` sysctls.
-        ///
-        /// `UnixSystem.initial` sets `ProtectedFiles.off`, the kernel's own
-        /// default, and `UnixBootImage.withProtectedFiles` any other. Only
-        /// `ProtectedFiles.off` is admitted on Darwin, which has no such
-        /// settings (`UnixSystemDefect.ProtectedFilesNotOfFlavour`).
-        ProtectedFiles : ProtectedFiles
-    }
+    internal
+        {
+            /// Every socket the simulated process owns, by identity.
+            ///
+            /// Separate from `FileDescriptors` because a socket's lifetime is not
+            /// a descriptor's: an `OpenFileTarget.Socket` holds only the
+            /// `SocketId`, and this is what it names. Every entry has exactly one
+            /// description naming it, enforced in two halves: at least one by
+            /// `UnixSystem.checkInvariants` (`UnreferencedSocket`), at most one by
+            /// `FileDescriptorRegistry.checkInvariants` (`DuplicateSocketId`). A
+            /// connection awaiting `accept(2)` is a `TcpConnection` in
+            /// `Connections`, not a socket, precisely so this rule can stay
+            /// strict.
+            Sockets : Map<SocketId, SocketDescription>
+            /// Every TCP connection the simulated kernel holds: established ends
+            /// referenced from a socket's `SocketPhase`, and completed
+            /// connections waiting in some listener's accept queue. An entry is
+            /// removed when nothing references it any more (`UnixDescriptor.close`).
+            Connections : Map<ConnectionId, TcpConnection>
+            /// The identity the next completed connect will allocate. Monotonic
+            /// and never reused, for the same replay-trace reason as
+            /// `NextSocketId`.
+            NextConnectionId : ConnectionId
+            /// The ordinal the next committed socket event registration records
+            /// as its `RegisteredAt`, whether an epoll instance's
+            /// (`EpollRegistration`) or a kqueue's (`KqueueRegistration`).
+            /// Monotonic, and bumped only when an `EPOLL_CTL_ADD` or the first
+            /// `EV_ADD` of a kqueue registration commits, so a failed `epoll_ctl`
+            /// leaves the kernel exactly as it found it.
+            NextSocketEventRegistrationOrdinal : int64
+            /// The ordinal the next park of any task records as its
+            /// `TaskPark.Ordinal`. Monotonic, and bumped only by `UnixWait.park`.
+            ///
+            /// The machine's rather than a process's, because what a kernel orders
+            /// by park is a wait queue on a kernel object, and processes can share
+            /// one.
+            NextParkOrdinal : ParkOrdinal
+            /// Where the next thread's id comes from: see `ThreadIdAllocator`.
+            ///
+            /// The machine's rather than a process's, because on both flavours the
+            /// counter is shared by every process on the machine. Set by
+            /// `UnixSystem.initial`, `UnixBootImage.withProcessId`,
+            /// `UnixBootImage.withLeaderThreadId` and `UnixSystem.writePidMaxSysctl`, and
+            /// advanced only by `UnixTaskLifecycle.spawn`.
+            ThreadIds : ThreadIdAllocator
+            /// The port a `bind(2)` of port 0 will try first.
+            ///
+            /// A counter rather than a draw from the seeded PRNG. Which port an
+            /// ephemeral bind picks is unspecified — Linux randomises within its
+            /// range and Darwin ascends — so this kernel owes a process only *a* free
+            /// port, and a trace whose ports read 32768, 32769, 32770 is far easier
+            /// to follow than one whose ports are scattered. A program may depend on
+            /// nothing about the value but that it is non-zero and unprivileged,
+            /// which is all the two real kernels agree on.
+            NextEphemeralPort : uint16
+            /// Range `NextEphemeralPort` sweeps, inclusive at both ends. Host
+            /// configuration; see `UnixSystem.defaultEphemeralPortRange`.
+            EphemeralPortRange : uint16 * uint16
+            /// The value of the `somaxconn` sysctl (`net.core.somaxconn` on
+            /// Linux, `kern.ipc.somaxconn` on Darwin): the ceiling `listen(2)`
+            /// clamps its backlog to before the accept-queue capacity is derived.
+            /// Host configuration with a per-flavour default; see
+            /// `UnixBootImage.withSoMaxConn` for the measured clamp rules.
+            SoMaxConn : int
+            /// The send buffer a new TCP socket starts with, in bytes: Darwin's
+            /// `net.inet.tcp.sendspace` sysctl, and Linux's `net.ipv4.tcp_wmem`
+            /// default. Host configuration with a per-flavour default; see
+            /// `UnixBootImage.withTcpSendSpace`. Only the Darwin flavour reads
+            /// it, through `DarwinReadiness.sendBufferSpace`.
+            TcpSendSpace : int
+            /// The IPv4 addresses this machine holds. Host configuration; see
+            /// `UnixSystem.defaultLocalAddresses`.
+            LocalAddresses : uint32 list
+            /// Prefixes this machine has a local route to, which Linux will bind any
+            /// address inside and Darwin ignores. See
+            /// `UnixSystem.defaultLocalRoutes`.
+            LocalRoutes : Ipv4Prefix list
+            /// Every pipe with an end open, by identity: an end the simulated
+            /// process holds, or one the client holds (`PipeState.heldByClient`).
+            ///
+            /// Separate from the descriptor table for the reason `Sockets` is: an
+            /// `OpenFileTarget.Pipe` holds only the `PipeId`, and both ends' descriptions
+            /// name the one pipe. A pipe is in the table exactly while one of its
+            /// ends is open (`UnixSystem.checkInvariants` states both halves), and
+            /// `UnixDescriptor.close` removes it with the last one.
+            Pipes : Map<PipeId, PipeState>
+            /// The identity the next pipe will be given, by `UnixPipe.pipe2`.
+            /// Monotonic and never reused, for the replay-trace reason
+            /// `NextSocketId` gives.
+            NextPipeId : PipeId
+            /// Every write that reached a client draining a pipe, oldest first: the
+            /// bytes the outside world has received from the process.
+            ///
+            /// A client reads what its own ends received by filtering on
+            /// `Delivery.Endpoint`. One log rather than one per endpoint, so that
+            /// the order of writes across endpoints is kept: a process writing to
+            /// its output, then its error stream, then its output again is read
+            /// back in that order. It grows without bound: a process that writes
+            /// gigabytes costs that much memory.
+            Delivered : DeliveryLog
+            /// The inode number the next pipe end will be given, as `fstat(2)`
+            /// reports it. Monotonic and never reused: a process can compare the
+            /// numbers two descriptors report to decide whether they name one pipe,
+            /// so a reused number would make a dead pipe and a live one look the
+            /// same.
+            NextPipeInode : InodeNumber
+            /// The `st_dev` every end of every pipe reports.
+            ///
+            /// On Linux this is the anonymous device the kernel gave its pipe
+            /// filesystem at boot, which depends on what else was mounted before
+            /// it: configuration of this machine rather than a fact of the kernel.
+            /// On Darwin it is 0 for every pipe on every machine (measured, 27.0.0).
+            /// See `UnixBootImage.withPipeDevice`.
+            PipeDevice : int64
+            /// The identity the next `UnixSocket.socket` will allocate.
+            ///
+            /// Monotonic, and never reused: no syscall reports a
+            /// `SocketId`, but a replay trace does, and reuse would make two
+            /// distinct sockets indistinguishable in it.
+            NextSocketId : SocketId
+            /// Time since this machine booted, in nanoseconds: what its monotonic
+            /// clocks read. Never negative.
+            ///
+            /// Nothing in this library moves it. The client decides how fast its
+            /// simulated machine runs and when time passes, and says so through
+            /// `UnixMachineState.advanceClock`, the only way it changes; between two
+            /// advances every clock stands still, so readings taken between them all
+            /// name the same instant.
+            NanosecondsSinceBoot : int64
+            /// What the realtime clock read when this machine booted. The realtime
+            /// clock reads this plus `NanosecondsSinceBoot`.
+            ///
+            /// So the two clocks cannot drift apart, and the realtime clock never
+            /// steps or slews on its own as a real one does under NTP or
+            /// `settimeofday`. Set by `UnixBootImage.withBootTime`, which says
+            /// what it admits.
+            BootTime : UnixTimestamp
+            /// The kernel's entropy pool, which every random-bytes syscall draws
+            /// from: `getrandom(2)` on Linux, `getentropy(2)` on Darwin. Seeded
+            /// by `UnixSystem.initial` from `UnixSystem.defaultEntropySeed`, or by
+            /// `UnixBootImage.withEntropySeed` from another.
+            EntropyPool : EntropyPool
+            /// Number of logical processors the machine reports to the simulated
+            /// process. Deliberately a value in kernel state rather than a host
+            /// read: a host read would make a replay depend on the machine that
+            /// produced it. Programs size thread pools, partition work, and stripe
+            /// arrays off this number, so letting the host leak in here would change
+            /// their *control flow* between runs — the single worst kind of
+            /// nondeterminism for a simulation whose purpose is bit-for-bit replay.
+            ///
+            /// Defaults to `UnixSystem.defaultProcessorCount`; a client chooses a
+            /// different value with `UnixBootImage.withProcessorCount`, which
+            /// refuses anything below 1, since programs divide by it.
+            ProcessorCount : int
+            /// Whether this machine's kernel screens a read or write buffer before
+            /// it performs the operation, and if so the greatest value
+            /// `address + length` may take: the machine's `TASK_SIZE_MAX`.
+            ///
+            /// Whether it screens is the platform's
+            /// `SimulatedUnixPlatform.screensUserBufferUpFront`. The limit is
+            /// configuration rather than a constant derived from the platform,
+            /// because it varies by *machine* as well as by architecture: 2^47 less
+            /// a page with four-level paging on x86-64, 2^56 less a page with
+            /// five-level, 2^48 on a 48-bit-VA arm64. Two GitHub runners of the same
+            /// image were measured disagreeing, so no value derived from the kernel
+            /// could be right everywhere.
+            ///
+            /// `UnixSystem.initial` sets the platform's default, and
+            /// `UnixBootImage.withUserAddressLimit` another limit the platform's
+            /// architecture has. `UnixSystem.checkInvariants` reports a check that
+            /// disagrees with the platform (`UnixSystemDefect.UserBufferCheckNotOfPlatform`).
+            UserBufferCheck : UserBufferCheck
+            /// Unix-shaped platform identity the simulated process reports, as
+            /// observed through `uname(2)`, and the flavour every other
+            /// platform-dependent answer follows.
+            ///
+            /// Fixed for the whole run: `UnixSystem.initial` takes it and nothing
+            /// changes it afterwards, so a process cannot observe it changing
+            /// under it.
+            UnixPlatform : SimulatedUnixPlatform
+            /// The simulated process's filesystem: every inode a process can reach
+            /// through the path syscalls.
+            ///
+            /// Set by `UnixBootImage.withFileSystemAndCurrentDirectory`, and changed by
+            /// the syscalls that write, create or truncate. It is emulated kernel
+            /// state rather than anything read from the host, for the usual reason:
+            /// a filesystem read from the host would make a replay depend on the
+            /// machine that produced it, and programs branch on what they find.
+            FileSystem : VirtualFileSystem
+            /// The mount `FileSystem`'s root filesystem claims to be: its type and
+            /// what `statfs(2)` reports about it (see `FileSystemStatistics.ofMount`). Its type also
+            /// decides a directory's `st_size`, and where `lseek(2)` with
+            /// `SEEK_END` lands on a directory.
+            ///
+            /// Fixed for the run: this library models no `mount(2)`, so nothing
+            /// a process does can change it. Derived from the flavour by
+            /// `UnixSystem.initial` and set only by `withMount`, which refuses a
+            /// type this machine's flavour cannot report.
+            Mount : EmulatedMount
+            /// The filesystem mounted at `/dev`, which the kernel mounts at boot
+            /// over the root's entry `dev`. What `stat(2)` and `statfs(2)` report
+            /// about it and the device nodes on it comes from here.
+            ///
+            /// Fixed for the run, and derived from the flavour by
+            /// `UnixSystem.initial`.
+            DeviceMount : DeviceFileSystemMount
+            /// Linux's `fs.protected_symlinks`, `fs.protected_regular` and
+            /// `fs.protected_fifos` sysctls.
+            ///
+            /// `UnixSystem.initial` sets `ProtectedFiles.off`, the kernel's own
+            /// default, and `UnixBootImage.withProtectedFiles` any other. Only
+            /// `ProtectedFiles.off` is admitted on Darwin, which has no such
+            /// settings (`UnixSystemDefect.ProtectedFilesNotOfFlavour`).
+            ProtectedFiles : ProtectedFiles
+        }
 
 /// What a socket is taking an ephemeral port for, which decides what stands
 /// in a candidate port's way.
@@ -277,7 +279,8 @@ module UnixMachineState =
             failwith
                 $"UnixMachineState.advanceClock: %d{nanoseconds} ns is negative, and every clock this kernel models is monotonic."
 
-        // Reachable only by a record-copy past this function, and checked because
+        // Unreachable through the public API, which builds no machine but through
+        // this function and `UnixSystem.initial`; checked because
         // the overflow test below is only sound for a non-negative uptime.
         if machine.NanosecondsSinceBoot < 0L then
             failwith
@@ -680,8 +683,8 @@ module UnixMachineState =
     /// `clock_gettime(CLOCK_REALTIME)` reports the same clock, but at the
     /// granularity its flavour reports it at; see `UnixClock.clockGettime`.
     let realtime (machine : UnixMachineState) : UnixTimestamp =
-        // Both reachable only by a record-copy past `withBootTime` and
-        // `advanceClock`; checked because the carry below is only sound when each
+        // Both unreachable through the public API, which sets these only through
+        // `withBootTime` and `advanceClock`; checked because the carry below is only sound when each
         // operand is inside the range those two admit.
         if machine.NanosecondsSinceBoot < 0L then
             failwith

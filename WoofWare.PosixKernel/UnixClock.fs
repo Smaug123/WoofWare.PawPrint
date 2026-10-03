@@ -187,11 +187,13 @@ module UnixClock =
     /// Darwin's `CLOCK_REALTIME` and `CLOCK_MONOTONIC` report whole microseconds,
     /// dropping the finer digits. Every other answered clock reports to the
     /// nanosecond.
-    let clockGettime
+    let clockGettime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (clockId : int)
-        (machine : UnixMachineState)
+        (system : UnixSystem<'Task, 'Handler>)
         : Result<Result<UnixTimestamp, UnixError>, ClockGettimeRefusal>
         =
+        let machine = system.Machine
+
         match decode (SimulatedUnixPlatform.flavour machine.UnixPlatform) clockId with
         | ClockDecoding.Invalid -> Ok (Error UnixError.EINVAL)
         | ClockDecoding.Refused refusal -> Error refusal
@@ -200,7 +202,8 @@ module UnixClock =
         | ClockDecoding.Reads (ClockSource.SinceBoot granularity) ->
             let sinceBoot = machine.NanosecondsSinceBoot
 
-            // Reachable only by a record-copy past `advanceClock`.
+            // Unreachable through the public API: only `advanceClock` moves the
+            // uptime, and it refuses to make it negative.
             if sinceBoot < 0L then
                 failwith
                     $"UnixClock.clockGettime: the machine has been up for %d{sinceBoot} ns, which is negative. No uptime can be; the machine was assembled without advanceClock."

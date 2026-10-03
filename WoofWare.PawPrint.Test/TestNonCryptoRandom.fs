@@ -138,19 +138,20 @@ module TestNonCryptoRandom =
     let ``EmulatedKernel.initial's entropy pool is the library's, at the pinned seed`` () : unit =
         // One source of truth: PawPrint boots the pool `UnixSystem.initial`
         // boots, rather than restating the seed.
-        EmulatedKernel.initial.Machine.EntropyPool
-        |> shouldEqual
-            (UnixSystem.initial<ThreadId, NativeSignalHandler>
+        (UnixSystem.entropyPool EmulatedKernel.initial.System)
+        |> shouldEqual (
+            UnixSystem.initial<ThreadId, NativeSignalHandler>
                 UnixSystem.defaultUnixPlatform
                 UnixSystem.pipedStandardStreams
                 (ThreadId 0)
                 (CpuId 0)
-             |> UnixBootImage.boot)
-                .Machine.EntropyPool
+            |> UnixBootImage.boot
+            |> UnixSystem.entropyPool
+        )
 
         // And that seed is part of PawPrint's replay contract, because every
         // `Guid.NewGuid` draws from the pool.
-        EmulatedKernel.initial.Machine.EntropyPool
+        (UnixSystem.entropyPool EmulatedKernel.initial.System)
         |> shouldEqual (EntropyPool.ofSeed 0x243F6A8885A308D3UL)
 
     [<Test>]
@@ -160,12 +161,9 @@ module TestNonCryptoRandom =
         // is not splitmix64.
         let property (seed : uint64) (count : byte) : bool =
             let kernel =
-                { EmulatedKernel.initial with
-                    Machine =
-                        { EmulatedKernel.initial.Machine with
-                            EntropyPool = EntropyPool.ofSeed seed
-                        }
-                }
+                EmulatedKernel.initialImage
+                |> UnixBootImage.withEntropySeed seed
+                |> EmulatedKernel.boot
 
             let pool, _ =
                 MinipalRandom.coreClrSecureRandomBytes "test" (ThreadId 0) (int count) kernel

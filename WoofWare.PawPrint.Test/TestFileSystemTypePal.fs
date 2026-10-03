@@ -139,11 +139,9 @@ module TestFileSystemTypePal =
             |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
             |> UnixBootImage.boot
 
-        let machine = system.Machine
-
         match target with
         | None -> system |> UnixPathResolution.fstatfs 4242
-        | Some target -> FileSystemStatistics.ofObject machine.UnixPlatform machine.Mount target
+        | Some target -> FileSystemStatistics.ofObject (UnixSystem.platform system) (UnixSystem.mount system) target
 
     [<Test>]
     let ``the shim's number is CoreLib's UnixFileSystemTypes member for every modelled answer`` () : unit =

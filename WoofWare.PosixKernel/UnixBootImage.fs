@@ -8,7 +8,7 @@ namespace WoofWare.PosixKernel
 /// a setting cannot be applied to a system that has already run: it describes
 /// the machine from the moment it booted. What changes while the machine runs
 /// is a syscall's effect, or an operation of the outside world on the running
-/// system, such as `UnixMachineState.advanceClock`.
+/// system, such as `UnixSystem.advanceClock`.
 [<RequireQualifiedAccess>]
 module UnixBootImage =
 
@@ -421,6 +421,20 @@ module UnixBootImage =
 
         { machine with
             UserBufferCheck = UserBufferCheck.BeforeOperation limit
+        }
+        |> withMachine image
+
+    /// Seed the machine's entropy pool, which every random-bytes syscall draws
+    /// from, with `seed` in place of `UnixSystem.defaultEntropySeed`. Every
+    /// byte the pool hands out follows from the seed, so a run that must replay
+    /// bit for bit depends on it.
+    let withEntropySeed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (seed : uint64)
+        (image : UnixBootImage<'Task, 'Handler>)
+        : UnixBootImage<'Task, 'Handler>
+        =
+        { image.System.Machine with
+            EntropyPool = EntropyPool.ofSeed seed
         }
         |> withMachine image
 

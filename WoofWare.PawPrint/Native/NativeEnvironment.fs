@@ -48,9 +48,9 @@ module NativeEnvironment =
             if processorCount < 1 then
                 // `Environment.ProcessorCount` is documented as always
                 // positive, and CoreLib callers (ThreadPool sizing,
-                // `Parallel` partitioning) divide by it. A kernel built by
-                // record-copy can bypass `UnixBootImage.withProcessorCount`,
-                // so re-assert here: the guest must never observe a value
+                // `Parallel` partitioning) divide by it.
+                // `UnixBootImage.withProcessorCount` refuses such a count, so
+                // this is an assertion: the guest must never observe a value
                 // that the real property could not produce.
                 failwith
                     $"Environment.GetProcessorCount: kernel ProcessorCount is %d{processorCount}, which is not a legal value for Environment.ProcessorCount (must be at least 1)"

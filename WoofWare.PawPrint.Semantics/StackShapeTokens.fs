@@ -445,7 +445,7 @@ module StackShapeTokens =
 
     /// The token effects of the instructions at `offsets` in a body whose operands are all
     /// metadata tokens of `assembly`, under the instantiation `binding`. Only what control can
-    /// reach need be read (`StackShape.reachable`): CoreCLR's importer reads only what it
+    /// reach need be read (`StackFlow.reachable`): CoreCLR's importer reads only what it
     /// imports, and a token on dead code may name what cannot be resolved. A body minted by
     /// `Reflection.Emit` has `DynamicScope` operands instead, which only something holding the
     /// scope can read.

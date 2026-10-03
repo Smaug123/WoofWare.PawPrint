@@ -39,11 +39,14 @@ Converting those to and from a client's own encoding is the client's business.
 
 ## Using it
 
-The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`:
+The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three parts:
 
-* `Machine` (`UnixMachineState`): the filesystem, sockets, connections and pipes, the clock, the entropy pool, and the platform being simulated;
-* `Process` (`UnixProcessState`): the descriptor table, credentials, umask, current directory, environment and signal state;
-* `Tasks`: the process's tasks, and what each is blocked in, if anything.
+* the machine (`UnixMachineState`): the filesystem, sockets, connections and pipes, the clock, the entropy pool, and the platform being simulated;
+* the process (`UnixProcessState`): the descriptor table, credentials, umask, current directory, environment and signal state;
+* the tasks (`UnixTaskState`): the process's tasks, and what each is blocked in, if anything.
+
+Those records are opaque outside the library.
+A client reads a system through `UnixSystem`'s queries, such as `leader`, `tasks`, `signals`, `fileDescriptors`, `delivered` and `descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described below.
 
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
@@ -51,9 +54,7 @@ The library never looks inside either; it only compares them.
 `UnixSystem.initial` builds the *boot image* of a process that has not done anything yet: a `UnixBootImage`, which no syscall takes.
 Configure it with the setters in the `UnixBootImage` module, such as `withCredentials`, `withFileSystemAndCurrentDirectory`, `withBootTime` and `withEnvironment`, then `UnixBootImage.boot` it to get the `UnixSystem` its first syscall takes.
 Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
-What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixMachineState.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
-
-The records are public, so a client can still build or copy one by hand, which bypasses all of this; a later change is to make their fields internal.
+What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixSystem.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
 
 ```fsharp
 open WoofWare.PosixKernel
@@ -78,7 +79,7 @@ let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
         printfn "mkdir returned %d" result
         system
     | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
-        let numbering = SimulatedUnixPlatform.rawErrnoNumbering system.Machine.UnixPlatform
+        let numbering = SimulatedUnixPlatform.rawErrnoNumbering (UnixSystem.platform system)
         printfn "mkdir failed with errno %d" (UnixError.toRawErrnoUnder numbering error)
         system
     | Ok (SyscallOutcome.WouldBlock _, _)

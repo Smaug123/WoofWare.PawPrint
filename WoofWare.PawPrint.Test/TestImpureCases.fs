@@ -478,7 +478,7 @@ module TestImpureCases =
 
     /// The signals whose disposition is System.Native's handler.
     let private caughtBySystemNative (state : IlMachineState) : Set<Signal> =
-        KernelSignals.dispositions (EmulatedKernel.unix state.Kernel)
+        KernelSignals.dispositions state.Kernel.System
         |> Map.filter (fun _ disposition ->
             match disposition with
             | SignalDisposition.Catch action -> action.Handler = NativeSignalHandler.SystemNative
@@ -828,7 +828,7 @@ module TestImpureCases =
     let private assertClosedFdLeftNoOrphan (state : IlMachineState) : unit =
         state.Kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
-        VirtualFileSystem.checkInvariants Set.empty state.Kernel.Machine.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty (UnixSystem.fileSystem state.Kernel.System)
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
@@ -914,7 +914,7 @@ module TestImpureCases =
     /// called `ObjectLifetime.forgetIfUnheld` would pass every other assertion
     /// in this slice.
     let private assertRmDirLeftNoOrphan (state : IlMachineState) : unit =
-        VirtualFileSystem.checkInvariants Set.empty state.Kernel.Machine.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty (UnixSystem.fileSystem state.Kernel.System)
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
@@ -933,7 +933,7 @@ module TestImpureCases =
         kernel.DirectoryStreamFds |> shouldEqual Map.empty
 
         // The three inherited standard streams and nothing else.
-        FileDescriptorRegistry.fds kernel.Process.FileDescriptors
+        FileDescriptorRegistry.fds (UnixSystem.fileDescriptors kernel.System)
         |> Map.count
         |> shouldEqual 3
 
@@ -944,7 +944,7 @@ module TestImpureCases =
         NativeMemoryPool.liveBlockCount kernel.NativeMemoryPool
         |> shouldBeSmallerThan 20
 
-        VirtualFileSystem.checkInvariants Set.empty kernel.Machine.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty (UnixSystem.fileSystem kernel.System)
         |> shouldEqual []
 
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
@@ -974,9 +974,9 @@ module TestImpureCases =
     /// `DirectoryContent.Parent` naming an inode the graph no longer contains.
     let private assertRmDirOrphanChainSurvives (state : IlMachineState) : unit =
         let kernel = state.Kernel
-        let filesystem = kernel.Machine.FileSystem
+        let filesystem = (UnixSystem.fileSystem kernel.System)
         let root = VirtualFileSystem.root filesystem
-        let pinned = ObjectLifetime.pinnedInodes (EmulatedKernel.unix kernel)
+        let pinned = ObjectLifetime.pinnedInodes kernel.System
 
         let survivors =
             VirtualFileSystem.inodes filesystem
@@ -997,7 +997,8 @@ module TestImpureCases =
             failwith
                 $"expected exactly two orphaned inodes to survive -- the removed current directory and its removed parent -- but %d{other.Length} did: %A{other}. Freeing the parent would leave the orphan's \"..\" dangling; freeing neither means the cascade never fires."
 
-        List.contains kernel.Process.CurrentDirectoryInode orphaned |> shouldEqual true
+        List.contains (UnixSystem.currentDirectoryInode kernel.System) orphaned
+        |> shouldEqual true
 
         for inode in orphaned do
             Set.contains inode pinned |> shouldEqual true
@@ -1047,8 +1048,8 @@ module TestImpureCases =
     /// bound.
     let private assertUnlinkReapedExactlyOne (state : IlMachineState) : unit =
         let kernel = state.Kernel
-        let filesystem = kernel.Machine.FileSystem
-        let pinned = ObjectLifetime.pinnedInodes (EmulatedKernel.unix kernel)
+        let filesystem = (UnixSystem.fileSystem kernel.System)
+        let pinned = ObjectLifetime.pinnedInodes kernel.System
 
         let survivors =
             VirtualFileSystem.inodes filesystem
@@ -1181,11 +1182,11 @@ module TestImpureCases =
             ExpectsUnhandledException = false
             AssertTerminalState =
                 Some (fun state ->
-                    let machine = (EmulatedKernel.unix state.Kernel).Machine
+                    let system = state.Kernel.System
 
                     // Only the standard streams' pipes are left, which the
                     // guest was launched with and still holds.
-                    machine.Pipes
+                    UnixSystem.pipes system
                     |> Map.forall (fun _ pipe ->
                         match pipe.Origin with
                         | PipeOrigin.Launched _ -> true
@@ -1194,8 +1195,14 @@ module TestImpureCases =
                     |> shouldEqual true
 
                     // The launch made three pipes and the guest two, so the
-                    // next is the sixth.
-                    machine.NextPipeId |> shouldEqual (PipeId 5L)
+                    // next one made is the sixth.
+                    match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                    | Ok (Pipe2Answer.Created _, after) ->
+                        Set.difference
+                            (UnixSystem.pipes after |> Map.keys |> Set.ofSeq)
+                            (UnixSystem.pipes system |> Map.keys |> Set.ofSeq)
+                        |> shouldEqual (Set.singleton (PipeId 5L))
+                    | other -> failwith $"making one more pipe: %A{other}"
                 )
         }
 
@@ -1244,7 +1251,7 @@ module TestImpureCases =
                 Some (fun state ->
                     SignalState.pending state.Kernel.Signals |> shouldEqual []
 
-                    (EmulatedKernel.unix state.Kernel).Machine.Pipes
+                    (UnixSystem.pipes state.Kernel.System)
                     |> Map.forall (fun _ pipe ->
                         match pipe.Origin with
                         | PipeOrigin.Launched _ -> true
@@ -1279,7 +1286,7 @@ module TestImpureCases =
                     SignalState.pending state.Kernel.Signals |> shouldEqual []
 
                     state.Kernel.Tasks
-                    |> Map.forall (fun _ task -> task.Parked.IsNone)
+                    |> Map.forall (fun thread _ -> (UnixTaskTable.parkedFor thread state.Kernel.Tasks).IsNone)
                     |> shouldEqual true
                 )
         }
@@ -1310,7 +1317,7 @@ module TestImpureCases =
                     SignalState.pending state.Kernel.Signals |> shouldEqual []
 
                     state.Kernel.Tasks
-                    |> Map.forall (fun _ task -> task.Parked.IsNone)
+                    |> Map.forall (fun _ task -> (UnixTaskState.park task).IsNone)
                     |> shouldEqual true
                 )
         }
@@ -2400,7 +2407,7 @@ module TestImpureCases =
                 AssertTerminalState =
                     Some (fun state ->
                         state.Kernel.Tasks
-                        |> Map.forall (fun _ task -> task.Parked.IsNone)
+                        |> Map.forall (fun thread _ -> (UnixTaskTable.parkedFor thread state.Kernel.Tasks).IsNone)
                         |> shouldEqual true
                     )
             }
@@ -3689,7 +3696,8 @@ module TestImpureCases =
                                 16
                                 (KernelConfig.toKernel KernelConfig.Default)
 
-                        state.Kernel.Machine.EntropyPool |> shouldEqual expected.Machine.EntropyPool
+                        (UnixSystem.entropyPool state.Kernel.System)
+                        |> shouldEqual (UnixSystem.entropyPool expected.System)
                     )
             }
             {
