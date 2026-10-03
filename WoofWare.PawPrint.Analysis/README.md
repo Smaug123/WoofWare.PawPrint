@@ -7,8 +7,13 @@ of everything it calls, following calls into whatever assemblies they live in, a
 exception types it can name and whether anything it could not see through (a virtual call, a native
 method) may add more:
 
-* an exception a method constructs and throws is named exactly; one returned by a helper and thrown
-  is named as "this type or a subtype";
+* an exception thrown is named by what the IL says its operand is, over every path to the `throw`:
+  exactly where a path constructs it, and as "this type or a subtype" where a path holds it in a
+  value of that static type (an argument, a local, a field, a call's result, a cast);
+* a `callvirt` of a method a derived class may override, on an object the IL says is exactly of one
+  class (one a `newobj` made), or of a sealed class or a boxed value type, runs that class's
+  implementation, found as for a `constrained.` call below; one on an object that may be of a class
+  others derive from is opaque;
 * `throw null` raises the `NullReferenceException` that throwing a null does, and nothing else;
 * a `rethrow` re-raises what its `catch` clause caught: what the clause's protected block raises and
   no clause tried before it stops, of the clause's type. Something the analysis cannot name, caught
@@ -81,7 +86,12 @@ an implementation that throws anything else can let that escape unreported. The 
 callback, `GetInterfaceImplementation`, is reached only by an interface call or an interface `ldvirtftn` on
 an object whose class does not implement the interface. The analysis counts an interface
 `ldvirtftn` as opaque, and resolves an interface call only through a `constrained.` type that
-implements the interface itself.
+implements the interface itself, or on an object the IL says is of a class that does.
+
+The analysis also assumes the IL is well typed: a value held where the IL spells a type (an
+argument, a local, a field, a call's result) is of that type, as the JIT assumes when it
+devirtualises. Code that breaks that with `Unsafe.As`, or by reinterpreting memory, is outside what
+the analysis answers for.
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set
