@@ -424,6 +424,20 @@ module UnixBootImage =
         }
         |> withMachine image
 
+    /// Seed the machine's entropy pool, which every random-bytes syscall draws
+    /// from, with `seed` in place of `UnixSystem.defaultEntropySeed`. Every
+    /// byte the pool hands out follows from the seed, so a run that must replay
+    /// bit for bit depends on it.
+    let withEntropySeed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (seed : uint64)
+        (image : UnixBootImage<'Task, 'Handler>)
+        : UnixBootImage<'Task, 'Handler>
+        =
+        { image.System.Machine with
+            EntropyPool = EntropyPool.ofSeed seed
+        }
+        |> withMachine image
+
     /// Set the logical-processor count the simulated process reports. Rejects
     /// non-positive values at the boundary rather than letting them reach a
     /// program that will divide by them.

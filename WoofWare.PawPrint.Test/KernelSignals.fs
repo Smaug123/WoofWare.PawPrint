@@ -12,7 +12,7 @@ module KernelSignals =
         (system : UnixSystem<'Task, 'Handler>)
         : SignalNumbering
         =
-        SimulatedUnixPlatform.signalNumbering system.Machine.UnixPlatform
+        SimulatedUnixPlatform.signalNumbering (UnixSystem.platform system)
 
     /// `signal`'s disposition, as `sigaction` reports it. Fails the test where
     /// the kernel will not report it (Darwin's SIGKILL and SIGSTOP).

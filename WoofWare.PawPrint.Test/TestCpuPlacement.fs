@@ -147,30 +147,6 @@ module TestCpuPlacement =
 
         Check.One (propertyConfig, Prop.forAll ints property)
 
-    [<Test>]
-    let ``a record-copied non-positive processor count is rejected`` () =
-        // `withProcessorCount` guards construction, but record-copy bypasses it
-        // and `rotation % 0` would divide by zero while `rotation % -n` would
-        // yield a negative shard index. Assert at the point of use, sweeping
-        // the whole illegal range rather than pinning the single zero case.
-        let property (countSeed : int, rotationSeed : int) : bool =
-            let count = -(abs (countSeed % 64))
-
-            let kernel =
-                { EmulatedKernel.initial with
-                    System =
-                        { EmulatedKernel.initial.System with
-                            Machine =
-                                { EmulatedKernel.initial.System.Machine with
-                                    ProcessorCount = count
-                                }
-                        }
-                }
-
-            not (succeeds (fun () -> EmulatedKernel.cpuForRotation (rotationFrom rotationSeed) kernel))
-
-        Check.One (propertyConfig, Prop.forAll intPairs property)
-
     // --- Cursor bookkeeping ---
     //
     // The properties above cover the pure placement function. These cover the
@@ -289,16 +265,9 @@ module TestCpuPlacement =
             let plain = kernelWith count
 
             let busy =
-                { plain with
+                { EmulatedKernel.withVirtualClockTicks 1234L plain with
                     StepCounter = 5678L
                     ProcessRandom = ProcessRandom.Minipal (MinipalUrandom.Open 7, Some (Lrand48.seed 0xDEADBEEFL))
-                    System =
-                        { plain.System with
-                            Machine =
-                                { plain.System.Machine with
-                                    NanosecondsSinceBoot = 1234L * ClockPal.nanosecondsPerTick
-                                }
-                        }
                 }
 
             EmulatedKernel.cpuForRotation rotation plain = EmulatedKernel.cpuForRotation rotation busy

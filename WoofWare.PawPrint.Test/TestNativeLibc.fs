@@ -41,46 +41,34 @@ module TestNativeLibc =
         launched numbering Set.empty
 
     let private numberingOf (system : UnixSystem<int, NativeSignalHandler>) : SignalNumbering =
-        SimulatedUnixPlatform.signalNumbering system.Machine.UnixPlatform
+        SimulatedUnixPlatform.signalNumbering (UnixSystem.platform system)
 
-    /// `system` with `entry` pending, as though it had been generated while
-    /// every task that could take it blocked it.
-    let private enqueue
-        (entry : PendingSignal<int>)
+    /// `system` with a task `task` the leader started.
+    let private withTask
+        (task : int)
         (system : UnixSystem<int, NativeSignalHandler>)
         : UnixSystem<int, NativeSignalHandler>
         =
-        { system with
-            Process =
-                { system.Process with
-                    Signals = SignalState.enqueue entry system.Process.Signals
-                }
-        }
+        match UnixTaskLifecycle.spawn leader task (CpuId 0) system with
+        | Ok (_, system) -> system
+        | Error error -> failwith $"spawning task %d{task} failed with %O{error}"
 
-    /// `system` once `entry` has been generated among the tasks `leader` and
-    /// `worker`, failing the test unless the process carries on.
-    let private generateAmong
-        (worker : int)
-        (entry : PendingSignal<int>)
-        (system : UnixSystem<int, NativeSignalHandler>)
-        : UnixSystem<int, NativeSignalHandler>
-        =
-        match
-            SignalState.generate
-                CoreDumps.Suppressed
-                leader
-                (Set.ofList [ leader ; worker ])
-                entry
-                system.Process.Signals
-        with
-        | Ok (SignalGeneration.ProcessContinues signals) ->
-            { system with
-                Process =
-                    { system.Process with
-                        Signals = signals
-                    }
-            }
-        | other -> failwith $"generating %A{entry}: %A{other}"
+    /// `system` once `entry` has been sent, by `kill(2)` to the process or by
+    /// `pthread_kill(3)` to its target, failing the test unless the process
+    /// carries on.
+    let private send (entry : PendingSignal<int>) (system : UnixSystem<int, NativeSignalHandler>) =
+        let signo = Signal.toRawSignoUnder (numberingOf system) entry.Signal
+
+        let outcome =
+            match entry.Target with
+            | ValueSome target -> UnixSignal.pthreadKill target signo system |> Result.mapError (sprintf "%A")
+            | ValueNone ->
+                UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId system)) signo system
+                |> Result.mapError (sprintf "%A")
+
+        match outcome with
+        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+        | other -> failwith $"sending %A{entry}: %A{other}"
 
     let private signal (numbering : SignalNumbering) (signo : int) : Signal =
         match Signal.ofRawSignoUnder numbering signo with
@@ -387,7 +375,8 @@ module TestNativeLibc =
                             action.Restart |> shouldEqual true
                         | other -> failwith $"expected System.Native's handler, got %A{other}"
 
-                        let registered = enqueue (processDirected sent) signals, shim
+                        // Caught, so it waits for the return to user mode.
+                        let registered = send (processDirected sent) signals, shim
 
                         screen registered (signal numbering signo)
                         |> shouldEqual (Some (UnmodelledSelfSignal.NativeHandler (sent, handler)))
@@ -437,7 +426,9 @@ module TestNativeLibc =
             for disposition in dispositions do
                 for sender in [ leader ; worker ] do
                     let before =
-                        initial numbering |> KernelSignals.setDisposition Signal.SIGPIPE disposition
+                        initial numbering
+                        |> withTask worker
+                        |> KernelSignals.setDisposition Signal.SIGPIPE disposition
 
                     let raised : PendingSignal<int> =
                         {
@@ -448,7 +439,7 @@ module TestNativeLibc =
                                 | SimulatedUnixFlavour.Darwin -> ValueNone
                         }
 
-                    let after = generateAmong worker raised before
+                    let after = send raised before
 
                     let expected =
                         match disposition, raised.Target with
@@ -472,7 +463,7 @@ module TestNativeLibc =
         for platform in everyPlatform do
             let numbering = SimulatedUnixPlatform.signalNumbering platform
             let sigill = signal numbering 4
-            let before = initial numbering
+            let before = initial numbering |> withTask worker
 
             for raiser in [ leader ; worker ] do
                 let raised : PendingSignal<int> =
@@ -481,7 +472,7 @@ module TestNativeLibc =
                         Target = ValueSome raiser
                     }
 
-                let after = generateAmong worker raised before
+                let after = send raised before
 
                 let expected =
                     if raiser = leader then
@@ -585,13 +576,21 @@ module TestNativeLibc =
                 (fresh numbering, registered)
                 ||> List.fold (fun state signal -> register numbering signal state)
 
+            // Every thread blocks every candidate, so each one sent stays
+            // pending rather than being delivered.
+            let signals =
+                signals
+                |> withTask 3
+                |> SignalFrames.enterSystem leader (Set.ofList candidates)
+                |> SignalFrames.enterSystem 3 (Set.ofList candidates)
+
             let signals =
                 (signals, pending)
                 ||> List.fold (fun signals (index, aimedAtThread) ->
                     let signal =
                         candidates.[((index % candidates.Length) + candidates.Length) % candidates.Length]
 
-                    enqueue
+                    send
                         {
                             Signal = signal
                             Target = if aimedAtThread then ValueSome 3 else ValueNone
@@ -618,7 +617,7 @@ module TestNativeLibc =
         // The same signal, pending while registered.
         for numbering in everyNumbering do
             let signals, shim = register numbering Signal.SIGTERM (fresh numbering)
-            let pending = enqueue (processDirected Signal.SIGTERM) signals, shim
+            let pending = send (processDirected Signal.SIGTERM) signals, shim
             screen pending Signal.SIGTERM |> shouldEqual None
 
     [<Test>]

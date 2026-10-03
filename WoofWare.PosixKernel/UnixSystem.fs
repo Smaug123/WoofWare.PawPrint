@@ -550,6 +550,132 @@ module UnixSystem =
             Machine = UnixMachineState.advanceClock nanoseconds system.Machine
         }
 
+    /// The process's descriptor table, which `FileDescriptorRegistry`'s queries
+    /// read: every descriptor it holds, and the open file description each
+    /// names.
+    let fileDescriptors<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileDescriptorRegistry
+        =
+        system.Process.FileDescriptors
+
+    /// The machine's filesystem, which `VirtualFileSystem`'s queries read.
+    let fileSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : VirtualFileSystem
+        =
+        system.Machine.FileSystem
+
+    /// The inode of the directory the process is standing in. See
+    /// `UnixProcessState.CurrentDirectoryInode`; the path `getcwd(3)` reports is
+    /// `UnixPathResolution.currentDirectoryPath`.
+    let currentDirectoryInode<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : InodeNumber
+        =
+        system.Process.CurrentDirectoryInode
+
+    /// Who the process is: all six of its IDs, and its supplementary groups.
+    let credentials<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : Credentials
+        =
+        system.Process.Credentials
+
+    /// The process's file-mode creation mask, without replacing it as `umask`
+    /// does.
+    let fileModeCreationMask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : PermissionBits
+        =
+        system.Process.Umask
+
+    /// The machine's entropy pool, from which every random-bytes syscall draws.
+    let entropyPool<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : EntropyPool
+        =
+        system.Machine.EntropyPool
+
+    /// The range a `bind(2)` of port 0 draws from, inclusive at both ends.
+    let ephemeralPortRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : uint16 * uint16
+        =
+        system.Machine.EphemeralPortRange
+
+    /// The machine's `somaxconn` sysctl. See `UnixMachineState.SoMaxConn`.
+    let soMaxConn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : int
+        =
+        system.Machine.SoMaxConn
+
+    /// The mount the machine's root filesystem claims to be. See
+    /// `UnixMachineState.Mount`.
+    let mount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : EmulatedMount
+        =
+        system.Machine.Mount
+
+    /// The machine's `fs.protected_*` sysctls. See
+    /// `UnixMachineState.ProtectedFiles`.
+    let protectedFiles<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : ProtectedFiles
+        =
+        system.Machine.ProtectedFiles
+
+    /// Every pipe with an end open, by identity. See `UnixMachineState.Pipes`.
+    let pipes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : Map<PipeId, PipeState>
+        =
+        system.Machine.Pipes
+
+    /// The realtime clock's reading, to the nanosecond. See
+    /// `UnixMachineState.realtime`.
+    let realtime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixTimestamp
+        =
+        UnixMachineState.realtime system.Machine
+
+    /// Whether, and where, the machine's kernel screens a read or write buffer
+    /// before performing the operation. See `UnixMachineState.userBufferCheck`.
+    let userBufferCheck<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UserBufferCheck
+        =
+        UnixMachineState.userBufferCheck system.Machine
+
+    /// The socket `socketId` names. Loudly partial, as
+    /// `UnixMachineState.socket` is.
+    let socket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SocketDescription
+        =
+        UnixMachineState.socket socketId system.Machine
+
+    /// The pipe `pipeId` names. Loudly partial, as `UnixMachineState.pipe` is.
+    let pipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (pipeId : PipeId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : PipeState
+        =
+        UnixMachineState.pipe pipeId system.Machine
+
+    /// How ready the socket `socketId` is. See
+    /// `UnixMachineState.socketReadinessLevel`.
+    let socketReadinessLevel<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ReadinessLevel
+        =
+        UnixMachineState.socketReadinessLevel socketId system.Machine
+
     /// What the descriptor `fd` names, or `None` if the process has no such
     /// descriptor open.
     let descriptorTarget<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1777,7 +1903,8 @@ module UnixSystem =
     /// constant nobody chose for its bits is the least arbitrary one.
     ///
     /// A client whose recorded runs must replay bit-for-bit depends on this
-    /// value, because every byte the pool hands out follows from it.
+    /// value, because every byte the pool hands out follows from it. A client
+    /// chooses another with `UnixBootImage.withEntropySeed`.
     let defaultEntropySeed : uint64 = 0x243F6A8885A308D3UL
 
     /// The `pid_max` a freshly-minted Linux machine has: 4194304, the most Linux

@@ -325,8 +325,8 @@ module TestSocketCreation =
         match UnixSocket.socket domain socketType protocol system with
         | Ok (Ok (fd, system)) ->
             let socket =
-                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
-                | Some (OpenFileTarget.Socket socketId) -> UnixMachineState.socket socketId system.Machine
+                match FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors system) with
+                | Some (OpenFileTarget.Socket socketId) -> UnixSystem.socket socketId system
                 | other -> failwith $"descriptor %d{fd} names %A{other}"
 
             sprintf "%O" socket.Domain |> shouldEqual expectedDomain

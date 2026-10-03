@@ -196,32 +196,38 @@ module TestSignalDispatch =
             EmulatedKernel.withUnix (KernelSignals.setDisposition signal disposition kernel.System) kernel
         )
 
-    let private mapSignals
-        (f : SignalState<ThreadId, NativeSignalHandler> -> SignalState<ThreadId, NativeSignalHandler>)
-        (state : IlMachineState)
-        : IlMachineState
-        =
+    /// `state` once the process has sent itself `signal` with `kill(2)`.
+    /// Fails the test unless the process carries on.
+    let private sendToProcess (signal : Signal) (state : IlMachineState) : IlMachineState =
         state.MapKernel (fun kernel ->
-            { kernel with
-                System =
-                    { kernel.System with
-                        Process =
-                            { kernel.System.Process with
-                                Signals = f kernel.Signals
-                            }
-                    }
-            }
+            let pid = ProcessId.toInt32 (UnixSystem.processId kernel.System)
+            let signo = Signal.toRawSignoUnder (numberingOf state) signal
+
+            match UnixSignal.kill pid signo kernel.System with
+            | Ok (Ok (KillOutcome.ProcessContinues system)) -> EmulatedKernel.withUnix system kernel
+            | other ->
+                let masks =
+                    UnixSystem.tasks kernel.System
+                    |> Map.map (fun task _ -> SignalState.maskOf task (UnixSystem.signals kernel.System))
+
+                failwith $"sending %O{signal} answered %A{other}; the tasks' masks were %A{masks}"
         )
 
-    /// `signal`, generated for the whole process and pending there.
-    let private sendToProcess (signal : Signal) (state : IlMachineState) : IlMachineState =
-        mapSignals
-            (SignalState.enqueue
-                {
-                    Signal = signal
-                    Target = ValueNone
-                })
-            state
+    /// `state` with every task inside a handler that masks `signal`, so that a
+    /// `signal` sent now stays pending rather than being taken or acted on.
+    let private blockEverywhere (signal : Signal) (state : IlMachineState) : IlMachineState =
+        state.MapKernel (fun kernel ->
+            (kernel, UnixSystem.tasks kernel.System |> Map.keys)
+            ||> Seq.fold (fun kernel task -> SignalFrames.enter task (Set.singleton signal) kernel)
+        )
+
+    /// `state` once every task's handler from `blockEverywhere` has returned,
+    /// leaving whatever it held off pending and now receivable.
+    let private unblockEverywhere (state : IlMachineState) : IlMachineState =
+        state.MapKernel (fun kernel ->
+            (kernel, SignalState.tasksWithFrames (UnixSystem.signals kernel.System))
+            ||> Seq.fold (fun kernel task -> SignalFrames.leave task kernel)
+        )
 
     let private withStatus (thread : ThreadId) (status : ThreadStatus) (state : IlMachineState) : IlMachineState =
         { state with
@@ -307,7 +313,7 @@ module TestSignalDispatch =
                     WriteEnd = 4
                 }
 
-            let descriptors = state.Kernel.System.Process.FileDescriptors
+            let descriptors = (UnixSystem.fileDescriptors state.Kernel.System)
 
             let readEnd =
                 FileDescriptorRegistry.tryFind pipe.ReadEnd descriptors
@@ -387,11 +393,7 @@ module TestSignalDispatch =
         let state' =
             state
             |> register Signal.SIGINT
-            |> fun state ->
-                state.MapKernel (
-                    SignalFrames.enter state.Kernel.Leader (Set.singleton Signal.SIGINT)
-                    >> SignalFrames.enter dispatcher (Set.singleton Signal.SIGINT)
-                )
+            |> blockEverywhere Signal.SIGINT
             |> sendToProcess Signal.SIGINT
             |> poll
 
@@ -415,13 +417,17 @@ module TestSignalDispatch =
         // A receivable pending signal nobody registered falls to its kernel
         // default — Terminate, for SIGINT. Generation applies that default
         // when a thread can receive the signal, so it can reach the poll only
-        // by becoming receivable later; the poll must refuse it loudly rather
-        // than leave it queued forever (the shape #1380 objected to) or
-        // half-apply it.
+        // by becoming receivable later, as here, where every task blocked it
+        // when it was sent; the poll must refuse it loudly rather than leave
+        // it queued forever (the shape #1380 objected to) or half-apply it.
         let state, _dispatcher, _ = preparedState ()
 
         let state =
-            state |> withSibling ThreadStatus.Runnable |> sendToProcess Signal.SIGINT
+            state
+            |> withSibling ThreadStatus.Runnable
+            |> blockEverywhere Signal.SIGINT
+            |> sendToProcess Signal.SIGINT
+            |> unblockEverywhere
 
         let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
 
@@ -429,16 +435,21 @@ module TestSignalDispatch =
 
     [<Test>]
     let ``poll discards a receivable ignored signal and persists the discard`` () : unit =
-        // SIGCHLD's kernel default is Ignore, and the test kernel simulates
-        // Linux, so the non-registered entry survives generation and it is
-        // the delivery scan that discards it. The scan produces no action —
+        // SIGCHLD's kernel default is Ignore, but every task blocked it when
+        // it was sent, so the non-registered entry survives generation, as
+        // Linux keeps a blocked ignored signal; once unblocked it is the
+        // delivery scan that discards it. The scan produces no action —
         // nothing reaches the pipe, and the dispatcher stays Parked — but its
         // state change must be kept, or the next poll would discard the same
         // entry forever.
         let state, dispatcher, _ = preparedState ()
 
         let state =
-            state |> withSibling ThreadStatus.Runnable |> sendToProcess Signal.SIGCHLD
+            state
+            |> withSibling ThreadStatus.Runnable
+            |> blockEverywhere Signal.SIGCHLD
+            |> sendToProcess Signal.SIGCHLD
+            |> unblockEverywhere
 
         state.Kernel.Signals |> SignalState.pending |> List.length |> shouldEqual 1
 
@@ -808,7 +819,7 @@ module TestSignalDispatch =
 
             match UnixNamespace.openPath (flagWord OpenFlagsPal.ReadOnly) sinkBytes 0 system with
             | Ok (SyscallAnswer.Completed fd, system) ->
-                match UnixReadWrite.read system.Leader (int fd) UserBuffer.Mapped 16UL system with
+                match UnixReadWrite.read (UnixSystem.leader system) (int fd) UserBuffer.Mapped 16UL system with
                 | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), _) -> List.ofSeq bytes
                 | other -> failwith $"reading the sink answered %O{other}"
             | other -> failwith $"reopening the sink answered %O{other}"
@@ -884,7 +895,9 @@ module TestSignalDispatch =
             read.Reader
             |> shouldEqual (
                 SleepTarget.Waiting (
-                    FileDescriptorRegistry.tryFindId (pipeOf state).ReadEnd state.Kernel.System.Process.FileDescriptors
+                    FileDescriptorRegistry.tryFindId
+                        (pipeOf state).ReadEnd
+                        (UnixSystem.fileDescriptors state.Kernel.System)
                     |> Option.get,
                     (pipeOf state).ReadEnd
                 )
@@ -1136,11 +1149,11 @@ module TestSignalDispatch =
 
         // Fill the pipe to capacity through its write end.
         let rec fill (system : UnixSystem<ThreadId, NativeSignalHandler>) =
-            match UnixReadWrite.admitWrite system.Leader pipe.WriteEnd UserBuffer.Mapped 4096UL system with
+            match UnixReadWrite.admitWrite (UnixSystem.leader system) pipe.WriteEnd UserBuffer.Mapped 4096UL system with
             | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, system)) ->
                 match
                     UnixReadWrite.write
-                        system.Leader
+                        (UnixSystem.leader system)
                         pipe.WriteEnd
                         (ImmutableArray.CreateRange (Array.create count 1uy))
                         system
@@ -1177,7 +1190,9 @@ module TestSignalDispatch =
             state.MapKernel (fun kernel ->
                 let system = kernel.System
 
-                match UnixReadWrite.write system.Leader pipe.WriteEnd (ImmutableArray.Create 0uy) system with
+                match
+                    UnixReadWrite.write (UnixSystem.leader system) pipe.WriteEnd (ImmutableArray.Create 0uy) system
+                with
                 | Ok (WriteOutcome.Returns (WriteAnswer.Completed 1L, system)) -> EmulatedKernel.withUnix system kernel
                 | other -> failwith $"writing to the pipe answered %O{other}"
             )
@@ -1208,14 +1223,17 @@ module TestSignalDispatch =
         // the leader blocking SIGINT and the dispatcher not, a real kernel
         // would pick another thread, which PawPrint does not model: the poll
         // must refuse rather than run the handler as though the dispatcher
-        // had received it.
-        let state, _dispatcher, _ = preparedState ()
+        // had received it. Generation refuses the same choice, so the signal
+        // is sent while every task blocks it, and the dispatcher's handler
+        // then returns.
+        let state, dispatcher, _ = preparedState ()
 
         let state =
             state
             |> register Signal.SIGINT
-            |> fun state -> state.MapKernel (SignalFrames.enter state.Kernel.Leader (Set.singleton Signal.SIGINT))
+            |> blockEverywhere Signal.SIGINT
             |> sendToProcess Signal.SIGINT
+            |> fun state -> state.MapKernel (SignalFrames.leave dispatcher)
 
         let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
         exn.Message |> shouldContainText "LeaderBlocks"

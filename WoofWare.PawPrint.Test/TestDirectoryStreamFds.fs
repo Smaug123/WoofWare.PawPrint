@@ -78,7 +78,7 @@ module TestDirectoryStreamFds =
     let private positionOf (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : DirectoryPosition =
         let fd = EmulatedKernel.directoryStreamFd block kernel
 
-        match FileDescriptorRegistry.tryFindTarget fd kernel.System.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors kernel.System) with
         | Some (OpenFileTarget.Directory (_, position)) -> position
         | other -> failwith $"the stream's fd %d{fd} names %O{other}, not a directory"
 

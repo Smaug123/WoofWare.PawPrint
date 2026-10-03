@@ -202,7 +202,8 @@ module UnixClock =
         | ClockDecoding.Reads (ClockSource.SinceBoot granularity) ->
             let sinceBoot = machine.NanosecondsSinceBoot
 
-            // Reachable only by a record-copy past `advanceClock`.
+            // Unreachable through the public API: only `advanceClock` moves the
+            // uptime, and it refuses to make it negative.
             if sinceBoot < 0L then
                 failwith
                     $"UnixClock.clockGettime: the machine has been up for %d{sinceBoot} ns, which is negative. No uptime can be; the machine was assembled without advanceClock."

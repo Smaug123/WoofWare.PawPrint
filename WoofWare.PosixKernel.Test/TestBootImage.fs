@@ -63,6 +63,7 @@ module TestBootImage =
                     "withBootTime"
                     "withCoreDumps"
                     "withCredentials"
+                    "withEntropySeed"
                     "withEnvironment"
                     "withEphemeralPortRange"
                     "withFileSystemAndCurrentDirectory"
@@ -123,3 +124,59 @@ module TestBootImage =
 
         t.GetConstructors (BindingFlags.Public ||| BindingFlags.Instance)
         |> shouldBeEmpty
+
+    /// A client that could copy a booted system's records could set anything
+    /// a setter sets, or anything a syscall changes, without going through
+    /// either. So the records a system is made of have no public fields and no
+    /// public constructor: a client reads them through queries and changes them
+    /// through syscalls.
+    [<Test>]
+    let ``a booted system's state is opaque`` () : unit =
+        let records : Type list =
+            [
+                typeof<UnixSystem<int, string>>
+                typeof<UnixMachineState>
+                typeof<UnixProcessState<int, string>>
+                typeof<UnixTaskState>
+            ]
+
+        for t in records do
+            // That they are records at all, so that the rest cannot pass by
+            // asking about the wrong types.
+            FSharpType.IsRecord (t, BindingFlags.NonPublic) |> shouldEqual true
+            FSharpType.IsRecord (t, BindingFlags.Public) |> shouldEqual false
+
+            t.GetProperties (BindingFlags.Public ||| BindingFlags.Instance)
+            |> Array.map (fun p -> p.Name)
+            |> shouldBeEmpty
+
+            t.GetConstructors (BindingFlags.Public ||| BindingFlags.Instance)
+            |> shouldBeEmpty
+
+    /// Parking a task and releasing its park change a running system without
+    /// being syscalls, so a client parks a task by making a blocking syscall and
+    /// releases it by finishing one.
+    [<Test>]
+    let ``parking and releasing are not public`` () : unit =
+        let named (declaringPrefix : string) (name : string) : MethodInfo list =
+            library.GetTypes ()
+            |> Seq.filter (fun t -> t.FullName.StartsWith (declaringPrefix, StringComparison.Ordinal))
+            |> Seq.collect (fun t ->
+                t.GetMethods (
+                    BindingFlags.Public
+                    ||| BindingFlags.NonPublic
+                    ||| BindingFlags.Static
+                    ||| BindingFlags.DeclaredOnly
+                )
+            )
+            |> Seq.filter (fun m -> m.Name = name)
+            |> List.ofSeq
+
+        for declaring, name in
+            [
+                "WoofWare.PosixKernel.UnixWait", "park"
+                "WoofWare.PosixKernel.UnixTaskTable", "unpark"
+            ] do
+            match named declaring name with
+            | [ m ] -> (describe m, m.IsPublic) |> shouldEqual (describe m, false)
+            | other -> failwith $"expected one %s{declaring}.%s{name}, found %d{List.length other}"

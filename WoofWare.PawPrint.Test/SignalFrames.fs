@@ -14,12 +14,16 @@ module SignalFrames =
     /// using this does not use it otherwise.
     let private carrier : Signal = Signal.SIGPROF
 
-    /// `kernel` with `thread` inside a handler whose `sa_mask` is `mask`, with
+    /// `system` with `task` inside a handler whose `sa_mask` is `mask`, with
     /// `SA_NODEFER`, for `carrier`, whose disposition is put back as it was.
     /// Fails the test unless the return to user mode delivers the carrier
     /// alone.
-    let enter (thread : ThreadId) (mask : Set<Signal>) (kernel : EmulatedKernel) : EmulatedKernel =
-        let system = kernel.System
+    let enterSystem<'Task when 'Task : comparison>
+        (task : 'Task)
+        (mask : Set<Signal>)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
+        : UnixSystem<'Task, NativeSignalHandler>
+        =
         let before = KernelSignals.disposition carrier system
 
         let action =
@@ -33,17 +37,35 @@ module SignalFrames =
         let caught =
             KernelSignals.setDisposition carrier (SignalDisposition.Catch action) system
 
-        let sent =
-            match
-                UnixSignal.pthreadKill
-                    thread
-                    (Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform) carrier)
-                    caught
-            with
-            | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
-            | other -> failwith $"expected the carrier to be left pending on %O{thread}, got %A{other}"
+        let numbering = SimulatedUnixPlatform.signalNumbering (UnixSystem.platform system)
 
-        match UnixSignal.onReturnToUser thread sent with
+        let sent =
+            match UnixSignal.pthreadKill task (Signal.toRawSignoUnder numbering carrier) caught with
+            | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+            | other -> failwith $"expected the carrier to be left pending on %O{task}, got %A{other}"
+
+        match UnixSignal.onReturnToUser task sent with
         | Ok (Some (SignalDelivery.RunHandlers [ frame ]), system) when frame.Entry.Signal = carrier ->
-            EmulatedKernel.withUnix (KernelSignals.setDisposition carrier before system) kernel
-        | other -> failwith $"expected the carrier alone to be delivered to %O{thread}, got %A{other}"
+            KernelSignals.setDisposition carrier before system
+        | other -> failwith $"expected the carrier alone to be delivered to %O{task}, got %A{other}"
+
+    /// `system` once `task`'s innermost handler has returned: `sigreturn(2)`,
+    /// which puts back the mask in force before that frame was pushed.
+    /// Delivers nothing; fails the test if `task` has no frame.
+    let leaveSystem<'Task when 'Task : comparison>
+        (task : 'Task)
+        (system : UnixSystem<'Task, NativeSignalHandler>)
+        : UnixSystem<'Task, NativeSignalHandler>
+        =
+        match SignalState.framesOf task (UnixSystem.signals system) with
+        | innermost :: _ -> UnixSignal.sigreturn task innermost.Id system
+        | [] -> failwith $"%O{task} is inside no handler"
+
+    /// `kernel` with `thread` inside a handler whose `sa_mask` is `mask`: see
+    /// `enterSystem`.
+    let enter (thread : ThreadId) (mask : Set<Signal>) (kernel : EmulatedKernel) : EmulatedKernel =
+        EmulatedKernel.withUnix (enterSystem thread mask kernel.System) kernel
+
+    /// `kernel` once `thread`'s innermost handler has returned: see `leaveSystem`.
+    let leave (thread : ThreadId) (kernel : EmulatedKernel) : EmulatedKernel =
+        EmulatedKernel.withUnix (leaveSystem thread kernel.System) kernel
