@@ -1231,6 +1231,15 @@ module NativeDelegate =
                                                 true
                                                 state
 
+                                        let resolved =
+                                            match resolved with
+                                            | IlMachineStateExecution.ResolvedVirtualCall.Runs implementation ->
+                                                Some implementation
+                                            | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> None
+                                            | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted reabstraction ->
+                                                failwith
+                                                    $"TODO: %s{operation} must virtualise %s{method.Name} of the open generic definition %O{definition} over a %O{receiverType}, whose instantiation %O{interfaceHandle} of it resolves to the reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}; PawPrint does not model how CoreCLR's search for the typical instantiation treats one"
+
                                         state, acc @ [ interfaceHandle, resolved ]
                                     | Some _
                                     | None -> state, acc
@@ -1318,13 +1327,17 @@ module NativeDelegate =
                         // on `final` methods, whose slot always resolves to themselves, so skipping
                         // the resolution there gives the same method; and on static virtuals,
                         // which the arm above refuses.
+                        //
+                        // A slot holding a reabstraction raises, as `ldvirtftn`'s does. Measured:
+                        // real .NET throws `EntryPointNotFoundException` from `CreateDelegate`,
+                        // with a message naming the method, which this does not reproduce.
                         let state, methodPtr =
                             match targetAddr with
                             | Some receiver when method.DispatchesVirtually ->
                                 let receiverType = ManagedHeap.getObjectConcreteType receiver state.ManagedHeap
 
                                 if receiverType = declaringType then
-                                    state, method
+                                    state, Ok method
                                 else
 
                                 let state, resolved =
@@ -1338,16 +1351,25 @@ module NativeDelegate =
                                         true
                                         state
 
-                                state, resolved |> Option.defaultValue method
+                                match resolved with
+                                | IlMachineStateExecution.ResolvedVirtualCall.Runs implementation ->
+                                    state, Ok implementation
+                                | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> state, Ok method
+                                | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted _ ->
+                                    state, Error (ctx.BaseClassTypes.EntryPointNotFoundException, None)
                             | Some _
                             | None ->
                                 // No receiver to virtualise on. A delegate closed over a null
                                 // receiver is legal and reachable, and CoreCLR's
                                 // `*pRefFirstArg != NULL` conjunct is what makes it bind the
                                 // declared body unvirtualised.
-                                state, method
+                                state, Ok method
 
-                        state, Ok (DelegateBinding.Closed (targetAddr, FunctionPointerTarget.Managed methodPtr))
+                        state,
+                        methodPtr
+                        |> Result.map (fun methodPtr ->
+                            DelegateBinding.Closed (targetAddr, FunctionPointerTarget.Managed methodPtr)
+                        )
 
                     binding
                     |> Result.map (fun binding ->

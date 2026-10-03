@@ -407,7 +407,7 @@ module internal UnaryMetadataTokenOps =
 
         match pendingConstrained with
         | Some constrainedTypeHandle ->
-            let state, implementation, _declaringTypeHandle =
+            match
                 UnaryMetadataCallOps.resolveConstrainedStaticInterfaceMethod
                     "Ldftn"
                     ctx
@@ -415,8 +415,12 @@ module internal UnaryMetadataTokenOps =
                     method
                     concretizedMethod
                     state
-
-            pushTarget implementation state
+            with
+            | state, ConstrainedStaticImplementation.Runs (implementation, _declaringTypeHandle) ->
+                pushTarget implementation state
+            | _, ConstrainedStaticImplementation.Reabstracted reabstraction ->
+                failwith
+                    $"TODO: constrained. Ldftn of %s{method.Name} resolved to the reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}. Measured: real .NET makes a delegate over the pointer, and invoking it throws EntryPointNotFoundException; PawPrint has no function pointer to push that would do so"
         | None ->
 
         match concretizedMethod.Body with
@@ -512,13 +516,11 @@ module internal UnaryMetadataTokenOps =
         // — a boxed value type included — as an `ObjectRef`. Anything else is malformed IL rather
         // than a shape to reinterpret, and the arm after this one says so.
         | Some (EvalStackValue.ObjectRef receiver) ->
-            let _, state = IlMachineState.popEvalStack thread state
-
             let receiverType = ManagedHeap.getObjectConcreteType receiver state.ManagedHeap
 
             // Exactly `callvirt`'s dispatch: same resolver, same `walkBaseTypes = true`, same
-            // method-generic context. `None` means no override exists, in which case the call
-            // site's own method is the answer.
+            // method-generic context. `NotOverridden` means no override exists, in which case the
+            // call site's own method is the answer.
             let state, resolved =
                 IlMachineStateExecution.tryResolveVirtualImplementation
                     loggerFactory
@@ -530,7 +532,27 @@ module internal UnaryMetadataTokenOps =
                     true
                     state
 
-            let target = resolved |> Option.defaultValue callSiteMethod
+            // `None` where the slot holds a reabstraction.
+            let target =
+                match resolved with
+                | IlMachineStateExecution.ResolvedVirtualCall.Runs implementation -> Some implementation
+                | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> Some callSiteMethod
+                | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted _ -> None
+
+            match target with
+            | None ->
+                // Measured: real .NET raises as it resolves the slot, so no delegate is made. With
+                // the parameterless constructor's message, as at a virtual call's dispatch in
+                // `callMethodWithCommitment`.
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    baseClassTypes
+                    baseClassTypes.EntryPointNotFoundException
+                    thread
+                    state
+            | Some target ->
+
+            let _, state = IlMachineState.popEvalStack thread state
 
             // Known limit. When the receiver is a boxed
             // value type and the slot resolves to a struct instance method, CoreCLR hands back the

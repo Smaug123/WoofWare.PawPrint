@@ -2465,6 +2465,9 @@ module EscapeAnalysis =
             DispatchOutcome.Raises (
                 ThrownType.Exactly (corelibType state "System.Runtime" "AmbiguousImplementationException")
             )
+        | Some (VirtualImplementation.Reabstracted _) ->
+            state,
+            DispatchOutcome.Raises (ThrownType.Exactly (corelibType state "System" "EntryPointNotFoundException"))
         | Some (VirtualImplementation.Found runs) ->
             match runs.Definition.TryMetadata with
             | None -> state, DispatchOutcome.Undecided
