@@ -518,12 +518,12 @@ module SocketFuzz =
             // cannot disagree; asked here because a generated sequence drives
             // the port through phases no hand-written row reaches.
             let system = state.Kernel
-            let predicted = SocketEventPort.hasDeliverableEvent portId system
-            let delivered, system = SocketEventPort.drain portId maxEvents system
+            let predicted = EpollReadyList.hasDeliverableEvent portId system
+            let delivered, system = EpollReadyList.drain portId maxEvents system
 
             if List.isEmpty delivered = predicted then
                 failwith
-                    $"INTERPRETER-DRIVER BUG: SocketEventPort.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
+                    $"INTERPRETER-DRIVER BUG: EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
 
             let kernel = system
 
@@ -630,7 +630,7 @@ module SocketFuzz =
 
     // --- Generation ---
 
-    /// The phase of one shadow *socket* (or event port). Slots alias sockets
+    /// The phase of one shadow *socket* (or epoll instance). Slots alias sockets
     /// — a dup shares the socket — so the phase lives here and every slot of
     /// the socket sees a change at once.
     ///

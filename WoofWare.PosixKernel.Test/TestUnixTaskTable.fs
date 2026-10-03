@@ -64,18 +64,18 @@ module TestUnixTaskTable =
         // to zero" are distinguishable.
         let system = initial |> withTask 7 3
 
-        let wait : ParkedSocketWait =
+        let wait : ParkedEpollWait =
             {
-                Port = OpenFileDescriptionId 5L
+                Epoll = OpenFileDescriptionId 5L
                 MaxEvents = 8
                 Buffer = UserBuffer.Mapped
                 Deadline = None
             }
 
-        let parked = (UnixWait.park 7 (ParkedSyscall.SocketWait wait) system).Tasks
+        let parked = (UnixWait.park 7 (ParkedSyscall.EpollWait wait) system).Tasks
 
         UnixTaskTable.parkedFor 7 parked
-        |> shouldEqual (Some (ParkedSyscall.SocketWait wait))
+        |> shouldEqual (Some (ParkedSyscall.EpollWait wait))
 
         UnixTaskTable.cpuOf 7 parked |> shouldEqual (CpuId 3)
         idOf 7 parked |> shouldEqual 4243UL

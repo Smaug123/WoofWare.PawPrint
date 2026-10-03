@@ -189,9 +189,9 @@ module DebuggerServer =
             // port waits on the same one, and the descriptor number the guest
             // called through may since have been closed or reused.
             match task |> Option.bind UnixTaskState.park |> Option.map (fun park -> park.Syscall) with
-            | Some (ParkedSyscall.SocketWait wait) ->
+            | Some (ParkedSyscall.EpollWait wait) ->
                 writer.WriteString ("kind", "blockedOnSocketEvents")
-                let (OpenFileDescriptionId port) = wait.Port
+                let (OpenFileDescriptionId port) = wait.Epoll
                 writer.WriteNumber ("port", port)
             | Some (ParkedSyscall.Kevent wait) ->
                 writer.WriteString ("kind", "blockedInKevent")

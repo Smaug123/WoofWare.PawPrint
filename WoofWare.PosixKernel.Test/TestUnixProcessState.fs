@@ -265,7 +265,7 @@ module TestUnixProcessState =
         let signalled (wake : SocketWake) (socketId : SocketId) : UnixProcessState<int, string> =
             { proc with
                 FileDescriptors =
-                    FileDescriptorRegistry.signalSocketEventPorts
+                    FileDescriptorRegistry.signalEpollInstances
                         (UnixProcessState.descriptionsNamingSocket socketId proc)
                         (SocketWake.epollKey wake)
                         proc.FileDescriptors

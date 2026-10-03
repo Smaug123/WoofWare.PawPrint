@@ -127,9 +127,9 @@ type FStatRefusal =
     /// </remarks>
     | LaunchedPipe of pipe : PipeId
     /// <summary>
-    /// A socket event port: an anonymous kernel object.
+    /// An event queue: an anonymous kernel object.
     /// </summary>
-    | SocketEventPort
+    | EventQueue
     /// <summary>
     /// A socket, which has an identity in WoofWare.PosixKernel, but not an inode-shaped one.
     /// </summary>
@@ -158,8 +158,8 @@ module FStatRefusal =
         match refusal with
         | FStatRefusal.LaunchedPipe pipe ->
             $"the descriptor is an end of pipe %O{pipe}, which the process was launched with rather than one it made. A real kernel answers here -- S_IFIFO, the launcher's user and group, the time the launcher made the pipe -- and the launch table states none of the launcher's half, so it would be invented, with nothing able to say the invention was wrong."
-        | FStatRefusal.SocketEventPort ->
-            "the descriptor is a socket event port, an anonymous kernel object this kernel holds no inode for. Measured, the two flavours share not one field, and Linux's identity fields are facts about the machine that produced them rather than portable ones: Linux gives `st_mode` 0600 (permission bits and *no* file-type bits), `st_nlink` 1, `st_blksize` 4096, and a real anon-inode `st_dev`/`st_ino`; Darwin gives `st_mode` S_IFIFO (no permission bits), `st_nlink` 0, `st_blksize` 32, and zero for both identity fields."
+        | FStatRefusal.EventQueue ->
+            "the descriptor is an event queue, an anonymous kernel object this kernel holds no inode for. Measured, the two flavours share not one field, and Linux's identity fields are facts about the machine that produced them rather than portable ones: Linux gives `st_mode` 0600 (permission bits and *no* file-type bits), `st_nlink` 1, `st_blksize` 4096, and a real anon-inode `st_dev`/`st_ino`; Darwin gives `st_mode` S_IFIFO (no permission bits), `st_nlink` 0, `st_blksize` 32, and zero for both identity fields."
         | FStatRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}, for which this kernel holds no inode — a `SocketId` is a contention key rather than an inode number. Measured, only Linux gives a socket an inode at all (`st_dev` 8 and a distinct `st_ino` per socket, on `sockfs`), a Darwin AF_INET socket reporting 0 for both; and the rest would be invented either way — `st_mode` is S_IFSOCK|0777 on Linux against S_IFSOCK|0666 on Darwin, `st_nlink` 1 against 0, and Darwin's `st_blksize` varies with the socket itself (131072 for TCP, 9216 for UDP, 8192 for a Unix-domain socket)."
         | FStatRefusal.NfsDirectorySize inode -> StatRefusal.describe (StatRefusal.NfsDirectorySize inode)
@@ -268,7 +268,7 @@ type FUTimensRefusal =
     /// before the epoch; this kernel models neither.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
     /// The descriptor names something other than a file or directory: a pipe,
-    /// a socket or a socket event port.
+    /// a socket or an event queue.
     | UnmodelledObject of object : OpenFileObject
 
 [<RequireQualifiedAccess>]
@@ -657,8 +657,8 @@ module UnixPathResolution =
     /// own permission bits, size, timestamps and identity: see `PipeInodes`,
     /// `PipeTimes` and `UnixMachineState.PipeDevice`.
     ///
-    /// Refuses for a descriptor this kernel holds no inode for — a socket event
-    /// port, a socket — and for an end of a pipe the process was launched with,
+    /// Refuses for a descriptor this kernel holds no inode for — an event
+    /// queue, a socket — and for an end of a pipe the process was launched with,
     /// whose owner and timestamps are the launcher's. That is a limit of the
     /// model rather than an absent kernel answer; see `FStatRefusal`. Also
     /// refuses for a directory on an NFS mount, as `statOf` does.
@@ -670,7 +670,7 @@ module UnixPathResolution =
         match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
         | None -> Ok (FileStatusAnswer.Failed UnixError.EBADF)
         | Some (OpenFileTarget.Kqueue _)
-        | Some (OpenFileTarget.Epoll _) -> Error FStatRefusal.SocketEventPort
+        | Some (OpenFileTarget.Epoll _) -> Error FStatRefusal.EventQueue
         | Some (OpenFileTarget.Socket socketId) -> Error (FStatRefusal.Socket socketId)
         | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
             let pipe = UnixMachineState.pipe pipeId system.Machine

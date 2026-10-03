@@ -445,7 +445,7 @@ module UnixKqueue =
                     },
                     system
                 | None ->
-                    let ordinal = system.Machine.NextSocketEventRegistrationOrdinal
+                    let ordinal = system.Machine.NextEventRegistrationOrdinal
 
                     let registration =
                         {
@@ -461,7 +461,7 @@ module UnixKqueue =
                     { system with
                         Machine =
                             { system.Machine with
-                                NextSocketEventRegistrationOrdinal = ordinal + 1L
+                                NextEventRegistrationOrdinal = ordinal + 1L
                             }
                     }
 

@@ -370,7 +370,7 @@ type UnixError =
     /// <example>
     /// For example, <c>accept(2)</c>, <c>bind(2)</c>, <c>listen(2)</c>, and <c>getsockname(2)</c>
     /// when their input isn't a socket but instead is any of
-    /// a regular file, a socket event port, or either end of a pipe.
+    /// a regular file, an event queue, or either end of a pipe.
     /// </example>
     /// <remarks>
     /// This is one of the many errnos with an integer value that's not portable.

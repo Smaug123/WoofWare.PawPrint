@@ -11,7 +11,7 @@ type ParkingSyscall =
     /// `flock(2)`, blocking.
     | Flock
     /// `epoll_wait(2)`.
-    | SocketWait
+    | EpollWait
 
 /// What the kernel knows about a thread.
 ///
@@ -270,7 +270,7 @@ module TestTaskState =
             match UnixDescriptor.flock thread writeEnd lockExclusive system with
             | Ok (SyscallOutcome.WouldBlock _, system) -> system
             | other -> failwith $"expected %O{thread}'s flock to park, got %A{other}"
-        | ParkingSyscall.SocketWait ->
+        | ParkingSyscall.EpollWait ->
             let port, system =
                 match UnixPoll.epollCreate1 0 system with
                 | Ok (Ok (port, system)) -> port, system
@@ -285,7 +285,7 @@ module TestTaskState =
     /// status are exactly what let one statement of the rule cover every parking syscall, and a
     /// row per kind is what would otherwise have to be written again for a fifth.
     let private parks : ParkingSyscall list =
-        [ ParkingSyscall.Flock ; ParkingSyscall.SocketWait ]
+        [ ParkingSyscall.Flock ; ParkingSyscall.EpollWait ]
 
     /// A thread with a task, parked in `syscall`.
     let private threadParkedIn (syscall : ParkingSyscall) : IlMachineState * ThreadId =
@@ -477,12 +477,12 @@ module TestTaskState =
             |> Scheduler.parkInSyscall thread
 
         match UnixTaskTable.parkedFor thread parked.Kernel.Tasks with
-        | Some (ParkedSyscall.SocketWait wait) ->
+        | Some (ParkedSyscall.EpollWait wait) ->
             wait.MaxEvents |> shouldEqual 8
 
             wait.Deadline
             |> shouldEqual (Some (UnixSystem.nanosecondsSinceBoot state.Kernel.System + 10_000_000L))
-        | other -> failwith $"expected a socket wait recorded, got %A{other}"
+        | other -> failwith $"expected an epoll_wait recorded, got %A{other}"
 
         agrees parked
 
@@ -498,7 +498,7 @@ module TestTaskState =
             let expired =
                 woken.MapKernel (EmulatedKernel.withVirtualClockTicks (woken.Kernel.VirtualClockTicks + 100_000L))
 
-            match UnixPoll.finishSocketWait thread expired.Kernel.System with
+            match UnixPoll.finishEpollWait thread expired.Kernel.System with
             | Ok (EpollWaitOutcome.Answered [], system) -> expired.MapKernel (EmulatedKernel.withUnix system)
             | other -> failwith $"expected the wait to time out, got %A{other}"
 
