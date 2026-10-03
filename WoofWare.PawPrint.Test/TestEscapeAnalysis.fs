@@ -2870,14 +2870,18 @@ public static class Holder<T> where T : IProbe
     let private dispatchInputs : (int * int) list =
         [ 1, 0 ; Int32.MaxValue, 1 ; Int32.MinValue, -1 ; 1, 1 ]
 
-    /// The full names of the exceptions each of `runners` of `Dispatch.Runners` in `image` lets
-    /// escape on the real runtime, over `dispatchInputs`.
-    let private dispatchOnRealRuntime (image : byte[]) (runners : string list) : Map<string, Set<string>> =
-        let context =
-            System.Runtime.Loader.AssemblyLoadContext ("Dispatch", isCollectible = true)
+    /// The full names of the exceptions each of `runners` of `<ns>.Runners` in `image` lets escape on
+    /// the real runtime, over `dispatchInputs`.
+    let private dispatchOnRealRuntime
+        (ns : string)
+        (image : byte[])
+        (runners : string list)
+        : Map<string, Set<string>>
+        =
+        let context = System.Runtime.Loader.AssemblyLoadContext (ns, isCollectible = true)
 
         try
-            let ty = context.LoadFromStream(new MemoryStream (image)).GetType "Dispatch.Runners"
+            let ty = context.LoadFromStream(new MemoryStream (image)).GetType (ns + ".Runners")
 
             runners
             |> List.map (fun name ->
@@ -2898,43 +2902,25 @@ public static class Holder<T> where T : IProbe
         finally
             context.Unload ()
 
-    [<Test>]
-    let ``a constrained call on a type variable runs what each closed instantiation supplies`` () : unit =
-        let _, loggerFactory = LoggerFactory.makeTest ()
-
-        let image =
-            Roslyn.compileAssembly "Dispatch" OutputKind.DynamicallyLinkedLibrary [] [ dispatchSource ]
-
-        let fixture =
-            Assembly.read loggerFactory (Some "Dispatch.dll") (new MemoryStream (image))
-
-        // Each runner, what the analysis must report of `DivideByZeroException` and
-        // `OverflowException`, and what it must claim.
-        let cases =
-            [
-                for shape in probeShapes do
-                    for receiver in probeReceivers do
-                        let reported =
-                            receiver.Raises
-                            |> List.filter (fun raised -> not (List.contains raised shape.Absorbs))
-
-                        yield $"%s{shape.Name}_%s{receiver.Name}", Set.ofList reported, receiver.Claim
-                yield "Hash_HashDivides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
-                yield "Hash_NoHash", Set.empty, DispatchClaim.SoundOnly
-                yield "Grow_Divides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.SoundOnly
-            ]
-
-        let runtime =
-            cases |> List.map (fun (name, _, _) -> name) |> dispatchOnRealRuntime image
-
+    /// What is wrong with the analysis's answers for `cases` of `<ns>.Runners` in `fixture`, each a
+    /// runner, which of `DivideByZeroException` and `OverflowException` it must report, and what it
+    /// must claim, given what `runtime` says each lets escape on the real runtime.
+    let private dispatchFailures
+        (fixture : DumpedAssembly)
+        (ns : string)
+        (runtime : Map<string, Set<string>>)
+        (cases : (string * Set<string> * DispatchClaim) list)
+        (analysis : EscapeAnalysisState)
+        : EscapeAnalysisState * string list
+        =
         let arithmetic = Set.ofList [ dividesByZero ; overflows ]
-        let mutable analysis = analysisOver [ fixture ] id
+        let mutable analysis = analysis
 
         let failures =
             [
                 for name, reported, claim in cases do
                     let next, escapes =
-                        EscapeAnalysis.escapes analysis (methodNamed fixture "Dispatch.Runners" name)
+                        EscapeAnalysis.escapes analysis (methodNamed fixture (ns + ".Runners") name)
 
                     analysis <- next
 
@@ -2971,6 +2957,44 @@ public static class Holder<T> where T : IProbe
                     | DispatchClaim.SoundOnly -> ()
             ]
 
+        analysis, failures
+
+    [<Test>]
+    let ``a constrained call on a type variable runs what each closed instantiation supplies`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "Dispatch" OutputKind.DynamicallyLinkedLibrary [] [ dispatchSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Dispatch.dll") (new MemoryStream (image))
+
+        // Each runner, what the analysis must report of `DivideByZeroException` and
+        // `OverflowException`, and what it must claim.
+        let cases =
+            [
+                for shape in probeShapes do
+                    for receiver in probeReceivers do
+                        let reported =
+                            receiver.Raises
+                            |> List.filter (fun raised -> not (List.contains raised shape.Absorbs))
+
+                        yield $"%s{shape.Name}_%s{receiver.Name}", Set.ofList reported, receiver.Claim
+                yield "Hash_HashDivides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                yield "Hash_NoHash", Set.empty, DispatchClaim.SoundOnly
+                yield "Grow_Divides", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.SoundOnly
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "Dispatch" image
+
+        let arithmetic = Set.ofList [ dividesByZero ; overflows ]
+
+        let analysis, failures =
+            dispatchFailures fixture "Dispatch" runtime cases (analysisOver [ fixture ] id)
+
         // A generic definition asked about by itself has no instantiation to resolve a call on its
         // type variable against, but a call it spells without one is resolved all the same.
         let analysis, direct =
@@ -3005,6 +3029,618 @@ public static class Holder<T> where T : IProbe
                 else
                     analysis, failures
             )
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// The receivers of the static dispatch fixture, and which of `DivideByZeroException` and
+    /// `OverflowException` the `Probe` each supplies raises. A static method has no receiver object,
+    /// so the type a `constrained.` prefix names decides what runs, even a class others derive from.
+    let private staticReceivers : DispatchReceiver list =
+        [
+            {
+                Name = "Quiet"
+                Claim = DispatchClaim.Precise
+                Raises = []
+            }
+            {
+                Name = "Adds"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "Divides"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            {
+                Name = "ExplicitAdds"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "UsesDefault"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            {
+                Name = "OpenAdds"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "InheritsAdds"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "ReimplementsQuiet"
+                Claim = DispatchClaim.Precise
+                Raises = []
+            }
+            // Hides `OpenAdds.Probe` without re-listing the interface, so the base class's runs.
+            {
+                Name = "ShadowsQuiet"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "AbstractAdds"
+                Claim = DispatchClaim.Precise
+                Raises = [ overflows ]
+            }
+            {
+                Name = "OpenUsesDefault"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            // Implements `IStatic` through `IShadow`, whose `new static virtual Probe` is another
+            // method, so `IStatic`'s own default body runs.
+            {
+                Name = "ThroughShadow"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+        ]
+
+    let private staticShapes : DispatchShape list =
+        [
+            {
+                Name = "Direct"
+                Call = fun r -> $"Shapes.Direct<%s{r}>(a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "OnType"
+                Call = fun r -> $"Holder<%s{r}>.Call(a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "Relayed"
+                Call = fun r -> $"Shapes.Relayed<%s{r}>(a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "TypeToMethod"
+                Call = fun r -> $"Holder<%s{r}>.Relay(a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "Caught"
+                Call = fun r -> $"Shapes.Caught<%s{r}>(a, b)"
+                Absorbs = [ dividesByZero ]
+            }
+            {
+                Name = "Wrapped"
+                Call = fun r -> $"Shapes.Direct<Wrapper<%s{r}>>(a, b)"
+                Absorbs = []
+            }
+            {
+                Name = "Rethrown"
+                Call = fun r -> $"Shapes.Rethrown<%s{r}>(a, b)"
+                Absorbs = []
+            }
+        ]
+
+    /// The receivers, the generic methods that call the static virtual `Probe` on a type variable,
+    /// and the non-generic runners, one per shape and receiver, that close each instantiation.
+    let private staticDispatchSource : string =
+        let declarations =
+            """
+using System;
+
+namespace StaticDispatch;
+
+public interface IStatic
+{
+    static virtual int Probe(int a, int b) => a / b;
+}
+
+public struct Quiet : IStatic { public static int Probe(int a, int b) => unchecked(a + b); }
+public struct Adds : IStatic { public static int Probe(int a, int b) => checked(a + b); }
+public struct Divides : IStatic { public static int Probe(int a, int b) => a / b; }
+public struct ExplicitAdds : IStatic { static int IStatic.Probe(int a, int b) => checked(a + b); }
+public struct UsesDefault : IStatic { }
+public class OpenAdds : IStatic { public static int Probe(int a, int b) => checked(a + b); }
+public class InheritsAdds : OpenAdds { }
+public class ReimplementsQuiet : OpenAdds, IStatic { static int IStatic.Probe(int a, int b) => unchecked(a + b); }
+public class ShadowsQuiet : OpenAdds { public static new int Probe(int a, int b) => unchecked(a + b); }
+public abstract class AbstractAdds : IStatic { public static int Probe(int a, int b) => checked(a + b); }
+public class OpenUsesDefault : IStatic { }
+public interface IShadow : IStatic { static new virtual int Probe(int a, int b) => checked(a + b); }
+public class ThroughShadow : IShadow { }
+
+public struct Wrapper<T> : IStatic where T : IStatic
+{
+    public static int Probe(int a, int b) => T.Probe(a, b);
+}
+
+public interface IVariant<in T>
+{
+    static abstract int Probe(int a, int b);
+}
+
+public class VariantBase : IVariant<string> { static int IVariant<string>.Probe(int a, int b) => checked(a + b); }
+public class VariantDerived : VariantBase, IVariant<object> { static int IVariant<object>.Probe(int a, int b) => a / b; }
+
+public interface IExact<in T> { static abstract int Probe(int a, int b); }
+public interface IExactString : IExact<string> { static int IExact<string>.Probe(int a, int b) => a / b; }
+public interface IExactObject : IExactString, IExact<object> { static int IExact<object>.Probe(int a, int b) => checked(a + b); }
+public class ExactDefault : IExactObject { }
+
+public class ExactBoth : IExact<string>, IExact<object>
+{
+    static int IExact<string>.Probe(int a, int b) => a / b;
+    static int IExact<object>.Probe(int a, int b) => checked(a + b);
+}
+
+
+public static class Shapes
+{
+    public static int Direct<T>(int a, int b) where T : IStatic => T.Probe(a, b);
+    public static int Relayed<T>(int a, int b) where T : IStatic => Direct<T>(a, b);
+
+    public static int Caught<T>(int a, int b) where T : IStatic
+    {
+        try { return T.Probe(a, b); }
+        catch (DivideByZeroException) { return 0; }
+    }
+
+    // Catches everything, so what escapes is what the `throw;` re-raises.
+    public static int Rethrown<T>(int a, int b) where T : IStatic
+    {
+        try { return T.Probe(a, b); }
+        catch (Exception) { throw; }
+    }
+
+    public static int Variant<T>(int a, int b) where T : IVariant<string> => T.Probe(a, b);
+    public static int Exact<T>(int a, int b) where T : IExact<string> => T.Probe(a, b);
+}
+
+public static class Holder<T> where T : IStatic
+{
+    public static int Call(int a, int b) => T.Probe(a, b);
+    public static int Relay(int a, int b) => Shapes.Direct<T>(a, b);
+}
+"""
+
+        let runners =
+            [
+                for shape in staticShapes do
+                    for receiver in staticReceivers do
+                        yield
+                            $"    public static int %s{shape.Name}_%s{receiver.Name}(int a, int b) => %s{shape.Call receiver.Name};"
+                yield "    public static int Direct_IStatic(int a, int b) => Shapes.Direct<IStatic>(a, b);"
+                yield "    public static int Variant_VariantBase(int a, int b) => Shapes.Variant<VariantBase>(a, b);"
+                yield
+                    "    public static int Variant_VariantDerived(int a, int b) => Shapes.Variant<VariantDerived>(a, b);"
+                yield "    public static int Exact_ExactDefault(int a, int b) => Shapes.Exact<ExactDefault>(a, b);"
+                yield "    public static int Exact_ExactBoth(int a, int b) => Shapes.Exact<ExactBoth>(a, b);"
+            ]
+            |> String.concat "\n"
+
+        declarations + "\npublic static class Runners\n{\n" + runners + "\n}\n"
+
+    [<Test>]
+    let ``a constrained call of a static virtual runs what the type it names supplies`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "StaticDispatch" OutputKind.DynamicallyLinkedLibrary [] [ staticDispatchSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "StaticDispatch.dll") (new MemoryStream (image))
+
+        let cases =
+            [
+                for shape in staticShapes do
+                    for receiver in staticReceivers do
+                        let reported =
+                            receiver.Raises
+                            |> List.filter (fun raised -> not (List.contains raised shape.Absorbs))
+
+                        yield $"%s{shape.Name}_%s{receiver.Name}", Set.ofList reported, receiver.Claim
+                // An interface named as the type runs its own default body.
+                yield "Direct_IStatic", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                yield "Variant_VariantBase", Set.ofList [ overflows ], DispatchClaim.Precise
+                // CoreCLR looks for a variant match on each class before its base, so the derived
+                // class's implementation through `IVariant<object>` runs, not the base class's
+                // through `IVariant<string>`.
+                yield "Variant_VariantDerived", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                // CoreCLR looks for exactly the call's instantiation before a variance-compatible
+                // one, for a default body and for a MethodImpl alike, so `IExact<string>`'s runs.
+                yield "Exact_ExactDefault", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+                yield "Exact_ExactBoth", Set.ofList [ dividesByZero ; overflows ], DispatchClaim.Precise
+            ]
+
+        let runtime =
+            cases
+            |> List.map (fun (name, _, _) -> name)
+            |> dispatchOnRealRuntime "StaticDispatch" image
+
+        let analysis, failures =
+            dispatchFailures fixture "StaticDispatch" runtime cases (analysisOver [ fixture ] id)
+
+        // A generic definition asked about by itself has no type to resolve the call against.
+        let analysis, direct =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "StaticDispatch.Shapes" "Direct")
+
+        let failures =
+            if direct.Unknown then
+                failures
+            else
+                failures
+                @ [
+                    $"Shapes.Direct, uninstantiated: %A{Set.toList (render analysis direct)}, expected unknown"
+                ]
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``a constrained call of a static virtual with two equally specific default bodies raises the ambiguity in the caller``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        // C# refuses a type whose interfaces' default bodies conflict, so the client is compiled
+        // against a library in which only `IL` overrides `Probe`, and run against one in which
+        // `IR` does too.
+        let library (bothOverride : bool) : string =
+            let right =
+                if bothOverride then
+                    "{ static int IStatic.Probe(int a, int b) => checked(a + b); }"
+                else
+                    "{ }"
+
+            $"""
+namespace StaticLib;
+
+public interface IStatic {{ static virtual int Probe(int a, int b) => a / b; }}
+public interface IL : IStatic {{ static int IStatic.Probe(int a, int b) => checked(a + b); }}
+public interface IR : IStatic %s{right}
+"""
+
+        let client =
+            """
+using System;
+using System.Runtime;
+using StaticLib;
+
+namespace StaticClient;
+
+public struct S : IL, IR { }
+public class C : IL, IR { }
+
+public static class Shapes
+{
+    public static int Direct<T>(int a, int b) where T : IStatic => T.Probe(a, b);
+
+    public static int Caught<T>(int a, int b) where T : IStatic
+    {
+        try { return T.Probe(a, b); }
+        catch (AmbiguousImplementationException) { return -1; }
+    }
+}
+
+public static class Runners
+{
+    public static int Direct_S(int a, int b) => Shapes.Direct<S>(a, b);
+    public static int Direct_C(int a, int b) => Shapes.Direct<C>(a, b);
+    public static int Caught_S(int a, int b) => Shapes.Caught<S>(a, b);
+    public static int Caught_C(int a, int b) => Shapes.Caught<C>(a, b);
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let clientImage =
+            compile "StaticClient" [ compile "StaticLib" [] (library false) ] client
+
+        let libraryImage = compile "StaticLib" [] (library true)
+        let runners = [ "Direct_S" ; "Direct_C" ; "Caught_S" ; "Caught_C" ]
+
+        // What each runner lets escape on the real runtime, with the library in which both
+        // interfaces override `Probe`.
+        let runtime =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("StaticClient", isCollectible = true)
+
+            try
+                let lib = context.LoadFromStream (new MemoryStream (libraryImage))
+
+                context.add_Resolving (fun _ name -> if name.Name = "StaticLib" then lib else null)
+
+                let ty =
+                    context.LoadFromStream(new MemoryStream (clientImage)).GetType "StaticClient.Runners"
+
+                runners
+                |> List.map (fun name ->
+                    let thrown =
+                        try
+                            ty.GetMethod(name).Invoke ((null : obj), [| box 1 ; box 1 |]) |> ignore<obj>
+                            None
+                        with :? TargetInvocationException as e ->
+                            Some (e.InnerException.GetType().FullName)
+
+                    name, thrown
+                )
+                |> Map.ofList
+            finally
+                context.Unload ()
+
+        let ambiguity = "System.Runtime.AmbiguousImplementationException"
+
+        runtime
+        |> shouldEqual (
+            Map.ofList
+                [
+                    "Direct_S", Some ambiguity
+                    "Direct_C", Some ambiguity
+                    "Caught_S", None
+                    "Caught_C", None
+                ]
+        )
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let clientAssembly = read "StaticClient" clientImage
+        let libraryAssembly = read "StaticLib" libraryImage
+
+        let libraryReference =
+            clientAssembly.AssemblyReferences.Values
+            |> Seq.find (fun r -> r.Name.Name = "StaticLib")
+
+        let mutable analysis =
+            analysisOver
+                [ clientAssembly ; libraryAssembly ]
+                (fun loaded -> fst (loaded.WithBoundReference libraryReference libraryAssembly))
+
+        let failures =
+            [
+                for name in runners do
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "StaticClient.Runners" name)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+
+                    // The runtime throws in the caller, whose own `catch` stops it.
+                    let expected = runtime.[name].IsSome
+
+                    if escapes.Unknown || shown.Contains ("=" + ambiguity) <> expected then
+                        yield
+                            $"%s{name}: %A{Set.toList shown}, unknown %b{escapes.Unknown}; expected the ambiguity to escape: %b{expected}, and nothing unknown"
+            ]
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``a constrained call of a static virtual runs the initializer of the type it lands on`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let source =
+            """
+using System;
+
+namespace StaticInit;
+
+public interface IStatic { static abstract int Probe(int a, int b); }
+
+// The interface has no initializer; the implementing type's fails.
+public class FailsInit : IStatic
+{
+    static readonly int Zero;
+    static FailsInit() { Zero = 1 / Zero; }
+    public static int Probe(int a, int b) => unchecked(a + b);
+}
+
+public static class Shapes
+{
+    public static int Direct<T>(int a, int b) where T : IStatic => T.Probe(a, b);
+}
+
+public static class Runners
+{
+    public static int Direct_FailsInit(int a, int b) => Shapes.Direct<FailsInit>(a, b);
+}
+"""
+
+        let image =
+            Roslyn.compileAssembly "StaticInit" OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "StaticInit.dll") (new MemoryStream (image))
+
+        let initialization = "System.TypeInitializationException"
+
+        dispatchOnRealRuntime "StaticInit" image [ "Direct_FailsInit" ]
+        |> shouldEqual (Map.ofList [ "Direct_FailsInit", Set.singleton initialization ])
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes
+                (analysisOver [ fixture ] id)
+                (methodNamed fixture "StaticInit.Runners" "Direct_FailsInit")
+
+        let shown = render analysis escapes
+
+        if not escapes.Unknown && not (shown.Contains ("=" + initialization)) then
+            failwith $"Direct_FailsInit: %A{Set.toList shown}, unknown false; lacks %s{initialization}"
+
+    [<Test>]
+    let ``a constrained call landing in another module runs that module's initializer`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let contracts =
+            """
+namespace Contracts;
+
+public interface IStatic { static abstract int Probe(int a, int b); }
+public interface IProbe { int Probe(int a, int b); }
+"""
+
+        // The default bodies bind a token of their own module, which runs its initializer first.
+        let defaults =
+            """
+namespace Defaults;
+
+static class Init
+{
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Run() => throw new System.InvalidOperationException();
+}
+
+static class Helper
+{
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    public static int Add(int a, int b) => a + b;
+}
+
+public interface IStaticDefault : Contracts.IStatic { static int Contracts.IStatic.Probe(int a, int b) => Helper.Add(a, b); }
+public interface IInstanceDefault : Contracts.IProbe { int Contracts.IProbe.Probe(int a, int b) => Helper.Add(a, b); }
+"""
+
+        // Nothing here names Defaults' members; only dispatch reaches them.
+        let client =
+            """
+namespace Client;
+
+public struct StaticUser : Defaults.IStaticDefault { }
+public struct InstanceUser : Defaults.IInstanceDefault { }
+
+public static class Shapes
+{
+    public static int Static<T>(int a, int b) where T : Contracts.IStatic => T.Probe(a, b);
+    public static int Instance<T>(T x, int a, int b) where T : Contracts.IProbe => x.Probe(a, b);
+
+    public static int CaughtStatic<T>(int a, int b) where T : Contracts.IStatic
+    {
+        try { return T.Probe(a, b); }
+        catch (System.TypeInitializationException) { return -1; }
+    }
+}
+
+public static class Runners
+{
+    public static int Static() => Shapes.Static<StaticUser>(1, 2);
+    public static int Instance() => Shapes.Instance(new InstanceUser(), 1, 2);
+    public static int CaughtStatic() => Shapes.CaughtStatic<StaticUser>(1, 2);
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let contractsImage = compile "Contracts" [] contracts
+        let defaultsImage = compile "Defaults" [ contractsImage ] defaults
+        let clientImage = compile "Client" [ contractsImage ; defaultsImage ] client
+
+        let initialization = "System.TypeInitializationException"
+
+        // Each in a context of its own, since a module initializer that failed fails every later
+        // binding the same way.
+        let onRealRuntime (methodName : string) : string option =
+            let context =
+                new TestMethodReferenceResolution.ImagesContext (
+                    Map.ofList
+                        [
+                            "Contracts", contractsImage
+                            "Defaults", defaultsImage
+                            "Client", clientImage
+                        ]
+                )
+
+            try
+                let runners =
+                    context.LoadFromAssemblyName(AssemblyName "Client").GetType "Client.Runners"
+
+                try
+                    runners.GetMethod(methodName).Invoke ((null : obj), Array.empty<obj>)
+                    |> ignore<obj>
+
+                    None
+                with :? TargetInvocationException as e ->
+                    Some (e.InnerException.GetType().FullName)
+            finally
+                context.Unload ()
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let assemblies =
+            [
+                read "Contracts" contractsImage
+                read "Defaults" defaultsImage
+                read "Client" clientImage
+            ]
+
+        let clientAssembly = List.last assemblies
+
+        let bind (loaded : LoadedAssemblies) : LoadedAssemblies =
+            (loaded, clientAssembly.AssemblyReferences.Values)
+            ||> Seq.fold (fun loaded reference ->
+                match assemblies |> List.tryFind (fun a -> a.Name.Name = reference.Name.Name) with
+                | Some target -> fst (loaded.WithBoundReference reference target)
+                | None -> loaded
+            )
+
+        let mutable analysis = analysisOver assemblies bind
+
+        let failures =
+            [
+                for methodName, escapes in [ "Static", true ; "Instance", true ; "CaughtStatic", false ] do
+                    let thrown = onRealRuntime methodName
+
+                    if thrown <> (if escapes then Some initialization else None) then
+                        yield $"%s{methodName} on the real runtime: %A{thrown}"
+
+                    let next, summary =
+                        EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Runners" methodName)
+
+                    analysis <- next
+                    let shown = render analysis summary
+
+                    if summary.Unknown || shown.Contains ("=" + initialization) <> escapes then
+                        yield
+                            $"%s{methodName}: %A{Set.toList shown}, unknown %b{summary.Unknown}; expected %s{initialization} to escape: %b{escapes}, and nothing unknown"
+            ]
 
         match failures with
         | [] -> ()
