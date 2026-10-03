@@ -492,8 +492,10 @@ public static class MathF
             { expect "Fixture.Cases" "CallsLeaf" with
                 Excludes = [ "=System.TypeInitializationException" ]
             }
+            // A value is of the type the IL spells for it.
             { expect "Fixture.Cases" "ThrowsParameter" with
-                Unknown = Some true
+                Contains = [ "<:System.Exception" ]
+                Unknown = Some false
             }
             { expect "Fixture.Cases" "CoreLibThrowHelper" with
                 Contains = [ "=System.ArgumentNullException" ]
@@ -2186,8 +2188,8 @@ public static class Uses
         /// wrapper of an exception, which a clause in an assembly that does not wrap sees as that
         /// exception.
         | ConstructedWrapperOfException
-        /// `call object Make(); nop; throw`: the `nop` stands between the `throw` and what made
-        /// its operand, so the analysis does not know the operand's type.
+        /// What `Make` returns, stored in and loaded back from an `object[]`: the analysis does not
+        /// follow what an array holds, so it does not know the operand's type.
         | Untyped
 
     /// The `catch` clause, if any, around an emitted method's raise.
@@ -2391,8 +2393,15 @@ public static class Uses
                 code.Token wrapperConstructor
                 code.OpCode ILOpCode.Throw
             | Raise.Untyped ->
+                code.LoadConstantI4 1
+                code.OpCode ILOpCode.Newarr
+                code.Token objectRef
+                code.OpCode ILOpCode.Dup
+                code.LoadConstantI4 0
                 code.Call make
-                code.OpCode ILOpCode.Nop
+                code.OpCode ILOpCode.Stelem_ref
+                code.LoadConstantI4 0
+                code.OpCode ILOpCode.Ldelem_ref
                 code.OpCode ILOpCode.Throw
 
         let addMethod (name : string) (returnsObject : bool) (body : int) : unit =
@@ -3039,6 +3048,106 @@ public static class Holder<T> where T : IProbe
                 else
                     analysis, failures
             )
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// Callers of `Probe` through `callvirt`, with no `constrained.` prefix, whose receiver's class
+    /// the IL may or may not decide, and a `throw` whose operand two paths make.
+    let private receiverSource : string =
+        """
+using System;
+
+namespace Receivers;
+
+public class Base { public virtual int Probe(int a, int b) => unchecked(a + b); }
+public class Divides : Base { public override int Probe(int a, int b) => a / b; }
+public sealed class SealedAdds : Base { public override int Probe(int a, int b) => checked(a + b); }
+public class OpenDivides : Base { public override int Probe(int a, int b) => a / b; }
+
+public interface IProbe { int Probe(int a, int b); }
+public sealed class SealedViaInterface : IProbe { public int Probe(int a, int b) => a / b; }
+public struct ValueAdds : IProbe { public int Probe(int a, int b) => checked(a + b); }
+
+public class First : Exception { public First() : base("first") { } }
+public class Second : Exception { public Second() : base("second") { } }
+
+public static class Through
+{
+    public static int Sealed(SealedAdds x, int a, int b) => x.Probe(a, b);
+    public static int Open(OpenDivides x, int a, int b) => x.Probe(a, b);
+    public static int Generic<T>(T x, int a, int b) where T : Base => x.Probe(a, b);
+}
+
+public static class Runners
+{
+    public static int NewObject(int a, int b) => new Divides().Probe(a, b);
+    public static int SealedParameter(int a, int b) => Through.Sealed(new SealedAdds(), a, b);
+    public static int OpenParameter(int a, int b) => Through.Open(new OpenDivides(), a, b);
+    public static int Joined(int a, int b) => (b == 0 ? (Base)new Divides() : new SealedAdds()).Probe(a, b);
+    public static int Interface(int a, int b) => ((IProbe)new SealedViaInterface()).Probe(a, b);
+    public static int BoxedStruct(int a, int b) => ((IProbe)new ValueAdds()).Probe(a, b);
+    public static int GenericSealed(int a, int b) => Through.Generic(new SealedAdds(), a, b);
+    public static int GenericOpen(int a, int b) => Through.Generic(new OpenDivides(), a, b);
+    public static int ThrowJoined(int a, int b) =>
+        throw (b == 0 ? (Exception)new First() : new Second());
+}
+"""
+
+    [<Test>]
+    let ``a callvirt runs the override of the receiver's class where the IL decides that class`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "Receivers" OutputKind.DynamicallyLinkedLibrary [] [ receiverSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Receivers.dll") (new MemoryStream (image))
+
+        let both = Set.ofList [ dividesByZero ; overflows ]
+
+        let cases =
+            [
+                "NewObject", both, DispatchClaim.Precise
+                "SealedParameter", Set.singleton overflows, DispatchClaim.Precise
+                "OpenParameter", both, DispatchClaim.Unknown
+                "Joined", both, DispatchClaim.Precise
+                "Interface", both, DispatchClaim.Precise
+                "BoxedStruct", Set.singleton overflows, DispatchClaim.Precise
+                "GenericSealed", Set.singleton overflows, DispatchClaim.Precise
+                "GenericOpen", both, DispatchClaim.Unknown
+            ]
+
+        let runtime =
+            "ThrowJoined" :: (cases |> List.map (fun (name, _, _) -> name))
+            |> dispatchOnRealRuntime "Receivers" image
+
+        let analysis, failures =
+            dispatchFailures fixture "Receivers" runtime cases (analysisOver [ fixture ] id)
+
+        // A `throw` of what either arm of a join makes raises exactly what each arm makes.
+        let joined = Set.ofList [ "Receivers.First" ; "Receivers.Second" ]
+
+        let analysis, escapes =
+            EscapeAnalysis.escapes analysis (methodNamed fixture "Receivers.Runners" "ThrowJoined")
+
+        let shown = render analysis escapes
+        let raised = runtime.["ThrowJoined"]
+
+        let failures =
+            if
+                raised <> joined
+                || escapes.Unknown
+                || not (joined |> Set.forall (fun ty -> shown.Contains ("=" + ty)))
+                || shown |> Set.exists (fun ty -> ty.StartsWith "<:")
+            then
+                failures
+                @ [
+                    $"ThrowJoined: %A{Set.toList shown}, unknown %b{escapes.Unknown}; the runtime raised %A{Set.toList raised}"
+                ]
+            else
+                failures
 
         match failures with
         | [] -> ()
