@@ -21,7 +21,8 @@ module NativeArray =
     /// Read `buffer[index]` of an `int*` argument. The native side indexes the pointer in
     /// bytes at the Int32 stride whatever the buffer's provenance, so this does the same:
     /// CoreLib hands over a `stackalloc int[]`, an `int[]` pinned by `fixed`, or the address
-    /// of a single `int` local, and only the last of those is limited to index 0.
+    /// of a single `int` local, and only the last of those is limited to index 0. `Error` when
+    /// nothing wrote some byte of the element, since the runtime uses what it reads.
     let private readInt32Element
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
@@ -30,7 +31,7 @@ module NativeArray =
         (argName : string)
         (buffer : ManagedPointerSource)
         (index : int)
-        : int
+        : Result<int, UndefinedValue>
         =
         match buffer with
         | ManagedPointerSource.Null -> failwith $"%s{operation}: expected non-null %s{argName} pointer"
@@ -41,8 +42,9 @@ module NativeArray =
             let ptr =
                 ManagedPointerByteView.addByteOffset state int32ConcreteType (index * sizeof<int32>) buffer
 
-            IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr)
-            |> int32OfCliType operation $"%s{argName}[%d{index}]"
+            match IlMachineState.readManagedByref baseClassTypes state (ManagedPointerSource.requireAddressed ptr) with
+            | CliType.Undefined u -> Error u
+            | element -> int32OfCliType operation $"%s{argName}[%d{index}]" element |> Ok
 
     /// CoreCLR's `MAX_RANK` (vm/array.h): the most dimensions an array type can have.
     let private maxRank = 32
@@ -214,10 +216,25 @@ module NativeArray =
 
             let int32ConcreteType = requiredInt32ConcreteType operation ctx.BaseClassTypes state
 
-            let dimensionLengths =
-                Array.init
-                    rank
-                    (readInt32Element ctx.BaseClassTypes operation state int32ConcreteType "lengths" lengths)
+            // Each in turn, as `AllocateArrayEx` reads them: the first one nothing wrote stops the run.
+            let readAll (argName : string) (buffer : ManagedPointerSource) : Result<int list, UndefinedValue> =
+                let rec go (i : int) (acc : int list) : Result<int list, UndefinedValue> =
+                    if i >= rank then
+                        Ok (List.rev acc)
+                    else
+                        match
+                            readInt32Element ctx.BaseClassTypes operation state int32ConcreteType argName buffer i
+                        with
+                        | Error u -> Error u
+                        | Ok element -> go (i + 1) (element :: acc)
+
+                go 0 []
+
+            match readAll "lengths" lengths with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the lengths of the array it makes" u
+                |> Some
+            | Ok dimensionLengths ->
 
             // CoreCLR validates the dimensions inside `AllocateArrayEx`, after the array type is
             // in hand, and answers a violation with an exception the guest can catch. The
@@ -234,26 +251,26 @@ module NativeArray =
             | Error (exnType, message) -> NativeHandlerResult.raiseExceptionWithMessage exnType message state |> Some
             | Ok totalLength ->
 
-            match lowerBounds with
-            | ManagedPointerSource.Null -> ()
-            | ManagedPointerSource.NativeIntPlaceholder bits ->
-                failwith
-                    $"%s{operation}: cannot read lowerBounds through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-            | ManagedPointerSource.Byref _ ->
-                for i in 0 .. rank - 1 do
-                    let lowerBound =
-                        readInt32Element
-                            ctx.BaseClassTypes
-                            operation
-                            state
-                            int32ConcreteType
-                            "lowerBounds"
-                            lowerBounds
-                            i
+            let lowerBoundsRead =
+                match lowerBounds with
+                | ManagedPointerSource.Null -> Ok []
+                | ManagedPointerSource.NativeIntPlaceholder bits ->
+                    failwith
+                        $"%s{operation}: cannot read lowerBounds through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+                | ManagedPointerSource.Byref _ -> readAll "lowerBounds" lowerBounds
 
-                    if lowerBound <> 0 then
-                        failwith
-                            $"TODO: %s{operation} with non-zero lower bound %d{lowerBound} at dimension %d{i}; PawPrint only models zero lower bounds"
+            match lowerBoundsRead with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the lower bounds of the array it makes" u
+                |> Some
+            | Ok lowerBoundValues ->
+
+            lowerBoundValues
+            |> List.iteri (fun i lowerBound ->
+                if lowerBound <> 0 then
+                    failwith
+                        $"TODO: %s{operation} with non-zero lower bound %d{lowerBound} at dimension %d{i}; PawPrint only models zero lower bounds"
+            )
 
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes elementType
