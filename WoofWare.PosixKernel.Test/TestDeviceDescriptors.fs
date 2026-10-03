@@ -243,8 +243,8 @@ module TestDeviceDescriptors =
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"chmod as root: %A{other}"
 
-        let unprivileged =
-            UnixSystem.withCredentials context booted.Process.Credentials narrowed
+        // Root then gives up its privilege for the default user's IDs.
+        let unprivileged = Become.fully booted.Process.Credentials narrowed
 
         for access in
             [

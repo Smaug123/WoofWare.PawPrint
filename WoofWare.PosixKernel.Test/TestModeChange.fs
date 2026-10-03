@@ -685,15 +685,28 @@ module TestModeChange =
 
     /// A process on `platform` whose clock is past its creation, holding a pipe
     /// it made as `creator`, and then acting as `caller`.
+    ///
+    /// Where the two differ, the process starts as root, makes the pipe while
+    /// acting as `creator`, and then becomes `caller`, all through the syscalls.
+    /// Only on Linux: this library models no call that changes a Darwin
+    /// process's IDs, so there the two must agree.
     let private withPipe
         (platform : SimulatedUnixPlatform)
         (creator : Credentials)
         (caller : Credentials)
         : (int * int) * UnixSystem<int, string>
         =
+        let changesIds = creator <> caller
+
         let system =
             UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixSystem.withCredentials context creator
+            |> UnixSystem.withCredentials context (if changesIds then Owners.root else creator)
+
+        let system =
+            if changesIds then
+                Become.temporarily creator system
+            else
+                system
 
         let fds, system = pipeOrFail system
 
@@ -701,7 +714,12 @@ module TestModeChange =
             { system with
                 Machine = UnixMachineState.advanceClock later system.Machine
             }
-            |> UnixSystem.withCredentials context caller
+
+        let system =
+            if changesIds then
+                system |> Become.rootAgain |> Become.fully caller
+            else
+                system
 
         fds, system
 

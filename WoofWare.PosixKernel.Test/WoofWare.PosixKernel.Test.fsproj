@@ -24,6 +24,7 @@
     <Compile Include="PReadUnchanged.fs" />
     <Compile Include="DirectoryReading.fs" />
     <Compile Include="Owners.fs" />
+    <Compile Include="Become.fs" />
     <Compile Include="LaunchedStreams.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="Tasks.fs" />
