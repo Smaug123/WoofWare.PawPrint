@@ -223,8 +223,6 @@ module internal FcntlWorld =
         | Ok (Pipe2Answer.Created (r, w), system) -> (r, w), system
         | other -> failwith $"pipe2(0x%x{flags}): %A{other}"
 
-    let private inet : int option = Some SimulatedUnixPlatform.internetAddressFamily
-
     let private loopback (port : uint16) : InternetEndpoint =
         InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
 
@@ -240,7 +238,9 @@ module internal FcntlWorld =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let system =
-            match UnixSocket.bind fd UserBuffer.Mapped 16u inet (Some (loopback port)) system with
+            match
+                CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) (loopback port)) system
+            with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"bind: %A{other}"
 
@@ -268,7 +268,14 @@ module internal FcntlWorld =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let system =
-            match UnixConnection.connect client UserBuffer.Mapped 16u inet (Some (loopback port)) system with
+            match
+                CopyIn.connect
+                    client
+                    UserBuffer.Mapped
+                    16u
+                    (CopyIn.inet (UnixSystem.platform system) (loopback port))
+                    system
+            with
             | Ok (_, system) -> system
             | Error refusal -> failwith $"connect: %s{ConnectRefusal.describe refusal}"
 

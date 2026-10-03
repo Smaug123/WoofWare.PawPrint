@@ -1922,7 +1922,7 @@ module UnixDescriptor =
                     | ParkedSyscall.PipeWrite write -> write.Written > 0
                     | ParkedSyscall.PipeRead _
                     | ParkedSyscall.Accept _
-                    | ParkedSyscall.SocketWait _
+                    | ParkedSyscall.EpollWait _
                     | ParkedSyscall.Kevent _
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _

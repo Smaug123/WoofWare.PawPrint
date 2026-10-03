@@ -2410,7 +2410,7 @@ module UnixReadWrite =
         | Some (ParkedSyscall.PipeWrite _)
         | Some (ParkedSyscall.PipeRead _)
         | Some (ParkedSyscall.Accept _)
-        | Some (ParkedSyscall.SocketWait _)
+        | Some (ParkedSyscall.EpollWait _)
         | Some (ParkedSyscall.Kevent _)
         | Some (ParkedSyscall.Flock _)
         | Some (ParkedSyscall.Poll _)
