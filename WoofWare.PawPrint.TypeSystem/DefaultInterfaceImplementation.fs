@@ -37,10 +37,12 @@ module internal DefaultInterfaceImplementation =
         | Some facts -> state.LoadedAssembly(method.DeclaringAssemblyFullName).Value.Methods.[facts.Handle]
         | None -> failwith $"%s{operation}: %s{method.Name} is synthesised, so it has no MethodDef row to search for"
 
-    /// The body of the first MethodImpl on `level`, in row order, that implements `method`, a static
-    /// method if `statics` holds and an instance one otherwise, on an interface instantiation
-    /// `accepts` admits: the MethodImpl search of `TryGetCandidateImplementation`, and for a static
-    /// method of `MethodTable::TryResolveVirtualStaticMethodOnThisType`.
+    /// The body a MethodImpl on `level` supplies for `method`, a static method if `statics` holds and
+    /// an instance one otherwise, on an interface instantiation `accepts` admits. Where several do,
+    /// it is the one CoreCLR's search meets first: for an instance method the first body in
+    /// `level`'s method table, in slot order (the MethodImpl search of
+    /// `TryGetCandidateImplementation`), and for a static method the body of the first such
+    /// MethodImpl row (`MethodTable::TryResolveVirtualStaticMethodOnThisType`).
     let internal implementationOnType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -70,45 +72,90 @@ module internal DefaultInterfaceImplementation =
             |> Seq.map (fun (KeyValue (_, impl)) -> impl)
             |> List.ofSeq
 
-        let rec first (state : TypeSystemState) (rows : MethodImplParsed list) =
-            match rows with
+        // The body `row` supplies, if it names `method` on an instantiation `accepts` admits.
+        let bodyOf
+            (state : TypeSystemState)
+            (row : MethodImplParsed)
+            : TypeSystemState *
+              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
+            =
+            let state, declaration =
+                ConcreteInterfaceDispatch.interfaceMethodImplDeclaration
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    baseClassTypes
+                    operation
+                    statics
+                    state
+                    levelTy
+                    owner.Description
+                    owner.Substitution
+                    assembly
+                    row.Declaration
+
+            match declaration with
+            | Some (declaredOn, _, declared) when declared = method ->
+                match accepts state declaredOn with
+                | state, true ->
+                    let state, body =
+                        ConcreteInterfaceDispatch.methodImplBody
+                            loggerFactory
+                            dotnetRuntimeDirs
+                            baseClassTypes
+                            operation
+                            state
+                            owner
+                            levelTypeInfo
+                            assembly
+                            row.Body
+
+                    state, Some body
+                | state, false -> state, None
+            | _ -> state, None
+
+        if statics then
+            let rec first (state : TypeSystemState) (rows : MethodImplParsed list) =
+                match rows with
+                | [] -> state, None
+                | row :: rows ->
+                    match bodyOf state row with
+                    | state, Some body -> state, Some body
+                    | state, None -> first state rows
+
+            first state rows
+        else
+            let bodies, state =
+                (state, rows)
+                ||> List.mapFold (fun state row ->
+                    let state, body = bodyOf state row
+                    body, state
+                )
+
+            match List.choose id bodies with
             | [] -> state, None
-            | row :: rows ->
-                let state, declaration =
-                    ConcreteInterfaceDispatch.interfaceMethodImplDeclaration
+            | bodies ->
+                let state, table =
+                    ConcreteMethodTable.slotTableOfDefinition
                         loggerFactory
                         dotnetRuntimeDirs
                         baseClassTypes
                         operation
-                        statics
                         state
-                        levelTy
-                        owner.Description
-                        owner.Substitution
-                        assembly
-                        row.Declaration
+                        levelTy.Identity
 
-                match declaration with
-                | Some (declaredOn, _, declared) when declared = method ->
-                    match accepts state declaredOn with
-                    | state, true ->
-                        let state, body =
-                            ConcreteInterfaceDispatch.methodImplBody
-                                loggerFactory
-                                dotnetRuntimeDirs
-                                baseClassTypes
-                                operation
-                                state
-                                owner
-                                levelTypeInfo
-                                assembly
-                                row.Body
+                let slotOf
+                    (body : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+                    : int
+                    =
+                    match
+                        MethodTableLayout.slotIndexInTable (body.DeclaringAssemblyFullName, body.IdentityKey) table
+                    with
+                    | Some slot -> slot
+                    | None ->
+                        failwith
+                            $"%s{operation}: the MethodImpl body %s{body.Name} holds no slot in the method table of %s{levelTy.Name}, which declares it"
 
-                        state, Some body
-                    | state, false -> first state rows
-                | _ -> first state rows
-
-        first state rows
+                state, Some (List.minBy slotOf bodies)
 
     /// Whether `from` casts to `target`, which for two interfaces is identity or variance.
     let internal castsTo
