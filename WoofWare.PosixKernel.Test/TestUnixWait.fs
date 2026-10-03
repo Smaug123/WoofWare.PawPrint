@@ -82,7 +82,7 @@ module TestUnixWait =
         if task <= 2 then
             ParkedSyscall.EpollWait
                 {
-                    Port = blocked
+                    Epoll = blocked
                     MaxEvents = 1
                     Buffer = UserBuffer.Mapped
                     Deadline = None

@@ -96,7 +96,7 @@ module UnixWait =
             |> List.sortBy (fun (ordinal, _, _) -> ordinal)
 
         // Measured on Linux 6.18.5 (`epoll-wait.c`, section F): `epoll_wait`
-        // queues its waiters exclusively at the *front* of the port's wait
+        // queues its waiters exclusively at the *front* of the epoll instance's wait
         // queue, so each signal wakes exactly one of them, the one that parked
         // last; three threads parked in any order returned in the reverse of
         // it, one per datagram, in 60 trials of 60, and a thread that waited
@@ -167,7 +167,7 @@ module UnixWait =
 
         let exclusiveQueueOf (primitive : WakePrimitive) : ExclusiveWaitQueue option =
             match primitive with
-            | WakePrimitive.EpollEventDeliverable port -> Some (ExclusiveWaitQueue.Epoll port)
+            | WakePrimitive.EpollEventDeliverable epoll -> Some (ExclusiveWaitQueue.Epoll epoll)
             | WakePrimitive.AcceptQueueNonEmpty listener -> Some (ExclusiveWaitQueue.Listener listener)
             | WakePrimitive.PipeHasBytes reader when linux -> pipeOf reader |> Option.map ExclusiveWaitQueue.PipeReaders
             | WakePrimitive.PipeHasRoom (writer, _, _) when linux ->
@@ -196,7 +196,7 @@ module UnixWait =
                     match state.Parked with
                     | Some {
                                Syscall = ParkedSyscall.EpollWait wait
-                           } -> Some (ExclusiveWaitQueue.Epoll wait.Port)
+                           } -> Some (ExclusiveWaitQueue.Epoll wait.Epoll)
                     // A call a close has ended waits on no queue.
                     | Some {
                                Syscall = ParkedSyscall.Accept accept

@@ -66,7 +66,7 @@ module TestUnixTaskTable =
 
         let wait : ParkedEpollWait =
             {
-                Port = OpenFileDescriptionId 5L
+                Epoll = OpenFileDescriptionId 5L
                 MaxEvents = 8
                 Buffer = UserBuffer.Mapped
                 Deadline = None

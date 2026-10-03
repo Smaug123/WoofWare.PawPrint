@@ -27,7 +27,7 @@ type ParkedEpollWait =
         /// <summary>
         /// The open file description of the epoll instance being waited on.
         /// </summary>
-        Port : OpenFileDescriptionId
+        Epoll : OpenFileDescriptionId
         /// <summary>
         /// The <c>maxevents</c> the call was made with.
         /// </summary>
@@ -350,7 +350,7 @@ module ParkedSyscall =
     /// file whose wait queue it sleeps on; a Darwin one holds none.
     let descriptions (parked : ParkedSyscall) : OpenFileDescriptionId list =
         match parked with
-        | ParkedSyscall.EpollWait wait -> [ wait.Port ]
+        | ParkedSyscall.EpollWait wait -> [ wait.Epoll ]
         | ParkedSyscall.Kevent wait -> [ wait.Kqueue ]
         | ParkedSyscall.Flock parked -> [ parked.Requester ]
         | ParkedSyscall.Poll poll ->

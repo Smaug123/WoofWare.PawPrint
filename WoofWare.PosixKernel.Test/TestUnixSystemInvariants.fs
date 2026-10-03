@@ -214,7 +214,7 @@ module TestUnixSystemInvariants =
             { unlaunched with
                 Machine =
                     { unlaunched.Machine with
-                        NextSocketEventRegistrationOrdinal = ordinal
+                        NextEventRegistrationOrdinal = ordinal
                     }
                 Process =
                     { unlaunched.Process with
@@ -236,10 +236,7 @@ module TestUnixSystemInvariants =
             }
 
         UnixSystem.checkInvariants forged
-        |> shouldEqual
-            [
-                UnixSystemDefect.SocketEventRegistrationOrdinalNotFresh (ordinal, portId, ordinal)
-            ]
+        |> shouldEqual [ UnixSystemDefect.EventRegistrationOrdinalNotFresh (ordinal, portId, ordinal) ]
 
     // ------------------------------------------------------------------
     // A current directory that is not a directory
@@ -397,7 +394,7 @@ module TestUnixSystemInvariants =
             Some (
                 ParkedSyscall.EpollWait
                     {
-                        Port = absentDescription
+                        Epoll = absentDescription
                         MaxEvents = 1
                         Buffer = UserBuffer.Mapped
                         Deadline = None
@@ -420,7 +417,7 @@ module TestUnixSystemInvariants =
             Some (
                 ParkedSyscall.EpollWait
                     {
-                        Port = stdoutDescription
+                        Epoll = stdoutDescription
                         MaxEvents = 1
                         Buffer = UserBuffer.Mapped
                         Deadline = None
@@ -522,7 +519,7 @@ module TestUnixSystemInvariants =
             Some (
                 ParkedSyscall.EpollWait
                     {
-                        Port = port
+                        Epoll = port
                         MaxEvents = 1
                         Buffer = UserBuffer.Mapped
                         Deadline = None

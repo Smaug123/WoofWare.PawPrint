@@ -460,7 +460,7 @@ module TestPollTimeout =
             match defect with
             | UnixSystemDefect.ParkedPollDescriptorRebound _
             | UnixSystemDefect.ParkedOnAbsentDescription _
-            | UnixSystemDefect.ParkedPollOnSocketEventPort _ -> true
+            | UnixSystemDefect.ParkedPollOnEventQueue _ -> true
             | _ -> false
         )
 
@@ -524,7 +524,7 @@ module TestPollTimeout =
                     }
                 ParkedSyscall.EpollWait
                     {
-                        Port = idOf listener idle
+                        Epoll = idOf listener idle
                         MaxEvents = 1
                         Buffer = UserBuffer.Mapped
                         Deadline = None

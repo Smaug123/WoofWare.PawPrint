@@ -88,7 +88,7 @@ module TestPosixFadvise =
                 }
         }
 
-    let private eventPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+    let private withEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         fd,
@@ -163,7 +163,7 @@ module TestPosixFadvise =
     let ``an epoll instance succeeds`` () : unit =
         // Measured on an epoll port, which answers success for the same reason
         // the socket does.
-        let fd, system = systemOn SimulatedUnixPlatform.linuxX64 |> eventPort
+        let fd, system = systemOn SimulatedUnixPlatform.linuxX64 |> withEpoll
 
         for advice in everyAdvice do
             UnixDescriptor.posixFadvise fd 0L 0L advice system
@@ -273,7 +273,7 @@ module TestPosixFadvise =
 
         let directory, system = system |> openedAt "/dir" FileAccessMode.ReadOnly
         let sock, system = socket system
-        let port, system = eventPort system
+        let port, system = withEpoll system
 
         let kinds =
             [

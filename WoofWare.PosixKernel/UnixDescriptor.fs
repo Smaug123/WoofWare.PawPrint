@@ -162,7 +162,7 @@ type EndedWriteSignalRefusal =
 ///
 /// Generic in what names a task because most of them are about a task parked
 /// in a wait, and which one that is cannot be recomputed by the client:
-/// nothing stops two tasks parking on the same port, so a client repeating the
+/// nothing stops two tasks parking on the same event queue, so a client repeating the
 /// search could name a different one from the one this refusal is about.
 ///
 /// Under Linux a sleeping call holds the description it sleeps on, so a close
@@ -257,7 +257,7 @@ module BytesAvailableRefusal =
         match refusal with
         | BytesAvailableRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | BytesAvailableRefusal.UnmodelledTarget fd ->
-            $"fd %d{fd} is not an end of a pipe, and FIONREAD is answered here for pipes only. The other kinds answer per kind and per flavour (measured, pipe-syscalls.c): a regular file reports its size less the offset on both; a directory is ENOTTY on Linux and reports a number of its own on Darwin; a socket reports what it has queued; an epoll port is EINVAL and a kqueue ENOTTY. Model the kind before answering."
+            $"fd %d{fd} is not an end of a pipe, and FIONREAD is answered here for pipes only. The other kinds answer per kind and per flavour (measured, pipe-syscalls.c): a regular file reports its size less the offset on both; a directory is ENOTTY on Linux and reports a number of its own on Darwin; a socket reports what it has queued; an epoll instance is EINVAL and a kqueue ENOTTY. Model the kind before answering."
 
 /// What `tcgetattr(3)` answered, which is also what `isatty(3)` answers: it is
 /// `tcgetattr` with the answer reduced to 1 or 0 and the errno left as it was.
@@ -491,7 +491,7 @@ module UnixDescriptor =
             | Some (OpenFileTarget.Kqueue _) -> Some DescriptorFault.NotSeekable
             | Some (OpenFileTarget.Epoll _) -> None
             | Some (OpenFileTarget.Socket _) ->
-                // Unseekable on both, unlike the port above: measured, both
+                // Unseekable on both, unlike the epoll instance above: measured, both
                 // platforms answer ESPIPE for every whence in 0..4 and every
                 // offset, `-1` and `INT64_MAX` alike. The whence-ordering
                 // divergence still shows through this, and is exactly what the
@@ -538,7 +538,7 @@ module UnixDescriptor =
         //
         // Ahead of the SEEK_DATA/SEEK_HOLE refusal below, which is why that
         // refusal is not simply hoisted to the whence check: it is a statement
-        // about a *file's* sparseness, and a port has none. The syscall's own
+        // about a *file's* sparseness, and an epoll instance has none. The syscall's own
         // `whence <= SEEK_MAX` guard still applies and has already run, so
         // whence 5 and above were rejected as EINVAL.
         match target with
@@ -788,7 +788,7 @@ module UnixDescriptor =
         | OpenFileTarget.CharacterDevice _ ->
             // EINVAL on both platforms for every object that is not a regular
             // file: measured on a pipe (either end), an INET socket, a UNIX
-            // socket, an epoll port and a kqueue, and on Linux on `/dev/null`
+            // socket, an epoll instance and a kqueue, and on Linux on `/dev/null`
             // and `/dev/urandom`, through descriptors opened for reading as
             // well as for writing (`devices.c`, FTRUNCATE rows). Unlike `pread`/`pwrite` there
             // is no unseekable-versus-unwritable tie for the platforms to break
@@ -905,7 +905,7 @@ module UnixDescriptor =
         match UnixTaskTable.parkedFor task system.Tasks with
         | Some parked ->
             failwith
-                $"UnixDescriptor.flock: task %O{task} is parked in %A{parked}, and is issuing an flock. A task blocks in one syscall at a time; a parked flock is finished with `flockAcquire`, and a socket wait's completion must clear its record first (this is a bug in the client)."
+                $"UnixDescriptor.flock: task %O{task} is parked in %A{parked}, and is issuing an flock. A task blocks in one syscall at a time; a parked flock is finished with `flockAcquire`, and any other parked call's completion must clear its record first (this is a bug in the client)."
         | None ->
 
         // Unlike a foreign-function layer's error and open-flag encodings, these
@@ -1091,7 +1091,7 @@ module UnixDescriptor =
             | Some (ParkedSyscall.Flock parked) -> parked.Requester, parked.Mode
             | Some (ParkedSyscall.EpollWait wait) ->
                 failwith
-                    $"UnixDescriptor.flockAcquire: task %O{task} is parked in an epoll_wait on %O{wait.Port}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
+                    $"UnixDescriptor.flockAcquire: task %O{task} is parked in an epoll_wait on %O{wait.Epoll}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
             | Some (ParkedSyscall.Kevent wait) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in a kevent on %O{wait.Kqueue}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
@@ -1338,7 +1338,7 @@ module UnixDescriptor =
         //   regular file, directory, pipe end   ENOTTY   ENOTTY
         //   TCP or UDP socket, IPv4 or IPv6     ENOTTY   ENXIO
         //   Unix-domain socket, either kind     ENOTTY   EOPNOTSUPP
-        //   epoll port / kqueue                 EINVAL   ENOTTY
+        //   epoll instance / kqueue             EINVAL   ENOTTY
         //
         // and a device answers what its driver does
         // (`CharacterDevice.unrecognisedIoctl`).
@@ -1442,7 +1442,7 @@ module UnixDescriptor =
                 parks
                 |> List.tryPick (fun (task, parked) ->
                     match parked with
-                    | ParkedSyscall.EpollWait wait when wait.Port = closingId ->
+                    | ParkedSyscall.EpollWait wait when wait.Epoll = closingId ->
                         failwith
                             $"UnixDescriptor.close: task %O{task} is parked in an epoll_wait on %O{closingId} under the Darwin flavour, which has no epoll (this is a bug in the caller's state construction)."
                     | ParkedSyscall.Flock parked when parked.Requester = closingId ->

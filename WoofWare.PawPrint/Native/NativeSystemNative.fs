@@ -1173,7 +1173,7 @@ module NativeSystemNative =
             match refusal with
             | FStatRefusal.LaunchedPipe _ ->
                 "PawPrint launches every guest with its standard streams on pipes, and does not say who made them or when. The BCL reaches FStat on a standard stream only through a SafeFileHandle it opened itself, so this is a hand-rolled P/Invoke or a new code path -- and either wants a decision about the launcher's owner and timestamps rather than a guess."
-            | FStatRefusal.SocketEventPort
+            | FStatRefusal.EventQueue
             | FStatRefusal.Socket _ ->
                 "Decide what an inode-free descriptor's struct stat is -- for streams, ports and sockets together (issue #956) -- rather than guessing."
             | FStatRefusal.NfsDirectorySize _ -> nfsDirectoryReachability

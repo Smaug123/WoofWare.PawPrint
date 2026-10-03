@@ -191,7 +191,7 @@ module DebuggerServer =
             match task |> Option.bind UnixTaskState.park |> Option.map (fun park -> park.Syscall) with
             | Some (ParkedSyscall.EpollWait wait) ->
                 writer.WriteString ("kind", "blockedOnSocketEvents")
-                let (OpenFileDescriptionId port) = wait.Port
+                let (OpenFileDescriptionId port) = wait.Epoll
                 writer.WriteNumber ("port", port)
             | Some (ParkedSyscall.Kevent wait) ->
                 writer.WriteString ("kind", "blockedInKevent")

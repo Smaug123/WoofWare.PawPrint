@@ -326,7 +326,7 @@ module GuestLocation =
                         // the guest passed, which is the one thing it is not.
                         match task |> Option.bind UnixTaskState.park |> Option.map (fun park -> park.Syscall) with
                         | Some (ParkedSyscall.EpollWait wait) ->
-                            Some $"for events on open file description %O{wait.Port}"
+                            Some $"for events on open file description %O{wait.Epoll}"
                         | Some (ParkedSyscall.Kevent wait) ->
                             let until =
                                 match wait.Deadline with

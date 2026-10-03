@@ -121,7 +121,7 @@ class LockAndPortWaiters
             | _ -> None
         )
 
-    let private isPortWait (parked : ParkedSyscall) : bool =
+    let private isEventQueueWait (parked : ParkedSyscall) : bool =
         match parked with
         | ParkedSyscall.EpollWait _
         | ParkedSyscall.Kevent _ -> true
@@ -189,12 +189,12 @@ class LockAndPortWaiters
                 | Some _ -> port
                 | None ->
                     parkedNow
-                    |> List.tryPick (fun (tid, p) -> if isPortWait p then Some tid else None)
+                    |> List.tryPick (fun (tid, p) -> if isEventQueueWait p then Some tid else None)
 
             let bothParked =
                 bothParked
-                || (parkedNow |> List.exists (fun (_, p) -> isPortWait p)
-                    && parkedNow |> List.exists (fun (_, p) -> not (isPortWait p)))
+                || (parkedNow |> List.exists (fun (_, p) -> isEventQueueWait p)
+                    && parkedNow |> List.exists (fun (_, p) -> not (isEventQueueWait p)))
 
             let ranAfter (ran : ThreadId) : ThreadId list =
                 match port with

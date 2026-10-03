@@ -439,7 +439,7 @@ module TestWakeCondition =
                 }
             ParkedSyscall.EpollWait
                 {
-                    Port = locker
+                    Epoll = locker
                     MaxEvents = 1
                     Buffer = UserBuffer.Mapped
                     Deadline = None

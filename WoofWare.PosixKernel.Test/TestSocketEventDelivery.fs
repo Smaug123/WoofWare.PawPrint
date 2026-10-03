@@ -85,7 +85,7 @@ module TestSocketEventDelivery =
     let private hasDeliverableEpollEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
         EpollReadyList.hasDeliverableEvent portId kernel
 
-    let private addPort (kernel : UnixSystem<int, string>) : int * OpenFileDescriptionId * UnixSystem<int, string> =
+    let private addEpoll (kernel : UnixSystem<int, string>) : int * OpenFileDescriptionId * UnixSystem<int, string> =
         let fd, registry = FileDescriptorRegistry.createEpoll kernel.Process.FileDescriptors
 
         let portId =
@@ -204,7 +204,7 @@ module TestSocketEventDelivery =
     /// nothing, and is consumed — epoll re-polls at delivery.
     [<Test>]
     let ``a stale edge delivers nothing and is consumed`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, listenerId, kernel = addListener 5000us kernel
         let _, clientId, kernel = addStream kernel
         let kernel = register portFd listenerFd 7UL kernel
@@ -224,7 +224,7 @@ module TestSocketEventDelivery =
     /// edge that reports again (D).
     [<Test>]
     let ``a live edge reports once, and a further connect re-arms the reported queue`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, _, kernel = addListener 5000us kernel
         let _, c1, kernel = addStream kernel
         let _, c2, kernel = addStream kernel
@@ -250,7 +250,7 @@ module TestSocketEventDelivery =
     /// the refill is the edge, whatever the mask did in between.
     [<Test>]
     let ``a drop-then-rise between deliveries reports`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, listenerId, kernel = addListener 5000us kernel
         let _, c1, kernel = addStream kernel
         let _, c2, kernel = addStream kernel
@@ -275,7 +275,7 @@ module TestSocketEventDelivery =
         let _, kernel = connect c1 false (loopback 5000us) kernel
 
         // The port did not exist when the edge arrived.
-        let portFd, portId, kernel = addPort kernel
+        let portFd, portId, kernel = addEpoll kernel
         let kernel = register portFd listenerFd 9UL kernel
 
         hasDeliverableEpollEvents portId kernel |> shouldEqual true
@@ -287,7 +287,7 @@ module TestSocketEventDelivery =
     /// nothing, which is what keeps the no-spurious-wake guests parked.
     [<Test>]
     let ``an ADD of an unready target pends nothing`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, _, kernel = addListener 5000us kernel
         let kernel = register portFd listenerFd 9UL kernel
 
@@ -302,7 +302,7 @@ module TestSocketEventDelivery =
     [<Test>]
     let ``the batch is in edge-arrival order`` () : unit =
         for firstIsL1 in [ true ; false ] do
-            let portFd, portId, kernel = addPort initialSystem
+            let portFd, portId, kernel = addEpoll initialSystem
             let l1Fd, _, kernel = addListener 5001us kernel
             let l2Fd, _, kernel = addListener 5002us kernel
             let _, c1, kernel = addStream kernel
@@ -324,7 +324,7 @@ module TestSocketEventDelivery =
     /// Row H: a re-signal of an entry already pending does not move it.
     [<Test>]
     let ``a re-signal does not move a pending entry`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let l1Fd, _, kernel = addListener 5001us kernel
         let l2Fd, _, kernel = addListener 5002us kernel
         let _, c1, kernel = addStream kernel
@@ -344,7 +344,7 @@ module TestSocketEventDelivery =
     /// Row I: an ADD-of-ready enters at ADD time, not at its old edge's time.
     [<Test>]
     let ``an ADD of a ready target enters at ADD time`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let l1Fd, _, kernel = addListener 5001us kernel
         let l2Fd, _, kernel = addListener 5002us kernel
         let _, c1, kernel = addStream kernel
@@ -365,7 +365,7 @@ module TestSocketEventDelivery =
     /// order, and a drained port reports nothing further.
     [<Test>]
     let ``truncation keeps the suffix pending in order`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let l1Fd, _, kernel = addListener 5001us kernel
         let l2Fd, _, kernel = addListener 5002us kernel
         let l3Fd, _, kernel = addListener 5003us kernel
@@ -395,7 +395,7 @@ module TestSocketEventDelivery =
     [<Test>]
     let ``same-signal ties deliver newest-registered first`` () : unit =
         for originalFirst in [ true ; false ] do
-            let portFd, portId, kernel = addPort initialSystem
+            let portFd, portId, kernel = addEpoll initialSystem
             let listenerFd, _, kernel = addListener 5000us kernel
             let _, c1, kernel = addStream kernel
 
@@ -431,7 +431,7 @@ module TestSocketEventDelivery =
     /// Row K: a MOD of a consumed, still-ready target re-arms it.
     [<Test>]
     let ``MOD of a consumed ready target re-arms`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, _, kernel = addListener 5000us kernel
         let _, c1, kernel = addStream kernel
         let kernel = register portFd listenerFd 7UL kernel
@@ -452,7 +452,7 @@ module TestSocketEventDelivery =
     /// Row L: a MOD of an entry already pending leaves its place alone.
     [<Test>]
     let ``MOD of a pending entry does not move it`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let l1Fd, _, kernel = addListener 5001us kernel
         let l2Fd, _, kernel = addListener 5002us kernel
         let _, c1, kernel = addStream kernel
@@ -479,7 +479,7 @@ module TestSocketEventDelivery =
     /// signals again with the idle level.
     [<Test>]
     let ``a refusal delivers its error level once, and the reset re-signals`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let clientFd, clientId, kernel = addStream kernel
         let kernel = register portFd clientFd 5UL kernel
 
@@ -536,7 +536,7 @@ module TestSocketEventDelivery =
     /// does (`consumed-epoll.c` R2).
     [<Test>]
     let ``taking a refusal signals nothing, and the aborting connect re-signals`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let clientFd, clientId, kernel = addStream kernel
         let kernel = register portFd clientFd 5UL kernel
         let _, kernel = deliverEpollEvents portId 8 kernel
@@ -561,7 +561,7 @@ module TestSocketEventDelivery =
     /// collection, which has lost ERR (`consumed-epoll.c` R3).
     [<Test>]
     let ``an edge collected after the refusal is taken reports the level without ERR`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let clientFd, clientId, kernel = addStream kernel
         let kernel = register portFd clientFd 5UL kernel
         let _, kernel = deliverEpollEvents portId 8 kernel
@@ -584,7 +584,7 @@ module TestSocketEventDelivery =
     /// delivery cannot report from a key the table no longer holds.
     [<Test>]
     let ``removing a registration removes its pending entry`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, _, kernel = addListener 5000us kernel
         let _, c1, kernel = addStream kernel
         let kernel = register portFd listenerFd 7UL kernel
@@ -605,7 +605,7 @@ module TestSocketEventDelivery =
     /// entry with its registration (`eventpoll_release`).
     [<Test>]
     let ``closing the registered target sweeps its pending entry`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, _, kernel = addListener 5000us kernel
         let clientFd, c1, kernel = addStream kernel
         let kernel = register portFd listenerFd 7UL kernel
@@ -636,17 +636,17 @@ module TestSocketEventDelivery =
     /// found it: a failed `epoll_ctl` changes no kernel state.
     [<Test>]
     let ``a failed ADD does not consume an ordinal`` () : unit =
-        let portFd, _, kernel = addPort initialSystem
+        let portFd, _, kernel = addEpoll initialSystem
         let listenerFd, _, kernel = addListener 5000us kernel
         let kernel = register portFd listenerFd 7UL kernel
-        let before = kernel.Machine.NextSocketEventRegistrationOrdinal
+        let before = kernel.Machine.NextEventRegistrationOrdinal
 
         match UnixPoll.epollCtl portFd 1 listenerFd (EpollEventArgument.Readable (allInterest, 8UL)) kernel with
         | Ok (EpollCtlAnswer.Changed, _) -> failwith "expected EEXIST"
         | Ok (EpollCtlAnswer.Failed reason, _) -> reason |> shouldEqual EpollCtlError.AlreadyRegistered
         | Error refusal -> failwith (EpollCtlRefusal.describe refusal)
 
-        before |> shouldEqual kernel.Machine.NextSocketEventRegistrationOrdinal
+        before |> shouldEqual kernel.Machine.NextEventRegistrationOrdinal
 
     // --- the peer-close edge ---
 
@@ -655,7 +655,7 @@ module TestSocketEventDelivery =
     /// IN|OUT|RDHUP (`order3.c` row Q).
     [<Test>]
     let ``closing the peer signals the registered survivor with the half-closed level`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
@@ -693,7 +693,7 @@ module TestSocketEventDelivery =
     /// readiness that happened to match.
     [<Test>]
     let ``a peer close pends an interest the half-closed level cannot satisfy, until it widens`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
@@ -739,7 +739,7 @@ module TestSocketEventDelivery =
     /// finds it ready at the half-closed level.
     [<Test>]
     let ``registering a survivor after an unwatched peer close pends the half-closed level`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
@@ -782,7 +782,7 @@ module TestSocketEventDelivery =
     /// client's completion before the listener's accept edge.
     [<Test>]
     let ``a connect's edges enter client-first`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, _, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let kernel = register portFd listenerFd 2UL kernel
@@ -804,7 +804,7 @@ module TestSocketEventDelivery =
     /// edge-consumed client re-reports once established.
     [<Test>]
     let ``a connect's completion signals the registered client`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let _, _, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let kernel = register portFd clientFd 6UL kernel
@@ -827,7 +827,7 @@ module TestSocketEventDelivery =
     /// re-reports its post-reset idle level.
     [<Test>]
     let ``an inline refusal signals the registered client`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let clientFd, clientId, kernel = addStream kernel
         let kernel = register portFd clientFd 6UL kernel
         let delivered, kernel = deliverEpollEvents portId 8 kernel
@@ -849,7 +849,7 @@ module TestSocketEventDelivery =
     /// fresh at MOD time — behind everything queued since the missed edge.
     [<Test>]
     let ``a signal missing the interest leaves no trace, and a later MOD enqueues fresh`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let l1Fd, _, kernel = addListener 5001us kernel
         let l2Fd, _, kernel = addListener 5002us kernel
         let _, c1, kernel = addStream kernel
@@ -896,7 +896,7 @@ module TestSocketEventDelivery =
 
         for bit in 0..27 do
             let mask = 1u <<< bit
-            let portFd, portId, kernel = addPort initialSystem
+            let portFd, portId, kernel = addEpoll initialSystem
             let aFd, _, kernel = addListener 5001us kernel
             let bFd, _, kernel = addListener 5002us kernel
             let _, c1, kernel = addStream kernel
@@ -931,7 +931,7 @@ module TestSocketEventDelivery =
     /// but reports nothing, and is consumed silently.
     [<Test>]
     let ``an interest narrowed while pending is dropped at delivery`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, _, kernel = addListener 5000us kernel
         let _, c1, kernel = addStream kernel
         let kernel = register portFd listenerFd 6UL kernel
@@ -956,7 +956,7 @@ module TestSocketEventDelivery =
     /// place — `RegisteredAt` survives the MOD.
     [<Test>]
     let ``MOD does not move a registration's place in a same-signal tie`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let listenerFd, _, kernel = addListener 5000us kernel
         let _, c1, kernel = addStream kernel
 
@@ -996,7 +996,7 @@ module TestSocketEventDelivery =
     [<Test>]
     let ``closing every descriptor of an in-flight-waited epoll instance proceeds, the last one included`` () : unit =
         let build () =
-            let portFd, portId, kernel = addPort initialSystem
+            let portFd, portId, kernel = addEpoll initialSystem
 
             let dupFd, kernel =
                 match FileDescriptorRegistry.dup portFd kernel.Process.FileDescriptors with
@@ -1017,7 +1017,7 @@ module TestSocketEventDelivery =
                     1
                     (ParkedSyscall.EpollWait
                         {
-                            ParkedEpollWait.Port = portId
+                            ParkedEpollWait.Epoll = portId
                             MaxEvents = 8
                             Buffer = UserBuffer.Mapped
                             Deadline = None
@@ -1039,7 +1039,7 @@ module TestSocketEventDelivery =
             FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
             |> Map.containsKey (
                 match UnixTaskTable.parkedFor 1 closed.Tasks with
-                | Some (ParkedSyscall.EpollWait wait) -> wait.Port
+                | Some (ParkedSyscall.EpollWait wait) -> wait.Epoll
                 | other -> failwith $"expected the wait to stay parked, got %A{other}"
             )
             |> shouldEqual true
@@ -1053,7 +1053,7 @@ module TestSocketEventDelivery =
     /// duplicated ordinal.
     [<Test>]
     let ``checkInvariants rejects stale and duplicated registration ordinals`` () : unit =
-        let portFd, portId, kernel = addPort initialSystem
+        let portFd, portId, kernel = addEpoll initialSystem
         let l1Fd, _, kernel = addListener 5001us kernel
         let l2Fd, _, kernel = addListener 5002us kernel
         let kernel = register portFd l1Fd 1UL kernel
@@ -1086,7 +1086,7 @@ module TestSocketEventDelivery =
             { kernel with
                 Machine =
                     { kernel.Machine with
-                        NextSocketEventRegistrationOrdinal = counter
+                        NextEventRegistrationOrdinal = counter
                     }
                 Process =
                     { kernel.Process with
@@ -1107,7 +1107,7 @@ module TestSocketEventDelivery =
             }
 
         UnixSystem.checkInvariants (withOrdinals 0L 5L 2L)
-        |> shouldEqual [ UnixSystemDefect.SocketEventRegistrationOrdinalNotFresh (2L, portId, 5L) ]
+        |> shouldEqual [ UnixSystemDefect.EventRegistrationOrdinalNotFresh (2L, portId, 5L) ]
 
         UnixSystem.checkInvariants (withOrdinals 0L 0L 2L)
-        |> shouldEqual [ UnixSystemDefect.DuplicateSocketEventRegistrationOrdinal 0L ]
+        |> shouldEqual [ UnixSystemDefect.DuplicateEventRegistrationOrdinal 0L ]

@@ -1086,7 +1086,7 @@ module TestSocketTable =
             { kernel with
                 Machine =
                     { kernel.Machine with
-                        NextSocketEventRegistrationOrdinal = 1L
+                        NextEventRegistrationOrdinal = 1L
                     }
             }
 

@@ -1268,9 +1268,9 @@ module UnixReadWrite =
             // ENXIO for a kqueue.
             //
             // Placed in this classification rather than after the buffer screen
-            // because it precedes it on both: measured, `read(port, (void*)-1,
+            // because it precedes it on both: measured, `read(queue, (void*)-1,
             // 8)` is EINVAL on Linux and ENXIO on Darwin, not EFAULT. Length is
-            // irrelevant too — `read(port, buf, 0)` gives the same answer as a
+            // irrelevant too — `read(queue, buf, 0)` gives the same answer as a
             // non-zero length, unlike a pipe's zero-return shortcut below.
             | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
             | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
@@ -1335,8 +1335,8 @@ module UnixReadWrite =
             // connected, which `UnconnectedSocketRules` answers below with the
             // rest of a socket without a peer.
             //
-            // The socket event port does not share the shortcut and is answered
-            // above: measured, `read(port, buf, 0)` is EINVAL on Linux like
+            // The event queue does not share the shortcut and is answered
+            // above: measured, `read(queue, buf, 0)` is EINVAL on Linux like
             // every other length.
             let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
@@ -1697,7 +1697,7 @@ module UnixReadWrite =
         //   negative offset + bad fd       EINVAL   EBADF
         //   negative offset + pipe         EINVAL   ESPIPE
         //   negative offset + socket       EINVAL   ESPIPE
-        //   negative offset + port         EINVAL   ESPIPE
+        //   negative offset + event queue  EINVAL   ESPIPE
         //   negative offset + O_WRONLY     EINVAL   EBADF
         //   negative offset + directory    EINVAL   EINVAL
         //   negative offset + bad address  EINVAL   EINVAL
@@ -1779,11 +1779,11 @@ module UnixReadWrite =
                 | SimulatedUnixFlavour.Linux -> Error UnixError.ESPIPE
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->
-                // Unseekable on both, with no tie to break: a port's description
+                // Unseekable on both, with no tie to break: an event queue's description
                 // is `ReadWrite`, so the unreadability arm above cannot apply to
-                // it. Measured, `pread(port, buf, 8, 0)` and
-                // `pread(port, buf, 0, 0)` are both ESPIPE on both flavours, and
-                // so is `pread(port, (void*)-1, 8, 0)` — unseekability precedes
+                // it. Measured, `pread(queue, buf, 8, 0)` and
+                // `pread(queue, buf, 0, 0)` are both ESPIPE on both flavours, and
+                // so is `pread(queue, (void*)-1, 8, 0)` — unseekability precedes
                 // the buffer screen, which is why this is classified here rather
                 // than after it.
                 //
@@ -1793,7 +1793,7 @@ module UnixReadWrite =
                 // far as asking, having already failed on seekability.
                 Error UnixError.ESPIPE
             | OpenFileTarget.Socket _ ->
-                // Unseekable on both, for the same reason the port is, and
+                // Unseekable on both, for the same reason the event queue is, and
                 // measured on a TCP, a UDP and a Unix-domain socket alike.
                 //
                 // Unlike `read`, this does not depend on the socket's phase:
@@ -1872,7 +1872,7 @@ module UnixReadWrite =
         // kqueue.
         //
         // Ahead of the buffer screen and of the zero-size no-op, on both
-        // platforms: measured, `write(port, (void*)-1, 8)` is EINVAL/ENXIO
+        // platforms: measured, `write(queue, (void*)-1, 8)` is EINVAL/ENXIO
         // rather than EFAULT, and no length is a no-op.
         | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
         | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
@@ -2674,7 +2674,7 @@ module UnixReadWrite =
         //   a read-only file           EINVAL   EINVAL
         //   a directory                EINVAL   EINVAL
         //   a socket                   EINVAL   EINVAL
-        //   a socket event port        EINVAL   EINVAL
+        //   an event queue             EINVAL   EINVAL
         //   an unscreenable address    EINVAL   EINVAL
         //   a zero length              EINVAL   EINVAL
         //
@@ -2734,7 +2734,7 @@ module UnixReadWrite =
             | SimulatedUnixFlavour.Linux -> Error UnixError.ESPIPE
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ ->
-            // Unseekable on both, with no tie to break: a port's description is
+            // Unseekable on both, with no tie to break: an event queue's description is
             // `ReadWrite`, so the unwritability arm above cannot apply to it.
             // Measured ESPIPE at length 8, at length 0, and with an unscreenable
             // address — so unseekability precedes both the no-op and the screen.
@@ -2744,7 +2744,7 @@ module UnixReadWrite =
             // write operation at all, and `pwrite` never gets as far as asking.
             Error UnixError.ESPIPE
         | OpenFileTarget.Socket _ ->
-            // Unseekable on both, for the same reason the port is, and measured
+            // Unseekable on both, for the same reason the event queue is, and measured
             // on a TCP, a UDP and a Unix-domain socket alike.
             //
             // Unlike `write`, this does not depend on the socket's phase: every

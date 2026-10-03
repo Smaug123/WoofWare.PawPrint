@@ -56,7 +56,7 @@ module TestEpollCtl =
                 }
         }
 
-    let private withPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+    let private withEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         fd, withRegistry registry system
@@ -116,13 +116,13 @@ module TestEpollCtl =
         | Some id -> id
         | None -> failwith $"fd %d{fd} is not live"
 
-    let private portOf (portFd : int) (system : UnixSystem<int, string>) : EpollState =
+    let private epollOf (portFd : int) (system : UnixSystem<int, string>) : EpollState =
         match FileDescriptorRegistry.tryFindTarget portFd system.Process.FileDescriptors with
         | Some (OpenFileTarget.Epoll portState) -> portState
         | other -> failwith $"expected an epoll instance, got %A{other}"
 
     let private ready (portFd : int) (system : UnixSystem<int, string>) : (int * OpenFileDescriptionId) list =
-        (portOf portFd system).Ready
+        (epollOf portFd system).Ready
 
     let private ctl
         (epfd : int)
@@ -288,7 +288,7 @@ module TestEpollCtl =
         | "udp" -> withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle system
         | "unix-stream" -> withSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle system
         | "unix-dgram" -> withSocket SocketDomain.Unix SocketKind.Datagram SocketPhase.Idle system
-        | "epoll" -> withPort system
+        | "epoll" -> withEpoll system
         | "same-as-epfd" -> epfd, system
         // The probe's `dup` of an epfd that is not open failed, leaving -1.
         | "dup-of-epfd" ->
@@ -443,9 +443,9 @@ module TestEpollCtl =
 
         let property (mask : uint32) : unit =
             for label, op, registered, epollTarget in rows do
-                let portFd, system = withPort linux
+                let portFd, system = withEpoll linux
 
-                let targetFd, system = if epollTarget then withPort system else idleSocket system
+                let targetFd, system = if epollTarget then withEpoll system else idleSocket system
 
                 let system =
                     if registered then
@@ -572,7 +572,7 @@ module TestEpollCtl =
     /// ADD order, since each ADD of a ready target appends it.
     let private reportsAsMeasured (mask : uint32) : unit =
         let rows, system = measuredLevels
-        let portFd, system = withPort system
+        let portFd, system = withEpoll system
         let portId = idOf portFd system
 
         let system =
@@ -628,7 +628,7 @@ module TestEpollCtl =
     /// replaces it wholesale along with the data.
     [<Test>]
     let ``the stored mask is the caller's events with ERR and HUP added`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
         let key = socketFd, idOf socketFd system
 
@@ -644,7 +644,7 @@ module TestEpollCtl =
             | Ok (EpollCtlAnswer.Changed, system) -> system
             | other -> failwith $"%A{other}"
 
-        let stored = (portOf portFd system).Registrations.[key]
+        let stored = (epollOf portFd system).Registrations.[key]
 
         stored.Events
         |> shouldEqual (EpollEvents.Pri ||| 0x800u ||| edge ||| EpollEvents.Err ||| EpollEvents.Hup)
@@ -663,7 +663,7 @@ module TestEpollCtl =
             | Ok (EpollCtlAnswer.Changed, system) -> system
             | other -> failwith $"%A{other}"
 
-        let stored = (portOf portFd system).Registrations.[key]
+        let stored = (epollOf portFd system).Registrations.[key]
 
         stored.Events
         |> shouldEqual (EpollEvents.In ||| edge ||| EpollEvents.Err ||| EpollEvents.Hup)
@@ -678,7 +678,7 @@ module TestEpollCtl =
     /// were readable; every other operation value reads it first of all.
     [<Test>]
     let ``an unreadable event is EFAULT for everything but DEL, and DEL never reads it`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
         let registered = applied portFd add socketFd (EpollEvents.In ||| edge) system
 
@@ -691,7 +691,7 @@ module TestEpollCtl =
         |> shouldEqual (Ok (EpollCtlAnswer.Failed EpollCtlError.BadPortFd, registered))
 
         match UnixPoll.epollCtl portFd del socketFd EpollEventArgument.Unreadable registered with
-        | Ok (EpollCtlAnswer.Changed, after) -> (portOf portFd after).Registrations |> shouldEqual Map.empty
+        | Ok (EpollCtlAnswer.Changed, after) -> (epollOf portFd after).Registrations |> shouldEqual Map.empty
         | other -> failwith $"%A{other}"
 
     // ------------------------------------------------------------------
@@ -705,7 +705,7 @@ module TestEpollCtl =
     [<Test>]
     let ``a Darwin-flavoured kernel refuses every call`` () : unit =
         let darwin = systemOn SimulatedUnixPlatform.macOsArm64
-        let portFd, darwin = withPort darwin
+        let portFd, darwin = withEpoll darwin
         let socketFd, darwin = idleSocket darwin
 
         let expected = Error (EpollCtlRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
@@ -723,7 +723,7 @@ module TestEpollCtl =
     /// failure that precedes the commit is still the kernel's answer.
     [<Test>]
     let ``a level-triggered request is refused at the commit, and answered where it would fail`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
 
         ctl portFd add socketFd EpollEvents.In system
@@ -746,8 +746,8 @@ module TestEpollCtl =
     /// ENOENT, as they do on a table that holds no such registration.
     [<Test>]
     let ``an ADD of another port is refused, and MOD and DEL of one are answered`` () : unit =
-        let portFd, system = withPort linux
-        let innerFd, system = withPort system
+        let portFd, system = withEpoll linux
+        let innerFd, system = withEpoll system
 
         ctl portFd add innerFd (EpollEvents.In ||| edge) system
         |> shouldEqual (Error (EpollCtlRefusal.NestedPort innerFd))
@@ -770,7 +770,7 @@ module TestEpollCtl =
     /// `dup` of the port operates on the one shared table.
     [<Test>]
     let ``dup of the target is a second key; dup of the port is the same table`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
         let copyFd, system = dupOf socketFd system
 
@@ -779,7 +779,7 @@ module TestEpollCtl =
             |> applied portFd add socketFd (EpollEvents.In ||| edge)
             |> applied portFd add copyFd (EpollEvents.In ||| edge)
 
-        (portOf portFd system).Registrations.Count |> shouldEqual 2
+        (epollOf portFd system).Registrations.Count |> shouldEqual 2
 
         let portCopyFd, system = dupOf portFd system
 
@@ -787,7 +787,7 @@ module TestEpollCtl =
         |> shouldEqual (Ok (EpollCtlAnswer.Failed EpollCtlError.AlreadyRegistered, system))
 
         let system = applied portCopyFd del socketFd 0u system
-        (portOf portFd system).Registrations.Count |> shouldEqual 1
+        (epollOf portFd system).Registrations.Count |> shouldEqual 1
 
     // ------------------------------------------------------------------
     // The ordinal
@@ -798,27 +798,27 @@ module TestEpollCtl =
     /// shift the numbering a later ADD will get.
     [<Test>]
     let ``only an ADD consumes an ordinal`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
-        system.Machine.NextSocketEventRegistrationOrdinal |> shouldEqual 0L
+        system.Machine.NextEventRegistrationOrdinal |> shouldEqual 0L
 
         let system = applied portFd add socketFd (EpollEvents.In ||| edge) system
-        system.Machine.NextSocketEventRegistrationOrdinal |> shouldEqual 1L
+        system.Machine.NextEventRegistrationOrdinal |> shouldEqual 1L
 
         let system = applied portFd modify socketFd (EpollEvents.Out ||| edge) system
-        system.Machine.NextSocketEventRegistrationOrdinal |> shouldEqual 1L
+        system.Machine.NextEventRegistrationOrdinal |> shouldEqual 1L
 
         let system = applied portFd del socketFd 0u system
-        system.Machine.NextSocketEventRegistrationOrdinal |> shouldEqual 1L
+        system.Machine.NextEventRegistrationOrdinal |> shouldEqual 1L
 
         let system = applied portFd add socketFd (EpollEvents.In ||| edge) system
-        system.Machine.NextSocketEventRegistrationOrdinal |> shouldEqual 2L
+        system.Machine.NextEventRegistrationOrdinal |> shouldEqual 2L
 
     /// A failure or a refusal consumes nothing: the ordinal is taken by the
     /// commit, which did not happen.
     [<Test>]
     let ``a failed or refused ADD changes nothing`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
         let system = applied portFd add socketFd (EpollEvents.In ||| edge) system
 
@@ -839,7 +839,7 @@ module TestEpollCtl =
     /// target.
     [<Test>]
     let ``an ADD of an already-ready target is pending at once`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
         ready portFd system |> shouldEqual []
 
@@ -852,7 +852,7 @@ module TestEpollCtl =
     /// socket is ready under a read-only mask too.
     [<Test>]
     let ``a mask that misses OUT still sees the unrequested HUP`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
         let system = applied portFd add socketFd (EpollEvents.In ||| edge) system
         ready portFd system |> List.length |> shouldEqual 1
@@ -861,7 +861,7 @@ module TestEpollCtl =
     /// appending it a second time.
     [<Test>]
     let ``a MOD of an already-pending entry does not re-append it`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
         let system = applied portFd add socketFd (EpollEvents.Out ||| edge) system
         let afterAdd = ready portFd system
@@ -874,7 +874,7 @@ module TestEpollCtl =
     /// A DEL takes the pending entry with it.
     [<Test>]
     let ``a DEL removes the pending entry`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
         let socketFd, system = idleSocket system
         let system = applied portFd add socketFd (EpollEvents.Out ||| edge) system
         let system = applied portFd del socketFd 0u system
@@ -886,7 +886,7 @@ module TestEpollCtl =
     /// a mask of `WRNORM` alone does report.
     [<Test>]
     let ``an ADD pends exactly when the mask meets the target's readiness`` () : unit =
-        let portFd, system = withPort linux
+        let portFd, system = withEpoll linux
 
         let quiet =
             applied portFd add 1 (EpollEvents.In ||| EpollEvents.RdNorm ||| EpollEvents.Pri ||| edge) system

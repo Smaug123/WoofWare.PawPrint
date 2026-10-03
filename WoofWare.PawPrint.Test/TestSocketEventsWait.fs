@@ -138,7 +138,7 @@ class WaitsOnADuplicatedPort
             Some (
                 ParkedSyscall.EpollWait
                     {
-                        ParkedEpollWait.Port = OpenFileDescriptionId 3L
+                        ParkedEpollWait.Epoll = OpenFileDescriptionId 3L
                         MaxEvents = 1
                         Buffer = UserBuffer.Mapped
                         Deadline = None
@@ -474,14 +474,14 @@ class TwoPortsOneEdge
 """
 
     /// Every thread currently parked in an `epoll_wait`, with the port its task records.
-    let private parkedOnPorts (state : IlMachineState) : (ThreadId * OpenFileDescriptionId) list =
+    let private parkedInEpollWait (state : IlMachineState) : (ThreadId * OpenFileDescriptionId) list =
         state.ThreadState
         |> Map.toList
         |> List.choose (fun (tid, ts) ->
             match ts.Status with
             | ThreadStatus.BlockedInSyscall ->
                 match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
-                | Some (ParkedSyscall.EpollWait wait) -> Some (tid, wait.Port)
+                | Some (ParkedSyscall.EpollWait wait) -> Some (tid, wait.Epoll)
                 | Some (ParkedSyscall.Kevent _)
                 | Some (ParkedSyscall.Flock _)
                 | Some (ParkedSyscall.Poll _)
@@ -548,7 +548,7 @@ class TwoPortsOneEdge
             if steps > maxSteps then
                 failwith $"guest did not terminate within %d{maxSteps} steps"
 
-            let parked = parkedOnPorts prepared.State
+            let parked = parkedInEpollWait prepared.State
 
             let quiet =
                 match quiet with
@@ -672,7 +672,7 @@ class ClosesAParkedPort
                     match UnixTaskState.park task with
                     | Some {
                                Syscall = ParkedSyscall.EpollWait wait
-                           } -> Some wait.Port
+                           } -> Some wait.Epoll
                     | _ -> None
                 )
 

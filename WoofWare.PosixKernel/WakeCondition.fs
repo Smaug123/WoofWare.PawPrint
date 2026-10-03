@@ -25,17 +25,17 @@ type WakePrimitive =
     /// reusable while the description lives on.
     | FlockGrantable of requester : OpenFileDescriptionId * mode : FlockMode
     /// A wait for events on the epoll instance the open file description
-    /// `port` names, parked because the instance had nothing to deliver.
+    /// `epoll` names, parked because the instance had nothing to deliver.
     ///
     /// Carries no event count, unlike the record a client parks with: how many
     /// events the caller asked for decides what the *finishing* call copies out,
     /// and says nothing about whether it can finish at all. A single deliverable
     /// event satisfies a wait for any number of them.
     ///
-    /// `port` is the open file description rather than the descriptor, for the
+    /// `epoll` is the open file description rather than the descriptor, for the
     /// reason `FlockGrantable`'s requester is: the number can be closed and
-    /// reused while the wait sleeps, and a `dup` of it waits on the same port.
-    | EpollEventDeliverable of port : OpenFileDescriptionId
+    /// reused while the wait sleeps, and a `dup` of it waits on the same epoll instance.
+    | EpollEventDeliverable of epoll : OpenFileDescriptionId
     /// The kqueue the open file description `kqueue` names has been drained:
     /// a `close(2)` of a descriptor a `kevent` wait on it was entered through
     /// has ended every wait on it (see `KqueueState.Drained`).
@@ -233,7 +233,7 @@ module WakeCondition =
                     mode
                     registry
                 |> not
-        | WakePrimitive.EpollEventDeliverable port -> EpollReadyList.hasDeliverableEvent port system
+        | WakePrimitive.EpollEventDeliverable epoll -> EpollReadyList.hasDeliverableEvent epoll system
         | WakePrimitive.KqueueEventDeliverable kqueue -> KqueueQueue.hasDeliverableEvent kqueue system
         | WakePrimitive.KqueuePollReportable -> KqueuePoll.reportable task system
         | WakePrimitive.KqueueDrained kqueue ->
@@ -425,7 +425,7 @@ module WakeCondition =
                 ]
             | ParkedSyscall.EpollWait wait ->
                 let deliverable =
-                    WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable wait.Port)
+                    WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable wait.Epoll)
 
                 match wait.Deadline with
                 | None -> [ deliverable ]
@@ -524,7 +524,7 @@ type SyscallOutcome =
     /// the number. Descriptor numbers are reused as soon as they are free, so a
     /// `close` of the number this call was made through can leave that number
     /// naming something else entirely by the time the waiter wakes, while the
-    /// object lives on for the waiter. `ParkedEpollWait` holds its port by
+    /// object lives on for the waiter. `ParkedEpollWait` holds its epoll instance by
     /// description identity for exactly this reason.
     ///
     /// The system this rides with is the one a real kernel sleeps *in*, not the

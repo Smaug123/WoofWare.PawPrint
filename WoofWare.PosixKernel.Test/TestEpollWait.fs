@@ -50,10 +50,10 @@ module TestEpollWait =
     let private withTask (name : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         Tasks.ensure name system
 
-    let private createPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+    let private createEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         match UnixPoll.epollCreate1 0 system with
         | Ok (Ok (fd, system)) -> fd, system
-        | other -> failwith $"expected a port, got %A{other}"
+        | other -> failwith $"expected an epoll instance, got %A{other}"
 
     /// A Linux-flavoured system with tasks 1 to 6 registered, a listening socket
     /// with an empty accept queue, and a port holding one edge-triggered
@@ -106,7 +106,7 @@ module TestEpollWait =
                     }
             }
 
-        let portFd, system = createPort system
+        let portFd, system = createEpoll system
 
         let system =
             match
@@ -448,7 +448,7 @@ module TestEpollWait =
                 wait
                 |> shouldEqual
                     {
-                        Port = portId
+                        Epoll = portId
                         MaxEvents = 8
                         Buffer = UserBuffer.Mapped
                         Deadline = None
@@ -656,7 +656,7 @@ module TestEpollWait =
             let ports, system =
                 ((idle, []), pending)
                 ||> List.fold (fun (system, ports) isPending ->
-                    let fd, system = createPort system
+                    let fd, system = createEpoll system
                     let id = idOf fd system
 
                     let registry =
@@ -687,7 +687,7 @@ module TestEpollWait =
                         park.Waiter
                         (ParkedSyscall.EpollWait
                             {
-                                Port = ports.[park.Port]
+                                Epoll = ports.[park.Port]
                                 MaxEvents = 1
                                 Buffer = UserBuffer.Mapped
                                 Deadline = park.Deadline
@@ -719,11 +719,11 @@ module TestEpollWait =
 
             let finishingOn (portId : OpenFileDescriptionId) : bool =
                 parkedTasks
-                |> List.exists (fun (name, wait, _) -> not (Set.contains name asleep) && wait.Port = portId)
+                |> List.exists (fun (name, wait, _) -> not (Set.contains name asleep) && wait.Epoll = portId)
 
             let lastAsleepOn (portId : OpenFileDescriptionId) : int =
                 parkedTasks
-                |> List.filter (fun (name, wait, _) -> Set.contains name asleep && wait.Port = portId)
+                |> List.filter (fun (name, wait, _) -> Set.contains name asleep && wait.Epoll = portId)
                 |> List.maxBy (fun (_, _, ordinal) -> ordinal)
                 |> fun (name, _, _) -> name
 
@@ -738,13 +738,13 @@ module TestEpollWait =
                         | _ -> None
 
                     let event =
-                        if isPending wait.Port then
-                            Some (WakePrimitive.EpollEventDeliverable wait.Port)
+                        if isPending wait.Epoll then
+                            Some (WakePrimitive.EpollEventDeliverable wait.Epoll)
                         else
                             None
 
                     let chosen =
-                        event.IsSome && not (finishingOn wait.Port) && lastAsleepOn wait.Port = name
+                        event.IsSome && not (finishingOn wait.Epoll) && lastAsleepOn wait.Epoll = name
 
                     if expired.IsSome || chosen then
                         Some (name, Set.ofList (Option.toList expired @ Option.toList event))
