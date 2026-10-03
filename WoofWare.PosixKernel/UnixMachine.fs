@@ -33,9 +33,11 @@ type UnixMachineState =
         /// `NextSocketId`.
         NextConnectionId : ConnectionId
         /// The ordinal the next committed socket event registration records
-        /// as its `RegisteredAt`. Monotonic, and bumped only when an ADD
-        /// commits, so a failed `epoll_ctl` leaves the kernel exactly as it
-        /// found it.
+        /// as its `RegisteredAt`, whether an epoll instance's
+        /// (`EpollRegistration`) or a kqueue's (`KqueueRegistration`).
+        /// Monotonic, and bumped only when an `EPOLL_CTL_ADD` or the first
+        /// `EV_ADD` of a kqueue registration commits, so a failed `epoll_ctl`
+        /// leaves the kernel exactly as it found it.
         NextSocketEventRegistrationOrdinal : int64
         /// The ordinal the next park of any task records as its
         /// `TaskPark.Ordinal`. Monotonic, and bumped only by `UnixWait.park`.
@@ -71,6 +73,12 @@ type UnixMachineState =
         /// Host configuration with a per-flavour default; see
         /// `UnixMachineState.withSoMaxConn` for the measured clamp rules.
         SoMaxConn : int
+        /// The send buffer a new TCP socket starts with, in bytes: Darwin's
+        /// `net.inet.tcp.sendspace` sysctl, and Linux's `net.ipv4.tcp_wmem`
+        /// default. Host configuration with a per-flavour default; see
+        /// `UnixMachineState.withTcpSendSpace`. Only the Darwin flavour reads
+        /// it, through `DarwinReadiness.sendBufferSpace`.
+        TcpSendSpace : int
         /// The IPv4 addresses this machine holds. Host configuration; see
         /// `UnixSystem.defaultLocalAddresses`.
         LocalAddresses : uint32 list
@@ -554,6 +562,27 @@ module UnixMachineState =
             failwith
                 $"UnixMachineState.connection: %O{connectionId} names no connection in this kernel's connection table. UnixSystemDefect.DanglingConnection and DanglingQueuedConnection exist to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
 
+    /// Whether the other end of the connection `connectionId`, of which the
+    /// socket `socketId` is one end, is still open: some other socket holds
+    /// the connection established, or a listener holds it in its accept queue.
+    ///
+    /// Derived rather than stored: the connection object outlives its ends
+    /// exactly as long as something references it, so the scan is the truth.
+    let peerOpen (socketId : SocketId) (connectionId : ConnectionId) (machine : UnixMachineState) : bool =
+        machine.Sockets
+        |> Map.exists (fun otherId other ->
+            otherId <> socketId
+            && (
+                match other.Phase with
+                | SocketPhase.Established c
+                | SocketPhase.EstablishedPendingReport c -> c = connectionId
+                | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
+                | SocketPhase.Idle
+                | SocketPhase.Refused _
+                | SocketPhase.DatagramPeer _ -> false
+            )
+        )
+
     /// The readiness a socket presents right now, before any waiter's interest
     /// mask is applied. Every row is measured on Linux 6.18.5 — `masks.c`
     /// (docs/plans/2026-08-21-socket-readiness-wake) through level-triggered
@@ -564,8 +593,8 @@ module UnixMachineState =
     ///
     /// Darwin has no measured rows and needs none: both waiters refuse that
     /// flavour before reaching here — epoll, which Darwin does not have, and
-    /// `UnixPoll.poll` — and `UnixKqueue.kevent` refuses every registration, so
-    /// none asks a readiness question of a Darwin-flavoured machine.
+    /// `UnixPoll.poll` — and Darwin's kqueue reads its own filters'
+    /// readiness (`DarwinReadiness`), not this.
     let socketReadinessLevel (socketId : SocketId) (machine : UnixMachineState) : ReadinessLevel =
         let target = socket socketId machine
 
@@ -596,30 +625,12 @@ module UnixMachineState =
             // With the peer alive and no receive path modelled, both ends
             // are exactly write-ready; once the peer is gone, the level is
             // the measured half-closed one.
-            let peerAlive =
-                machine.Sockets
-                |> Map.exists (fun otherId other ->
-                    otherId <> socketId
-                    && (
-                        match other.Phase with
-                        | SocketPhase.Established c
-                        | SocketPhase.EstablishedPendingReport c -> c = connectionId
-                        | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
-                        | SocketPhase.Idle
-                        | SocketPhase.Refused _
-                        | SocketPhase.DatagramPeer _ -> false
-                    )
-                )
-
-            if peerAlive then
+            if peerOpen socketId connectionId machine then
                 { ReadinessLevel.none with
                     Out = true
                 }
             else
-                // The measured half-closed level (`order3.c` row Q). Peer
-                // liveness is derived rather than stored: the connection
-                // object outlives its ends exactly as long as something
-                // references it, so the scan is the truth.
+                // The measured half-closed level (`order3.c` row Q).
                 {
                     In = true
                     Out = true
@@ -830,6 +841,61 @@ module UnixMachineState =
 
         { machine with
             SoMaxConn = resolved
+        }
+
+    /// The TCP send buffer sysctl's default on each flavour, measured on the
+    /// probe machines (2026-10-02): `net.inet.tcp.sendspace` reads 131072 on
+    /// Darwin 27.0.0, and `net.ipv4.tcp_wmem` reads `4096 16384 4194304` on
+    /// the Linux 6.18.5 container, whose middle value a fresh TCP socket's
+    /// `SO_SNDBUF` reports.
+    let defaultTcpSendSpace (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 16384
+        | SimulatedUnixFlavour.Darwin -> 131072
+
+    /// The send pipe of a Darwin machine's route to 127.0.0.1, in bytes: three
+    /// times the loopback interface's MTU of 16384. A connection's handshake
+    /// grows a send buffer smaller than this to it (measured,
+    /// `kevent-write-data.c` section B), and routes to the machine's other
+    /// addresses have none, so below it a buffer's size depends on the route.
+    let darwinLoopbackSendPipe : int = 49152
+
+    /// The most a Darwin socket buffer can hold, in bytes: the default of the
+    /// `kern.ipc.maxsockbuf` sysctl, measured on Darwin 27.0.0. Darwin refuses
+    /// a `net.inet.tcp.sendspace` above it, and caps any buffer at it.
+    let darwinSocketBufferMax : int = 8388608
+
+    /// Set the TCP send buffer sysctl (`TcpSendSpace`). `None` takes the
+    /// measured default of this machine's flavour.
+    ///
+    /// Under Darwin a value must lie between `darwinLoopbackSendPipe` and
+    /// `darwinSocketBufferMax`, inclusive: Darwin itself refuses a sendspace
+    /// above the maximum, and below the send pipe the size a connection's
+    /// buffer grows to depends on which route it took, which this kernel does
+    /// not model. Under Linux nothing reads the value, so configuring one is
+    /// refused rather than silently ignored.
+    let withTcpSendSpace (value : int option) (machine : UnixMachineState) : UnixMachineState =
+        let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+        let resolved =
+            match value, flavour with
+            | None, _ -> defaultTcpSendSpace flavour
+            | Some value, SimulatedUnixFlavour.Linux ->
+                failwith
+                    $"UnixMachineState.TcpSendSpace: %d{value} was configured on a Linux machine, but this kernel models no Linux TCP send buffer, so nothing would read it. Pass None."
+            | Some value, SimulatedUnixFlavour.Darwin ->
+                if value > darwinSocketBufferMax then
+                    failwith
+                        $"UnixMachineState.TcpSendSpace: %d{value} exceeds kern.ipc.maxsockbuf (%d{darwinSocketBufferMax}), and Darwin refuses such a net.inet.tcp.sendspace with ERANGE. Configure at most %d{darwinSocketBufferMax}, or None for the default."
+
+                if value < darwinLoopbackSendPipe then
+                    failwith
+                        $"UnixMachineState.TcpSendSpace: %d{value} is below %d{darwinLoopbackSendPipe}, the send pipe of Darwin's route to 127.0.0.1. A connection's handshake grows a send buffer that small to the send pipe of the route it takes, and this kernel does not model routes. Configure at least %d{darwinLoopbackSendPipe}, or None for the default."
+
+                value
+
+        { machine with
+            TcpSendSpace = resolved
         }
 
     /// The realtime clock's reading, to the nanosecond: `BootTime` plus

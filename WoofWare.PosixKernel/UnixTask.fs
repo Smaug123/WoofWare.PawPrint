@@ -59,6 +59,9 @@ type ParkedKevent =
         /// The `nevents` the call was made with: positive, since a call with
         /// none to take returns at once.
         MaxEvents : int
+        /// The eventlist the call was given to copy events out to, as the
+        /// caller classified it when the call was entered.
+        Buffer : UserBuffer
         /// The instant, in nanoseconds since boot, at which the wait stops and
         /// returns no events; or `None` for a wait with a null timeout.
         Deadline : int64 option

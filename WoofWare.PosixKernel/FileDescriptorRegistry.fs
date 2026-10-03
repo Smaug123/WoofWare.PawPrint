@@ -481,10 +481,40 @@ type SocketEventPortState =
         Ready : (int * OpenFileDescriptionId) list
     }
 
+/// One of the two kqueue filters this library models: what a registration
+/// watches its descriptor for.
+[<RequireQualifiedAccess>]
+type KqueueFilter =
+    /// `EVFILT_READ`: something to read, or a connection to accept.
+    | Read
+    /// `EVFILT_WRITE`: room to write.
+    | Write
+
+/// One registration held by a kqueue: what `kevent(2)`'s `EV_ADD` recorded for
+/// one (descriptor, filter) pair.
+type KqueueRegistration =
+    {
+        /// Whether the registration was first added with `EV_CLEAR`. One that
+        /// was is reported once each time something activates it; one that was
+        /// not is reported by every wait while its filter stays ready. A later
+        /// `EV_ADD` of the same pair cannot change this.
+        Clear : bool
+        /// Whether the registration was first added with `EV_RECEIPT`, which
+        /// every event it reports carries in its flags. A later `EV_ADD` of the
+        /// same pair cannot change this.
+        Receipt : bool
+        /// The caller's `udata` from the latest `EV_ADD` of this pair, which
+        /// every event the registration reports carries back verbatim.
+        UserData : uint64
+        /// When this registration's first `EV_ADD` committed, as an ordinal
+        /// from the kernel's counter (`UnixMachineState.NextSocketEventRegistrationOrdinal`).
+        /// One event can activate several registrations of the same socket
+        /// and filter at once, made through different descriptors onto it, and
+        /// they are queued newest-registered first.
+        RegisteredAt : int64
+    }
+
 /// Everything one Darwin kqueue holds.
-///
-/// It holds no filter registrations ("knotes"): `UnixKqueue.kevent` refuses
-/// every change, so a kqueue never has anything to report.
 type KqueueState =
     {
         /// Whether a `close(2)` has ended a `kevent` wait on this kqueue, which
@@ -496,6 +526,20 @@ type KqueueState =
         /// through a descriptor that survived the close is `EBADF` at once.
         /// Closing a descriptor no waiter entered through changes nothing.
         Drained : bool
+        /// The registrations, keyed as Darwin keys them: the descriptor number
+        /// the registration was made through, and the filter. Closing that
+        /// descriptor removes the registration, in every kqueue, even while
+        /// something else keeps what it named alive (another descriptor, or a
+        /// call in flight that holds it); so every registration names an open
+        /// descriptor, and destroying a description touches none.
+        Registrations : Map<int * KqueueFilter, KqueueRegistration>
+        /// The registrations activated and still to be reported, in the order
+        /// a wait reports them; and, for a registration added without
+        /// `EV_CLEAR`, one reported and still active. A wait walks this list in
+        /// order, reporting each entry whose filter is still ready and dropping
+        /// each that is not. Always a subset of `Registrations`, with no
+        /// duplicates (`checkInvariants` states both).
+        Active : (int * KqueueFilter) list
     }
 
 /// What an open file description refers to, together with the state that only
@@ -836,6 +880,25 @@ type FileDescriptorRegistryDefect =
     /// a re-signal does not move it), so a duplicate would deliver one edge
     /// twice.
     | SocketEventReadyEntryDuplicated of port : OpenFileDescriptionId * key : int * target : OpenFileDescriptionId
+    /// A kqueue holds a registration made through a descriptor that is not
+    /// open. Closing a descriptor removes every registration made through it,
+    /// so the registration has outlived its descriptor.
+    | KqueueRegistrationThroughClosedDescriptor of kqueue : OpenFileDescriptionId * fd : int * filter : KqueueFilter
+    /// A kqueue holds a registration made through a descriptor that names
+    /// something other than a socket, which `kevent` never registers.
+    | KqueueRegistrationNotOnSocket of
+        kqueue : OpenFileDescriptionId *
+        fd : int *
+        filter : KqueueFilter *
+        target : OpenFileTarget
+    /// A kqueue's queue of activated registrations holds an entry it does not
+    /// register. Every path that removes a registration removes its queue entry
+    /// in the same step.
+    | KqueueActiveEntryUnregistered of kqueue : OpenFileDescriptionId * fd : int * filter : KqueueFilter
+    /// A kqueue's queue of activated registrations holds the same entry twice.
+    /// An activated registration keeps its place when activated again, so a
+    /// duplicate would report one event twice.
+    | KqueueActiveEntryDuplicated of kqueue : OpenFileDescriptionId * fd : int * filter : KqueueFilter
 
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistry =
@@ -980,9 +1043,13 @@ module FileDescriptorRegistry =
         // (`eventpoll_release`). No syscall can tell the difference — the dead
         // pair's key can never be probed again, since no fd names the
         // description — but the readiness wake must not deliver from a corpse,
-        // so the tables stay truthful now and `checkInvariants` states it. A
-        // kqueue holds no registrations (`KqueueState`), so it has nothing to
-        // forget.
+        // so the tables stay truthful now and `checkInvariants` states it.
+        //
+        // A kqueue's registrations need no purge here: Darwin keys each by the
+        // descriptor it was made through and drops it when that descriptor
+        // closes (`dropDescriptor`), not when the file is released, so every
+        // registration names an open descriptor, which names a live
+        // description, never this one (`KqueueRegistrationThroughClosedDescriptor`).
         let descriptions =
             Map.remove id registry.Descriptions
             |> Map.map (fun _ description ->
@@ -1046,9 +1113,10 @@ module FileDescriptorRegistry =
     /// general (see the record-lock note on `FileDescriptorRegistry`).
     ///
     /// The descriptor-table half of `close(2)`, and only that half: it drops
-    /// the descriptor and, if it was the last reference, the description, and
-    /// it releases nothing that description referenced. `UnixDescriptor.close`
-    /// is the syscall, and the one caller; a client that wants `close(2)` wants
+    /// the descriptor, every kqueue registration made through it, and, if it
+    /// was the last reference, the description, and it releases nothing that
+    /// description referenced. `UnixDescriptor.close` is the syscall, and the
+    /// one caller; a client that wants `close(2)` wants
     /// that. The in-house property tests drive close+dup cycles directly
     /// against this function to exercise the `lowestFree` invariant against
     /// the gap structure that closing produces.
@@ -1069,6 +1137,40 @@ module FileDescriptorRegistry =
         match Map.tryFind fd registry.Fds with
         | None -> Error FileDescriptorCloseError.BadFd
         | Some id ->
+            // Every kqueue registration made through this descriptor goes with
+            // it, queued or not, whether or not something else keeps the
+            // description alive: Darwin keys a registration by the descriptor
+            // number (measured, `kevent-register.c` section G).
+            let registry =
+                { registry with
+                    Descriptions =
+                        registry.Descriptions
+                        |> Map.map (fun _ description ->
+                            match description.Target with
+                            | OpenFileTarget.Kqueue state when
+                                state.Registrations |> Map.exists (fun (registeredFd, _) _ -> registeredFd = fd)
+                                ->
+                                { description with
+                                    Target =
+                                        OpenFileTarget.Kqueue
+                                            { state with
+                                                Registrations =
+                                                    state.Registrations
+                                                    |> Map.filter (fun (registeredFd, _) _ -> registeredFd <> fd)
+                                                Active =
+                                                    state.Active |> List.filter (fun (activeFd, _) -> activeFd <> fd)
+                                            }
+                                }
+                            | OpenFileTarget.Kqueue _
+                            | OpenFileTarget.Epoll _
+                            | OpenFileTarget.File _
+                            | OpenFileTarget.Directory _
+                            | OpenFileTarget.Socket _
+                            | OpenFileTarget.CharacterDevice _
+                            | OpenFileTarget.Pipe _ -> description
+                        )
+                }
+
             // Present by `DanglingFd`: a live descriptor names a live
             // description.
             if not (Map.containsKey id registry.Descriptions) then
@@ -1262,6 +1364,8 @@ module FileDescriptorRegistry =
             (OpenFileTarget.Kqueue
                 {
                     Drained = false
+                    Registrations = Map.empty
+                    Active = []
                 })
             registry
 
@@ -1670,6 +1774,35 @@ module FileDescriptorRegistry =
         | other ->
             failwith
                 $"drainKqueue: %O{kqueue} names %A{other} rather than a live kqueue; the caller resolved it as one moments ago (this is a bug in the caller of FileDescriptorRegistry.drainKqueue)."
+
+    /// Replace the state of the kqueue the open file description `kqueue`
+    /// names with `state`. Loudly partial on a dead or non-kqueue description:
+    /// the caller has just resolved it as a kqueue.
+    ///
+    /// Checks nothing about `state`; `checkInvariants` states what a kqueue's
+    /// state must satisfy.
+    let setKqueueState
+        (kqueue : OpenFileDescriptionId)
+        (state : KqueueState)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry
+        =
+        match Map.tryFind kqueue registry.Descriptions with
+        | Some ({
+                    Target = OpenFileTarget.Kqueue _
+                } as description) ->
+            { registry with
+                Descriptions =
+                    Map.add
+                        kqueue
+                        { description with
+                            Target = OpenFileTarget.Kqueue state
+                        }
+                        registry.Descriptions
+            }
+        | other ->
+            failwith
+                $"setKqueueState: %O{kqueue} names %A{other} rather than a live kqueue; the caller resolved it as one moments ago (this is a bug in the caller of FileDescriptorRegistry.setKqueueState)."
 
     /// Rewrite the state of the epoll instance `portId` names. Loudly partial
     /// on a dead or non-epoll description: every caller resolved it as an
@@ -2155,6 +2288,71 @@ module FileDescriptorRegistry =
                     unregistered @ duplicated
             )
 
+        let kqueueEntries =
+            registry.Descriptions
+            |> Map.toList
+            |> List.collect (fun (kqueue, description) ->
+                match description.Target with
+                | OpenFileTarget.Epoll _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Pipe _ -> []
+                | OpenFileTarget.Kqueue state ->
+                    let registrations =
+                        state.Registrations
+                        |> Map.toList
+                        |> List.choose (fun ((fd, filter), _) ->
+                            match Map.tryFind fd registry.Fds with
+                            | None ->
+                                Some (
+                                    FileDescriptorRegistryDefect.KqueueRegistrationThroughClosedDescriptor (
+                                        kqueue,
+                                        fd,
+                                        filter
+                                    )
+                                )
+                            | Some id ->
+                                match Map.tryFind id registry.Descriptions with
+                                | Some {
+                                           Target = OpenFileTarget.Socket _
+                                       }
+                                // A dangling descriptor is `DanglingFd`'s to report.
+                                | None -> None
+                                | Some other ->
+                                    Some (
+                                        FileDescriptorRegistryDefect.KqueueRegistrationNotOnSocket (
+                                            kqueue,
+                                            fd,
+                                            filter,
+                                            other.Target
+                                        )
+                                    )
+                        )
+
+                    let unregistered =
+                        state.Active
+                        |> List.choose (fun (fd, filter as key) ->
+                            if Map.containsKey key state.Registrations then
+                                None
+                            else
+                                Some (FileDescriptorRegistryDefect.KqueueActiveEntryUnregistered (kqueue, fd, filter))
+                        )
+
+                    let duplicated =
+                        state.Active
+                        |> List.countBy id
+                        |> List.choose (fun ((fd, filter), count) ->
+                            if count > 1 then
+                                Some (FileDescriptorRegistryDefect.KqueueActiveEntryDuplicated (kqueue, fd, filter))
+                            else
+                                None
+                        )
+
+                    registrations @ unregistered @ duplicated
+            )
+
         dangling
         @ freshness
         @ negativeOffsets
@@ -2163,6 +2361,7 @@ module FileDescriptorRegistry =
         @ duplicateSockets
         @ deadRegistrations
         @ readyEntries
+        @ kqueueEntries
 
     /// Fail loudly if `registry` is not sound, naming `context`.
     let assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =

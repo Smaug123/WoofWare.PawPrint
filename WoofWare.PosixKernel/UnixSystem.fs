@@ -157,7 +157,8 @@ type UnixSystemDefect<'Task> =
     /// A connection in the table has an identity at or above the next one to
     /// allocate, so a future connect would mint a duplicate.
     | NextConnectionIdNotFresh of nextConnectionId : ConnectionId * existing : ConnectionId
-    /// A socket event registration records an ADD ordinal at or above the
+    /// A socket event registration, an epoll instance's or a kqueue's, records
+    /// an ADD ordinal at or above the
     /// next one to mint, so some future ADD would repeat it — and the
     /// ordinal's whole job is to order same-signal ties, which a repeat
     /// leaves unspecified.
@@ -805,8 +806,11 @@ module UnixSystem =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
-                | OpenFileTarget.Pipe _
-                | OpenFileTarget.Kqueue _ -> []
+                | OpenFileTarget.Pipe _ -> []
+                | OpenFileTarget.Kqueue state ->
+                    state.Registrations
+                    |> Map.toList
+                    |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
                 | OpenFileTarget.Epoll portState ->
                     portState.Registrations
                     |> Map.toList
@@ -1562,8 +1566,8 @@ module UnixSystem =
     /// it always is, and on Darwin as the start of a quiet machine's counter,
     /// which a client moves with `withLeaderThreadId`.
     ///
-    /// The three fields the platform *fixes* are derived from it rather than
-    /// taken as arguments — `SoMaxConn`, `Mount`, and the platform
+    /// The fields the platform *fixes* are derived from it rather than
+    /// taken as arguments — `SoMaxConn`, `TcpSendSpace`, `Mount`, and the platform
     /// itself — because a machine whose flavour and those disagree is one no
     /// real system could be: `EmulatedFileSystemType.isReportableUnder` says
     /// outright that a Darwin kernel never reports tmpfs. Building the record
@@ -1650,6 +1654,7 @@ module UnixSystem =
                     NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
                     EphemeralPortRange = defaultEphemeralPortRange flavour
                     SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
+                    TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
                     LocalAddresses = defaultLocalAddresses
                     LocalRoutes = defaultLocalRoutes
                     NanosecondsSinceBoot = 0L

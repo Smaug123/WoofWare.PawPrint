@@ -5958,12 +5958,12 @@ module NativeSystemNative =
                 // `kevent(port, changes, n, NULL, 0, NULL)`, with the changelist
                 // `SocketEventsPal.keventChanges` transcribes; the shim's EINTR
                 // loop never turns, a call with no events to take never sleeping.
-                // The kernel answers its argument checks and refuses to apply a
-                // change, so the zero placeholder is never stored.
+                // With no room in the eventlist, a receipt is dropped and a
+                // failing change ends the call, the changes before it applied.
                 let changes =
                     SocketEventsPal.keventChanges targetFd currentEvents newEvents placeholder
 
-                match
+                let kevent (changes : Kevent list) =
                     UnixKqueue.kevent
                         ctx.Thread
                         portFd
@@ -5973,18 +5973,44 @@ module NativeSystemNative =
                         (UserBuffer.Unmapped 0UL)
                         KeventTimeout.Null
                         (EmulatedKernel.unix state.Kernel)
-                with
+
+                // An `EV_ADD` commits exactly when the changelist up to and
+                // including it succeeds, the eventlist having no room for a
+                // failure to be echoed into. Only then would the real kernel
+                // store the caller's `data`, and the zero placeholder must not
+                // survive into the table in its place.
+                match data with
+                | Error message when
+                    changes
+                    |> List.indexed
+                    |> List.exists (fun (index, change) ->
+                        change.Flags &&& KeventFlags.Add <> 0us
+                        && (
+                            match kevent (List.truncate (index + 1) changes) with
+                            | Ok (KeventOutcome.Answered [], _) -> true
+                            | _ -> false
+                        )
+                    )
+                    ->
+                    failwith message
+                | Error _
+                | Ok _ ->
+
+                match kevent changes with
                 | Error refusal -> failwith $"%s{operation}: %s{KeventRefusal.describe refusal}"
-                | Ok (KeventOutcome.Failed error, _) ->
+                | Ok (KeventOutcome.Failed error, system) ->
                     let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
                     state.MapKernel (
-                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
+                        EmulatedKernel.withUnix system
+                        >> EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                     )
                     |> complete (UnixErrorPal.toPal error)
                 | Ok (KeventOutcome.Answered [], system) ->
-                    // Neither SA_READ nor SA_WRITE changed, so the shim made no
-                    // change at all, and a successful `kevent` leaves errno alone.
+                    // A successful `kevent` leaves errno alone. An ADD of a ready
+                    // filter has queued its registration inside the kernel change,
+                    // and if a waiter is parked on the kqueue, `Program`'s
+                    // readiness sweep wakes it before the next scheduling decision.
                     state.MapKernel (EmulatedKernel.withUnix system)
                     |> complete UnixErrorPal.palSuccess
                 | Ok (outcome, _) ->
@@ -6256,8 +6282,68 @@ module NativeSystemNative =
                     |> NativeHandlerResult.completed
                     |> Some
                 | KeventOutcome.Answered events ->
+                    // `kevent` writes a 32-byte `struct kevent` per event from the
+                    // start of the buffer, and the shim then converts each in place,
+                    // in order, into a 16-byte `SocketEvent`: the `udata`, the
+                    // `SocketEvents` mask (`SocketEventsPal.ofKevent`), and four
+                    // bytes of padding its `memset` zeroes. The conversions overwrite
+                    // the first half of what `kevent` wrote, and the second half
+                    // stays as `kevent` left it, which a caller can read past
+                    // `*count`. So the buffer gets both, every byte of the events
+                    // `kevent` wrote.
+                    let keventSize = 32
+                    let socketEventSize = 16
+                    let image = Array.zeroCreate<byte> (List.length events * keventSize)
+
+                    let put (offset : int) (bytes : byte[]) =
+                        Array.blit bytes 0 image offset bytes.Length
+
+                    events
+                    |> List.iteri (fun j event ->
+                        let at = j * keventSize
+                        put at (BitConverter.GetBytes event.Ident)
+                        put (at + 8) (BitConverter.GetBytes event.Filter)
+                        put (at + 10) (BitConverter.GetBytes event.Flags)
+                        put (at + 12) (BitConverter.GetBytes event.FilterFlags)
+                        put (at + 16) (BitConverter.GetBytes event.Data)
+                        put (at + 24) (BitConverter.GetBytes event.UserData)
+                    )
+
+                    events
+                    |> List.iteri (fun i event ->
+                        let at = i * socketEventSize
+                        put at (BitConverter.GetBytes event.UserData)
+                        put (at + 8) (BitConverter.GetBytes (SocketEventsPal.ofKevent event.Filter event.Flags))
+                        put (at + 12) (Array.zeroCreate<byte> 4)
+                    )
+
+                    if not BitConverter.IsLittleEndian then
+                        failwith
+                            $"%s{operation}: the host is big-endian, and the guest's struct kevent is laid out little-endian (this is an interpreter limitation)."
+
+                    let bufferPointer =
+                        match BufferPointer.dereferenceable buffer with
+                        | Some pointer -> pointer
+                        | None ->
+                            failwith
+                                $"%s{operation}: the kernel delivered events to the event buffer %O{buffer}, which names no storage. The kernel refuses a delivery to any buffer but a mapped one, so this buffer's classification disagrees with its pointer (this is an interpreter bug)."
+
+                    let countBytes = Array.zeroCreate<byte> 4
+                    BinaryPrimitives.WriteInt32LittleEndian (Span<byte> countBytes, List.length events)
+
+                    // A successful wait leaves errno alone.
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange image)
+                    |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
+                    |> IlMachineState.pushToEvalStack'
+                        (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
+                        ctx.Thread
+                    |> NativeHandlerResult.completed
+                    |> Some
+                | KeventOutcome.Echoed changes
+                | KeventOutcome.FailedAfterEchoing (_, changes) ->
                     failwith
-                        $"%s{operation}: kevent delivered %d{List.length events} events, but the kernel accepts no kqueue registration, so it has none to deliver (this is an interpreter bug)."
+                        $"%s{operation}: kevent echoed %d{List.length changes} changes, but the shim's wait passes no changelist (this is an interpreter bug)."
                 | KeventOutcome.WouldBlock _ ->
                     state.MapKernel (EmulatedKernel.withUnix system)
                     |> Scheduler.parkInSyscall ctx.Thread
