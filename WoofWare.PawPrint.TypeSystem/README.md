@@ -37,12 +37,16 @@ What lives here:
 * `ConcreteMethodTable`, `ConcreteInterfaceDispatch` — the method table of a concrete type, read
   through its definition's, and CoreCLR's interface map and dispatch map: which slot of the receiver
   implements an interface method, before any default interface body is considered.
+* `DefaultInterfaceImplementation` — the default interface bodies a call can land on, as CoreCLR's
+  `MethodTable::FindDefaultInterfaceImplementation` finds them: by identity, never by name, at the
+  call's exact instantiation or allowing variance, keeping only the most specific. Both dispatchers
+  below search with it, and each decides what more than one survivor means.
 * `ConcreteVirtualDispatch` — which method a virtual or interface call runs on a receiver of a
   known concrete type, as CoreCLR's `MethodTable::FindDispatchImpl` decides it: the dispatch table
   and MethodImpls, the dispatch map, default interface bodies, variance, and the methods the
   runtime supplies for an SZ array's implicit interfaces, or that the call is ambiguous because
-  more than one default body is most specific, or that it is not modelled, where default bodies
-  conflict through a variant interface. It names the method it chooses and the generic arguments it
+  more than one default body is most specific, or that it is not modelled: a conflict at a variant
+  interface's exact instantiation, whose outcome depends on the JIT, or a reabstraction. It names the method it chooses and the generic arguments it
   runs with, and leaves instantiating that method to `MethodConcretisation`: CoreCLR reads a
   method's locals only when it compiles the method.
 * `StaticVirtualDispatch` — which method a `constrained.` call of a static virtual interface method

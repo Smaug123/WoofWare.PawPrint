@@ -2731,6 +2731,11 @@ public static class Uses
                 Raises = [ dividesByZero ; overflows ]
             }
             {
+                Name = "ShadowsDefault"
+                Claim = DispatchClaim.Precise
+                Raises = [ dividesByZero ; overflows ]
+            }
+            {
                 Name = "OpenDivides"
                 Claim = DispatchClaim.Unknown
                 Raises = [ dividesByZero ; overflows ]
@@ -2795,6 +2800,11 @@ public struct Adds : IProbe { public int Probe(int a, int b) => checked(a + b); 
 public struct Divides : IProbe { public int Probe(int a, int b) => a / b; }
 public struct ExplicitAdds : IProbe { int IProbe.Probe(int a, int b) => checked(a + b); }
 public struct UsesDefault : IProbe { }
+
+// `IShadowsProbe.Probe` is a new method, not an implementation of `IProbe.Probe`, so a call
+// through `IProbe` runs `IProbe`'s default body.
+public interface IShadowsProbe : IProbe { new int Probe(int a, int b) => checked(a + b); }
+public struct ShadowsDefault : IShadowsProbe { }
 public sealed class SealedDivides : IProbe { public int Probe(int a, int b) => a / b; }
 public class OpenDivides : IProbe { public virtual int Probe(int a, int b) => a / b; }
 
@@ -3800,7 +3810,7 @@ public static class Runners
             Assembly.read
                 loggerFactory
                 (Some "Diamond.dll")
-                (new MemoryStream (TestAmbiguousDefaultInterfaceDispatch.fabricate ()))
+                (new MemoryStream (TestAmbiguousDefaultInterfaceDispatch.fabricate false))
 
         let analysis, escapes =
             EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Call")

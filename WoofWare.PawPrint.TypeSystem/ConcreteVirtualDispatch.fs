@@ -31,9 +31,10 @@ type VirtualImplementation =
     /// `AmbiguousImplementationException` (`MethodTable::FindDefaultInterfaceImplementation`,
     /// methodtable.cpp, through `ThrowAmbiguousResolutionException`). These are the candidates.
     | Ambiguous of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
-    /// The receiver's default interface bodies conflict in a way this does not model, for the
-    /// reason given: through a variant interface, CoreCLR's variance pass takes the first candidate
-    /// in an order this does not reproduce, rather than throwing.
+    /// The receiver's default interface bodies decide the call in a way this does not model, for
+    /// the reason given: a conflict at a variant interface's exact instantiation, where whether
+    /// CoreCLR throws depends on how the JIT compiled the call; or a most specific body that is a
+    /// reabstraction.
     | Unmodelled of reason : string
 
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
@@ -257,13 +258,6 @@ module ConcreteVirtualDispatch =
         let methodDeclaringType =
             declaringAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get]
 
-        let interfaceExplicitNamedMethod =
-            if methodDeclaringType.IsInterface then
-                Some
-                    $"{TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) methodDeclaringType}.{methodToCall.Name}"
-            else
-                None
-
         let signatureMatchesTarget
             (candidateAssemblyFullName : string)
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -343,39 +337,13 @@ module ConcreteVirtualDispatch =
             | MethodReturnType.Void, MethodReturnType.Returns _
             | MethodReturnType.Returns _, MethodReturnType.Void -> state, false
 
-        // When dispatching through a variant interface (ECMA-335 §I.8.7), the MethodImpl's
-        // declaration may name a variance-compatible — not identical — instantiation of the
-        // call target's interface. The candidate's signature has been substituted with the
-        // declaration's view (e.g. `IContravariant<object>.Set(object)`) while methodToCall
-        // holds the dispatch view (`IContravariant<string>.Set(string)`), so a literal
-        // parameter-type comparison would wrongly reject the override.
-        //
-        // Instead of relaxing the signature comparison — which can match the wrong overload
-        // when an interface has overloads with assignable parameters (e.g. both `M(object)`
-        // and `M(string)`) — identify the slot by its underlying MethodDefinitionHandle.
-        // Both `meth.Handle` and `methodToCall.Handle` resolve to the same MethodDef in the
-        // interface's assembly when they name the same virtual slot under variance
-        // substitution, regardless of how the surrounding type generics differ.
-        let methodReferenceMatchesTarget
-            (varianceInPlay : bool)
-            (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
-            (meth : WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>)
-            (state : TypeSystemState)
-            : TypeSystemState * bool
-            =
-            if meth.Name <> methodToCall.Name then
-                state, false
-            elif varianceInPlay then
-                state, MethodInfo.sameDeclaredMethod meth methodToCall
-            else
-                signatureMatchesTarget meth.DeclaringAssemblyFullName candidateTypeGenerics meth.Signature state
-
+        /// Whether `meth`, a method of a class on the receiver's chain, overrides the target, a class's
+        /// virtual method, by name and signature.
         let methodMatches
             (candidateTypeGenerics : ImmutableArray<ConcreteTypeHandle>)
-            (allowImplicitInterfaceImplementation : bool)
             (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
             (state : TypeSystemState)
-            : (WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * bool) option *
+            : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option *
               TypeSystemState
             =
             if
@@ -385,36 +353,11 @@ module ConcreteVirtualDispatch =
                    <> methodToCall.Signature.RequiredParameterCount
             then
                 None, state
-            elif
-                meth.Name <> methodToCall.Name
-                && (not allowImplicitInterfaceImplementation
-                    || Some meth.Name <> interfaceExplicitNamedMethod)
-            then
+            elif meth.Name <> methodToCall.Name then
                 None, state
             elif
-                not allowImplicitInterfaceImplementation
-                && (not meth.IsVirtual
-                    || (meth.IsNewSlot && not (MethodInfo.sameDeclaredMethod meth methodToCall)))
-            then
-                None, state
-            elif
-                // A static method can never stand in for an instance slot, nor an instance
-                // method for a static one. Without this, a same-signature `static` shadow of an
-                // interface method is dispatched as though it were the implementation, and the
-                // missing `this` desynchronises the evaluation stack — the failure surfaces far
-                // away, as "method returned with more than one evaluation stack value".
-                meth.IsStatic <> methodToCall.IsStatic
-            then
-                None, state
-            elif
-                // Implicit implementation of an interface slot requires a *public* method
-                // (ECMA-335 II.12.2): a private same-signature method is an ordinary member that
-                // happens to collide, and leaves the slot to a default body or a base. Matching
-                // by the explicit `Namespace.IFoo.Method` name is exempt, because that *is* the
-                // explicit-implementation form and is private by construction.
-                allowImplicitInterfaceImplementation
-                && Some meth.Name <> interfaceExplicitNamedMethod
-                && not meth.IsPublic
+                not meth.IsVirtual
+                || (meth.IsNewSlot && not (MethodInfo.sameDeclaredMethod meth methodToCall))
             then
                 None, state
             else
@@ -422,10 +365,7 @@ module ConcreteVirtualDispatch =
             let state, matches =
                 signatureMatchesTarget meth.DeclaringAssemblyFullName candidateTypeGenerics meth.Signature state
 
-            if matches then
-                Some (meth, Some meth.Name = interfaceExplicitNamedMethod), state
-            else
-                None, state
+            if matches then Some meth, state else None, state
 
         let concretizeTypeArgs
             (declaringAssemblyFullName : string)
@@ -525,6 +465,8 @@ module ConcreteVirtualDispatch =
                 | MemberSignature.Field _ -> false
             | _ -> false
 
+        /// The bodies of `currentTy`'s MethodImpls whose declaration is the target, at the target's own
+        /// instantiation.
         let findMatchingMethodImplBodies
             (currentTy : ConcreteType<ConcreteTypeHandle>)
             (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -558,88 +500,24 @@ module ConcreteVirtualDispatch =
                     // Declaration: ECMA-335 II.22.27 keys the slot on (declaring type, member).
                     // Name + signature alone is not enough — two unrelated interfaces can share
                     // a shape (e.g. `IReader.Read()` and `IScanner.Read()`), so we also require
-                    // the declaration's declaring type to match the dispatch target.
-                    //
-                    // For variant interfaces (ECMA-335 §I.8.7) a MethodImpl on `IFoo<X>` also
-                    // satisfies dispatch through `IFoo<Y>` when `IFoo<X>` is variance-assignable
-                    // to `IFoo<Y>` (e.g. `ICovariant<string>` satisfies `ICovariant<object>`),
-                    // so we defer same-TypeDef generic comparisons to the assignability walk
-                    // rather than insisting on exact-argument equality.
-                    //
-                    // The declaration's declaring-type instantiation may not yet be in the
-                    // ConcreteTypes registry (e.g. `ICovariant<object> obj = new CovariantImpl();
-                    // obj.Get()` only concretizes the call target `ICovariant<object>`, not the
-                    // body's declared interface `ICovariant<string>`). Register it on demand so
-                    // the variance check is not silently skipped.
-                    let ensureRegistered
-                        (state : TypeSystemState)
-                        (identity : ResolvedTypeIdentity)
-                        (ns : string)
-                        (name : string)
-                        (generics : ImmutableArray<ConcreteTypeHandle>)
-                        : TypeSystemState * ConcreteTypeHandle
-                        =
-                        match AllConcreteTypes.findExistingConcreteType state.ConcreteTypes identity generics with
-                        | Some handle -> state, handle
-                        | None ->
-                            let ct = ConcreteType.makeFromIdentity identity ns name generics
-
-                            let handle, newConcreteTypes = AllConcreteTypes.add ct state.ConcreteTypes
-
-                            { state with
-                                ConcreteTypes = newConcreteTypes
-                            },
-                            handle
-
-                    // declarationTypeMatches is true when the MethodImpl's declared interface
-                    // matches the dispatch target; varianceInPlay tracks whether the match
-                    // relied on generic variance (vs identical instantiations), so we know to
-                    // relax the parameter check accordingly.
-                    let state, declarationTypeMatches, varianceInPlay =
-                        if
-                            declaration.RequiredDeclaringType.Identity
-                            <> methodToCall.RequiredDeclaringType.Identity
-                        then
-                            state, false, false
-                        elif declarationTypeGenerics = methodToCall.DeclaringTypeGenerics then
-                            state, true, false
-                        else
-                            let state, fromH =
-                                ensureRegistered
-                                    state
-                                    declaration.RequiredDeclaringType.Identity
-                                    declaration.RequiredDeclaringType.Namespace
-                                    declaration.RequiredDeclaringType.Name
-                                    declarationTypeGenerics
-
-                            let state, toH =
-                                ensureRegistered
-                                    state
-                                    methodToCall.RequiredDeclaringType.Identity
-                                    methodToCall.RequiredDeclaringType.Namespace
-                                    methodToCall.RequiredDeclaringType.Name
-                                    methodToCall.DeclaringTypeGenerics
-
-                            let state, matches =
-                                TypeAssignability.isConcreteTypeAssignableTo
-                                    loggerFactory
-                                    dotnetRuntimeDirs
-                                    baseClassTypes
-                                    state
-                                    fromH
-                                    toH
-
-                            state, matches, matches
-
-                    if not declarationTypeMatches then
+                    // the declaration's declaring type to be the dispatch target's, at the same
+                    // instantiation. Only the class walk asks, and only of a target declared on a
+                    // class, to which no variance applies.
+                    if
+                        declaration.RequiredDeclaringType.Identity
+                        <> methodToCall.RequiredDeclaringType.Identity
+                        || declarationTypeGenerics <> methodToCall.DeclaringTypeGenerics
+                        || declaration.Name <> methodToCall.Name
+                    then
                         state, acc
                     else
 
-                    let matches, state =
-                        let state, matches =
-                            methodReferenceMatchesTarget varianceInPlay declarationTypeGenerics declaration state
-
-                        matches, state
+                    let state, matches =
+                        signatureMatchesTarget
+                            declaration.DeclaringAssemblyFullName
+                            declarationTypeGenerics
+                            declaration.Signature
+                            state
 
                     if not matches then
                         state, acc
@@ -943,25 +821,19 @@ module ConcreteVirtualDispatch =
                         // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
                         |> failwithf
                             "multiple MethodImpl bodies matched this virtual slot; overload/interface disambiguation is not implemented: %s"
+                    | [] when methodDeclaringType.IsInterface ->
+                        failwith
+                            $"virtual dispatch of %s{methodToCall.Name}: an instance interface method reached the class walk, though its implementation is found through the dispatch map"
                     | [] ->
                         let implementation, state =
                             (state, currentTypeInfo.Methods)
-                            ||> List.mapFold (fun state meth ->
-                                methodMatches currentTy.Generics methodDeclaringType.IsInterface meth state
-                            )
+                            ||> List.mapFold (fun state meth -> methodMatches currentTy.Generics meth state)
 
-                        let implementation =
+                        match implementation |> List.choose id with
+                        | [ impl ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
+                        | _ :: _ as implementation ->
                             implementation
-                            |> List.choose id
-                            |> List.sortBy (fun (_, isInterface) -> if isInterface then -1 else 0)
-
-                        match implementation with
-                        | (impl, true) :: l when (l |> List.forall (fun (_, b) -> not b)) ->
-                            state, Some (currentTypeHandle, impl, "Found concrete implementation from an interface")
-                        | [ impl, false ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation")
-                        | _ :: _ ->
-                            implementation
-                            |> List.map (fun (m, _) -> m.Name)
+                            |> List.map (fun m -> m.Name)
                             |> String.concat ", "
                             |> failwithf "multiple options: %s"
                         | [] -> walkBase state currentTypeHandle
@@ -983,253 +855,51 @@ module ConcreteVirtualDispatch =
         | None when not walkBaseTypes -> state, VirtualImplementation.NotOverridden
         | None ->
 
-        logger.LogDebug "No concrete implementation found; scanning interfaces"
+        logger.LogDebug "No concrete implementation found; searching for a default interface body"
 
-        let resolveImplementedInterface =
-            ConcreteInterfaceDispatch.resolveImplementedInterface loggerFactory dotnetRuntimeDirs baseClassTypes
+        let search (allowVariance : bool) (state : TypeSystemState) =
+            DefaultInterfaceImplementation.search
+                loggerFactory
+                dotnetRuntimeDirs
+                baseClassTypes
+                allowVariance
+                dispatchTypeHandle
+                methodToCall
+                state
 
-        let hasCallableBody
-            (meth : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-            : bool
-            =
-            match meth.Body with
-            | MethodBody.Il _ -> true
-            | MethodBody.InternalCall
-            | MethodBody.PInvoke
-            | MethodBody.RuntimeProvided _
-            | MethodBody.Abstract -> false
-
-        let findInterfaceImplementationOnType
-            (currentTypeHandle : ConcreteTypeHandle)
-            (currentTy : ConcreteType<ConcreteTypeHandle>)
-            (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-            (state : TypeSystemState)
-            : TypeSystemState *
-              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> option
-            =
-            let state, matchingMethodImplBodies =
-                findMatchingMethodImplBodies currentTy currentTypeInfo state
-
-            let matchingMethodImplBodies =
-                matchingMethodImplBodies |> List.filter hasCallableBody
-
-            match matchingMethodImplBodies with
-            | [ impl ] -> state, Some impl
-            | _ :: _ ->
-                matchingMethodImplBodies
-                |> List.map (fun m -> m.Name)
-                |> String.concat ", "
-                // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
-                |> failwithf
-                    "multiple interface MethodImpl bodies matched this virtual slot on %O; overload/interface disambiguation is not implemented: %s"
-                    currentTypeHandle
-            | [] ->
-                let implementation, state =
-                    (state, currentTypeInfo.Methods)
-                    ||> List.mapFold (fun state meth -> methodMatches currentTy.Generics true meth state)
-
-                let implementation =
-                    implementation |> List.choose id |> List.map fst |> List.filter hasCallableBody
-
-                match implementation with
-                | [ impl ] -> state, Some impl
-                | _ :: _ ->
-                    implementation
-                    |> List.map (fun m -> m.Name)
-                    |> String.concat ", "
-                    // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
-                    |> failwithf
-                        "multiple default interface methods matched this virtual slot on %O; overload/interface disambiguation is not implemented: %s"
-                        currentTypeHandle
-                | [] -> state, None
-
-        let rec collectInterfaceCandidates
-            (state : TypeSystemState)
-            (visited : Set<ConcreteTypeHandle>)
-            (currentTypeHandle : ConcreteTypeHandle)
-            (currentTy : ConcreteType<ConcreteTypeHandle>)
-            (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-            : TypeSystemState *
-              (ConcreteTypeHandle *
-              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) list
-            =
-            if visited.Contains currentTypeHandle then
-                state, []
-            else
-                let visited = visited.Add currentTypeHandle
-
+        let foundDefault (state : TypeSystemState) (candidate : DefaultInterfaceImplementation.Candidate) =
+            match candidate.Body.Body with
+            | MethodBody.Abstract ->
+                state,
+                VirtualImplementation.Unmodelled
+                    $"the most specific default body of %s{methodToCall.Name} is %s{MethodOwner.describe candidate.Body.Owner}'s reabstraction of it, for which CoreCLR's `FindDispatchImpl` fails the call; PawPrint does not raise that failure"
+            | _ ->
                 logger.LogDebug (
-                    "Interface {InterfaceName} (generics: {InterfaceGenerics})",
-                    currentTypeInfo.Name,
-                    currentTy.Generics
+                    "Found default interface body {DeclaringTypeName}.{MethodName}",
+                    candidate.Body.RequiredDeclaringType.Name,
+                    candidate.Body.Name
                 )
 
-                let state, ownCandidate =
-                    findInterfaceImplementationOnType currentTypeHandle currentTy currentTypeInfo state
+                state, VirtualImplementation.Found (dispatchedOn candidate.Interface candidate.Body state)
 
-                let ownCandidates =
-                    match ownCandidate with
-                    | Some impl -> [ currentTypeHandle, impl ]
-                    | None -> []
+        let throughVariantInterface =
+            methodDeclaringType.Generics
+            |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
 
-                ((state, ownCandidates), currentTypeInfo.ImplementedInterfaces)
-                ||> Seq.fold (fun (state, acc) impl ->
-                    let state, parentHandle, parentTy, parentTypeInfo =
-                        resolveImplementedInterface currentTy impl state
-
-                    let state, parentCandidates =
-                        collectInterfaceCandidates state visited parentHandle parentTy parentTypeInfo
-
-                    state, parentCandidates @ acc
-                )
-
-        let collectDirectInterfaceCandidates
-            (ownerTy : ConcreteType<ConcreteTypeHandle>)
-            (ownerTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-            (state : TypeSystemState)
-            : TypeSystemState *
-              (ConcreteTypeHandle *
-              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) list
-            =
-            ((state, []), ownerTypeInfo.ImplementedInterfaces)
-            ||> Seq.fold (fun (state, acc) impl ->
-                let state, interfaceHandle, interfaceTy, interfaceTypeInfo =
-                    resolveImplementedInterface ownerTy impl state
-
-                let state, candidates =
-                    // Each direct interface gets an independent visited set; diamond duplicates
-                    // are intentionally collapsed by the distinctBy after collection.
-                    collectInterfaceCandidates state Set.empty interfaceHandle interfaceTy interfaceTypeInfo
-
-                state, candidates @ acc
-            )
-
-        let rec collectTypeAndBaseInterfaceCandidates
-            (state : TypeSystemState)
-            (visited : Set<ConcreteTypeHandle>)
-            (currentTypeHandle : ConcreteTypeHandle)
-            : TypeSystemState *
-              (ConcreteTypeHandle *
-              WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) list
-            =
-            if visited.Contains currentTypeHandle then
-                state, []
-            else
-                let visited = visited.Add currentTypeHandle
-
-                let state, ownCandidates =
-                    match TypeSystemState.tryGetConcreteTypeInfo state currentTypeHandle with
-                    | Some (currentTy, currentTypeInfo) ->
-                        collectDirectInterfaceCandidates currentTy currentTypeInfo state
-                    | None ->
-                        match currentTypeHandle with
-                        | ConcreteTypeHandle.Byref _
-                        | ConcreteTypeHandle.Pointer _
-                        | ConcreteTypeHandle.FunctionPointer _ ->
-                            failwith $"No metadata dispatch type available for virtual receiver %O{currentTypeHandle}"
-                        | ConcreteTypeHandle.Concrete _
-                        | ConcreteTypeHandle.OneDimArrayZero _
-                        | ConcreteTypeHandle.Array _ -> state, []
-
-                let state, baseCandidates =
-                    if not walkBaseTypes then
-                        state, []
-                    else
-                        match currentTypeHandle with
-                        | ConcreteTypeHandle.Byref _
-                        | ConcreteTypeHandle.Pointer _
-                        | ConcreteTypeHandle.FunctionPointer _ -> state, []
-                        | ConcreteTypeHandle.Concrete _
-                        | ConcreteTypeHandle.OneDimArrayZero _
-                        | ConcreteTypeHandle.Array _ ->
-                            let state, baseType =
-                                TypeSystemState.resolveBaseConcreteType
-                                    loggerFactory
-                                    dotnetRuntimeDirs
-                                    baseClassTypes
-                                    state
-                                    currentTypeHandle
-
-                            match baseType with
-                            | None -> state, []
-                            | Some baseType -> collectTypeAndBaseInterfaceCandidates state visited baseType
-
-                state, ownCandidates @ baseCandidates
-
-        let state, possibleInterfaceMethods =
-            collectTypeAndBaseInterfaceCandidates state Set.empty dispatchTypeHandle
-
-        let possibleInterfaceMethods =
-            possibleInterfaceMethods
-            |> List.distinctBy (fun (interfaceHandle, meth) -> interfaceHandle, meth.TryMetadata |> Option.map _.Handle)
-
-        let rec hasMoreSpecificInterfaceImplementation
-            (state : TypeSystemState)
-            (interfaceHandle : ConcreteTypeHandle)
-            (candidates :
-                (ConcreteTypeHandle *
-                WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) list)
-            : TypeSystemState * bool
-            =
-            match candidates with
-            | [] -> state, false
-            | (otherInterfaceHandle, _) :: remaining ->
-                if otherInterfaceHandle = interfaceHandle then
-                    hasMoreSpecificInterfaceImplementation state interfaceHandle remaining
-                else
-                    let state, otherIsMoreSpecific =
-                        TypeAssignability.isConcreteTypeAssignableTo
-                            loggerFactory
-                            dotnetRuntimeDirs
-                            baseClassTypes
-                            state
-                            otherInterfaceHandle
-                            interfaceHandle
-
-                    if otherIsMoreSpecific then
-                        state, true
-                    else
-                        hasMoreSpecificInterfaceImplementation state interfaceHandle remaining
-
-        let state, mostSpecificInterfaceMethods =
-            ((state, []), possibleInterfaceMethods)
-            ||> List.fold (fun (state, acc) (interfaceHandle, meth) ->
-                let state, hasMoreSpecificImplementation =
-                    hasMoreSpecificInterfaceImplementation state interfaceHandle possibleInterfaceMethods
-
-                if hasMoreSpecificImplementation then
-                    state, acc
-                else
-                    state, (interfaceHandle, meth) :: acc
-            )
-            |> fun (state, acc) -> state, List.rev acc
-
-        match mostSpecificInterfaceMethods with
-        | [] ->
-            logger.LogDebug "No interface implementation found either"
-            state, VirtualImplementation.NotOverridden
-        | [ implementationTypeHandle, meth ] ->
-            logger.LogDebug (
-                "Exactly one interface implementation found {DeclaringTypeNamespace}.{DeclaringTypeName}.{MethodName} ({MethodGenerics})",
-                meth.RequiredDeclaringType.Namespace,
-                meth.RequiredDeclaringType.Name,
-                meth.Name,
-                meth.Generics
-            )
-
-            state, VirtualImplementation.Found (dispatchedOn implementationTypeHandle meth state)
-        | _ ->
-            // Candidates are matched allowing variance, so through a variant interface they may
-            // all be variance-compatible ones, among which CoreCLR's variance pass picks rather
-            // than throwing. Only through an invariant interface is the conflict CoreCLR's
-            // exact-pass one.
-            let candidates = mostSpecificInterfaceMethods |> List.map snd
-
-            let throughVariantInterface =
-                methodDeclaringType.Generics
-                |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
+        // `FindDispatchImpl` searches at the call's exact instantiation, and only if that finds
+        // nothing, and the interface is variant, allowing variance.
+        match search false state with
+        | state, [ only ] -> foundDefault state only
+        | state, (_ :: _ :: _ as candidates) ->
+            let candidates = candidates |> List.map _.Body
 
             if throughVariantInterface then
+                // A conflict at the call's exact instantiation, where CoreCLR's search reports
+                // one. Through a variant interface, though, whether the call throws depends on the
+                // JIT: measured on an instance method, unoptimised code throws
+                // AmbiguousImplementationException from the stub resolver, while optimised code
+                // devirtualises with `throwOnConflict` false, so the conflict falls through to the
+                // variant search, which runs the first candidate.
                 let described =
                     candidates
                     |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
@@ -1237,12 +907,20 @@ module ConcreteVirtualDispatch =
 
                 state,
                 VirtualImplementation.Unmodelled
-                    $"more than one most-specific default body of %s{methodToCall.Name} through a variant interface, which CoreCLR's variance pass chooses between in an order not modelled: %s{described}"
+                    $"more than one most-specific default body of %s{methodToCall.Name} at a variant interface's exact instantiation, where CoreCLR throws or runs the first depending on how the JIT compiled the call: %s{described}"
             else
                 state, VirtualImplementation.Ambiguous candidates
+        | state, [] when not throughVariantInterface -> state, VirtualImplementation.NotOverridden
+        | state, [] ->
 
-    /// One entry of a receiver's interface map, as the search for a variance-compatible default
-    /// body visits it.
+        // The variant search "[doesn't] look for a conflict for instance methods": it runs the first
+        // survivor. `sourcesPure/VariantInterfaceDefaultBodyPrecedence.cs` and
+        // `VariantInterfaceMapOrder.cs` pin its order against the real runtime.
+        match search true state with
+        | state, [] -> state, VirtualImplementation.NotOverridden
+        | state, first :: _ -> foundDefault state first
+
+    /// One entry of a receiver's interface map, as `collectInterfaceMap` visits it.
     type private InterfaceSearchEntry =
         {
             Handle : ConcreteTypeHandle
@@ -1250,8 +928,7 @@ module ConcreteVirtualDispatch =
         }
 
     /// One interface, followed by its transitive parents, depth-first. `visited` collapses
-    /// diamonds at the *first* occurrence; `variantInterfaceMapRetargets` depends on the
-    /// resulting order.
+    /// diamonds at the *first* occurrence; `interfaceMapHandles` reports the resulting order.
     let rec private expandInterfaceEntry
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1317,8 +994,8 @@ module ConcreteVirtualDispatch =
     /// inherited prefix. `sourcesPure/VariantInterfaceMapOrder.cs` pins the resulting order
     /// against the real runtime.
     ///
-    /// Variant interface dispatch resolves to the *first* compatible entry (see
-    /// `variantInterfaceMapRetargets`), so this must not be reordered or set-ified.
+    /// `interfaceMapHandles` reports this order to callers that pick the first compatible entry, so
+    /// it must not be reordered or set-ified.
     let rec private collectInterfaceMap
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1408,7 +1085,7 @@ module ConcreteVirtualDispatch =
         state, visited, ownEntries @ baseEntries
 
     /// The interfaces in `receiverType`'s interface map, its base types' included, in the order
-    /// CoreCLR's interface map lists them.
+    /// `MethodTable::FindDefaultInterfaceImplementation` searches them (see `collectInterfaceMap`).
     let interfaceMapHandles
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -1422,150 +1099,12 @@ module ConcreteVirtualDispatch =
 
         state, entries |> List.map _.Handle
 
-    /// ECMA-335 §I.8.7 lets a call site name a variance-compatible instantiation of an interface
-    /// the receiver never declares: `ISink<in T>` implemented at `ISink<object>` is dispatched
-    /// through `ISink<string>`. A class implementation reached that way is found by the dispatch
-    /// map, which is variance-aware itself; this serves the fallback after it, where only a
-    /// default interface body can answer, and returns the call target retargeted onto each of the
-    /// receiver's own variance-compatible entries, so that the default-body search can run against
-    /// each in turn.
-    ///
-    /// The entries come in the order `MethodTable::FindDefaultInterfaceImplementation` searches
-    /// them, and the *first* that yields a body wins with no ambiguity exception: that function
-    /// takes the first candidate and "[doesn't] look for a conflict for instance methods" once
-    /// `allowVariance` is set. `sourcesPure/VariantInterfaceDefaultBodyPrecedence.cs` pins that
-    /// against the real runtime, and it runs only after the exact instantiation's own default body
-    /// has been looked for, which is `FindDispatchImpl`'s order.
-    ///
-    /// Returns `[]` when no such entry exists, leaving the caller's answer unchanged.
-    let private variantInterfaceMapRetargets
-        (loggerFactory : ILoggerFactory)
-        (dotnetRuntimeDirs : string seq)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
-        (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        (dispatchTypeHandle : ConcreteTypeHandle)
-        (walkBaseTypes : bool)
-        (state : TypeSystemState)
-        : TypeSystemState *
-          WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list
-        =
-        // A non-generic interface has nothing to vary, so it can never reach here.
-        if methodToCall.DeclaringTypeGenerics.IsEmpty then
-            state, []
-        else
-
-        // The caller has already resolved this assembly on the path that led here, so a miss is
-        // a broken invariant rather than a reason to decline.
-        let declaringAssy =
-            state.LoadedAssembly(methodToCall.DeclaringAssemblyFullName).Value
-
-        let declaringTypeIsInterface =
-            declaringAssy.TypeDefs.[methodToCall.RequiredDeclaringType.Definition.Get].IsInterface
-
-        if not declaringTypeIsInterface then
-            state, []
-        else
-
-        let state, _, interfaceMap =
-            collectInterfaceMap
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                walkBaseTypes
-                state
-                Set.empty
-                dispatchTypeHandle
-
-        // Entries at the *same* instantiation are exactly what the caller already searched, so
-        // excluding them keeps this a strict fallback: it can only ever try an instantiation
-        // that has not been tried.
-        let candidates =
-            interfaceMap
-            |> List.filter (fun entry ->
-                entry.Type.Identity = methodToCall.RequiredDeclaringType.Identity
-                && entry.Type.Generics <> methodToCall.DeclaringTypeGenerics
-            )
-
-        if candidates.IsEmpty then
-            state, []
-        else
-
-        let state, targetHandle =
-            match
-                AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
-                    methodToCall.RequiredDeclaringType.Identity
-                    methodToCall.DeclaringTypeGenerics
-            with
-            | Some handle -> state, handle
-            | None ->
-                let handle, newConcreteTypes =
-                    AllConcreteTypes.add methodToCall.RequiredDeclaringType state.ConcreteTypes
-
-                { state with
-                    ConcreteTypes = newConcreteTypes
-                },
-                handle
-
-        let state, compatible =
-            ((state, []), candidates)
-            ||> List.fold (fun (state, acc) entry ->
-                let state, isCompatible =
-                    TypeAssignability.isConcreteTypeAssignableTo
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        baseClassTypes
-                        state
-                        entry.Handle
-                        targetHandle
-
-                if isCompatible then state, acc @ [ entry ] else state, acc
-            )
-
-        ((state, []), compatible)
-        ||> List.fold (fun (state, acc) entry ->
-            let chosenTy = entry.Type
-
-            match TypeSystemState.tryGetConcreteTypeInfo state entry.Handle with
-            | None ->
-                // Unreachable: every entry here came from `resolveImplementedInterface`, which
-                // already `failwith`s unless this same lookup succeeds. Loud rather than silent,
-                // so that an upstream change breaking that invariant shows up here.
-                failwith
-                    $"variant interface dispatch: interface-map entry %s{chosenTy.Namespace}.%s{chosenTy.Name} (%O{entry.Handle}) is no longer registered"
-            | Some (_, chosenTypeInfo) ->
-
-            // Both instantiations share a TypeDef, so they share a method list: the slot is
-            // identified by its MethodDef handle, exactly as the variance MethodImpl path does.
-            match
-                chosenTypeInfo.Methods
-                |> List.tryFind (fun m -> MethodInfo.sameDeclaredMethod m methodToCall)
-            with
-            | None ->
-                failwith
-                    $"variant interface dispatch: %s{chosenTy.Namespace}.%s{chosenTy.Name} has no method with handle matching %s{methodToCall.Name}, though it shares a TypeDef with the call target"
-            | Some slot ->
-                let state, retargeted, _ =
-                    MethodConcretisation.concretizeMethodWithAllGenerics
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        baseClassTypes
-                        chosenTy.Generics
-                        slot
-                        methodGenerics
-                        state
-
-                state, acc @ [ retargeted ]
-        )
-
     /// Identify the body a virtual or interface call lands on, given the receiver's runtime type.
     ///
     /// `walkBaseTypes` false means "exact-type dispatch": the `constrained.` value-type probe,
     /// which asks whether `T` itself supplies the method rather than inheriting it.
     ///
-    /// `Unmodelled` where default bodies conflict through variance, among which CoreCLR's variance
-    /// pass takes the first candidate in an order that is not modelled.
+    /// `Unmodelled` for the default-body outcomes `VirtualImplementation.Unmodelled` lists.
     ///
     /// `methodToCall` must be an instance method: a static virtual is `StaticVirtualDispatch`'s.
     let tryResolveVirtualImplementation
@@ -1583,87 +1122,12 @@ module ConcreteVirtualDispatch =
             failwith
                 $"virtual dispatch of %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}: a static virtual is resolved by StaticVirtualDispatch.resolve, not by instance dispatch"
 
-        let state, primary =
-            tryResolveVirtualImplementationForSlot
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                methodGenerics
-                methodToCall
-                dispatchTypeHandle
-                walkBaseTypes
-                state
-
-        match primary with
-        | VirtualImplementation.Found _
-        | VirtualImplementation.Ambiguous _
-        | VirtualImplementation.Unmodelled _ -> state, primary
-        | VirtualImplementation.NotOverridden ->
-
-        // Nothing implements the call site's own instantiation, not even a default body. A
-        // variance-compatible entry's default body is what is left: `FindDispatchImpl` tries the
-        // exact default before allowing variance.
-        let state, retargets =
-            variantInterfaceMapRetargets
-                loggerFactory
-                dotnetRuntimeDirs
-                baseClassTypes
-                methodGenerics
-                methodToCall
-                dispatchTypeHandle
-                walkBaseTypes
-                state
-
-        let isDefaultInterfaceBody (state : TypeSystemState) (meth : DispatchedMethod) : bool =
+        tryResolveVirtualImplementationForSlot
+            loggerFactory
+            dotnetRuntimeDirs
+            baseClassTypes
+            methodGenerics
+            methodToCall
+            dispatchTypeHandle
+            walkBaseTypes
             state
-                .LoadedAssembly(meth.Definition.DeclaringAssemblyFullName)
-                .Value.TypeDefs.[meth.Definition.RequiredDeclaringType.Definition.Get].IsInterface
-
-        let rec firstResolved
-            (state : TypeSystemState)
-            (retargets : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list)
-            =
-            match retargets with
-            | [] -> state, VirtualImplementation.NotOverridden
-            | retargeted :: rest ->
-                let state, resolved =
-                    tryResolveVirtualImplementationForSlot
-                        loggerFactory
-                        dotnetRuntimeDirs
-                        baseClassTypes
-                        methodGenerics
-                        retargeted
-                        dispatchTypeHandle
-                        walkBaseTypes
-                        state
-
-                match resolved with
-                | VirtualImplementation.NotOverridden -> firstResolved state rest
-                | VirtualImplementation.Ambiguous candidates ->
-                    let described =
-                        candidates
-                        |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
-                        |> String.concat ", "
-
-                    state,
-                    VirtualImplementation.Unmodelled
-                        $"variant interface dispatch of %s{methodToCall.Name}: retargeting onto %O{retargeted.DeclaringTypeGenerics} found more than one most-specific default body, of which CoreCLR's variance pass takes the first in an order that is not modelled: %s{described}"
-                | VirtualImplementation.Unmodelled _ as unmodelled -> state, unmodelled
-                | VirtualImplementation.Found resolved when isDefaultInterfaceBody state resolved ->
-                    let logger = loggerFactory.CreateLogger "CallMethod"
-
-                    logger.LogDebug (
-                        "Retargeting variant interface call {DeclaringTypeName}::{MethodName} to the default body for the receiver's own instantiation {Generics}",
-                        methodToCall.RequiredDeclaringType.Name,
-                        methodToCall.Name,
-                        retargeted.DeclaringTypeGenerics
-                    )
-
-                    state, VirtualImplementation.Found resolved
-                | VirtualImplementation.Found resolved ->
-                    // The dispatch map's variance pass already considered every entry this could
-                    // have come from, so a class implementation here means the two disagree.
-                    failwith
-                        $"variant interface dispatch of %s{methodToCall.Name}: the dispatch map found no class implementation through any variance-compatible entry, but retargeting onto %O{retargeted.DeclaringTypeGenerics} found %s{MethodOwner.describe resolved.Definition.Owner}::%s{resolved.Definition.Name}"
-
-        firstResolved state retargets

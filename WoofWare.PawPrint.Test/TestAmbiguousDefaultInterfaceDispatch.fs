@@ -20,8 +20,9 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestAmbiguousDefaultInterfaceDispatch =
 
-    /// The image, with `Run.Call()` making `constrained. Both callvirt IBase::M` on a default `Both`.
-    let fabricate () : byte[] =
+    /// The image, with `Run.Call()` making `constrained. Both callvirt IBase::M` on a default `Both`;
+    /// with `variant`, `IBase` is `IBase<out T>` and every use of it is `IBase<object>`.
+    let fabricate (variant : bool) : byte[] =
         let builder =
             PersistedAssemblyBuilder (AssemblyName "Diamond", typeof<obj>.Assembly)
 
@@ -30,9 +31,14 @@ module TestAmbiguousDefaultInterfaceDispatch =
         let interfaceAttributes =
             TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract
 
-        let baseInterface = modul.DefineType ("IBase", interfaceAttributes)
+        let baseInterface =
+            modul.DefineType ((if variant then "IBase`1" else "IBase"), interfaceAttributes)
 
-        let baseMethod =
+        if variant then
+            let parameters = baseInterface.DefineGenericParameters [| "T" |]
+            parameters.[0].SetGenericParameterAttributes GenericParameterAttributes.Covariant
+
+        let baseMethodDefinition =
             baseInterface.DefineMethod (
                 "M",
                 MethodAttributes.Public
@@ -45,6 +51,13 @@ module TestAmbiguousDefaultInterfaceDispatch =
             )
 
         baseInterface.CreateType () |> ignore<Type>
+
+        let baseInterface, baseMethod =
+            if variant then
+                let instantiated = baseInterface.MakeGenericType typeof<obj>
+                instantiated, TypeBuilder.GetMethod (instantiated, baseMethodDefinition)
+            else
+                baseInterface :> Type, baseMethodDefinition :> System.Reflection.MethodInfo
 
         let withDefault (name : string) (value : int) : TypeBuilder =
             let derived = modul.DefineType (name, interfaceAttributes)
@@ -79,7 +92,7 @@ module TestAmbiguousDefaultInterfaceDispatch =
                 ||| TypeAttributes.Sealed
                 ||| TypeAttributes.SequentialLayout,
                 typeof<ValueType>,
-                [| baseInterface :> Type ; left :> Type ; right :> Type |]
+                [| baseInterface ; left :> Type ; right :> Type |]
             )
 
         both.CreateType () |> ignore<Type>
@@ -106,9 +119,79 @@ module TestAmbiguousDefaultInterfaceDispatch =
         builder.Save stream
         stream.ToArray ()
 
+    /// What PawPrint resolves `fabricate variant`'s call to.
+    let private resolveDiamond (variant : bool) : VirtualImplementation =
+        let image = fabricate variant
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
+
+        let corelib =
+            Assembly.readFile
+                loggerFactory
+                (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
+
+        let diamond =
+            Assembly.read loggerFactory (Some "Diamond.dll") (new MemoryStream (image))
+
+        let bct = BaseClassTypes.ofCorelib corelib
+        let loaded = LoadedAssemblies.ofAssemblies [ corelib ; diamond ]
+        let concreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
+
+        let state =
+            { TypeSystemState.Empty with
+                _LoadedAssemblies = loaded
+                ConcreteTypes = concreteTypes
+            }
+
+        let typeNamed (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+            diamond.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = name)
+
+        let state, receiver =
+            TypeSystemState.concretizeType
+                loggerFactory
+                runtimeDirs
+                bct
+                state
+                diamond.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition ((typeNamed "Both").Identity, SignatureTypeKind.ValueType))
+
+        let method =
+            (typeNamed (if variant then "IBase`1" else "IBase")).Methods
+            |> List.find (fun m -> m.Name = "M")
+
+        let typeGenerics =
+            if variant then
+                ImmutableArray.Create (AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Object)
+            else
+                ImmutableArray.Empty
+
+        let state, concretized, _ =
+            MethodConcretisation.concretizeMethodWithAllGenerics
+                loggerFactory
+                runtimeDirs
+                bct
+                typeGenerics
+                method
+                ImmutableArray.Empty
+                state
+
+        ConcreteVirtualDispatch.tryResolveVirtualImplementation
+            loggerFactory
+            runtimeDirs
+            bct
+            concretized.Generics
+            concretized
+            receiver
+            true
+            state
+        |> snd
+
     [<Test>]
     let ``two equally specific default bodies make dispatch ambiguous`` () : unit =
-        let image = fabricate ()
+        let image = fabricate false
 
         // The real runtime loads `Both`, and throws when the call is dispatched.
         do
@@ -129,70 +212,27 @@ module TestAmbiguousDefaultInterfaceDispatch =
             finally
                 context.Unload ()
 
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        let runtimeDirs = FrameworkUnderTest.runtimeDirs ()
-
-        let corelib =
-            Assembly.readFile
-                loggerFactory
-                (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
-
-        let diamond =
-            Assembly.read loggerFactory (Some "Diamond.dll") (new MemoryStream (image))
-
-        let bct = BaseClassTypes.ofCorelib corelib
-        let loaded = LoadedAssemblies.ofAssemblies [ corelib ; diamond ]
-
-        let state =
-            { TypeSystemState.Empty with
-                _LoadedAssemblies = loaded
-                ConcreteTypes = Corelib.concretizeAll loaded bct AllConcreteTypes.Empty
-            }
-
-        let typeNamed (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
-            diamond.TypeDefs.Values |> Seq.find (fun ty -> ty.Name = name)
-
-        let state, receiver =
-            TypeSystemState.concretizeType
-                loggerFactory
-                runtimeDirs
-                bct
-                state
-                diamond.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-                (TypeDefn.FromDefinition ((typeNamed "Both").Identity, SignatureTypeKind.ValueType))
-
-        let method = (typeNamed "IBase").Methods |> List.find (fun m -> m.Name = "M")
-
-        let state, concretized, _ =
-            MethodConcretisation.concretizeMethodWithAllGenerics
-                loggerFactory
-                runtimeDirs
-                bct
-                ImmutableArray.Empty
-                method
-                ImmutableArray.Empty
-                state
-
-        let _, resolved =
-            ConcreteVirtualDispatch.tryResolveVirtualImplementation
-                loggerFactory
-                runtimeDirs
-                bct
-                concretized.Generics
-                concretized
-                receiver
-                true
-                state
-
-        match resolved with
+        match resolveDiamond false with
         | VirtualImplementation.Ambiguous candidates ->
             candidates
             |> List.map (fun m -> m.RequiredDeclaringType.Name)
             |> List.sort
             |> shouldEqual [ "ILeft" ; "IRight" ]
         | other -> failwith $"expected an ambiguous dispatch, got %A{other}"
+
+    /// Through a variant interface the same conflict is not one PawPrint models. Measured on .NET 10
+    /// with `fabricate true`: the call throws `AmbiguousImplementationException` under default tiering
+    /// and under `DOTNET_JITMinOpts=1`, but under `DOTNET_TieredCompilation=0` it returns `ILeft`'s 1,
+    /// because optimised code devirtualises the boxed call with `throwOnConflict` false and the
+    /// conflict falls through to CoreCLR's variant search, which takes the first candidate.
+    [<Test>]
+    let ``two equally specific default bodies at a variant interface's exact instantiation are not modelled``
+        ()
+        : unit
+        =
+        match resolveDiamond true with
+        | VirtualImplementation.Unmodelled _ -> ()
+        | other -> failwith $"expected a refusal, got %A{other}"
 
     /// A struct implementing `I<string>` and `I<Exception>` of a covariant `I<out T>`, each instantiation
     /// with a default body from an interface of its own, called through `I<object>`. Both bodies are
