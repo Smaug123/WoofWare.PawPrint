@@ -1234,16 +1234,19 @@ module NativeSystemNative =
 
         let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
 
-        let bytes =
+        match
             NativeCall.readNullTerminatedBytesWithin
                 operation
                 ctx.BaseClassTypes
                 state
                 pointer
                 (PathLimits.pathMaxBytes limits)
+        with
+        | Error u -> Error u
+        | Ok bytes ->
 
         match UnixByteString.ofBytes (ImmutableArray.CreateRange bytes) with
-        | Ok bytes -> PathArgumentBytes.Bytes bytes
+        | Ok bytes -> Ok (PathArgumentBytes.Bytes bytes)
         | Error (UnixByteStringDefect.ContainsNul offset) ->
             // The bytes come from reading the guest's C string up to its NUL,
             // so a NUL among them means that read went wrong.
@@ -1268,8 +1271,12 @@ module NativeSystemNative =
         (state : IlMachineState)
         : NativeHandlerResult option
         =
-        let path =
-            pathArgumentBytes ctx operation "path" ctx.Instruction.Arguments.[0] state
+        match pathArgumentBytes ctx operation "path" ctx.Instruction.Arguments.[0] state with
+        | Error u ->
+            NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the path it reads" u
+            |> Some
+        | Ok path ->
+
 
         match call path state.Kernel.System with
         | Error described -> failwith $"%s{operation}: %s{described}"
@@ -1658,7 +1665,12 @@ module NativeSystemNative =
         // Both pointers are dereferenced by the C on the success path, and
         // neither is inspected before the lookup — but the path is copied in
         // first, so an unmapped `path` is EFAULT whatever the output pointer is.
-        let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
+        match pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state with
+        | Error u ->
+            NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the path it reads" u
+            |> Some
+        | Ok path ->
+
 
         match UnixPathResolution.stat policy path state.Kernel.System with
         | Error refusal ->
@@ -3194,7 +3206,12 @@ module NativeSystemNative =
             | None -> fail UnixError.EINVAL
             | Some openFlags ->
 
-            let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
+            match pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the path it reads" u
+                |> Some
+            | Ok path ->
+
 
             // The `mode` argument crosses raw and unvalidated; see
             // `UnixNamespace.openPath` for why refusing a nonzero one without
@@ -3407,7 +3424,12 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
+            match pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the path it reads" u
+                |> Some
+            | Ok path ->
+
 
             // `Follow`, and a trailing separator that merely records its demand:
             // measured on both kernels, `opendir` follows a final symlink and a
@@ -4424,7 +4446,12 @@ module NativeSystemNative =
 
             // The kernel copies the pathname in before it looks at the buffer,
             // so a path that addresses nothing is EFAULT whatever the buffer is.
-            let path = pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state
+            match pathArgumentBytes ctx operation "path" instruction.Arguments.[0] state with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the path it reads" u
+                |> Some
+            | Ok path ->
+
 
             // The whole ordering below `bufferSize` and the pathname is the
             // library's, including the composition `NoFollowFinal` plus "and
@@ -5235,15 +5262,20 @@ module NativeSystemNative =
             // `accept4` loop, so a call made again after a signal uses that copy.
             let declaredLength =
                 match ctx.Instruction.NativeLocals with
-                | Some (NativeLocals.AcceptAddressLength declaredLength) -> declaredLength
+                | Some (NativeLocals.AcceptAddressLength declaredLength) -> Ok declaredLength
                 | Some (NativeLocals.PollEntries _)
                 | Some NativeLocals.SocketEventWaitLoop ->
                     failwith
                         $"%s{operation}: thread %O{ctx.Thread}'s accept frame keeps another call's locals (this is an interpreter bug)."
                 | None ->
-                    BinaryPrimitives.ReadInt32LittleEndian (
-                        (readBytesThrough ctx operation lengthCell 4 state).AsSpan ()
-                    )
+                    readBytesThrough ctx operation lengthCell 4 state
+                    |> Result.map (fun lengthBytes -> BinaryPrimitives.ReadInt32LittleEndian (lengthBytes.AsSpan ()))
+
+            match declaredLength with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the address length it reads" u
+                |> Some
+            | Ok declaredLength ->
 
             // The shim's own screen, which answers a negative length before it
             // calls `accept4`. The kernel never sees one from here: Linux would
@@ -6701,7 +6733,7 @@ module NativeSystemNative =
             // whole `struct pollfd` array before calling `poll(2)`. Each is the
             // descriptor and the PAL `Events`, which `PollEventsPal.convert`
             // converts.
-            let entries : (int * int16) list =
+            let entries : Result<(int * int16) list, UndefinedValue> =
                 match entriesStorage with
                 | None -> Ok []
                 | Some entriesStorage ->
@@ -6730,6 +6762,22 @@ module NativeSystemNative =
                         BinaryPrimitives.ReadInt32LittleEndian (fdBytes.AsSpan ()),
                         BinaryPrimitives.ReadInt16LittleEndian (eventsBytes.AsSpan ())
                     )
+
+                let rec readFrom (i : int) (acc : (int * int16) list) : Result<(int * int16) list, UndefinedValue> =
+                    if i >= int eventCount then
+                        Ok (List.rev acc)
+                    else
+                        match readEntry i with
+                        | Error u -> Error u
+                        | Ok entry -> readFrom (i + 1) (entry :: acc)
+
+                readFrom 0 []
+
+            match entries with
+            | Error u ->
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the poll entries it reads" u
+                |> Some
+            | Ok entries ->
 
             let entries = PollEventsPal.convert entries
             settle entries (PollEventsPal.pollConverted ctx.Thread entries milliseconds system)
@@ -6891,8 +6939,14 @@ module NativeSystemNative =
 
             // The bytes of the caller's buffer from `offset` on, `count` of them,
             // which the kernel has said it will read. Classification is total;
-            // it is the *extraction* that waits for the kernel to ask.
-            let extract (buffer : BufferPointer) (offset : int) (count : int) : ImmutableArray<byte> =
+            // it is the *extraction* that waits for the kernel to ask. `Error`
+            // with a byte nothing wrote, which the write would send on.
+            let extract
+                (buffer : BufferPointer)
+                (offset : int)
+                (count : int)
+                : Result<ImmutableArray<byte>, UndefinedValue>
+                =
                 let source =
                     match BufferPointer.dereferenceable buffer with
                     | Some source -> source
@@ -6901,6 +6955,10 @@ module NativeSystemNative =
                             $"%s{operation}: fd %d{fd}: the kernel asked for %d{count} bytes from a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
 
                 readBytesThrough ctx operation (bufferFieldAt ctx operation source offset state) count state
+
+            let unwritten (u : UndefinedValue) : NativeHandlerResult option =
+                NativeHandlerResult.undefinedRead ctx.Instruction.ExecutingMethod "the buffer it writes out" u
+                |> Some
 
             // A re-entry is told apart from a first entry by the record, as for
             // `SystemNative_Read`. The kernel says how much more of the buffer
@@ -6914,7 +6972,11 @@ module NativeSystemNative =
                 | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
                 | Error refusal -> refused refusal
                 | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
-                    match UnixReadWrite.finishWrite ctx.Thread (extract buffer offset count) admitted with
+                    match extract buffer offset count with
+                    | Error u -> unwritten u
+                    | Ok bytes ->
+
+                    match UnixReadWrite.finishWrite ctx.Thread bytes admitted with
                     | Error refusal -> refused refusal
                     | Ok outcome -> finish outcome noEffect
                 | Ok (WriteOutcome.Returns (WriteResumption.Answered answer, after)) ->
@@ -6985,12 +7047,20 @@ module NativeSystemNative =
             // A blocking write into a pipe with room for part of it: the part is
             // read now, and the rest only as the pipe takes it.
             | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
-                match UnixReadWrite.writeThenSleep ctx.Thread fd total (extract buffer 0 count) admitted with
+                match extract buffer 0 count with
+                | Error u -> unwritten u
+                | Ok bytes ->
+
+                match UnixReadWrite.writeThenSleep ctx.Thread fd total bytes admitted with
                 | Error refusal -> refused refusal
                 | Ok outcome -> finish outcome noEffect
             | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
 
-            match UnixReadWrite.write ctx.Thread fd (extract buffer 0 count) admitted with
+            match extract buffer 0 count with
+            | Error u -> unwritten u
+            | Ok bytes ->
+
+            match UnixReadWrite.write ctx.Thread fd bytes admitted with
             | Error refusal -> refused refusal
             | Ok outcome ->
 
@@ -7017,7 +7087,7 @@ module NativeSystemNative =
             // minipal's non-secure path: see `MinipalRandom`.
             let operation = "SystemNative_GetNonCryptographicallySecureRandomBytes"
 
-            let state =
+            let outcome : Result<IlMachineState, UndefinedValue> =
                 let buffer, length = randomBytesDestination ctx operation
 
                 let fill, kernel =
@@ -7026,7 +7096,7 @@ module NativeSystemNative =
                 let state = state.MapKernel (fun _ -> kernel)
 
                 match fill with
-                | NonSecureRandomFill.Filled bytes -> writeRandomBytes ctx operation buffer bytes state
+                | NonSecureRandomFill.Filled bytes -> Ok (writeRandomBytes ctx operation buffer bytes state)
                 | NonSecureRandomFill.OverExisting (written, mask, error) ->
                     // As the shim does it: the secure read has written its prefix
                     // into the buffer before it failed, and the XOR then runs over
@@ -7036,15 +7106,23 @@ module NativeSystemNative =
 
                     let existing =
                         if length = 0 then
-                            ImmutableArray.Empty
+                            Ok ImmutableArray.Empty
                         else
                             readBytesThrough ctx operation buffer length state
 
-                    let bytes = Seq.map2 (^^^) existing mask |> ImmutableArray.CreateRange
+                    // The XOR uses each byte, so a byte nothing wrote stops the run.
+                    existing
+                    |> Result.map (fun existing ->
+                        let bytes = Seq.map2 (^^^) existing mask |> ImmutableArray.CreateRange
 
-                    writeRandomBytes ctx operation buffer bytes state |> withErrnoOnly ctx error
+                        writeRandomBytes ctx operation buffer bytes state |> withErrnoOnly ctx error
+                    )
 
-            state |> NativeHandlerResult.completed |> Some
+            match outcome with
+            | Error u ->
+                NativeHandlerResult.undefinedRead instruction.ExecutingMethod "the buffer it mixes random bytes into" u
+                |> Some
+            | Ok state -> state |> NativeHandlerResult.completed |> Some
         | Some "SystemNative_GetCryptographicallySecureRandomBytes",
           [ ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
