@@ -886,13 +886,13 @@ module TestUnixSystemStep =
                 | Ok (_, system) -> system
                 | other -> failwith $"could not advance the offset: %A{other}"
 
-            UnixReadWrite.pread fd UserBuffer.Mapped 2UL 0L system
+            PReadUnchanged.pread fd UserBuffer.Mapped 2UL 0L system
             |> preadBytes
             |> shouldEqual [ 1uy ; 2uy ]
 
             // Short at the end of the file, from an offset the description never
             // held.
-            UnixReadWrite.pread fd UserBuffer.Mapped 8UL 3L system
+            PReadUnchanged.pread fd UserBuffer.Mapped 8UL 3L system
             |> preadBytes
             |> shouldEqual [ 4uy ; 5uy ]
 
@@ -906,8 +906,8 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
 
         for buffer in [ UserBuffer.Unmapped 0UL ; UserBuffer.Opaque ; UserBuffer.Mapped ] do
-            UnixReadWrite.pread fd buffer 5UL 100L system |> preadBytes |> shouldEqual []
-            UnixReadWrite.pread fd buffer 0UL 0L system |> preadBytes |> shouldEqual []
+            PReadUnchanged.pread fd buffer 5UL 100L system |> preadBytes |> shouldEqual []
+            PReadUnchanged.pread fd buffer 0UL 0L system |> preadBytes |> shouldEqual []
 
     [<Test>]
     let ``an addressless buffer is refused before pread's shortcuts on a screening platform`` () : unit =
@@ -917,12 +917,12 @@ module TestUnixSystemStep =
         // nothing, so the same call reaches the shortcut and answers 0.
         let fd, system = withOpenFile linux
 
-        UnixReadWrite.pread fd UserBuffer.Addressless 0UL 0L system
+        PReadUnchanged.pread fd UserBuffer.Addressless 0UL 0L system
         |> shouldEqual (Error BufferRefusal.AddresslessAtScreen)
 
         let darwinFd, darwinSystem = withOpenFile darwin
 
-        UnixReadWrite.pread darwinFd UserBuffer.Addressless 0UL 0L darwinSystem
+        PReadUnchanged.pread darwinFd UserBuffer.Addressless 0UL 0L darwinSystem
         |> preadBytes
         |> shouldEqual []
 
@@ -931,13 +931,13 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
         let darwinFd, darwinSystem = withOpenFile darwin
 
-        UnixReadWrite.pread fd UserBuffer.Opaque 5UL 0L system
+        PReadUnchanged.pread fd UserBuffer.Opaque 5UL 0L system
         |> shouldEqual (Error BufferRefusal.OpaqueAtTransfer)
 
-        UnixReadWrite.pread darwinFd UserBuffer.Addressless 5UL 0L darwinSystem
+        PReadUnchanged.pread darwinFd UserBuffer.Addressless 5UL 0L darwinSystem
         |> shouldEqual (Error BufferRefusal.AddresslessAtTransfer)
 
-        UnixReadWrite.pread fd UserBuffer.Addressless 5UL 0L system
+        PReadUnchanged.pread fd UserBuffer.Addressless 5UL 0L system
         |> shouldEqual (Error BufferRefusal.AddresslessAtScreen)
 
     [<Test>]
@@ -950,16 +950,16 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
         let darwinFd, darwinSystem = withOpenFile darwin
 
-        UnixReadWrite.pread fd wild 5UL 0L system
+        PReadUnchanged.pread fd wild 5UL 0L system
         |> shouldEqual (failedWith UnixError.EFAULT)
 
-        UnixReadWrite.pread darwinFd wild 5UL 0L darwinSystem
+        PReadUnchanged.pread darwinFd wild 5UL 0L darwinSystem
         |> shouldEqual (failedWith UnixError.EFAULT)
 
-        UnixReadWrite.pread fd wild 5UL 100L system
+        PReadUnchanged.pread fd wild 5UL 100L system
         |> shouldEqual (failedWith UnixError.EFAULT)
 
-        UnixReadWrite.pread darwinFd wild 5UL 100L darwinSystem
+        PReadUnchanged.pread darwinFd wild 5UL 100L darwinSystem
         |> preadBytes
         |> shouldEqual []
 
@@ -969,18 +969,18 @@ module TestUnixSystemStep =
         let fd, system = withOpenDirectory linux
         let darwinFd, darwinSystem = withOpenDirectory darwin
 
-        UnixReadWrite.pread fd UserBuffer.Mapped 5UL 0L system
+        PReadUnchanged.pread fd UserBuffer.Mapped 5UL 0L system
         |> shouldEqual (failedWith UnixError.EISDIR)
 
-        UnixReadWrite.pread darwinFd UserBuffer.Mapped 5UL 0L darwinSystem
+        PReadUnchanged.pread darwinFd UserBuffer.Mapped 5UL 0L darwinSystem
         |> shouldEqual (failedWith UnixError.EISDIR)
 
         // Measured: `pread(dir, (void*)-1, 5, 0)` is EFAULT under a screening
         // flavour and EISDIR under one that does not screen.
-        UnixReadWrite.pread fd wild 5UL 0L system
+        PReadUnchanged.pread fd wild 5UL 0L system
         |> shouldEqual (failedWith UnixError.EFAULT)
 
-        UnixReadWrite.pread darwinFd wild 5UL 0L darwinSystem
+        PReadUnchanged.pread darwinFd wild 5UL 0L darwinSystem
         |> shouldEqual (failedWith UnixError.EISDIR)
 
     [<Test>]
@@ -993,17 +993,17 @@ module TestUnixSystemStep =
         //   pipe read end (unseekable)        ESPIPE   ESPIPE
         //   pipe write end (also unreadable)  ESPIPE   EBADF
         //   regular file O_WRONLY (seekable)  EBADF    EBADF
-        UnixReadWrite.pread 0 UserBuffer.Mapped 5UL 0L linux
+        PReadUnchanged.pread 0 UserBuffer.Mapped 5UL 0L linux
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
-        UnixReadWrite.pread 0 UserBuffer.Mapped 5UL 0L darwin
+        PReadUnchanged.pread 0 UserBuffer.Mapped 5UL 0L darwin
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
         for fd in [ 1 ; 2 ] do
-            UnixReadWrite.pread fd UserBuffer.Mapped 5UL 0L linux
+            PReadUnchanged.pread fd UserBuffer.Mapped 5UL 0L linux
             |> shouldEqual (failedWith UnixError.ESPIPE)
 
-            UnixReadWrite.pread fd UserBuffer.Mapped 5UL 0L darwin
+            PReadUnchanged.pread fd UserBuffer.Mapped 5UL 0L darwin
             |> shouldEqual (failedWith UnixError.EBADF)
 
         // The third row is the control: a *seekable* descriptor that is not open
@@ -1012,7 +1012,7 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let fd, system = withWriteOnlyFile flavour
 
-            UnixReadWrite.pread fd UserBuffer.Mapped 5UL 0L system
+            PReadUnchanged.pread fd UserBuffer.Mapped 5UL 0L system
             |> shouldEqual (failedWith UnixError.EBADF)
 
     [<Test>]
@@ -1029,10 +1029,10 @@ module TestUnixSystemStep =
 
             for buffer in [ UserBuffer.Mapped ; wild ; UserBuffer.Opaque ; UserBuffer.Addressless ] do
                 for count in [ 0UL ; 5UL ] do
-                    UnixReadWrite.pread socketFd buffer count 0L socketSystem
+                    PReadUnchanged.pread socketFd buffer count 0L socketSystem
                     |> shouldEqual (failedWith UnixError.ESPIPE)
 
-                    UnixReadWrite.pread portFd buffer count 0L portSystem
+                    PReadUnchanged.pread portFd buffer count 0L portSystem
                     |> shouldEqual (failedWith UnixError.ESPIPE)
 
         // This is where `pread` and `read` part company hardest, and why `pread`
@@ -1048,7 +1048,7 @@ module TestUnixSystemStep =
             Error (ReadRefusal.UnmodelledSocketPhase (socketZero, SocketDomain.Inet, SocketKind.Stream, established))
         )
 
-        UnixReadWrite.pread fd UserBuffer.Mapped 5UL 0L system
+        PReadUnchanged.pread fd UserBuffer.Mapped 5UL 0L system
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
     [<Test>]
@@ -1060,10 +1060,10 @@ module TestUnixSystemStep =
                 UserBuffer.Opaque
                 UserBuffer.Addressless
             ] do
-            UnixReadWrite.pread 7 buffer 5UL 0L linux
+            PReadUnchanged.pread 7 buffer 5UL 0L linux
             |> shouldEqual (failedWith UnixError.EBADF)
 
-            UnixReadWrite.pread 7 buffer 5UL 0L darwin
+            PReadUnchanged.pread 7 buffer 5UL 0L darwin
             |> shouldEqual (failedWith UnixError.EBADF)
 
     [<Test>]
@@ -1088,19 +1088,19 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let fd, system = withOpenFile flavour
 
-            UnixReadWrite.pread fd UserBuffer.Mapped 5UL -1L system
+            PReadUnchanged.pread fd UserBuffer.Mapped 5UL -1L system
             |> shouldEqual (failedWith UnixError.EINVAL)
 
-        UnixReadWrite.pread 7 UserBuffer.Mapped 5UL -1L linux
+        PReadUnchanged.pread 7 UserBuffer.Mapped 5UL -1L linux
         |> shouldEqual (failedWith UnixError.EINVAL)
 
-        UnixReadWrite.pread 7 UserBuffer.Mapped 5UL -1L darwin
+        PReadUnchanged.pread 7 UserBuffer.Mapped 5UL -1L darwin
         |> shouldEqual (failedWith UnixError.EBADF)
 
-        UnixReadWrite.pread 0 UserBuffer.Mapped 5UL -1L linux
+        PReadUnchanged.pread 0 UserBuffer.Mapped 5UL -1L linux
         |> shouldEqual (failedWith UnixError.EINVAL)
 
-        UnixReadWrite.pread 0 UserBuffer.Mapped 5UL -1L darwin
+        PReadUnchanged.pread 0 UserBuffer.Mapped 5UL -1L darwin
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
         // The socket and the port are the rows that say the flag really is a
@@ -1108,38 +1108,38 @@ module TestUnixSystemStep =
         // exactly as the pipe's is, and Linux's offset check beats it too.
         let linuxSocket, linuxSocketSystem = withSocket linux
 
-        UnixReadWrite.pread linuxSocket UserBuffer.Mapped 5UL -1L linuxSocketSystem
+        PReadUnchanged.pread linuxSocket UserBuffer.Mapped 5UL -1L linuxSocketSystem
         |> shouldEqual (failedWith UnixError.EINVAL)
 
         let darwinSocket, darwinSocketSystem = withSocket darwin
 
-        UnixReadWrite.pread darwinSocket UserBuffer.Mapped 5UL -1L darwinSocketSystem
+        PReadUnchanged.pread darwinSocket UserBuffer.Mapped 5UL -1L darwinSocketSystem
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
         let linuxPort, linuxPortSystem = withSocketEventPort linux
 
-        UnixReadWrite.pread linuxPort UserBuffer.Mapped 5UL -1L linuxPortSystem
+        PReadUnchanged.pread linuxPort UserBuffer.Mapped 5UL -1L linuxPortSystem
         |> shouldEqual (failedWith UnixError.EINVAL)
 
         let darwinPort, darwinPortSystem = withSocketEventPort darwin
 
-        UnixReadWrite.pread darwinPort UserBuffer.Mapped 5UL -1L darwinPortSystem
+        PReadUnchanged.pread darwinPort UserBuffer.Mapped 5UL -1L darwinPortSystem
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
         let linuxWriteOnly, linuxSystem = withWriteOnlyFile linux
 
-        UnixReadWrite.pread linuxWriteOnly UserBuffer.Mapped 5UL -1L linuxSystem
+        PReadUnchanged.pread linuxWriteOnly UserBuffer.Mapped 5UL -1L linuxSystem
         |> shouldEqual (failedWith UnixError.EINVAL)
 
         let darwinWriteOnly, darwinSystem = withWriteOnlyFile darwin
 
-        UnixReadWrite.pread darwinWriteOnly UserBuffer.Mapped 5UL -1L darwinSystem
+        PReadUnchanged.pread darwinWriteOnly UserBuffer.Mapped 5UL -1L darwinSystem
         |> shouldEqual (failedWith UnixError.EBADF)
 
         for flavour in [ linux ; darwin ] do
             let fd, system = withOpenDirectory flavour
 
-            UnixReadWrite.pread fd UserBuffer.Mapped 5UL -1L system
+            PReadUnchanged.pread fd UserBuffer.Mapped 5UL -1L system
             |> shouldEqual (failedWith UnixError.EINVAL)
 
     [<Test>]
@@ -1152,10 +1152,10 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
         let darwinFd, darwinSystem = withOpenFile darwin
 
-        UnixReadWrite.pread fd UserBuffer.Addressless 5UL -1L system
+        PReadUnchanged.pread fd UserBuffer.Addressless 5UL -1L system
         |> shouldEqual (failedWith UnixError.EINVAL)
 
-        UnixReadWrite.pread darwinFd UserBuffer.Addressless 5UL -1L darwinSystem
+        PReadUnchanged.pread darwinFd UserBuffer.Addressless 5UL -1L darwinSystem
         |> shouldEqual (failedWith UnixError.EINVAL)
 
     // ------------------------------------------------------------------ pwrite
@@ -1182,7 +1182,7 @@ module TestUnixSystemStep =
                 | Ok (_, system) -> system
                 | other -> failwith $"could not advance the offset: %A{other}"
 
-            match UnixReadWrite.pwrite fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) 3L system with
+            match UnixReadWrite.pwrite 0 fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) 3L system with
             | Ok (WriteAnswer.Completed written, after) ->
                 written |> shouldEqual 2L
 
@@ -1202,7 +1202,7 @@ module TestUnixSystemStep =
     let ``a pwrite past the end of the file extends it`` () : unit =
         let fd, system = withOpenFile linux
 
-        match UnixReadWrite.pwrite fd (ImmutableArray.CreateRange [ 7uy ]) 7L system with
+        match UnixReadWrite.pwrite 0 fd (ImmutableArray.CreateRange [ 7uy ]) 7L system with
         | Ok (WriteAnswer.Completed written, after) ->
             written |> shouldEqual 1L
 
@@ -1254,16 +1254,16 @@ module TestUnixSystemStep =
                     socketFd, socketSystem
                     portFd, portSystem
                 ] do
-                UnixReadWrite.admitPWrite descriptor UserBuffer.Mapped 4UL -1L holding
+                UnixReadWrite.admitPWrite 0 descriptor UserBuffer.Mapped 4UL -1L holding
                 |> shouldEqual (pwriteFailed UnixError.EINVAL)
 
             // And it beats the buffer screen and the no-op too, which the rows
             // above cannot say: both of those sit behind the descriptor steps,
             // so a buffer with no answer at all still earns EINVAL.
-            UnixReadWrite.admitPWrite fd UserBuffer.Addressless 4UL -1L system
+            UnixReadWrite.admitPWrite 0 fd UserBuffer.Addressless 4UL -1L system
             |> shouldEqual (pwriteFailed UnixError.EINVAL)
 
-            UnixReadWrite.admitPWrite fd UserBuffer.Mapped 0UL -1L system
+            UnixReadWrite.admitPWrite 0 fd UserBuffer.Mapped 0UL -1L system
             |> shouldEqual (pwriteFailed UnixError.EINVAL)
 
     [<Test>]
@@ -1276,16 +1276,16 @@ module TestUnixSystemStep =
         //   pipe read end (also unwritable)   ESPIPE   EBADF
         //   regular file O_RDONLY (seekable)  EBADF    EBADF
         for fd in [ 1 ; 2 ] do
-            UnixReadWrite.admitPWrite fd UserBuffer.Mapped 4UL 0L linux
+            UnixReadWrite.admitPWrite 0 fd UserBuffer.Mapped 4UL 0L linux
             |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
-            UnixReadWrite.admitPWrite fd UserBuffer.Mapped 4UL 0L darwin
+            UnixReadWrite.admitPWrite 0 fd UserBuffer.Mapped 4UL 0L darwin
             |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
-        UnixReadWrite.admitPWrite 0 UserBuffer.Mapped 4UL 0L linux
+        UnixReadWrite.admitPWrite 0 0 UserBuffer.Mapped 4UL 0L linux
         |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
-        UnixReadWrite.admitPWrite 0 UserBuffer.Mapped 4UL 0L darwin
+        UnixReadWrite.admitPWrite 0 0 UserBuffer.Mapped 4UL 0L darwin
         |> shouldEqual (pwriteFailed UnixError.EBADF)
 
         // The control that says this is about the tie rather than about
@@ -1293,7 +1293,7 @@ module TestUnixSystemStep =
         for flavour in [ linux ; darwin ] do
             let fd, system = withReadOnlyFile flavour
 
-            UnixReadWrite.admitPWrite fd UserBuffer.Mapped 4UL 0L system
+            UnixReadWrite.admitPWrite 0 fd UserBuffer.Mapped 4UL 0L system
             |> shouldEqual (pwriteFailed UnixError.EBADF)
 
         // And seekability precedes the screen on both: measured,
@@ -1301,13 +1301,13 @@ module TestUnixSystemStep =
         // Darwin, not EFAULT.
         let wild = UserBuffer.Unmapped System.UInt64.MaxValue
 
-        UnixReadWrite.admitPWrite 0 wild 4UL 0L linux
+        UnixReadWrite.admitPWrite 0 0 wild 4UL 0L linux
         |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
-        UnixReadWrite.admitPWrite 0 wild 4UL 0L darwin
+        UnixReadWrite.admitPWrite 0 0 wild 4UL 0L darwin
         |> shouldEqual (pwriteFailed UnixError.EBADF)
 
-        UnixReadWrite.admitPWrite 1 wild 4UL 0L linux
+        UnixReadWrite.admitPWrite 0 1 wild 4UL 0L linux
         |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
     [<Test>]
@@ -1326,10 +1326,10 @@ module TestUnixSystemStep =
 
             for buffer in [ UserBuffer.Mapped ; wild ; UserBuffer.Opaque ; UserBuffer.Addressless ] do
                 for count in [ 0UL ; 4UL ] do
-                    UnixReadWrite.admitPWrite socketFd buffer count 0L socketSystem
+                    UnixReadWrite.admitPWrite 0 socketFd buffer count 0L socketSystem
                     |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
-                    UnixReadWrite.admitPWrite portFd buffer count 0L portSystem
+                    UnixReadWrite.admitPWrite 0 portFd buffer count 0L portSystem
                     |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
         // The same socket answers a `write` itself, and so does the port, each
@@ -1364,7 +1364,7 @@ module TestUnixSystemStep =
             for descriptor, holding in [ fd, system ; dirFd, dirSystem ] do
                 for buffer in [ UserBuffer.Mapped ; UserBuffer.Addressless ; UserBuffer.Unmapped 0UL ] do
                     for count in [ 0UL ; 4UL ] do
-                        UnixReadWrite.admitPWrite descriptor buffer count 0L holding
+                        UnixReadWrite.admitPWrite 0 descriptor buffer count 0L holding
                         |> shouldEqual (pwriteFailed UnixError.EBADF)
 
     [<Test>]
@@ -1376,10 +1376,10 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
         let darwinFd, darwinSystem = withOpenFile darwin
 
-        UnixReadWrite.admitPWrite fd wild 0UL 0L system
+        UnixReadWrite.admitPWrite 0 fd wild 0UL 0L system
         |> shouldEqual (pwriteFailed UnixError.EFAULT)
 
-        UnixReadWrite.admitPWrite darwinFd wild 0UL 0L darwinSystem
+        UnixReadWrite.admitPWrite 0 darwinFd wild 0UL 0L darwinSystem
         |> shouldEqual (Ok (PWriteAdmission.Answered (WriteAnswer.Completed 0L)))
 
         // A *null* pointer passes the screen on both — it is an ordinary user
@@ -1387,32 +1387,32 @@ module TestUnixSystemStep =
         // otherwise. Measured, `pwrite(f, NULL, 0, 0)` is 0 and
         // `pwrite(f, NULL, 4, 0)` is EFAULT, on both.
         for descriptor, holding in [ fd, system ; darwinFd, darwinSystem ] do
-            UnixReadWrite.admitPWrite descriptor (UserBuffer.Unmapped 0UL) 0UL 0L holding
+            UnixReadWrite.admitPWrite 0 descriptor (UserBuffer.Unmapped 0UL) 0UL 0L holding
             |> shouldEqual (Ok (PWriteAdmission.Answered (WriteAnswer.Completed 0L)))
 
-            UnixReadWrite.admitPWrite descriptor (UserBuffer.Unmapped 0UL) 4UL 0L holding
+            UnixReadWrite.admitPWrite 0 descriptor (UserBuffer.Unmapped 0UL) 4UL 0L holding
             |> shouldEqual (pwriteFailed UnixError.EFAULT)
 
     [<Test>]
     let ``a pwrite buffer with no bytes is refused at the copy, not faulted`` () : unit =
         let fd, system = withOpenFile linux
 
-        UnixReadWrite.admitPWrite fd UserBuffer.Opaque 4UL 0L system
+        UnixReadWrite.admitPWrite 0 fd UserBuffer.Opaque 4UL 0L system
         |> shouldEqual (Error (PWriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
-        UnixReadWrite.admitPWrite fd UserBuffer.Addressless 4UL 0L system
+        UnixReadWrite.admitPWrite 0 fd UserBuffer.Addressless 4UL 0L system
         |> shouldEqual (Error (PWriteRefusal.Buffer BufferRefusal.AddresslessAtScreen))
 
         let darwinFd, darwinSystem = withOpenFile darwin
 
-        UnixReadWrite.admitPWrite darwinFd UserBuffer.Addressless 4UL 0L darwinSystem
+        UnixReadWrite.admitPWrite 0 darwinFd UserBuffer.Addressless 4UL 0L darwinSystem
         |> shouldEqual (Error (PWriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
 
     [<Test>]
     let ``a pwrite that reaches the copy asks for exactly what was requested`` () : unit =
         let fd, system = withOpenFile linux
 
-        UnixReadWrite.admitPWrite fd UserBuffer.Mapped 3UL 9L system
+        UnixReadWrite.admitPWrite 0 fd UserBuffer.Mapped 3UL 9L system
         |> pwriteAdmitted
         |> shouldEqual (PWriteAdmission.Transfer 3)
 
@@ -1429,10 +1429,10 @@ module TestUnixSystemStep =
                 UserBuffer.Unmapped 0UL, 3UL
                 UserBuffer.Mapped, 0UL
             ] do
-            UnixReadWrite.admitPWrite fd buffer count 0L system
+            UnixReadWrite.admitPWrite 0 fd buffer count 0L system
             |> ignore<Result<PWriteAdmission, PWriteRefusal>>
 
-        UnixReadWrite.admitPWrite fd UserBuffer.Mapped 3UL 0L system
+        UnixReadWrite.admitPWrite 0 fd UserBuffer.Mapped 3UL 0L system
         |> pwriteAdmitted
         |> shouldEqual (PWriteAdmission.Transfer 3)
 
@@ -1442,18 +1442,18 @@ module TestUnixSystemStep =
         // an inconsistent one, which is what lets the second call take no buffer.
         let bytes = ImmutableArray.CreateRange [ 1uy ]
 
-        UnixReadWrite.pwrite 7 bytes 0L linux
+        UnixReadWrite.pwrite 0 7 bytes 0L linux
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, linux))
 
         let fd, system = withReadOnlyFile linux
 
-        UnixReadWrite.pwrite fd bytes 0L system
+        UnixReadWrite.pwrite 0 fd bytes 0L system
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, system))
 
         // Including the negative offset, which precedes them all.
         let good, goodSystem = withOpenFile linux
 
-        UnixReadWrite.pwrite good bytes -1L goodSystem
+        UnixReadWrite.pwrite 0 good bytes -1L goodSystem
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EINVAL, goodSystem))
 
     [<Test>]
@@ -1464,12 +1464,12 @@ module TestUnixSystemStep =
         // measured, `pwrite(f, buf, 0, 100000)` on a five-byte file leaves it five
         // bytes long.
         for offset in [ 0L ; 100000L ] do
-            UnixReadWrite.pwrite fd ImmutableArray<byte>.Empty offset system
+            UnixReadWrite.pwrite 0 fd ImmutableArray<byte>.Empty offset system
             |> shouldEqual (Ok (WriteAnswer.Completed 0L, system))
 
         let readOnlyFd, readOnly = withReadOnlyFile linux
 
-        UnixReadWrite.pwrite readOnlyFd ImmutableArray<byte>.Empty 0L readOnly
+        UnixReadWrite.pwrite 0 readOnlyFd ImmutableArray<byte>.Empty 0L readOnly
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
 
     [<Test>]
@@ -1481,7 +1481,7 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
         let bytes = ImmutableArray.CreateRange [ 1uy ]
 
-        match UnixReadWrite.pwrite fd bytes VirtualFileSystem.maxFileLength system with
+        match UnixReadWrite.pwrite 0 fd bytes VirtualFileSystem.maxFileLength system with
         | Error (PWriteRefusal.ExceedsRepresentableLength (_, offset, count)) ->
             offset |> shouldEqual VirtualFileSystem.maxFileLength
             count |> shouldEqual 1
@@ -1496,7 +1496,7 @@ module TestUnixSystemStep =
 
         let exn =
             Assert.Throws<System.Exception> (fun () ->
-                UnixReadWrite.pwrite fd Unchecked.defaultof<ImmutableArray<byte>> 0L system
+                UnixReadWrite.pwrite 0 fd Unchecked.defaultof<ImmutableArray<byte>> 0L system
                 |> ignore<Result<WriteAnswer * UnixSystem<int, string>, PWriteRefusal>>
             )
 

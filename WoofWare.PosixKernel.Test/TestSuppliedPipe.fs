@@ -161,6 +161,7 @@ module TestSuppliedPipe =
                                 failwith $"%s{where}: byte %d{position + int64 i} read back as %d{b}"
                         )
                     | ReadAnswer.Failed error -> failwith $"%s{where}: read failed with %O{error}"
+                    | ReadAnswer.Drawn _ -> failwith $"%s{where}: a read of a pipe drew from the entropy pool"
 
                     check where row system
                     system, position + int64 row.Returned, index + 1
@@ -344,6 +345,7 @@ module TestSuppliedPipe =
                         if got.[i] <> bytes.[position + i] then
                             failwith $"%s{where}: byte %d{position + i} read back wrong"
                 | ReadAnswer.Failed error -> failwith $"%s{where}: failed with %O{error}"
+                | ReadAnswer.Drawn _ -> failwith $"%s{where}: a read of a pipe drew from the entropy pool"
 
                 check where afterReference after
                 position <- position + expected

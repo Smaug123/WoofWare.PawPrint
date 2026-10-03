@@ -12,6 +12,7 @@ are facts about *upstream source being misleading*.
 | the creatable socket triples | `TestSocketCreation` against `socketMatrix/{linux,darwin}.tsv` |
 | standard streams, regular files, directories | `TestVirtualFileSystem` and `TestVirtualFileSystemAgainstHost` |
 | pipe (`pipe2`) | `TestPipe` and `TestPipeAgainstHost`; `sourcesImpure/PipeRaw.cs` for the wiring |
+| `/dev/null`, `/dev/urandom` (Linux) | `TestDeviceDescriptors` and `TestDeviceDescriptorsAgainstHost` |
 
 ## Three things reading the kernel source gets wrong
 

@@ -190,6 +190,7 @@ module WakeCondition =
                 | OpenFileTarget.Kqueue state -> state.Drained
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
+                | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.Epoll _ ->
@@ -225,6 +226,7 @@ module WakeCondition =
                         $"WakeCondition.satisfied: a task is parked in an accept on socket %O{socketId}, which is in %A{phase} rather than listening. Nothing takes a live listener out of listening, so the park was recorded on a socket that was never one (this is a bug in the caller that recorded it)."
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->

@@ -308,7 +308,8 @@ module UnixProcessState =
         |> Seq.choose (fun (_, description) ->
             match description.Target with
             | OpenFileTarget.File (inode, _)
-            | OpenFileTarget.Directory (inode, _) -> Some inode
+            | OpenFileTarget.Directory (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _) -> Some inode
             | OpenFileTarget.Socket _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _

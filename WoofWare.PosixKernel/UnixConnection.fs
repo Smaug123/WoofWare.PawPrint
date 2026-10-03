@@ -1430,6 +1430,7 @@ module UnixConnection =
         match description.Target with
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
+        | OpenFileTarget.CharacterDevice _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (AcceptOutcome.Failed UnixError.ENOTSOCK, system)
@@ -1517,6 +1518,7 @@ module UnixConnection =
             | OpenFileTarget.Socket socketId -> socketId
             | OpenFileTarget.File _
             | OpenFileTarget.Directory _
+            | OpenFileTarget.CharacterDevice _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->

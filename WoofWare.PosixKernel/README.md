@@ -143,6 +143,7 @@ The filesystem type is chosen separately (currently tmpfs, APFS or NFS), from th
 
 The kernel mounts a device filesystem over `/dev` at boot, as a real one does.
 On Linux it is a devtmpfs holding a node for each device the kernel has a driver for (`/dev/null` and `/dev/urandom`); since a real devtmpfs holds hundreds, any other name in it is refused rather than answered ENOENT, and so are listing it and adding or removing a name in it.
+Opening a node gives a descriptor whose syscalls are the driver's: `/dev/null` reads nothing and swallows every write, and `/dev/urandom` reads from the same entropy pool `getrandom` draws on.
 On Darwin it is devfs, which is not modelled, so any path that reaches `/dev` is refused.
 
 WoofWare.PosixKernel is intended to be fully POSIX-compliant eventually.
