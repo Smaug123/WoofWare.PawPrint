@@ -703,3 +703,68 @@ module UnixMachineState =
             "UnixMachineState.realtime"
             (bootSeconds + machine.NanosecondsSinceBoot / nanosecondsPerSecond + carry)
             (int (nanoseconds % nanosecondsPerSecond))
+
+    /// `machine` with the timestamps of the pipe `pipeId` passed through
+    /// `touch`, if this kernel holds them: it holds none for a pipe the process
+    /// was launched with, whose timestamps are the launcher's.
+    let private withPipeTimes
+        (pipeId : PipeId)
+        (touch : PipeTimes -> PipeTimes)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
+        let piped = pipe pipeId machine
+
+        match piped.Origin with
+        | PipeOrigin.Launched _ -> machine
+        | PipeOrigin.Made status ->
+            { machine with
+                Pipes =
+                    Map.add
+                        pipeId
+                        { piped with
+                            Origin =
+                                PipeOrigin.Made
+                                    { status with
+                                        Times = touch status.Times
+                                    }
+                        }
+                        machine.Pipes
+            }
+
+    /// What a read reaching `pipeId`'s read operation, or ending a sleep on it,
+    /// does to its timestamps: on Darwin, moves the read end's `st_atime` to
+    /// now; on Linux, nothing.
+    let internal touchedByPipeRead (pipeId : PipeId) (machine : UnixMachineState) : UnixMachineState =
+        match SimulatedUnixPlatform.flavour machine.UnixPlatform with
+        | SimulatedUnixFlavour.Linux -> machine
+        | SimulatedUnixFlavour.Darwin ->
+            let now = realtime machine
+
+            withPipeTimes
+                pipeId
+                (fun times ->
+                    { times with
+                        ReadEndAccess = now
+                    }
+                )
+                machine
+
+    /// What a write reaching `pipeId`'s write operation, or ending a sleep on
+    /// it, does to its timestamps: on Darwin, moves `st_mtime` and `st_ctime`
+    /// of both ends to now; on Linux, nothing.
+    let internal touchedByPipeWrite (pipeId : PipeId) (machine : UnixMachineState) : UnixMachineState =
+        match SimulatedUnixPlatform.flavour machine.UnixPlatform with
+        | SimulatedUnixFlavour.Linux -> machine
+        | SimulatedUnixFlavour.Darwin ->
+            let now = realtime machine
+
+            withPipeTimes
+                pipeId
+                (fun times ->
+                    { times with
+                        Modification = now
+                        StatusChange = now
+                    }
+                )
+                machine

@@ -1331,6 +1331,7 @@ module UnixSocket =
                     {
                         Backlog = backlog
                         Queue = []
+                        Drained = false
                     }
 
         let system =

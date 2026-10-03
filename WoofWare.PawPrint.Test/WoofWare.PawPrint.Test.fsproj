@@ -249,7 +249,6 @@
     <Compile Include="KernelSyscall.fs" />
     <Compile Include="TestDirectoryStreamFds.fs" />
     <Compile Include="TestTaskState.fs" />
-        <Compile Include="TestUnixSystemProjection.fs" />
     <Compile Include="TestFlockBlocking.fs" />
     <Compile Include="TestFlockPark.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />

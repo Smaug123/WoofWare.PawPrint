@@ -551,17 +551,14 @@ type CopyFileRangeSupport =
 /// shaped emulation) without disturbing the rest of the state model.
 type EmulatedKernel =
     {
-        /// See `UnixProcessState`.
+        /// The POSIX process this kernel runs, and the machine it runs on: see
+        /// `UnixSystem`. Its one task to begin with is the thread `Main` runs
+        /// on, `ThreadId 0`.
         ///
         /// Never read field by field: PawPrint is a client of the kernel, and
         /// learns what it holds through the syscalls and the queries
-        /// `UnixProcessState` provides, as the members below do.
-        Process : UnixProcessState<ThreadId, NativeSignalHandler>
-        /// The POSIX machine this process is running on: see `UnixMachineState`.
-        ///
-        /// Never read field by field, for the reason `Process` gives; the
-        /// queries are `UnixMachineState`'s.
-        Machine : UnixMachineState
+        /// `UnixSystem` provides, as the members below do.
+        System : UnixSystem<ThreadId, NativeSignalHandler>
         /// Per-thread value CoreCLR keeps in its `t_lastPInvokeError` thread-local and
         /// `Marshal.GetLastPInvokeError` (equivalently `GetLastWin32Error`) reads. A
         /// `SetLastError = true` P/Invoke's stub copies the system error here once the
@@ -611,16 +608,6 @@ type EmulatedKernel =
         /// `copy_file_range(2)`: see `CopyFileRangeSupport`. Userspace state,
         /// like `PosixSignalShim`.
         CopyFileRangeSupport : CopyFileRangeSupport
-        /// Every task the kernel knows about, by the thread that is it.
-        ///
-        /// Exactly the live threads: `checkTaskInvariants` reports a thread with
-        /// no task or a task with no thread. An absent key is therefore a bug
-        /// rather than a default, which is what lets `UnixTaskState` be total.
-        Tasks : Map<ThreadId, UnixTaskState>
-        /// The process's first task, which `create` makes: always `ThreadId 0`,
-        /// the thread `IlMachineState.addThread` runs `Main` on. See
-        /// `UnixSystem.Leader`.
-        Leader : ThreadId
         /// Registry of `System.Threading.LowLevelMonitor` instances minted by
         /// `SystemNative_LowLevelMonitor_Create`. The handle held by the
         /// guest (as an `IntPtr` in `LowLevelMonitor._nativeMonitor`) is the
@@ -745,22 +732,31 @@ type EmulatedKernel =
     /// write, in the order it wrote them: the kernel's deliveries to the pipes
     /// PawPrint drains, labelled by stream.
     member this.OutputLog : ImmutableArray<OutputLogEntry> =
-        StandardStreams.outputLog (UnixMachineState.delivered this.Machine)
+        StandardStreams.outputLog (UnixSystem.delivered this.System)
+
+    /// Every task the kernel knows about, by the thread that is it.
+    ///
+    /// Exactly the live threads: `checkTaskInvariants` reports a thread with
+    /// no task or a task with no thread. An absent key is therefore a bug
+    /// rather than a default, which is what lets `UnixTaskState` be total.
+    member this.Tasks : Map<ThreadId, UnixTaskState> = UnixSystem.tasks this.System
+
+    /// The process's first task: always `ThreadId 0`, the thread
+    /// `IlMachineState.addThread` runs `Main` on. See `UnixSystem.leader`.
+    member this.Leader : ThreadId = UnixSystem.leader this.System
 
 
     /// The environment the simulated process was started with: see
     /// `UnixProcessState.Environment`.
-    member this.Environment : UnixByteString list =
-        UnixProcessState.environment this.Process
+    member this.Environment : UnixByteString list = UnixSystem.environment this.System
 
     /// The path of the executable that started the simulated process: see
     /// `UnixProcessState.ProcessPath`.
-    member this.ProcessPath : AbsoluteUnixPath option =
-        UnixProcessState.processPath this.Process
+    member this.ProcessPath : AbsoluteUnixPath option = UnixSystem.processPath this.System
 
     /// The simulated process's signal state, which `SignalState`'s queries read.
     member this.Signals : SignalState<ThreadId, NativeSignalHandler> =
-        UnixProcessState.signals this.Process
+        UnixSystem.signals this.System
 
     /// The virtual clock in 100 ns ticks (`ClockPal.nanosecondsPerTick`): the
     /// machine's uptime, which PawPrint only ever advances by whole ticks, so
@@ -784,7 +780,7 @@ type EmulatedKernel =
     /// matching jump in `StepCounter` (which would skew the spurious-wakeup
     /// schedule).
     member this.VirtualClockTicks : int64 =
-        let nanoseconds = UnixMachineState.nanosecondsSinceBoot this.Machine
+        let nanoseconds = UnixSystem.nanosecondsSinceBoot this.System
 
         if nanoseconds % ClockPal.nanosecondsPerTick <> 0L then
             failwith
@@ -795,11 +791,10 @@ type EmulatedKernel =
     /// The number of logical processors the machine reports: see
     /// `UnixMachineState.ProcessorCount`, and `EmulatedKernel.effectiveProcessorCount`
     /// for the number the guest observes.
-    member this.ProcessorCount : int = UnixMachineState.processorCount this.Machine
+    member this.ProcessorCount : int = UnixSystem.processorCount this.System
 
     /// The platform the simulated process runs on, fixed when the kernel was made.
-    member this.UnixPlatform : SimulatedUnixPlatform =
-        UnixMachineState.platform this.Machine
+    member this.UnixPlatform : SimulatedUnixPlatform = UnixSystem.platform this.System
 
 /// A way this kernel's own tables disagree with the POSIX system underneath
 /// them — a state no kernel could be in, and which `EmulatedKernel` exists to
@@ -846,53 +841,30 @@ type EmulatedKernelDefect =
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
 
-    /// Apply an operation to the POSIX machine this process runs on. Those
-    /// operations live in `UnixMachineState`, which takes that machine rather
-    /// than the kernel.
-    let mapMachine (f : UnixMachineState -> UnixMachineState) (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Machine = f kernel.Machine
-        }
-
-    /// This kernel's POSIX half, as `UnixSystem.step` and its per-syscall
-    /// siblings want it. Allocates: `EmulatedKernel` stores the three parts
-    /// flat, and this assembles a view of them.
-    let unix (kernel : EmulatedKernel) : UnixSystem<ThreadId, NativeSignalHandler> =
-        {
-            Machine = kernel.Machine
-            Process = kernel.Process
-            Tasks = kernel.Tasks
-            Leader = kernel.Leader
-        }
-
     /// The path of the directory the simulated process is standing in, as
     /// `SystemNative_GetCwd` reports it — or `None` if no path reaches it, which
     /// is the state a process is left in when its directory is removed out from
     /// under it. See `UnixPathResolution.currentDirectoryPath`.
     let currentDirectoryPath (kernel : EmulatedKernel) : AbsoluteUnixPath option =
-        UnixPathResolution.currentDirectoryPath (unix kernel)
+        UnixPathResolution.currentDirectoryPath kernel.System
 
-    /// Put back a POSIX half a syscall answered from. Total in both directions
-    /// with `unix`, which `TestUnixSystemProjection` asserts: a syscall's answer
+    /// Put back the POSIX system a syscall answered from: a syscall's answer
     /// is lost if a caller forgets this, and gained twice if a caller writes
     /// back a system it did not step.
     let withUnix (system : UnixSystem<ThreadId, NativeSignalHandler>) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            Machine = system.Machine
-            Process = system.Process
-            Tasks = system.Tasks
-            Leader = system.Leader
+            System = system
         }
 
-    /// Apply an operation that spans this kernel's whole POSIX half. Those
-    /// operations live in `UnixSystem`, which takes the three parts as one
-    /// record rather than the kernel.
+    /// Apply an operation to this kernel's POSIX system. Those operations live
+    /// in `UnixSystem` and the syscall families, which take the system rather
+    /// than the kernel.
     let mapUnix
         (f : UnixSystem<ThreadId, NativeSignalHandler> -> UnixSystem<ThreadId, NativeSignalHandler>)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
-        withUnix (f (unix kernel)) kernel
+        withUnix (f kernel.System) kernel
 
     /// Environment entries every simulated process starts with, ahead of
     /// whatever the host configures; see `withEnvironment` for how the two
@@ -1050,7 +1022,7 @@ module EmulatedKernel =
         : EmulatedKernel
         =
         let system = UnixBootImage.boot image
-        let platform = UnixMachineState.platform system.Machine
+        let platform = UnixSystem.platform system
 
         let system =
             system
@@ -1083,8 +1055,6 @@ module EmulatedKernel =
             PosixSignalShim = PosixSignalShim.initial
             CopyFileRangeSupport = CopyFileRangeSupport.Unprobed
             DirectoryStreamFds = Map.empty
-            Tasks = system.Tasks
-            Leader = system.Leader
             LowLevelMonitors = Map.empty
             NextLowLevelMonitorId = 1
             WaitHandles = Map.empty
@@ -1095,8 +1065,7 @@ module EmulatedKernel =
             ClockJitter = ClockJitterStrategy.Disabled
             StepCounter = 0L
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
-            Machine = system.Machine
-            Process = system.Process
+            System = system
         }
 
     /// `bootInheritingSignalIgnores` for a process whose launcher left no
@@ -1323,7 +1292,7 @@ module EmulatedKernel =
         validateVirtualClockTicks ticks kernel
 
         kernel
-        |> mapMachine (UnixMachineState.advanceClock ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick))
+        |> mapUnix (UnixSystem.advanceClock ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick))
 
     /// Retire one interpreted instruction: bump `StepCounter` by one and charge
     /// `InstructionCostTicks` of virtual time, subject to exactly the checks `withVirtualClockTicks`
@@ -1346,10 +1315,8 @@ module EmulatedKernel =
 
         { kernel with
             StepCounter = kernel.StepCounter + 1L
-            Machine =
-                UnixMachineState.advanceClock
-                    ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick)
-                    kernel.Machine
+            System =
+                UnixSystem.advanceClock ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick) kernel.System
         }
 
 
@@ -1428,17 +1395,6 @@ module EmulatedKernel =
         match configured |> Option.bind tryParseConfigBase10 with
         | Some count when count > 0 && count <= maxConfiguredProcessorCount -> count
         | _ -> kernel.ProcessorCount
-
-    /// Apply an operation to the tasks this kernel knows about. Those operations
-    /// live in `UnixTaskTable`, which takes the table rather than the kernel.
-    let mapTasks
-        (f : Map<ThreadId, UnixTaskState> -> Map<ThreadId, UnixTaskState>)
-        (kernel : EmulatedKernel)
-        : EmulatedKernel
-        =
-        { kernel with
-            Tasks = f kernel.Tasks
-        }
 
     /// The system error (errno on Unix, `GetLastError` on Windows) `thread` would read.
     /// 0 for a thread that has had none reported to it, which is what a fresh thread sees.
@@ -1578,7 +1534,7 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : ConnectOutcome * EmulatedKernel
         =
-        match UnixConnection.connectSocket socketId nonBlocking declaredLength family destination (unix kernel) with
+        match UnixConnection.connectSocket socketId nonBlocking declaredLength family destination kernel.System with
         | Ok (outcome, system) -> outcome, withUnix system kernel
         | Error refusal -> failwith $"EmulatedKernel.connectSocket: %s{ConnectRefusal.describe refusal}"
 
@@ -1590,7 +1546,7 @@ module EmulatedKernel =
     /// fixtures that hold an `EmulatedKernel`: writing `unix` in and `withUnix`
     /// back out at each would be this function, copied.
     let acceptConnection (socketId : SocketId) (kernel : EmulatedKernel) : int * TcpConnection * EmulatedKernel =
-        let fd, connection, system = UnixConnection.acceptConnection socketId (unix kernel)
+        let fd, connection, system = UnixConnection.acceptConnection socketId kernel.System
         fd, connection, withUnix system kernel
 
     /// `UnixTaskLifecycle.exitThread` through this kernel: `thread` has finished,
@@ -1606,7 +1562,7 @@ module EmulatedKernel =
         // 0 is what glibc's `start_thread` passes to the thread-exit syscall once
         // the thread's start routine has returned. Only a last task's status is ever
         // read, and that is refused below.
-        match UnixTaskLifecycle.exitThread thread 0 (unix kernel) with
+        match UnixTaskLifecycle.exitThread thread 0 kernel.System with
         | Ok (TaskOutcome.Continues system) -> withUnix system kernel
         | Ok (TaskOutcome.ProcessEnded ended) ->
             failwith
@@ -1621,7 +1577,7 @@ module EmulatedKernel =
     /// latched exit code to `exit`, once `Main` has returned and the foreground
     /// threads have finished, or at once from `Environment.Exit`.
     let exitGroup (thread : ThreadId) (status : int32) (kernel : EmulatedKernel) : ProcessTermination =
-        (UnixTaskLifecycle.exitGroup thread status (unix kernel)).Termination
+        (UnixTaskLifecycle.exitGroup thread status kernel.System).Termination
 
     /// `abort(3)`, called by `thread` at the end of CoreCLR's `PROCAbort`, which is
     /// how the runtime ends a process that failed fast or let an exception escape.
@@ -1629,7 +1585,7 @@ module EmulatedKernel =
     ///
     /// Fails loudly if the process survives, or dies of anything but SIGABRT.
     let abort (thread : ThreadId) (kernel : EmulatedKernel) : ProcessTermination =
-        let system = unix kernel
+        let system = kernel.System
 
         // `PROCAbort` first restores the dispositions CoreCLR's own handlers
         // replaced (`SEHCleanupSignals`), and `abort` unblocks SIGABRT and raises
@@ -1736,7 +1692,7 @@ module EmulatedKernel =
     /// repeats neither. The latter takes a `pinned` argument, which is what
     /// `ObjectLifetime.pinnedInodes` computes, so a caller wanting the whole picture
     /// pairs this with
-    /// `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes (unix kernel))`.
+    /// `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes kernel.System)`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         let dispatcher =
             match PosixSignalShim.signalThread kernel.PosixSignalShim with
@@ -1750,7 +1706,7 @@ module EmulatedKernel =
             |> Set.toList
             |> List.map EmulatedKernelDefect.HandlerFramesBetweenInstructions
 
-        (UnixSystem.checkInvariants (unix kernel) |> List.map EmulatedKernelDefect.System)
+        (UnixSystem.checkInvariants kernel.System |> List.map EmulatedKernelDefect.System)
         @ dispatcher
         @ frames
 

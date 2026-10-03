@@ -136,6 +136,7 @@ module TestSocketBinding =
             {
                 Backlog = 8
                 Queue = []
+                Drained = false
             }
 
     let private establishedPhase = SocketPhase.Established (ConnectionId 0L)

@@ -8,7 +8,7 @@ namespace WoofWare.PosixKernel
 /// a setting cannot be applied to a system that has already run: it describes
 /// the machine from the moment it booted. What changes while the machine runs
 /// is a syscall's effect, or an operation of the outside world on the running
-/// system, such as `UnixMachineState.advanceClock`.
+/// system, such as `UnixSystem.advanceClock`.
 [<RequireQualifiedAccess>]
 module UnixBootImage =
 

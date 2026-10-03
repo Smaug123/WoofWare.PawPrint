@@ -183,7 +183,8 @@ module UnixWait =
             | WakePrimitive.KqueuePollReportable
             | WakePrimitive.DescriptorReady _
             | WakePrimitive.DeadlinePassed _
-            | WakePrimitive.SignalDeliverable -> None
+            | WakePrimitive.SignalDeliverable
+            | WakePrimitive.EndedByClose -> None
 
         let finishing : Set<ExclusiveWaitQueue> =
             system.Tasks
@@ -196,15 +197,24 @@ module UnixWait =
                     | Some {
                                Syscall = ParkedSyscall.SocketWait wait
                            } -> Some (ExclusiveWaitQueue.SocketEventPort wait.Port)
+                    // A call a close has ended waits on no queue.
                     | Some {
                                Syscall = ParkedSyscall.Accept accept
-                           } -> Some (ExclusiveWaitQueue.Listener accept.Listener)
+                           } ->
+                        SleepTarget.description accept.Listener
+                        |> Option.map ExclusiveWaitQueue.Listener
                     | Some {
                                Syscall = ParkedSyscall.PipeRead read
-                           } when linux -> pipeOf read.Reader |> Option.map ExclusiveWaitQueue.PipeReaders
+                           } when linux ->
+                        SleepTarget.description read.Reader
+                        |> Option.bind pipeOf
+                        |> Option.map ExclusiveWaitQueue.PipeReaders
                     | Some {
                                Syscall = ParkedSyscall.PipeWrite write
-                           } when linux -> pipeOf write.Writer |> Option.map ExclusiveWaitQueue.PipeWriters
+                           } when linux ->
+                        SleepTarget.description write.Writer
+                        |> Option.bind pipeOf
+                        |> Option.map ExclusiveWaitQueue.PipeWriters
                     | Some {
                                Syscall = ParkedSyscall.Flock _
                            }

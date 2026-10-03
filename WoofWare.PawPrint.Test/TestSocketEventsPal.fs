@@ -629,6 +629,7 @@ module TestSocketEventsPal =
                         {
                             Backlog = 8
                             Queue = []
+                            Drained = false
                         })
                 addSocket
                     SocketDomain.Inet
@@ -637,6 +638,7 @@ module TestSocketEventsPal =
                         {
                             Backlog = 8
                             Queue = [ ConnectionId 9L ]
+                            Drained = false
                         })
                 addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)
                 addSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection)

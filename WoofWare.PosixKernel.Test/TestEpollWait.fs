@@ -90,6 +90,7 @@ module TestEpollWait =
                         {
                             Backlog = 8
                             Queue = []
+                            Drained = false
                         }
             }
 
@@ -156,6 +157,7 @@ module TestEpollWait =
                                         {
                                             Backlog = 8
                                             Queue = queue
+                                            Drained = false
                                         }
                             }
                             system.Machine.Sockets

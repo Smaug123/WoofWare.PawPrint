@@ -48,22 +48,15 @@ module TestClockAgainstHost =
     let private imageOn (flavour : SimulatedUnixFlavour) : UnixBootImage<int, string> =
         UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-    let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixBootImage.boot (imageOn flavour)).Machine
-
-    /// The machine of a process on `flavour` booted at `bootTime`.
-    let private bootedAt (flavour : SimulatedUnixFlavour) (bootTime : UnixTimestamp) : UnixMachineState =
-        (imageOn flavour |> UnixBootImage.withBootTime bootTime |> UnixBootImage.boot).Machine
-
     [<Test>]
     let ``an id is EINVAL here exactly when the host says so, unless it is refused`` () : unit =
         HostPlatform.onUnixHost (fun flavour ->
-            let machine = machineOn flavour
+            let system = UnixBootImage.boot (imageOn flavour)
 
             let disagreements =
                 sweptIds
                 |> List.choose (fun clockId ->
-                    match UnixClock.clockGettime clockId machine, hostRead clockId with
+                    match UnixClock.clockGettime clockId system, hostRead clockId with
                     // A refusal is this kernel declining to model a clock; the host may
                     // answer it or not, and either is consistent with declining.
                     | Error _, _ -> None
@@ -97,9 +90,11 @@ module TestClockAgainstHost =
             // Two clocks, the monotonic one and the realtime one, and one reading
             // of each whose sub-microsecond part is non-zero: a clock that keeps
             // whole microseconds drops it, and one that does not keeps it.
-            let machine =
-                bootedAt flavour (UnixTimestamp.ofSeconds 1_000_000L)
-                |> UnixMachineState.advanceClock 1_000_000_123L
+            let system =
+                imageOn flavour
+                |> UnixBootImage.withBootTime (UnixTimestamp.ofSeconds 1_000_000L)
+                |> UnixBootImage.boot
+                |> UnixSystem.advanceClock 1_000_000_123L
 
             // Linux's CLOCK_REALTIME_COARSE carries sub-microsecond digits only
             // once something has set the realtime clock to a time that has them
@@ -109,7 +104,7 @@ module TestClockAgainstHost =
                 flavour = SimulatedUnixFlavour.Linux && clockId = 5
 
             for clockId in [ 0..16 ] |> List.filter (hostDependent >> not) do
-                match UnixClock.clockGettime clockId machine with
+                match UnixClock.clockGettime clockId system with
                 | Ok (Ok reading) ->
                     let modelKeepsNanoseconds = UnixTimestamp.nanoseconds reading % 1000 <> 0
 

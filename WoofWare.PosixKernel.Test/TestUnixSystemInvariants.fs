@@ -366,7 +366,7 @@ module TestUnixSystemInvariants =
             Some (
                 ParkedSyscall.PipeRead
                     {
-                        Reader = stdin
+                        Reader = SleepTarget.Waiting (stdin, 0)
                         Buffer = UserBuffer.Mapped
                         Count = 1
                     }
@@ -594,6 +594,7 @@ module TestUnixSystemInvariants =
             {
                 Backlog = 8
                 Queue = []
+                Drained = false
             }
 
     [<Test>]

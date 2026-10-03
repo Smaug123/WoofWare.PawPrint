@@ -69,8 +69,8 @@ module TestEmulatedKernelCurrentDirectory =
         EmulatedKernel.currentDirectoryPath EmulatedKernel.initial
         |> shouldEqual (Some AbsoluteUnixPath.root)
 
-        EmulatedKernel.initial.Process.CurrentDirectoryInode
-        |> shouldEqual (VirtualFileSystem.root EmulatedKernel.initial.Machine.FileSystem)
+        EmulatedKernel.initial.System.Process.CurrentDirectoryInode
+        |> shouldEqual (VirtualFileSystem.root EmulatedKernel.initial.System.Machine.FileSystem)
 
         EmulatedKernel.checkInvariants EmulatedKernel.initial |> shouldEqual []
 
@@ -94,8 +94,8 @@ module TestEmulatedKernelCurrentDirectory =
                 (absolute $"/%s{wide}")
             |> EmulatedKernel.boot
 
-        darwin.Process.CurrentDirectoryInode
-        |> shouldNotEqual (VirtualFileSystem.root darwin.Machine.FileSystem)
+        darwin.System.Process.CurrentDirectoryInode
+        |> shouldNotEqual (VirtualFileSystem.root darwin.System.Machine.FileSystem)
 
         darwin.UnixPlatform |> shouldEqual SimulatedUnixPlatform.macOsArm64
         EmulatedKernel.checkInvariants darwin |> shouldEqual []

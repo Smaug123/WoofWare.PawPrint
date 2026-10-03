@@ -15,6 +15,9 @@ type AcceptOutcome =
     /// The call failed with this errno, and nothing about the listener changed.
     /// The accept queue in particular is untouched: measured on both flavours,
     /// a failed `accept` leaves a queued connection queued.
+    ///
+    /// Answered by `finishAccept`, the task is no longer parked in the system
+    /// this rides with.
     | Failed of error : UnixError
     /// A connection was dequeued and a socket materialised onto it. `fd` is the
     /// descriptor that socket is open on.
@@ -94,6 +97,15 @@ type AcceptRefusal =
     /// so the listener goes as the call returns, and what that does to what is
     /// left in its queue is unmeasured.
     | Release of DescriptionReleaseRefusal
+    /// The accept would sleep on a listener a close has drained
+    /// (`ListenState.Drained`): its queue is empty and the description it was
+    /// made through blocking.
+    ///
+    /// Darwin answers such a sleep with `ECONNABORTED` once anything wakes it,
+    /// and a connection wakes one sleeper and stays queued, so a second sleeper
+    /// sleeps on through it. This kernel wakes a sleeping accept while a
+    /// connection is queued, which would wake that second sleeper too.
+    | DarwinDrainedListener of listener : SocketId
 
 [<RequireQualifiedAccess>]
 module AcceptRefusal =
@@ -112,6 +124,8 @@ module AcceptRefusal =
         | AcceptRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
         | AcceptRefusal.Release refusal ->
             $"the accept slept on a listener no descriptor names any more, which goes as the call returns: %s{DescriptionReleaseRefusal.describe refusal}"
+        | AcceptRefusal.DarwinDrainedListener listener ->
+            $"socket %O{listener} is a listener on which a close of the descriptor an accept was asleep through has ended every accept, and this accept would sleep on it. Measured on Darwin (close-ends-call.c section A7), such a sleep answers ECONNABORTED as soon as anything wakes it, a connection or a signal, and one connection wakes one such sleeper, the connection staying queued, so a second sleeper sleeps on through it. This kernel wakes a sleeping accept for as long as a connection is queued, so it would wake every such sleeper for one connection."
 
 /// Why this kernel will not answer a `connect(2)` at all: the call reached an
 /// input whose real answer is unmeasured, or a state this library does not
@@ -1358,6 +1372,14 @@ module UnixConnection =
     /// that parked first (see `UnixWait.wakes`). The destination is not looked
     /// at before the call sleeps.
     ///
+    /// Under Darwin, a close of the descriptor a sleeping accept was made
+    /// through ends every accept asleep on the listener, through that
+    /// descriptor or another, and leaves the listener drained
+    /// (`ListenState.Drained`); see `UnixDescriptor.close`. A later accept on
+    /// it that finds a connection queued takes it, and a non-blocking one that
+    /// finds none answers `EAGAIN`; one that would sleep is refused
+    /// (`AcceptRefusal.DarwinDrainedListener`).
+    ///
     /// The accepted descriptor inherits `O_NONBLOCK` from the description this
     /// call was made through, on the flavours whose kernels do that: see
     /// `SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking`. A client whose
@@ -1432,14 +1454,18 @@ module UnixConnection =
         | [] ->
             // `O_NONBLOCK` is a fact about the open file description `fd` came
             // through, not about the socket, so an accept through a `dup` of a
-            // non-blocking listener answers EAGAIN too.
+            // non-blocking listener answers EAGAIN too. Measured on Darwin
+            // (close-ends-call.c section A7a), a drained listener's is EAGAIN
+            // too.
             if description.NonBlocking then
                 Ok (AcceptOutcome.Failed UnixError.EAGAIN, system)
+            elif listenState.Drained then
+                Error (AcceptRefusal.DarwinDrainedListener socketId)
             else
                 let parked =
                     ParkedSyscall.Accept
                         {
-                            Listener = descriptionId
+                            Listener = SleepTarget.Waiting (descriptionId, fd)
                             Destination = destination
                             DeclaredLength = declaredLength
                         }
@@ -1462,15 +1488,29 @@ module UnixConnection =
                 failwith
                     $"UnixConnection.finishAccept: task %O{task} is not parked, so there is no accept to finish. Only a task `accept` answered `WouldBlock` finishes here (this is a bug in the client)."
 
+        match parked.Listener with
+        | SleepTarget.EndedByClose _ ->
+            // Measured on Darwin 27.0.0 (`close-ends-call.c`, sections A1-A4):
+            // ECONNABORTED, whatever is queued and whatever signal is pending,
+            // since a woken accept on a drained listener answers it whatever
+            // woke it (section A7).
+            Ok (
+                AcceptOutcome.Failed UnixError.ECONNABORTED,
+                { system with
+                    Tasks = UnixTaskTable.unpark task system.Tasks
+                }
+            )
+        | SleepTarget.Waiting (listenerId, _) ->
+
         let description =
             match
                 FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-                |> Map.tryFind parked.Listener
+                |> Map.tryFind listenerId
             with
             | Some description -> description
             | None ->
                 failwith
-                    $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{parked.Listener}, which is not in the table, but a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
+                    $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{listenerId}, which is not in the table, but a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
 
         let socketId =
             match description.Target with
@@ -1482,7 +1522,7 @@ module UnixConnection =
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ ->
                 failwith
-                    $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{parked.Listener}, which names %A{description.Target} rather than a socket. `accept` parks only on a listening socket (this is a bug in the caller that recorded the park)."
+                    $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{listenerId}, which names %A{description.Target} rather than a socket. `accept` parks only on a listening socket (this is a bug in the caller that recorded the park)."
 
         let finished =
             { system with
@@ -1490,6 +1530,11 @@ module UnixConnection =
             }
 
         match (UnixMachineState.socket socketId system.Machine).Phase with
+        | SocketPhase.Listening {
+                                    Drained = true
+                                } ->
+            failwith
+                $"UnixConnection.finishAccept: task %O{task}'s accept sleeps on socket %O{socketId}, which a close has drained. The close that drains a listener ends every accept asleep on it, and `accept` refuses to sleep on a drained one (this is a bug in this library, or in a caller that assembled the state by hand)."
         | SocketPhase.Listening {
                                     Queue = _ :: _
                                 } ->
@@ -1543,6 +1588,10 @@ module UnixConnection =
     /// answers, and if a connection whose client is open is left in its queue,
     /// what that does to the client is unmeasured and the finish refuses
     /// (`AcceptRefusal.Release`).
+    ///
+    /// An accept a close has ended (`SleepTarget.EndedByClose`, under Darwin)
+    /// answers `ECONNABORTED`, whatever is queued and whatever signal is
+    /// pending, and leaves the queue as it is.
     ///
     /// `task` must be parked in an accept.
     let finishAccept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

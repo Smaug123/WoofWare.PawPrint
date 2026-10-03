@@ -109,6 +109,7 @@ module TestConnect =
                     {
                         Backlog = 8
                         Queue = []
+                        Drained = false
                     })
 
         let _, system = withSocket (SocketId 1L) listener system

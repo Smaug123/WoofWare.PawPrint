@@ -625,7 +625,7 @@ module TestNativeLibc =
     let ``inherited ignores are set as the process is created`` () : unit =
         EmulatedKernel.image SimulatedUnixPlatform.linuxX64 StandardStreamsConfig.piped
         |> EmulatedKernel.bootInheritingSignalIgnores "test" (Set.singleton Signal.SIGHUP)
-        |> EmulatedKernel.unix
+        |> fun kernel -> kernel.System
         |> KernelSignals.disposition Signal.SIGHUP
         |> shouldEqual SignalDisposition.Ignore
 

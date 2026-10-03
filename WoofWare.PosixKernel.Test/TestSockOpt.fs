@@ -426,6 +426,7 @@ module TestSockOpt =
                     {
                         Backlog = 5
                         Queue = []
+                        Drained = false
                     },
                 false
                 SocketPhase.Established (ConnectionId 0L), false
@@ -478,6 +479,7 @@ module TestSockOpt =
                 {
                     Backlog = 5
                     Queue = queue
+                    Drained = false
                 }
 
         for platform in platforms do

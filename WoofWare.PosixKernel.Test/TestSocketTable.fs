@@ -613,6 +613,7 @@ module TestSocketTable =
                                 {
                                     Backlog = 8
                                     Queue = queue
+                                    Drained = false
                                 }
                     }
                 ]
@@ -766,6 +767,7 @@ module TestSocketTable =
                                 {
                                     Backlog = backlog
                                     Queue = []
+                                    Drained = false
                                 }
                     }
                 for i in 1..clients -> int64 i, someSocket
@@ -1073,6 +1075,7 @@ module TestSocketTable =
                                 {
                                     Backlog = 8
                                     Queue = []
+                                    Drained = false
                                 }
                     }
                     1L, someSocket
@@ -1336,6 +1339,7 @@ module TestSocketTable =
                                 {
                                     Backlog = 8
                                     Queue = [ ConnectionId 5L ]
+                                    Drained = false
                                 }
                     }
                 ]
@@ -1417,6 +1421,7 @@ module TestSocketTable =
                                 {
                                     Backlog = 8
                                     Queue = [ ConnectionId 0L ; ConnectionId 0L ]
+                                    Drained = false
                                 }
                     }
                 ]
