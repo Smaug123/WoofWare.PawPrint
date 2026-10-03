@@ -3556,6 +3556,7 @@ module TestImpureCases =
                         let _, expected =
                             MinipalRandom.coreClrSecureRandomBytes
                                 "test"
+                                (ThreadId 0)
                                 16
                                 (KernelConfig.toKernel KernelConfig.Default)
 

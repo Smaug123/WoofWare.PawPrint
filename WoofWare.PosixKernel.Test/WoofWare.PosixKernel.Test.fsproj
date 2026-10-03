@@ -27,6 +27,7 @@
     <Compile Include="LaunchedStreams.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="Tasks.fs" />
+    <Compile Include="PendingSignal.fs" />
     <Compile Include="HandlerFrames.fs" />
     <Compile Include="Interruptible.fs" />
     <Compile Include="TestUnixTaskTable.fs" />

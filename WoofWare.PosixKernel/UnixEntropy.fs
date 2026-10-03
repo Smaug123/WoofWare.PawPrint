@@ -43,6 +43,9 @@ type GetRandomRefusal =
     | Buffer of BufferRefusal
     /// The simulated kernel has no `getrandom` system call.
     | NoSuchSyscall of flavour : SimulatedUnixFlavour
+    /// A request that moves `count` bytes, more than a page, by a task with a
+    /// signal pending that it would take on its return to user mode.
+    | SignalAtPageBoundary of count : int
 
 [<RequireQualifiedAccess>]
 module GetRandomRefusal =
@@ -53,6 +56,8 @@ module GetRandomRefusal =
         | GetRandomRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | GetRandomRefusal.NoSuchSyscall flavour ->
             $"the simulated kernel is %O{flavour}, which has no getrandom system call; getentropy(2) is how a process asks it for random bytes."
+        | GetRandomRefusal.SignalAtPageBoundary count ->
+            $"the request moves %d{count} bytes, more than a page, and a signal is pending that the calling task would take on its return to user mode. Linux's getrandom stops at the first page boundary once a signal is pending, short of the count, and this kernel answers no short getrandom."
 
 /// What `getentropy(2)` did, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -109,15 +114,23 @@ module UnixEntropy =
     [<Literal>]
     let getEntropyMaxLength : uint64 = 256UL
 
+    /// Why `transfer` has no answer, for each syscall to state in its own
+    /// refusal.
+    [<RequireQualifiedAccess>]
+    type private TransferRefusal =
+        | Buffer of BufferRefusal
+        | SignalAtPageBoundary of count : int
+
     /// Where a call that has decided how many bytes to move gets them: the
     /// buffer screen, the zero-length shortcut, and the one point at which the
     /// buffer must be able to hold bytes. `Error` is a refusal; `Ok (Error _)`
     /// is an errno.
     let private transfer<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (stopsShort : int -> bool)
         (buffer : UserBuffer)
         (length : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<Result<EntropyDraw * UnixSystem<'Task, 'Handler>, UnixError>, BufferRefusal>
+        : Result<Result<EntropyDraw * UnixSystem<'Task, 'Handler>, UnixError>, TransferRefusal>
         =
         match
             UserBufferCheck.faultsBeforeOperationFor
@@ -125,7 +138,7 @@ module UnixEntropy =
                 buffer
                 (uint64 length)
         with
-        | Error refusal -> Error refusal
+        | Error refusal -> Error (TransferRefusal.Buffer refusal)
         | Ok true -> Ok (Error UnixError.EFAULT)
         | Ok false ->
 
@@ -144,9 +157,15 @@ module UnixEntropy =
             // kernel's pool is, so this one stays put, which keeps a faulting
             // call from changing the system at all.
             Ok (Error UnixError.EFAULT)
-        | UserBuffer.Opaque -> Error BufferRefusal.OpaqueAtTransfer
-        | UserBuffer.Addressless -> Error BufferRefusal.AddresslessAtTransfer
+        | UserBuffer.Opaque -> Error (TransferRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (TransferRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped ->
+
+        // After the copy's own fault, which comes at the first block, before
+        // any page boundary.
+        if stopsShort length then
+            Error (TransferRefusal.SignalAtPageBoundary length)
+        else
 
         let draw, pool = EntropyPool.take length system.Machine.EntropyPool
 
@@ -170,7 +189,13 @@ module UnixEntropy =
     /// `GetRandomFlags.Insecure`, whatever the buffer and the count.
     ///
     /// Never blocks. Linux-only: under any other flavour the call is refused.
+    ///
+    /// `task` is the task making the call, which must be one of the process's.
+    /// A request that moves more than a page, by a task with a signal pending,
+    /// is refused (`GetRandomRefusal.SignalAtPageBoundary`): a real one stops
+    /// short at the first page boundary.
     let getRandom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (buffer : UserBuffer)
         (count : uint64)
         (flags : uint32)
@@ -198,8 +223,16 @@ module UnixEntropy =
         // the clamped count succeeds rather than faulting.
         let length = int (min count (getRandomMaxTransfer system.Machine.UnixPlatform))
 
-        match transfer buffer length system with
-        | Error refusal -> Error (GetRandomRefusal.Buffer refusal)
+        if not (Map.containsKey task system.Tasks) then
+            failwith
+                $"UnixEntropy.getRandom: task %O{task} is not one of the process's tasks, so it cannot be making the call (this is a bug in the client)."
+
+        let stopsShort (moved : int) =
+            SyscallInterruption.stopsAtPageBoundary task moved system
+
+        match transfer stopsShort buffer length system with
+        | Error (TransferRefusal.Buffer refusal) -> Error (GetRandomRefusal.Buffer refusal)
+        | Error (TransferRefusal.SignalAtPageBoundary count) -> Error (GetRandomRefusal.SignalAtPageBoundary count)
         | Ok (Error error) -> Ok (GetRandomAnswer.Failed error, system)
         | Ok (Ok (draw, system)) -> Ok (GetRandomAnswer.Completed draw, system)
 
@@ -225,7 +258,12 @@ module UnixEntropy =
             Ok (GetEntropyAnswer.Failed UnixError.EINVAL, system)
         else
 
-        match transfer buffer (int length) system with
-        | Error refusal -> Error (GetEntropyRefusal.Buffer refusal)
+        // This kernel cuts no getentropy short: a request is at most 256
+        // bytes.
+        match transfer (fun _ -> false) buffer (int length) system with
+        | Error (TransferRefusal.Buffer refusal) -> Error (GetEntropyRefusal.Buffer refusal)
+        | Error (TransferRefusal.SignalAtPageBoundary count) ->
+            failwith
+                $"UnixEntropy.getEntropy: a request of %d{count} bytes was cut short for a signal, which getentropy's limit of %d{getEntropyMaxLength} rules out (this is a bug in this library)."
         | Ok (Error error) -> Ok (GetEntropyAnswer.Failed error, system)
         | Ok (Ok (draw, system)) -> Ok (GetEntropyAnswer.Completed draw, system)

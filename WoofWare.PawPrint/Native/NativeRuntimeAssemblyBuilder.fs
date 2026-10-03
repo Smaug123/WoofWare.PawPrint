@@ -23,8 +23,15 @@ module NativeRuntimeAssemblyBuilder =
     /// A version-4 GUID over secure random bytes from the kernel, as `minipal_guid_v4_create` makes
     /// one: the metadata emitter stamps a dynamic module's version ID that way, so it differs between
     /// runs of the real runtime.
-    let private freshModuleVersionId (operation : string) (state : IlMachineState) : Guid * IlMachineState =
-        let bytes, kernel = MinipalRandom.coreClrSecureRandomBytes operation 16 state.Kernel
+    let private freshModuleVersionId
+        (operation : string)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : Guid * IlMachineState
+        =
+        let bytes, kernel =
+            MinipalRandom.coreClrSecureRandomBytes operation thread 16 state.Kernel
+
         let bytes = Seq.toArray bytes
         // `Data3` is bytes 6 and 7, little-endian, and its top nibble is the version.
         bytes.[7] <- (bytes.[7] &&& 0x0Fuy) ||| 0x40uy
@@ -220,7 +227,7 @@ module NativeRuntimeAssemblyBuilder =
                 failwith
                     $"TODO: %s{operation}: the dynamic assembly '%s{simpleName}' asks for flags 0x%08x{uint32 requestedFlags}, with bits above the sixteen DynamicAssemblyImage can write; CoreCLR stores all thirty-two"
 
-            let moduleVersionId, state = freshModuleVersionId operation state
+            let moduleVersionId, state = freshModuleVersionId operation ctx.Thread state
 
             let assembly =
                 use image = new MemoryStream (DynamicAssemblyImage.build name moduleVersionId)
