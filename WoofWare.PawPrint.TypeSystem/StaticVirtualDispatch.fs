@@ -17,8 +17,11 @@ open Microsoft.Extensions.Logging
 /// 2. the most specific default body among the constrained type and its interfaces: the method's
 ///    own body on its interface, or a MethodImpl on a more specific interface. Exactly the call's
 ///    instantiation is looked for first, and then any variance-compatible one, whose body runs as
-///    that instantiation's (`FindDefaultInterfaceImplementation`). Two equally specific bodies are
-///    a conflict.
+///    that instantiation's (`FindDefaultInterfaceImplementation`). Two equally specific bodies for
+///    exactly the call's instantiation are a conflict, but of two for variance-compatible ones the
+///    first runs. The search meets interfaces in order (the constrained type itself if it is an
+///    interface, then each type's interface map from the constrained type up its base chain), and
+///    a more specific body takes the place of the first one it displaces.
 ///
 /// CoreCLR falls back to the method's own body after that, which no type admitting the interface
 /// reaches: the search in 2 finds that body wherever the interface or a compatible instantiation of
@@ -41,7 +44,11 @@ module StaticVirtualDispatch =
     /// What the default-body search finds.
     [<RequireQualifiedAccess>]
     type private DefaultBody =
+        /// The body the call runs: the only most specific one, or in the variant pass the first of
+        /// several.
         | Unique of Candidate
+        /// Several equally specific bodies for exactly the call's instantiation, which the call
+        /// throws `AmbiguousImplementationException` for.
         | Conflict of Candidate list
         | NotFound
 
@@ -314,18 +321,21 @@ module StaticVirtualDispatch =
 
         let state, candidates = levels (state, candidates) constrained
 
-        // The survivors are distinct interfaces, so more than one is a conflict, which a static
-        // method's search reports in the variant pass too.
+        // The survivors are distinct interfaces, so more than one is a conflict. The search for a
+        // static method finds that conflict in the variant pass too, but `ResolveVirtualStaticMethod`
+        // then runs the first survivor anyway, reporting a variant match as unique.
         match List.choose id candidates with
         | [] -> state, DefaultBody.NotFound
         | [ only ] -> state, DefaultBody.Unique only
+        | first :: _ when allowVariance -> state, DefaultBody.Unique first
         | all -> state, DefaultBody.Conflict all
 
     /// The method a `constrained.` call of the static virtual `method` runs when the prefix names
     /// `constrained`. `method` is the interface method as the call instantiates it, so its declaring
     /// type is the interface instantiation the call names.
     ///
-    /// `Ambiguous` where two default bodies are equally specific, which the call throws
+    /// `Ambiguous` where no MethodImpl on the chain implements the method and two default bodies
+    /// for exactly the call's instantiation are equally specific, which the call throws
     /// `AmbiguousImplementationException` for; `NotOverridden` where nothing implements it, which
     /// for a type CoreCLR loads and a call it compiles cannot happen. `constrained` must be a type
     /// with a TypeDef row.
