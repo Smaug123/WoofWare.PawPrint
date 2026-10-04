@@ -21,6 +21,8 @@ type BlockingPipeOp =
     | Write of task : int * fd : int * count : int * mapped : bool
     | Close of fd : int
     | Dup of fd : int
+    /// `dup2(oldFd, newFd)`, which closes an open `newFd` as `Close` does.
+    | Dup2 of oldFd : int * newFd : int
     | SetNonBlocking of fd : int * value : bool
     /// A caught `SIGUSR1` is sent to a task in a call.
     | Signal of task : int
@@ -639,6 +641,7 @@ module TestBlockingPipe =
                 }
                 closes, Gen.map BlockingPipeOp.Close fd
                 dups, Gen.map BlockingPipeOp.Dup fd
+                closes, Gen.map2 (fun o n -> BlockingPipeOp.Dup2 (o, n)) fd fd
                 nonBlocking,
                 Gen.map2 (fun fd v -> BlockingPipeOp.SetNonBlocking (fd, v)) fd (Gen.elements [ true ; false ])
                 signals, Gen.map BlockingPipeOp.Signal task
@@ -796,6 +799,7 @@ module TestBlockingPipe =
                     | BlockingPipeOp.Finish index -> pick woken index |> Option.map BlockingPipeOp.Finish
                     | BlockingPipeOp.Close _
                     | BlockingPipeOp.Dup _
+                    | BlockingPipeOp.Dup2 _
                     | BlockingPipeOp.SetNonBlocking _
                     | BlockingPipeOp.Wake -> Some op
 
@@ -805,39 +809,21 @@ module TestBlockingPipe =
 
                 let where = $"%O{platform}, restart %b{restart}, op %d{i} (%A{op})"
 
-                match op with
-                | BlockingPipeOp.Read (task, fd, count, mapped) ->
-                    let expected, after = referenceRead task fd count mapped reference
-
-                    let buffer =
-                        if mapped then
-                            UserBuffer.Mapped
-                        else
-                            UserBuffer.Unmapped 8UL
-
-                    let seen, actual =
-                        fromRead (UnixReadWrite.read task fd buffer (uint64 count) system)
-
-                    compare where expected seen
-                    cover (label flavourName "read" seen)
-                    system <- settle task seen (Option.get actual)
-                    reference <- after
-                | BlockingPipeOp.Write (task, fd, count, mapped) ->
-                    let bytes = payload reference.Writes count
-                    let expected, after = referenceWrite task fd count mapped reference
-                    let seen, actual = fromWrite (libraryWrite task fd bytes mapped system)
-                    compare where expected seen
-
-                    match seen, after.Parks |> Map.tryFind task with
-                    | Seen.Sleeps,
-                      Some {
-                               Call = Call.Writing (_, _, written, _)
-                           } when written > 0 -> cover $"%s{flavourName} write: sleeps having put some in"
-                    | _ -> cover (label flavourName "write" seen)
-
-                    system <- settle task seen (Option.get actual)
-                    reference <- after
-                | BlockingPipeOp.Close fd ->
+                // A close of `fd` from `system` and `reference`, made by `call`,
+                // which answers `expectedAnswer` if it closes and leaves the
+                // reference as `install` makes it of the reference with `fd`
+                // gone: close's own, and dup2's onto an open descriptor. The
+                // system and reference after it.
+                let closing
+                    (fd : int)
+                    (call :
+                        UnixSystem<int, string> -> Result<SyscallAnswer * UnixSystem<int, string>, CloseRefusal<int>>)
+                    (expectedAnswer : SyscallAnswer)
+                    (install : Reference -> Reference)
+                    (system : UnixSystem<int, string>)
+                    (reference : Reference)
+                    : UnixSystem<int, string> * Reference
+                    =
                     let holder =
                         Map.tryFind fd reference.Fds
                         |> Option.bind (fun (_, description) ->
@@ -882,7 +868,7 @@ module TestBlockingPipe =
                         then
                             cover "Linux close: the last descriptor onto a sleeping call's description"
 
-                    match refusedFor, UnixDescriptor.close fd system with
+                    match refusedFor, call system with
                     | Some task, Error (CloseRefusal.DarwinWokenTransfer (description, refused)) ->
                         refused |> shouldEqual task
 
@@ -890,14 +876,9 @@ module TestBlockingPipe =
                         |> shouldEqual libraryDescription.[descriptionOf reference.Parks.[task].Call]
 
                         cover "Darwin close: refused, the transfer woken"
+                        system, reference
                     | None, Ok (answer, after) ->
-                        answer
-                        |> shouldEqual (
-                            if Map.containsKey fd reference.Fds then
-                                SyscallAnswer.Completed 0L
-                            else
-                                SyscallAnswer.Failed UnixError.EBADF
-                        )
+                        answer |> shouldEqual expectedAnswer
 
                         if not (List.isEmpty through) then
                             for task in through do
@@ -915,9 +896,8 @@ module TestBlockingPipe =
                             then
                                 cover "Darwin close: ends a transfer, one through a dup sleeping on"
 
-                        system <- after
-
-                        reference <-
+                        after,
+                        install
                             { reference with
                                 Fds = Map.remove fd reference.Fds
                                 Parks =
@@ -932,6 +912,102 @@ module TestBlockingPipe =
                                     )
                             }
                     | expected, other -> failwith $"%s{where}: close expected refusal for %A{expected}, got %A{other}"
+
+
+                match op with
+                | BlockingPipeOp.Read (task, fd, count, mapped) ->
+                    let expected, after = referenceRead task fd count mapped reference
+
+                    let buffer =
+                        if mapped then
+                            UserBuffer.Mapped
+                        else
+                            UserBuffer.Unmapped 8UL
+
+                    let seen, actual =
+                        fromRead (UnixReadWrite.read task fd buffer (uint64 count) system)
+
+                    compare where expected seen
+                    cover (label flavourName "read" seen)
+                    system <- settle task seen (Option.get actual)
+                    reference <- after
+                | BlockingPipeOp.Write (task, fd, count, mapped) ->
+                    let bytes = payload reference.Writes count
+                    let expected, after = referenceWrite task fd count mapped reference
+                    let seen, actual = fromWrite (libraryWrite task fd bytes mapped system)
+                    compare where expected seen
+
+                    match seen, after.Parks |> Map.tryFind task with
+                    | Seen.Sleeps,
+                      Some {
+                               Call = Call.Writing (_, _, written, _)
+                           } when written > 0 -> cover $"%s{flavourName} write: sleeps having put some in"
+                    | _ -> cover (label flavourName "write" seen)
+
+                    system <- settle task seen (Option.get actual)
+                    reference <- after
+                | BlockingPipeOp.Close fd ->
+                    let after, afterReference =
+                        closing
+                            fd
+                            (UnixDescriptor.close fd)
+                            (if Map.containsKey fd reference.Fds then
+                                 SyscallAnswer.Completed 0L
+                             else
+                                 SyscallAnswer.Failed UnixError.EBADF)
+                            id
+                            system
+                            reference
+
+                    system <- after
+                    reference <- afterReference
+                | BlockingPipeOp.Dup2 (oldFd, newFd) ->
+                    match Map.tryFind oldFd reference.Fds with
+                    | Some named when newFd >= 0 && newFd <> oldFd && Map.containsKey newFd reference.Fds ->
+                        cover $"%s{flavourName} dup2: onto an open descriptor"
+
+                        if reference.Parks |> Map.exists (fun _ park -> park.Through = Some newFd) then
+                            cover $"%s{flavourName} dup2: onto a descriptor a transfer sleeps through"
+
+                        let after, afterReference =
+                            closing
+                                newFd
+                                (fun system ->
+                                    UnixDescriptor.dup2 oldFd newFd system
+                                    |> Result.mapError (fun (Dup2Refusal.ClosingTarget refusal) -> refusal)
+                                )
+                                (SyscallAnswer.Completed (int64 newFd))
+                                (fun reference ->
+                                    { reference with
+                                        Fds = Map.add newFd named reference.Fds
+                                    }
+                                )
+                                system
+                                reference
+
+                        system <- after
+                        reference <- afterReference
+                    | named ->
+                        let expected =
+                            match named with
+                            | Some _ when newFd >= 0 -> SyscallAnswer.Completed (int64 newFd)
+                            | _ -> SyscallAnswer.Failed UnixError.EBADF
+
+                        match UnixDescriptor.dup2 oldFd newFd system with
+                        | Ok (answer, after) ->
+                            answer |> shouldEqual expected
+                            system <- after
+
+                            match named with
+                            | Some named when newFd >= 0 ->
+                                reference <-
+                                    { reference with
+                                        Fds = Map.add newFd named reference.Fds
+                                    }
+                            | _ -> ()
+                        | Error refusal ->
+                            failwith
+                                $"%s{where}: dup2 onto a closed or the same descriptor was refused: %s{Dup2Refusal.describe refusal}"
                 | BlockingPipeOp.Dup fd ->
                     let answer, after = UnixDescriptor.dup fd system
 
@@ -950,7 +1026,7 @@ module TestBlockingPipe =
 
                     system <- after
                 | BlockingPipeOp.SetNonBlocking (fd, value) ->
-                    let _, after = UnixSocket.setNonBlocking fd value system
+                    let _, after = UnixDescriptor.setNonBlocking fd value system
                     system <- after
 
                     match Map.tryFind fd reference.Fds with
@@ -1159,6 +1235,9 @@ module TestBlockingPipe =
                 "Darwin close: refused, the transfer woken"
                 "Darwin finish read ended by a close: end of file"
                 "Darwin finish write ended by a close: EPIPE"
+                "Linux dup2: onto an open descriptor"
+                "Darwin dup2: onto an open descriptor"
+                "Darwin dup2: onto a descriptor a transfer sleeps through"
             ]
 
         let missing = required |> List.filter (fun label -> not (covered.ContainsKey label))
@@ -1207,7 +1286,7 @@ module TestBlockingPipe =
             | other -> failwith $"pipe2: %A{other}"
 
         // Filled by non-blocking writes, as the probe fills it.
-        let _, system = UnixSocket.setNonBlocking 4 true system
+        let _, system = UnixDescriptor.setNonBlocking 4 true system
 
         let rec fill (remaining : int) (system : UnixSystem<int, string>) =
             if remaining = 0 then
@@ -1225,7 +1304,7 @@ module TestBlockingPipe =
                 | other -> failwith $"filling: %A{other}"
 
         let system = fill prefill system
-        let _, system = UnixSocket.setNonBlocking 4 false system
+        let _, system = UnixDescriptor.setNonBlocking 4 false system
         system
 
     let private readerAsleep (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -1668,7 +1747,7 @@ module TestBlockingPipe =
             UnixSystem.checkInvariants system |> shouldEqual []
 
             let system = leaderReads (65536 - 4096 + 1) system
-            let _, system = UnixSocket.setNonBlocking 3 true system
+            let _, system = UnixDescriptor.setNonBlocking 3 true system
 
             match ReadOutcomes.read 3 UserBuffer.Mapped 1UL system with
             | Ok (answer, _) ->
@@ -1888,7 +1967,7 @@ module TestBlockingPipe =
 
         pipeHolding platform false 65536
         |> writerAsleep 1000
-        |> fun system -> UnixSocket.setNonBlocking 4 true system |> snd
+        |> fun system -> UnixDescriptor.setNonBlocking 4 true system |> snd
         |> leaderReads 1
         |> refused 4
 
@@ -2138,7 +2217,7 @@ module TestBlockingPipe =
             for prefill, expected in [ 65536, 4096L ; 0, 69632L ] do
                 let system = pipeHolding platform false prefill |> writerAsleep 200000
                 // Setting the flag wakes nothing (section I).
-                let _, system = UnixSocket.setNonBlocking 4 true system
+                let _, system = UnixDescriptor.setNonBlocking 4 true system
                 UnixWait.wakes (Set.singleton sleeper) system |> shouldEqual []
                 let system = leaderReads 4096 system
                 finished (Some (payload 7 200000)) system |> shouldEqual (Seen.Wrote expected)
@@ -2164,7 +2243,7 @@ module TestBlockingPipe =
                         | other -> failwith $"%A{other}"
 
                 let system = system |> sleep sleeper |> sleep 2
-                let _, system = UnixSocket.setNonBlocking (if writing then 4 else 3) true system
+                let _, system = UnixDescriptor.setNonBlocking (if writing then 4 else 3) true system
 
                 let system =
                     if writing then
@@ -2197,7 +2276,7 @@ module TestBlockingPipe =
         // Section N3: on Linux a sleeper woken and beaten to what woke it
         // sleeps on, whatever the flag says.
         let system = pipeHolding SimulatedUnixPlatform.linuxX64 false 0 |> readerAsleep
-        let _, system = UnixSocket.setNonBlocking 3 true system
+        let _, system = UnixDescriptor.setNonBlocking 3 true system
         let system = leaderWrites 1 system
 
         UnixWait.wakes (Set.singleton sleeper) system
@@ -2212,7 +2291,7 @@ module TestBlockingPipe =
         let system =
             pipeHolding SimulatedUnixPlatform.linuxX64 false 65536 |> writerAsleep 4096
 
-        let _, system = UnixSocket.setNonBlocking 4 true system
+        let _, system = UnixDescriptor.setNonBlocking 4 true system
         let system = leaderReads 4096 system |> leaderWrites 4096
 
         fst (fromWrite (libraryFinishWrite sleeper (payload 7 4096) system))
@@ -2230,7 +2309,7 @@ module TestBlockingPipe =
 
             for nonBlocking in [ false ; true ] do
                 let system = pipeHolding platform false 65536 |> writerAsleep size
-                let _, system = UnixSocket.setNonBlocking 4 nonBlocking system
+                let _, system = UnixDescriptor.setNonBlocking 4 nonBlocking system
                 let system = leaderReads 50 system
                 let woken = UnixWait.wakes (Set.singleton sleeper) system |> List.map fst
                 woken |> shouldEqual (if nonBlocking && not linux then [ sleeper ] else [])

@@ -69,7 +69,7 @@ module UnixPipe =
     /// flavour accepts.
     [<RequireQualifiedAccess>]
     type private Pipe2Flags =
-        | Creates of nonBlocking : bool
+        | Creates of nonBlocking : bool * descriptorFlags : DescriptorFlags
         | Fails of error : UnixError
         | Refused of Pipe2Refusal
 
@@ -82,9 +82,9 @@ module UnixPipe =
     //   Darwin  O_NONBLOCK, O_CLOEXEC and O_CLOFORK make a pipe; every other
     //           bit is EINVAL.
     //
-    // O_NONBLOCK lands on both descriptions. O_CLOEXEC and O_CLOFORK set a
-    // per-descriptor flag that matters only across exec and fork, which this
-    // kernel models neither of, so they are accepted and change nothing here.
+    // O_NONBLOCK lands on both descriptions, and O_CLOEXEC and O_CLOFORK on
+    // both descriptors as FD_CLOEXEC and FD_CLOFORK (measured by fcntl-dup.c,
+    // KIND rows).
     let private decode (platform : SimulatedUnixPlatform) (flags : int) : Pipe2Flags =
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux ->
@@ -104,7 +104,12 @@ module UnixPipe =
             elif flags &&& direct <> 0 then
                 Pipe2Flags.Refused (Pipe2Refusal.PacketMode flags)
             else
-                Pipe2Flags.Creates (flags &&& OpenFlagNumbering.LinuxNonBlock <> 0)
+                Pipe2Flags.Creates (
+                    flags &&& OpenFlagNumbering.LinuxNonBlock <> 0,
+                    { DescriptorFlags.none with
+                        CloseOnExec = flags &&& OpenFlagNumbering.LinuxCloseOnExec <> 0
+                    }
+                )
         | SimulatedUnixFlavour.Darwin ->
             let accepted =
                 OpenFlagNumbering.DarwinNonBlock
@@ -114,13 +119,21 @@ module UnixPipe =
             if flags &&& ~~~accepted <> 0 then
                 Pipe2Flags.Fails UnixError.EINVAL
             else
-                Pipe2Flags.Creates (flags &&& OpenFlagNumbering.DarwinNonBlock <> 0)
+                Pipe2Flags.Creates (
+                    flags &&& OpenFlagNumbering.DarwinNonBlock <> 0,
+                    {
+                        CloseOnExec = flags &&& OpenFlagNumbering.DarwinCloseOnExec <> 0
+                        CloseOnFork = flags &&& OpenFlagNumbering.DarwinCloseOnFork <> 0
+                    }
+                )
 
     /// `pipe2(2)`: make a pipe, with a descriptor onto each end, and store the
     /// two in the caller's array at `destination`.
     ///
     /// `flags` is raw, in the simulated flavour's own `<fcntl.h>` numbering.
-    /// `pipe(2)` is `pipe2` with flags 0.
+    /// `pipe(2)` is `pipe2` with flags 0. `O_NONBLOCK` makes both descriptions
+    /// non-blocking, and `O_CLOEXEC` (and Darwin's `O_CLOFORK`) gives both
+    /// descriptors `FD_CLOEXEC` (`FD_CLOFORK`).
     ///
     /// The flags are screened first, on both flavours: a flag word the flavour
     /// rejects is EINVAL whatever the destination. Then Linux copies the two
@@ -145,7 +158,7 @@ module UnixPipe =
         match decode platform flags with
         | Pipe2Flags.Fails error -> Ok (Pipe2Answer.Failed error, system)
         | Pipe2Flags.Refused refusal -> Error refusal
-        | Pipe2Flags.Creates nonBlocking ->
+        | Pipe2Flags.Creates (nonBlocking, descriptorFlags) ->
 
         match destination with
         | UserBuffer.Opaque -> Error (Pipe2Refusal.Buffer BufferRefusal.OpaqueAtTransfer)
@@ -199,6 +212,11 @@ module UnixPipe =
 
         let (readFd, writeFd), registry =
             FileDescriptorRegistry.createPipe pipeId nonBlocking system.Process.FileDescriptors
+
+        let registry =
+            registry
+            |> FileDescriptorRegistry.setFlags readFd descriptorFlags
+            |> FileDescriptorRegistry.setFlags writeFd descriptorFlags
 
         Ok (
             Pipe2Answer.Created (readFd, writeFd),

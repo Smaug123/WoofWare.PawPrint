@@ -96,6 +96,7 @@ module TestSocketTable =
                          AccessMode = FileAccessMode.ReadWrite
                          NonBlocking = false
                          Flock = None
+                         Status = OpenFileStatus.none
                      }
                  )
                  |> Map.ofList)

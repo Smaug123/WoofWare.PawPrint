@@ -131,7 +131,7 @@ module TestDirectoryStreamFds =
         kernel.DirectoryStreamFds |> shouldBeEmpty
 
         // `fcntl(F_GETFL)` of a closed descriptor is EBADF.
-        UnixSocket.isNonBlocking fd kernel.System |> shouldEqual None
+        UnixDescriptor.isNonBlocking fd kernel.System |> shouldEqual None
 
     [<Test>]
     let ``a DIR* this kernel never issued is refused loudly`` () : unit =

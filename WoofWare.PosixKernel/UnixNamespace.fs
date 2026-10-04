@@ -80,7 +80,8 @@ module UnmodelledOpenFlag =
 /// flavour.
 ///
 /// Every field is a flag this kernel acts on, or (`CloseOnExec`,
-/// `Synchronous`) one it accepts knowing it changes nothing here. A word
+/// `Synchronous`, `DataSynchronous`) one whose only effect here is what
+/// `fcntl` reports. A word
 /// holding any other bit its flavour defines never becomes one of these: the
 /// decoder refuses it, so the kernel cannot guess at a flag it does not
 /// model.
@@ -110,16 +111,20 @@ type internal OpenFlags =
         /// `O_NOFOLLOW`: do not follow a symbolic link in the final position,
         /// which makes opening one ELOOP.
         NoFollow : bool
-        /// `O_CLOEXEC`. Accepted and ignored: it sets `FD_CLOEXEC`, which
-        /// matters only across `exec`, and this kernel models neither `fork` nor
-        /// `exec`.
+        /// `O_CLOEXEC`: give the new descriptor `FD_CLOEXEC`.
         CloseOnExec : bool
         /// `O_SYNC` (on Linux, the `__O_SYNC` bit, which the kernel completes to
-        /// `O_SYNC` whether or not `O_DSYNC` is beside it). Accepted and
-        /// ignored: it governs when a write reaches storage rather than whether
-        /// it is visible, and this filesystem holds its bytes in memory, so
-        /// every write is already as durable as the model gets.
+        /// `O_SYNC` whether or not `O_DSYNC` is beside it). It governs when a
+        /// write reaches storage rather than whether it is visible, and this
+        /// filesystem holds its bytes in memory, so every write is already as
+        /// durable as the model gets; the description carries it for `fcntl`
+        /// to report.
         Synchronous : bool
+        /// `O_DSYNC`, as the description will carry it: on Linux whenever
+        /// `Synchronous` is set, the kernel completing `__O_SYNC` with it; on
+        /// Darwin when the word holds it, which the decoder admits only beside
+        /// `O_SYNC`.
+        DataSynchronous : bool
         /// `O_DIRECTORY`: fail ENOTDIR unless the path names a directory.
         ///
         /// Modelled only as `opendir(3)` uses it: with `O_RDONLY`, and without
@@ -497,10 +502,9 @@ module internal OpenFlagWord =
     let private linuxBits (architecture : SimulatedUnixArchitecture) : (int * Meaning) list =
         // aarch64's <asm/fcntl.h> moves four bits; x86-64 keeps the generic
         // numbering.
-        let directory, noFollow, largeFile =
-            match architecture with
-            | SimulatedUnixArchitecture.X64 -> 0x10000, 0x20000, 0x8000
-            | SimulatedUnixArchitecture.Arm64 -> 0x4000, 0x8000, 0x20000
+        let directory = OpenFlagNumbering.linuxDirectory architecture
+        let noFollow = OpenFlagNumbering.linuxNoFollow architecture
+        let largeFile = OpenFlagNumbering.linuxLargeFile architecture
 
         let direct = OpenFlagNumbering.linuxDirect architecture
 
@@ -509,17 +513,17 @@ module internal OpenFlagWord =
             OpenFlagNumbering.LinuxExclusive, Meaning.Exclusive
             0x100, Meaning.Unmodelled UnmodelledOpenFlag.NoControllingTerminal
             0x200, Meaning.Truncate
-            0x400, Meaning.Unmodelled UnmodelledOpenFlag.Append
+            OpenFlagNumbering.LinuxAppend, Meaning.Unmodelled UnmodelledOpenFlag.Append
             OpenFlagNumbering.LinuxNonBlock, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
-            0x1000, Meaning.DataSynchronous
-            0x2000, Meaning.Unmodelled UnmodelledOpenFlag.Asynchronous
+            OpenFlagNumbering.LinuxDataSynchronous, Meaning.DataSynchronous
+            OpenFlagNumbering.LinuxAsynchronous, Meaning.Unmodelled UnmodelledOpenFlag.Asynchronous
             direct, Meaning.Unmodelled UnmodelledOpenFlag.Direct
             largeFile, Meaning.Unmodelled UnmodelledOpenFlag.LargeFile
             directory, Meaning.Directory
             noFollow, Meaning.NoFollow
-            0x40000, Meaning.Unmodelled UnmodelledOpenFlag.NoAccessTime
+            OpenFlagNumbering.LinuxNoAccessTime, Meaning.Unmodelled UnmodelledOpenFlag.NoAccessTime
             OpenFlagNumbering.LinuxCloseOnExec, Meaning.CloseOnExec
-            0x100000, Meaning.Synchronous
+            OpenFlagNumbering.LinuxSynchronous, Meaning.Synchronous
             0x200000, Meaning.Unmodelled UnmodelledOpenFlag.PathOnly
             0x400000, Meaning.Unmodelled UnmodelledOpenFlag.TemporaryFile
         ]
@@ -528,11 +532,11 @@ module internal OpenFlagWord =
     let private darwinBits : (int * Meaning) list =
         [
             OpenFlagNumbering.DarwinNonBlock, Meaning.Unmodelled UnmodelledOpenFlag.NonBlocking
-            0x8, Meaning.Unmodelled UnmodelledOpenFlag.Append
+            OpenFlagNumbering.DarwinAppend, Meaning.Unmodelled UnmodelledOpenFlag.Append
             0x10, Meaning.Unmodelled UnmodelledOpenFlag.SharedLock
             0x20, Meaning.Unmodelled UnmodelledOpenFlag.ExclusiveLock
-            0x40, Meaning.Unmodelled UnmodelledOpenFlag.Asynchronous
-            0x80, Meaning.Synchronous
+            OpenFlagNumbering.DarwinAsynchronous, Meaning.Unmodelled UnmodelledOpenFlag.Asynchronous
+            OpenFlagNumbering.DarwinSynchronous, Meaning.Synchronous
             0x100, Meaning.NoFollow
             0x200, Meaning.Create
             0x400, Meaning.Truncate
@@ -543,7 +547,7 @@ module internal OpenFlagWord =
             0x20000, Meaning.Unmodelled UnmodelledOpenFlag.NoControllingTerminal
             0x100000, Meaning.Directory
             0x200000, Meaning.Unmodelled UnmodelledOpenFlag.Symlink
-            0x400000, Meaning.DataSynchronous
+            OpenFlagNumbering.DarwinDataSynchronous, Meaning.DataSynchronous
             OpenFlagNumbering.DarwinCloseOnExec, Meaning.CloseOnExec
             OpenFlagNumbering.DarwinCloseOnFork, Meaning.Unmodelled UnmodelledOpenFlag.CloseOnFork
             0x20000000, Meaning.Unmodelled UnmodelledOpenFlag.NoFollowAny
@@ -612,6 +616,10 @@ module internal OpenFlagWord =
                 NoFollow = has Meaning.NoFollow
                 CloseOnExec = has Meaning.CloseOnExec
                 Synchronous = has Meaning.Synchronous
+                DataSynchronous =
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux -> has Meaning.Synchronous
+                    | SimulatedUnixFlavour.Darwin -> has Meaning.DataSynchronous
                 Directory = has Meaning.Directory
             }
 
@@ -668,8 +676,12 @@ module UnixNamespace =
         // the two would leave it with nothing to be right or wrong about.
         let exclusive = flags.Create && flags.Exclusive
 
-        /// Hand out a descriptor onto `inode` for the access that was asked for.
+        /// Hand out a descriptor onto `inode` for the access that was asked for,
+        /// with the descriptor flag and the status flags the word asked for.
+        /// `truncatedExisting` is whether this open's `O_TRUNC` truncated a file
+        /// that was there before it.
         let opened
+            (truncatedExisting : bool)
             (inode : InodeNumber)
             (system : UnixSystem<'Task, 'Handler>)
             : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
@@ -686,6 +698,42 @@ module UnixNamespace =
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
                 | None -> FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
+
+            let registry =
+                FileDescriptorRegistry.setFlags
+                    fd
+                    { DescriptorFlags.none with
+                        CloseOnExec = flags.CloseOnExec
+                    }
+                    registry
+
+            // Each kept under the flavour whose F_GETFL reports it
+            // (`OpenFileStatus`): measured (`open-flags.c`), Linux keeps
+            // O_DIRECTORY and O_NOFOLLOW, and Darwin marks a description whose
+            // open truncated a file that existed (`fcntl-dup.c`, WRITTEN rows).
+            let linux =
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> true
+                | SimulatedUnixFlavour.Darwin -> false
+
+            let registry =
+                match FileDescriptorRegistry.tryFindId fd registry with
+                | Some id ->
+                    FileDescriptorRegistry.mapStatus
+                        id
+                        (fun status ->
+                            { status with
+                                Synchronous = flags.Synchronous
+                                DataSynchronous = flags.DataSynchronous
+                                OpenedDirectory = linux && flags.Directory
+                                OpenedNoFollow = linux && flags.NoFollow
+                                Written = not linux && truncatedExisting
+                            }
+                        )
+                        registry
+                | None ->
+                    failwith
+                        $"UnixNamespace.openPath: fd %d{fd} was handed out a moment ago and is not live (this is a bug in this library)."
 
             Ok (
                 SyscallAnswer.Completed (int64 fd),
@@ -722,7 +770,7 @@ module UnixNamespace =
 
             match OpenDirRules.verdict credentials resolution system.Machine.FileSystem with
             | OpenDirVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
-            | OpenDirVerdict.Open inode -> opened inode system
+            | OpenDirVerdict.Open inode -> opened false inode system
         else
 
         // `O_CREAT|O_EXCL` does not follow a final symlink -- measured
@@ -804,7 +852,10 @@ module UnixNamespace =
                             FileSystem = filesystem
                         }
                 }
-                |> opened inode
+                // A file this open created is not one it truncated, whatever
+                // `O_TRUNC` asked: measured on Darwin (`fcntl-dup.c`, WRITTEN
+                // rows), its description is not marked written.
+                |> opened false inode
         | CreatingOpenVerdict.OpenExisting inode ->
 
         let entry =
@@ -907,7 +958,7 @@ module UnixNamespace =
             match entry.Content with
             | InodeContent.RegularFile _ when flags.Truncate ->
                 match UnixDescriptor.truncateAt inode 0L system with
-                | Ok system -> Ok system
+                | Ok system -> Ok (true, system)
                 | Error (TruncationRefusal.UnmeasuredSetIdChange (inode, refusal)) ->
                     Error (OpenRefusal.UnmeasuredSetIdChange (inode, refusal))
                 | Error (TruncationRefusal.ExceedsRepresentableLength _ as refusal) ->
@@ -917,9 +968,10 @@ module UnixNamespace =
             | InodeContent.RegularFile _
             | InodeContent.Directory _
             | InodeContent.CharacterDevice _
-            | InodeContent.Symlink _ -> Ok system
+            | InodeContent.Symlink _ -> Ok (false, system)
 
-        truncated |> Result.bind (opened inode)
+        truncated
+        |> Result.bind (fun (truncatedExisting, system) -> opened truncatedExisting inode system)
 
     /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
     /// descriptor onto what it names.

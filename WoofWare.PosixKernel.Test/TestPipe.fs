@@ -584,7 +584,7 @@ module TestPipe =
                         system <- after
                     | _ -> failwith $"%s{where}: expected %A{expected}, got %A{actual}"
                 | PipeOp.SetNonBlocking (fd, value) ->
-                    let answer, after = UnixSocket.setNonBlocking fd value system
+                    let answer, after = UnixDescriptor.setNonBlocking fd value system
 
                     match Map.tryFind fd reference.Fds with
                     | None -> answer |> shouldEqual (SetNonBlockingAnswer.Failed UnixError.EBADF)
@@ -741,8 +741,8 @@ module TestPipe =
                 | Ok None, Ok (Pipe2Answer.Failed UnixError.EINVAL, after) -> after |> shouldEqual initial
                 | Ok (Some nonBlocking), Ok (Pipe2Answer.Created (readFd, writeFd), after) ->
                     (readFd, writeFd) |> shouldEqual (3, 4)
-                    UnixSocket.isNonBlocking readFd after |> shouldEqual (Some nonBlocking)
-                    UnixSocket.isNonBlocking writeFd after |> shouldEqual (Some nonBlocking)
+                    UnixDescriptor.isNonBlocking readFd after |> shouldEqual (Some nonBlocking)
+                    UnixDescriptor.isNonBlocking writeFd after |> shouldEqual (Some nonBlocking)
                     assertSound $"%O{platform} bit %d{bit}" after
                 | Error (), Error (Pipe2Refusal.PacketMode _)
                 | Error (), Error (Pipe2Refusal.NotificationPipe _) -> ()
@@ -990,7 +990,7 @@ module TestPipe =
                                         fillUp system
                                     | n -> writeOrFail w (payload 0 n) system |> snd
 
-                                let system = UnixSocket.setNonBlocking w nonBlocking system |> snd
+                                let system = UnixDescriptor.setNonBlocking w nonBlocking system |> snd
 
                                 let system =
                                     match UnixDescriptor.close r system with

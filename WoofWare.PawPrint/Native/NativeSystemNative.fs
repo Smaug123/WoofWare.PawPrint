@@ -4439,19 +4439,28 @@ module NativeSystemNative =
         | Some "SystemNative_Dup",
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
           MethodReturnType.Returns (ConcreteIntPtr state.TypeSystem.ConcreteTypes) ->
-            // `dup(2)`: allocate the lowest non-negative fd not in use, sharing
-            // the OFD of `oldFd`. On EBADF we return -1 and set errno=EBADF so
-            // CoreLib's `Interop.CheckIo` raises an IOException, matching the
-            // libc behaviour `Interop.Sys.Dup` is written against. `LastSystemError`
-            // holds the raw kernel errno; the BCL converts it to the
-            // `Interop.Error` PAL enum via `SystemNative_ConvertErrorPlatformToPal`
-            // before `CheckIo` switches on it.
-            let oldFd = fdArgument "SystemNative_Dup" instruction.Arguments.[0]
+            // `intptr_t SystemNative_Dup(intptr_t oldfd)` (pal_io.c:351):
+            // `fcntl(oldfd, F_DUPFD_CLOEXEC, 0)`, retried on EINTR, which the
+            // call never answers here. So the lowest descriptor not in use,
+            // sharing `oldFd`'s description, with FD_CLOEXEC. On EBADF it
+            // returns -1 with errno set, so CoreLib's `Interop.CheckIo` raises an
+            // IOException. `LastSystemError` holds the raw kernel errno; the BCL
+            // converts it to the `Interop.Error` PAL enum via
+            // `SystemNative_ConvertErrorPlatformToPal` before `CheckIo` switches
+            // on it.
+            let operation = "SystemNative_Dup"
+            let oldFd = fdArgument operation instruction.Arguments.[0]
+
+            let command =
+                FcntlNumbering.duplicateCloseOnExec (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
 
             let resultFd, state =
-                match UnixDescriptor.dup oldFd state.Kernel.System with
-                | SyscallAnswer.Completed newFd, system -> newFd, withAnswered system state
-                | SyscallAnswer.Failed error, system -> -1L, withErrno ctx error system state
+                match UnixDescriptor.fcntl oldFd command 0 state.Kernel.System with
+                | Ok (SyscallAnswer.Completed newFd, system) -> newFd, withAnswered system state
+                | Ok (SyscallAnswer.Failed error, system) -> -1L, withErrno ctx error system state
+                | Error refusal ->
+                    failwith
+                        $"%s{operation}: fcntl(%d{oldFd}, F_DUPFD_CLOEXEC, 0) was refused: %s{FcntlRefusal.describe refusal}"
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim resultFd)) ctx.Thread
@@ -4530,20 +4539,69 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_FcntlSetFD",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FcntlSetFD(intptr_t fd, int32_t flags)`
+            // (pal_io.c:609): `fcntl(fd, F_SETFD, ConvertOpenFlags(flags))`,
+            // retried on EINTR, which the call never answers here. The argument
+            // goes through the *open* flags' conversion, PAL to platform, -1
+            // for a word it does not know; the kernel then keeps the bits of it
+            // that are descriptor flags. Returns 0, or -1-and-errno.
+            //
+            // The second parameter is matched loosely for the reason
+            // `SystemNative_FcntlSetIsNonBlocking`'s is.
+            let operation = "SystemNative_FcntlSetFD"
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let palFlags = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let argument =
+                OpenFlagsPal.decode state.Kernel.UnixPlatform palFlags |> Option.defaultValue -1
+
+            let code, state =
+                match UnixDescriptor.fcntl fd FcntlNumbering.SetDescriptorFlags argument state.Kernel.System with
+                | Ok (SyscallAnswer.Completed _, system) -> 0, withAnswered system state
+                | Ok (SyscallAnswer.Failed error, system) -> -1, withErrno ctx error system state
+                | Error refusal ->
+                    failwith
+                        $"%s{operation}: fcntl(%d{fd}, F_SETFD, 0x%x{argument}) was refused: %s{FcntlRefusal.describe refusal}"
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim code)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | Some "SystemNative_FcntlGetFD",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FcntlGetFD(intptr_t fd)` (pal_io.c:616):
+            // `fcntl(fd, F_GETFD)`, the descriptor's flags, or -1-and-errno.
+            // `SafeSocketHandle` reads it as it closes a socket that a call is
+            // still using: a descriptor without FD_CLOEXEC, which another
+            // process may share, is left alone.
+            let operation = "SystemNative_FcntlGetFD"
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            let code, state =
+                match UnixDescriptor.fcntl fd FcntlNumbering.GetDescriptorFlags 0 state.Kernel.System with
+                | Ok (SyscallAnswer.Completed flags, system) -> int flags, withAnswered system state
+                | Ok (SyscallAnswer.Failed error, system) -> -1, withErrno ctx error system state
+                | Error refusal ->
+                    failwith $"%s{operation}: fcntl(%d{fd}, F_GETFD) was refused: %s{FcntlRefusal.describe refusal}"
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim code)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_FcntlSetIsNonBlocking",
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_FcntlSetIsNonBlocking(intptr_t fd,
             // int32_t isNonBlocking)` (pal_io.c:655): `fcntl(F_GETFL)`, toggle
-            // `O_NONBLOCK`, `fcntl(F_SETFL)`. Returns 0, or -1-and-errno; any
+            // `O_NONBLOCK`, `fcntl(F_SETFL)`, which is
+            // `UnixDescriptor.setNonBlocking`. Returns 0, or -1-and-errno; any
             // nonzero second argument sets. The modelled targets draw two
             // errnos: EBADF from `F_GETFL` on a dead descriptor, and Darwin's
             // ENOTTY from `F_SETFL` on a kqueue.
-            //
-            // The flag lands on the open file description
-            // (`OpenFileDescription.NonBlocking`), where POSIX keeps the status
-            // flags, for every target: `UnixSocket.setNonBlocking` says what
-            // each one's operations do with it.
             //
             // The second parameter is matched loosely for the reason
             // `SystemNative_Socket`'s enums are: CoreLib declares it `int`
@@ -4563,7 +4621,8 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            let answer, unix = UnixSocket.setNonBlocking fd isNonBlocking state.Kernel.System
+            let answer, unix =
+                UnixDescriptor.setNonBlocking fd isNonBlocking state.Kernel.System
 
             // The system comes back on the failing arm too: on one flavour the
             // event port's bit toggles and the call reports a failure anyway.
@@ -4608,7 +4667,8 @@ module NativeSystemNative =
                 BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> bytes, value)
                 writeBytesThrough ctx operation outCell (ImmutableArray.CreateRange bytes) state
 
-            match UnixSocket.isNonBlocking fd state.Kernel.System with
+            // `fcntl(F_GETFL)`, and its `O_NONBLOCK`.
+            match UnixDescriptor.isNonBlocking fd state.Kernel.System with
             | None ->
                 // The C stores 0 through the pointer before returning -1, and the
                 // only failure the modelled targets can produce is EBADF.
@@ -4704,6 +4764,19 @@ module NativeSystemNative =
                 |> storeCreatedSocket -1L
                 |> completeWith (UnixErrorPal.toPal error)
             | Ok (Ok (fd, unix)) ->
+
+            // `#ifndef SOCK_CLOEXEC`, which is Darwin: `fcntl(fd, F_SETFD,
+            // FD_CLOEXEC)`, its failure ignored. On Linux the type carried
+            // SOCK_CLOEXEC.
+            let unix =
+                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> unix
+                | SimulatedUnixFlavour.Darwin ->
+                    match UnixDescriptor.fcntl fd FcntlNumbering.SetDescriptorFlags FcntlNumbering.CloseOnExec unix with
+                    | Ok (_, unix) -> unix
+                    | Error refusal ->
+                        failwith
+                            $"%s{operation}: fcntl(%d{fd}, F_SETFD, FD_CLOEXEC) was refused: %s{FcntlRefusal.describe refusal}"
 
             state.MapKernel (EmulatedKernel.withUnix unix)
             |> storeCreatedSocket (int64 fd)
@@ -5054,6 +5127,24 @@ module NativeSystemNative =
                     |> Some
                 | Ok (AcceptOutcome.Accepted (acceptedFd, peer, reportedLength), unix) ->
 
+                // FD_CLOEXEC: Linux's `accept4(..., SOCK_CLOEXEC)` sets it as
+                // it accepts, and on Darwin the shim's `fcntl(F_SETFD,
+                // FD_CLOEXEC)` sets it after, closing the socket if that fails,
+                // which it cannot on a socket the kernel has just made. The
+                // kernel library models `accept(2)`, so both are this `fcntl`.
+                let unix =
+                    match
+                        UnixDescriptor.fcntl
+                            acceptedFd
+                            FcntlNumbering.SetDescriptorFlags
+                            FcntlNumbering.CloseOnExec
+                            unix
+                    with
+                    | Ok (SyscallAnswer.Completed _, unix) -> unix
+                    | other ->
+                        failwith
+                            $"%s{operation}: setting FD_CLOEXEC on the accepted socket, fd %d{acceptedFd}, answered %A{other}; fcntl(F_SETFD) fails on no open descriptor (this is an interpreter bug)."
+
                 // `#if !defined(__linux__)`: "On macOS and FreeBSD new socket
                 // inherits flags from accepting fd. Our socket code expects new
                 // socket to be in blocking mode by default"
@@ -5063,7 +5154,7 @@ module NativeSystemNative =
                 // socket if the `fcntl` fails, which it cannot on a socket the
                 // kernel has just made.
                 let unix =
-                    match UnixSocket.setNonBlocking acceptedFd false unix with
+                    match UnixDescriptor.setNonBlocking acceptedFd false unix with
                     | SetNonBlockingAnswer.Set, unix -> unix
                     | SetNonBlockingAnswer.Failed error, _ ->
                         failwith
