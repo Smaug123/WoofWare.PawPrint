@@ -184,8 +184,8 @@ module TestSzArrayInterfaceDispatch =
         match resolved with
         | IlMachineStateExecution.ResolvedVirtualCall.Runs implementation -> state, Some implementation
         | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> state, None
-        | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted reabstraction ->
-            failwith $"%s{concretizedMethod.Name} resolved to the reabstraction %s{reabstraction.Name}"
+        | IlMachineStateExecution.ResolvedVirtualCall.Fails failure ->
+            failwith $"%s{concretizedMethod.Name} resolved to %s{DispatchFailure.describe failure}"
 
     let private objectHandle : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Object

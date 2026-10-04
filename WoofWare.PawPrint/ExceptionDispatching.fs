@@ -1358,6 +1358,8 @@ module ExceptionDispatching =
             ExceptionHResults.lookup "System.DuplicateWaitObjectException"
         elif id = baseClassTypes.EntryPointNotFoundException.Identity then
             ExceptionHResults.lookup "System.EntryPointNotFoundException"
+        elif id = baseClassTypes.AmbiguousImplementationException.Identity then
+            ExceptionHResults.lookup "System.Runtime.AmbiguousImplementationException"
         elif id = baseClassTypes.InvalidProgramException.Identity then
             ExceptionHResults.lookup "System.InvalidProgramException"
         elif id = baseClassTypes.BadImageFormatException.Identity then

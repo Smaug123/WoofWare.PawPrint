@@ -10,9 +10,8 @@ type ConstrainedStaticImplementation =
     | Runs of
         WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
         declaringType : ConcreteTypeHandle
-    /// The most specific default body is this reabstraction, as for
-    /// `VirtualImplementation.Reabstracted`: a call throws `EntryPointNotFoundException`.
-    | Reabstracted of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+    /// There is no method to run, and a call throws `DispatchFailure.exceptionType` instead.
+    | Fails of DispatchFailure
 
 /// Which method a `constrained.` call of a static virtual interface method runs, given the type the
 /// prefix names, as CoreCLR's `MethodTable::ResolveVirtualStaticMethod` (methodtable.cpp) decides
@@ -256,8 +255,7 @@ module StaticVirtualDispatch =
         | state, None -> state, VirtualImplementation.NotOverridden
 
     /// Resolve a `constrained.`-prefixed reference to a static abstract interface member down to
-    /// the implementation the constrained type supplies, or to the reabstraction that stands in
-    /// its place.
+    /// the implementation the constrained type supplies, or to why there is none to run.
     ///
     /// Shared by `constrained. call` and `constrained. ldftn`, which pick their target the same
     /// way: CoreCLR routes both through `getCallInfo` with the constrained token, and the switch
@@ -320,20 +318,13 @@ module StaticVirtualDispatch =
 
             failwith $"%s{opName}: could not find static implementation of %s{methodToCall.Name} on %s{constrained}"
         | VirtualImplementation.Ambiguous candidates ->
-            candidates
-            |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
-            |> String.concat ", "
-            // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
-            |> failwithf
-                "%s: multiple most-specific default interface implementations of %s: %s"
-                opName
-                methodToCall.Name
+            state, ConstrainedStaticImplementation.Fails (DispatchFailure.Ambiguous candidates)
         | VirtualImplementation.Unmodelled reason -> failwith $"%s{opName}: %s{reason}"
         | VirtualImplementation.Reabstracted reabstraction when not reabstraction.IsStatic ->
             failwith
                 $"%s{opName}: resolved non-static reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}"
         | VirtualImplementation.Reabstracted reabstraction ->
-            state, ConstrainedStaticImplementation.Reabstracted reabstraction
+            state, ConstrainedStaticImplementation.Fails (DispatchFailure.Reabstracted reabstraction)
         | VirtualImplementation.Found implementation when not implementation.Definition.IsStatic ->
             failwith
                 $"%s{opName}: resolved non-static implementation %s{MethodOwner.describe implementation.Definition.Owner}::%s{implementation.Definition.Name}"
