@@ -1116,15 +1116,18 @@ module VirtualFileSystem =
 
         bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
 
-    /// Create a symbolic link holding `target` verbatim, owned by `owner`. Mirrors `symlink(2)`,
-    /// including that the target is not resolved, need not exist, and may be
-    /// relative. An empty target is unrepresentable by construction; see
-    /// `SymlinkTargetError.Empty`.
-    /// There is no `permissions` parameter: see
-    /// `InodePermissions.PlatformSymlinkDefault`.
+    /// Create a symbolic link holding `target` verbatim, with permission bits
+    /// `permissions`, owned by `owner`. Mirrors `symlink(2)`, including that the
+    /// target is not resolved, need not exist, and may be relative. An empty
+    /// target is unrepresentable by construction; see `SymlinkTargetError.Empty`.
+    ///
+    /// Which bits a link may have is a rule of the flavour, which this
+    /// filesystem does not know: `SimulatedUnixPlatform.symlinkCreationPermissions`
+    /// gives them, and `UnixSystem.checkInvariants` holds a system to it.
     let createSymlink
         (directory : InodeNumber)
         (name : DirectoryEntryName)
+        (permissions : PermissionBits)
         (owner : InodeOwner)
         (now : UnixTimestamp)
         (target : SymlinkTarget)
@@ -1133,11 +1136,16 @@ module VirtualFileSystem =
         =
         let target = SymlinkTarget.assertValid "VirtualFileSystem.createSymlink" target
 
+        let permissions =
+            PermissionBits.assertValid "VirtualFileSystem.createSymlink" permissions
+
         match ensureBindable directory name vfs with
         | Error error -> Error error
         | Ok () ->
 
-        let inode, allocated = allocate (InodeContent.Symlink target) owner now vfs
+        let inode, allocated =
+            allocate (InodeContent.Symlink (target, permissions)) owner now vfs
+
         bind directory name inode now allocated |> Result.map (fun vfs -> inode, vfs)
 
     /// Bind an existing inode under a second name. Mirrors `link(2)`, including
@@ -2080,9 +2088,9 @@ module VirtualFileSystem =
     /// `ctime` moves even when `bits` are the bits the inode already had, and
     /// no other timestamp moves.
     ///
-    /// Partial in the inode, which must name a regular file or a directory this
-    /// filesystem contains: a symbolic link's permission bits are the
-    /// platform's, and nothing here can change them.
+    /// Partial in the inode, which must name a regular file, a device or a
+    /// directory this filesystem contains: no syscall this library models
+    /// changes a symbolic link's own bits.
     let setPermissions
         (inode : InodeNumber)
         (bits : PermissionBits)
@@ -2113,7 +2121,7 @@ module VirtualFileSystem =
                     }
             | InodeContent.Symlink _ ->
                 failwith
-                    $"VirtualFileSystem.setPermissions: inode %O{inode} is a symbolic link, whose permission bits are the platform's rather than stored. `chmod` follows a final symlink and no descriptor names one, so the caller should never have reached a link (this is a bug in the caller)."
+                    $"VirtualFileSystem.setPermissions: inode %O{inode} is a symbolic link. `chmod` follows a final symlink, no descriptor names one, and Darwin's `lchmod` is not modelled, so the caller should never have reached a link (this is a bug in the caller)."
 
         { vfs with
             Inodes =
@@ -2600,9 +2608,13 @@ module VirtualFileSystem =
     /// `defaultOwner` owns the root directory and every entry that does not
     /// state an owner of its own. It is not inherited from an entry's parent:
     /// an entry without an owner belongs to `defaultOwner` wherever it is.
+    ///
+    /// `symlinkPermissions` are every seeded symbolic link's bits, which a seed
+    /// does not state: see `SeedEntry.Symlink`.
     let ofFileSystemSeed
         (createdAt : UnixTimestamp)
         (defaultOwner : InodeOwner)
+        (symlinkPermissions : PermissionBits)
         (entries : Map<DirectoryEntryName, SeedEntry>)
         : VirtualFileSystem
         =
@@ -2631,7 +2643,7 @@ module VirtualFileSystem =
                     | SeedEntry.Symlink (target, owner) ->
                         let owner = owner |> Option.defaultValue defaultOwner
 
-                        match createSymlink directory name owner createdAt target vfs with
+                        match createSymlink directory name symlinkPermissions owner createdAt target vfs with
                         | Ok (_, vfs) -> vfs
                         | Error error ->
                             failwith

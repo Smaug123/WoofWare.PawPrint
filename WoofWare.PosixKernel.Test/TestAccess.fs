@@ -109,7 +109,7 @@ module TestAccess =
                     Parent = VirtualFileSystem.root (VirtualFileSystem.empty epoch (owner 0u 0u))
                     Permissions = bits
                 }
-        | Kind.Link -> InodeContent.Symlink (SymlinkTarget.parseOrFail context "target")
+        | Kind.Link -> InodeContent.Symlink (SymlinkTarget.parseOrFail context "target", bits)
 
     [<Test>]
     let ``denied answers the probe's prediction for every standing, mode, question and kind`` () : unit =
@@ -424,6 +424,7 @@ module TestAccess =
         VirtualFileSystem.createSymlink
             (inodeAt vfs parent)
             (name child)
+            SymlinkModes.linux
             by
             epoch
             (SymlinkTarget.parseOrFail context target)
@@ -718,10 +719,7 @@ module TestAccess =
             Error (
                 AccessRefusal.UnmeasuredExecution (
                     inodeAt vfs "/t/l",
-                    ExecutionRefusal.UnmeasuredPrivilegedCaller (
-                        rootStanding,
-                        SimulatedUnixPlatform.symlinkPermissions SimulatedUnixPlatform.macOsArm64
-                    )
+                    ExecutionRefusal.UnmeasuredPrivilegedCaller (rootStanding, SymlinkModes.linux)
                 )
             )
         )

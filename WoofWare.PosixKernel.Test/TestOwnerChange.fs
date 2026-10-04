@@ -746,6 +746,7 @@ module TestOwnerChange =
         VirtualFileSystem.createSymlink
             (inodeAt vfs parent)
             (name child)
+            SymlinkModes.linux
             by
             epoch
             (SymlinkTarget.parseOrFail context target)
@@ -788,9 +789,7 @@ module TestOwnerChange =
         | None -> failwith $"%s{p} is absent"
 
     let private bitsOf (p : string) (system : UnixSystem<int, string>) : int =
-        match Inode.permissions (inodeOf p system) with
-        | InodePermissions.Stored bits -> PermissionBits.toInt bits
-        | InodePermissions.PlatformSymlinkDefault -> failwith $"%s{p} is a symlink"
+        PermissionBits.toInt (Inode.permissions (inodeOf p system))
 
     /// Give the inode at `p` the bits `bits`, without moving anything else:
     /// every inode of a hand-built filesystem was stamped at `epoch`, so

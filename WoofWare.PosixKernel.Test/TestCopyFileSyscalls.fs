@@ -130,9 +130,7 @@ module TestCopyFileSyscalls =
         | other -> failwith $"/%s{fileName} is %A{other}"
 
     let private modeOf (system : UnixSystem<int, string>) (fileName : string) : int =
-        match Inode.permissions (entryOf system fileName) with
-        | InodePermissions.Stored bits -> PermissionBits.toInt bits
-        | InodePermissions.PlatformSymlinkDefault -> failwith $"/%s{fileName} is a symlink"
+        PermissionBits.toInt (Inode.permissions (entryOf system fileName))
 
     let private withRegistry
         (registry : FileDescriptorRegistry)

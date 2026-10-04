@@ -116,12 +116,10 @@ module private RenameChecks =
     let lacksWrite (role : string) (credentials : Credentials) (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
         match VirtualFileSystem.tryGet inode vfs with
         | Some entry ->
-            match Inode.permissions entry with
-            | InodePermissions.Stored bits ->
-                PermissionBits.deniedTo (Standing.toward credentials entry.Owner) AccessRequest.Write bits
-            | InodePermissions.PlatformSymlinkDefault ->
-                failwith
-                    $"RenameChecks.lacksWrite: %s{role} is inode %O{inode}, which reports platform-default symlink permissions -- but rename only asks this of a directory (this is a bug in the caller of RenameChecks.lacksWrite)."
+            PermissionBits.deniedTo
+                (Standing.toward credentials entry.Owner)
+                AccessRequest.Write
+                (Inode.permissions entry)
         | None ->
             failwith
                 $"RenameChecks.lacksWrite: %s{role} is inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."

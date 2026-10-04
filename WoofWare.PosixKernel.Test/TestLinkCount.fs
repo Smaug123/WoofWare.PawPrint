@@ -316,6 +316,7 @@ module TestLinkCount =
             VirtualFileSystem.createSymlink
                 directory
                 (name "l")
+                SymlinkModes.linux
                 Owners.linuxDefault
                 now
                 (SymlinkTarget.parseOrFail context "s")

@@ -170,7 +170,7 @@ module TestResolutionSplit =
             let followFinal = policy = SymlinkPolicy.Follow || trailingActsOnFinal
 
             match content with
-            | InodeContent.Symlink linkTarget when not isFinal || followFinal ->
+            | InodeContent.Symlink (linkTarget, _) when not isFinal || followFinal ->
                 if symlinks + 1 > PathLimits.maxSymlinkTraversals limits then
                     Error UnixError.ELOOP
                 else if not (PathLimits.spliceWithinLimit limits linkTarget rest) then
@@ -354,6 +354,7 @@ module TestResolutionSplit =
             VirtualFileSystem.createSymlink
                 (VirtualFileSystem.root vfs)
                 (name n)
+                SymlinkModes.linux
                 Owners.linuxDefault
                 buildTime
                 (target t)
@@ -606,7 +607,14 @@ module TestResolutionSplit =
                     vfs
                 |> Result.map snd
             | Step.MakeSymlink (p, n, t) ->
-                VirtualFileSystem.createSymlink (pick p) (name n) Owners.linuxDefault buildTime (target t) vfs
+                VirtualFileSystem.createSymlink
+                    (pick p)
+                    (name n)
+                    SymlinkModes.linux
+                    Owners.linuxDefault
+                    buildTime
+                    (target t)
+                    vfs
                 |> Result.map snd
 
         // A rejected step (EEXIST, mostly) leaves the filesystem alone.

@@ -460,7 +460,16 @@ module TestBindingCount =
             match pick living d with
             | None -> vfs, pinned
             | Some directory ->
-                match VirtualFileSystem.createSymlink directory (name n) Owners.linuxDefault now (target "a") vfs with
+                match
+                    VirtualFileSystem.createSymlink
+                        directory
+                        (name n)
+                        SymlinkModes.linux
+                        Owners.linuxDefault
+                        now
+                        (target "a")
+                        vfs
+                with
                 | Ok (_, vfs) ->
                     record Reached.Symlink
                     vfs, pinned
@@ -629,7 +638,9 @@ module TestBindingCount =
         (ops : Op list)
         : unit
         =
-        let vfs = VirtualFileSystem.ofFileSystemSeed buildTime Owners.linuxDefault seed
+        let vfs =
+            VirtualFileSystem.ofFileSystemSeed buildTime Owners.linuxDefault SymlinkModes.linux seed
+
         assertAgrees "after realising the seed" Set.empty vfs
 
         ops

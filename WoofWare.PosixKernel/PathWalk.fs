@@ -532,7 +532,7 @@ module PathWalk =
                     $"VirtualFileSystem: directory inode %O{directory} binds \"%s{DirectoryEntryName.toEscaped name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
         match content with
-        | InodeContent.Symlink linkTarget ->
+        | InodeContent.Symlink (linkTarget, _) ->
             // A non-final symlink is always traversed, whatever the policy
             // says: `SymlinkPolicy.NoFollowFinal` is about the *final*
             // component alone, and no kernel offers a walk that stops at an
@@ -788,7 +788,7 @@ module PathWalk =
         let followFinal = paused.Policy = SymlinkPolicy.Follow || trailingActsOnFinal
 
         match content with
-        | InodeContent.Symlink linkTarget when followFinal ->
+        | InodeContent.Symlink (linkTarget, _) when followFinal ->
             match traverse limits vfs directory linkTarget rest paused.SymlinksTraversed with
             | Error error -> Error (PathFailure.Errno error)
             | Ok (next, spliced) ->

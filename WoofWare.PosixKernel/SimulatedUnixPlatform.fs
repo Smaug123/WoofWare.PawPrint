@@ -528,29 +528,19 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> true
         | SimulatedUnixFlavour.Darwin -> false
 
-    /// The permission bits this platform reports for a symbolic link, which no
-    /// syscall can set and which the two Unixes disagree about.
-    ///
-    /// Measured rather than read: with `umask 022` macOS reports 0o755 for a
-    /// fresh symlink, with `umask 077` it reports 0o700 and with `umask 000`
-    /// 0o777 — it applies the creating process's umask, exactly as it does to a
-    /// regular file. Linux reports 0o777 whatever the umask, which is why
-    /// `InodePermissions` derives this rather than storing it: under a Linux
-    /// simulation a stored value could only ever describe a filesystem no
-    /// kernel produced.
-    ///
-    /// The Darwin answer here is the `umask 022` one, and stays a constant even
-    /// though a process umask is modelled: a symbolic link can only enter this
-    /// filesystem through a *seed*, and a seed describes a tree some other
-    /// process built, so this process's umask is not the one that applied to
-    /// it. The day a `symlink(2)` lets a process create one, that link *is*
-    /// created by this process and this must become a function of the process's
-    /// umask — that is the trigger, not the existence of the field.
-    let symlinkPermissions (platform : SimulatedUnixPlatform) : PermissionBits =
+    /// The permission bits this platform gives a symbolic link created by a
+    /// process whose umask is `umask`: 0o777 on Linux whatever the umask, and
+    /// 0o777 less the umask on Darwin, as it does for a regular file.
+    let symlinkCreationPermissions (platform : SimulatedUnixPlatform) (umask : PermissionBits) : PermissionBits =
+        // Measured by `link-symlink.c` (SYMMODE) on Linux 6.18.5 and Darwin
+        // 27.0, under umasks 000, 022, 077, 0700 and 0777.
         match flavour platform with
-        | SimulatedUnixFlavour.Linux -> PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" 0o777
+        | SimulatedUnixFlavour.Linux ->
+            PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkCreationPermissions" 0o777
         | SimulatedUnixFlavour.Darwin ->
-            PermissionBits.parseOrFail "SimulatedUnixPlatform.symlinkPermissions" (0o777 &&& ~~~0o022)
+            PermissionBits.parseOrFail
+                "SimulatedUnixPlatform.symlinkCreationPermissions"
+                (0o777 &&& ~~~(PermissionBits.toInt umask))
 
     /// Whether this platform clears a truncated file's set-user-ID and
     /// set-group-ID bits.

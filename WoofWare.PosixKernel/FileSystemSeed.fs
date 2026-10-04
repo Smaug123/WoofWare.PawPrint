@@ -18,9 +18,9 @@ open System.Collections.Immutable
 /// `SeedEntry.file` and `SeedEntry.directory` supply the modes a `umask 022`
 /// process would have created, for the many seeds that only care about shape.
 ///
-/// A symlink has no mode field, and must not: Linux ignores a symlink's own
-/// mode entirely, `lchmod` is not portable, and `VirtualFileSystem` already
-/// models this with `InodePermissions.PlatformSymlinkDefault`.
+/// A symlink has no mode field: Linux gives every link 0o777, `lchmod` is not
+/// portable, and a seeded link gets what its flavour gives a link created
+/// under `SeedEntry.symlinkCreatorsUmask`.
 ///
 /// Every entry has an optional owner. `None` means the owner the seed is
 /// realised with, which whoever realises it states explicitly
@@ -57,6 +57,13 @@ module SeedEntry =
     /// See <c>defaultForRegularFile</c> for the files version.
     /// </remarks>
     let defaultPermsForDirectory : PermissionBits = PermissionBits (0o777 &&& ~~~0o022)
+
+    /// The umask a seeded symbolic link was created under, which is the `umask
+    /// 022` the other defaults here assume: a seed describes a tree some other
+    /// process built, so the umask of the process the seed is booted into
+    /// never applied to it. Only Darwin's links are affected; see
+    /// `SimulatedUnixPlatform.symlinkCreationPermissions`.
+    let symlinkCreatorsUmask : PermissionBits = PermissionBits 0o022
 
     /// A regular file with the mode a `umask 022` process's `open(O_CREAT)`
     /// would have produced: 0666 &&& ~~~0o022. It belongs to whatever owner the

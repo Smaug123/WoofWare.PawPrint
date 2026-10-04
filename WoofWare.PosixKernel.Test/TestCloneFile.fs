@@ -99,6 +99,7 @@ module TestCloneFile =
         VirtualFileSystem.createSymlink
             (inodeAt vfs parent)
             (name child)
+            SymlinkModes.linux
             mine
             epoch
             (SymlinkTarget.parseOrFail context target)
@@ -324,12 +325,11 @@ module TestCloneFile =
 
                     match clone "m/msrc" "m/mdst" 0x4 system, bits &&& 0o400 <> 0 with
                     | Ok (SyscallAnswer.Completed 0L, after), true ->
-                        match Inode.permissions (entryAt after "/m/mdst") with
-                        | InodePermissions.Stored kept ->
-                            if PermissionBits.toInt kept <> (bits &&& ~~~0o6000) then
-                                failwith
-                                    $"0o%o{bits} in group %d{directoryGroup}: clone has 0o%o{PermissionBits.toInt kept}"
-                        | InodePermissions.PlatformSymlinkDefault -> failwith "a link"
+                        let kept = Inode.permissions (entryAt after "/m/mdst")
+
+                        if PermissionBits.toInt kept <> (bits &&& ~~~0o6000) then
+                            failwith
+                                $"0o%o{bits} in group %d{directoryGroup}: clone has 0o%o{PermissionBits.toInt kept}"
                     | Ok (SyscallAnswer.Failed UnixError.EACCES, _), false -> ()
                     | other, _ -> failwith $"0o%o{bits} in group %d{directoryGroup}: %A{other}"
 
@@ -390,7 +390,7 @@ module TestCloneFile =
                         StatusChange = now
                     }
 
-                Inode.permissions clone |> shouldEqual (InodePermissions.Stored (mode 0o640))
+                Inode.permissions clone |> shouldEqual (mode 0o640)
                 entryAt after "/src" |> shouldEqual (entryAt system "/src")
 
                 let before = (entryAt system "/w").Times
@@ -455,7 +455,7 @@ module TestCloneFile =
         | Ok (SyscallAnswer.Completed 0L, after) ->
             let clone = entryAt after "/c"
             clone.Owner |> shouldEqual mine
-            Inode.permissions clone |> shouldEqual (InodePermissions.Stored (mode 0o644))
+            Inode.permissions clone |> shouldEqual (mode 0o644)
         | other -> failwith $"%A{other}"
 
     [<Test>]

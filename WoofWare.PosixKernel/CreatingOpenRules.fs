@@ -186,12 +186,7 @@ module CreatingOpenRules =
         // resolution that reached here has already passed it.
         let parent, parentBits =
             match VirtualFileSystem.tryGet directory vfs with
-            | Some parent ->
-                match Inode.permissions parent with
-                | InodePermissions.Stored bits -> parent, bits
-                | InodePermissions.PlatformSymlinkDefault ->
-                    failwith
-                        $"CreatingOpenRules.verdict: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is a bug in this library's path walk, or in a caller that assembled the resolution itself)."
+            | Some parent -> parent, Inode.permissions parent
             | None ->
                 failwith
                     $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toEscaped name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."

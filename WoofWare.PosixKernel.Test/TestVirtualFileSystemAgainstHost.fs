@@ -544,6 +544,7 @@ module TestVirtualFileSystemAgainstHost =
                     (VirtualFileSystem.createSymlink
                         parent
                         leaf
+                        SymlinkModes.linux
                         Owners.linuxDefault
                         buildTime
                         (SymlinkTarget.parseOrFail "test" target)
@@ -572,7 +573,7 @@ module TestVirtualFileSystemAgainstHost =
         | Ok inode ->
 
         match VirtualFileSystem.tryGetContent inode vfs with
-        | Some (InodeContent.Symlink target) -> Outcome.Symlink (PathText.ofTarget target)
+        | Some (InodeContent.Symlink (target, _)) -> Outcome.Symlink (PathText.ofTarget target)
         | Some _ -> Outcome.NotASymlink
         | None -> failwith $"the model resolved %s{relative} to inode %O{inode}, which it does not contain"
 
@@ -828,6 +829,7 @@ module TestVirtualFileSystemAgainstHost =
                             VirtualFileSystem.createSymlink
                                 (VirtualFileSystem.root (VirtualFileSystem.empty buildTime Owners.linuxDefault))
                                 (DirectoryEntryName.parseOrFail "test" linkName)
+                                SymlinkModes.linux
                                 Owners.linuxDefault
                                 buildTime
                                 (SymlinkTarget.parseOrFail "test" targetText)
@@ -2325,7 +2327,7 @@ module TestVirtualFileSystemAgainstHost =
         )
         |> shouldEqual (ofName "S_IFDIR")
 
-        InodeContent.fileTypeBits (InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x"))
+        InodeContent.fileTypeBits (InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x", SymlinkModes.linux))
         |> shouldEqual (ofName "S_IFLNK")
 
         // ...and each of them really is inside the band, so that a value that
@@ -2336,7 +2338,7 @@ module TestVirtualFileSystemAgainstHost =
         for content in
             [
                 InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
-                InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x")
+                InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x", SymlinkModes.linux)
             ] do
             let bits = InodeContent.fileTypeBits content
             bits &&& mask |> shouldEqual bits
@@ -2628,6 +2630,7 @@ module TestVirtualFileSystemAgainstHost =
                 VirtualFileSystem.createSymlink
                     (directoryOf parent)
                     leaf
+                    SymlinkModes.linux
                     Owners.linuxDefault
                     buildTime
                     (SymlinkTarget.parseOrFail "test" target)

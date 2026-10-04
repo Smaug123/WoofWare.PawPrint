@@ -1042,10 +1042,7 @@ module TestPermissionStanding =
 
     let private modeOf (p : string) (system : UnixSystem<int, string>) : int =
         match VirtualFileSystem.tryGet (inodeAt system.Machine.FileSystem p) system.Machine.FileSystem with
-        | Some inode ->
-            match Inode.permissions inode with
-            | InodePermissions.Stored bits -> PermissionBits.toInt bits
-            | InodePermissions.PlatformSymlinkDefault -> failwith $"%s{p} is a symlink"
+        | Some inode -> PermissionBits.toInt (Inode.permissions inode)
         | None -> failwith $"%s{p} is absent"
 
     [<Test>]

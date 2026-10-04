@@ -625,11 +625,7 @@ module UnixPathResolution =
         | None -> None
         | Some entry ->
 
-        let permissions =
-            match Inode.permissions entry with
-            | InodePermissions.Stored bits -> bits
-            | InodePermissions.PlatformSymlinkDefault ->
-                SimulatedUnixPlatform.symlinkPermissions system.Machine.UnixPlatform
+        let permissions = Inode.permissions entry
 
         let fileSystem = system.Machine.FileSystem
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
@@ -653,7 +649,7 @@ module UnixPathResolution =
                 Error (StatRefusal.DeviceFileSystemRoot inode)
             // `readlink` reports the target's byte length as the link's size,
             // and a process can see it through `lstat`.
-            | InodeContent.Symlink target ->
+            | InodeContent.Symlink (target, _) ->
                 Ok (
                     int64 (UnixByteString.length (SymlinkTarget.toByteString target)),
                     int64 (VirtualFileSystem.bindingCount inode fileSystem)
@@ -1055,8 +1051,7 @@ module UnixPathResolution =
             | InodeContent.RegularFile (_, bits)
             | InodeContent.CharacterDevice (_, bits) -> OwnerChangeTarget.NonDirectory, bits
             | InodeContent.Directory directory -> OwnerChangeTarget.Directory, directory.Permissions
-            | InodeContent.Symlink _ ->
-                OwnerChangeTarget.NonDirectory, SimulatedUnixPlatform.symlinkPermissions platform
+            | InodeContent.Symlink (_, bits) -> OwnerChangeTarget.NonDirectory, bits
 
         match
             OwnerChangeRules.verdict
@@ -1796,10 +1791,7 @@ module UnixPathResolution =
                 failwith
                     $"UnixPathResolution.faccessat: inode %O{inode} is not in the filesystem, but a path or a descriptor resolved to it. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
 
-        let bits =
-            match Inode.permissions entry with
-            | InodePermissions.Stored bits -> bits
-            | InodePermissions.PlatformSymlinkDefault -> SimulatedUnixPlatform.symlinkPermissions platform
+        let bits = Inode.permissions entry
 
         match
             AccessRules.denied

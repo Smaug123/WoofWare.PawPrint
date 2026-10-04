@@ -153,9 +153,8 @@ type CharacterDevice =
 /// What lives at an inode.
 /// </summary>
 /// <remarks>
-/// Carries only the metadata whose existence depends on which kind of thing
-/// this inode is (e.g. permission bits, which can't necessarily be set on symlinks on Linux).
-/// Metadata whose existence is guaranteed for all inodes lives on <c>Inode</c> instead.
+/// Carries only the metadata whose shape depends on which kind of thing this inode is.
+/// Metadata whose shape is the same for all inodes lives on <c>Inode</c> instead.
 ///
 /// The emulated filesystem is case-sensitive and normalisation-preserving,
 /// because names are compared byte for byte.
@@ -167,14 +166,18 @@ type InodeContent =
     | RegularFile of contents : ImmutableArray<byte> * permissions : PermissionBits
     | Directory of directory : DirectoryContent
     /// <summary>
-    /// The link's target, unresolved.
+    /// The link's target, unresolved, and the link's own permission bits.
     /// </summary>
     /// <remarks>
     /// The kernel treats a symlink's target as a string to be re-resolved
     /// on every traversal; it's not a reference to whatever it pointed at
     /// when it was made.
+    ///
+    /// The permission bits are what the link was created with, which is a rule of
+    /// the flavour: see <c>SimulatedUnixPlatform.symlinkCreationPermissions</c>. Linux's are
+    /// always <c>0o777</c>; Darwin's depend on the creating process's umask.
     /// </remarks>
-    | Symlink of target : SymlinkTarget
+    | Symlink of target : SymlinkTarget * permissions : PermissionBits
     /// A character special file: what `stat(2)` reports as `S_IFCHR`, standing
     /// for `device` rather than holding any contents of its own.
     | CharacterDevice of device : CharacterDevice * permissions : PermissionBits
@@ -292,38 +295,14 @@ type Inode =
         Owner : InodeOwner
     }
 
-/// <summary>
-/// An inode's permission bits as a caller must handle them.
-/// </summary>
-/// <remarks>
-/// This is usually just a number as you might pass to <c>chmod</c>.
-/// However, symlinks have platform-specific behaviour, so <c>InodePermissions</c> models them individually.
-/// </remarks>
-[<RequireQualifiedAccess>]
-type InodePermissions =
-    /// <summary>
-    /// A regular file's, directory's or device node's stored, <c>chmod</c>-able bits.
-    /// </summary>
-    | Stored of bits : PermissionBits
-    /// <summary>
-    /// A symbolic link's permission bits.
-    /// </summary>
-    /// <remarks>
-    /// Behaviour is platform-dependent. Darwin applies the creating process's <c>umask</c>
-    /// to a symlink, and Darwin also has <c>lchmod</c>.
-    /// By contrast, Linux reports <c>0o777</c> whatever the umask (and has no syscalls
-    /// like BSD's <c>lchmod</c> which could change that value).
-    /// </remarks>
-    | PlatformSymlinkDefault
-
 [<RequireQualifiedAccess>]
 module Inode =
     /// <summary>
     /// An inode's permission bits.
     /// </summary>
-    let permissions (inode : Inode) : InodePermissions =
+    let permissions (inode : Inode) : PermissionBits =
         match inode.Content with
-        | InodeContent.RegularFile (_, permissions) -> InodePermissions.Stored permissions
-        | InodeContent.Directory directory -> InodePermissions.Stored directory.Permissions
-        | InodeContent.Symlink _ -> InodePermissions.PlatformSymlinkDefault
-        | InodeContent.CharacterDevice (_, permissions) -> InodePermissions.Stored permissions
+        | InodeContent.RegularFile (_, permissions) -> permissions
+        | InodeContent.Directory directory -> directory.Permissions
+        | InodeContent.Symlink (_, permissions) -> permissions
+        | InodeContent.CharacterDevice (_, permissions) -> permissions

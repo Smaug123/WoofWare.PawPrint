@@ -409,7 +409,7 @@ module TestPathCursor =
             let followFinal = policy = SymlinkPolicy.Follow || trailing
 
             match content with
-            | InodeContent.Symlink linkTarget when not isFinal || followFinal ->
+            | InodeContent.Symlink (linkTarget, _) when not isFinal || followFinal ->
                 if symlinks + 1 > PathLimits.maxSymlinkTraversals limits then
                     Error UnixError.ELOOP
                 else
@@ -517,6 +517,7 @@ module TestPathCursor =
             VirtualFileSystem.createSymlink
                 parent
                 (name n)
+                SymlinkModes.linux
                 Owners.linuxDefault
                 buildTime
                 (SymlinkTarget.parseOrFail "test" t)

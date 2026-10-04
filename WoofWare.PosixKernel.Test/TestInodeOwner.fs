@@ -293,7 +293,8 @@ module TestInodeOwner =
                     )
                 ]
 
-        let vfs = VirtualFileSystem.ofFileSystemSeed epoch defaultOwner seed
+        let vfs =
+            VirtualFileSystem.ofFileSystemSeed epoch defaultOwner SymlinkModes.linux seed
 
         let system =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
@@ -348,7 +349,7 @@ module TestInodeOwner =
                         )
                     ]
 
-            VirtualFileSystem.ofFileSystemSeed epoch defaultOwner seed
+            VirtualFileSystem.ofFileSystemSeed epoch defaultOwner SymlinkModes.linux seed
             |> VirtualFileSystem.inodes
             |> Map.iter (fun _ inode -> inode.Owner |> shouldEqual defaultOwner)
 
@@ -390,7 +391,14 @@ module TestInodeOwner =
             |> ok
 
         let link, vfs =
-            VirtualFileSystem.createSymlink q (name "l") g epoch (SymlinkTarget.parseOrFail context "g") vfs
+            VirtualFileSystem.createSymlink
+                q
+                (name "l")
+                SymlinkModes.linux
+                g
+                epoch
+                (SymlinkTarget.parseOrFail context "g")
+                vfs
             |> ok
 
         let before = VirtualFileSystem.inodes vfs |> Map.map (fun _ inode -> inode.Owner)
