@@ -312,7 +312,7 @@ module TestSocketAddressLength =
         let property (clients : (bool * bool * uint32) list, word : uint32) : unit =
             let listenerFd, system = withListener SimulatedUnixPlatform.linuxX64
 
-            let portFd, system =
+            let queueFd, system =
                 match UnixPoll.epollCreate1 0 system with
                 | Ok (Ok created) -> created
                 | other -> failwith $"epoll_create1: %A{other}"
@@ -343,7 +343,7 @@ module TestSocketAddressLength =
                             system
                         else
                             match
-                                UnixPoll.epollCtl portFd 1 clientFd (EpollEventArgument.Readable (events, 7UL)) system
+                                UnixPoll.epollCtl queueFd 1 clientFd (EpollEventArgument.Readable (events, 7UL)) system
                             with
                             | Ok (EpollCtlAnswer.Changed, system) -> system
                             | other -> failwith $"epoll_ctl ADD: %A{other}"
@@ -455,12 +455,12 @@ module TestSocketAddressLength =
             let fileFd, registry =
                 FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
 
-            let createPort =
+            let createEventQueue =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
                 | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
                 | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
 
-            let portFd, registry = createPort registry
+            let queueFd, registry = createEventQueue registry
 
             let system =
                 { system with
@@ -471,7 +471,7 @@ module TestSocketAddressLength =
                 }
 
             everyLength (fun word ->
-                for fd in [ 0 ; fileFd ; portFd ] do
+                for fd in [ 0 ; fileFd ; queueFd ] do
                     for destination in
                         [
                             UserBuffer.Mapped

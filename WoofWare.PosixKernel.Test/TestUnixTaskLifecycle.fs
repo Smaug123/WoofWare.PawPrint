@@ -58,10 +58,10 @@ module TestUnixTaskLifecycle =
         },
         id
 
-    let private flockOn (port : OpenFileDescriptionId) : ParkedSyscall =
+    let private flockOn (queue : OpenFileDescriptionId) : ParkedSyscall =
         ParkedSyscall.Flock
             {
-                Requester = port
+                Requester = queue
                 Mode = FlockMode.Exclusive
             }
 
@@ -154,9 +154,9 @@ module TestUnixTaskLifecycle =
     [<Test>]
     let ``a parked task's exit is refused, and names the park`` () : unit =
         for platform in platforms do
-            let system, port = world platform
+            let system, queue = world platform
 
-            let system = system |> withTask 1 |> withTask 2 |> UnixWait.park 2 (flockOn port)
+            let system = system |> withTask 1 |> withTask 2 |> UnixWait.park 2 (flockOn queue)
 
             let park =
                 match UnixTaskTable.parkOf 2 system.Tasks with
@@ -245,8 +245,8 @@ module TestUnixTaskLifecycle =
     let ``a parked leader's exit is refused as parked`` () : unit =
         // The park is the first thing a task in a syscall is refused for, whoever it is.
         for platform in platforms do
-            let system, port = world platform
-            let system = system |> withTask 1 |> UnixWait.park 0 (flockOn port)
+            let system, queue = world platform
+            let system = system |> withTask 1 |> UnixWait.park 0 (flockOn queue)
             let park = UnixTaskTable.parkOf 0 system.Tasks |> Option.get
 
             UnixTaskLifecycle.exitThread 0 0 system
@@ -255,14 +255,14 @@ module TestUnixTaskLifecycle =
     [<Test>]
     let ``exit_group ends the process with the flavour's status, parked tasks included`` () : unit =
         for platform in platforms do
-            let system, port = world platform
+            let system, queue = world platform
 
             let system =
                 system
                 |> withTask 1
                 |> withTask 2
                 |> withTask 3
-                |> UnixWait.park 3 (flockOn port)
+                |> UnixWait.park 3 (flockOn queue)
                 |> HandlerFrames.enterIn "h" 2 (Set.singleton Signal.SIGUSR2)
                 |> mapSignals (
                     SignalState.enqueue
@@ -305,8 +305,8 @@ module TestUnixTaskLifecycle =
 
     [<Test>]
     let ``exit_group from a parked task, or one that was never registered, fails loudly`` () : unit =
-        let system, port = world SimulatedUnixPlatform.linuxX64
-        let system = system |> withTask 1 |> withTask 2 |> UnixWait.park 2 (flockOn port)
+        let system, queue = world SimulatedUnixPlatform.linuxX64
+        let system = system |> withTask 1 |> withTask 2 |> UnixWait.park 2 (flockOn queue)
 
         let parked =
             Assert.Throws<exn> (fun () -> UnixTaskLifecycle.exitGroup 2 0 system |> ignore<EndedProcess<int, string>>)
@@ -471,7 +471,7 @@ module TestUnixTaskLifecycle =
         |> shouldEqual before.Process
 
     let private runProperty (platform : SimulatedUnixPlatform) (coverage : Coverage) : unit =
-        let initial, port = world platform
+        let initial, queue = world platform
 
         let step ((system, model) : UnixSystem<int, string> * Model) (op : Op) : UnixSystem<int, string> * Model =
             let live (task : int) = Set.contains task model.Live
@@ -553,7 +553,7 @@ module TestUnixTaskLifecycle =
                         system,
                     model
                 | Op.Park task when live task ->
-                    UnixWait.park task (flockOn port) system,
+                    UnixWait.park task (flockOn queue) system,
                     { model with
                         Parked = Set.add task model.Parked
                     }

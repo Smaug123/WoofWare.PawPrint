@@ -13,7 +13,7 @@ open WoofWare.PosixKernel
 /// The rows restate `docs/probes/fadvise/measured-fadvise-linux.txt`, measured
 /// on Linux 6.18.5 with `docs/probes/fadvise/fadvise.py`. Two of them are worth
 /// naming because reading the man page instead would have got them wrong: a
-/// socket and an epoll port both answer *success*, where "not seekable" would
+/// socket and an epoll instance both answer *success*, where "not seekable" would
 /// predict ESPIPE, and only a pipe answers ESPIPE.
 ///
 /// The advice is Linux's raw `POSIX_FADV_*` number (0 to 5 on x86-64 and on
@@ -161,7 +161,7 @@ module TestPosixFadvise =
 
     [<Test>]
     let ``an epoll instance succeeds`` () : unit =
-        // Measured on an epoll port, which answers success for the same reason
+        // Measured on an epoll instance, which answers success for the same reason
         // the socket does.
         let fd, system = systemOn SimulatedUnixPlatform.linuxX64 |> withEpoll
 
@@ -273,7 +273,7 @@ module TestPosixFadvise =
 
         let directory, system = system |> openedAt "/dir" FileAccessMode.ReadOnly
         let sock, system = socket system
-        let port, system = withEpoll system
+        let epoll, system = withEpoll system
 
         let kinds =
             [
@@ -282,7 +282,7 @@ module TestPosixFadvise =
                 "file", file
                 "directory", directory
                 "socket", sock
-                "port", port
+                "epoll", epoll
             ]
 
         let property (kindIndex : int) (offset : int64) (length : int64) (advice : int) : bool =

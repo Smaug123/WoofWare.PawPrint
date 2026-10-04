@@ -1016,23 +1016,23 @@ module TestUnixSystemStep =
             |> shouldEqual (failedWith UnixError.EBADF)
 
     [<Test>]
-    let ``a socket and a port are ESPIPE, ahead of the buffer screen`` () : unit =
+    let ``a socket and an event queue are ESPIPE, ahead of the buffer screen`` () : unit =
         // Unseekable on both flavours, and measured to precede the screen:
-        // `pread(port, (void*)-1, 8, 0)` is ESPIPE rather than EFAULT. Driven at
+        // `pread(queueFd, (void*)-1, 8, 0)` is ESPIPE rather than EFAULT. Driven at
         // length 0 as well, because unseekability does not have the zero-length
         // shortcut a file's transfer window does.
         let wild = UserBuffer.Unmapped System.UInt64.MaxValue
 
         for flavour in [ linux ; darwin ] do
             let socketFd, socketSystem = withSocket flavour
-            let portFd, portSystem = withEpoll flavour
+            let queueFd, queueSystem = withEpoll flavour
 
             for buffer in [ UserBuffer.Mapped ; wild ; UserBuffer.Opaque ; UserBuffer.Addressless ] do
                 for count in [ 0UL ; 5UL ] do
                     PReadUnchanged.pread socketFd buffer count 0L socketSystem
                     |> shouldEqual (failedWith UnixError.ESPIPE)
 
-                    PReadUnchanged.pread portFd buffer count 0L portSystem
+                    PReadUnchanged.pread queueFd buffer count 0L queueSystem
                     |> shouldEqual (failedWith UnixError.ESPIPE)
 
         // This is where `pread` and `read` part company hardest, and why `pread`
@@ -1072,14 +1072,14 @@ module TestUnixSystemStep =
         // flavours, so only an input with two things wrong at once can tell them
         // apart:
         //
-        //   input                        Linux    Darwin
-        //   negative offset alone        EINVAL   EINVAL
-        //   negative offset + bad fd     EINVAL   EBADF
-        //   negative offset + pipe       EINVAL   ESPIPE
-        //   negative offset + socket     EINVAL   ESPIPE
-        //   negative offset + port       EINVAL   ESPIPE
-        //   negative offset + O_WRONLY   EINVAL   EBADF
-        //   negative offset + directory  EINVAL   EINVAL
+        //   input                          Linux    Darwin
+        //   negative offset alone          EINVAL   EINVAL
+        //   negative offset + bad fd       EINVAL   EBADF
+        //   negative offset + pipe         EINVAL   ESPIPE
+        //   negative offset + socket       EINVAL   ESPIPE
+        //   negative offset + event queue  EINVAL   ESPIPE
+        //   negative offset + O_WRONLY     EINVAL   EBADF
+        //   negative offset + directory    EINVAL   EINVAL
         //
         // Linux validates the offset before it looks the descriptor up at all;
         // Darwin resolves the descriptor, its seekability and its access mode
@@ -1103,7 +1103,7 @@ module TestUnixSystemStep =
         PReadUnchanged.pread 0 UserBuffer.Mapped 5UL -1L darwin
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
-        // The socket and the port are the rows that say the flag really is a
+        // The socket and the event queue are the rows that say the flag really is a
         // flag rather than a fact about pipes: their ESPIPE is unseekability,
         // exactly as the pipe's is, and Linux's offset check beats it too.
         let linuxSocket, linuxSocketSystem = withSocket linux
@@ -1116,14 +1116,14 @@ module TestUnixSystemStep =
         PReadUnchanged.pread darwinSocket UserBuffer.Mapped 5UL -1L darwinSocketSystem
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
-        let linuxPort, linuxPortSystem = withEpoll linux
+        let linuxQueue, linuxQueueSystem = withEpoll linux
 
-        PReadUnchanged.pread linuxPort UserBuffer.Mapped 5UL -1L linuxPortSystem
+        PReadUnchanged.pread linuxQueue UserBuffer.Mapped 5UL -1L linuxQueueSystem
         |> shouldEqual (failedWith UnixError.EINVAL)
 
-        let darwinPort, darwinPortSystem = withEpoll darwin
+        let darwinQueue, darwinQueueSystem = withEpoll darwin
 
-        PReadUnchanged.pread darwinPort UserBuffer.Mapped 5UL -1L darwinPortSystem
+        PReadUnchanged.pread darwinQueue UserBuffer.Mapped 5UL -1L darwinQueueSystem
         |> shouldEqual (failedWith UnixError.ESPIPE)
 
         let linuxWriteOnly, linuxSystem = withWriteOnlyFile linux
@@ -1241,7 +1241,7 @@ module TestUnixSystemStep =
             let readOnlyFd, readOnly = withReadOnlyFile flavour
             let dirFd, dirSystem = withOpenDirectory flavour
             let socketFd, socketSystem = withSocket flavour
-            let portFd, portSystem = withEpoll flavour
+            let queueFd, queueSystem = withEpoll flavour
 
             for descriptor, holding in
                 [
@@ -1252,7 +1252,7 @@ module TestUnixSystemStep =
                     readOnlyFd, readOnly
                     dirFd, dirSystem
                     socketFd, socketSystem
-                    portFd, portSystem
+                    queueFd, queueSystem
                 ] do
                 UnixReadWrite.admitPWrite 0 descriptor UserBuffer.Mapped 4UL -1L holding
                 |> shouldEqual (pwriteFailed UnixError.EINVAL)
@@ -1311,7 +1311,7 @@ module TestUnixSystemStep =
         |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
     [<Test>]
-    let ``a socket and a port are ESPIPE for pwrite, and so need no refusal`` () : unit =
+    let ``a socket and an event queue are ESPIPE for pwrite, and so need no refusal`` () : unit =
         // Where `pwrite` and `write` part company hardest: `write` to a socket is
         // an answer about connection state, which this kernel cannot give, but
         // seekability is not — so `pwrite` never reaches the write operation to
@@ -1322,17 +1322,17 @@ module TestUnixSystemStep =
 
         for flavour in [ linux ; darwin ] do
             let socketFd, socketSystem = withSocket flavour
-            let portFd, portSystem = withEpoll flavour
+            let queueFd, queueSystem = withEpoll flavour
 
             for buffer in [ UserBuffer.Mapped ; wild ; UserBuffer.Opaque ; UserBuffer.Addressless ] do
                 for count in [ 0UL ; 4UL ] do
                     UnixReadWrite.admitPWrite 0 socketFd buffer count 0L socketSystem
                     |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
-                    UnixReadWrite.admitPWrite 0 portFd buffer count 0L portSystem
+                    UnixReadWrite.admitPWrite 0 queueFd buffer count 0L queueSystem
                     |> shouldEqual (pwriteFailed UnixError.ESPIPE)
 
-        // The same socket answers a `write` itself, and so does the port, each
+        // The same socket answers a `write` itself, and so does the event queue, each
         // with its own kind's answer rather than with unseekability: on Linux,
         // the socket's is EPIPE and SIGPIPE, whose default action ends the
         // process.
@@ -1342,9 +1342,9 @@ module TestUnixSystemStep =
         |> endedBySigPipe
         |> shouldEqual true
 
-        let portFd, portSystem = withEpoll linux
+        let queueFd, queueSystem = withEpoll linux
 
-        WriteAdmissions.unchanged portFd UserBuffer.Mapped 4UL portSystem
+        WriteAdmissions.unchanged queueFd UserBuffer.Mapped 4UL queueSystem
         |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL)))
 
     [<Test>]
@@ -1686,9 +1686,9 @@ module TestUnixSystemStep =
         UnixPathResolution.fstat 1 linux
         |> shouldEqual (Error (FStatRefusal.LaunchedPipe (PipeId 1L)))
 
-        let portFd, portSystem = withEpoll linux
+        let queueFd, queueSystem = withEpoll linux
 
-        UnixPathResolution.fstat portFd portSystem
+        UnixPathResolution.fstat queueFd queueSystem
         |> shouldEqual (Error FStatRefusal.EventQueue)
 
         let socketFd, socketSystem = withSocket linux
@@ -3414,7 +3414,7 @@ module TestUnixSystemStep =
             | Ok (fd, system) -> fd, system
             | Error refusal -> failwith $"expected a kqueue, got %A{refusal}"
 
-    /// Task 7 parked in an `epoll_wait` on the port `fd` names.
+    /// Task 7 parked in an `epoll_wait` on the epoll instance `fd` names.
     let private parkedInEpollWait (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         let system = withTask 7 system
 
@@ -3430,8 +3430,11 @@ module TestUnixSystemStep =
             system
 
     [<Test>]
-    let ``closing the last descriptor onto a parked-on port leaves the waiter on a live port under Linux`` () : unit =
-        // A real `epoll_wait` holds a file reference, so the port and its registrations outlive
+    let ``closing the last descriptor onto a parked-on epoll instance leaves the waiter on a live epoll instance under Linux``
+        ()
+        : unit
+        =
+        // A real `epoll_wait` holds a file reference, so the epoll instance and its registrations outlive
         // every descriptor and a later edge still completes the wait (`open-file-references.c`
         // section E). The park is that reference here.
         let fd, system = withEventQueue linux
@@ -3452,8 +3455,8 @@ module TestUnixSystemStep =
         | other -> failwith $"expected the close to succeed, got %A{other}"
 
     [<Test>]
-    let ``closing an aliased descriptor onto a parked-on port is served under Linux`` () : unit =
-        // What separates Linux from Darwin's row below: a `dup` alias names the same port.
+    let ``closing an aliased descriptor onto a parked-on epoll instance is served under Linux`` () : unit =
+        // What separates Linux from Darwin's row below: a `dup` alias names the same epoll instance.
         let fd, system = withEventQueue linux
 
         let alias, registry =
@@ -3513,9 +3516,9 @@ module TestUnixSystemStep =
         | other -> failwith $"expected the close to succeed, got %A{other}"
 
     [<Test>]
-    let ``closing a port nothing waits on is served`` () : unit =
+    let ``closing an event queue nothing waits on is served`` () : unit =
         // Vacuity guard for the Darwin row above: the refusal is about the *waiter*, not about
-        // ports, so a port with no waiter closes on either flavour.
+        // event queues, so an event queue with no waiter closes on either flavour.
         for system in [ linux ; darwin ] do
             let fd, system = withEventQueue system
 
@@ -3524,23 +3527,23 @@ module TestUnixSystemStep =
             | other -> failwith $"expected the close to succeed, got %A{other}"
 
 
-    /// A port with the standard input descriptor registered on it and pending.
+    /// An epoll instance with the standard input descriptor registered on it and pending.
     ///
     /// Built out of a standard stream rather than a socket, which is what makes
     /// it constructible here at all: `LinuxReadiness.ofDescription` reports
     /// `EPOLLHUP` for stdin unconditionally — the launcher closed the pipe's
     /// write end — and every stored mask carries `EPOLLHUP`. So the
-    /// registration below asks for *nothing at all* and the port is still
+    /// registration below asks for *nothing at all* and the epoll instance is still
     /// deliverable, with no socket phase to arrange.
     let private withPendingEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let stdin = 0
         let stdinId = descriptionOf stdin system
-        let portFd, system = withEventQueue system
-        let portId = descriptionOf portFd system
+        let queueFd, system = withEventQueue system
+        let queueId = descriptionOf queueFd system
 
         let registry =
             FileDescriptorRegistry.addEpollRegistration
-                portId
+                queueId
                 (stdin, stdinId)
                 {
                     Events = EpollEvents.EdgeTriggered ||| EpollEvents.Err ||| EpollEvents.Hup
@@ -3549,16 +3552,16 @@ module TestUnixSystemStep =
                 }
                 system.Process.FileDescriptors
 
-        portFd,
+        queueFd,
         { system with
             Process =
                 { system.Process with
-                    FileDescriptors = FileDescriptorRegistry.appendEpollReady portId (stdin, stdinId) registry
+                    FileDescriptors = FileDescriptorRegistry.appendEpollReady queueId (stdin, stdinId) registry
                 }
         }
 
     [<Test>]
-    let ``a port with nothing pending would deliver nothing`` () : unit =
+    let ``an epoll instance with nothing pending would deliver nothing`` () : unit =
         let fd, system = withEventQueue linux
 
         EpollReadyList.hasDeliverableEvent (descriptionOf fd system) system
@@ -3567,15 +3570,15 @@ module TestUnixSystemStep =
     [<Test>]
     let ``a pending entry is deliverable, and draining it consumes it`` () : unit =
         let fd, system = withPendingEpoll linux
-        let portId = descriptionOf fd system
+        let queueId = descriptionOf fd system
 
-        EpollReadyList.hasDeliverableEvent portId system |> shouldEqual true
+        EpollReadyList.hasDeliverableEvent queueId system |> shouldEqual true
 
-        let delivered, drained = EpollReadyList.drain portId 8 system
+        let delivered, drained = EpollReadyList.drain queueId 8 system
 
         delivered |> shouldEqual [ 0xBEEFUL, EpollEvents.Hup ]
 
-        EpollReadyList.hasDeliverableEvent portId drained |> shouldEqual false
+        EpollReadyList.hasDeliverableEvent queueId drained |> shouldEqual false
 
     [<Test>]
     let ``the predicate and the drain cannot disagree`` () : unit =
@@ -3588,26 +3591,26 @@ module TestUnixSystemStep =
         let pending = withPendingEpoll linux
 
         for fd, system in [ empty ; pending ] do
-            let portId = descriptionOf fd system
-            let predicted = EpollReadyList.hasDeliverableEvent portId system
-            let delivered, drained = EpollReadyList.drain portId 8 system
+            let queueId = descriptionOf fd system
+            let predicted = EpollReadyList.hasDeliverableEvent queueId system
+            let delivered, drained = EpollReadyList.drain queueId 8 system
 
             List.isEmpty delivered |> shouldEqual (not predicted)
 
             // ...and again in the state the drain produced, which is the state a
             // waiter that found nothing parks in.
-            let predicted = EpollReadyList.hasDeliverableEvent portId drained
-            let delivered, _ = EpollReadyList.drain portId 8 drained
+            let predicted = EpollReadyList.hasDeliverableEvent queueId drained
+            let delivered, _ = EpollReadyList.drain queueId 8 drained
 
             List.isEmpty delivered |> shouldEqual (not predicted)
 
     [<Test>]
-    let ``a port that has gone is refused rather than answered`` () : unit =
-        // A port goes only behind the syscalls' back while a wait holds it, as
+    let ``an epoll instance that has gone is refused rather than answered`` () : unit =
+        // An epoll instance goes only behind the syscalls' back while a wait holds it, as
         // here. Answering would be wrong either way: `false` sleeps for ever,
         // and `true` wakes the waiter into an `EBADF` no kernel produces.
         let fd, system = withPendingEpoll linux
-        let portId = descriptionOf fd system
+        let queueId = descriptionOf fd system
 
         let closed =
             match FileDescriptorRegistry.dropDescriptor fd Set.empty system.Process.FileDescriptors with
@@ -3621,12 +3624,12 @@ module TestUnixSystemStep =
             | Error error -> failwith $"expected the close to succeed, got %O{error}"
 
         let exn =
-            Assert.Throws<exn> (fun () -> EpollReadyList.hasDeliverableEvent portId closed |> ignore)
+            Assert.Throws<exn> (fun () -> EpollReadyList.hasDeliverableEvent queueId closed |> ignore)
 
         exn.Message |> shouldContainText "a park holds what it waits on"
 
     [<Test>]
-    let ``a description that is not a port is refused rather than answered`` () : unit =
+    let ``a description that is not an epoll instance is refused rather than answered`` () : unit =
         // `false` here would be a waiter parked on something that can never
         // deliver, reported as an ordinary "not yet".
         let exn =
@@ -3639,13 +3642,13 @@ module TestUnixSystemStep =
         // `epoll_wait` answers EINVAL for a non-positive `maxevents` without
         // reaching the ready list, so a drain that got here was asked for
         // something the caller should have refused. It matters beyond tidiness:
-        // a zero count would report no events from a port that has some, which
+        // a zero count would report no events from an epoll instance that has some, which
         // is precisely the disagreement above.
         let fd, system = withPendingEpoll linux
-        let portId = descriptionOf fd system
+        let queueId = descriptionOf fd system
 
         let exn =
-            Assert.Throws<exn> (fun () -> EpollReadyList.drain portId 0 system |> ignore)
+            Assert.Throws<exn> (fun () -> EpollReadyList.drain queueId 0 system |> ignore)
 
         exn.Message |> shouldContainText "is not positive"
 
@@ -3664,15 +3667,15 @@ module TestUnixSystemStep =
         | None -> failwith "expected the park to have been recorded"
 
     [<Test>]
-    let ``a lock waiter is never read as a port waiter`` () : unit =
+    let ``a lock waiter is never read as an epoll waiter`` () : unit =
         // The one place the two parks' payloads can be confused. Both are largely an
-        // `OpenFileDescriptionId`, so mapping a lock's requester to a port condition type-checks
+        // `OpenFileDescriptionId`, so mapping a lock's requester to an epoll condition type-checks
         // and reads as plausible; the sweep that consumes this never destructures a record, so
         // this function is where such a mistake would live.
         //
-        // The requester here is a *port* description, which is the corner where nothing else would
+        // The requester here is an *epoll* description, which is the corner where nothing else would
         // catch it: `flock` of an epoll descriptor is permitted, so a mis-mapped condition would
-        // find a real port and answer an ordinary "not yet" instead of refusing.
+        // find a real epoll instance and answer an ordinary "not yet" instead of refusing.
         let fd, system = withEventQueue linux
 
         let parked =
@@ -3690,7 +3693,7 @@ module TestUnixSystemStep =
         )
 
     [<Test>]
-    let ``a port waiter is never read as a lock waiter`` () : unit =
+    let ``an epoll waiter is never read as a lock waiter`` () : unit =
         let fd, system = withEventQueue linux
 
         let parked =
@@ -3712,7 +3715,10 @@ module TestUnixSystemStep =
         )
 
     [<Test>]
-    let ``a wait on a port with nothing pending is not satisfied, and a pending entry satisfies it`` () : unit =
+    let ``a wait on an epoll instance with nothing pending is not satisfied, and a pending entry satisfies it``
+        ()
+        : unit
+        =
         // The socket condition through `satisfied`, which is what a client actually polls —
         // `EpollReadyList.hasDeliverableEvent` has its own rows, and this is the wiring between
         // them.
@@ -3726,7 +3732,7 @@ module TestUnixSystemStep =
         holds 0 (WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable (descriptionOf ready system))) system
         |> shouldEqual true
 
-    /// `waiters` parked, in this order, in an `epoll_wait` on the port `fd` names.
+    /// `waiters` parked, in this order, in an `epoll_wait` on the epoll instance `fd` names.
     let private parkedInEpollWaitInOrder
         (waiters : int list)
         (fd : int)
@@ -3748,7 +3754,7 @@ module TestUnixSystemStep =
         )
 
     [<Test>]
-    let ``one waiter on a deliverable port is woken, saying what woke it`` () : unit =
+    let ``one waiter on a deliverable epoll instance is woken, saying what woke it`` () : unit =
         let ready, system = withPendingEpoll linux
         let parked = parkedInEpollWaitInOrder [ 7 ] ready system
 
@@ -3760,9 +3766,9 @@ module TestUnixSystemStep =
         )
 
     [<Test>]
-    let ``of several waiters on one deliverable port, only the one that parked last wakes`` () : unit =
+    let ``of several waiters on one deliverable epoll instance, only the one that parked last wakes`` () : unit =
         // Measured (`epoll-wait.c`, section F): each signal wakes one waiter, the one at the
-        // front of the port's queue, which is the one that parked last.
+        // front of the epoll instance's queue, which is the one that parked last.
         let ready, system = withPendingEpoll linux
         let parked = parkedInEpollWaitInOrder [ 9 ; 7 ; 8 ] ready system
 
@@ -3772,12 +3778,12 @@ module TestUnixSystemStep =
         UnixWait.wakes (Set.ofList [ 7 ; 8 ; 9 ]) parked |> shouldEqual [ 8, fired ]
 
         // Waiters the client has already woken, and which have not finished, hold the event:
-        // one of them will take it, so nobody else on the port wakes.
+        // one of them will take it, so nobody else on the epoll instance wakes.
         UnixWait.wakes (Set.ofList [ 7 ; 9 ]) parked |> shouldEqual []
         UnixWait.wakes (Set.singleton 8) parked |> shouldEqual []
 
     [<Test>]
-    let ``a waiter that parks again goes to the front of the port's queue`` () : unit =
+    let ``a waiter that parks again goes to the front of the epoll instance's queue`` () : unit =
         // Measured (`epoll-wait.c`, section F2): a thread that waits again as soon as it
         // returns is woken first every time.
         let ready, system = withPendingEpoll linux
@@ -4954,9 +4960,9 @@ module TestUnixSystemStep =
             |> sockNameFailed
             |> shouldEqual (UnixError.ENOTSOCK, None)
 
-            let portFd, portSystem = withEpoll flavour
+            let queueFd, queueSystem = withEpoll flavour
 
-            UnixSocket.getsockname portFd (UserBuffer.Unmapped 8UL) 16u portSystem
+            UnixSocket.getsockname queueFd (UserBuffer.Unmapped 8UL) 16u queueSystem
             |> sockNameFailed
             |> shouldEqual (UnixError.ENOTSOCK, None)
 

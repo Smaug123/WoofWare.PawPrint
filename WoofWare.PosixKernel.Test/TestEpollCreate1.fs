@@ -7,14 +7,14 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixPoll.epollCreate1`: its flag screen, and the port it creates.
+/// `UnixPoll.epollCreate1`: its flag screen, and the epoll instance it creates.
 ///
 /// Measured by `docs/plans/2026-08-23-posix-kernel-extraction/epoll-wait.c`
 /// (section A) on Linux 6.18.5 aarch64, 2026-09-27: flags 0 and
-/// `EPOLL_CLOEXEC` (0x80000) create a port on the lowest free descriptor; every
-/// other single bit, `EPOLL_CLOEXEC` beside any other bit, -1 and `INT_MIN` are
-/// EINVAL. The host test below repeats the sweep on whatever Linux runs the
-/// suite, which in CI is x86-64.
+/// `EPOLL_CLOEXEC` (0x80000) create an epoll instance on the lowest free
+/// descriptor; every other single bit, `EPOLL_CLOEXEC` beside any other bit, -1
+/// and `INT_MIN` are EINVAL. The host test below repeats the sweep on whatever
+/// Linux runs the suite, which in CI is x86-64.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestEpollCreate1 =
@@ -29,7 +29,7 @@ module TestEpollCreate1 =
 
     let private cloExec : int = 0x80000
 
-    /// The flags the probe swept, each with whether it created a port.
+    /// The flags the probe swept, each with whether it created an epoll instance.
     let private measured : (int * bool) list =
         let singleBits = [ 0..31 ] |> List.map (fun bit -> 1 <<< bit)
 
@@ -48,7 +48,7 @@ module TestEpollCreate1 =
         match UnixPoll.epollCreate1 flags system with
         | Ok (Ok _) -> true
         | Ok (Error UnixError.EINVAL) -> false
-        | other -> failwith $"flags 0x%x{flags}: expected a port or EINVAL, got %A{other}"
+        | other -> failwith $"flags 0x%x{flags}: expected an epoll instance or EINVAL, got %A{other}"
 
     [<Test>]
     let ``the flag constant is the measured EPOLL_CLOEXEC`` () : unit =
@@ -74,19 +74,19 @@ module TestEpollCreate1 =
             ]
 
     [<Test>]
-    let ``a port is created exactly for 0 and EPOLL_CLOEXEC, on the lowest free descriptor`` () : unit =
+    let ``an epoll instance is created exactly for 0 and EPOLL_CLOEXEC, on the lowest free descriptor`` () : unit =
         // A descriptor table with holes, so "lowest free" is not "next".
-        let port, withPort =
+        let epoll, queueSystem =
             FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
 
-        let _, withTwo = FileDescriptorRegistry.createEpoll withPort
+        let _, withTwo = FileDescriptorRegistry.createEpoll queueSystem
 
         let holed =
             { linux with
                 Process =
                     { linux.Process with
                         FileDescriptors =
-                            match FileDescriptorRegistry.dropDescriptor port Set.empty withTwo with
+                            match FileDescriptorRegistry.dropDescriptor epoll Set.empty withTwo with
                             | Ok (registry, _) -> registry
                             | Error error -> failwith $"expected the close to succeed, got %O{error}"
                     }
@@ -96,7 +96,7 @@ module TestEpollCreate1 =
             match UnixPoll.epollCreate1 flags holed with
             | Ok (Ok (fd, after)) ->
                 (flags = 0 || flags = cloExec) |> shouldEqual true
-                fd |> shouldEqual port
+                fd |> shouldEqual epoll
 
                 let expectedFd, expectedRegistry =
                     FileDescriptorRegistry.createEpoll holed.Process.FileDescriptors
@@ -170,5 +170,5 @@ module TestEpollCreate1 =
 
                 if hostCreated <> created flags modelled then
                     failwith
-                        $"epoll_create1(0x%x{flags}): this host created a port: %b{hostCreated}; the model: %b{not hostCreated}."
+                        $"epoll_create1(0x%x{flags}): this host created an epoll instance: %b{hostCreated}; the model: %b{not hostCreated}."
         )

@@ -467,7 +467,7 @@ module TestPoll =
     /// descriptor.
     [<Test>]
     let ``an entry naming an epoll instance is refused`` () : unit =
-        let portFd, registry =
+        let queueFd, registry =
             FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
 
         let system =
@@ -478,24 +478,24 @@ module TestPoll =
                     }
             }
 
-        pollNow [ entry portFd everything ] 0 system
-        |> shouldEqual (Error (PollRefusal.UnmodelledTarget portFd))
+        pollNow [ entry queueFd everything ] 0 system
+        |> shouldEqual (Error (PollRefusal.UnmodelledTarget queueFd))
 
         // ...and it is refused from anywhere in the list, not only at the head:
         // the entries are all decoded before the answer, exactly as the caller
         // fills its whole array before the syscall.
-        pollNow [ entry 0 everything ; entry portFd everything ] 0 system
-        |> shouldEqual (Error (PollRefusal.UnmodelledTarget portFd))
+        pollNow [ entry 0 everything ; entry queueFd everything ] 0 system
+        |> shouldEqual (Error (PollRefusal.UnmodelledTarget queueFd))
 
     /// A real `poll` inspects its entries in order, so the entry a refusal
     /// names is the first one it could not answer: a client bisecting its
     /// array is told the right one whichever way round it filled it.
     [<Test>]
     let ``the refusal names the first unmeasured entry in list order`` () : unit =
-        let firstPort, registry =
+        let firstEpoll, registry =
             FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
 
-        let secondPort, registry = FileDescriptorRegistry.createEpoll registry
+        let secondEpoll, registry = FileDescriptorRegistry.createEpoll registry
 
         let system =
             { linux with
@@ -505,18 +505,18 @@ module TestPoll =
                     }
             }
 
-        pollNow [ entry firstPort everything ; entry secondPort everything ] 0 system
-        |> shouldEqual (Error (PollRefusal.UnmodelledTarget firstPort))
+        pollNow [ entry firstEpoll everything ; entry secondEpoll everything ] 0 system
+        |> shouldEqual (Error (PollRefusal.UnmodelledTarget firstEpoll))
 
         pollNow
             [
-                entry secondPort everything
+                entry secondEpoll everything
                 entry 0 everything
-                entry firstPort everything
+                entry firstEpoll everything
             ]
             0
             system
-        |> shouldEqual (Error (PollRefusal.UnmodelledTarget secondPort))
+        |> shouldEqual (Error (PollRefusal.UnmodelledTarget secondEpoll))
 
     /// An entry carrying anything at all makes a real poll return immediately at
     /// any timeout, which is measured rather than assumed -- so a *ready* poll

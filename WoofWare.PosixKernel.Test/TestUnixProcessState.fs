@@ -195,7 +195,7 @@ module TestUnixProcessState =
         let _sock, withSocket =
             FileDescriptorRegistry.createSocket (SocketId 1L) withDirectory
 
-        let _portFd, registry = FileDescriptorRegistry.createEpoll withSocket
+        let _epollFd, registry = FileDescriptorRegistry.createEpoll withSocket
 
         let proc =
             { empty with
@@ -214,7 +214,7 @@ module TestUnixProcessState =
             FileDescriptorRegistry.createSocket watched LaunchedStreams.registry
 
         let _otherFd, registry = FileDescriptorRegistry.createSocket other registry
-        let portFd, registry = FileDescriptorRegistry.createEpoll registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll registry
 
         let proc =
             { empty with
@@ -235,7 +235,7 @@ module TestUnixProcessState =
         let watchedFd, registry =
             FileDescriptorRegistry.createSocket watched LaunchedStreams.registry
 
-        let portFd, registry = FileDescriptorRegistry.createEpoll registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll registry
 
         let idOf (fd : int) : OpenFileDescriptionId =
             match FileDescriptorRegistry.tryFindId fd registry with
@@ -243,14 +243,14 @@ module TestUnixProcessState =
             | None -> failwith $"fd %d{fd} is not live"
 
         let registry =
-            FileDescriptorRegistry.addEpollRegistration (idOf portFd) (watchedFd, idOf watchedFd) readInterest registry
+            FileDescriptorRegistry.addEpollRegistration (idOf queueFd) (watchedFd, idOf watchedFd) readInterest registry
 
         let ready (proc : UnixProcessState<int, string>) : (int * OpenFileDescriptionId) list =
             FileDescriptorRegistry.descriptions proc.FileDescriptors
             |> Map.toSeq
             |> Seq.collect (fun (_, description) ->
                 match description.Target with
-                | OpenFileTarget.Epoll portState -> portState.Ready
+                | OpenFileTarget.Epoll queueState -> queueState.Ready
                 | _ -> []
             )
             |> List.ofSeq
