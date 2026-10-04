@@ -337,11 +337,9 @@ public static class Program
     let ``a reabstraction reached only through variance does not hide an exact body`` () : unit =
         agrees "CaseVarianceOnlyReabstraction" 106
 
-    /// The reabstraction and `IQux`'s body are equally specific, so the call is ambiguous, which
-    /// PawPrint does not yet raise in the guest.
+    /// The reabstraction and `IQux`'s body are equally specific, so the call is ambiguous.
     [<Test>]
-    let ``a reabstraction as specific as a body is ambiguous`` () : unit =
-        refuses "CaseDiamond" 0 [ "multiple most-specific default interface implementations" ]
+    let ``a reabstraction as specific as a body is ambiguous`` () : unit = agrees "CaseDiamond" 0
 
     [<Test>]
     let ``a pointer to a reabstracted static virtual is refused`` () : unit =

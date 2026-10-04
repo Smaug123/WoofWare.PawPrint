@@ -418,9 +418,11 @@ module internal UnaryMetadataTokenOps =
             with
             | state, ConstrainedStaticImplementation.Runs (implementation, _declaringTypeHandle) ->
                 pushTarget implementation state
-            | _, ConstrainedStaticImplementation.Reabstracted reabstraction ->
+            | _, ConstrainedStaticImplementation.Fails failure ->
+                let thrown = DispatchFailure.exceptionType ctx.BaseClassTypes failure
+
                 failwith
-                    $"TODO: constrained. Ldftn of %s{method.Name} resolved to the reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}. Measured: real .NET makes a delegate over the pointer, and invoking it throws EntryPointNotFoundException; PawPrint has no function pointer to push that would do so"
+                    $"TODO: constrained. Ldftn of %s{method.Name} resolved to %s{DispatchFailure.describe failure}. Measured: real .NET makes a delegate over the pointer, and invoking it throws %s{thrown.Namespace}.%s{thrown.Name}; PawPrint has no function pointer to push that would do so"
         | None ->
 
         match concretizedMethod.Body with
@@ -532,25 +534,24 @@ module internal UnaryMetadataTokenOps =
                     true
                     state
 
-            // `None` where the slot holds a reabstraction.
             let target =
                 match resolved with
-                | IlMachineStateExecution.ResolvedVirtualCall.Runs implementation -> Some implementation
-                | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> Some callSiteMethod
-                | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted _ -> None
+                | IlMachineStateExecution.ResolvedVirtualCall.Runs implementation -> Ok implementation
+                | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> Ok callSiteMethod
+                | IlMachineStateExecution.ResolvedVirtualCall.Fails failure -> Error failure
 
             match target with
-            | None ->
+            | Error failure ->
                 // Measured: real .NET raises as it resolves the slot, so no delegate is made. With
                 // the parameterless constructor's message, as at a virtual call's dispatch in
                 // `callMethodWithCommitment`.
                 IlMachineStateExecution.raiseRuntimeException
                     loggerFactory
                     baseClassTypes
-                    baseClassTypes.EntryPointNotFoundException
+                    (DispatchFailure.exceptionType baseClassTypes failure)
                     thread
                     state
-            | Some target ->
+            | Ok target ->
 
             let _, state = IlMachineState.popEvalStack thread state
 

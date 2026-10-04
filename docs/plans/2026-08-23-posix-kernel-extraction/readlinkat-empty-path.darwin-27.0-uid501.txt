@@ -1,0 +1,5 @@
+UNAME	Darwin 27.0.0 arm64	euid=501
+EMPTY	caller=501	cwd=ENOENT	minus1=EBADF	dir=ENOENT	file=ENOTDIR	pipe=ENOTSUP	socket=ENOTSUP	link=ENOTDIR	dangling-link=ENOTDIR	dir-link=ENOTDIR
+SIZE	caller=501	size=0	minus1=EBADF	link=ENOTDIR
+SIZE	caller=501	size=-1	minus1=EINVAL	link=EINVAL
+NULL	caller=501	size=0=EFAULT	size=-1=EINVAL	size=64=EFAULT

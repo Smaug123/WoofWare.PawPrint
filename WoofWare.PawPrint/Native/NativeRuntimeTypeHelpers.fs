@@ -422,9 +422,9 @@ module NativeRuntimeTypeHelpers =
         match directImplementation with
         | IlMachineStateExecution.ResolvedVirtualCall.Runs _ -> state, true
         | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> state, false
-        | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted reabstraction ->
+        | IlMachineStateExecution.ResolvedVirtualCall.Fails failure ->
             failwith
-                $"BUG: the exact-type probe of %O{methodTableFor} for %s{valueTypeMethod.Name} found the reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}, but an exact-type probe never searches default interface bodies"
+                $"BUG: the exact-type probe of %O{methodTableFor} for %s{valueTypeMethod.Name} found %s{DispatchFailure.describe failure}, but an exact-type probe never searches default interface bodies"
 
     let rec fieldAllowsFastCompare
         (loggerFactory : ILoggerFactory)

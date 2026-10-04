@@ -577,7 +577,9 @@ module TestPathCopyIn =
                     {
                         Name = $"readlink %A{destination} %d{capacity}"
                         Bytes = fun path -> UnixNamespace.readlink path destination capacity
-                        Parsed = fun path -> UnixNamespace.readlinkParsed path destination capacity
+                        Parsed =
+                            fun path ->
+                                UnixNamespace.readlinkParsed AtDirectory.CurrentDirectory path destination capacity
                         FailedWithoutChange = fun error _ answer -> answer = Ok (ReadLinkAnswer.Failed error)
                     }
 

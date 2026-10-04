@@ -902,13 +902,13 @@ module internal UnaryMetadataCallOps =
             with
             | state, ConstrainedStaticImplementation.Runs (implementation, _declaringTypeHandle) ->
                 enterCallee ctx implementation state
-            | state, ConstrainedStaticImplementation.Reabstracted _ ->
+            | state, ConstrainedStaticImplementation.Fails failure ->
                 // With the parameterless constructor's message, as at a virtual call's dispatch in
                 // `callMethodWithCommitment`.
                 IlMachineStateExecution.raiseRuntimeException
                     ctx.LoggerFactory
                     ctx.BaseClassTypes
-                    ctx.BaseClassTypes.EntryPointNotFoundException
+                    (DispatchFailure.exceptionType ctx.BaseClassTypes failure)
                     ctx.Thread
                     state
         | None -> enterNamedCallee ctx concretizedMethod state
@@ -1443,9 +1443,9 @@ module internal UnaryMetadataCallOps =
                             state
 
                     match directImplementation with
-                    | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted reabstraction ->
+                    | IlMachineStateExecution.ResolvedVirtualCall.Fails failure ->
                         failwith
-                            $"BUG: constrained.callvirt: the exact-type probe of %s{tConcrete.Namespace}.%s{tConcrete.Name} for %s{methodToCall.Name} found the reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}, but an exact-type probe never searches default interface bodies"
+                            $"BUG: constrained.callvirt: the exact-type probe of %s{tConcrete.Namespace}.%s{tConcrete.Name} for %s{methodToCall.Name} found %s{DispatchFailure.describe failure}, but an exact-type probe never searches default interface bodies"
                     | IlMachineStateExecution.ResolvedVirtualCall.Runs directImplementation ->
                         // The byref stays the callee's `this` without being dereferenced here, so
                         // a null one is the callee's business: it faults if and when it reads it.
@@ -1471,7 +1471,7 @@ module internal UnaryMetadataCallOps =
                                 true
                                 state
 
-                        // A reabstraction is no method of T's, and the box's dispatch raises it.
+                        // A failure is no method of T's, and the box's dispatch raises it.
                         match dispatched with
                         | IlMachineStateExecution.ResolvedVirtualCall.Runs dispatched ->
                             match dispatched.Owner with
@@ -1481,7 +1481,7 @@ module internal UnaryMetadataCallOps =
                             | MethodOwner.DeclaredOn _
                             | MethodOwner.DynamicMethodsClass _ -> ()
                         | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden
-                        | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted _ -> ()
+                        | IlMachineStateExecution.ResolvedVirtualCall.Fails _ -> ()
 
                         let ptr, state = IlMachineState.popEvalStack thread state
 
