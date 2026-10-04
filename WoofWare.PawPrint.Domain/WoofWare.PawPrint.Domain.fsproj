@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
         <TargetFramework>net8.0</TargetFramework>
@@ -60,6 +60,7 @@
         <Compile Include="AccessCheck.fs" />
         <Compile Include="IlFormatting.fs" />
         <Compile Include="AttributeFormatting.fs" />
+        <Compile Include="NamedAttribute.fs" />
         <Compile Include="RuntimeCompatibility.fs" />
         <Compile Include="IlDumpRendering.fs" />
         <!-- After TypeConcretisation.fs, for `SubstitutionContext`, and before IlMachineStateModel

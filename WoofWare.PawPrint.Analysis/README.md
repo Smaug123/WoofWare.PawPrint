@@ -34,7 +34,8 @@ method) may add more:
   raises what the JIT's tables say (`HardwareInstruction`); one of the runtime's primitives raises
   what its contract (`IntrinsicPrimitive`) says it can;
 * a method CoreCLR implements in native code is opaque, unless `NativeMethod` describes it (so far,
-  the maths functions `Math` and `MathF` call), when it raises what that contract says;
+  the maths functions `Math` and `MathF` call, and CoreLib's P/Invokes into the framework's own
+  native libraries), when it raises what that contract says;
 * code a capability query rules out on that CPU is left out. Where a call to an `IsSupported` or
   `IsHardwareAccelerated` that answers a constant (`IntrinsicBody.constantResult`) is branched on
   straight away (`brtrue` or `brfalse`, which nothing else reaches), only the way the answer goes is
@@ -95,6 +96,13 @@ The analysis also assumes the IL is well typed: a value held where the IL spells
 argument, a local, a field, a call's result) is of that type, as the JIT assumes when it
 devirtualises. Code that breaks that with `Unsafe.As`, or by reinterpreting memory, is outside what
 the analysis answers for.
+
+It assumes too that the native libraries the framework ships with its CoreLib
+(`libSystem.Native` and `libSystem.Globalization.Native`) are present and export what its P/Invokes
+import, so that calling one of their functions raises nothing: native code raises no exception the
+caller can catch, and an exception thrown by a managed function it calls back ends the process.
+Were one of those libraries missing, the runtime would run the program's `ResolvingUnmanagedDll`
+handlers, which could throw anything.
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set
