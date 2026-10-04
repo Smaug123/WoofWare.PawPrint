@@ -13,9 +13,10 @@ open WoofWare.PosixKernel
 /// The flag's whole subtlety is *where it lives* and *what each target does
 /// with it*: it is a property of the open file description rather than of the
 /// descriptor, a standard stream stores it and refuses the one write it would
-/// shorten, and an event port stores it while reporting a
-/// failure — which is a flavour split no guest can reach, since a guest runs one
-/// flavour and the managed surface never sets the flag on an event port.
+/// shorten, and an epoll instance or kqueue stores it while reporting a
+/// failure — which is a flavour split that only a test driving the library
+/// directly can reach, since a process runs under one flavour and a client
+/// need never set the flag on an event queue.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestNonBlocking =
@@ -442,7 +443,7 @@ module TestNonBlocking =
             | other -> failwith $"%O{platform}: a 65537-byte write answered %A{Result.map fst other}"
 
     // ------------------------------------------------------------------
-    // The event port, where store and answer come apart
+    // The event queue, where store and answer come apart
     // ------------------------------------------------------------------
 
     /// The flavour's event queue: an epoll instance or a kqueue, and the
@@ -465,7 +466,7 @@ module TestNonBlocking =
     /// back a system. Literals, so that the rows cannot agree with any rule at
     /// all.
     [<Test>]
-    let ``an event port stores the flag whatever it answers`` () : unit =
+    let ``an event queue stores the flag whatever it answers`` () : unit =
         let rows =
             [
                 SimulatedUnixPlatform.linuxX64, SetNonBlockingAnswer.Set

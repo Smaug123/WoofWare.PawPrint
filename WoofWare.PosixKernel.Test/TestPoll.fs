@@ -6,10 +6,10 @@ open WoofWare.PosixKernel
 
 /// `UnixPoll.poll`, driven directly on a constructed system.
 ///
-/// The tier that reaches what `sourcesPure/SocketPoll.cs` cannot: every bit of
-/// Linux's own `<poll.h>` alphabet (a guest reaches `poll` through the shim,
-/// which asks for six bits and hands back six) and the epoll-instance
-/// entry (no managed caller polls one). A poll that sleeps is
+/// The tier that reaches what a client's end-to-end tests may not: every bit
+/// of Linux's own `<poll.h>` alphabet (a client may ask for only six bits and
+/// hand back six) and the epoll-instance entry (a client need never poll one).
+/// A poll that sleeps is
 /// `TestPollTimeout`'s, and a Darwin-flavoured poll is `TestDarwinPoll`'s.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -357,8 +357,8 @@ module TestPoll =
         pollOrFail [ entry tcp pollWrBand ; entry udp pollWrBand ; entry unixStream pollWrBand ] 0 system
         |> shouldEqual ([ pollHup ; pollWrBand ; pollWrBand ||| pollHup ], 3)
 
-    /// `POLLRDHUP` is reported when asked for, which the shim never does: a
-    /// connection whose peer has gone presents it.
+    /// `POLLRDHUP` is reported when asked for: a connection whose peer has gone
+    /// presents it.
     [<Test>]
     let ``RDHUP is reported when asked for`` () : unit =
         let fd, system =
@@ -462,7 +462,7 @@ module TestPoll =
     // Refusals
     // ------------------------------------------------------------------
 
-    /// A guest can reach this where it cannot reach epoll's equivalent:
+    /// A process can reach this where it cannot reach epoll's equivalent:
     /// `epoll_ctl` screens the targets it accepts, and `poll(2)` accepts any
     /// descriptor.
     [<Test>]

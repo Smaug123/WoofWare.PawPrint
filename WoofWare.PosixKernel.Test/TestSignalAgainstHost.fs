@@ -13,16 +13,15 @@ open WoofWare.PosixKernel
 /// The oracle is the shell's `kill -l N`, which prints the name of signal `N`
 /// and fails for a number that is not a signal. It is the one thing that is
 /// callable from a .NET test host on both platforms and names *every* signal:
-/// `SystemNative_GetPlatformSignalNumber` names only the ten with a
-/// `PosixSignal` member (and is measured that way in
-/// `WoofWare.PawPrint.Test.TestPosixSignalPal`), `strsignal(3)` words its
+/// .NET's own signal-number mapping covers only ten of them, `strsignal(3)` words its
 /// descriptions differently on the two libcs, and `sigabbrev_np(3)` is glibc's
 /// alone. macOS's `/bin/sh` is bash and Debian's is dash; both answer `kill -l`
 /// the same way for a number below `NSIG`, and both refuse one at or above it.
 ///
 /// Whether `sigaction(2)` refuses a signal is not measured here: the only way
 /// to ask is to install a disposition in the test host's own process, and for
-/// the signals the runtime handles itself that would remove its handler.
+/// the signals .NET handles itself in the test host that would remove its
+/// handler.
 /// `TestSignal` pins that set from a probe instead.
 [<TestFixture>]
 module TestSignalAgainstHost =

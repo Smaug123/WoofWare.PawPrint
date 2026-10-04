@@ -11,6 +11,8 @@ using System.Runtime.InteropServices;
 // errno numbers differ -- 11/35 for EAGAIN, 88/38 for ENOTSOCK, 95/102 for
 // EOPNOTSUPP -- and those live in `SocketAcceptLinux.cs` /
 // `SocketAcceptDarwin.cs`, under PawPrint alone where the flavour is known).
+// The kernel's refusals, and both flavours at once, are reachable only by
+// driving the kernel directly: `WoofWare.PosixKernel.Test`'s `TestAccept`.
 //
 // The facts pinned deliberately:
 //

@@ -177,7 +177,9 @@ class SocketAcceptDarwin
         // here rather than in the differential `SocketAccept.cs` because only a
         // guest running the *Darwin* flavour exercises the clearing: on Linux
         // the kernel never set the flag, so the shim's `fcntl` is a no-op and a
-        // Linux-flavour guest passes whether it happens or not.
+        // Linux-flavour guest passes whether it happens or not. That the kernel
+        // itself inherits the flag on Darwin and not on Linux is
+        // `WoofWare.PosixKernel.Test`'s `TestAccept`.
         IntPtr v = Make(SOCK_STREAM, PT_TCP);
         if (v == (IntPtr)(-1)) return 32;
         if (!Address(blob)) return 33;

@@ -155,7 +155,8 @@ module TestUserBufferCheckAgainstHost =
     /// The model's arithmetic against a real kernel, at *this machine's* limit
     /// rather than at a modelled one. Configuring the model with the measured
     /// limit is what lets the two be compared without asserting that any
-    /// particular machine's address space is the one PawPrint ships as default.
+    /// particular machine's address space is the one
+    /// `UnixSystem.defaultUserBufferCheck` assumes.
     [<Test>]
     let ``the model agrees with this kernel once given its limit`` () : unit =
         HostPlatform.onUnixHostPreset (fun platform ->

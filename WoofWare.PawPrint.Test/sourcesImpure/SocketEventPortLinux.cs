@@ -184,7 +184,9 @@ class Program
         // eventfd all report st_ino 15, and LOCK_EX on the second returns
         // EWOULDBLOCK. This is the row that fails if each port is given its own
         // OpenFileObject identity -- PawPrint would then grant two exclusive
-        // locks where Linux grants one.
+        // locks where Linux grants one. That the two ports are nonetheless two
+        // open file descriptions, which no guest can tell apart, is
+        // `WoofWare.PosixKernel.Test`'s `TestFileDescriptorRegistry`.
         //
         // LOCK_NB throughout: a blocking acquisition against a held lock is a
         // refusal in PawPrint (it would need the scheduler to park the caller),

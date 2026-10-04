@@ -102,8 +102,8 @@ static void assign_slot(int slot, int fd)
     fds[slot] = fd;
 }
 
-/* SA_* interest bits (the PAL's SocketEvents) to epoll bits, 1:1 as
- * GetEPollEvents maps them; EPOLLET always, as registration always ORs it. */
+/* The op language's five interest bits to epoll bits, 1:1; EPOLLET always,
+ * as registration always ORs it. */
 static uint32_t interest_to_epoll(int mask)
 {
     uint32_t ev = EPOLLET;
@@ -121,7 +121,7 @@ static uint32_t interest_to_epoll(int mask)
 }
 
 /* epoll_wait's events, in the order SocketFuzz.fs prints them: the five
- * conditions the .NET shim names, then the rest of Linux's named readiness
+ * conditions the op language names, then the rest of Linux's named readiness
  * bits. */
 static void mask_string(uint32_t events, char *buf, size_t cap)
 {

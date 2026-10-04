@@ -584,7 +584,7 @@ module TestUnconnectedSocketTransfer =
     extern nativeint private hostWrite(int fd, byte[] buffer, unativeint count)
 
     // `fcntl(2)` is variadic, which a P/Invoke cannot call portably, so this goes
-    // through the runtime's own fixed-arity wrapper of it.
+    // through the fixed-arity wrapper in .NET's own `System.Native` library.
     [<DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking")>]
     extern int private hostSetNonBlocking(nativeint fd, int isNonBlocking)
 
@@ -708,7 +708,7 @@ module TestUnconnectedSocketTransfer =
                     | _ -> true
                 )
 
-            // The host's runtime ignores SIGPIPE, so a write that raises it
+            // .NET ignores SIGPIPE in the test host, so a write that raises it
             // reports only its errno here; the signal is the probe's to report.
             let disagreeing =
                 rows

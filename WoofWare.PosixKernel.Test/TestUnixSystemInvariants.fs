@@ -7,12 +7,10 @@ open WoofWare.PosixKernel
 
 /// `UnixSystem.checkInvariants`, for the six rules nothing else exercises.
 ///
-/// The other ten are covered from `WoofWare.PawPrint.Test`, which is where
-/// these rules' tests were written before the checker moved here; they move in
-/// their own stages. Five of these six were found by mutating each rule in turn
-/// and seeing which mutants no suite killed, and three of those are the same
-/// gap twice over: the `>=` against a counter is only ever tested with a
-/// strictly greater identity, so the boundary the rule exists for is untested.
+/// Five of these six were found by mutating each rule in turn and seeing which
+/// mutants no suite killed, and three of those are the same gap twice over: the
+/// `>=` against a counter is only ever tested with a strictly greater identity,
+/// so the boundary the rule exists for is untested.
 /// The sixth, `CurrentDirectoryIsNotADirectory`, arrived with the setter that
 /// establishes the current directory.
 [<TestFixture>]
@@ -125,8 +123,7 @@ module TestUnixSystemInvariants =
     /// `NextConnectionId` equal to a live connection's identity, which is the
     /// state the rule exists for: the next connect mints that identity again
     /// and the two connections become one. A counter strictly *below* a live
-    /// identity, which is what the fixture in `WoofWare.PawPrint.Test` forges,
-    /// is caught by a strict comparison too.
+    /// identity is caught by a strict comparison too.
     [<Test>]
     let ``NextConnectionId equal to a live connection is a defect`` () : unit =
         let connection = ConnectionId 2L

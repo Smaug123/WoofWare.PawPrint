@@ -25,6 +25,10 @@ using System.Runtime.InteropServices;
 // listens, while Darwin permits the wildcard and a specific address to coexist
 // but never an exact duplicate. These are close to opposites.
 //
+// Each flavour's fault order, and whether its `listen(2)` re-screens an
+// already-bound socket (section 18), are also pinned as data by
+// `WoofWare.PosixKernel.Test`'s `TestSocketBinding`.
+//
 // The exit code is the index of the first check that failed; 0 means all passed.
 class SocketBindLinux
 {

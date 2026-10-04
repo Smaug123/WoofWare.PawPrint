@@ -14,7 +14,9 @@ using System.Threading;
 // the Darwin-flavoured kernel refuses such a close instead. Validated on real
 // Linux .NET, exit 0. The Volatile flag plus the sleep keeps the close after
 // the park on the real runtime, and under PawPrint the sleep yields to the
-// waiter deterministically.
+// waiter deterministically. `WoofWare.PosixKernel.Test`'s
+// `TestSocketEventDelivery` drives the same rule in the kernel directly, up to
+// closing the last descriptor.
 //
 // The exit code is the index of the first check that failed; 0 means all
 // passed. Kept below 128, since an exit code is eight bits.

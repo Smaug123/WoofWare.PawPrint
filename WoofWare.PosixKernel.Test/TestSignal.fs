@@ -11,10 +11,9 @@ open WoofWare.PosixKernel
 /// numbering, what a signal can be caught as, and what a kernel does with one
 /// by default.
 ///
-/// The other half of the conversion math — anything involving a client's
-/// managed `PosixSignal` enum — is not here, because it is not in this library:
-/// see `WoofWare.PawPrint.Test/TestPosixSignalPal.fs`. What remains is what a
-/// kernel itself knows.
+/// The other half of the conversion math — anything involving a client's own
+/// encoding of signals — is not here, because it is not in this library. What
+/// remains is what a kernel itself knows.
 ///
 /// Both columns are written out as literals here, so that a table swapped or
 /// transposed in `Signal.fs` is caught on any machine. `TestSignalAgainstHost`
@@ -23,8 +22,8 @@ open WoofWare.PosixKernel
 ///
 /// These functions are exhaustively verified rather than sampled because the
 /// arms that consume them cannot be tested any other way: enabling or disabling
-/// a signal through a direct P/Invoke on the real CLR installs a sigaction
-/// handler in the test host's own process.
+/// a signal on the real host installs a sigaction handler in the test host's
+/// own process.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSignal =
@@ -168,9 +167,9 @@ module TestSignal =
     ///
     /// 64 is glibc's `SIGRTMAX` and 31 is one less than Darwin's `NSIG`, both
     /// measured by installing `SIG_DFL` for every number up to `NSIG + 1` and
-    /// reporting the refusals. Getting either wrong is guest-visible: at 63, a
-    /// Linux guest registering signal 64 is refused where real Linux accepts
-    /// it.
+    /// reporting the refusals. Getting either wrong is visible to a process: at
+    /// 63, a Linux process registering signal 64 is refused where real Linux
+    /// accepts it.
     [<Test>]
     let ``the highest signo is SIGRTMAX on Linux and NSIG minus one on Darwin`` () : unit =
         Signal.highestSignoUnder SignalNumbering.Linux |> shouldEqual 64
@@ -319,15 +318,14 @@ module TestSignal =
             Signal.ofRawSignoUnder numbering System.Int32.MinValue |> shouldEqual ValueNone
 
         // The Darwin ceiling is the one that bites: 32 is a real-time signal
-        // on Linux and nothing at all on Darwin, even though CoreCLR's shim
-        // admits it there.
+        // on Linux and nothing at all on Darwin.
         Signal.ofRawSignoUnder SignalNumbering.Linux 32
         |> shouldEqual (ValueSome (Signal.RealTime 0))
 
         Signal.ofRawSignoUnder SignalNumbering.Darwin 32 |> shouldEqual ValueNone
 
     /// The same number is a different signal under each numbering; this is
-    /// what the enable arm gets wrong if it reads a Darwin guest's signo under
+    /// what a caller gets wrong if it reads a Darwin process's signo under
     /// Linux's table.
     [<Test>]
     let ``a raw signo names a signal only under its own numbering`` () : unit =

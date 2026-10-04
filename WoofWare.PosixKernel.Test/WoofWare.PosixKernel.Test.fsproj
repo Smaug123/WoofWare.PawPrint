@@ -350,8 +350,9 @@
 
   <ItemGroup>
     <!-- Bound the test host's GC heap, so that a runaway property test fails with an
-         OutOfMemoryException rather than taking the machine's memory. The value and its reasoning
-         are WoofWare.PawPrint.Test.fsproj's; see the comment there. Decimal, 8 GiB. -->
+         OutOfMemoryException rather than taking the machine's memory. Absolute rather than a
+         fraction of the machine's, so that several test hosts running at once stay bounded too.
+         Decimal, 8 GiB: runtimeconfig properties are parsed with base 0. -->
     <RuntimeHostConfigurationOption Include="System.GC.HeapHardLimit" Value="8589934592" />
   </ItemGroup>
 

@@ -160,7 +160,7 @@ module TestStateQueries =
         UnixProcessState.processPath (initialOn SimulatedUnixPlatform.linuxX64).Process
         |> shouldEqual UnixSystem.defaultProcessPath
 
-        for path in [ None ; Some (AbsoluteUnixPath.parseOrFail context "/bin/guest") ] do
+        for path in [ None ; Some (AbsoluteUnixPath.parseOrFail context "/bin/app") ] do
             imageOn SimulatedUnixPlatform.linuxX64
             |> UnixBootImage.withProcessPath context path
             |> UnixBootImage.boot

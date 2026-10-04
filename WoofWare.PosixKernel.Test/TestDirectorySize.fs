@@ -612,7 +612,7 @@ module TestDirectorySize =
             hostRename (under source, under destination)
             |> hostSucceeded $"rename %s{source} %s{destination}"
 
-    /// `st_size` through the shim's own `SystemNative_Stat`, whose output
+    /// `st_size` through `stat` in .NET's `System.Native` library, whose output
     /// struct has one layout on every platform (`Size` at byte 16), rather
     /// than through a `struct stat` that would have to fork by platform.
     let private hostSize (path : string) : int64 =

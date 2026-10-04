@@ -44,14 +44,12 @@ module IlMachineStateExecution =
         | Runs of WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         /// Nothing overrides the method the call names, which for a `callvirt` means that method runs.
         | NotOverridden
-        /// The most specific default interface body is this reabstraction, so the call throws
-        /// `EntryPointNotFoundException`; see `VirtualImplementation.Reabstracted`.
-        | Reabstracted of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        /// There is no method to run, and the call throws `DispatchFailure.exceptionType` instead.
+        | Fails of DispatchFailure
 
     /// `ConcreteVirtualDispatch.tryResolveVirtualImplementation` against the machine's type system,
-    /// with the method it finds instantiated. Refuses where more than one default interface body is
-    /// most specific, where the guest would see `AmbiguousImplementationException`, and where the
-    /// type system does not model the dispatch.
+    /// with the method it finds instantiated. Refuses where the type system does not model the
+    /// dispatch.
     let tryResolveVirtualImplementation
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -89,13 +87,9 @@ module IlMachineStateExecution =
             state.WithTypeSystem typeSystem, ResolvedVirtualCall.Runs implementation
         | VirtualImplementation.NotOverridden -> state.WithTypeSystem typeSystem, ResolvedVirtualCall.NotOverridden
         | VirtualImplementation.Reabstracted reabstraction ->
-            state.WithTypeSystem typeSystem, ResolvedVirtualCall.Reabstracted reabstraction
+            state.WithTypeSystem typeSystem, ResolvedVirtualCall.Fails (DispatchFailure.Reabstracted reabstraction)
         | VirtualImplementation.Ambiguous candidates ->
-            candidates
-            |> List.map (fun m -> $"%s{MethodOwner.describe m.Owner}::%s{m.Name}")
-            |> String.concat ", "
-            // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
-            |> failwithf "multiple most-specific default interface implementations matched this virtual slot: %s"
+            state.WithTypeSystem typeSystem, ResolvedVirtualCall.Fails (DispatchFailure.Ambiguous candidates)
         | VirtualImplementation.Unmodelled reason -> failwith reason
 
     /// How a call chooses the method it runs.
@@ -380,11 +374,11 @@ module IlMachineStateExecution =
         let activeMethodState = threadState.MethodState
 
         // Virtual/interface resolution runs before the `[Intrinsic]` classification below, so
-        // that `intrinsic` describes the method we are actually about to execute. `None` where it
-        // lands on a reabstraction, and there is no method to run.
+        // that `intrinsic` describes the method we are actually about to execute, or why there is
+        // none to run.
         let state, dispatched =
             match dispatch with
-            | CallDispatch.Direct -> state, Some methodToCall
+            | CallDispatch.Direct -> state, Ok methodToCall
             | CallDispatch.Virtual receiver ->
                 if not methodToCall.DispatchesVirtually then
                     failwith
@@ -412,18 +406,18 @@ module IlMachineStateExecution =
                         state
 
                 match resolved with
-                | ResolvedVirtualCall.Runs implementation -> state, Some implementation
-                | ResolvedVirtualCall.NotOverridden -> state, Some methodToCall
-                | ResolvedVirtualCall.Reabstracted _ -> state, None
+                | ResolvedVirtualCall.Runs implementation -> state, Ok implementation
+                | ResolvedVirtualCall.NotOverridden -> state, Ok methodToCall
+                | ResolvedVirtualCall.Fails failure -> state, Error failure
 
         match dispatched with
-        | None ->
+        | Error failure ->
             // The call consumes its receiver and arguments, and raises at the call site, which is
             // where exception dispatch must find the program counter. A delegate's invocation
             // reaches here with it already past the `callvirt Invoke`, and says where it was. The
             // message is the parameterless constructor's, where CoreCLR's
-            // (`IDS_CLASSLOAD_METHOD_NOT_IMPLEMENTED`) names the method, interface, receiver type
-            // and its assembly.
+            // (`IDS_CLASSLOAD_METHOD_NOT_IMPLEMENTED`, `IDS_CLASSLOAD_AMBIGUOUS_OVERRIDE`) names the
+            // method, interface, receiver type and its assembly.
             let state =
                 (state, [ 0 .. MethodInfo.arity methodToCall ])
                 ||> List.fold (fun state _ -> IlMachineState.popEvalStack thread state |> snd)
@@ -442,12 +436,12 @@ module IlMachineStateExecution =
                 raiseRuntimeException
                     loggerFactory
                     baseClassTypes
-                    baseClassTypes.EntryPointNotFoundException
+                    (DispatchFailure.exceptionType baseClassTypes failure)
                     thread
                     state
 
             state, CallCommitment.Raised
-        | Some methodToCall ->
+        | Ok methodToCall ->
 
         // Keyed on the call site, not on the target alone -- the target is perfectly legal to
         // enter. `sourcesPure/UnmanagedCallersOnlyFunctionPointer.cs` calls this very method

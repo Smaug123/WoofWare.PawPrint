@@ -35,8 +35,8 @@ module TestSocketTable =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> UnixBootImage.boot
 
-    /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
-    /// guest; an errno comes back, because that is an answer.
+    /// `close(2)`. A refusal crashes the test; an errno comes back, because that
+    /// is an answer.
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
         match UnixDescriptor.close fd system with
         | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
@@ -45,7 +45,7 @@ module TestSocketTable =
 
     /// `EpollReadyList.drain` against a kernel, with the claim its two readers
     /// exist to satisfy checked on every call: the predicate a parked waiter is
-    /// polled against and the drain its woken handler performs read the same
+    /// polled against and the drain its woken call performs read the same
     /// annotated walk, so a drain reports something exactly when the predicate
     /// said it would.
     let private deliverEpollEvents
@@ -124,9 +124,8 @@ module TestSocketTable =
             ReuseAddress = false
         }
 
-    /// The triple a socket is created with, asserted per field because nothing
-    /// else in the runtime reads it back yet: a transposition here would
-    /// otherwise survive until `SystemNative_GetSocketType` reported it.
+    /// The triple a socket is created with, asserted per field: a transposition
+    /// here would otherwise survive until a client read the socket's type back.
     [<Test>]
     let ``a fresh socket carries its triple into the socket table`` () : unit =
         let fd, kernel =
@@ -183,7 +182,7 @@ module TestSocketTable =
     /// ...and closing one of two descriptors onto a socket destroys neither the
     /// description nor the socket. This is the half that a `close` keying off
     /// "the descriptor named a socket" rather than off "a description died"
-    /// would get wrong, and it is reachable from a guest: `dup(2)` of a socket
+    /// would get wrong, and it is reachable from any process: `dup(2)` of a socket
     /// descriptor is an ordinary thing to do.
     [<Test>]
     let ``closing a dup leaves the socket alive`` () : unit =
@@ -245,16 +244,16 @@ module TestSocketTable =
         UnixSystem.checkInvariants kernel |> shouldEqual []
 
     /// A description naming a socket the table does not hold. `UnixMachineState.socket`
-    /// is total against this, so without the check it would surface as an
-    /// interpreter crash at some unrelated call site instead.
+    /// is total against this, so without the check it would surface as a
+    /// crash at some unrelated call site instead.
     [<Test>]
     let ``checkInvariants rejects a description naming no socket`` () : unit =
         forge [ 0, OpenFileDescriptionId 7L, OpenFileTarget.Socket (SocketId 5L) ] [] 6L
         |> UnixSystem.checkInvariants
         |> shouldEqual [ UnixSystemDefect.DanglingSocket (OpenFileDescriptionId 7L, SocketId 5L) ]
 
-    /// A socket no description names. Today that means a close forgot to clean
-    /// up; `SystemNative_Accept` is what will make it legal.
+    /// A socket no description names, which means a close forgot to clean up:
+    /// every way to make a socket hands back a descriptor at once.
     [<Test>]
     let ``checkInvariants rejects a socket no description names`` () : unit =
         forge [] [ 5L, someSocket ] 6L
@@ -456,7 +455,7 @@ module TestSocketTable =
                     // Only names `unlink(2)` or `rmdir(2)` could remove are
                     // candidates: anything that is not a directory, and a
                     // directory that is empty. Unbinding a *populated* one is a
-                    // state no syscall PawPrint models can produce — it would
+                    // state no syscall the library models can produce — it would
                     // orphan a whole subtree at once — and asserting soundness
                     // in it would be asserting a rule nobody has decided.
                     let removable =
@@ -594,7 +593,7 @@ module TestSocketTable =
         // case count chases a probability that is a product of four independent
         // choices, so it does not concentrate the way the counters above do; the
         // cascade is pinned deterministically by
-        // `TestEmulatedKernelInodeLifetime`'s `an orphan held by a descriptor
+        // `TestInodeLifetime`'s `an orphan held by a descriptor
         // keeps its ancestors alive` and `the cascade stops at the root`.
         observedHeldOrphanDirectories |> shouldBeGreaterThan 50
 
@@ -725,7 +724,7 @@ module TestSocketTable =
             |> shouldEqual (EpollEvents.Out ||| EpollEvents.WrNorm)
 
     /// Registrations reference live descriptions (`close` sweeps), so a
-    /// dangling id must be reported as the interpreter bug it is rather than
+    /// dangling id must be reported as the defect it is rather than
     /// answered either way.
     [<Test>]
     let ``a dangling readiness target crashes rather than answering`` () : unit =
@@ -813,9 +812,10 @@ module TestSocketTable =
         | Error refusal -> refusal
         | Ok answer -> failwith $"expected a refusal, got %A{answer}"
 
-    /// The write-back a guest cannot inspect: the queue's content, the
+    /// The write-back a process cannot inspect: the queue's content, the
     /// connection's two addresses, and the client's implicit binding. A
-    /// handler recording zeroes for any of them would survive every guest row.
+    /// `connect` recording zeroes for any of them would survive every test that
+    /// only runs a process.
     [<Test>]
     let ``a blocking connect establishes: queue content, addresses, binding, invariants`` () : unit =
         let kernel = listenerAndClients 8 5000us 1
@@ -867,7 +867,7 @@ module TestSocketTable =
         | other -> failwith $"expected Listening, got %A{other}"
 
     /// Linux's completion report is deferred to the first retry, and the
-    /// retry's answer carries the *same* connection — an identity no guest can
+    /// retry's answer carries the *same* connection — an identity no process can
     /// compare.
     [<Test>]
     let ``a non-blocking Linux establishment pends the completion report`` () : unit =
@@ -1011,9 +1011,9 @@ module TestSocketTable =
         |> shouldEqual (loopback 4444us)
 
     /// Both error directions of the capacity boundary matter: recording where
-    /// a kernel would pend is as wrong as refusing where it would record. The
-    /// guests can only see the under side, so the exact boundary is pinned
-    /// here.
+    /// a kernel would pend is as wrong as refusing where it would record. A
+    /// client's end-to-end tests see only the under side, so the exact boundary
+    /// is pinned here.
     [<Test>]
     let ``the accept queue admits backlog plus one on Linux and refuses the next`` () : unit =
         let kernel = listenerAndClients 1 5000us 3
@@ -1483,8 +1483,8 @@ module TestSocketTable =
         |> shouldEqual [ UnixSystemDefect.DuplicateQueuedConnection (ConnectionId 0L) ]
 
     /// A wildcard-bound listener receives a loopback-destined connect — the
-    /// shape `listen(2)`'s implicit bind creates, which no guest reaches yet
-    /// (they all bind loopback explicitly).
+    /// shape `listen(2)`'s implicit bind creates, which a process that binds
+    /// loopback explicitly never reaches.
     [<Test>]
     let ``a wildcard-bound listener receives a loopback connect`` () : unit =
         let kernel = listenerAndClients 8 5000us 1

@@ -13,7 +13,7 @@ open WoofWare.PosixKernel
 /// `VirtualFileSystem` and once as a real directory tree — and the same paths
 /// are resolved through both, comparing outcomes.
 ///
-/// This is the only oracle here that is not a restatement of PawPrint's own
+/// This is the only oracle here that is not a restatement of the library's own
 /// beliefs. Probed: a trailing separator cannot be desugared into a "."
 /// component — `mkdir("d/")` succeeds where `mkdir("d/.")` does not.
 ///
@@ -213,7 +213,7 @@ module TestVirtualFileSystemAgainstHost =
     ///
     /// Every mode here keeps the owner's *read* bit, and must. The creating-open
     /// comparison stops at `CreatingOpenRules.verdict`, which does not model the
-    /// access-mode permission check the handler applies afterwards — so a
+    /// access-mode permission check `open(2)` applies afterwards — so a
     /// directory this caller could not open `O_RDONLY` would make the real
     /// `open(2)` fail for a reason the model here never sees. 0o100 is the
     /// sharpest search-only mode and is exactly that case; it is pinned in
@@ -234,7 +234,7 @@ module TestVirtualFileSystemAgainstHost =
             "dang", "nx"
             "deep", "nx1/nx2"
             // A target carrying its own trailing separator, which imposes a
-            // directory demand the guest's path never mentioned.
+            // directory demand the caller's path never mentioned.
             "lfslash", "f/"
             "ldslash", "d/"
             // A target that navigates.
@@ -474,7 +474,7 @@ module TestVirtualFileSystemAgainstHost =
                 PathWalk.resolveExisting
                     (limits ())
                     // Privileged: this is the builder placing an inode, not a
-                    // guest looking one up. `ns/kid/gk` could not be reached
+                    // process looking one up. `ns/kid/gk` could not be reached
                     // otherwise, since `ns` is narrowed below.
                     Owners.root
                     SymlinkProtection.Off
@@ -874,7 +874,7 @@ module TestVirtualFileSystemAgainstHost =
         finally
             removeHostTree root
 
-    /// What `readlink(2)` returns for a buffer size the shim would never pass,
+    /// What `readlink(2)` returns for a buffer size a client need never pass,
     /// on this host and in the model: the count, or the errno.
     let private hostReadLink (root : string) (relative : string) (capacity : int) : Result<int, int> =
         let buffer = Array.zeroCreate<byte> 4096
@@ -1033,8 +1033,8 @@ module TestVirtualFileSystemAgainstHost =
         /// The call failed with this errno.
         | Failed of errno : int
 
-    /// This kernel's own `O_CREAT` and `O_EXCL`, which — unlike the PAL values
-    /// the interpreter consumes — are different numbers on the two platforms.
+    /// This kernel's own `O_CREAT` and `O_EXCL`, which are different numbers on
+    /// the two platforms.
     let private hostOpenFlags () : int * int =
         if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
             0x0200, 0x0800
@@ -1074,8 +1074,8 @@ module TestVirtualFileSystemAgainstHost =
         =
         let rules = SimulatedUnixPlatform.creatingOpenRules (hostPlatform ())
 
-        // Exactly the policies `SystemNative_Open` selects for a creating open;
-        // see the handler for why `O_EXCL` implies `NoFollowFinal`.
+        // The policies a creating open walks with: `O_CREAT | O_EXCL` fails on
+        // a final symbolic link whatever it points at, so it does not follow one.
         let policy =
             if exclusive then
                 SymlinkPolicy.NoFollowFinal
@@ -1146,13 +1146,13 @@ module TestVirtualFileSystemAgainstHost =
         if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
             Assert.Ignore "This oracle compares against a Unix kernel."
 
-        // The rows this pins are the ones no `sourcesPure` guest can carry. The
-        // two kernels genuinely disagree about a creating open on a directory,
-        // and about one whose final component carries a trailing separator, so
-        // the model is instantiated at *this* host's flavour and macOS locally
-        // and Linux in CI each falsify their own column. It also carries every
-        // EEXIST row at the errno level, where sourcesPure/CreateSeeded.cs sees
-        // only the exception CoreLib makes of some of them.
+        // The two kernels genuinely disagree about a creating open on a
+        // directory, and about one whose final component carries a trailing
+        // separator. A process runs under one flavour at a time, so only a test
+        // that drives the library directly can reach both columns: the model is
+        // instantiated at *this* host's flavour, and macOS locally and Linux in
+        // CI each falsify their own column. It also carries every EEXIST row at
+        // the errno level.
         let mismatches =
             [
                 for exclusive in [ false ; true ] do
@@ -1567,8 +1567,7 @@ module TestVirtualFileSystemAgainstHost =
         /// here — on Darwin `mkdir("dang/")` binds the link's target rather than
         /// anything the path names — because the host side cannot say. That
         /// identity is pinned instead by `MkDirRules.verdict`'s unit rows, which
-        /// see the bound name directly, and by the Darwin wiring guest, which
-        /// looks for the target afterwards.
+        /// see the bound name directly.
         | Created
         /// The call failed with this errno.
         | Failed of errno : int
@@ -1750,7 +1749,7 @@ module TestVirtualFileSystemAgainstHost =
 
         compared
 
-    /// Every mode worth asking about: the ordinary one CoreLib passes, the three
+    /// Every mode worth asking about: the ordinary one a client passes, the three
     /// upper bits one at a time, all of them at once, one above the permission
     /// word, and zero.
     let private mkDirModeProbes : int list =
@@ -2260,89 +2259,6 @@ module TestVirtualFileSystemAgainstHost =
 
             removals |> List.concat |> List.contains "d/sub" |> shouldEqual true
 
-    let private requireRuntimeSrc () : string =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-            failwith "unreachable: Assert.Ignore did not throw"
-        | dir -> dir
-
-    /// `internal const int S_IFDIR = 0x4000;` and friends.
-    let private fileTypeEntry : Text.RegularExpressions.Regex =
-        Text.RegularExpressions.Regex (@"internal const int (?<name>S_IF[A-Z]+)\s*=\s*0x(?<value>[0-9A-Fa-f]+);")
-
-    [<Test>]
-    let ``the derived S_IFMT band agrees with the pinned Interop.Stat.cs`` () : unit =
-        // `fileTypeBits` is where PawPrint decides what a guest's
-        // `st_mode & S_IFMT` says. Checking it against a second copy of the same
-        // literals would prove nothing, so the oracle is upstream's own
-        // declaration — the very numbers the guest's CoreLib will compare
-        // against.
-        let path =
-            Path.Combine (
-                requireRuntimeSrc (),
-                "src",
-                "libraries",
-                "Common",
-                "src",
-                "Interop",
-                "Unix",
-                "System.Native",
-                "Interop.Stat.cs"
-            )
-
-        if not (File.Exists path) then
-            failwith
-                $"expected the pinned FileStatus declaration at %s{path}. If the sparse checkout in flake.nix no longer includes src/libraries/Common/src/Interop/Unix/System.Native, InodeContent.fileTypeBits has lost its oracle."
-
-        let pinned =
-            fileTypeEntry.Matches (File.ReadAllText path)
-            |> Seq.map (fun m -> m.Groups.["name"].Value, Convert.ToInt32 (m.Groups.["value"].Value, 16))
-            |> Map.ofSeq
-
-        // Guard against the regex silently matching nothing, which would make
-        // every assertion below vacuous: upstream declares eight file types.
-        pinned |> Map.count |> shouldEqual 8
-
-        let ofName (name : string) : int =
-            match Map.tryFind name pinned with
-            | Some value -> value
-            | None -> failwith $"the pinned Interop.Stat.cs no longer declares %s{name}"
-
-        InodeContent.fileTypeBits (
-            InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
-        )
-        |> shouldEqual (ofName "S_IFREG")
-
-        InodeContent.fileTypeBits (
-            InodeContent.Directory
-                {
-                    Entries = Map.empty
-                    Parent = InodeNumber 1L
-                    Permissions = SeedEntry.defaultPermsForDirectory
-                }
-        )
-        |> shouldEqual (ofName "S_IFDIR")
-
-        InodeContent.fileTypeBits (InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x", SymlinkModes.linux))
-        |> shouldEqual (ofName "S_IFLNK")
-
-        // ...and each of them really is inside the band, so that a value that
-        // happened to match a typo'd constant still could not be a plausible
-        // file type.
-        let mask = ofName "S_IFMT"
-
-        for content in
-            [
-                InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
-                InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x", SymlinkModes.linux)
-            ] do
-            let bits = InodeContent.fileTypeBits content
-            bits &&& mask |> shouldEqual bits
-
     // --------------------------------------------------------------- opendir
 
     /// What `opendir(3)` did, in the terms both worlds can answer.
@@ -2474,8 +2390,8 @@ module TestVirtualFileSystemAgainstHost =
             removeHostTree root
 
     /// The names one directory holds, as the host reports them, sorted. `.` and
-    /// `..` are excluded on both sides, because the BCL's enumerator drops them
-    /// by default.
+    /// `..` are excluded on both sides, because `Directory.GetFileSystemEntries`,
+    /// which reads the host's side, drops them.
     let private hostNames (root : string) (relative : string) : string list =
         Directory.GetFileSystemEntries (hostPath root relative)
         |> Array.map Path.GetFileName
@@ -2483,7 +2399,7 @@ module TestVirtualFileSystemAgainstHost =
         |> List.sort
 
     /// The same, for the model, driven through the stream rather than read off
-    /// the map — so this compares what a guest would see rather than what the
+    /// the map — so this compares what a process would see rather than what the
     /// graph happens to hold.
     let private modelNames (vfs : VirtualFileSystem) (relative : string) : string list =
         let inode =

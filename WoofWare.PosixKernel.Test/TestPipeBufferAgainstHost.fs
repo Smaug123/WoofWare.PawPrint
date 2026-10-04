@@ -40,7 +40,8 @@ module TestPipeBufferAgainstHost =
 
     // `fcntl(2)` and `ioctl(2)` are variadic, which a P/Invoke cannot call
     // portably (Apple's arm64 ABI passes variadic arguments on the stack), so
-    // these two go through the runtime's own fixed-arity wrappers of them.
+    // these two go through .NET's own fixed-arity wrappers of them in its
+    // `System.Native` library.
     [<DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking")>]
     extern int private hostSetNonBlocking(nativeint fd, int isNonBlocking)
 

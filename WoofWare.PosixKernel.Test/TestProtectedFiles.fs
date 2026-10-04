@@ -906,8 +906,7 @@ module TestProtectedFiles =
 
     [<Test>]
     let ``no sysctl changes any answer while the caller owns every inode`` () =
-        // What a client gets when every inode of its seed is the process's own,
-        // which is PawPrint's default.
+        // What a client gets when every inode of its seed is the process's own.
         for knobs in
             [
                 for symlinks in allSymlinkProtections do

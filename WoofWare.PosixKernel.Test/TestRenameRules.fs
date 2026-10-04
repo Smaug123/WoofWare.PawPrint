@@ -160,7 +160,7 @@ module TestRenameRules =
         vfs
 
     /// A directory that has lost its last name while something still holds it —
-    /// the only way a guest reaches one is by having it as its current
+    /// the only way a process reaches one is by having it as its current
     /// directory, which is why the driver below takes a start directory rather
     /// than always walking from the root.
     let private orphanState =
@@ -192,7 +192,7 @@ module TestRenameRules =
     /// Resolve both paths as a `rename` of the given flavour would, then ask for
     /// the verdict — so the two `Resolution`s under test are ones the walk really
     /// produces rather than ones this test hand-assembled. This is what
-    /// `SystemNative_Rename` will do, which is why a wrong policy here would be a
+    /// `UnixNamespace.rename` does, which is why a wrong policy here would be a
     /// wrong policy there.
     ///
     /// `privilege` reaches the walks as well as the verdict, because the two
@@ -460,7 +460,8 @@ module TestRenameRules =
         // both reach the mount root and both answer EINVAL, while the same
         // sources with the destination in the other directory answer EXDEV. So
         // where the mount boundary stays quiet, the root answers what any
-        // directory answers, and PawPrint has no mounts to make it speak.
+        // directory answers, and no directory in this corpus is a mount point to
+        // make it speak.
         refuses linux UnixError.EBUSY [ "/.", "x" ; "/..", "x" ; "lroot/.", "x" ; "d/..", "x" ]
         refuses darwin UnixError.EINVAL [ "/.", "x" ; "/..", "x" ; "lroot/.", "x" ; "d/..", "x" ]
 

@@ -12,6 +12,8 @@ using System.Net.Sockets;
 // IN|OUT against IN|PRI|HUP — and every one of those lives in
 // `sourcesImpure/SocketPollLinux.cs` instead. The agreement of what is left was
 // measured, not reasoned: this guest exits 0 on real .NET on both kernels.
+// Every bit of `<poll.h>`, including the ones the shim never asks for, and a
+// poll of an epoll descriptor are `WoofWare.PosixKernel.Test`'s `TestPoll`.
 //
 // Two things here are load-bearing and must survive any edit:
 //

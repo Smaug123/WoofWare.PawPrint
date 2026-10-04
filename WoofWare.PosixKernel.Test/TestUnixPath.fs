@@ -46,7 +46,7 @@ module TestUnixPath =
                     candidate
         }
 
-    /// A path segment as a guest might write one, weighted so that "." and ".."
+    /// A path segment as a process might write one, weighted so that "." and ".."
     /// appear far more often than chance would give them: they are the whole
     /// reason this type keeps components rather than a normalised string.
     let private segmentGen : Gen<string> =
@@ -57,7 +57,7 @@ module TestUnixPath =
     let private separatorRunGen : Gen<string> =
         Gen.frequency [ 6, Gen.constant "/" ; 2, Gen.constant "//" ; 1, Gen.constant "///" ]
 
-    /// A whole guest-supplied path: optionally rooted, optionally
+    /// A whole caller-supplied path: optionally rooted, optionally
     /// trailing-separated, with arbitrary separator runs between segments.
     let private pathStringGen : Gen<string> =
         gen {
