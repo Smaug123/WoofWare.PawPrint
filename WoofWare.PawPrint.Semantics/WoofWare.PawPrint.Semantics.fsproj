@@ -29,6 +29,7 @@
         <Compile Include="VmSubstitution.fs" />
         <Compile Include="IntrinsicPrimitive.fs" />
         <Compile Include="NativeMethod.fs" />
+        <Compile Include="StringConstructor.fs" />
         <Compile Include="IntrinsicBody.fs" />
         <Compile Include="HardwareInstruction.fs" />
         <EmbeddedResource Include="HardwareIntrinsicTable.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.tsv" />

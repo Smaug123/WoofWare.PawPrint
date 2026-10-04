@@ -35,7 +35,9 @@ method) may add more:
   what its contract (`IntrinsicPrimitive`) says it can;
 * a method CoreCLR implements in native code is opaque, unless `NativeMethod` describes it (so far,
   the maths functions `Math` and `MathF` call, and CoreLib's P/Invokes into the framework's own
-  native libraries), when it raises what that contract says;
+  native libraries), when it raises what that contract says. A `newobj` of a constructor of
+  `System.String`, which is native, calls the `String.Ctor` CoreCLR runs in its place
+  (`StringConstructor`);
 * code a capability query rules out on that CPU is left out. Where a call to an `IsSupported` or
   `IsHardwareAccelerated` that answers a constant (`IntrinsicBody.constantResult`) is branched on
   straight away (`brtrue` or `brfalse`, which nothing else reaches), only the way the answer goes is
