@@ -60,6 +60,15 @@ type Syscall =
     /// `dirfd` is raw, as `symlinkat(2)` takes it. `symlink(2)` is this with
     /// the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`).
     | SymlinkAt of target : PathArgumentBytes * dirfd : int * path : PathArgumentBytes
+    /// `olddirfd`, `newdirfd` and `flags` are raw, as `linkat(2)` takes them.
+    /// `link(2)` is this with the flavour's `AT_FDCWD` on both sides and the
+    /// flags `LinkRules.PlainLinkSource` stands for.
+    | LinkAt of
+        olddirfd : int *
+        oldpath : PathArgumentBytes *
+        newdirfd : int *
+        newpath : PathArgumentBytes *
+        flags : int
     /// `futimens(2)` with two explicit times; see `UnixPathResolution.futimens`.
     | FUTimens of fd : int * access : UnixTimestamp * modification : UnixTimestamp
     /// `copy_file_range(2)` at both descriptions' own offsets. `length` is the
@@ -100,6 +109,7 @@ type SyscallRefusal<'Task> =
     | FChOwn of FChOwnRefusal
     | Access of AccessRefusal
     | Symlink of SymlinkRefusal
+    | Link of LinkRefusal
     | Close of CloseRefusal<'Task>
     | FUTimens of FUTimensRefusal
     | CopyFileRange of CopyFileRangeRefusal
@@ -895,6 +905,10 @@ module UnixSystem =
             UnixNamespace.symlinkat target dirfd path system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Symlink
+        | Syscall.LinkAt (olddirfd, oldpath, newdirfd, newpath, flags) ->
+            UnixNamespace.linkat olddirfd oldpath newdirfd newpath flags system
+            |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
+            |> Result.mapError SyscallRefusal.Link
         | Syscall.FUTimens (fd, access, modification) ->
             UnixPathResolution.futimens fd access modification system
             |> answered

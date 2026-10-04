@@ -1322,6 +1322,38 @@ module NativeSystemNative =
             |> fun destination -> UnixNamespace.renameWithDestination destination paused
             |> answer
 
+    /// `SystemNative_Link`, whose two pathnames are read as `rename`'s are: the
+    /// new one not until the kernel has resolved the source and reached the
+    /// point of copying it in, since a source that fails, and on Darwin a
+    /// directory source, finish the call without it ever being read.
+    let private linkSyscall (ctx : NativeCallContext) (state : IlMachineState) : NativeHandlerResult option =
+        let operation = "SystemNative_Link"
+
+        let answer (outcome : Result<SyscallAnswer * UnixSystem<ThreadId, NativeSignalHandler>, LinkRefusal>) =
+            match outcome with
+            | Error refusal -> failwith $"%s{operation}: %s{LinkRefusal.describe refusal}"
+            | Ok (SyscallAnswer.Failed error, system) ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (SyscallAnswer.Completed _, system) ->
+                withAnswered system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+        let source =
+            pathArgumentBytes ctx operation "source" ctx.Instruction.Arguments.[0] state
+
+        match UnixNamespace.linkSourcePhase source state.Kernel.System with
+        | Error refusal -> answer (Error refusal)
+        | Ok (LinkProgress.Answered syscallAnswer) -> answer (Ok (syscallAnswer, state.Kernel.System))
+        | Ok (LinkProgress.NeedsDestination paused) ->
+            pathArgumentBytes ctx operation "linkTarget" ctx.Instruction.Arguments.[1] state
+            |> fun destination -> UnixNamespace.linkWithDestination destination paused
+            |> answer
+
     /// `SystemNative_SymLink`, whose two pathnames are read as `rename`'s are:
     /// the link's own pathname not until the kernel has copied the target in
     /// and reached the point of copying it, since an unreadable target, and
@@ -3352,6 +3384,15 @@ module NativeSystemNative =
           [ ConcretePointer _ ; ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             renameSyscall ctx state
+        // `int32_t SystemNative_Link(const char* source, const char*
+        // linkTarget)` (pal_io.c): an EINTR-retrying `link(2)` and nothing
+        // else. CoreLib declares it as `int Link(string, string)` under UTF-8
+        // marshalling, so what arrives is a pair of NUL-terminated byte
+        // pointers, the existing name first.
+        | Some "SystemNative_Link",
+          [ ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            linkSyscall ctx state
         // `int32_t SystemNative_SymLink(const char* target, const char*
         // linkPath)` (pal_io.c): an EINTR-retrying `symlink(2)` and nothing
         // else. CoreLib declares it as `int SymLink(string, string)` under

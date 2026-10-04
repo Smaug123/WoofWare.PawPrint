@@ -363,6 +363,16 @@ module TestPureCases =
                     name "lf", SeedEntry.Symlink (target "f", None)
                     name "d", SeedEntry.directory (Map.ofList [ name "in", file "in" ])
                 ]
+            "LinkSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "g", file "other"
+                    name "d", SeedEntry.directory Map.empty
+                    name "lf", SeedEntry.Symlink (target "f", None)
+                    name "src", file "new content"
+                    name "dst", file "old content"
+                ]
             "SymLinkSeeded.cs",
             Map.ofList
                 [

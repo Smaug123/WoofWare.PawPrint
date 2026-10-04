@@ -1,0 +1,18 @@
+UNAME	Darwin 27.0.0 arm64	euid=501
+ORDER	protected_hardlinks=-1	caller=501	source=f	n=ok	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EPERM
+ORDER	protected_hardlinks=-1	caller=501	source=d	n=EPERM	g=EPERM	u/n=EPERM	n/=EPERM	nxdir/n=EPERM	/dev/n=EPERM
+ORDER	protected_hardlinks=-1	caller=501	source=nx	n=ENOENT	g=ENOENT	u/n=ENOENT	n/=ENOENT	nxdir/n=ENOENT	/dev/n=ENOENT
+ORDER	protected_hardlinks=-1	caller=501	source=s/sf	n=EACCES	g=EACCES	u/n=EACCES	n/=EACCES	nxdir/n=EACCES	/dev/n=EACCES
+ORDER	protected_hardlinks=-1	caller=501	source=o644	n=ok	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EPERM
+DESTMORE	protected_hardlinks=-1	caller=501	unwritable: free name/	ENOENT
+DESTMORE	protected_hardlinks=-1	caller=501	unwritable: taken name	EEXIST
+DESTMORE	protected_hardlinks=-1	caller=501	writable: unbindable name	errno92
+DESTMORE	protected_hardlinks=-1	caller=501	unwritable: unbindable name	EACCES
+STICKY	protected_hardlinks=-1	caller=501	own file into another's sticky directory	ok
+STICKY	protected_hardlinks=-1	caller=501	another's file out of it (Linux 0666; Darwin the root-owned 0644 file)	ok
+DESTORDER	protected_hardlinks=-1	caller=501	source=f	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=-1	caller=501	source=d	NULL=EPERM	empty=EPERM	overlong=EPERM	dirfd=-1=EPERM
+DESTORDER	protected_hardlinks=-1	caller=501	source=nx	NULL=ENOENT	empty=ENOENT	overlong=ENOENT	dirfd=-1=ENOENT
+DESTORDER	protected_hardlinks=-1	caller=501	source=s/sf	NULL=EACCES	empty=EACCES	overlong=EACCES	dirfd=-1=EACCES
+DESTORDER	protected_hardlinks=-1	caller=501	source=o644	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+EMLINK	/private/tmp/lr-emlink	links=70000	then=none	st_nlink=65535
