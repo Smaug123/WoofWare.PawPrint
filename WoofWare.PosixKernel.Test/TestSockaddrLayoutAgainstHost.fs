@@ -9,11 +9,11 @@ open WoofWare.PosixKernel
 /// The `struct sockaddr` layout this library states, against the one the machine
 /// running the test actually has.
 ///
-/// `IPEndPoint.Serialize()` hands back a real platform `sockaddr`: the runtime
-/// builds it with the same writes a guest's would make -- the length byte from
+/// `IPEndPoint.Serialize()` hands back a real platform `sockaddr`: .NET builds
+/// it with the writes a caller of `connect(2)` makes -- the length byte from
 /// `SocketAddress`'s own constructor, the family and the transport fields from
-/// the platform shim -- so its bytes are evidence about this machine rather than
-/// about .NET. No socket is opened and nothing is sent.
+/// .NET's native layer -- so its bytes are evidence about this machine rather
+/// than about .NET. No socket is opened and nothing is sent.
 ///
 /// Every fact this fixture checks about *offsets* is one both platforms agree
 /// on, so both columns check all of them; what splits by platform is the family

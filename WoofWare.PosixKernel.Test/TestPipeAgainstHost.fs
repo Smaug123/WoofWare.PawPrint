@@ -25,8 +25,9 @@ module TestPipeAgainstHost =
         val mutable Events : int16
         val mutable Revents : int16
 
-    /// `SystemNative_FStat`'s `FileStatus` (`pal_io.h`), which states every field
-    /// in fixed-width types whatever the platform's `struct stat` is.
+    /// The output struct of `fstat` in .NET's `System.Native` library
+    /// (`pal_io.h`), which states every field in fixed-width types whatever the
+    /// platform's `struct stat` is.
     [<Struct ; StructLayout(LayoutKind.Sequential)>]
     type private HostStatus =
         val mutable Flags : int
@@ -89,7 +90,8 @@ module TestPipeAgainstHost =
     extern uint32 private hostGetEGid()
 
     // `fcntl(2)` and `ioctl(2)` are variadic, which a P/Invoke cannot call
-    // portably, so these go through the runtime's own fixed-arity wrappers.
+    // portably, so these go through .NET's own fixed-arity wrappers in its
+    // `System.Native` library.
     [<DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking")>]
     extern int private hostSetNonBlocking(nativeint fd, int isNonBlocking)
 
@@ -210,7 +212,7 @@ module TestPipeAgainstHost =
                     |> UnixBootImage.withCredentials "TestPipeAgainstHost" (Credentials.ofIds uid gid [])
                     |> UnixBootImage.boot
 
-                // The test host's runtime ignores SIGPIPE, so a write with no
+                // The test host process ignores SIGPIPE, so a write with no
                 // reader answers EPIPE there rather than ending it.
                 let system =
                     { system with

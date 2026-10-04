@@ -31,8 +31,8 @@ module TestUnixTaskLifecycle =
                 }
         }
 
-    /// A system with one socket event port, which a task can park on in `flock`, and
-    /// that port's description.
+    /// A system with one epoll instance (a kqueue on Darwin), which a task can park on
+    /// in `flock`, and that instance's description.
     let private world (platform : SimulatedUnixPlatform) : UnixSystem<int, string> * OpenFileDescriptionId =
         let system =
             UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)

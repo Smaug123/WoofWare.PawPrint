@@ -10,7 +10,9 @@ open WoofWare.PosixKernel
 /// `pal_signal.c`, so its oracles are those: every row below reads
 /// `System.Runtime.InteropServices.PosixSignal` from the BCL this test host
 /// runs rather than restating its values, and the numbering rows call the
-/// host's own `SystemNative_GetPlatformSignalNumber`.
+/// host's own `SystemNative_GetPlatformSignalNumber`. What a kernel itself
+/// knows of signals, with no `PosixSignal` in sight, is
+/// `WoofWare.PosixKernel.Test`'s `TestSignal` and `TestSignalAgainstHost`.
 ///
 /// That is a better position than the other three `*Pal` modules are in.
 /// `Interop.Error`, the `SocketEvents` bits and the `AF_*` numbering are all

@@ -42,7 +42,7 @@ module TestSocketErrorAgainstHost =
 
     // `fcntl(2)` is variadic, which a P/Invoke cannot call portably (Apple's
     // arm64 ABI passes variadic arguments on the stack), so this goes through
-    // the runtime's own fixed-arity wrapper of it.
+    // the fixed-arity wrapper in .NET's own `System.Native` library.
     [<DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking")>]
     extern int private hostSetNonBlocking(nativeint fd, int isNonBlocking)
 

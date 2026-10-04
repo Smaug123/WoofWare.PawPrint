@@ -7,13 +7,12 @@ open WoofWare.PosixKernel
 
 /// `UnixConnection.accept`, driven directly on a constructed system.
 ///
-/// The guest tier already exercises the answers a managed program can reach
-/// (`sourcesPure/SocketAccept.cs`, and the errno numbers in
-/// `sourcesImpure/SocketAccept{Linux,Darwin}.cs`). What it cannot reach is the
-/// other half: a guest runs one flavour, cannot hold a socket of a kind this
-/// kernel refuses, and cannot ask for an accept through a buffer whose bytes
-/// nobody can produce. Every refusal, and both flavours, are reachable only from
-/// here.
+/// A client's end-to-end tests can exercise the answers a process can reach.
+/// What they cannot reach is the other half: a process runs under one flavour,
+/// cannot hold a socket of a kind this kernel refuses, and cannot ask for an
+/// accept through a buffer whose bytes nobody can produce. Every refusal, and
+/// both flavours, are reachable only from a test that drives the library
+/// directly, as this one does.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestAccept =
@@ -328,7 +327,7 @@ module TestAccept =
     let ``a descriptor that is not a socket is ENOTSOCK`` (platform : SimulatedUnixPlatform) : unit =
         let system = systemOn platform
 
-        // A standard stream, a regular file and a socket event port: the three
+        // A standard stream, a regular file and an epoll instance: the three
         // things a descriptor can name that are not sockets.
         let fileFd, registry =
             FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
@@ -582,11 +581,9 @@ module TestAccept =
             [| box SimulatedUnixPlatform.macOsArm64 ; box true |]
         ]
 
-    /// A guest cannot see this at all -- CoreCLR's `SystemNative_Accept` clears
-    /// the flag on the flavours that set it, precisely so that its own socket
-    /// code does not have to care -- so this fixture is the only thing that
-    /// distinguishes the two answers. (`sourcesImpure/SocketAcceptDarwin.cs`
-    /// covers the *clearing*, which is a different claim.)
+    /// A process need not see this at all -- a client may clear the flag on
+    /// every accepted socket, so that its own socket code does not have to care
+    /// -- so this fixture is the only thing that distinguishes the two answers.
     [<TestCaseSource(nameof inheritanceRows)>]
     let ``a non-blocking listener's accepted socket inherits the flavour's answer``
         (platform : SimulatedUnixPlatform)

@@ -10,10 +10,9 @@ open WoofWare.PosixKernel
 ///
 /// Darwin's syscall answers move between major releases: Darwin 27 changed what
 /// `rmdir` gives a path ending in "..", and what `connect` answers on a refused
-/// socket. On any other major, the host-equality tests here and the compared
-/// `*Darwin.cs` guests in `WoofWare.PawPrint.Test` would fail on rows that
-/// PawPrint models correctly, and name neither the release nor the cause. This
-/// test names both.
+/// socket. On any other major, the host-equality tests here would fail on rows
+/// that the library models correctly, and name neither the release nor the
+/// cause. This test names both.
 ///
 /// Only the major release is compared, which is the granularity at which a
 /// change has been seen. Linux is not compared at all: `linuxX64` names a GitHub
@@ -68,4 +67,4 @@ module TestDarwinReleaseAgainstHost =
             <> major "SimulatedUnixPlatform.macOsArm64" modelledRelease
         then
             failwith
-                $"This host runs Darwin %s{hostRelease}, but SimulatedUnixPlatform.macOsArm64 models Darwin %s{modelledRelease}. Every comparison of the Darwin flavour against this host is measuring the wrong kernel. Re-measure the Darwin flavour here (the host-equality tests in this project, and the Guest fixtures whose Oracle is WhenHostMatchesEmulatedFlavour), model what moved, and bump macOsArm64's release."
+                $"This host runs Darwin %s{hostRelease}, but SimulatedUnixPlatform.macOsArm64 models Darwin %s{modelledRelease}. Every comparison of the Darwin flavour against this host is measuring the wrong kernel. Re-measure the Darwin flavour here (the host-equality tests in this project), model what moved, and bump macOsArm64's release."
