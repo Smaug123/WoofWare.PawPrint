@@ -1,7 +1,7 @@
 # Seed 20260926, 400 sequences, generated after the raw `eadd`/`emod` ops were added and
 # measured against real Linux 6.18.5 (arm64) through socketFuzz/harness.c. 207 of the 399
 # compared sequences carry at least one raw op; the earlier corpora predate them, so
-# without this file the CI replay would never register a bit the .NET shim does not.
+# without this file the CI replay would never register a bit outside the op language's five.
 # One sequence was skipped as refused (a level-triggered raw registration).
 port:0 sock:1 sock:2 poll:2:0 sock:3 add:0:1:15 mod:0:1:7 sock:4 sock:5 wait:0:8	ok ok ok <HUP> ok ok ok ok ok [1/OUT+HUP]
 port:0 sock:1 add:0:1:1 sock:2 eadd:0:1:2147483680 sock:3 conndead:2 wait:0:1 wait:0:8	ok ok ok ok EEXIST ok EINPROGRESS [1/HUP] []

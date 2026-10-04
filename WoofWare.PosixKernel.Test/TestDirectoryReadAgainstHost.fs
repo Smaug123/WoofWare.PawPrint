@@ -161,8 +161,8 @@ module TestDirectoryReadAgainstHost =
 
         Ok (parse 0 [])
 
-    /// `st_ino` through the shim's `SystemNative_LStat`, whose `FileStatus`
-    /// has one layout on every platform (`Ino` at byte 104).
+    /// `st_ino` through `lstat` in .NET's `System.Native` library, whose output
+    /// struct has one layout on every platform (`Ino` at byte 104).
     let private hostInode (path : string) : uint64 =
         let output = Array.zeroCreate<byte> 256
         hostLStat (path, output) |> hostSucceeded $"lstat %s{path}"

@@ -109,8 +109,9 @@ module TestOpenDirRules =
 
     /// Resolve as `opendir` does, then ask for the verdict — so the `Resolution`
     /// under test is one the walk really produces rather than one this test
-    /// hand-assembled. Mirrors what `SystemNative_OpenDir` does, which is why a
-    /// wrong policy here would be a wrong policy there too.
+    /// hand-assembled. Mirrors what `UnixNamespace.openPath` does for the
+    /// `O_DIRECTORY` open that `opendir(3)` makes, which is why a wrong policy
+    /// here would be a wrong policy there too.
     ///
     /// `privilege` reaches the walk as well as the verdict, because the two
     /// split the permission rule between them: the walk refuses a directory this

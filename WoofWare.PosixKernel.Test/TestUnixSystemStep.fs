@@ -5,13 +5,12 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// The syscall surface, driven the way a client that is not PawPrint would
-/// drive it.
+/// The syscall surface, driven the way a client would drive it.
 ///
 /// This is the first fixture at this altitude, and it is here for the reachable
-/// set rather than for the arithmetic: the guest tier runs one flavour, so the
-/// Darwin arms of an ordering divergence are unreachable from a guest and
-/// reachable from here by constructing a Darwin system directly.
+/// set rather than for the arithmetic: a process runs under one flavour, so a
+/// client's end-to-end tests reach only one arm of an ordering divergence, and
+/// this fixture reaches the Darwin arm by constructing a Darwin system directly.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixSystemStep =
@@ -1231,7 +1230,7 @@ module TestUnixSystemStep =
         //   a read-only file           EINVAL   EINVAL
         //   a directory                EINVAL   EINVAL
         //   a socket                   EINVAL   EINVAL
-        //   a socket event port        EINVAL   EINVAL
+        //   an epoll or kqueue fd      EINVAL   EINVAL
         //   an unscreenable address    EINVAL   EINVAL
         //   a zero length              EINVAL   EINVAL
         //
@@ -1546,8 +1545,8 @@ module TestUnixSystemStep =
         status.Size |> shouldEqual 5L
         // The literal, not `VirtualFileSystem.deviceId`: comparing the answer
         // against the constant it was read from is a row a zeroed constant would
-        // pass. What matters to a guest is only that it is stable and non-zero —
-        // a runtime compares `(st_dev, st_ino)` pairs and never interprets the
+        // pass. What matters to a process is only that it is stable and non-zero
+        // — one that compares `(st_dev, st_ino)` pairs never interprets the
         // device — and zero is the one value that would be indistinguishable
         // from a field nobody wrote.
         status.DeviceId |> shouldEqual 0x1000001L
@@ -1602,7 +1601,7 @@ module TestUnixSystemStep =
     [<Test>]
     let ``a birth time is withheld on the flavour whose stat has no such field`` () : unit =
         // The inode knows when it was born either way; this decides whether a
-        // guest is told. `None` rather than a zero, so that a client cannot read
+        // process is told. `None` rather than a zero, so that a client cannot read
         // "not reported" as "born at the epoch" — which, for an inode created at
         // the epoch, is a distinction no zeroed field could carry.
         let linuxFd, linuxSystem = withOpenFile linux
@@ -1711,7 +1710,7 @@ module TestUnixSystemStep =
         FStatRefusal.describe (FStatRefusal.Socket socketZero)
         |> shouldContainText "contention key"
 
-        // And none of them names PawPrint: which client is asking, and what it
+        // And none of them names a client: which client is asking, and what it
         // would have to build, is the client's half of the message.
         for refusal in
             [
@@ -1819,7 +1818,7 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``stat reports exactly what fstat reports for the same inode`` () : unit =
-        // Two entry points onto one answer. If they could disagree, a guest that
+        // Two entry points onto one answer. If they could disagree, a process that
         // opened a file and stat'd its path would see two different files.
         let _, target, _, system = withTree linux
 
@@ -2062,10 +2061,10 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``mkdir binds a directory the umask has had its say over`` () : unit =
-        // The mode is raw — the shim passes it straight through — so what the
-        // directory actually gets is the kernel's business. Driven with a
-        // distinctive umask rather than the default, since a `mkdir` that ignored
-        // the umask entirely would pass a row that used 0.
+        // The mode is the caller's raw argument, so what the directory actually
+        // gets is the kernel's business. Driven with a distinctive umask rather
+        // than the default, since a `mkdir` that ignored the umask entirely would
+        // pass a row that used 0.
         let system =
             { linux with
                 Process =
@@ -2477,8 +2476,9 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``an invalid whence and an unseekable descriptor are ordered by flavour`` () : unit =
-        // The divergence this fixture exists for, and one a guest cannot reach:
-        // CI's guests run Linux, so the Darwin row below has no other home.
+        // The divergence this fixture exists for: a process runs under one
+        // flavour, so only a test that drives the library directly can reach
+        // both rows.
         // Linux validates `whence` before asking whether the object is seekable;
         // Darwin the other way round. Standard input is a pipe, so it is
         // unseekable on both.
@@ -3006,7 +3006,7 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``a parked acquisition finishes on the description once the lock frees`` () : unit =
-        // The resume path, which no guest can reach without a scheduler: what a client does when
+        // The resume path, which no process can reach without a scheduler: what a client does when
         // its wake predicate answers true.
         let first, second, system = withTwoDescriptions linux
 
@@ -3581,7 +3581,7 @@ module TestUnixSystemStep =
     let ``the predicate and the drain cannot disagree`` () : unit =
         // The claim the shared annotated walk exists to make true, and the one a
         // parked waiter's correctness rests on: the predicate the sweep polls
-        // and the drain the woken handler performs answer the same question, so
+        // and the drain the woken call performs answer the same question, so
         // no event can arrive that wakes nobody, and no wake can find nothing.
         // Each reader looks correct alone.
         let empty = withEventQueue linux
@@ -3845,7 +3845,7 @@ module TestUnixSystemStep =
     /// process keeps working relative to but which has no path any more.
     ///
     /// Orphaned through this library's own `rmdir` rather than by editing the
-    /// filesystem, so that the state under test is one a guest could actually
+    /// filesystem, so that the state under test is one a process could actually
     /// reach — `rmdir` is the only syscall that can orphan a directory.
     let private atOrphan (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         let system = atInner system
@@ -4112,10 +4112,10 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``a directory opens for reading but not for writing`` () : unit =
-        // CoreLib depends on both halves: `SafeFileHandle.Init` skips its own
-        // directory check when write access was asked for, on the strength of
-        // "open will have failed with EISDIR", and it opens-then-fstats to raise
-        // `UnauthorizedAccessException` for a read.
+        // A client may depend on both halves: one asking for write access can
+        // skip its own directory check on the strength of "open will have
+        // failed with EISDIR", and one reading can open and then `fstat` to tell
+        // a directory apart.
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
@@ -4276,10 +4276,10 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``O_NOFOLLOW makes opening a symbolic link ELOOP`` () : unit =
-        // What `SafeFileHandle.OpenNoFollowSymlink` reads back to decide a path
-        // was a symlink without racing. Paired with the same open *without* the
-        // flag, which follows to the file — otherwise the row could not tell
-        // ELOOP from "this link was broken".
+        // What a client can read back to decide a path was a symlink without
+        // racing. Paired with the same open *without* the flag, which follows
+        // to the file — otherwise the row could not tell ELOOP from "this link
+        // was broken".
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
@@ -4397,9 +4397,8 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``a nonzero mode without O_CREAT is not rejected`` () : unit =
-        // `SafeFileHandle.OpenReadOnly` passes 0666 even for a read-only open of
-        // an existing file, so a kernel that validated `mode` here would refuse
-        // the BCL's own read path.
+        // A client may pass 0666 even for a read-only open of an existing file,
+        // so a kernel that validated `mode` here would refuse an ordinary read.
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
@@ -4617,9 +4616,9 @@ module TestUnixSystemStep =
     [<Test>]
     let ``opendir consumes a descriptor that pins the directory`` () : unit =
         // A real `opendir` takes a file descriptor, and `dirfd(3)` hands it
-        // back. Nothing in the PAL calls `dirfd`, so the only way a guest sees
-        // it is in the *numbering* of a later open — which is what this asserts,
-        // rather than reading the stream's own field.
+        // back. A process that never calls `dirfd` still sees the descriptor in
+        // the *numbering* of a later open — which is what this asserts, rather
+        // than reading the stream's own field.
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
@@ -4748,10 +4747,10 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``a short buffer truncates rather than failing`` () : unit =
-        // Truncation is how the BCL *sizes* its allocation: `Interop.Sys.ReadLink`
-        // starts with a 256-byte `stackalloc` and doubles while the result fills
-        // the buffer, so refusing here would break `FileInfo.LinkTarget` for
-        // every target of 256 bytes or more.
+        // Truncation is how a client can *size* its allocation: start with a
+        // small buffer and double it while the result fills the buffer. Refusing
+        // here would break such a client for every target longer than its first
+        // buffer.
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
@@ -4926,9 +4925,7 @@ module TestUnixSystemStep =
     let ``the declared length bounds what is written and not what is reported`` () : unit =
         // Measured on both flavours across a sweep of declared lengths: a call
         // declaring 8 writes eight bytes and reports 16; one declaring 128
-        // writes sixteen and still reports 16. The shim's own
-        // `assert(addrLen <= *socketAddressLen)` is false on both platforms and
-        // is compiled out of the shipped build.
+        // writes sixteen and still reports 16.
         for flavour in [ linux ; darwin ] do
             let fd, system = withBoundSocket flavour
 
@@ -5065,7 +5062,7 @@ module TestUnixSystemStep =
         GetSockNameRefusal.describe (GetSockNameRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
         |> shouldContainText "bytes the caller cannot produce"
 
-        // And neither names PawPrint: which client is asking, and what it would
+        // And neither names a client: which client is asking, and what it would
         // have to build, is the client's half of the message.
         for refusal in
             [
@@ -5176,7 +5173,7 @@ module TestUnixSystemStep =
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | other -> failwith $"unexpected answer %A{other}"
 
-    /// A pathname the guest passed, as bytes: what the syscall is actually
+    /// A pathname the caller passed, as bytes: what the syscall is actually
     /// handed, since where each is decoded is the kernel's business.
     let private arg (path : string) : PathArgumentBytes = PathArg.ofText path
 
@@ -5305,7 +5302,7 @@ module TestUnixSystemStep =
     let ``the destination's pathname is copied in before the source's final lookup, on Linux only`` () : unit =
         // `PathArgument.Failed` is what `getname()` reports, and the two errnos
         // it can carry surface at the same point — so both are asserted, and a
-        // handler that screened only one would be caught.
+        // `rename` that screened only one would be caught.
         for failure in [ UnixError.ENAMETOOLONG ; UnixError.EFAULT ] do
             let system = withRenameTree linux
 
@@ -5806,7 +5803,7 @@ module TestUnixSystemStep =
                 "a regular file", "f", Error UnixError.ENOTDIR
                 "a regular file, trailing separator", "f/", Error UnixError.ENOTDIR
                 // Follows the link, and records where it landed rather than what
-                // the guest named.
+                // the caller named.
                 "a symlink to a directory", "ld", Ok (Some "/d")
                 "a symlink to a directory, trailing sep", "ld/", Ok (Some "/d")
                 "a symlink to a file", "lf", Error UnixError.ENOTDIR

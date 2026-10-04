@@ -74,8 +74,8 @@ module TestSocketBinding =
             order |> List.sort |> shouldEqual (List.sort allFaults)
 
     /// The two orders differ, and specifically in the two places measured. Were
-    /// they equal, every per-flavour ordering row in `SocketBindLinux.cs` and its
-    /// Darwin sibling would be asserting the same thing twice.
+    /// they equal, every per-flavour ordering row would be asserting the same
+    /// thing twice.
     [<Test>]
     let ``the flavours disagree about which fault comes first`` () : unit =
         let linux = SimulatedUnixPlatform.bindFaultOrder SimulatedUnixPlatform.linuxX64
@@ -306,9 +306,7 @@ module TestSocketBinding =
     /// two SO_REUSEADDR sockets stop coexisting when one listens, and the Darwin
     /// answer is why re-checking there would *invent* an EADDRINUSE rather than
     /// tighten one — its bind rule keys on the candidate's flag alone, so asking
-    /// it again reverses the roles it was answered under. The guests hold the
-    /// end-to-end rows: `SocketBindLinux.cs` and `SocketBindDarwin.cs`, both
-    /// section 18.
+    /// it again reverses the roles it was answered under.
     [<Test>]
     let ``only Linux re-screens an already-bound listen`` () : unit =
         SimulatedUnixPlatform.listenRescreensBinding SimulatedUnixPlatform.linuxX64

@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint.Test
 
 open System
 open System.Buffers.Binary
+open System.Collections.Immutable
 open System.IO
 open System.Runtime.InteropServices
 open System.Text.RegularExpressions
@@ -14,7 +15,9 @@ open WoofWare.PosixKernel.Test
 /// `FileStatusPal` transcribes the one bit of `st_flags` the shim keeps, so
 /// nothing in the type system keeps its numbers right. Its oracles are the
 /// pinned `pal_io.h` and, on a Darwin host, the host's own `SystemNative_LStat`
-/// over files whose flags this test sets.
+/// over files whose flags this test sets. The `st_mode` the kernel reports goes
+/// into `FileStatus.Mode` untranslated, so the kernel's file-type numbers are
+/// checked here against the pinned `Interop.Stat.cs` too.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestFileStatusPal =
@@ -44,6 +47,10 @@ module TestFileStatusPal =
                 $"TestFileStatusPal: expected the pinned PAL header at %s{path}. If the sparse checkout in flake.nix no longer includes it, this transcription has lost its oracle."
 
         File.ReadAllText path
+
+    /// `internal const int S_IFDIR = 0x4000;` and friends.
+    let private fileTypeEntry : Regex =
+        Regex (@"internal const int (?<name>S_IF[A-Z]+)\s*=\s*0x(?<value>[0-9A-Fa-f]+);")
 
     [<Test>]
     let ``PAL_UF_HIDDEN is upstream's`` () : unit =
@@ -101,3 +108,82 @@ module TestFileStatusPal =
                     hostChflags (path, 0u) |> ignore<int>
                     File.Delete path
         )
+
+    [<Test>]
+    let ``the kernel's S_IFMT band agrees with the pinned Interop.Stat.cs`` () : unit =
+        // `fileTypeBits` is where the kernel decides what `st_mode & S_IFMT`
+        // says, and the FileStatus PawPrint writes carries that mode
+        // untranslated. Checking it against a second copy of the same literals
+        // would prove nothing, so the oracle is upstream's own declaration:
+        // the very numbers the guest's CoreLib will compare against.
+        let path =
+            match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
+            | null
+            | "" ->
+                Assert.Ignore
+                    "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
+
+                failwith "unreachable: Assert.Ignore did not throw"
+            | dir ->
+                Path.Combine (
+                    dir,
+                    "src",
+                    "libraries",
+                    "Common",
+                    "src",
+                    "Interop",
+                    "Unix",
+                    "System.Native",
+                    "Interop.Stat.cs"
+                )
+
+        if not (File.Exists path) then
+            failwith
+                $"expected the pinned FileStatus declaration at %s{path}. If the sparse checkout in flake.nix no longer includes src/libraries/Common/src/Interop/Unix/System.Native, InodeContent.fileTypeBits has lost its oracle."
+
+        let pinned =
+            fileTypeEntry.Matches (File.ReadAllText path)
+            |> Seq.map (fun m -> m.Groups.["name"].Value, Convert.ToInt32 (m.Groups.["value"].Value, 16))
+            |> Map.ofSeq
+
+        // Guard against the regex silently matching nothing, which would make
+        // every assertion below vacuous: upstream declares eight file types.
+        pinned |> Map.count |> shouldEqual 8
+
+        let ofName (name : string) : int =
+            match Map.tryFind name pinned with
+            | Some value -> value
+            | None -> failwith $"the pinned Interop.Stat.cs no longer declares %s{name}"
+
+        InodeContent.fileTypeBits (
+            InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
+        )
+        |> shouldEqual (ofName "S_IFREG")
+
+        InodeContent.fileTypeBits (
+            InodeContent.Directory
+                {
+                    Entries = Map.empty
+                    Parent = InodeNumber 1L
+                    Permissions = SeedEntry.defaultPermsForDirectory
+                }
+        )
+        |> shouldEqual (ofName "S_IFDIR")
+
+        InodeContent.fileTypeBits (
+            InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x", (PermissionBits.parseOrFail "test" 0o777))
+        )
+        |> shouldEqual (ofName "S_IFLNK")
+
+        // ...and each of them really is inside the band, so that a value that
+        // happened to match a typo'd constant still could not be a plausible
+        // file type.
+        let mask = ofName "S_IFMT"
+
+        for content in
+            [
+                InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
+                InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x", (PermissionBits.parseOrFail "test" 0o777))
+            ] do
+            let bits = InodeContent.fileTypeBits content
+            bits &&& mask |> shouldEqual bits

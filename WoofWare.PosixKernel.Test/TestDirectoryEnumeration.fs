@@ -101,7 +101,7 @@ module TestDirectoryEnumeration =
     [<Test>]
     let ``a stream yields the names in the map's order, then dot-dot and dot`` () : unit =
         // The dots are *last*, and that is the whole point of this order: a
-        // guest that consumes two entries to skip them, or that expects the
+        // process that consumes two entries to skip them, or that expects the
         // first entry to be one, is broken on ext4 and must be broken here.
         let vfs, directory = withEntries [ "m" ; "a" ; "z" ]
 
@@ -144,7 +144,7 @@ module TestDirectoryEnumeration =
 
     [<Test>]
     let ``a directory entry reports the inode that name binds`` () : unit =
-        // So that the handler can derive `d_type` without a second lookup, and
+        // So that a caller can derive `d_type` without a second lookup, and
         // so a wrong-inode bug cannot hide behind a right name.
         let vfs, directory = withEntries [ "f" ]
 
@@ -180,8 +180,9 @@ module TestDirectoryEnumeration =
 
         seen |> shouldEqual [ "a" ; "b" ; "c" ]
 
-        // And the directory really is empty, which is what makes CoreLib's
-        // `RemoveDirectoryRecursive` succeed rather than answer ENOTEMPTY.
+        // And the directory really is empty, which is what makes a recursive
+        // removal that deletes each name as it reads it succeed, rather than
+        // answer ENOTEMPTY at its final `rmdir`.
         match VirtualFileSystem.tryGetContent directory after with
         | Some (InodeContent.Directory content) -> content.Entries |> Map.isEmpty |> shouldEqual true
         | other -> failwith $"expected a directory, got %O{other}"
@@ -289,8 +290,8 @@ module TestDirectoryEnumeration =
 
     [<Test>]
     let ``deleting each name as it is returned always empties the directory`` () : unit =
-        // The property behind CoreLib's `RemoveDirectoryRecursive`, generalised
-        // past the three-name example above.
+        // The property a recursive removal relies on, generalised past the
+        // three-name example above.
         let property (names : string list) : bool =
             let vfs, directory = withEntries (List.distinct names)
 

@@ -6,8 +6,9 @@ open System.Runtime.InteropServices
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// The fields of this host's own `struct stat` that the shim's `FileStatus`
-/// does not carry, read in the library's vocabulary: the oracle for
+/// The fields of this host's own `struct stat` that the output struct of
+/// .NET's `System.Native` `stat` does not carry, read in the library's
+/// vocabulary: the oracle for
 /// `FileStatus.LinkCount`, `SpecialFileDevice` and `FileFlags`.
 type HostStatus =
     {

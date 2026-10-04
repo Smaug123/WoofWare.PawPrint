@@ -14,10 +14,9 @@ open WoofWare.PosixKernel
 /// tests that matter here hold it to `ErrnoHeaders`, a checked-in transcription
 /// of both flavours' headers, on every host. The host then checks that
 /// transcription for its own flavour, against its header and its libc's
-/// `strerror`: the Darwin half on a dev box, the Linux half in CI. (.NET's PAL
-/// numbering of these errors is a client's business: it lives in
-/// `WoofWare.PawPrint.Test.TestUnixErrorPal`, checked against its own upstream
-/// authority.)
+/// `strerror`: the Darwin half on a dev box, the Linux half in CI. (A client's
+/// own numbering of these errors is that client's business, and is not tested
+/// here.)
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixError =

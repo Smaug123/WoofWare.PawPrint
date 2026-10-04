@@ -74,7 +74,7 @@ module TestUserBuffer =
     [<Test>]
     let ``an unmapped address is screened by the arithmetic`` () : unit =
         // The classified form must agree with the bare-number form it wraps, or
-        // a caller that moved from one to the other changes what a guest reads.
+        // a caller that moved from one to the other changes what a process reads.
         for address in
             [
                 0UL

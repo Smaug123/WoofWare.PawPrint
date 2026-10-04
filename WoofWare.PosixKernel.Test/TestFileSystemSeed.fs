@@ -24,8 +24,8 @@ module TestFileSystemSeed =
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
 
-    /// None of these tests are about the resolution limits; Linux because that
-    /// is what `KernelConfig` defaults to.
+    /// None of these tests are about the resolution limits, so any flavour's
+    /// will do; these are Linux's.
     let private limits : PathLimits =
         SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
 
@@ -116,7 +116,7 @@ module TestFileSystemSeed =
         // The "physical parent" link is what ".." walks, and nothing in the
         // seed's own shape supplies it — `createDirectory` does. A seed that
         // built the tree by binding inodes directly could get this wrong and
-        // still look right until a guest wrote "..".
+        // still look right until a process walked "..".
         let seed =
             Map.ofList
                 [
@@ -251,12 +251,12 @@ module TestFileSystemSeed =
 
     [<Test>]
     let ``realising a seed is deterministic, down to the inode numbers`` () : unit =
-        // Inode numbers are guest-observable through `st_ino`, and the BCL
-        // compares `(st_dev, st_ino)` pairs to decide whether two paths name
-        // one file. So "the same seed gives the same numbers" is part of the
-        // replay contract, not an implementation detail — and it is the reason
-        // the realiser folds over `Map`, whose iteration order is the keys'
-        // rather than the host's insertion order.
+        // Inode numbers are observable to a process through `st_ino`, and a
+        // program may compare `(st_dev, st_ino)` pairs to decide whether two
+        // paths name one file. So "the same seed gives the same numbers" is
+        // part of the replay contract, not an implementation detail — and it is
+        // the reason the realiser folds over `Map`, whose iteration order is
+        // the keys' rather than the host's insertion order.
         let property (seed : Map<DirectoryEntryName, SeedEntry>) : unit =
             let first = realise seed
             let second = realise seed
@@ -279,9 +279,9 @@ module TestFileSystemSeed =
 
     [<Test>]
     let ``a boot clock in milliseconds becomes a timespec`` () : unit =
-        // The seed's creation instant comes from `KernelConfig.WallClockEpochMs`,
-        // so the millisecond-to-timespec conversion is on the path of every
-        // seeded inode's mtime.
+        // A client may keep its boot clock in milliseconds since the epoch, and
+        // the seed's creation instant is that clock, so the millisecond-to-
+        // timespec conversion is on the path of every seeded inode's mtime.
         let at (ms : int64) =
             UnixTimestamp.ofMillisecondsSinceEpoch ms
 
@@ -375,8 +375,8 @@ module TestFileSystemSeed =
     [<Test>]
     let ``every platform can answer every question stat asks of it`` () : unit =
         // The point of carrying a flavour: a platform that named only a release
-        // string could not answer these, and a guest on it could abort the
-        // interpreter by stat-ing a symlink.
+        // string could not answer these, and a process on it could abort the
+        // whole simulation by stat-ing a symlink.
         let linux = SimulatedUnixPlatform.linuxX64
         let darwin = SimulatedUnixPlatform.macOsArm64
 
@@ -439,9 +439,9 @@ module TestFileSystemSeed =
     [<Test>]
     let ``a release string must be one a real uname could print`` () : unit =
         // Validated at construction rather than when the release is read, which
-        // is what makes every accessor total — and means a host sees the
-        // complaint next to the knob it set, rather than at the guest's first
-        // `Environment.OSVersion`.
+        // is what makes every accessor total — and means a client sees the
+        // complaint next to the knob it set, rather than at the process's first
+        // `uname(2)`.
         //
         // The release is checked for every combination of the other three,
         // measured or not, so these errors are the release's alone.
@@ -467,9 +467,9 @@ module TestFileSystemSeed =
         create (String.replicate 256 "a")
         |> shouldEqual (Error (SimulatedUnixReleaseError.TooLong (256, 255)))
 
-        // The release reaches the guest as single bytes, so anything outside
+        // The release reaches the process as single bytes, so anything outside
         // printable ASCII has no faithful encoding — and an embedded NUL would
-        // silently truncate what the guest reads.
+        // silently truncate what the process reads.
         create "6.8.0-\u00E9"
         |> shouldEqual (Error (SimulatedUnixReleaseError.NotPrintableAscii (6, '\u00E9')))
 
@@ -477,7 +477,7 @@ module TestFileSystemSeed =
         |> shouldEqual (Error (SimulatedUnixReleaseError.NotPrintableAscii (5, '\u0000')))
 
         // A forged value bypasses `create` entirely; `assertValid` is what
-        // catches it before its null release reaches a guest as `uname -r`.
+        // catches it before its null release reaches a process as `uname -r`.
         let forged =
             Assert.Throws (fun () ->
                 SimulatedUnixPlatform.assertValid "test" Unchecked.defaultof<SimulatedUnixPlatform>

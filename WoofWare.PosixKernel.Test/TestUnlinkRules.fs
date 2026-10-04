@@ -123,7 +123,7 @@ module TestUnlinkRules =
     /// Resolve as an `unlink` of the given flavour would, then ask for the
     /// verdict — so the `Resolution` under test is one the walk really produces
     /// rather than one this test hand-assembled. Mirrors what
-    /// `SystemNative_Unlink` does, which is why a wrong policy here would be a
+    /// `UnixNamespace.unlink` does, which is why a wrong policy here would be a
     /// wrong policy there too.
     ///
     /// `privilege` reaches the walk as well as the verdict, because the two
@@ -307,8 +307,8 @@ module TestUnlinkRules =
     [<Test>]
     let ``Darwin answers EBUSY for the root reached by a navigation`` () : unit =
         // XNU's `unlink1` refuses a mount's root vnode (`vp->v_flag & VROOT`);
-        // PawPrint mounts one filesystem, so that is the root. Reached through a
-        // symlink to "/" as readily as directly.
+        // this corpus is one filesystem, so its root is `/`. Reached
+        // through a symlink to "/" as readily as directly.
         // `d/..` is here rather than beside `d/.` for exactly that reason: this
         // corpus's root *is* the filesystem root, so climbing out of `d` lands
         // on it.

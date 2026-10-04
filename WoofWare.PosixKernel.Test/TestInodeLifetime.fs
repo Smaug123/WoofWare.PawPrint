@@ -12,9 +12,8 @@ open WoofWare.PosixKernel
 /// in `ObjectLifetime.pinnedInodes` and `ObjectLifetime.forgetIfUnheld`, which
 /// is the one place that can see both tables.
 ///
-/// None of this is guest-observable — freeing memory is not something a process
-/// can watch — so these rows and `sourcesImpure/UnlinkReapSeeded.cs`'s terminal
-/// assertion are the only checks on it.
+/// None of this is observable to a process — freeing memory is not something a
+/// process can watch — so it is checked here, by driving the library directly.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestInodeLifetime =
@@ -254,7 +253,7 @@ module TestInodeLifetime =
         // Nothing holds an entry naming the root, so its binding count is zero
         // by construction and a rule that consulted only the count would free
         // the filesystem out from under every path. `open("/")` and then
-        // `close` is an ordinary thing for a guest to do, so this is reachable.
+        // `close` is an ordinary thing for a process to do, so this is reachable.
         let kernel = kernel ()
         let root = VirtualFileSystem.root kernel.Machine.FileSystem
 

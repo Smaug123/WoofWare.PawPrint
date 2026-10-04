@@ -38,7 +38,7 @@ module TestSockOpt =
     let private pipeFd : int = 0
 
     /// A fresh system on `platform` holding one IPv4 stream socket in `phase`,
-    /// bound where the phase needs it, and one socket event port.
+    /// bound where the phase needs it, and one epoll instance.
     let private systemWith
         (platform : SimulatedUnixPlatform)
         (phase : SocketPhase)
@@ -187,7 +187,7 @@ module TestSockOpt =
     type private Target =
         | Closed
         | Pipe
-        | EventPort
+        | EventQueue
         | Socket
 
     let private null' : UserBuffer = UserBuffer.Unmapped 0UL
@@ -240,7 +240,7 @@ module TestSockOpt =
     /// Linux and the Darwin answer.
     let private setRows : SetRow list =
         let closed, pipe, port, sock =
-            Target.Closed, Target.Pipe, Target.EventPort, Target.Socket
+            Target.Closed, Target.Pipe, Target.EventQueue, Target.Socket
 
         let reuse = Option.ReuseAddress
         let unknownLevel, unknownOption = Option.UnknownLevel, Option.UnknownAtSocketLevel
@@ -259,7 +259,7 @@ module TestSockOpt =
             setRow "pipe, unmapped value" pipe reuse unmapped 4u enotsock enotsock
             setRow "pipe, length 0" pipe reuse real 0u enotsock enotsock
             setRow "pipe, length -1" pipe reuse real minus1 enotsock enotsock
-            setRow "event port" port reuse real 4u enotsock enotsock
+            setRow "event queue" port reuse real 4u enotsock enotsock
             setRow "socket, length 0" sock reuse real 0u einval einval
             setRow "socket, length 1" sock reuse real 1u einval einval
             setRow "socket, length 3" sock reuse real 3u einval einval
@@ -291,7 +291,7 @@ module TestSockOpt =
         match target with
         | Target.Closed -> closedFd
         | Target.Pipe -> pipeFd
-        | Target.EventPort -> portFd
+        | Target.EventQueue -> portFd
         | Target.Socket -> socketFd
 
     let private flavourColumn (platform : SimulatedUnixPlatform) (onLinux : 'a) (onDarwin : 'a) : 'a =
@@ -634,7 +634,7 @@ module TestSockOpt =
     /// then the Linux and the Darwin answer.
     let private getRows : GetRow list =
         let closed, pipe, port, sock =
-            Target.Closed, Target.Pipe, Target.EventPort, Target.Socket
+            Target.Closed, Target.Pipe, Target.EventQueue, Target.Socket
 
         let reuse = Option.ReuseAddress
         let unknownLevel, unknownOption = Option.UnknownLevel, Option.UnknownAtSocketLevel
@@ -644,7 +644,7 @@ module TestSockOpt =
             getRow "closed, null length" closed reuse real null' 4u ebadf ebadf
             getRow "pipe" pipe reuse real real 4u enotsock enotsock
             getRow "pipe, null length" pipe reuse real null' 4u enotsock enotsock
-            getRow "event port" port reuse real real 4u enotsock enotsock
+            getRow "event queue" port reuse real real 4u enotsock enotsock
             getRow "socket, null length" sock reuse real null' 4u efault efault
             getRow "socket, unmapped length" sock reuse real unmapped 4u efault efault
             getRow "socket, null value, null length" sock reuse null' null' 4u efault efault

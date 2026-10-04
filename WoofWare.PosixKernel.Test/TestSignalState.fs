@@ -603,10 +603,10 @@ module TestSignalState =
         // `ImmutableQueue<T>` compares by reference, so storing `Pending` in
         // one would make two independently-built states with identical
         // contents compare unequal once the queue was non-empty.
-        // `EmulatedKernel` (which embeds `SignalState`) is compared
-        // structurally for deterministic state dedup; this test pins
-        // down that the contract holds across every operation that
-        // touches the queue.
+        // A client may compare a `UnixSystem` (whose process embeds
+        // `SignalState`) structurally for deterministic state dedup; this
+        // test pins down that the contract holds across every operation
+        // that touches the queue.
         let entryA =
             {
                 Signal = Signal.SIGINT
