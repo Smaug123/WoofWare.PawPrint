@@ -1236,9 +1236,9 @@ module NativeDelegate =
                                             | IlMachineStateExecution.ResolvedVirtualCall.Runs implementation ->
                                                 Some implementation
                                             | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> None
-                                            | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted reabstraction ->
+                                            | IlMachineStateExecution.ResolvedVirtualCall.Fails failure ->
                                                 failwith
-                                                    $"TODO: %s{operation} must virtualise %s{method.Name} of the open generic definition %O{definition} over a %O{receiverType}, whose instantiation %O{interfaceHandle} of it resolves to the reabstraction %s{MethodOwner.describe reabstraction.Owner}::%s{reabstraction.Name}; PawPrint does not model how CoreCLR's search for the typical instantiation treats one"
+                                                    $"TODO: %s{operation} must virtualise %s{method.Name} of the open generic definition %O{definition} over a %O{receiverType}, whose instantiation %O{interfaceHandle} of it resolves to %s{DispatchFailure.describe failure}; PawPrint does not model how CoreCLR's search for the typical instantiation treats one"
 
                                         state, acc @ [ interfaceHandle, resolved ]
                                     | Some _
@@ -1328,9 +1328,10 @@ module NativeDelegate =
                         // the resolution there gives the same method; and on static virtuals,
                         // which the arm above refuses.
                         //
-                        // A slot holding a reabstraction raises, as `ldvirtftn`'s does. Measured:
-                        // real .NET throws `EntryPointNotFoundException` from `CreateDelegate`,
-                        // with a message naming the method, which this does not reproduce.
+                        // A slot holding a reabstraction, or ambiguous default bodies, raises as
+                        // `ldvirtftn`'s does. Measured: real .NET throws `EntryPointNotFoundException`
+                        // or `AmbiguousImplementationException` from `CreateDelegate`, with a message
+                        // naming the method, which this does not reproduce.
                         let state, methodPtr =
                             match targetAddr with
                             | Some receiver when method.DispatchesVirtually ->
@@ -1355,8 +1356,8 @@ module NativeDelegate =
                                 | IlMachineStateExecution.ResolvedVirtualCall.Runs implementation ->
                                     state, Ok implementation
                                 | IlMachineStateExecution.ResolvedVirtualCall.NotOverridden -> state, Ok method
-                                | IlMachineStateExecution.ResolvedVirtualCall.Reabstracted _ ->
-                                    state, Error (ctx.BaseClassTypes.EntryPointNotFoundException, None)
+                                | IlMachineStateExecution.ResolvedVirtualCall.Fails failure ->
+                                    state, Error (DispatchFailure.exceptionType ctx.BaseClassTypes failure, None)
                             | Some _
                             | None ->
                                 // No receiver to virtualise on. A delegate closed over a null

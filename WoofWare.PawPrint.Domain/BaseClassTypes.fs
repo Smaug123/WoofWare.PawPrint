@@ -180,6 +180,9 @@ module BaseClassTypes =
         let entryPointNotFoundException =
             findCorelibType corelib "System" "EntryPointNotFoundException"
 
+        let ambiguousImplementationException =
+            findCorelibType corelib "System.Runtime" "AmbiguousImplementationException"
+
         let nullReferenceException =
             findCorelibType corelib "System" "NullReferenceException"
 
@@ -281,6 +284,7 @@ module BaseClassTypes =
             VerificationException = verificationException
             AmbiguousMatchException = ambiguousMatchException
             EntryPointNotFoundException = entryPointNotFoundException
+            AmbiguousImplementationException = ambiguousImplementationException
             NullReferenceException = nullReferenceException
             OutOfMemoryException = outOfMemoryException
             ArgumentException = argumentException

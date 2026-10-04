@@ -395,6 +395,9 @@ type BaseClassTypes<'corelib> =
         /// method no implementation can be found for, as happens when a delegate open over a
         /// static abstract interface method is invoked.
         EntryPointNotFoundException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Runtime.AmbiguousImplementationException`. Thrown by the runtime when a call's most
+        /// specific default interface body is not unique.
+        AmbiguousImplementationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NullReferenceException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         OutOfMemoryException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArgumentException : TypeInfo<GenericParamFromMetadata, TypeDefn>

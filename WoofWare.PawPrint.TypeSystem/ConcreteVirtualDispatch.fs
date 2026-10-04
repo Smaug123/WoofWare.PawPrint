@@ -42,6 +42,39 @@ type VirtualImplementation =
     /// CoreCLR throws depends on how the JIT compiled the call.
     | Unmodelled of reason : string
 
+/// Why a virtual call has no method to run, and throws instead of calling anything.
+[<RequireQualifiedAccess>]
+type DispatchFailure =
+    /// The most specific default body is this reabstraction, as for
+    /// `VirtualImplementation.Reabstracted`: the call throws `EntryPointNotFoundException`.
+    | Reabstracted of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+    /// These default bodies are equally specific, as for `VirtualImplementation.Ambiguous`: the call
+    /// throws `AmbiguousImplementationException`.
+    | Ambiguous of WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+
+[<RequireQualifiedAccess>]
+module DispatchFailure =
+    /// The exception the call throws.
+    let exceptionType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (failure : DispatchFailure)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        match failure with
+        | DispatchFailure.Reabstracted _ -> baseClassTypes.EntryPointNotFoundException
+        | DispatchFailure.Ambiguous _ -> baseClassTypes.AmbiguousImplementationException
+
+    /// The failure in words, for a refusal that names it.
+    let describe (failure : DispatchFailure) : string =
+        let name (m : WoofWare.PawPrint.MethodInfo<_, _, _>) =
+            $"%s{MethodOwner.describe m.Owner}::%s{m.Name}"
+
+        match failure with
+        | DispatchFailure.Reabstracted reabstraction -> $"the reabstraction %s{name reabstraction}"
+        | DispatchFailure.Ambiguous candidates ->
+            let described = candidates |> List.map name |> String.concat ", "
+            $"the ambiguous default bodies %s{described}"
+
 /// Which method a virtual or interface call runs on a receiver of a known concrete type, as
 /// CoreCLR's `MethodTable::FindDispatchImpl` decides it: the receiver's dispatch table and
 /// MethodImpls, its dispatch map, default interface bodies, variance, and the SZ-array carve-out.
