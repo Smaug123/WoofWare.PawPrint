@@ -77,6 +77,53 @@ public static class Natives
     public static string Repeat(int count) => new string('a', count);
 }
 
+// CoreLib's exceptions take their messages from CoreLib's resource lookup.
+public static class Messages
+{
+    public static object Construct() => new InvalidOperationException();
+
+    public static void Swallowed()
+    {
+        try { _ = new InvalidOperationException(); }
+        catch { }
+    }
+
+    public static void Rethrown()
+    {
+        try { _ = new InvalidOperationException(); }
+        catch { throw; }
+    }
+
+    // A clause for a class that RuntimeWrappedException does not derive from re-raises what the
+    // analysis cannot name as that class or a subclass.
+    public static void RethrownAsTimeout()
+    {
+        try { _ = new InvalidOperationException(); }
+        catch (TimeoutException) { throw; }
+    }
+
+    // The rethrow re-raises only a TimeoutException, which the outer clause absorbs.
+    public static void RethrownThenAbsorbed()
+    {
+        try
+        {
+            try { _ = new InvalidOperationException(); }
+            catch (TimeoutException) { throw; }
+            catch { }
+        }
+        catch (TimeoutException) { }
+    }
+
+    public static void OutOfMemoryCaught()
+    {
+        try { _ = new InvalidOperationException(); }
+        catch (OutOfMemoryException) { }
+    }
+
+    // The shadow `System.SR` in this assembly, not CoreLib's.
+    public static string Impostor() => SR.InternalGetResourceString("key");
+}
+
 public static class Cases
 {
     public static void ThrowsDirectly() { throw new InvalidOperationException("boom"); }
@@ -360,6 +407,11 @@ public static class MathF
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.InternalCall)]
     public static extern float Sin(float x);
 }
+
+public static class SR
+{
+    public static string InternalGetResourceString(string key) => key;
+}
 """
 
     /// What a fixture method's answer must hold. A thrown type is written `=T` for `Exactly T` and
@@ -370,6 +422,8 @@ public static class MathF
             Contains : string list
             Excludes : string list
             Unknown : bool option
+            /// Exactly the assumptions the answer relied on.
+            Assumes : Assumption list option
         }
 
     let private expect (ty : string) (name : string) : Expectation =
@@ -378,6 +432,7 @@ public static class MathF
             Contains = []
             Excludes = []
             Unknown = None
+            Assumes = None
         }
 
     let private expectations : Expectation list =
@@ -585,6 +640,50 @@ public static class MathF
                 Contains = [ "=System.ArgumentOutOfRangeException" ]
                 Unknown = Some true
             }
+            { expect "Fixture.Natives" "ThreadId" with
+                Assumes = Some []
+            }
+            // The resource lookup's contract, which only an interrupted wait for its lock reaches
+            // with this exception.
+            { expect "Fixture.Messages" "Construct" with
+                Contains = [ "=System.Threading.ThreadInterruptedException" ]
+                Excludes = [ ioe ]
+                Unknown = Some false
+                Assumes = Some [ Assumption.CoreLibResourceLookup ]
+            }
+            // Whatever the lookup raises is caught, so the answer holds whether or not the
+            // assumption does.
+            { expect "Fixture.Messages" "Swallowed" with
+                Excludes = [ "=System.Threading.ThreadInterruptedException" ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.Messages" "Rethrown" with
+                Contains = [ "=System.Threading.ThreadInterruptedException" ]
+                Unknown = Some false
+                Assumes = Some [ Assumption.CoreLibResourceLookup ]
+            }
+            { expect "Fixture.Messages" "RethrownAsTimeout" with
+                Contains = [ "=System.Threading.ThreadInterruptedException" ]
+                Excludes = [ "<:System.TimeoutException" ]
+                Unknown = Some false
+                Assumes = Some [ Assumption.CoreLibResourceLookup ]
+            }
+            { expect "Fixture.Messages" "RethrownThenAbsorbed" with
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.Messages" "OutOfMemoryCaught" with
+                Contains = [ "=System.Threading.ThreadInterruptedException" ]
+                Excludes = [ "=System.OutOfMemoryException" ]
+                Unknown = Some false
+                Assumes = Some [ Assumption.CoreLibResourceLookup ]
+            }
+            { expect "Fixture.Messages" "Impostor" with
+                Excludes = [ "=System.Threading.ThreadInterruptedException" ]
+                Unknown = Some false
+                Assumes = Some []
+            }
         ]
 
     /// An answer as the expectations spell it: `=T` for `Exactly T`, `<:T` for `SubtypeOf T`.
@@ -621,12 +720,13 @@ public static class MathF
 
     /// An analysis over `corelib` and `assemblies`, with `bind` applied to the load context, loading
     /// any other assembly from `runtimeDirs`, for the JIT compiling for `target` on a CPU `profile`
-    /// describes.
+    /// describes, allowed `assumptions`.
     let private analysisOf
         (corelib : DumpedAssembly)
         (runtimeDirs : string seq)
         (target : JitTarget)
         (profile : HardwareIntrinsicsProfile)
+        (assumptions : Set<Assumption>)
         (assemblies : DumpedAssembly list)
         (bind : LoadedAssemblies -> LoadedAssemblies)
         : EscapeAnalysisState
@@ -640,6 +740,7 @@ public static class MathF
             runtimeDirs
             target
             profile
+            assumptions
             {
                 ConcreteTypes = Corelib.concretizeAll loaded baseClassTypes AllConcreteTypes.Empty
                 LoadedAssemblies = loaded
@@ -661,7 +762,14 @@ public static class MathF
         (bind : LoadedAssemblies -> LoadedAssemblies)
         : EscapeAnalysisState
         =
-        analysisOf (hostCoreLib ()) (FrameworkUnderTest.runtimeDirs ()) (hostTarget ()) profile assemblies bind
+        analysisOf
+            (hostCoreLib ())
+            (FrameworkUnderTest.runtimeDirs ())
+            (hostTarget ())
+            profile
+            Assumption.all
+            assemblies
+            bind
 
     /// An analysis over CoreLib and `assemblies`, with `bind` applied to the load context, on a CPU
     /// with no instruction sets.
@@ -706,6 +814,11 @@ public static class MathF
                     | Some unknown when unknown <> escapes.Unknown ->
                         yield $"%s{describe ()}, expected unknown %b{unknown}"
                     | _ -> ()
+
+                    match expectation.Assumes with
+                    | Some assumes when Set.ofList assumes <> escapes.Assumes ->
+                        yield $"%s{describe ()}, assuming %A{Set.toList escapes.Assumes}, expected %A{assumes}"
+                    | _ -> ()
                 ]
 
             analysis, failures
@@ -724,6 +837,122 @@ public static class MathF
         match unmet (analysisOver [ fixture ] id) fixture expectations with
         | _, [] -> ()
         | _, failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``allowed no assumption, constructing a CoreLib exception is unknown and no answer assumes anything``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "EscapeFixture" OutputKind.DynamicallyLinkedLibrary [] [ source ; shadow ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "EscapeFixture.dll") (new MemoryStream (image))
+
+        let analysis =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Set.empty
+                [ fixture ]
+                id
+
+        // Of the fixture's own expectations, only whether each answer assumes anything is checked.
+        let assumingNothing =
+            expectations
+            |> List.map (fun expectation ->
+                { expect (fst expectation.Method) (snd expectation.Method) with
+                    Assumes = Some []
+                }
+            )
+
+        let withoutLookup =
+            [
+                { expect "Fixture.Messages" "Construct" with
+                    Unknown = Some true
+                    Assumes = Some []
+                }
+                { expect "Fixture.Messages" "Swallowed" with
+                    Unknown = Some false
+                    Assumes = Some []
+                }
+                { expect "Fixture.Messages" "Rethrown" with
+                    Unknown = Some true
+                    Assumes = Some []
+                }
+                { expect "Fixture.Messages" "OutOfMemoryCaught" with
+                    Unknown = Some true
+                    Assumes = Some []
+                }
+                { expect "Fixture.Messages" "RethrownAsTimeout" with
+                    Contains = [ "<:System.TimeoutException" ]
+                    Unknown = Some true
+                    Assumes = Some []
+                }
+            ]
+
+        match unmet analysis fixture (assumingNothing @ withoutLookup) with
+        | _, [] -> ()
+        | _, failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``CoreLib's resource lookup raises exactly its contract when assumed, and is unknown otherwise`` () : unit =
+        let corelib = hostCoreLib ()
+
+        let lookup =
+            [
+                for KeyValue (handle, _) in corelib.Methods do
+                    match Assumption.summarises corelib handle with
+                    | Some assumption -> yield MethodKey.make corelib handle, assumption
+                    | None -> ()
+            ]
+
+        let key, assumption =
+            match lookup with
+            | [ only ] -> only
+            | other -> failwith $"Expected one method of CoreLib's that an assumption summarises, found %A{other}"
+
+        assumption |> shouldEqual Assumption.CoreLibResourceLookup
+
+        // Running out of memory or stack is something no assumption rules out.
+        let contract =
+            Assumption.raises assumption
+            |> List.map (fun name -> name.FullName)
+            |> Set.ofList
+
+        for exhaustion in [ "System.OutOfMemoryException" ; "System.StackOverflowException" ] do
+            if not (contract.Contains exhaustion) then
+                failwith $"%A{assumption}'s contract leaves out %s{exhaustion}"
+
+        let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                assumptions
+                []
+                id
+
+        let assuming, escapes = EscapeAnalysis.escapes (analysis Assumption.all) key
+
+        render assuming escapes
+        |> shouldEqual (
+            Assumption.raises assumption
+            |> List.map (fun name -> "=" + name.FullName)
+            |> Set.ofList
+        )
+
+        escapes.Unknown |> shouldEqual false
+        escapes.Assumes |> shouldEqual (Set.singleton assumption)
+
+        let _, escapes = EscapeAnalysis.escapes (analysis Set.empty) key
+        escapes.Unknown |> shouldEqual true
+        escapes.Assumes |> shouldEqual Set.empty
 
     [<Test>]
     let ``a native method the contract table describes raises exactly what its row says`` () : unit =
@@ -750,6 +979,7 @@ public static class MathF
                 (FrameworkUnderTest.runtimeDirs ())
                 (hostTarget ())
                 HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
                 []
                 id
 
@@ -1024,7 +1254,10 @@ public static class Cases
         =
         let corelib, runtimeDirs, target = coreLibNamed coreLibName
         let profile = profileNamed corelib profileName
-        let mutable analysis = analysisOf corelib runtimeDirs target profile [] id
+
+        let mutable analysis =
+            analysisOf corelib runtimeDirs target profile Assumption.all [] id
+
         let failures = ResizeArray<string> ()
         let mutable substituted = 0
         let mutable primitives = 0
