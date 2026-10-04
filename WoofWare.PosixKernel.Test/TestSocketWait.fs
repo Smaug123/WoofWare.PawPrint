@@ -108,8 +108,8 @@ module TestSocketWait =
         | Failed of UnixError
         /// The call returned no events at once.
         | NoEvents
-        /// The call parked on this port for up to this many events.
-        | Parked of port : OpenFileDescriptionId * maxEvents : int
+        /// The call parked on this event queue for up to this many events.
+        | Parked of queue : OpenFileDescriptionId * maxEvents : int
 
     /// The flavour's wait for socket events, for ever: `epoll_wait` with a
     /// timeout of -1, or `kevent` with no changes and a null timeout.
@@ -296,7 +296,7 @@ module TestSocketWait =
         let socketFd, system = withSocket system
         let queueFd, system = withEventQueue system
 
-        // Count beats buffer: a zero count on a port with an unscreenable
+        // Count beats buffer: a zero count on an epoll instance with an unscreenable
         // buffer is EINVAL, not EFAULT.
         wait queueFd 0 wild system |> shouldEqual (Waited.Failed UnixError.EINVAL)
 

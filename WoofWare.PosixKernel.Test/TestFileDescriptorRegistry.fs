@@ -89,12 +89,12 @@ module TestFileDescriptorRegistry =
             |> shouldEqual (FileDescriptorRegistry.tryFindId a registry)
 
     /// Two sockets are two descriptions *and* two `flock` objects — the exact
-    /// opposite of the two ports below, and the reason `OpenFileObject.Socket`
+    /// opposite of the two epoll instances below, and the reason `OpenFileObject.Socket`
     /// carries an identity where `AnonymousInode` does not.
     ///
     /// Measured on Linux 6.18.5: two `socket(2)` calls report distinct inodes
     /// (4127 and 4130, `st_dev` 8 for both, on `sockfs`), and
-    /// `flock(LOCK_EX|LOCK_NB)` succeeds on each. Two epoll ports on
+    /// `flock(LOCK_EX|LOCK_NB)` succeeds on each. Two epoll instances on
     /// `anon_inodefs` share one inode and so exclude one another.
     ///
     /// No end-to-end observer: Darwin refuses `flock` on a socket outright, and
@@ -189,16 +189,16 @@ module TestFileDescriptorRegistry =
     /// Two epoll instances are two *descriptions* but one `flock` object.
     /// That split is why `OpenFileObject` must stay the contention key rather
     /// than becoming a general-purpose identity: on Linux every anon-inode file
-    /// shares a single inode, so an exclusive lock on one port excludes the
-    /// other, while the descriptions themselves stay distinct.
+    /// shares a single inode, so an exclusive lock on one epoll instance
+    /// excludes the other, while the descriptions themselves stay distinct.
     ///
     /// The object half is observable from a process — it can lock one instance
     /// and find the other excluded — so this test exists for the description
     /// half, which is not: nothing a process can call tells two instances
     /// apart. That half matters for the wait rather than for `flock`.
-    /// `ParkedEpollWait` keys a parked task on the port's
-    /// `OpenFileDescriptionId`, so two ports sharing one description identity
-    /// would wake the wrong waiter.
+    /// `ParkedEpollWait` keys a parked task on the epoll instance's
+    /// `OpenFileDescriptionId`, so two epoll instances sharing one description
+    /// identity would wake the wrong waiter.
     [<Test>]
     let ``two epoll instances are two descriptions but one flock object`` () : unit =
         let a, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
@@ -220,7 +220,7 @@ module TestFileDescriptorRegistry =
         match FileDescriptorRegistry.dup a registry with
         | Error e -> failwith $"expected dup to succeed, got %O{e}"
         | Ok (duplicate, registry) ->
-            // `dup` shares the description, so it is the *same* port rather than
+            // `dup` shares the description, so it is the *same* epoll instance rather than
             // an equal one — the distinction two `createEpoll` calls
             // draw in the other direction above.
             FileDescriptorRegistry.tryFindId duplicate registry
@@ -228,13 +228,14 @@ module TestFileDescriptorRegistry =
 
             duplicate |> shouldEqual 5
 
-            FileDescriptorRegistry.assertInvariants "two ports and a dup" registry
+            FileDescriptorRegistry.assertInvariants "two epoll instances and a dup" registry
             |> ignore<FileDescriptorRegistry>
 
-    /// Closing one descriptor of a `dup` pair leaves the port alive, and closing
-    /// the last destroys it — the same rule as for a file, asserted here because
-    /// a port is the first target kind whose *identity* is the description, so
-    /// "the description outlived its descriptors" would be a different bug.
+    /// Closing one descriptor of a `dup` pair leaves the epoll instance alive,
+    /// and closing the last destroys it — the same rule as for a file, asserted
+    /// here because an epoll instance is the first target kind whose *identity*
+    /// is the description, so "the description outlived its descriptors" would
+    /// be a different bug.
     [<Test>]
     let ``an epoll instance outlives a closed descriptor but not its last`` () : unit =
         let a, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
@@ -262,7 +263,7 @@ module TestFileDescriptorRegistry =
         // Only the three standard streams are left.
         FileDescriptorRegistry.descriptions registry |> Map.count |> shouldEqual 3
 
-        FileDescriptorRegistry.assertInvariants "port closed" registry
+        FileDescriptorRegistry.assertInvariants "epoll instance closed" registry
         |> ignore<FileDescriptorRegistry>
 
     /// Descriptor numbers are reused; description identities are not. The
@@ -1751,8 +1752,8 @@ module TestFileDescriptorRegistry =
 
     // --- socket event registrations ---
 
-    /// The interest table of the port `queueFd` names. Fails on anything else, so
-    /// a test cannot silently assert about the wrong descriptor.
+    /// The interest table of the epoll instance `queueFd` names. Fails on
+    /// anything else, so a test cannot silently assert about the wrong descriptor.
     let private registrationsOf
         (queueFd : int)
         (registry : FileDescriptorRegistry)
@@ -1787,8 +1788,8 @@ module TestFileDescriptorRegistry =
             RegisteredAt = 0L
         }
 
-    /// Register the target `targetFd` names with the port `queueFd` names,
-    /// keyed as epoll keys it.
+    /// Register the target `targetFd` names with the epoll instance `queueFd`
+    /// names, keyed as epoll keys it.
     let private add
         (queueFd : int)
         (targetFd : int)
@@ -1917,7 +1918,7 @@ module TestFileDescriptorRegistry =
         Assert.Throws<System.Exception> (fun () -> add queueFd sockFd 0UL registry |> ignore)
         |> ignore
 
-        // A description that is not a port.
+        // A description that is not an epoll instance.
         Assert.Throws<System.Exception> (fun () ->
             FileDescriptorRegistry.addEpollRegistration (snd key) (queueFd, queueId) (registration 0UL) registry
             |> ignore
@@ -2000,7 +2001,7 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.checkInvariants registry
         |> shouldEqual [ FileDescriptorRegistryDefect.EpollRegistrationTargetDead (queueId, deadId) ]
 
-    /// A port whose ready list disagrees with its interest table: one entry
+    /// An epoll instance whose ready list disagrees with its interest table: one entry
     /// nothing registers, and one registered entry pending twice.
     [<Test>]
     let ``checkInvariants rejects unregistered and duplicated ready entries`` () : unit =
@@ -2016,7 +2017,7 @@ module TestFileDescriptorRegistry =
         let queueId =
             match FileDescriptorRegistry.tryFindId queueFd registry with
             | Some id -> id
-            | None -> failwith "port fd not live"
+            | None -> failwith "epoll fd not live"
 
         let registry = add queueFd sockFd 1UL registry
 
@@ -2033,7 +2034,7 @@ module TestFileDescriptorRegistry =
                                         Ready = ready
                                     }
                         }
-                    | other -> failwith $"not a port: %O{other}"
+                    | other -> failwith $"not an epoll instance: %O{other}"
                 )
                 registry
 

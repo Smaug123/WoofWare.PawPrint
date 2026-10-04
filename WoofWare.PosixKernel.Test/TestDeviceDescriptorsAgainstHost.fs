@@ -298,16 +298,16 @@ module TestDeviceDescriptorsAgainstHost =
                      | other -> failwith $"the model's poll: %A{other}")
 
                 "epoll_ctl ADD",
-                (let port = hostEpollCreate1 0
+                (let epoll = hostEpollCreate1 0
 
                  try
                      // struct epoll_event, EPOLLIN, laid out wide enough for either
                      // architecture's packing.
                      let event = Array.zeroCreate<byte> 16
                      event.[0] <- 1uy
-                     hostAnswer (int64 (hostEpollCtl (port, 1, host, event)))
+                     hostAnswer (int64 (hostEpollCtl (epoll, 1, host, event)))
                  finally
-                     hostClose port |> ignore<int>),
+                     hostClose epoll |> ignore<int>),
                 (let queueFd, registry =
                     FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 

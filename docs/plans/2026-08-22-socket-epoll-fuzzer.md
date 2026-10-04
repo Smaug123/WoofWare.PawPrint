@@ -63,7 +63,7 @@ One sequence per line, ops space-separated, slots naming fds on both sides
 | `acpt:l:s2` | nonblocking accept from `l` into fresh slot `s2` |
 | `close:s` | `close(2)` |
 | `dup:s:s2` | `dup(2)` |
-| `port:p` | `epoll_create1` |
+| `epoll:p` | `epoll_create1` |
 | `add:p:t:m` / `mod:p:t:m` | `epoll_ctl` ADD/MOD, interest `m` in `SA_*` bits (0..0x1F, translated 1:1 to epoll bits, `EPOLLET` always ORed in as the PAL does), data = `t` |
 | `del:p:t` | `epoll_ctl` DEL |
 | `eadd:p:t:e` / `emod:p:t:e` | `epoll_ctl` ADD/MOD with raw `<sys/epoll.h>` events `e` (decimal `uint32`, passed unconverted), data = `t`; added 2026-09-26 with `UnixPoll.epollCtl`. A mode the model refuses (level-triggering, `EPOLLEXCLUSIVE`, `EPOLLONESHOT`, `EPOLLWAKEUP`) skips the sequence; a `wait` batch then names every readiness bit Linux reports (`PRI`, `RDNORM`, `RDBAND`, `WRNORM`, `WRBAND`, `MSG` after the five) |
@@ -103,7 +103,7 @@ generated sequence that reaches one is a finding in its own right.
 The generator is phase-aware (constructive generation, not filtering): it
 tracks a shadow phase per slot so that most sequences stay inside the modelled
 envelope — e.g. it never closes a listener with a nonempty shadow accept
-queue (a modelled refusal), never targets a port with `add` (nested epoll is
+queue (a modelled refusal), never targets an epoll instance with `add` (nested epoll is
 refused), and biases toward registration/wait-rich sequences. Its weights are
 themselves drawn per-sequence from the seed, so the distribution is fuzzed
 too. The live test asserts the observed distribution (op coverage, nonempty

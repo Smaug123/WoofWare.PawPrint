@@ -455,12 +455,12 @@ module TestSocketAddressLength =
             let fileFd, registry =
                 FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
 
-            let createPort =
+            let createEventQueue =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
                 | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
                 | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
 
-            let queueFd, registry = createPort registry
+            let queueFd, registry = createEventQueue registry
 
             let system =
                 { system with

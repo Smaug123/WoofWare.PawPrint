@@ -78,7 +78,7 @@ module TestSocketEventDelivery =
 
         if List.isEmpty delivered = predicted then
             failwith
-                $"EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{queueId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
+                $"EpollReadyList.hasDeliverableEvent answered %b{predicted} of epoll instance %O{queueId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
 
         delivered, system
 
@@ -91,7 +91,7 @@ module TestSocketEventDelivery =
         let queueId =
             match FileDescriptorRegistry.tryFindId fd registry with
             | Some id -> id
-            | None -> failwith "port fd not live"
+            | None -> failwith "epoll fd not live"
 
         fd,
         queueId,
@@ -196,8 +196,8 @@ module TestSocketEventDelivery =
         | Some description ->
             match description.Target with
             | OpenFileTarget.Epoll queueState -> queueState.Ready
-            | other -> failwith $"not a port: %O{other}"
-        | None -> failwith "port description not live"
+            | other -> failwith $"not an epoll instance: %O{other}"
+        | None -> failwith "epoll description not live"
 
     let private assertSound (kernel : UnixSystem<int, string>) : unit =
         UnixSystem.checkInvariants kernel |> shouldEqual []
@@ -281,7 +281,7 @@ module TestSocketEventDelivery =
         let _, c1, kernel = addStream kernel
         let _, kernel = connect c1 false (loopback 5000us) kernel
 
-        // The port did not exist when the edge arrived.
+        // The epoll instance did not exist when the edge arrived.
         let queueFd, queueId, kernel = addEpoll kernel
         let kernel = register queueFd listenerFd 9UL kernel
 
@@ -370,7 +370,7 @@ module TestSocketEventDelivery =
         assertSound kernel
 
     /// Row J: truncation delivers the prefix, the suffix stays pending in
-    /// order, and a drained port reports nothing further.
+    /// order, and a drained epoll instance reports nothing further.
     [<Test>]
     let ``truncation keeps the suffix pending in order`` () : unit =
         let queueFd, queueId, kernel = addEpoll initialSystem
@@ -1040,7 +1040,7 @@ module TestSocketEventDelivery =
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
-        // ...and so does the last one, leaving the port to the wait.
+        // ...and so does the last one, leaving the epoll instance to the wait.
         match UnixDescriptor.close queueFd kernel with
         | Ok (SyscallAnswer.Completed 0L, closed) ->
             FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
@@ -1074,7 +1074,7 @@ module TestSocketEventDelivery =
             let queueState =
                 match (Map.find queueId descriptions).Target with
                 | OpenFileTarget.Epoll queueState -> queueState
-                | other -> failwith $"not a port: %O{other}"
+                | other -> failwith $"not an epoll instance: %O{other}"
 
             let ordinals = [ first ; second ]
 

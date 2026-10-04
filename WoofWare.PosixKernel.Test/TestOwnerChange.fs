@@ -1278,7 +1278,7 @@ module TestOwnerChange =
             |> UnixBootImage.boot
 
         // The flavour's own event queue: an epoll instance, or a kqueue.
-        let port (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let eventQueue (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
             let create =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
                 | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
@@ -1293,12 +1293,12 @@ module TestOwnerChange =
         // Linux's epoll instance is EOPNOTSUPP whoever asks and whatever it
         // asks; Darwin's kqueue is EINVAL.
         for user, group in asks do
-            let fd, queueSystem = port linux
+            let fd, queueSystem = eventQueue linux
 
             fchownAnswer fd user group queueSystem
             |> shouldEqual (SyscallAnswer.Failed UnixError.EOPNOTSUPP, queueSystem)
 
-            let fd, queueSystem = port darwin
+            let fd, queueSystem = eventQueue darwin
 
             fchownAnswer fd user group queueSystem
             |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL, queueSystem)

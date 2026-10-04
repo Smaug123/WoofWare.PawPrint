@@ -1279,22 +1279,22 @@ module TestPipe =
         level r (closeOrFail w full) |> shouldEqual 0x51u
 
     [<Test>]
-    let ``epoll will not register a pipe end, and waits on one are not a port's`` () : unit =
+    let ``epoll will not register a pipe end, and a pipe end is not an epoll instance to wait on`` () : unit =
         let (r, w), system = pipeOrFail 0 (systemOn SimulatedUnixPlatform.linuxX64)
 
-        let port, system =
+        let epoll, system =
             match UnixPoll.epollCreate1 0 system with
-            | Ok (Ok (port, system)) -> port, system
+            | Ok (Ok (epoll, system)) -> epoll, system
             | other -> failwith $"%A{other}"
 
         let edge = EpollEvents.In ||| EpollEvents.EdgeTriggered
 
         for fd in [ r ; w ] do
-            match UnixPoll.epollCtl port 1 fd (EpollEventArgument.Readable (edge, 0UL)) system with
+            match UnixPoll.epollCtl epoll 1 fd (EpollEventArgument.Readable (edge, 0UL)) system with
             | Error (EpollCtlRefusal.PipeTarget refused) -> refused |> shouldEqual fd
             | other -> failwith $"%A{other}"
 
-            match UnixPoll.epollCtl port 2 fd (EpollEventArgument.Readable (edge, 0UL)) system with
+            match UnixPoll.epollCtl epoll 2 fd (EpollEventArgument.Readable (edge, 0UL)) system with
             | Ok (EpollCtlAnswer.Failed EpollCtlError.NotRegistered, _) -> ()
             | other -> failwith $"%A{other}"
 

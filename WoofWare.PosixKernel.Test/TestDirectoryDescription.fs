@@ -552,7 +552,7 @@ module TestDirectoryDescription =
             let socket, system =
                 NewSocket.create SocketDomain.Unix SocketKind.Stream SocketProtocol.Default system
 
-            let port, registry =
+            let epoll, registry =
                 FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
             let system =
@@ -580,7 +580,7 @@ module TestDirectoryDescription =
             expect 0 UnixError.ENOTDIR UnixError.ENOTSUP
             expect 1 UnixError.ENOTDIR UnixError.ENOTSUP
             expect socket UnixError.ENOTDIR UnixError.ENOTSUP
-            expect port UnixError.ENOTDIR UnixError.ENOTSUP
+            expect epoll UnixError.ENOTDIR UnixError.ENOTSUP
             expect 999 UnixError.EBADF UnixError.EBADF
 
     [<Test>]

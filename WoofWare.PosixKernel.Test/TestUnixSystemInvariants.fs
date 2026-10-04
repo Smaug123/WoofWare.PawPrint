@@ -190,7 +190,7 @@ module TestUnixSystemInvariants =
         let queueId = OpenFileDescriptionId 0L
         let ordinal = 7L
 
-        let port =
+        let queueState =
             {
                 Registrations =
                     Map.ofList
@@ -224,7 +224,7 @@ module TestUnixSystemInvariants =
                                     [
                                         queueId,
                                         {
-                                            Target = OpenFileTarget.Epoll port
+                                            Target = OpenFileTarget.Epoll queueState
                                             AccessMode = FileAccessMode.ReadWrite
                                             NonBlocking = false
                                             Flock = None
@@ -236,7 +236,10 @@ module TestUnixSystemInvariants =
             }
 
         UnixSystem.checkInvariants forged
-        |> shouldEqual [ UnixSystemDefect.EventRegistrationOrdinalNotFresh (ordinal, queueId, ordinal) ]
+        |> shouldEqual
+            [
+                UnixSystemDefect.EventRegistrationOrdinalNotFresh (ordinal, queueId, ordinal)
+            ]
 
     // ------------------------------------------------------------------
     // A current directory that is not a directory
@@ -406,7 +409,7 @@ module TestUnixSystemInvariants =
 
     [<Test>]
     let ``a task parked in an epoll_wait on a description that is not an epoll instance is a defect`` () : unit =
-        // stdout, which every system holds and which is not a port.
+        // stdout, which every system holds and which is not an epoll instance.
         let stdoutDescription, target =
             match FileDescriptorRegistry.tryFindWithId 1 system.Process.FileDescriptors with
             | Some (id, description) -> id, description.Target
@@ -492,14 +495,14 @@ module TestUnixSystemInvariants =
     /// right kind is sound, so those rows are not passing because every park
     /// is reported.
     [<Test>]
-    let ``a task parked on a live port or file is sound`` () : unit =
+    let ``a task parked on a live epoll instance or file is sound`` () : unit =
         let queueFd, registry =
             FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
-        let port =
+        let queueId =
             match FileDescriptorRegistry.tryFindWithId queueFd registry with
             | Some (id, _) -> id
-            | None -> failwith "the port just created is not in the table"
+            | None -> failwith "the epoll instance just created is not in the table"
 
         let stdoutDescription =
             match FileDescriptorRegistry.tryFindWithId 1 registry with
@@ -519,7 +522,7 @@ module TestUnixSystemInvariants =
             Some (
                 ParkedSyscall.EpollWait
                     {
-                        Epoll = port
+                        Epoll = queueId
                         MaxEvents = 1
                         Buffer = UserBuffer.Mapped
                         Deadline = None

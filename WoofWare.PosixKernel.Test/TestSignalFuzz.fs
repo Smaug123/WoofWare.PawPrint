@@ -200,7 +200,9 @@ module TestSignalFuzz =
                 List.init count (fun _ -> SignalFuzz.generate numbering rng |> SignalFuzz.serialise)
 
             let unique = Guid.NewGuid().ToString "N"
-            let workDir = Path.Combine (Path.GetTempPath (), $"posixkernel-signal-fuzz-%s{unique}")
+
+            let workDir =
+                Path.Combine (Path.GetTempPath (), $"posixkernel-signal-fuzz-%s{unique}")
 
             try
                 let binary = buildHarness workDir

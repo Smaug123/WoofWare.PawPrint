@@ -59,7 +59,7 @@ module TestSocketTable =
 
         if List.isEmpty delivered = predicted then
             failwith
-                $"EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{queueId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
+                $"EpollReadyList.hasDeliverableEvent answered %b{predicted} of epoll instance %O{queueId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
 
         delivered, system
 
@@ -225,7 +225,7 @@ module TestSocketTable =
         let _, kernel =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp initialSystem
 
-        let port, registry =
+        let epoll, registry =
             FileDescriptorRegistry.createEpoll kernel.Process.FileDescriptors
 
         let kernel =
@@ -236,7 +236,7 @@ module TestSocketTable =
                     }
             }
 
-        match closeFd port kernel with
+        match closeFd epoll kernel with
         | Error e -> failwith $"expected close to succeed, got %O{e}"
         | Ok kernel ->
 
@@ -1047,8 +1047,8 @@ module TestSocketTable =
         | other -> failwith $"expected the queue to be full, got %A{other}"
 
     /// The producer this slice exists for: a connect onto a registered
-    /// listener queues the accept-queue-push edge, so the port has something
-    /// to deliver.
+    /// listener queues the accept-queue-push edge, so the epoll instance has
+    /// something to deliver.
     [<Test>]
     let ``connect onto a registered listener makes the registration pending and deliverable`` () : unit =
         let registration =

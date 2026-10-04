@@ -9,7 +9,8 @@ open WoofWare.PosixKernel
 /// Park order, and which parked tasks a system wakes.
 ///
 /// The epoll half of `UnixWait.wakes` lives in `TestUnixSystemStep` and
-/// `TestEpollWait`, beside the port fixtures that can make a port deliverable.
+/// `TestEpollWait`, beside the epoll fixtures that can make an epoll instance
+/// deliverable.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixWait =
@@ -76,8 +77,8 @@ module TestUnixWait =
         let _, _, _, blocked = world
         blocked
 
-    /// The park each task makes: 1 and 2 wait on a port, 3 and 4 for a lock, so that
-    /// both kinds of park are in the table at once.
+    /// The park each task makes: 1 and 2 wait on an epoll instance, 3 and 4 for a
+    /// lock, so that both kinds of park are in the table at once.
     let private parkOfTask (task : int) : ParkedSyscall =
         if task <= 2 then
             ParkedSyscall.EpollWait
@@ -104,7 +105,7 @@ module TestUnixWait =
         | Park of task : int
         | Unpark of task : int
         | AdvanceClock of nanoseconds : int64
-        | CreatePort
+        | CreateEpoll
         | Register of task : int
 
     let private opGen : Gen<Op> =
@@ -115,7 +116,7 @@ module TestUnixWait =
                 4, task |> Gen.map Op.Park
                 2, task |> Gen.map Op.Unpark
                 1, Gen.choose (0, 1000) |> Gen.map (int64 >> Op.AdvanceClock)
-                1, Gen.constant Op.CreatePort
+                1, Gen.constant Op.CreateEpoll
                 1, Gen.choose (5, 1000) |> Gen.map Op.Register
             ]
 
@@ -130,7 +131,7 @@ module TestUnixWait =
             { system with
                 Machine = UnixMachineState.advanceClock nanoseconds system.Machine
             }
-        | Op.CreatePort ->
+        | Op.CreateEpoll ->
             let _, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
             withRegistry registry system
@@ -156,7 +157,7 @@ module TestUnixWait =
                         | Op.Park task
                         | Op.Unpark task -> Some task
                         | Op.AdvanceClock _
-                        | Op.CreatePort
+                        | Op.CreateEpoll
                         | Op.Register _ -> None
 
                     // Every other task keeps its park, ordinal and all.
@@ -186,7 +187,7 @@ module TestUnixWait =
                         UnixTaskTable.parkOf task after.Tasks |> shouldEqual None
                         after, lastMinted
                     | Op.AdvanceClock _
-                    | Op.CreatePort
+                    | Op.CreateEpoll
                     | Op.Register _ -> after, lastMinted
                 )
                 |> ignore
@@ -246,8 +247,8 @@ module TestUnixWait =
         exn.Message |> shouldContainText "records no park"
 
     [<Test>]
-    let ``a quiet port wakes none of its waiters, however many there are`` () : unit =
-        // An exclusive wake is about a deliverable event, not about sharing a port.
+    let ``a quiet epoll instance wakes none of its waiters, however many there are`` () : unit =
+        // An exclusive wake is about a deliverable event, not about sharing an epoll instance.
         let parked =
             system |> UnixWait.park 1 (parkOfTask 1) |> UnixWait.park 2 (parkOfTask 2)
 

@@ -195,7 +195,7 @@ module TestUnixProcessState =
         let _sock, withSocket =
             FileDescriptorRegistry.createSocket (SocketId 1L) withDirectory
 
-        let _portFd, registry = FileDescriptorRegistry.createEpoll withSocket
+        let _epollFd, registry = FileDescriptorRegistry.createEpoll withSocket
 
         let proc =
             { empty with

@@ -91,7 +91,7 @@ module TestSocketFuzz =
     /// reaches the conversion exactly as a generator regression would.
     [<Test>]
     let ``an op outside the language is a defect rather than a skip`` () : unit =
-        match SocketFuzz.executeEmulated (SocketFuzz.parse "port:0 sock:1 add:0:1:32") with
+        match SocketFuzz.executeEmulated (SocketFuzz.parse "epoll:0 sock:1 add:0:1:32") with
         | EmulatedRun.Defect (_, message) -> message |> shouldContainText "0x20"
         | EmulatedRun.Refused (_, message) ->
             Assert.Fail
@@ -209,7 +209,7 @@ module TestSocketFuzz =
         | FuzzOp.Accept _ -> "acpt"
         | FuzzOp.Close _ -> "close"
         | FuzzOp.Dup _ -> "dup"
-        | FuzzOp.NewPort _ -> "port"
+        | FuzzOp.NewEpoll _ -> "epoll"
         | FuzzOp.Add _ -> "add"
         | FuzzOp.Mod _ -> "mod"
         | FuzzOp.Del _ -> "del"
@@ -227,7 +227,7 @@ module TestSocketFuzz =
             "acpt"
             "close"
             "dup"
-            "port"
+            "epoll"
             "add"
             "mod"
             "del"

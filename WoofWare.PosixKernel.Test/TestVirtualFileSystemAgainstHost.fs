@@ -2754,7 +2754,10 @@ module TestVirtualFileSystemAgainstHost =
         // thing the ".." comparison exists for. Stated against the *kernel*, so
         // the model cannot satisfy it by agreeing with itself.
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-rename-cover-%s{unique}")
+
+        let root =
+            Path.Combine (Path.GetTempPath (), $"posixkernel-rename-cover-%s{unique}")
+
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -2819,7 +2822,10 @@ module TestVirtualFileSystemAgainstHost =
 
     let private compareRenameRefusal (source : string) (destination : string) : RenameRefusal * RenameRefusal =
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-rename-refusal-%s{unique}")
+
+        let root =
+            Path.Combine (Path.GetTempPath (), $"posixkernel-rename-refusal-%s{unique}")
+
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 

@@ -492,10 +492,10 @@ module TestPoll =
     /// array is told the right one whichever way round it filled it.
     [<Test>]
     let ``the refusal names the first unmeasured entry in list order`` () : unit =
-        let firstPort, registry =
+        let firstEpoll, registry =
             FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
 
-        let secondPort, registry = FileDescriptorRegistry.createEpoll registry
+        let secondEpoll, registry = FileDescriptorRegistry.createEpoll registry
 
         let system =
             { linux with
@@ -505,18 +505,18 @@ module TestPoll =
                     }
             }
 
-        pollNow [ entry firstPort everything ; entry secondPort everything ] 0 system
-        |> shouldEqual (Error (PollRefusal.UnmodelledTarget firstPort))
+        pollNow [ entry firstEpoll everything ; entry secondEpoll everything ] 0 system
+        |> shouldEqual (Error (PollRefusal.UnmodelledTarget firstEpoll))
 
         pollNow
             [
-                entry secondPort everything
+                entry secondEpoll everything
                 entry 0 everything
-                entry firstPort everything
+                entry firstEpoll everything
             ]
             0
             system
-        |> shouldEqual (Error (PollRefusal.UnmodelledTarget secondPort))
+        |> shouldEqual (Error (PollRefusal.UnmodelledTarget secondEpoll))
 
     /// An entry carrying anything at all makes a real poll return immediately at
     /// any timeout, which is measured rather than assumed -- so a *ready* poll

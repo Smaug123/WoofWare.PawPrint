@@ -263,7 +263,7 @@ module TestEpollCtl =
             )
 
     /// A descriptor of the probe's kind `kind`, made in `system`. `epfd` is the
-    /// port descriptor already made, for the two kinds defined relative to it.
+    /// epoll descriptor already made, for the two kinds defined relative to it.
     let private make (kind : string) (epfd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         match kind with
         | "closed" -> 50, system
@@ -329,7 +329,7 @@ module TestEpollCtl =
     /// the real kernel gave, or, where the kernel committed a change this
     /// library does not model, refused with the refusal the call is owed. The
     /// only cells left out are those that start from a registered epoll
-    /// target, a nested port this library will not make.
+    /// target, a nested epoll instance this library will not make.
     [<Test>]
     let ``every ladder cell answers as the measured Linux table says`` () : unit =
         let rows = ladderRows.Force ()
@@ -338,8 +338,8 @@ module TestEpollCtl =
         let mutable answeredCommits = 0
         let mutable refusals = 0
 
-        // A registered epoll target is a nested port, which this library
-        // refuses to make, so those cells have no model state to start from.
+        // A registered epoll target is a nested epoll instance, which this
+        // library refuses to make, so those cells have no model state to start from.
         let reachable, unreachable =
             rows |> List.partition (fun row -> not (row.Registered && row.Target = "epoll"))
 
@@ -566,8 +566,8 @@ module TestEpollCtl =
 
         List.rev rows, system
 
-    /// ADD every measured state to one fresh port with `mask`, each with its
-    /// row's index as `data`, and drain it: what one `epoll_wait` reports.
+    /// ADD every measured state to one fresh epoll instance with `mask`, each
+    /// with its row's index as `data`, and drain it: what one `epoll_wait` reports.
     /// Asserts the report is the measured level masked by the stored mask, in
     /// ADD order, since each ADD of a ready target appends it.
     let private reportsAsMeasured (mask : uint32) : unit =
@@ -742,10 +742,10 @@ module TestEpollCtl =
 
     /// Linux registers one epoll instance in another; this library refuses to,
     /// at the point in the ladder where Linux runs its loop check, which is
-    /// behind the EPOLLEXCLUSIVE screen. MOD and DEL of a port target answer
+    /// behind the EPOLLEXCLUSIVE screen. MOD and DEL of an epoll target answer
     /// ENOENT, as they do on a table that holds no such registration.
     [<Test>]
-    let ``an ADD of another port is refused, and MOD and DEL of one are answered`` () : unit =
+    let ``an ADD of another epoll instance is refused, and MOD and DEL of one are answered`` () : unit =
         let queueFd, system = withEpoll linux
         let innerFd, system = withEpoll system
 
@@ -767,9 +767,9 @@ module TestEpollCtl =
 
     /// The registration key is the (fd, description) pair, exactly as epoll
     /// keys it: a `dup` of the target admits a second registration, and a
-    /// `dup` of the port operates on the one shared table.
+    /// `dup` of the epoll instance operates on the one shared table.
     [<Test>]
-    let ``dup of the target is a second key; dup of the port is the same table`` () : unit =
+    let ``dup of the target is a second key; dup of the epoll instance is the same table`` () : unit =
         let queueFd, system = withEpoll linux
         let socketFd, system = idleSocket system
         let copyFd, system = dupOf socketFd system
@@ -781,12 +781,12 @@ module TestEpollCtl =
 
         (epollOf queueFd system).Registrations.Count |> shouldEqual 2
 
-        let portCopyFd, system = dupOf queueFd system
+        let queueCopyFd, system = dupOf queueFd system
 
-        ctl portCopyFd add socketFd (EpollEvents.In ||| edge) system
+        ctl queueCopyFd add socketFd (EpollEvents.In ||| edge) system
         |> shouldEqual (Ok (EpollCtlAnswer.Failed EpollCtlError.AlreadyRegistered, system))
 
-        let system = applied portCopyFd del socketFd 0u system
+        let system = applied queueCopyFd del socketFd 0u system
         (epollOf queueFd system).Registrations.Count |> shouldEqual 1
 
     // ------------------------------------------------------------------

@@ -8,7 +8,7 @@ open WoofWare.PosixKernel
 
 /// `UnixPoll.epollWait` and `UnixPoll.finishEpollWait`: the argument screens,
 /// the timeout, the park and its finish, and which of several waiters on one
-/// port an event wakes.
+/// epoll instance an event wakes.
 ///
 /// The facts these rows hold the library to were measured by
 /// `docs/plans/2026-08-23-posix-kernel-extraction/epoll-wait.c` on Linux 6.18.5
@@ -18,10 +18,11 @@ open WoofWare.PosixKernel
 /// when both hold as the waiter runs; a negative `maxevents` is screened as 0
 /// is; and each event wakes one waiter, the one that parked last.
 ///
-/// The port holds one edge-triggered registration of a listening socket, which
-/// presents nothing while its accept queue is empty and `IN|RDNORM` once it is
-/// not. The queue and the port's ready list are set directly, so that a row can
-/// make the registration deliverable, or stale, at an instant it chooses.
+/// The epoll instance holds one edge-triggered registration of a listening
+/// socket, which presents nothing while its accept queue is empty and
+/// `IN|RDNORM` once it is not. The queue and the epoll instance's ready list
+/// are set directly, so that a row can make the registration deliverable, or
+/// stale, at an instant it chooses.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestEpollWait =
@@ -56,8 +57,9 @@ module TestEpollWait =
         | other -> failwith $"expected an epoll instance, got %A{other}"
 
     /// A Linux-flavoured system with tasks 1 to 6 registered, a listening socket
-    /// with an empty accept queue, and a port holding one edge-triggered
-    /// `EPOLLIN` registration of it: the listener's descriptor, and the port's.
+    /// with an empty accept queue, and an epoll instance holding one
+    /// edge-triggered `EPOLLIN` registration of it: the listener's descriptor,
+    /// and the epoll instance's.
     let private world : int * int * UnixSystem<int, string> =
         let system =
             (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
@@ -126,7 +128,7 @@ module TestEpollWait =
         let fd, _, _ = world
         fd
 
-    let private port : int =
+    let private epoll : int =
         let _, fd, _ = world
         fd
 
@@ -134,7 +136,7 @@ module TestEpollWait =
         let _, _, system = world
         system
 
-    let private queueId : OpenFileDescriptionId = idOf port idle
+    let private queueId : OpenFileDescriptionId = idOf epoll idle
 
     /// `system` with the listener's accept queue holding `queue`.
     let private withQueue (queue : ConnectionId list) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -165,16 +167,16 @@ module TestEpollWait =
         }
 
     /// A connection arrives: the listener becomes ready, and its registration is
-    /// signalled onto the port's ready list.
+    /// signalled onto the epoll instance's ready list.
     let private signal (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         let key = listener, idOf listener system
 
         let system = withQueue [ ConnectionId 99L ] system
 
         let alreadyReady =
-            match FileDescriptorRegistry.tryFindTarget port system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget epoll system.Process.FileDescriptors with
             | Some (OpenFileTarget.Epoll state) -> List.contains key state.Ready
-            | other -> failwith $"expected the port, got %O{other}"
+            | other -> failwith $"expected the epoll instance, got %O{other}"
 
         if alreadyReady then
             system
@@ -187,9 +189,9 @@ module TestEpollWait =
         withQueue []
 
     let private pendingEntries (system : UnixSystem<int, string>) : int =
-        match FileDescriptorRegistry.tryFindTarget port system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget epoll system.Process.FileDescriptors with
         | Some (OpenFileTarget.Epoll state) -> List.length state.Ready
-        | other -> failwith $"expected the port, got %O{other}"
+        | other -> failwith $"expected the epoll instance, got %O{other}"
 
     let private after (nanoseconds : int64) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         { system with
@@ -205,7 +207,7 @@ module TestEpollWait =
         (system : UnixSystem<int, string>)
         : Result<EpollWaitOutcome * UnixSystem<int, string>, EpollWaitRefusal>
         =
-        UnixPoll.epollWait task port 8 UserBuffer.Mapped milliseconds system
+        UnixPoll.epollWait task epoll 8 UserBuffer.Mapped milliseconds system
 
     let private parks
         (milliseconds : int)
@@ -265,9 +267,9 @@ module TestEpollWait =
 
     [<Test>]
     let ``every count is screened by Linux's ladder: descriptor, count, buffer, kind`` () : unit =
-        // The descriptors: stdin (not a port), the listener (a socket), the port, and one
-        // that is not open.
-        let descriptors = Gen.elements [ 0 ; listener ; port ; 99 ]
+        // The descriptors: stdin (not an epoll instance), the listener (a socket),
+        // the epoll instance, and one that is not open.
+        let descriptors = Gen.elements [ 0 ; listener ; epoll ; 99 ]
 
         let counts =
             Gen.oneof
@@ -297,7 +299,7 @@ module TestEpollWait =
                 Some UnixError.EINVAL
             elif buffer = wild then
                 Some UnixError.EFAULT
-            elif fd <> port then
+            elif fd <> epoll then
                 Some UnixError.EINVAL
             else
                 None
@@ -318,14 +320,14 @@ module TestEpollWait =
     [<Test>]
     let ``a negative count is screened as zero is: after the descriptor, before the buffer and the kind`` () : unit =
         // Measured (section G): EBADF for a bad fd whatever the buffer, and otherwise EINVAL,
-        // even with a kernel-range buffer and on a descriptor that is not a port.
+        // even with a kernel-range buffer and on a descriptor that is not an epoll instance.
         let property (maxEvents : int, milliseconds : int) : unit =
             for fd, buffer, expected in
                 [
                     99, UserBuffer.Mapped, UnixError.EBADF
                     99, wild, UnixError.EBADF
-                    port, wild, UnixError.EINVAL
-                    port, UserBuffer.Mapped, UnixError.EINVAL
+                    epoll, wild, UnixError.EINVAL
+                    epoll, UserBuffer.Mapped, UnixError.EINVAL
                     listener, wild, UnixError.EINVAL
                     0, UserBuffer.Mapped, UnixError.EINVAL
                 ] do
@@ -569,11 +571,11 @@ module TestEpollWait =
             let started = after now idle
 
             for buffer, refusal in uncopyable do
-                UnixPoll.epollWait task port 8 buffer milliseconds (signal started)
+                UnixPoll.epollWait task epoll 8 buffer milliseconds (signal started)
                 |> shouldEqual (Error refusal)
 
                 // Nothing to copy: the buffer is never looked at past the screen.
-                match UnixPoll.epollWait task port 8 buffer milliseconds started with
+                match UnixPoll.epollWait task epoll 8 buffer milliseconds started with
                 | Ok (EpollWaitOutcome.Answered [], _) -> milliseconds |> shouldEqual 0
                 | Ok (EpollWaitOutcome.WouldBlock _, _) -> milliseconds |> shouldNotEqual 0
                 | other -> failwith $"expected no delivery, got %A{other}"
@@ -585,7 +587,7 @@ module TestEpollWait =
     let ``a parked wait finishes by copying to the buffer it was entered with`` () : unit =
         for buffer, refusal in uncopyable do
             let _, parked =
-                match UnixPoll.epollWait task port 8 buffer 5 idle with
+                match UnixPoll.epollWait task epoll 8 buffer 5 idle with
                 | Ok (EpollWaitOutcome.WouldBlock condition, parked) -> condition, parked
                 | other -> failwith $"expected a park, got %A{other}"
 
@@ -602,42 +604,42 @@ module TestEpollWait =
             | other -> failwith $"expected the wait to time out, got %A{other}"
 
     // ------------------------------------------------------------------
-    // Several waiters on one port
+    // Several waiters on one epoll instance
     // ------------------------------------------------------------------
 
-    /// One park the property below makes: `waiter` waits on port number `port`
-    /// of the generated set, until `deadline` if it has one.
+    /// One park the property below makes: `waiter` waits on the epoll instance
+    /// at index `epollIndex` of the generated set, until `deadline` if it has one.
     type private GeneratedPark =
         {
             Waiter : int
-            Port : int
+            EpollIndex : int
             Deadline : int64 option
         }
 
     [<Test>]
-    let ``each event wakes the waiter that parked last, unless a woken waiter of its port has yet to finish``
+    let ``each event wakes the waiter that parked last, unless a woken waiter of its epoll instance has yet to finish``
         ()
         : unit
         =
-        // Up to three ports, each with or without a deliverable event; tasks parking on them
+        // Up to three epoll instances, each with or without a deliverable event; tasks parking on them
         // in a generated order, some more than once; a clock; and which parked tasks the
         // client holds asleep. The oracle states the rule per task, where `UnixWait.wakes`
-        // groups by port.
+        // groups by epoll instance.
         let gen =
             gen {
-                let! portCount = Gen.choose (1, 3)
-                let! pending = Gen.listOfLength portCount (ArbMap.defaults |> ArbMap.generate<bool>)
+                let! epollCount = Gen.choose (1, 3)
+                let! pending = Gen.listOfLength epollCount (ArbMap.defaults |> ArbMap.generate<bool>)
 
                 let park =
                     gen {
                         let! waiter = Gen.choose (1, 6)
-                        let! port = Gen.choose (0, portCount - 1)
+                        let! epollIndex = Gen.choose (0, epollCount - 1)
                         let! deadline = Gen.optionOf (Gen.choose64 (0L, 100L))
 
                         return
                             {
                                 Waiter = waiter
-                                Port = port
+                                EpollIndex = epollIndex
                                 Deadline = deadline
                             }
                     }
@@ -649,13 +651,13 @@ module TestEpollWait =
             }
 
         let property (pending : bool list, parks : GeneratedPark list, clock : int64, asleepMask : bool list) : unit =
-            // The ports, every one of them registering stdin, which presents HUP whatever it is
+            // The epoll instances, every one of them registering stdin, which presents HUP whatever it is
             // asked, so that a pending entry for it is always deliverable.
             let stdinKey = 0, idOf 0 idle
 
-            let ports, system =
+            let epolls, system =
                 ((idle, []), pending)
-                ||> List.fold (fun (system, ports) isPending ->
+                ||> List.fold (fun (system, epolls) isPending ->
                     let fd, system = createEpoll system
                     let id = idOf fd system
 
@@ -676,9 +678,9 @@ module TestEpollWait =
                         else
                             registry
 
-                    withRegistry registry system, ports @ [ id ]
+                    withRegistry registry system, epolls @ [ id ]
                 )
-                |> fun (system, ports) -> ports, system
+                |> fun (system, epolls) -> epolls, system
 
             let system =
                 (system, parks)
@@ -687,7 +689,7 @@ module TestEpollWait =
                         park.Waiter
                         (ParkedSyscall.EpollWait
                             {
-                                Epoll = ports.[park.Port]
+                                Epoll = epolls.[park.EpollIndex]
                                 MaxEvents = 1
                                 Buffer = UserBuffer.Mapped
                                 Deadline = park.Deadline
@@ -715,7 +717,7 @@ module TestEpollWait =
                 |> Set.ofList
 
             let isPending (queueId : OpenFileDescriptionId) : bool =
-                pending.[List.findIndex ((=) queueId) ports]
+                pending.[List.findIndex ((=) queueId) epolls]
 
             let finishingOn (queueId : OpenFileDescriptionId) : bool =
                 parkedTasks
