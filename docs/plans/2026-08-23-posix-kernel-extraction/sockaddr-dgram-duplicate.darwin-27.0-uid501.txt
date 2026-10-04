@@ -1,0 +1,4 @@
+# Darwin 27.0.0 arm64
+second bind: Address already in use
+first connect: OK
+second connect: OK local=127.0.0.1:other peer=yes

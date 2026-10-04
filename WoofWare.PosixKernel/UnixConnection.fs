@@ -156,9 +156,9 @@ type ConnectRefusal =
     /// The resolved source equals the destination while a listener matched,
     /// which only a reuse-bound client can engineer; unmeasured.
     | SelfTuple of endpoint : InternetEndpoint
-    /// A connection between this source and destination already exists, or
-    /// another datagram socket is connected from this source to this
-    /// destination, and how a kernel refuses the duplicate four-tuple is
+    /// A connection between this source and destination already exists, or,
+    /// under Darwin, another datagram socket is connected from this source to
+    /// this destination, and how a kernel refuses the duplicate four-tuple is
     /// unmeasured.
     | DuplicateFourTuple of source : InternetEndpoint * destination : InternetEndpoint
     /// The destination is the socket's own bound address with nothing
@@ -1181,16 +1181,19 @@ module UnixConnection =
             | Ok (binding, system) ->
 
             // Another datagram socket already holding this very source and
-            // peer: a real kernel refuses the duplicate, and how (and what it
-            // leaves behind) is unmeasured.
+            // peer. Linux admits it: two sockets sharing a port through
+            // SO_REUSEADDR both connect to one peer (`sockaddr-dgram-duplicate.c`).
+            // Darwin reaches it only through a reconnect whose source is
+            // resolved afresh, and how it refuses that is unmeasured.
             let duplicate =
-                system.Machine.Sockets
-                |> Map.exists (fun otherId other ->
-                    otherId <> socketId
-                    && other.Kind = SocketKind.Datagram
-                    && other.Phase = SocketPhase.DatagramPeer dest
-                    && (other.Binding |> Option.map (fun b -> b.Endpoint)) = Some binding.Endpoint
-                )
+                flavour = SimulatedUnixFlavour.Darwin
+                && system.Machine.Sockets
+                   |> Map.exists (fun otherId other ->
+                       otherId <> socketId
+                       && other.Kind = SocketKind.Datagram
+                       && other.Phase = SocketPhase.DatagramPeer dest
+                       && (other.Binding |> Option.map (fun b -> b.Endpoint)) = Some binding.Endpoint
+                   )
 
             if duplicate then
                 Error (ConnectRefusal.DuplicateFourTuple (binding.Endpoint, dest))
