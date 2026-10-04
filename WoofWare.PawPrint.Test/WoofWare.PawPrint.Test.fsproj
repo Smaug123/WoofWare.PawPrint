@@ -11,6 +11,7 @@
     <Compile Include="ExpectRun.fs" />
     <Compile Include="SynthesisedLayoutKind.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
+    <Compile Include="TestJitSwitchLowering.fs" />
     <Compile Include="TestNoMissedInterpolation.fs" />
     <Compile Include="TestFixturesDeclareParallelism.fs" />
     <Compile Include="Assembly.fs" />
