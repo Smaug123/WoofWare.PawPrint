@@ -287,6 +287,46 @@ module TestStartingDirectory =
     [<Test>]
     let ``faccessat answers every dirfd and path the probe tried on Darwin`` () : unit = replayFAccessAt darwinUser
 
+    let private replaySymlinkAt (envelope : Envelope) : unit =
+        let rows = atRows envelope |> Map.filter (fun (call, _, _) _ -> call = "symlinkat")
+        let skipped = faccessatNotReplayed envelope
+
+        let renderedSymlink (result : Result<SyscallAnswer * UnixSystem<int, string>, SymlinkRefusal>) : string =
+            match result with
+            | Ok (SyscallAnswer.Completed _, _) -> "ok"
+            | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+            | Error refusal -> $"refused: %s{SymlinkRefusal.describe refusal}"
+
+        rows.Count |> shouldEqual (13 * 9)
+
+        [
+            for KeyValue ((_, kind, path), expected) in rows do
+                if not (skipped.Contains kind) then
+                    match directoryArgument kind envelope with
+                    | None -> yield $"%s{kind} %s{path}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+                        let actual =
+                            UnixNamespace.symlinkat
+                                (PathArg.ofText "target")
+                                dirfd
+                                (pathArgument path envelope.Platform)
+                                system
+                            |> renderedSymlink
+
+                        if actual <> expected then
+                            yield $"%s{kind} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``symlinkat answers every dirfd and path the probe tried as Linux root`` () : unit = replaySymlinkAt linuxRoot
+
+    [<Test>]
+    let ``symlinkat answers every dirfd and path the probe tried as a Linux user`` () : unit = replaySymlinkAt linuxUser
+
+    [<Test>]
+    let ``symlinkat answers every dirfd and path the probe tried on Darwin`` () : unit = replaySymlinkAt darwinUser
+
     [<Test>]
     let ``only Darwin's /dev/null is left unreplayed`` () : unit =
         envelopes
