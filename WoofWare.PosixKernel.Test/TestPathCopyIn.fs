@@ -594,7 +594,6 @@ module TestPathCopyIn =
                 Syscall.ChMod (path, 0o644)
                 Syscall.ChOwn (path, None, None)
                 Syscall.LChOwn (path, None, None)
-                Syscall.Access (path, 0)
                 // AT_FDCWD on Linux.
                 Syscall.FAccessAt (-100, path, 0, 0)
                 Syscall.CloneFile (path, path, 0)

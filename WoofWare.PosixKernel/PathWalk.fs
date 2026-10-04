@@ -120,6 +120,11 @@ type PathRefusal =
     /// a node for each device it has a driver for and nothing else, where a
     /// real one holds many more, so whether a real one binds `name` is unknown.
     | UnmodelledDeviceName of directory : InodeNumber * name : DirectoryEntryName
+    /// The path is empty and the call is about the object `fd` names, which is
+    /// not a filesystem object: a pipe, a socket or an event queue. What a
+    /// kernel answers about such an object through an empty path has not been
+    /// measured.
+    | UnmodelledStartingObject of fd : int
 
 [<RequireQualifiedAccess>]
 module PathRefusal =
@@ -131,6 +136,8 @@ module PathRefusal =
             $"the path reaches the root of the %O{fileSystem} mounted at inode %O{mountRoot}, which this kernel does not model."
         | PathRefusal.UnmodelledDeviceName (directory, name) ->
             $"the path looks up \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory}, on the device filesystem. This kernel's device filesystem holds a node only for each device it has a driver for, and a real one holds many more, so whether that name exists is unknown."
+        | PathRefusal.UnmodelledStartingObject fd ->
+            $"the path is empty and the call asks about what fd %d{fd} names, which is a pipe, a socket or an event queue rather than a filesystem object. What a kernel answers about such an object through an empty path has not been measured."
 
 /// How a path resolution failed: with the errno a real kernel answers, or with
 /// a refusal of this one's.

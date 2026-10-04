@@ -51,13 +51,11 @@ type Syscall =
     /// keeps is behaviour this kernel models, and models per flavour. Answers
     /// the previous mask.
     | UMask of mask : int
-    /// `path` is the argument's bytes, which this kernel copies in at the
-    /// point it measured; `mode` is raw, as `access(2)` takes it, because
-    /// which of its bits are rejected is behaviour this kernel models per
-    /// flavour.
-    | Access of path : PathArgumentBytes * mode : int
     /// `dirfd`, `mode` and `flags` are raw, as `faccessat(2)` takes them: each
-    /// flavour numbers `AT_FDCWD` and the flags its own way.
+    /// flavour numbers `AT_FDCWD` and the flags its own way, and which bits of
+    /// `mode` are rejected is behaviour this kernel models per flavour.
+    /// `access(2)` is this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`)
+    /// and no flags.
     | FAccessAt of dirfd : int * path : PathArgumentBytes * mode : int * flags : int
     /// `futimens(2)` with two explicit times; see `UnixPathResolution.futimens`.
     | FUTimens of fd : int * access : UnixTimestamp * modification : UnixTimestamp
@@ -877,10 +875,6 @@ module UnixSystem =
             let previous, system = umask mask system
 
             Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (PermissionBits.toInt previous))), system)
-        | Syscall.Access (path, mode) ->
-            UnixPathResolution.access path mode system
-            |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
-            |> Result.mapError SyscallRefusal.Access
         | Syscall.FAccessAt (dirfd, path, mode, flags) ->
             UnixPathResolution.faccessat dirfd path mode flags system
             |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)

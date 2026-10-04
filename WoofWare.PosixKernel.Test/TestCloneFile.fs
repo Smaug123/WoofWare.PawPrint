@@ -513,6 +513,7 @@ module TestCloneFile =
                     let sourceEntry =
                         match
                             UnixPathResolution.resolvePath
+                                AtDirectory.CurrentDirectory
                                 SymlinkPolicy.Follow
                                 (UnixPath.parseOrFail context source)
                                 system

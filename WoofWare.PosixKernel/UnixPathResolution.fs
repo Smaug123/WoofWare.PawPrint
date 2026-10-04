@@ -377,6 +377,16 @@ type AccessProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
     /// `UnixPathResolution.accessWithPath`.
     | NeedsPath of paused : PausedAccess<'Task, 'Handler>
 
+/// Where a `*at` syscall's copied-in path is taken from.
+[<RequireQualifiedAccess>]
+type internal PathStart =
+    /// Walk the path from this directory. A rooted path is walked from the root
+    /// whatever this is.
+    | Walk of directory : InodeNumber
+    /// The path is empty and the call is about this inode, which `dirfd` names
+    /// and need not be a directory.
+    | StartingObject of inode : InodeNumber
+
 [<RequireQualifiedAccess>]
 module UnixPathResolution =
 
@@ -392,6 +402,98 @@ module UnixPathResolution =
         | PathArgument.Failed error -> Error error
         | PathArgument.Parsed path -> Ok path
 
+    /// The directory a walk of `path`, given to a `*at` syscall with
+    /// `directory`, starts from, or the errno the call answers instead.
+    ///
+    /// `path` is one this kernel has copied in: every flavour copies the path
+    /// in before it looks `dirfd` up. A rooted path never looks `dirfd` up at
+    /// all, so any `directory` starts it from the root. Otherwise `directory`
+    /// names nothing (EBADF), something other than a directory (see
+    /// `StartingPointRules.nonDirectoryAnswer`), or the directory to start
+    /// from. The empty path is ENOENT either before that lookup or after it,
+    /// as the platform's `StartingPointRules.EmptyPath` says.
+    let internal walkStart<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<InodeNumber, UnixError>
+        =
+        let rules = SimulatedUnixPlatform.startingPointRules system.Machine.UnixPlatform
+
+        // The directory `directory` names, or what the call answers for one
+        // that names no directory. The process holds the inode either way,
+        // through its current directory or through an open description, so
+        // the walk starts from whatever that directory has since become:
+        // measured on both flavours, a directory renamed after it was opened
+        // is walked from its new place, one removed after it was opened holds
+        // no name and keeps its "..", and one made unsearchable after it was
+        // opened refuses its first component.
+        let startingDirectory () : Result<InodeNumber, UnixError> =
+            match directory with
+            | AtDirectory.CurrentDirectory -> Ok system.Process.CurrentDirectoryInode
+            | AtDirectory.Descriptor fd ->
+
+            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            | None -> Error UnixError.EBADF
+            | Some description ->
+
+            match description.Target with
+            | OpenFileTarget.Directory (inode, _) -> Ok inode
+            | OpenFileTarget.File _
+            | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Epoll _
+            | OpenFileTarget.Kqueue _ -> Error (StartingPointRules.nonDirectoryAnswer rules description.Target)
+
+        if UnixPath.isRooted path then
+            Ok (VirtualFileSystem.root system.Machine.FileSystem)
+        elif UnixPath.isEmpty path then
+            match rules.EmptyPath with
+            | EmptyPathRule.NoSuchEntryBeforeDescriptor -> Error UnixError.ENOENT
+            | EmptyPathRule.NoSuchEntryAfterDescriptor ->
+                startingDirectory () |> Result.bind (fun _ -> Error UnixError.ENOENT)
+        else
+            startingDirectory ()
+
+    /// Where `path`, given to a `*at` syscall with `directory`, is taken from:
+    /// `walkStart`, except that an empty path the call reads as naming its
+    /// starting point names whatever `directory` names, a regular file or a
+    /// device as well as a directory.
+    ///
+    /// Refuses an empty path naming a pipe, a socket or an event queue; see
+    /// `PathRefusal.UnmodelledStartingObject`.
+    let internal startOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (emptyPath : EmptyPathMeaning)
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PathStart, PathFailure>
+        =
+        match emptyPath with
+        | EmptyPathMeaning.NamesStartingPoint when UnixPath.isEmpty path ->
+            match directory with
+            | AtDirectory.CurrentDirectory -> Ok (PathStart.StartingObject system.Process.CurrentDirectoryInode)
+            | AtDirectory.Descriptor fd ->
+
+            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            | None -> Error (PathFailure.Errno UnixError.EBADF)
+            | Some description ->
+
+            match description.Target with
+            | OpenFileTarget.Directory (inode, _)
+            | OpenFileTarget.File (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _) -> Ok (PathStart.StartingObject inode)
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Epoll _
+            | OpenFileTarget.Kqueue _ -> Error (PathFailure.Refused (PathRefusal.UnmodelledStartingObject fd))
+        | EmptyPathMeaning.NamesStartingPoint
+        | EmptyPathMeaning.Walked ->
+            walkStart directory path system
+            |> Result.map PathStart.Walk
+            |> Result.mapError PathFailure.Errno
+
     /// <summary>
     /// The full result of walking <c>path</c>.
     /// </summary>
@@ -403,38 +505,39 @@ module UnixPathResolution =
     /// "the name exists" from "the name is free in a directory that exists", such as
     /// <c>rename</c>, <c>link</c>, and <c>open</c> with <c>O_CREAT</c>.
     ///
-    /// Relative paths start at the process's current directory <i>inode</i>, not at a
-    /// re-walk of its path.
+    /// A relative path starts where <c>directory</c> says (see <c>walkStart</c>): at the
+    /// <i>inode</i> of the process's current directory or of the directory a descriptor is
+    /// open on, not at a re-walk of a path to it.
     /// </remarks>
     let internal resolvePathFull<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<Resolution, PathFailure>
         =
-        // The held inode, not a re-walk of the recorded current directory: a real
-        // process reaches its current directory through a reference it already
-        // holds, so no component of that directory's own path is looked up here
-        // and none of their permission bits are consulted. Measured on both
-        // kernels — with the cwd at `outer/inner` and `outer` unsearchable, a
-        // relative `lstat("target")` succeeds while `lstat("../inner/target")` is
-        // EACCES.
+        // The held inode, not a re-walk of a path to it: a real process reaches
+        // its current directory, or a directory it has open, through a reference
+        // it already holds, so no component of that directory's own path is
+        // looked up here and none of their permission bits are consulted.
+        // Measured on both kernels — with the cwd at `outer/inner` and `outer`
+        // unsearchable, a relative `lstat("target")` succeeds while
+        // `lstat("../inner/target")` is EACCES.
         //
-        // The cwd *itself* is not exempt: the walk starts there and checks its
-        // search bit the moment it consumes a component, which is what makes
-        // `lstat("target")` EACCES when the cwd itself is unsearchable — also
-        // measured on both.
-        //
-        // Passed unconditionally, a rooted path included: `resolveFull` asks
-        // `isRooted` itself and starts at the root regardless of what it is
-        // handed, so a caller that branched here would be computing a value the
-        // walk discards.
+        // The starting directory *itself* is not exempt: the walk starts there
+        // and checks its search bit the moment it consumes a component, which is
+        // what makes `lstat("target")` EACCES when the cwd itself is
+        // unsearchable — also measured on both.
+        match walkStart directory path system with
+        | Error error -> Error (PathFailure.Errno error)
+        | Ok start ->
+
         PathWalk.resolveFull
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
             system.Process.Credentials
             system.Machine.ProtectedFiles.Symlinks
-            system.Process.CurrentDirectoryInode
+            start
             policy
             trailingSeparatorPolicy
             path
@@ -450,17 +553,22 @@ module UnixPathResolution =
     /// Finish such a walk with <c>PathWalk.completeResolution</c>.
     /// </remarks>
     let internal resolvePathParent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PausedResolution, PathFailure>
         =
+        match walkStart directory path system with
+        | Error error -> Error (PathFailure.Errno error)
+        | Ok start ->
+
         PathWalk.resolveParent
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
             system.Process.Credentials
             system.Machine.ProtectedFiles.Symlinks
-            system.Process.CurrentDirectoryInode
+            start
             policy
             trailingSeparatorPolicy
             path
@@ -473,12 +581,13 @@ module UnixPathResolution =
     /// This is the call path for every non-creating caller.
     /// </remarks>
     let internal resolvePath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<InodeNumber, PathFailure>
         =
-        resolvePathFull policy TrailingSeparatorPolicy.Demand path system
+        resolvePathFull directory policy TrailingSeparatorPolicy.Demand path system
         |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target |> Result.mapError PathFailure.Errno)
 
     /// `count` as the platform's `stat(2)` would report it in `st_nlink`.
@@ -609,7 +718,7 @@ module UnixPathResolution =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<FileStatusAnswer, StatRefusal>
         =
-        match resolvePath policy path system with
+        match resolvePath AtDirectory.CurrentDirectory policy path system with
         | Error (PathFailure.Errno error) -> Ok (FileStatusAnswer.Failed error)
         | Error (PathFailure.Refused refusal) -> Error (StatRefusal.Path refusal)
         | Ok inode ->
@@ -804,7 +913,7 @@ module UnixPathResolution =
         // dangling link and an absent name ENOENT, a link to itself ELOOP,
         // the empty path ENOENT and "f/under" ENOTDIR. Those are exactly what
         // `Follow` with a demanded trailing separator answers.
-        match resolvePath SymlinkPolicy.Follow path system with
+        match resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChModRefusal.Path refusal)
         | Ok inode ->
@@ -1010,7 +1119,7 @@ module UnixPathResolution =
         // the empty path ENOENT, "f/under" ENOTDIR, and a path through an
         // unsearchable directory EACCES even naming another's uid. Someone
         // else's file named as "f/" or "f/under" is ENOTDIR, not EPERM.
-        match resolvePath SymlinkPolicy.Follow path system with
+        match resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChOwnRefusal.Path refusal)
         | Ok inode ->
@@ -1056,7 +1165,7 @@ module UnixPathResolution =
         // link to a directory, a dangling link and a link to itself each
         // change themselves; "ld/" changes the directory and "lf/" is
         // ENOTDIR; the remaining path rows answer as `chown`'s do.
-        match resolvePath SymlinkPolicy.NoFollowFinal path system with
+        match resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.NoFollowFinal path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChOwnRefusal.Path refusal)
         | Ok inode ->
@@ -1264,7 +1373,7 @@ module UnixPathResolution =
         =
         FileSystemStatistics.assertCoherent "UnixPathResolution.statfs" system.Machine.UnixPlatform system.Machine.Mount
 
-        match resolvePath SymlinkPolicy.Follow path system with
+        match resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow path system with
         | Error (PathFailure.Errno error) -> Ok (FileSystemStatisticsAnswer.Failed error)
         | Error (PathFailure.Refused refusal) -> Error refusal
         | Ok inode -> Ok (statisticsOfInode inode system)
@@ -1467,7 +1576,7 @@ module UnixPathResolution =
         // for "f/", ENAMETOOLONG for an over-long component, ELOOP for a cycle —
         // and it follows "ld" to what it names, which is why `getcwd` afterwards
         // reports the target rather than the link.
-        match resolvePath SymlinkPolicy.Follow path system with
+        match resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error refusal
         | Ok target ->
@@ -1558,9 +1667,9 @@ module UnixPathResolution =
     // `access-rules.c`, on Linux 6.18.5 and Darwin 27.0: the mode and flag
     // words (`AccessRules.screen`), then the path's copy-in (an unreadable
     // pointer is EFAULT, and an over-long one ENAMETOOLONG, ahead of any
-    // dirfd), then Linux's empty path, then the dirfd (EBADF for a number
-    // naming nothing, ENOTDIR for a regular file), then the walk, then the
-    // permission bits. An absolute path never looks at its dirfd, even one
+    // dirfd), then the dirfd and the empty path as every `*at` call takes
+    // them (`walkStart`, measured again by `at-dirfd.c`), then the walk, then
+    // the permission bits. An absolute path never looks at its dirfd, even one
     // naming nothing.
 
     let private screenFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1602,7 +1711,7 @@ module UnixPathResolution =
         : Result<AccessProgress<'Task, 'Handler>, AccessRefusal>
         =
         let directory =
-            AccessRules.atDirectory (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) dirfd
+            AtDirectory.decode (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) dirfd
 
         screenFrom directory mode flags system
 
@@ -1649,58 +1758,19 @@ module UnixPathResolution =
             | AccessIds.Real -> Credentials.realIdsAsEffective system.Process.Credentials
             | AccessIds.Effective -> system.Process.Credentials
 
-        let empty = UnixPath.isEmpty path
-
-        // The inode a relative or empty path starts from, and whether it is a
-        // directory; `None` when the call does not need one.
-        let start : Result<Result<(InodeNumber * bool) option, UnixError>, AccessRefusal> =
-            if UnixPath.isRooted path then
-                Ok (Ok None)
-            elif empty && arguments.EmptyPath = AccessEmptyPath.NoSuchEntryBeforeDescriptor then
-                Ok (Error UnixError.ENOENT)
-            else
-
-            match directory with
-            | AtDirectory.CurrentDirectory -> Ok (Ok (Some (system.Process.CurrentDirectoryInode, true)))
-            | AtDirectory.Descriptor fd ->
-
-            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
-            | None -> Ok (Error UnixError.EBADF)
-            | Some description ->
-
-            match description.Target with
-            | OpenFileTarget.Directory (inode, _) -> Ok (Ok (Some (inode, true)))
-            | OpenFileTarget.File (inode, _)
-            | OpenFileTarget.CharacterDevice (inode, _) -> Ok (Ok (Some (inode, false)))
-            | OpenFileTarget.Kqueue _
-            | OpenFileTarget.Epoll _
-            | OpenFileTarget.Socket _
-            | OpenFileTarget.Pipe _ -> Error (AccessRefusal.UnmodelledDescriptor fd)
-
         let target : Result<Result<InodeNumber, UnixError>, AccessRefusal> =
-            match start with
-            | Error refusal -> Error refusal
-            | Ok (Error error) -> Ok (Error error)
-            | Ok (Ok start) ->
-
-            match start with
-            | Some (inode, _) when empty && arguments.EmptyPath = AccessEmptyPath.NamesStartingPoint -> Ok (Ok inode)
-            | Some (_, false) -> Ok (Error UnixError.ENOTDIR)
-            | _ ->
-
-            // A rooted path ignores the starting directory, and an empty one is
-            // ENOENT from the walk, as `NoSuchEntryAfterDescriptor` wants.
-            let startDirectory =
-                match start with
-                | Some (inode, _) -> inode
-                | None -> system.Process.CurrentDirectoryInode
+            match startOf directory arguments.EmptyPath path system with
+            | Error (PathFailure.Refused refusal) -> Error (AccessRefusal.Path refusal)
+            | Error (PathFailure.Errno error) -> Ok (Error error)
+            | Ok (PathStart.StartingObject inode) -> Ok (Ok inode)
+            | Ok (PathStart.Walk start) ->
 
             match
                 PathWalk.resolveFull
                     (SimulatedUnixPlatform.pathLimits platform)
                     credentials
                     system.Machine.ProtectedFiles.Symlinks
-                    startDirectory
+                    start
                     arguments.FinalSymlink
                     TrailingSeparatorPolicy.Demand
                     path
@@ -1769,8 +1839,8 @@ module UnixPathResolution =
     ///
     /// Refuses Darwin's extended rights and the flags Darwin accepts without this library
     /// modelling them, a privileged caller's execute question under a flavour where that is
-    /// unmeasured, and a <c>dirfd</c> naming neither a directory nor a regular file when the
-    /// call would start from it; see <c>AccessRefusal</c>.
+    /// unmeasured, and Linux's <c>AT_EMPTY_PATH</c> with a <c>dirfd</c> naming a pipe, a socket
+    /// or an event queue; see <c>AccessRefusal</c>.
     /// </remarks>
     let faccessat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)

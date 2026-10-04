@@ -1,0 +1,77 @@
+UNAME	Linux 6.18.5 aarch64	euid=0 egid=0
+SYSCTL	/proc/sys/fs/protected_hardlinks=1
+SYSCTL	/proc/sys/fs/protected_symlinks=0
+LINKSRC	f	link=ok(n=file:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=moved)	linkat(0)=ok(n=file:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=moved)	linkat(FOLLOW)=ok(n=file:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=moved)
+LINKSRC	d	link=EPERM	linkat(0)=EPERM	linkat(FOLLOW)=EPERM
+LINKSRC	lf	link=ok(n=symlink:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=same)	linkat(0)=ok(n=symlink:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=same)	linkat(FOLLOW)=ok(n=file:f nlink=1 srcctime=same dirmtime=moved fctime=moved)
+LINKSRC	ld	link=ok(n=symlink:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=same)	linkat(0)=ok(n=symlink:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=same)	linkat(FOLLOW)=EPERM
+LINKSRC	dang	link=ok(n=symlink:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=same)	linkat(0)=ok(n=symlink:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=same)	linkat(FOLLOW)=ENOENT
+LINKSRC	cyc	link=ok(n=symlink:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=same)	linkat(0)=ok(n=symlink:the-name-itself nlink=2 srcctime=moved dirmtime=moved fctime=same)	linkat(FOLLOW)=ELOOP
+LINKSRC	nx	link=ENOENT	linkat(0)=ENOENT	linkat(FOLLOW)=ENOENT
+LINKSRC	f/	link=ENOTDIR	linkat(0)=ENOTDIR	linkat(FOLLOW)=ENOTDIR
+LINKSRC	lf/	link=ENOTDIR	linkat(0)=ENOTDIR	linkat(FOLLOW)=ENOTDIR
+LINKSRC	ld/	link=EPERM	linkat(0)=EPERM	linkat(FOLLOW)=EPERM
+LINKSRC	d/	link=EPERM	linkat(0)=EPERM	linkat(FOLLOW)=EPERM
+LINKDST	n	ok(nlink-of-f-now-2:file)
+LINKDST	g	EEXIST
+LINKDST	dl	EEXIST
+LINKDST	e	EEXIST
+LINKDST	lf	EEXIST
+LINKDST	n/	ENOENT
+LINKDST	g/	EEXIST
+LINKDST	e/	EEXIST
+LINKDST	dl/	EEXIST
+LINKDST	nxdir/n	ENOENT
+LINKDST	g/n	ENOTDIR
+LINKDST	d/n	ok(nlink-of-f-now-2:file)
+LINKDST	ld/n	ok(nlink-of-f-now-2:file)
+LINKDST	.	EEXIST
+LINKDEV	/dev/null -> n	EXDEV
+LINKDEV	f -> /dev/n	EXDEV
+LINKDEV	nx -> /dev/n	ENOENT
+LINKDEV	f -> /dev/null	EEXIST
+LINKDEV	/dev/null -> /dev/n	ok
+LINKDEV	/dev/nx -> n	ENOENT
+LINKPERM	dest-dir-0555	EACCES
+LINKPERM	src-dir-0600	EACCES
+LINKPERM	src-dir-0600-absent	EACCES
+LINKPERM	others-file-0600	EPERM
+LINKPERM	others-file-0644	EPERM
+LINKPERM	others-file-0666	ok
+LINKPERM	absent-src+dest-dir-0555	ENOENT
+LINKPERM	existing-dest+dest-dir-0555	EEXIST
+SYMLINK	t -> n	ok(nx2=absent nx=absent n=symlink)(readlink=1 size=1)
+SYMLINK	'' -> n	ENOENT(nx2=absent nx=absent n=absent)
+SYMLINK	PATH_MAX-1 bytes -> n	ok(nx2=absent nx=absent n=symlink)(readlink=4095 size=4095)
+SYMLINK	PATH_MAX bytes -> n	ENAMETOOLONG(nx2=absent nx=absent n=absent)
+SYMLINK	t -> f	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> dl (dangling)	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> lf	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> d	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> n/	ENOENT(nx2=absent nx=absent n=absent)
+SYMLINK	t -> dl/ (dangling)	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> f/	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> d/	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> nxdir/n	ENOENT(nx2=absent nx=absent n=absent)
+SYMLINK	t -> f/n	ENOTDIR(nx2=absent nx=absent n=absent)
+SYMLINK	t -> ld/n	ok(nx2=absent nx=absent n=absent)(readlink=1 size=1)
+SYMLINK	t -> .	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> ''	ENOENT(nx2=absent nx=absent n=absent)
+SYMEMPTY	create=ENOENT
+SYMMODE	umask=00	ok mode=0777
+SYMMODE	umask=022	ok mode=0777
+SYMMODE	umask=077	ok mode=0777
+SYMMODE	umask=0777	ok mode=0777
+SYMMODE	umask=0700	ok mode=0777
+SYMGROUP	setgid=0	ok dir-gid=1234 dir-mode=0777 egid=0 link-gid=0 file-gid=0
+SYMGROUP	setgid=1	ok dir-gid=1234 dir-mode=02777 egid=0 link-gid=1234 file-gid=1234
+MKNOD	S_IFREG	ok(type=0100000 perm=0644 rdev=0) onto-existing=EEXIST
+MKNOD	type0	ok(type=0100000 perm=0644 rdev=0) onto-existing=EEXIST
+MKNOD	S_IFIFO	ok(type=010000 perm=0644 rdev=0) onto-existing=EEXIST
+MKNOD	S_IFCHR	ok(type=020000 perm=0644 rdev=259) onto-existing=EEXIST
+MKNOD	S_IFBLK	ok(type=060000 perm=0644 rdev=259) onto-existing=EEXIST
+MKNOD	S_IFDIR	EPERM onto-existing=EPERM
+MKNOD	S_IFLNK	EINVAL onto-existing=EINVAL
+MKNOD	S_IFSOCK	ok(type=0140000 perm=0644 rdev=0) onto-existing=EEXIST
+MKNOD	S_IFMT	EINVAL onto-existing=EINVAL
+MKNOD	mkfifo	ok(type=010000 perm=0644 rdev=0) onto-existing=EEXIST

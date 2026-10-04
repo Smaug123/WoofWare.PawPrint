@@ -779,7 +779,12 @@ module UnixNamespace =
             // being unreadable, and it is the read bit rather than the search
             // bit that is demanded. `OpenDirRules` holds them.
             match
-                UnixPathResolution.resolvePathFull SymlinkPolicy.Follow TrailingSeparatorPolicy.Demand path system
+                UnixPathResolution.resolvePathFull
+                    AtDirectory.CurrentDirectory
+                    SymlinkPolicy.Follow
+                    TrailingSeparatorPolicy.Demand
+                    path
+                    system
             with
             | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
             | Error (PathFailure.Refused refusal) -> Error (OpenRefusal.Path refusal)
@@ -807,7 +812,9 @@ module UnixNamespace =
             else
                 TrailingSeparatorPolicy.Demand
 
-        match UnixPathResolution.resolvePathFull policy trailingSeparatorPolicy path system with
+        match
+            UnixPathResolution.resolvePathFull AtDirectory.CurrentDirectory policy trailingSeparatorPolicy path system
+        with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (OpenRefusal.Path refusal)
         | Ok resolution ->
@@ -1079,7 +1086,7 @@ module UnixNamespace =
         // read, not something to step through. A trailing separator still
         // overrides that -- "lf/" demands that `lf` be a directory -- and the
         // resolver owns that rule, answering ENOTDIR.
-        match UnixPathResolution.resolvePath SymlinkPolicy.NoFollowFinal path system with
+        match UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.NoFollowFinal path system with
         | Error (PathFailure.Errno error) -> Ok (ReadLinkAnswer.Failed error)
         | Error (PathFailure.Refused refusal) -> Error (ReadLinkRefusal.Path refusal)
         | Ok inode ->
@@ -1303,7 +1310,14 @@ module UnixNamespace =
         // points at a file, or points at itself. The trailing separator is the
         // only thing that can reach past it, and only on Darwin — see
         // `MkDirRules.TrailingSeparator`.
-        match UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
+        match
+            UnixPathResolution.resolvePathFull
+                AtDirectory.CurrentDirectory
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                path
+                system
+        with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error refusal
         | Ok resolution ->
@@ -1379,7 +1393,14 @@ module UnixNamespace =
         // given, never what that name points at. The trailing separator is the
         // only thing that can reach past a final symlink, and only on Darwin;
         // see `UnlinkRules.TrailingSeparator`.
-        match UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
+        match
+            UnixPathResolution.resolvePathFull
+                AtDirectory.CurrentDirectory
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                path
+                system
+        with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
         | Ok resolution ->
@@ -1476,7 +1497,14 @@ module UnixNamespace =
         // reaches past a final symlink, and only on Darwin — which is how
         // `rmdir("ld/")` removes the *link's target* there and is ENOTDIR on
         // Linux. See `RmDirRules.TrailingSeparator`.
-        match UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
+        match
+            UnixPathResolution.resolvePathFull
+                AtDirectory.CurrentDirectory
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                path
+                system
+        with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
         | Ok resolution ->
@@ -1602,6 +1630,7 @@ module UnixNamespace =
         | RenameWalkOrder.ParentsThenFinals ->
             match
                 UnixPathResolution.resolvePathParent
+                    AtDirectory.CurrentDirectory
                     SymlinkPolicy.NoFollowFinal
                     rules.TrailingSeparator
                     sourcePath
@@ -1613,7 +1642,12 @@ module UnixNamespace =
         | RenameWalkOrder.SourceThenDestination ->
 
         match
-            UnixPathResolution.resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator sourcePath system
+            UnixPathResolution.resolvePathFull
+                AtDirectory.CurrentDirectory
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                sourcePath
+                system
         with
         | Error (PathFailure.Errno error) -> stopped error
         | Error (PathFailure.Refused refusal) -> Error (RenameRefusal.Path refusal)
@@ -1658,6 +1692,7 @@ module UnixNamespace =
                 // Darwin: the source is already finished, so the destination is
                 // resolved to completion and the verdict judges the pair.
                 UnixPathResolution.resolvePathFull
+                    AtDirectory.CurrentDirectory
                     SymlinkPolicy.NoFollowFinal
                     rules.TrailingSeparator
                     destinationPath
@@ -1668,6 +1703,7 @@ module UnixNamespace =
             // Linux: the destination's parent, then both final lookups.
             match
                 UnixPathResolution.resolvePathParent
+                    AtDirectory.CurrentDirectory
                     SymlinkPolicy.NoFollowFinal
                     rules.TrailingSeparator
                     destinationPath
@@ -1926,7 +1962,7 @@ module UnixNamespace =
         | Error error -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
         | Ok sourcePath ->
 
-        match UnixPathResolution.resolvePath SymlinkPolicy.Follow sourcePath system with
+        match UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow sourcePath system with
         | Error (PathFailure.Errno error) -> Ok (CloneFileProgress.Answered (SyscallAnswer.Failed error, system))
         | Error (PathFailure.Refused refusal) -> Error (CloneFileRefusal.Path refusal)
         | Ok inode ->
@@ -2003,7 +2039,12 @@ module UnixNamespace =
         | Ok destinationPath ->
 
         match
-            UnixPathResolution.resolvePathFull SymlinkPolicy.Follow rules.TrailingSeparator destinationPath system
+            UnixPathResolution.resolvePathFull
+                AtDirectory.CurrentDirectory
+                SymlinkPolicy.Follow
+                rules.TrailingSeparator
+                destinationPath
+                system
         with
         | Error (PathFailure.Errno error) -> failed error
         | Error (PathFailure.Refused refusal) -> Error (CloneFileRefusal.Path refusal)

@@ -1894,10 +1894,10 @@ module TestUnixSystemStep =
                     }
             }
 
-        UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "t") (at inner)
+        UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow (statPath "t") (at inner)
         |> shouldEqual (Ok target)
 
-        UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "t") (at rootInode)
+        UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow (statPath "t") (at rootInode)
         |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
         // ...and a rooted path ignores it, which is what says the branch above is
@@ -1905,7 +1905,11 @@ module TestUnixSystemStep =
         // the root: with it at the root the two arms agree, so that row could
         // not tell "rooted paths start at the root" from "every path starts at
         // the current directory".
-        UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") (at inner)
+        UnixPathResolution.resolvePath
+            AtDirectory.CurrentDirectory
+            SymlinkPolicy.Follow
+            (statPath "/d/inner/t")
+            (at inner)
         |> shouldEqual (Ok target)
 
     [<Test>]
@@ -1916,13 +1920,13 @@ module TestUnixSystemStep =
         // separator on a regular file would resolve.
         let inner, target, _, system = withTree linux
 
-        UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t/") system
+        UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow (statPath "/d/inner/t/") system
         |> shouldEqual (Error (PathFailure.Errno UnixError.ENOTDIR))
 
-        UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/") system
+        UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow (statPath "/d/inner/") system
         |> shouldEqual (Ok inner)
 
-        UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") system
+        UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow (statPath "/d/inner/t") system
         |> shouldEqual (Ok target)
 
     [<Test>]
@@ -1931,7 +1935,7 @@ module TestUnixSystemStep =
         // system rather than passed in — so dropping root changes the answer.
         let _, _, _, system = withTreeUnder (PermissionBits.parseOrFail context 0o600) linux
 
-        UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") system
+        UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow (statPath "/d/inner/t") system
         |> shouldEqual (Error (PathFailure.Errno UnixError.EACCES))
 
         // uid 0 is exempt, which is what says the rule is being read from the
@@ -1943,7 +1947,13 @@ module TestUnixSystemStep =
             |> UnixBootImage.boot
             |> withTreeUnder (PermissionBits.parseOrFail context 0o600)
 
-        match UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") asRoot with
+        match
+            UnixPathResolution.resolvePath
+                AtDirectory.CurrentDirectory
+                SymlinkPolicy.Follow
+                (statPath "/d/inner/t")
+                asRoot
+        with
         | Ok _ -> ()
         | Error error -> failwith $"root should have been exempt, got %O{error}"
 
@@ -4373,7 +4383,13 @@ module TestUnixSystemStep =
                     0o777
                     system
 
-            match UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/made") after with
+            match
+                UnixPathResolution.resolvePath
+                    AtDirectory.CurrentDirectory
+                    SymlinkPolicy.Follow
+                    (statPath "/made")
+                    after
+            with
             | Ok inode ->
                 match UnixPathResolution.statOf inode after with
                 | Some (Ok status) -> status.Mode &&& 0o7777 |> shouldEqual 0o755
@@ -4417,7 +4433,7 @@ module TestUnixSystemStep =
 
             // Nothing was created under either rule, which is the half an errno
             // alone does not assert.
-            UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/new") after
+            UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow (statPath "/new") after
             |> shouldEqual (Error (PathFailure.Errno UnixError.ENOENT))
 
             // The same name *without* the separator creates, so the row above is
@@ -5367,7 +5383,13 @@ module TestUnixSystemStep =
         let system = withRenameTree linux
 
         let held =
-            match UnixPathResolution.resolvePath SymlinkPolicy.NoFollowFinal (statPath "/f") system with
+            match
+                UnixPathResolution.resolvePath
+                    AtDirectory.CurrentDirectory
+                    SymlinkPolicy.NoFollowFinal
+                    (statPath "/f")
+                    system
+            with
             | Ok inode -> inode
             | Error error -> failwith $"could not resolve /f: %O{error}"
 
@@ -5421,7 +5443,13 @@ module TestUnixSystemStep =
         let system = withRenameTree system
 
         let sub =
-            match UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/dir/sub") system with
+            match
+                UnixPathResolution.resolvePath
+                    AtDirectory.CurrentDirectory
+                    SymlinkPolicy.Follow
+                    (statPath "/dir/sub")
+                    system
+            with
             | Ok inode -> inode
             | Error error -> failwith $"could not resolve /dir/sub: %O{error}"
 
@@ -5460,7 +5488,13 @@ module TestUnixSystemStep =
         let inode, created =
             match Answered.mkdir (PathArg.ofPath (statPath "/gone")) 0o755 system with
             | SyscallAnswer.Completed 0L, created ->
-                match UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/gone") created with
+                match
+                    UnixPathResolution.resolvePath
+                        AtDirectory.CurrentDirectory
+                        SymlinkPolicy.Follow
+                        (statPath "/gone")
+                        created
+                with
                 | Ok inode -> inode, created
                 | Error error -> failwith $"could not resolve /gone: %O{error}"
             | other -> failwith $"could not create /gone: %A{other}"
