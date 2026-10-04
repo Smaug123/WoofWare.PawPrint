@@ -830,7 +830,7 @@ module internal UnsafeAccessorDispatch =
             | UnsafeAccessorKind.Field
             | UnsafeAccessorKind.StaticField ->
                 // Field access takes exactly one argument for the target type, and returns a byref
-                // to the field (unsafeaccessors.cpp:1127).
+                // to the field (unsafeaccessors.cpp:1144).
                 match rawSignature.ParameterTypes, concreteSignature.ParameterTypes with
                 | [ raw ], [ concrete ] ->
                     match rawSignature.ReturnType with
@@ -1061,7 +1061,7 @@ module internal UnsafeAccessorDispatch =
             LoadedTypeInfo.isValueType baseClassTypes state.TypeSystem._LoadedAssemblies targetTypeInfo
 
         // An instance member of a value type must be reached through a byref, or the accessor
-        // would be handed a copy (unsafeaccessors.cpp:1111 and :1134).
+        // would be handed a copy (unsafeaccessors.cpp:1128 and :1151).
         let instanceOfValueTypeNeedsByref =
             match kind with
             | UnsafeAccessorKind.Method
@@ -1174,23 +1174,6 @@ module internal UnsafeAccessorDispatch =
             | Ok () ->
 
             refuseByrefReferenceReceiver ()
-
-            // A value type's generic virtual method has no unboxing stub, so it binds (see
-            // `findTargetMethod`), and the stub's `callvirt` then runs it for a value-type
-            // instantiation. For an instantiation shared over `System.__Canon` -- a reference-type
-            // argument, or a value type instantiated over one -- measured on real .NET 10 the
-            // process dies with SIGSEGV on the call, which is not an answer PawPrint can give.
-            match kind with
-            | UnsafeAccessorKind.Method when
-                targetIsValueType
-                && target.IsVirtual
-                && not target.Generics.IsEmpty
-                && accessor.Generics
-                   |> Seq.exists (IlMachineRuntimeMetadata.isSharedTypeArgument baseClassTypes state describe)
-                ->
-                failwith
-                    $"TODO: %s{describe} names the generic virtual method %s{name} of a value type and instantiates it over System.__Canon; real .NET 10 crashes the process with SIGSEGV calling such an accessor, which PawPrint cannot reproduce"
-            | _ -> ()
 
             // Two shapes the *body* CoreCLR emits refuses, both of them after the lookup has
             // succeeded -- measured on real .NET 10, an abstract class with no matching
@@ -1331,7 +1314,7 @@ module internal UnsafeAccessorDispatch =
     /// Refuse an accessor whose `UnsafeAccessorKind` names none of the five kinds.
     ///
     /// CoreCLR parses the attribute's integer, keeps it, and reaches the `default:` of the switch
-    /// that consumes it (unsafeaccessors.cpp:1149), which is the same `BFA_INVALID_UNSAFEACCESSOR`
+    /// that consumes it (unsafeaccessors.cpp:1166), which is the same `BFA_INVALID_UNSAFEACCESSOR`
     /// refusal a malformed declaration gets -- measured on real .NET 10 as a catchable
     /// `BadImageFormatException` on the first invocation. The accessor's own declaring type is not
     /// initialised: the stub fails to compile before the method's prologue could run.

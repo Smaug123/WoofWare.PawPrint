@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 
 // An instance member of a *value type* must be reached through a byref: CoreCLR refuses a
-// by-value first argument as `BadImageFormatException` (vm/unsafeaccessors.cpp:1111 and :1134),
+// by-value first argument as `BadImageFormatException` (vm/unsafeaccessors.cpp:1128 and :1151),
 // because the accessor would otherwise operate on a copy. This checks the accepted shape actually
 // mutates the caller's struct rather than a copy, for both the method and the field kind.
 public class TestUnsafeAccessorValueTypeTarget
