@@ -1,0 +1,24 @@
+UNAME	Darwin 27.0.0 arm64	euid=501
+CONST	AT_FDCWD=-2	AT_SYMLINK_NOFOLLOW=0x20
+NOFOLLOW	caller=501	libc	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=ok l:0755>0640 s:0644>0644	ld=ok l:0755>0640 s:0755>0755	dang=ok l:0755>0640 s:->-	cyc=ok l:0755>0640 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EPERM l:0755>0755 s:1777>1777	theirs-file=EPERM l:0644>0644 s:0644>0644
+NOFOLLOW	caller=501	syscall	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=ok l:0755>0640 s:0644>0644	ld=ok l:0755>0640 s:0755>0755	dang=ok l:0755>0640 s:->-	cyc=ok l:0755>0640 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EPERM l:0755>0755 s:1777>1777	theirs-file=EPERM l:0644>0644 s:0644>0644
+LCHOWN	caller=501	f=ok 501:20 / lchown ok 501:20	d=ok 501:20 / lchown ok 501:20	lf=ok 501:20 / lchown ok 501:20	ld=ok 501:20 / lchown ok 501:20	dang=ok 501:20 / lchown ok 501:20	cyc=ok 501:20 / lchown ok 501:20	lf/=ENOTDIR - / lchown ENOTDIR -	ld/=ok 501:20 / lchown ok 501:20	nx=ENOENT - / lchown ENOENT -	=ENOENT - / lchown ENOENT -	theirs-link=EPERM 0:0 / lchown EPERM 0:0	theirs-file=EPERM 0:0 / lchown EPERM 0:0
+LINKMODE	caller=501	in-group	group=20	ok=4096	mismatches=0	failures-left-mode=0
+LINKMODE	caller=501	out-of-group	group=0	ok=4096	mismatches=0	failures-left-mode=0
+LINKMODE	caller=501	theirs	EPERM 0755>0755
+LINKTIMES	caller=501	0700	ok	link atime=kept mtime=kept ctime=moved	target atime=kept mtime=kept ctime=kept
+LINKUSE	caller=501	0000	lmode=0000	stat=ok	readlink=EACCES	open=ok	walk=ok	faccessat(R_OK,NOFOLLOW)=EACCES
+LINKUSE	caller=501	0111	lmode=0111	stat=ok	readlink=EACCES	open=ok	walk=ok	faccessat(R_OK,NOFOLLOW)=EACCES
+LINKUSE	caller=501	0444	lmode=0444	stat=ok	readlink=ok	open=ok	walk=ok	faccessat(R_OK,NOFOLLOW)=ok
+LINKUSE	caller=501	0222	lmode=0222	stat=ok	readlink=EACCES	open=ok	walk=ok	faccessat(R_OK,NOFOLLOW)=EACCES
+LINKUSE	caller=501	0755	lmode=0755	stat=ok	readlink=ok	open=ok	walk=ok	faccessat(R_OK,NOFOLLOW)=ok
+LINKSETID	caller=501	link	chmod(6777)=ok 6777 chown(-1,-1)=ok 6777
+LINKSETID	caller=501	link	chmod(6777)=ok 6777 chown(-1,egid)=ok 0777
+LINKSETID	caller=501	link	chmod(1777)=ok 1777 chown(-1,-1)=ok 1777
+LINKSETID	caller=501	link	chmod(1777)=ok 1777 chown(-1,egid)=ok 1777
+LINKSETID	caller=501	file	chmod(6777)=ok 6777 chown(-1,-1)=ok 6777
+LINKSETID	caller=501	file	chmod(6777)=ok 6777 chown(-1,egid)=ok 0777
+LINKSETID	caller=501	file	chmod(1777)=ok 1777 chown(-1,-1)=ok 1777
+LINKSETID	caller=501	file	chmod(1777)=ok 1777 chown(-1,egid)=ok 1777
+FLAGMIX	caller=501	fchmodat	0x20=ok	0x20|0x1=EINVAL	0x20|0x40000000=EINVAL	0x800=ok	0x800|0x1=EINVAL	0x800|0x40000000=EINVAL	0x2000=ok	0x2000|0x1=EINVAL	0x2000|0x40000000=EINVAL	0x8000=ok	0x8000|0x1=EINVAL	0x8000|0x40000000=EINVAL
+FLAGMIX	caller=501	fchownat	0x20=ok	0x20|0x1=EINVAL	0x20|0x40000000=EINVAL	0x800=ok	0x800|0x1=EINVAL	0x800|0x40000000=EINVAL	0x2000=ok	0x2000|0x1=EINVAL	0x2000|0x40000000=EINVAL	0x8000=ok	0x8000|0x1=EINVAL	0x8000|0x40000000=EINVAL

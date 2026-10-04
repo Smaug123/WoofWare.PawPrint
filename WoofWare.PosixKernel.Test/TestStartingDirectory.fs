@@ -15,15 +15,17 @@ open WoofWare.PosixKernel
 /// nineteen calls, thirteen kinds of `dirfd` and nine pathnames. This fixture
 /// holds the library to it three ways:
 ///
-/// - the probe's `faccessat` rows, replayed end to end under each envelope the
-///   probe ran in;
+/// - the probe's rows for each call this library has as a `*at` call
+///   (`replayedEndToEnd`), replayed end to end under each envelope the probe
+///   ran in;
 /// - every other call's rows that the starting point alone decides: wherever
 ///   the copy-in or `UnixPathResolution.walkStart` fails, the probe answered
 ///   exactly that, for all nineteen calls, but for three measured exceptions;
-/// - two properties over generated paths: a walk from `AT_FDCWD` is the walk
-///   from the current directory's inode that every plain call made before
-///   `*at` existed, and a walk from a descriptor on a directory is the walk
-///   from that directory as the current one.
+/// - properties over generated paths: a walk from `AT_FDCWD` is the walk from
+///   the current directory's inode that every plain call made before `*at`
+///   existed, a walk from a descriptor on a directory is the walk from that
+///   directory as the current one, and each plain call is its `*at` call from
+///   `AT_FDCWD`.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStartingDirectory =
@@ -450,13 +452,23 @@ module TestStartingDirectory =
         |> Seq.map List.tail
         |> List.ofSeq
 
-    let private replayFStatAtFlags (envelope : Envelope) : unit =
+    /// Replay the probe's FLAGS and FLAGORDER rows for `call`, which answers
+    /// `answer dirfd path flags system`, rendered: every flag bit alone with
+    /// AT_FDCWD and "f", and a rejected bit against the FLAGORDER cells. Every
+    /// bit the library refuses must be one of `expectedRefused`, each of which
+    /// the probe saw accepted or answered other than EINVAL.
+    let private replayFlags
+        (call : string)
+        (answer : int -> PathArgumentBytes -> int -> UnixSystem<int, string> -> string)
+        (expectedRefused : int list)
+        (envelope : Envelope)
+        : unit
+        =
         let flavour = SimulatedUnixPlatform.flavour envelope.Platform
         let atFdCwd = atFdCwd flavour
 
         let row =
-            probeLines envelope.Resource "FLAGS"
-            |> List.find (fun row -> row.[0] = "fstatat")
+            probeLines envelope.Resource "FLAGS" |> List.find (fun row -> row.[0] = call)
 
         row.[1] |> shouldEqual "0=ok"
 
@@ -476,24 +488,14 @@ module TestStartingDirectory =
                 for bit in 0..31 do
                     let flag = 1 <<< bit
                     let expected = Map.tryFind flag rejected |> Option.defaultValue "ok"
-
-                    let actual =
-                        UnixPathResolution.fstatat atFdCwd (PathArg.ofText "f") flag (boot envelope)
-                        |> renderedStatus
+                    let actual = answer atFdCwd (PathArg.ofText "f") flag (boot envelope)
 
                     if actual.StartsWith "refused: the flag word" then
                         yield flag
                     elif actual <> expected then
                         failwith
-                            $"%s{context}: fstatat with flags 0x%x{flag}: the probe answered %s{expected}, this library %s{actual}"
+                            $"%s{context}: %s{call} with flags 0x%x{flag}: the probe answered %s{expected}, this library %s{actual}"
             ]
-
-        // Every flag refused is one the probe saw accepted, or answered other
-        // than EINVAL.
-        let expectedRefused =
-            match flavour with
-            | SimulatedUnixFlavour.Linux -> [ 0x800 ; 0x2000 ; 0x4000 ]
-            | SimulatedUnixFlavour.Darwin -> [ 0x200 ; 0x400 ; 0x800 ; 0x2000 ; 0x8000 ]
 
         refused |> shouldEqual expectedRefused
 
@@ -502,7 +504,7 @@ module TestStartingDirectory =
 
         let order =
             probeLines envelope.Resource "FLAGORDER"
-            |> List.find (fun row -> row.[0] = "fstatat")
+            |> List.find (fun row -> row.[0] = call)
 
         order.[1] |> shouldEqual "flags=0x40000000"
 
@@ -520,14 +522,24 @@ module TestStartingDirectory =
                     | "nx" -> atFdCwd, PathArg.ofText "nx"
                     | other -> failwith $"%s{context}: the probe has no FLAGORDER cell %s{other}"
 
-                let actual =
-                    UnixPathResolution.fstatat dirfd path 0x40000000 (boot envelope)
-                    |> renderedStatus
+                let actual = answer dirfd path 0x40000000 (boot envelope)
 
                 if actual <> expected then
                     yield $"FLAGORDER %s{label}: the probe answered %s{expected}, this library %s{actual}"
         ]
         |> shouldEqual []
+
+    let private replayFStatAtFlags (envelope : Envelope) : unit =
+        let expectedRefused =
+            match SimulatedUnixPlatform.flavour envelope.Platform with
+            | SimulatedUnixFlavour.Linux -> [ 0x800 ; 0x2000 ; 0x4000 ]
+            | SimulatedUnixFlavour.Darwin -> [ 0x200 ; 0x400 ; 0x800 ; 0x2000 ; 0x8000 ]
+
+        replayFlags
+            "fstatat"
+            (fun dirfd path flags system -> UnixPathResolution.fstatat dirfd path flags system |> renderedStatus)
+            expectedRefused
+            envelope
 
     [<Test>]
     let ``fstatat screens every flag bit as measured as Linux root`` () : unit = replayFStatAtFlags linuxRoot
@@ -2344,6 +2356,88 @@ module TestStartingDirectory =
         ]
         |> shouldEqual []
 
+    // ------------------------------------------------------------ fchmodat and fchownat
+
+    let private renderedChange
+        (describe : 'Refusal -> string)
+        (result : Result<SyscallAnswer * UnixSystem<int, string>, 'Refusal>)
+        : string
+        =
+        match result with
+        | Ok (SyscallAnswer.Completed _, _) -> "ok"
+        | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+        | Error refusal -> $"refused: %s{describe refusal}"
+
+    /// `fchmodat` as the probe called it: mode 0644.
+    let private probeFChModAt
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (flags : int)
+        (system : UnixSystem<int, string>)
+        =
+        UnixPathResolution.fchmodat dirfd path 0o644 flags system
+        |> renderedChange FChModAtRefusal.describe
+
+    /// `fchownat` as the probe called it: (uid_t)-1 and (gid_t)-1.
+    let private probeFChOwnAt
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (flags : int)
+        (system : UnixSystem<int, string>)
+        =
+        UnixPathResolution.fchownat dirfd path None None flags system
+        |> renderedChange FChOwnAtRefusal.describe
+
+    let private replayAttributeChange
+        (call : string)
+        (answer : int -> PathArgumentBytes -> int -> UnixSystem<int, string> -> string)
+        (envelope : Envelope)
+        : unit
+        =
+        let rows = atRows envelope |> Map.filter (fun (c, _, _) _ -> c = call)
+        rows.Count |> shouldEqual (13 * 9)
+        let skipped = faccessatNotReplayed envelope
+
+        [
+            for KeyValue ((_, kind, path), expected) in rows do
+                if not (skipped.Contains kind) then
+                    match directoryArgument kind envelope with
+                    | None -> yield $"%s{kind} %s{path}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+                        let actual = answer dirfd (pathArgument path envelope.Platform) 0 system
+
+                        if actual <> expected then
+                            yield $"%s{kind} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``fchmodat answers every dirfd and path the probe tried, under every envelope`` () : unit =
+        for envelope in envelopes do
+            replayAttributeChange "fchmodat" probeFChModAt envelope
+
+    [<Test>]
+    let ``fchownat answers every dirfd and path the probe tried, under every envelope`` () : unit =
+        for envelope in envelopes do
+            replayAttributeChange "fchownat" probeFChOwnAt envelope
+
+    /// The flags each flavour accepts on `fchmodat` and `fchownat` and this
+    /// library does not model.
+    let private unmodelledAttributeFlags (envelope : Envelope) : int list =
+        match SimulatedUnixPlatform.flavour envelope.Platform with
+        | SimulatedUnixFlavour.Linux -> []
+        | SimulatedUnixFlavour.Darwin -> [ 0x800 ; 0x2000 ; 0x8000 ]
+
+    [<Test>]
+    let ``fchmodat screens every flag bit as measured, under every envelope`` () : unit =
+        for envelope in envelopes do
+            replayFlags "fchmodat" probeFChModAt (unmodelledAttributeFlags envelope) envelope
+
+    [<Test>]
+    let ``fchownat screens every flag bit as measured, under every envelope`` () : unit =
+        for envelope in envelopes do
+            replayFlags "fchownat" probeFChOwnAt (unmodelledAttributeFlags envelope) envelope
+
     [<Test>]
     let ``only Darwin's /dev/null is left unreplayed`` () : unit =
         envelopes
@@ -2388,6 +2482,8 @@ module TestStartingDirectory =
                 "unlinkat(REMOVEDIR)"
                 "renameat[old]"
                 "renameat[new]"
+                "fchmodat"
+                "fchownat"
             ]
 
     /// The cells where a call not replayed end to end answers before, or
@@ -3098,3 +3194,141 @@ module TestStartingDirectory =
             )
 
         Check.One (config, Prop.forAll (Arb.fromGen renameCase) property)
+
+    /// What an attribute change left behind that a caller can observe: the
+    /// answer and the filesystem, or the refusal.
+    let private changed
+        (result : Result<SyscallAnswer * UnixSystem<int, string>, 'Refusal>)
+        : Result<SyscallAnswer * VirtualFileSystem, 'Refusal>
+        =
+        match result with
+        | Ok (answer, system) -> Ok (answer, system.Machine.FileSystem)
+        | Error refusal -> Error refusal
+
+    /// `walkSystem`'s tree, built by root with the process holding a
+    /// descriptor on `cwd`, for `credentials` with its current directory at
+    /// the root and at `cwd`, and the descriptor.
+    let private heldDirectory
+        (platform : SimulatedUnixPlatform)
+        (credentials : Credentials)
+        (cwd : string)
+        : int * UnixSystem<int, string> * UnixSystem<int, string>
+        =
+        // Opened as root, as the descriptor properties above do, and compared
+        // with the call from the same tree, whose unowned entries are root's,
+        // by the same caller.
+        let fd, held =
+            match
+                Answered.openPath readOnly (UnixPath.parseOrFail context cwd) 0 (walkSystem platform Owners.root cwd)
+            with
+            | SyscallAnswer.Completed fd, system -> int fd, system
+            | other -> failwith $"%s{context}: open(%s{cwd}) did not open: %O{other}"
+
+        let withCaller (cwdInode : InodeNumber) =
+            { held with
+                Process =
+                    { held.Process with
+                        Credentials = credentials
+                        CurrentDirectoryInode = cwdInode
+                    }
+            }
+
+        fd, withCaller (VirtualFileSystem.root held.Machine.FileSystem), withCaller held.Process.CurrentDirectoryInode
+
+    [<Test>]
+    let ``chmod is fchmodat from AT_FDCWD, and fchmodat from a descriptor on a directory is fchmodat from that directory``
+        ()
+        : unit
+        =
+        let modeCase =
+            gen {
+                let! case = walkCase
+                let! mode = Gen.elements [ 0 ; 0o640 ; 0o2755 ; 0o1777 ; 0o7777 ; 0o170644 ]
+                return case, mode
+            }
+
+        let property
+            ((platform, credentials, cwd, path : UnixPath, policy, _ : TrailingSeparatorPolicy), mode : int)
+            : unit
+            =
+            let flavour = SimulatedUnixPlatform.flavour platform
+            let argument = PathArgumentBytes.Bytes (UnixPath.toByteString path)
+
+            let flags =
+                match policy with
+                | SymlinkPolicy.Follow -> 0
+                | SymlinkPolicy.NoFollowFinal -> atSymlinkNoFollow flavour
+
+            let inCwd = walkSystem platform credentials cwd
+
+            UnixPathResolution.fchmodat (atFdCwd flavour) argument mode 0 inCwd
+            |> changed
+            |> shouldEqual (
+                UnixPathResolution.chmod argument mode inCwd
+                |> Result.mapError FChModAtRefusal.ChMod
+                |> changed
+            )
+
+            let fd, atRoot, heldInCwd = heldDirectory platform credentials cwd
+
+            UnixPathResolution.fchmodat fd argument mode flags atRoot
+            |> changed
+            |> shouldEqual (
+                UnixPathResolution.fchmodat (atFdCwd flavour) argument mode flags heldInCwd
+                |> changed
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen modeCase) property)
+
+    [<Test>]
+    let ``chown and lchown are fchownat from AT_FDCWD, and fchownat from a descriptor on a directory is fchownat from that directory``
+        ()
+        : unit
+        =
+        let ownerCase =
+            gen {
+                let! case = walkCase
+
+                let! ids =
+                    Gen.elements
+                        [
+                            None, None
+                            Some (UserId.parseOrFail context 1000u), None
+                            None, Some (GroupId.parseOrFail context 1000u)
+                            Some (UserId.parseOrFail context 2000u), Some (GroupId.parseOrFail context 2000u)
+                        ]
+
+                return case, ids
+            }
+
+        let property
+            (
+                (platform, credentials, cwd, path : UnixPath, policy, _ : TrailingSeparatorPolicy),
+                (user : UserId option, group : GroupId option)
+            )
+            : unit
+            =
+            let flavour = SimulatedUnixPlatform.flavour platform
+            let argument = PathArgumentBytes.Bytes (UnixPath.toByteString path)
+            let inCwd = walkSystem platform credentials cwd
+
+            let flags, plain =
+                match policy with
+                | SymlinkPolicy.Follow -> 0, UnixPathResolution.chown argument user group inCwd
+                | SymlinkPolicy.NoFollowFinal ->
+                    atSymlinkNoFollow flavour, UnixPathResolution.lchown argument user group inCwd
+
+            UnixPathResolution.fchownat (atFdCwd flavour) argument user group flags inCwd
+            |> changed
+            |> shouldEqual (plain |> Result.mapError FChOwnAtRefusal.ChOwn |> changed)
+
+            let fd, atRoot, heldInCwd = heldDirectory platform credentials cwd
+
+            UnixPathResolution.fchownat fd argument user group flags atRoot
+            |> changed
+            |> shouldEqual (
+                UnixPathResolution.fchownat (atFdCwd flavour) argument user group flags heldInCwd
+                |> changed
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen ownerCase) property)

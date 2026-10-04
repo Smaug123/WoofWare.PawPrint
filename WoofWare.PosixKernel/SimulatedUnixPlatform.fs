@@ -577,6 +577,22 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> PrivilegedModeChange.SetsRequestedBits
         | SimulatedUnixFlavour.Darwin -> PrivilegedModeChange.Unmeasured
 
+    /// What this platform's `fchmodat(2)` does with `AT_SYMLINK_NOFOLLOW` when
+    /// the path names a symbolic link.
+    let symlinkModeChange (platform : SimulatedUnixPlatform) : SymlinkModeChange =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/chmod-chown-at.c`
+        // (NOFOLLOW, LINKMODE, LINKTIMES). Linux 6.18.5, through glibc and
+        // through the fchmodat2 syscall alike: EOPNOTSUPP for a link to a
+        // file, to a directory, dangling and to itself, as root and as uid
+        // 1000, for all 4096 modes, on the caller's own link and on another
+        // user's, the mode and every timestamp left as they were. Darwin 27.0
+        // at uid 501: all 4096 modes set on its own link as `chmod` would set
+        // them on a file, in the link's group and out of it; EPERM on root's;
+        // the link's ctime moves and its target's timestamps do not.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> SymlinkModeChange.NotSupported
+        | SimulatedUnixFlavour.Darwin -> SymlinkModeChange.ChangesLink
+
     /// What a privileged caller is granted when it asks to execute something
     /// that is not a directory. See `PermissionBits.executionDenied`.
     let privilegedExecution (platform : SimulatedUnixPlatform) : PrivilegedExecution =
