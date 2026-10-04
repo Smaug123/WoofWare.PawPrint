@@ -99,6 +99,7 @@ static void set_hardlinks(int value) {
 // The cell, entered as the cwd, owned by the caller (1000 on Linux, the
 // running user on Darwin):
 //   f, g (0644)  d/  u/ (0555)  s/ (0600, holding sf)
+//   x600 x622 x4666 xlnk (a third user's, uid 2000, Linux)
 //   o600 o644 o666 o4666 o2676 o2666 (another user's files, Linux; Darwin has
 //   only o644, a link to `rootfile`) olnk (another user's link to f, Linux)
 //   odir/ (another user's directory, Linux) st/ (01777, another user's,
@@ -123,6 +124,16 @@ static void fixture(uid_t caller) {
         if (symlink("f", "olnk") < 0 || mkdir("odir", 0777) < 0) die("olnk/odir");
         if (mkdir("st", 0777) < 0 || chmod("st", 01777) < 0) die("st");
         mkfile("st/so", 0666);
+        // A third user's files, so that root's exemption is measured against
+        // an inode it does not own, and write without read is too.
+        mkfile("x600", 0600);
+        mkfile("x622", 0622);
+        mkfile("x4666", 04666);
+        if (symlink("f", "xlnk") < 0) die("xlnk");
+        if (chown("x600", 2000, 2000) < 0 || chown("x622", 2000, 2000) < 0 || lchown("xlnk", 2000, 2000) < 0)
+            die("chown x");
+        // chown clears the set-user-ID bit, so set it again.
+        if (chown("x4666", 2000, 2000) < 0 || chmod("x4666", 04666) < 0) die("chown x4666");
         const char *mine[] = {".", "f", "g", "d", "u", "s", "s/sf"};
         for (int i = 0; i < 7; i++)
             if (chown(mine[i], caller, caller) < 0) die("chown");
@@ -294,7 +305,7 @@ int main(int argc, char **argv) {
     uname(&u);
     printf("UNAME\t%s %s %s\teuid=%d\n", u.sysname, u.release, u.machine, (int)geteuid());
 
-    const char *sources[] = {"f", "d", "nx", "s/sf", "o600", "o644", "o666", "o4666", "o2676", "o2666", "olnk", "odir"};
+    const char *sources[] = {"f", "d", "nx", "s/sf", "o600", "o644", "o666", "o4666", "o2676", "o2666", "olnk", "odir", "x600", "x622", "x4666", "xlnk"};
     const char *dests[] = {"n", "g", "u/n", "n/", "nxdir/n", "/dev/n"};
 #ifdef __linux__
     uid_t callers[] = {1000, 0};
@@ -313,7 +324,7 @@ int main(int argc, char **argv) {
 #endif
         for (int c = 0; c < ncallers; c++)
             for (size_t i = 0; i < sizeof sources / sizeof sources[0]; i++) {
-                if (!isroot && strcmp(sources[i], "o644") != 0 && sources[i][0] == 'o') continue;
+                if (!isroot && strcmp(sources[i], "o644") != 0 && (sources[i][0] == 'o' || sources[i][0] == 'x')) continue;
                 printf("ORDER\tprotected_hardlinks=%d\tcaller=%d\tsource=%s", settings[s], (int)callers[c], sources[i]);
                 for (size_t j = 0; j < sizeof dests / sizeof dests[0]; j++) {
                     struct order a = {sources[i], dests[j], 0, callers[c]};
@@ -342,7 +353,7 @@ int main(int argc, char **argv) {
             }
         for (int c = 0; c < ncallers; c++)
             for (size_t i = 0; i < sizeof sources / sizeof sources[0]; i++) {
-                if (!isroot && strcmp(sources[i], "o644") != 0 && sources[i][0] == 'o') continue;
+                if (!isroot && strcmp(sources[i], "o644") != 0 && (sources[i][0] == 'o' || sources[i][0] == 'x')) continue;
                 printf("DESTORDER\tprotected_hardlinks=%d\tcaller=%d\tsource=%s", settings[s], (int)callers[c], sources[i]);
                 struct destorder rows[] = {
                     {sources[i], NULL, AT_FDCWD, callers[c]},

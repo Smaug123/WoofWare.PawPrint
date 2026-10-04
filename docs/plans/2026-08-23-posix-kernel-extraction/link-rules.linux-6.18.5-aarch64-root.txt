@@ -11,6 +11,10 @@ ORDER	protected_hardlinks=0	caller=1000	source=o2676	n=ok	g=EEXIST	u/n=EACCES	n/
 ORDER	protected_hardlinks=0	caller=1000	source=o2666	n=ok	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=0	caller=1000	source=olnk	n=ok	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=0	caller=1000	source=odir	n=EPERM	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=0	caller=1000	source=x600	n=ok	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=0	caller=1000	source=x622	n=ok	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=0	caller=1000	source=x4666	n=ok	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=0	caller=1000	source=xlnk	n=ok	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=0	caller=0	source=f	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=0	caller=0	source=d	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=0	caller=0	source=nx	n=ENOENT	g=ENOENT	u/n=ENOENT	n/=ENOENT	nxdir/n=ENOENT	/dev/n=ENOENT
@@ -23,6 +27,10 @@ ORDER	protected_hardlinks=0	caller=0	source=o2676	n=ok	g=EEXIST	u/n=ok	n/=ENOENT
 ORDER	protected_hardlinks=0	caller=0	source=o2666	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=0	caller=0	source=olnk	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=0	caller=0	source=odir	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=0	caller=0	source=x600	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=0	caller=0	source=x622	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=0	caller=0	source=x4666	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=0	caller=0	source=xlnk	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 DESTMORE	protected_hardlinks=0	caller=1000	unwritable: free name/	ENOENT
 DESTMORE	protected_hardlinks=0	caller=1000	unwritable: taken name	EEXIST
 DESTMORE	protected_hardlinks=0	caller=1000	writable: unbindable name	ok
@@ -47,6 +55,10 @@ DESTORDER	protected_hardlinks=0	caller=1000	source=o2676	NULL=EFAULT	empty=ENOEN
 DESTORDER	protected_hardlinks=0	caller=1000	source=o2666	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=0	caller=1000	source=olnk	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=0	caller=1000	source=odir	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=0	caller=1000	source=x600	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=0	caller=1000	source=x622	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=0	caller=1000	source=x4666	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=0	caller=1000	source=xlnk	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=0	caller=0	source=f	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=0	caller=0	source=d	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=0	caller=0	source=nx	NULL=ENOENT	empty=ENOENT	overlong=ENOENT	dirfd=-1=ENOENT
@@ -59,6 +71,10 @@ DESTORDER	protected_hardlinks=0	caller=0	source=o2676	NULL=EFAULT	empty=ENOENT	o
 DESTORDER	protected_hardlinks=0	caller=0	source=o2666	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=0	caller=0	source=olnk	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=0	caller=0	source=odir	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=0	caller=0	source=x600	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=0	caller=0	source=x622	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=0	caller=0	source=x4666	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=0	caller=0	source=xlnk	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 EMPTY	protected_hardlinks=0	caller=1000	own file	ok
 EMPTY	protected_hardlinks=0	caller=1000	own directory	EPERM
 EMPTY	protected_hardlinks=0	caller=1000	own file, unlinked	ENOENT
@@ -87,6 +103,10 @@ ORDER	protected_hardlinks=1	caller=1000	source=o2676	n=EPERM	g=EEXIST	u/n=EPERM	
 ORDER	protected_hardlinks=1	caller=1000	source=o2666	n=ok	g=EEXIST	u/n=EACCES	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=1	caller=1000	source=olnk	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=1	caller=1000	source=odir	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=1	caller=1000	source=x600	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=1	caller=1000	source=x622	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=1	caller=1000	source=x4666	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=1	caller=1000	source=xlnk	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=1	caller=0	source=f	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=1	caller=0	source=d	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=1	caller=0	source=nx	n=ENOENT	g=ENOENT	u/n=ENOENT	n/=ENOENT	nxdir/n=ENOENT	/dev/n=ENOENT
@@ -99,6 +119,10 @@ ORDER	protected_hardlinks=1	caller=0	source=o2676	n=ok	g=EEXIST	u/n=ok	n/=ENOENT
 ORDER	protected_hardlinks=1	caller=0	source=o2666	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=1	caller=0	source=olnk	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 ORDER	protected_hardlinks=1	caller=0	source=odir	n=EPERM	g=EEXIST	u/n=EPERM	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=1	caller=0	source=x600	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=1	caller=0	source=x622	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=1	caller=0	source=x4666	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
+ORDER	protected_hardlinks=1	caller=0	source=xlnk	n=ok	g=EEXIST	u/n=ok	n/=ENOENT	nxdir/n=ENOENT	/dev/n=EXDEV
 DESTMORE	protected_hardlinks=1	caller=1000	unwritable: free name/	ENOENT
 DESTMORE	protected_hardlinks=1	caller=1000	unwritable: taken name	EEXIST
 DESTMORE	protected_hardlinks=1	caller=1000	writable: unbindable name	ok
@@ -123,6 +147,10 @@ DESTORDER	protected_hardlinks=1	caller=1000	source=o2676	NULL=EFAULT	empty=ENOEN
 DESTORDER	protected_hardlinks=1	caller=1000	source=o2666	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=1	caller=1000	source=olnk	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=1	caller=1000	source=odir	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=1	caller=1000	source=x600	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=1	caller=1000	source=x622	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=1	caller=1000	source=x4666	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=1	caller=1000	source=xlnk	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=1	caller=0	source=f	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=1	caller=0	source=d	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=1	caller=0	source=nx	NULL=ENOENT	empty=ENOENT	overlong=ENOENT	dirfd=-1=ENOENT
@@ -135,6 +163,10 @@ DESTORDER	protected_hardlinks=1	caller=0	source=o2676	NULL=EFAULT	empty=ENOENT	o
 DESTORDER	protected_hardlinks=1	caller=0	source=o2666	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=1	caller=0	source=olnk	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 DESTORDER	protected_hardlinks=1	caller=0	source=odir	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=1	caller=0	source=x600	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=1	caller=0	source=x622	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=1	caller=0	source=x4666	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
+DESTORDER	protected_hardlinks=1	caller=0	source=xlnk	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	dirfd=-1=EBADF
 EMPTY	protected_hardlinks=1	caller=1000	own file	ok
 EMPTY	protected_hardlinks=1	caller=1000	own directory	EPERM
 EMPTY	protected_hardlinks=1	caller=1000	own file, unlinked	ENOENT
