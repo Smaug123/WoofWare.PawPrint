@@ -294,11 +294,11 @@ module TestSocketWait =
     let ``epoll screens count, then buffer, then object kind`` () : unit =
         let system = systemOn SimulatedUnixPlatform.linuxX64
         let socketFd, system = withSocket system
-        let portFd, system = withEventQueue system
+        let queueFd, system = withEventQueue system
 
         // Count beats buffer: a zero count on a port with an unscreenable
         // buffer is EINVAL, not EFAULT.
-        wait portFd 0 wild system |> shouldEqual (Waited.Failed UnixError.EINVAL)
+        wait queueFd 0 wild system |> shouldEqual (Waited.Failed UnixError.EINVAL)
 
         // Buffer beats object kind: the same buffer on a *socket* is EFAULT,
         // not the EINVAL the wrong-kind arm would give.

@@ -297,7 +297,7 @@ module TestDirectoryReadAgainstHost =
 
             let property (entries : (string * bool) list) (steps : HostDirectoryStep list) (removeAtEnd : bool) =
                 let root =
-                    Path.Combine (hostBase, "pawprint-getdents-" + Guid.NewGuid().ToString "N")
+                    Path.Combine (hostBase, "posixkernel-getdents-" + Guid.NewGuid().ToString "N")
 
                 hostMkdir (root, 0o755u) |> hostSucceeded "mkdir root"
                 let hostD = Path.Combine (root, "d")
@@ -574,7 +574,7 @@ module TestDirectoryReadAgainstHost =
             let platform = HostPlatform.platformOf flavour
 
             let root =
-                Path.Combine (hostBase, "pawprint-getdents-" + Guid.NewGuid().ToString "N")
+                Path.Combine (hostBase, "posixkernel-getdents-" + Guid.NewGuid().ToString "N")
 
             hostMkdir (root, 0o755u) |> hostSucceeded "mkdir root"
             let hostFile = Path.Combine (root, "f")

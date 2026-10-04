@@ -308,7 +308,7 @@ module TestDeviceDescriptorsAgainstHost =
                      hostAnswer (int64 (hostEpollCtl (port, 1, host, event)))
                  finally
                      hostClose port |> ignore<int>),
-                (let portFd, registry =
+                (let queueFd, registry =
                     FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
                  let system =
@@ -319,7 +319,7 @@ module TestDeviceDescriptorsAgainstHost =
                              }
                      }
 
-                 match UnixPoll.epollCtl portFd 1 fd (EpollEventArgument.Readable (1u, 0UL)) system with
+                 match UnixPoll.epollCtl queueFd 1 fd (EpollEventArgument.Readable (1u, 0UL)) system with
                  | Ok (EpollCtlAnswer.Changed, _) -> Ok 0L
                  | Ok (EpollCtlAnswer.Failed EpollCtlError.TargetNotPollable, _) -> Error UnixError.EPERM
                  | other -> failwith $"the model's epoll_ctl: %A{other}")

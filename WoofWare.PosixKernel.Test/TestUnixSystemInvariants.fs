@@ -187,7 +187,7 @@ module TestUnixSystemInvariants =
     /// counter above, and untested for the same reason.
     [<Test>]
     let ``a registration ordinal equal to the next to mint is a defect`` () : unit =
-        let portId = OpenFileDescriptionId 0L
+        let queueId = OpenFileDescriptionId 0L
         let ordinal = 7L
 
         let port =
@@ -219,10 +219,10 @@ module TestUnixSystemInvariants =
                     { unlaunched.Process with
                         FileDescriptors =
                             FileDescriptorRegistry.Unchecked.ofParts
-                                (Map.ofList [ 4, portId ])
+                                (Map.ofList [ 4, queueId ])
                                 (Map.ofList
                                     [
-                                        portId,
+                                        queueId,
                                         {
                                             Target = OpenFileTarget.Epoll port
                                             AccessMode = FileAccessMode.ReadWrite
@@ -236,7 +236,7 @@ module TestUnixSystemInvariants =
             }
 
         UnixSystem.checkInvariants forged
-        |> shouldEqual [ UnixSystemDefect.EventRegistrationOrdinalNotFresh (ordinal, portId, ordinal) ]
+        |> shouldEqual [ UnixSystemDefect.EventRegistrationOrdinalNotFresh (ordinal, queueId, ordinal) ]
 
     // ------------------------------------------------------------------
     // A current directory that is not a directory
@@ -493,11 +493,11 @@ module TestUnixSystemInvariants =
     /// is reported.
     [<Test>]
     let ``a task parked on a live port or file is sound`` () : unit =
-        let portFd, registry =
+        let queueFd, registry =
             FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         let port =
-            match FileDescriptorRegistry.tryFindWithId portFd registry with
+            match FileDescriptorRegistry.tryFindWithId queueFd registry with
             | Some (id, _) -> id
             | None -> failwith "the port just created is not in the table"
 
@@ -506,7 +506,7 @@ module TestUnixSystemInvariants =
             | Some (id, _) -> id
             | None -> failwith "the fixture has no stdout"
 
-        let withPort =
+        let queueSystem =
             { system with
                 Process =
                     { system.Process with
@@ -514,7 +514,7 @@ module TestUnixSystemInvariants =
                     }
             }
 
-        withPort
+        queueSystem
         |> withTask (
             Some (
                 ParkedSyscall.EpollWait
@@ -529,7 +529,7 @@ module TestUnixSystemInvariants =
         |> UnixSystem.checkInvariants
         |> shouldEqual []
 
-        withPort
+        queueSystem
         |> withTask (
             Some (
                 ParkedSyscall.Flock

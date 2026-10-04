@@ -4997,7 +4997,7 @@ one binding used by both `runHarness` and the new row, because a second copy of
 the literal would only have guarded itself. Mutating it to the old assembly name
 fails the row, which is what says it is load-bearing.
 
-The `PAWPRINT_SOCKET_FUZZ*` variable names are unchanged. They are the documented
+The `POSIXKERNEL_SOCKET_FUZZ*` variable names are unchanged. They are the documented
 interface, and renaming them would break every invocation anyone has recorded.
 
 **The audit is closed** — and the audit turns out not to have been exhaustive;

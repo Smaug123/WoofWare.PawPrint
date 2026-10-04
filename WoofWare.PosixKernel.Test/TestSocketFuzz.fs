@@ -14,7 +14,7 @@ open NUnit.Framework
 /// must agree.
 ///
 /// The live test needs the container and so is gated on
-/// `PAWPRINT_SOCKET_FUZZ=1`; the corpus test replays previously-measured real
+/// `POSIXKERNEL_SOCKET_FUZZ=1`; the corpus test replays previously-measured real
 /// transcripts and runs everywhere.
 [<TestFixture>]
 module TestSocketFuzz =
@@ -239,18 +239,18 @@ module TestSocketFuzz =
 
     [<Test>]
     let ``SocketFuzzLive: generated sequences agree with the real kernel`` () : unit =
-        if Environment.GetEnvironmentVariable "PAWPRINT_SOCKET_FUZZ" <> "1" then
+        if Environment.GetEnvironmentVariable "POSIXKERNEL_SOCKET_FUZZ" <> "1" then
             Assert.Ignore
-                "differential fuzzing needs the `container` CLI; opt in with PAWPRINT_SOCKET_FUZZ=1 (see docs/plans/2026-08-22-socket-epoll-fuzzer.md)"
+                "differential fuzzing needs the `container` CLI; opt in with POSIXKERNEL_SOCKET_FUZZ=1 (see docs/plans/2026-08-22-socket-epoll-fuzzer.md)"
 
         let sequenceCount =
-            match Environment.GetEnvironmentVariable "PAWPRINT_SOCKET_FUZZ_SEQUENCES" with
+            match Environment.GetEnvironmentVariable "POSIXKERNEL_SOCKET_FUZZ_SEQUENCES" with
             | null
             | "" -> 150
             | s -> int s
 
         let seed =
-            match Environment.GetEnvironmentVariable "PAWPRINT_SOCKET_FUZZ_SEED" with
+            match Environment.GetEnvironmentVariable "POSIXKERNEL_SOCKET_FUZZ_SEED" with
             | null
             | "" -> 20260822
             | s -> int s
@@ -336,7 +336,7 @@ module TestSocketFuzz =
                 + String.concat "\n\n" rendered
             )
 
-        match Environment.GetEnvironmentVariable "PAWPRINT_SOCKET_FUZZ_WRITE_CORPUS" with
+        match Environment.GetEnvironmentVariable "POSIXKERNEL_SOCKET_FUZZ_WRITE_CORPUS" with
         | null
         | "" -> ()
         | path ->

@@ -79,11 +79,11 @@ module TestSockOpt =
                     }
             }
 
-        let portFd, registry =
+        let queueFd, registry =
             FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
         socketFd,
-        portFd,
+        queueFd,
         { system with
             Process =
                 { system.Process with
@@ -287,11 +287,11 @@ module TestSockOpt =
             setRow "socket, SO_ERROR" sock Option.SocketError real 4u refused refused
         ]
 
-    let private targetFd (target : Target) (socketFd : int) (portFd : int) : int =
+    let private targetFd (target : Target) (socketFd : int) (queueFd : int) : int =
         match target with
         | Target.Closed -> closedFd
         | Target.Pipe -> pipeFd
-        | Target.EventQueue -> portFd
+        | Target.EventQueue -> queueFd
         | Target.Socket -> socketFd
 
     let private flavourColumn (platform : SimulatedUnixPlatform) (onLinux : 'a) (onDarwin : 'a) : 'a =
@@ -311,9 +311,9 @@ module TestSockOpt =
     let ``setsockopt answers every measured row`` () : unit =
         for platform in platforms do
             for row in setRows do
-                let socketFd, portFd, system = systemWith platform SocketPhase.Idle
+                let socketFd, queueFd, system = systemWith platform SocketPhase.Idle
                 let level, optionName = numbered platform row.Option
-                let fd = targetFd row.Target socketFd portFd
+                let fd = targetFd row.Target socketFd queueFd
                 let expected = flavourColumn platform row.Linux row.Darwin
 
                 let actual =
@@ -666,10 +666,10 @@ module TestSockOpt =
     let ``getsockopt answers every measured row`` () : unit =
         for platform in platforms do
             for row in getRows do
-                let socketFd, portFd, system = systemWith platform SocketPhase.Idle
+                let socketFd, queueFd, system = systemWith platform SocketPhase.Idle
                 let system = ReuseAddress.set true socketFd system
                 let level, optionName = numbered platform row.Option
-                let fd = targetFd row.Target socketFd portFd
+                let fd = targetFd row.Target socketFd queueFd
                 let expected = flavourColumn platform row.Linux row.Darwin
 
                 let actual =

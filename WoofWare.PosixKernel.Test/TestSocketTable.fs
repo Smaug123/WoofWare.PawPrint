@@ -49,22 +49,22 @@ module TestSocketTable =
     /// annotated walk, so a drain reports something exactly when the predicate
     /// said it would.
     let private deliverEpollEvents
-        (portId : OpenFileDescriptionId)
+        (queueId : OpenFileDescriptionId)
         (maxCount : int)
         (kernel : UnixSystem<int, string>)
         : (uint64 * uint32) list * UnixSystem<int, string>
         =
-        let predicted = EpollReadyList.hasDeliverableEvent portId kernel
-        let delivered, system = EpollReadyList.drain portId maxCount kernel
+        let predicted = EpollReadyList.hasDeliverableEvent queueId kernel
+        let delivered, system = EpollReadyList.drain queueId maxCount kernel
 
         if List.isEmpty delivered = predicted then
             failwith
-                $"EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
+                $"EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{queueId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
 
         delivered, system
 
-    let private hasDeliverableEpollEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
-        EpollReadyList.hasDeliverableEvent portId kernel
+    let private hasDeliverableEpollEvents (queueId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
+        EpollReadyList.hasDeliverableEvent queueId kernel
 
     let private linuxReadiness (targetId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : uint32 =
         LinuxReadiness.ofDescription targetId kernel

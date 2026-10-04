@@ -106,12 +106,12 @@ module TestEpollWait =
                     }
             }
 
-        let portFd, system = createEpoll system
+        let queueFd, system = createEpoll system
 
         let system =
             match
                 UnixPoll.epollCtl
-                    portFd
+                    queueFd
                     1
                     listenerFd
                     (EpollEventArgument.Readable (EpollEvents.In ||| EpollEvents.EdgeTriggered, data))
@@ -120,7 +120,7 @@ module TestEpollWait =
             | Ok (EpollCtlAnswer.Changed, system) -> system
             | other -> failwith $"expected the registration to succeed, got %A{other}"
 
-        listenerFd, portFd, system
+        listenerFd, queueFd, system
 
     let private listener : int =
         let fd, _, _ = world
@@ -134,7 +134,7 @@ module TestEpollWait =
         let _, _, system = world
         system
 
-    let private portId : OpenFileDescriptionId = idOf port idle
+    let private queueId : OpenFileDescriptionId = idOf port idle
 
     /// `system` with the listener's accept queue holding `queue`.
     let private withQueue (queue : ConnectionId list) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -179,7 +179,7 @@ module TestEpollWait =
         if alreadyReady then
             system
         else
-            withRegistry (FileDescriptorRegistry.appendEpollReady portId key system.Process.FileDescriptors) system
+            withRegistry (FileDescriptorRegistry.appendEpollReady queueId key system.Process.FileDescriptors) system
 
     /// The connection is taken by someone else: the listener's level drops, and
     /// the pending entry goes stale.
@@ -380,7 +380,7 @@ module TestEpollWait =
                 UnixTaskTable.parkedFor task answered.Tasks |> shouldEqual None
                 // The walk consumed the stale entry even though it delivered nothing.
                 pendingEntries answered |> shouldEqual 0
-                answered |> shouldEqual (snd (EpollReadyList.drain portId 8 stale))
+                answered |> shouldEqual (snd (EpollReadyList.drain queueId 8 stale))
             | other -> failwith $"expected no events, got %A{other}"
 
         Check.One (config, Prop.forAll (Arb.fromGen start) property)
@@ -400,7 +400,7 @@ module TestEpollWait =
             |> shouldEqual (
                 Interruptible.condition (
                     WakeCondition.AnyOf (
-                        WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable portId),
+                        WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable queueId),
                         [ WakeCondition.Primitive (WakePrimitive.DeadlinePassed deadline) ]
                     )
                 )
@@ -438,7 +438,7 @@ module TestEpollWait =
 
             condition
             |> shouldEqual (
-                Interruptible.condition (WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable portId))
+                Interruptible.condition (WakeCondition.Primitive (WakePrimitive.EpollEventDeliverable queueId))
             )
 
             UnixWait.deadlines (Set.singleton task) parked |> shouldEqual []
@@ -448,7 +448,7 @@ module TestEpollWait =
                 wait
                 |> shouldEqual
                     {
-                        Epoll = portId
+                        Epoll = queueId
                         MaxEvents = 8
                         Buffer = UserBuffer.Mapped
                         Deadline = None
@@ -468,7 +468,7 @@ module TestEpollWait =
             let ready = parked |> after (min elapsed (deadline - 1L)) |> signal
 
             woken ready
-            |> shouldEqual (Some (Set.singleton (WakePrimitive.EpollEventDeliverable portId)))
+            |> shouldEqual (Some (Set.singleton (WakePrimitive.EpollEventDeliverable queueId)))
 
             let events, finished = finishes ready
             events |> shouldEqual delivered
@@ -489,7 +489,7 @@ module TestEpollWait =
                 Some (
                     Set.ofList
                         [
-                            WakePrimitive.EpollEventDeliverable portId
+                            WakePrimitive.EpollEventDeliverable queueId
                             WakePrimitive.DeadlinePassed deadline
                         ]
                 )
@@ -510,7 +510,7 @@ module TestEpollWait =
         let ready = parked |> after 1L |> signal
 
         woken ready
-        |> shouldEqual (Some (Set.singleton (WakePrimitive.EpollEventDeliverable portId)))
+        |> shouldEqual (Some (Set.singleton (WakePrimitive.EpollEventDeliverable queueId)))
 
         // Someone else takes the connection before the woken waiter runs.
         let stale = unready ready
@@ -556,7 +556,7 @@ module TestEpollWait =
     /// memory whose bytes the caller cannot produce.
     let private uncopyable : (UserBuffer * EpollWaitRefusal) list =
         [
-            UserBuffer.Unmapped 0x1000UL, EpollWaitRefusal.UnmeasuredCopyOutFault portId
+            UserBuffer.Unmapped 0x1000UL, EpollWaitRefusal.UnmeasuredCopyOutFault queueId
             UserBuffer.Opaque, EpollWaitRefusal.Buffer BufferRefusal.OpaqueAtTransfer
         ]
 
@@ -714,16 +714,16 @@ module TestEpollWait =
                 |> List.filter (fun name -> asleepMask.[name - 1])
                 |> Set.ofList
 
-            let isPending (portId : OpenFileDescriptionId) : bool =
-                pending.[List.findIndex ((=) portId) ports]
+            let isPending (queueId : OpenFileDescriptionId) : bool =
+                pending.[List.findIndex ((=) queueId) ports]
 
-            let finishingOn (portId : OpenFileDescriptionId) : bool =
+            let finishingOn (queueId : OpenFileDescriptionId) : bool =
                 parkedTasks
-                |> List.exists (fun (name, wait, _) -> not (Set.contains name asleep) && wait.Epoll = portId)
+                |> List.exists (fun (name, wait, _) -> not (Set.contains name asleep) && wait.Epoll = queueId)
 
-            let lastAsleepOn (portId : OpenFileDescriptionId) : int =
+            let lastAsleepOn (queueId : OpenFileDescriptionId) : int =
                 parkedTasks
-                |> List.filter (fun (name, wait, _) -> Set.contains name asleep && wait.Epoll = portId)
+                |> List.filter (fun (name, wait, _) -> Set.contains name asleep && wait.Epoll = queueId)
                 |> List.maxBy (fun (_, _, ordinal) -> ordinal)
                 |> fun (name, _, _) -> name
 

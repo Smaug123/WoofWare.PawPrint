@@ -416,7 +416,7 @@ module TestLaunchedStreams =
             | Ok (Ok (port, system)) -> port, system
             | other -> failwith $"%A{other}"
 
-        let portId =
+        let queueId =
             match FileDescriptorRegistry.tryFindId port system.Process.FileDescriptors with
             | Some id -> id
             | None -> failwith "the port is not open"
@@ -434,7 +434,7 @@ module TestLaunchedStreams =
             | other -> failwith $"%A{other}"
 
         let reported (system : UnixSystem<int, string>) : bool * UnixSystem<int, string> =
-            let rows, system = EpollReadyList.drain portId 4 system
+            let rows, system = EpollReadyList.drain queueId 4 system
             not rows.IsEmpty, system
 
         let atAdd, system = reported system

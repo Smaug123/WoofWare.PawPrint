@@ -510,7 +510,7 @@ module SocketFuzz =
         | FuzzOp.EpollMod (port, target, events) -> epollCtl true port 3 target events state
         | FuzzOp.Del (port, target) -> epollCtl false port 2 target 0u state
         | FuzzOp.Wait (port, maxEvents) ->
-            let portId =
+            let queueId =
                 match FileDescriptorRegistry.tryFindId (slotFd port state) state.Kernel.Process.FileDescriptors with
                 | Some id -> id
                 | None -> failwith $"FUZZ-DRIVER BUG: wait's port slot %d{port} is not live."
@@ -520,12 +520,12 @@ module SocketFuzz =
             // cannot disagree; asked here because a generated sequence drives
             // the port through phases no hand-written row reaches.
             let system = state.Kernel
-            let predicted = EpollReadyList.hasDeliverableEvent portId system
-            let delivered, system = EpollReadyList.drain portId maxEvents system
+            let predicted = EpollReadyList.hasDeliverableEvent queueId system
+            let delivered, system = EpollReadyList.drain queueId maxEvents system
 
             if List.isEmpty delivered = predicted then
                 failwith
-                    $"FUZZ-DRIVER BUG: EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
+                    $"FUZZ-DRIVER BUG: EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{queueId}, but draining it reported %d{List.length delivered} events."
 
             let kernel = system
 

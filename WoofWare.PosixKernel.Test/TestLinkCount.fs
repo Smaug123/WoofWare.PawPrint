@@ -556,7 +556,7 @@ module TestLinkCount =
 
             for name, steps, observations in scenarios do
                 let unique = Guid.NewGuid().ToString "N"
-                let root = Path.Combine (hostBase, $"pawprint-nlink-%s{unique}")
+                let root = Path.Combine (hostBase, $"posixkernel-nlink-%s{unique}")
 
                 hostMkdir (root, 0o755u) |> hostSucceeded "mkdir root"
                 let mutable hostHeld = Map.empty

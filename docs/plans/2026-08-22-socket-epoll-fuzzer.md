@@ -38,7 +38,7 @@ out of the fuzzed vocabulary.
 ### 2. Suite integration
 
 **(a) Corpus + gated live.** The live differential loop is an NUnit test gated
-on `PAWPRINT_SOCKET_FUZZ=1` (`Assert.Ignore` otherwise — the container only
+on `POSIXKERNEL_SOCKET_FUZZ=1` (`Assert.Ignore` otherwise — the container only
 exists on the dev box). Sequences whose transcripts agree can be written out
 as a corpus (`socketFuzzCorpus/*.txt`, embedded resources); a deterministic
 replay test runs the corpus against `EmulatedKernel` in CI with no container.
@@ -112,14 +112,14 @@ batches, skip and unstable rates) rather than printing it.
 ## How to run
 
 ```
-PAWPRINT_SOCKET_FUZZ=1 nix develop -c dotnet test WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj \
+POSIXKERNEL_SOCKET_FUZZ=1 nix develop -c dotnet test WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj \
   --filter "Name~SocketFuzzLive" --verbosity normal
 ```
 
-Optional: `PAWPRINT_SOCKET_FUZZ_SEQUENCES=<n>` (default in the test),
-`PAWPRINT_SOCKET_FUZZ_SEED=<int>` (default fixed; the failure message prints
+Optional: `POSIXKERNEL_SOCKET_FUZZ_SEQUENCES=<n>` (default in the test),
+`POSIXKERNEL_SOCKET_FUZZ_SEED=<int>` (default fixed; the failure message prints
 the seed and the offending sequence, which is a one-line repro),
-`PAWPRINT_SOCKET_FUZZ_WRITE_CORPUS=<path>` to append agreeing rows for
+`POSIXKERNEL_SOCKET_FUZZ_WRITE_CORPUS=<path>` to append agreeing rows for
 checking in to `socketFuzzCorpus/`.
 
 The corpus replay test (`SocketFuzzCorpus`) runs everywhere, container or not.

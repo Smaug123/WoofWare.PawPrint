@@ -87,7 +87,7 @@ module TestDeviceFileSystemAgainstHost =
             // A name no real /dev holds, so that the host's rename cannot
             // succeed and the model's walk must answer without knowing it.
             let unique () = Guid.NewGuid().ToString "N"
-            let destination = $"/dev/pawprint-%s{unique ()}"
+            let destination = $"/dev/posixkernel-%s{unique ()}"
 
             let model =
                 UnixNamespace.rename (PathArg.ofText "/nonexistent") (PathArg.ofText destination) system
@@ -101,7 +101,7 @@ module TestDeviceFileSystemAgainstHost =
                 | other -> failwith $"rename on Darwin: expected ENOENT, got %A{other}"
             | SimulatedUnixFlavour.Linux ->
 
-            let source = Path.Combine (Path.GetTempPath (), $"pawprint-%s{unique ()}")
+            let source = Path.Combine (Path.GetTempPath (), $"posixkernel-%s{unique ()}")
 
             File.WriteAllBytes (source, [||])
 

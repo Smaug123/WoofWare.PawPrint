@@ -614,7 +614,7 @@ module TestVirtualFileSystemAgainstHost =
         // against a header or a recollection. macOS locally and Linux in CI, so
         // each flavour's entry is checked on the machine that can falsify it.
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-loop-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-loop-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -663,7 +663,7 @@ module TestVirtualFileSystemAgainstHost =
         // any name the model and the kernel disagree about, whatever arithmetic
         // produced the disagreement.
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-namemax-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-namemax-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
         let limits = limits ()
@@ -725,7 +725,7 @@ module TestVirtualFileSystemAgainstHost =
             Assert.Ignore "This oracle compares against a Unix kernel."
 
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-pathmax-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-pathmax-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -769,7 +769,7 @@ module TestVirtualFileSystemAgainstHost =
         // every probe below must resolve, and a model that wrongly re-checked
         // would fail here rather than silently agreeing.
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-splice-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-splice-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -919,7 +919,7 @@ module TestVirtualFileSystemAgainstHost =
             Assert.Ignore "This oracle compares against a Unix kernel."
 
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-readlink-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-readlink-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -957,7 +957,7 @@ module TestVirtualFileSystemAgainstHost =
             Assert.Ignore "This oracle compares against a Unix kernel."
 
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-vfs-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-vfs-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -1130,7 +1130,7 @@ module TestVirtualFileSystemAgainstHost =
     /// open mutates, so no two rows may share a tree.
     let private compareCreatingOpen (relative : string) (exclusive : bool) : CreatingOutcome * CreatingOutcome =
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-create-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-create-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -1376,7 +1376,7 @@ module TestVirtualFileSystemAgainstHost =
     /// comparisons, which want the same thing.
     let private withModeProbeRoot (body : string -> unit) : unit =
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-modeprobe-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-modeprobe-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -1622,7 +1622,7 @@ module TestVirtualFileSystemAgainstHost =
     /// so no two rows may share a tree.
     let private compareMkDir (relative : string) : MkDirOutcome * MkDirOutcome =
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-mkdir-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-mkdir-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -1761,7 +1761,7 @@ module TestVirtualFileSystemAgainstHost =
             Assert.Ignore "This oracle compares against a Unix kernel."
 
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-mkdir-mode-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-mkdir-mode-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -1780,7 +1780,7 @@ module TestVirtualFileSystemAgainstHost =
             Assert.Ignore "This oracle compares against a Unix kernel."
 
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-mkdir-sgid-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-mkdir-sgid-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -1974,7 +1974,7 @@ module TestVirtualFileSystemAgainstHost =
     /// destroys, so no two rows may share a tree.
     let private compareUnlink (relative : string) : UnlinkOutcome * UnlinkOutcome =
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-unlink-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-unlink-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -2171,7 +2171,7 @@ module TestVirtualFileSystemAgainstHost =
     /// so no two rows may share a tree.
     let private compareRmDir (relative : string) : UnlinkOutcome * UnlinkOutcome =
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-rmdir-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-rmdir-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -2307,7 +2307,7 @@ module TestVirtualFileSystemAgainstHost =
             Assert.Ignore "This oracle compares against a Unix kernel."
 
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-opendir-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-opendir-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -2349,7 +2349,7 @@ module TestVirtualFileSystemAgainstHost =
         // asymmetric row: a verdict demanding search rather than read would
         // refuse it, and this test would fail.
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-opendir-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-opendir-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -2447,7 +2447,7 @@ module TestVirtualFileSystemAgainstHost =
         // one name `z` enumerates as `. .. z` on APFS and as `z .. .` on CI's
         // ext4. Nothing may compare it.
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-opendir-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-opendir-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -2704,7 +2704,7 @@ module TestVirtualFileSystemAgainstHost =
             [
                 for source, destination in renamePairs do
                     let unique = Guid.NewGuid().ToString "N"
-                    let root = Path.Combine (Path.GetTempPath (), $"pawprint-rename-%s{unique}")
+                    let root = Path.Combine (Path.GetTempPath (), $"posixkernel-rename-%s{unique}")
                     Directory.CreateDirectory root |> ignore<DirectoryInfo>
                     let root = physicalPath root
 
@@ -2754,7 +2754,7 @@ module TestVirtualFileSystemAgainstHost =
         // thing the ".." comparison exists for. Stated against the *kernel*, so
         // the model cannot satisfy it by agreeing with itself.
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-rename-cover-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-rename-cover-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -2819,7 +2819,7 @@ module TestVirtualFileSystemAgainstHost =
 
     let private compareRenameRefusal (source : string) (destination : string) : RenameRefusal * RenameRefusal =
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-rename-refusal-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-rename-refusal-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 
@@ -3152,7 +3152,7 @@ module TestVirtualFileSystemAgainstHost =
             Assert.Ignore "This oracle compares against a Unix kernel."
 
         let unique = Guid.NewGuid().ToString "N"
-        let root = Path.Combine (Path.GetTempPath (), $"pawprint-chdir-%s{unique}")
+        let root = Path.Combine (Path.GetTempPath (), $"posixkernel-chdir-%s{unique}")
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
         let root = physicalPath root
 

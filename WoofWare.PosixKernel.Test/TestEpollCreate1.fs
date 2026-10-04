@@ -76,10 +76,10 @@ module TestEpollCreate1 =
     [<Test>]
     let ``a port is created exactly for 0 and EPOLL_CLOEXEC, on the lowest free descriptor`` () : unit =
         // A descriptor table with holes, so "lowest free" is not "next".
-        let port, withPort =
+        let port, queueSystem =
             FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
 
-        let _, withTwo = FileDescriptorRegistry.createEpoll withPort
+        let _, withTwo = FileDescriptorRegistry.createEpoll queueSystem
 
         let holed =
             { linux with

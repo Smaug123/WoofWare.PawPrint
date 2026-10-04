@@ -1293,15 +1293,15 @@ module TestOwnerChange =
         // Linux's epoll instance is EOPNOTSUPP whoever asks and whatever it
         // asks; Darwin's kqueue is EINVAL.
         for user, group in asks do
-            let fd, withPort = port linux
+            let fd, queueSystem = port linux
 
-            fchownAnswer fd user group withPort
-            |> shouldEqual (SyscallAnswer.Failed UnixError.EOPNOTSUPP, withPort)
+            fchownAnswer fd user group queueSystem
+            |> shouldEqual (SyscallAnswer.Failed UnixError.EOPNOTSUPP, queueSystem)
 
-            let fd, withPort = port darwin
+            let fd, queueSystem = port darwin
 
-            fchownAnswer fd user group withPort
-            |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL, withPort)
+            fchownAnswer fd user group queueSystem
+            |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL, queueSystem)
 
         // A socket and a standard stream (one end of a pipe the process was
         // launched with) are EINVAL on Darwin. On Linux both have an owner

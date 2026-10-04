@@ -1741,31 +1741,31 @@ module TestFileDescriptorRegistry =
     /// `UnixDescriptor.setNonBlocking`, which stores before reporting).
     [<Test>]
     let ``setNonBlocking round-trips on an epoll instance`` () : unit =
-        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
-        let registry = FileDescriptorRegistry.setNonBlocking portFd true registry
-        nonBlockingOf portFd registry |> shouldEqual true
+        let registry = FileDescriptorRegistry.setNonBlocking queueFd true registry
+        nonBlockingOf queueFd registry |> shouldEqual true
 
-        let registry = FileDescriptorRegistry.setNonBlocking portFd false registry
-        nonBlockingOf portFd registry |> shouldEqual false
+        let registry = FileDescriptorRegistry.setNonBlocking queueFd false registry
+        nonBlockingOf queueFd registry |> shouldEqual false
 
     // --- socket event registrations ---
 
-    /// The interest table of the port `portFd` names. Fails on anything else, so
+    /// The interest table of the port `queueFd` names. Fails on anything else, so
     /// a test cannot silently assert about the wrong descriptor.
     let private registrationsOf
-        (portFd : int)
+        (queueFd : int)
         (registry : FileDescriptorRegistry)
         : Map<int * OpenFileDescriptionId, EpollRegistration>
         =
-        match FileDescriptorRegistry.tryFindTarget portFd registry with
-        | Some (OpenFileTarget.Epoll portState) -> portState.Registrations
-        | other -> failwith $"fd %d{portFd} is not an epoll instance: %O{other}"
+        match FileDescriptorRegistry.tryFindTarget queueFd registry with
+        | Some (OpenFileTarget.Epoll queueState) -> queueState.Registrations
+        | other -> failwith $"fd %d{queueFd} is not an epoll instance: %O{other}"
 
-    let private readyOf (portFd : int) (registry : FileDescriptorRegistry) : (int * OpenFileDescriptionId) list =
-        match FileDescriptorRegistry.tryFindTarget portFd registry with
-        | Some (OpenFileTarget.Epoll portState) -> portState.Ready
-        | other -> failwith $"fd %d{portFd} is not an epoll instance: %O{other}"
+    let private readyOf (queueFd : int) (registry : FileDescriptorRegistry) : (int * OpenFileDescriptionId) list =
+        match FileDescriptorRegistry.tryFindTarget queueFd registry with
+        | Some (OpenFileTarget.Epoll queueState) -> queueState.Ready
+        | other -> failwith $"fd %d{queueFd} is not an epoll instance: %O{other}"
 
     let private idOf (fd : int) (registry : FileDescriptorRegistry) : OpenFileDescriptionId =
         match FileDescriptorRegistry.tryFindId fd registry with
@@ -1787,17 +1787,17 @@ module TestFileDescriptorRegistry =
             RegisteredAt = 0L
         }
 
-    /// Register the target `targetFd` names with the port `portFd` names,
+    /// Register the target `targetFd` names with the port `queueFd` names,
     /// keyed as epoll keys it.
     let private add
-        (portFd : int)
+        (queueFd : int)
         (targetFd : int)
         (data : uint64)
         (registry : FileDescriptorRegistry)
         : FileDescriptorRegistry
         =
         FileDescriptorRegistry.addEpollRegistration
-            (idOf portFd registry)
+            (idOf queueFd registry)
             (targetFd, idOf targetFd registry)
             (registration data)
             registry
@@ -1810,15 +1810,15 @@ module TestFileDescriptorRegistry =
         ()
         : unit
         =
-        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
-        let portId = idOf portFd registry
+        let queueId = idOf queueFd registry
         let key = sockFd, idOf sockFd registry
 
         let registry =
             FileDescriptorRegistry.addEpollRegistration
-                portId
+                queueId
                 key
                 {
                     Events = readWrite
@@ -1827,7 +1827,7 @@ module TestFileDescriptorRegistry =
                 }
                 registry
 
-        registrationsOf portFd registry
+        registrationsOf queueFd registry
         |> shouldEqual (
             Map.ofList
                 [
@@ -1843,9 +1843,9 @@ module TestFileDescriptorRegistry =
         let readOnly = readWrite &&& ~~~EpollEvents.Out
 
         let registry =
-            FileDescriptorRegistry.modifyEpollRegistration portId key readOnly 77UL registry
+            FileDescriptorRegistry.modifyEpollRegistration queueId key readOnly 77UL registry
 
-        registrationsOf portFd registry
+        registrationsOf queueFd registry
         |> shouldEqual (
             Map.ofList
                 [
@@ -1858,36 +1858,36 @@ module TestFileDescriptorRegistry =
                 ]
         )
 
-        let registry = FileDescriptorRegistry.removeEpollRegistration portId key registry
-        registrationsOf portFd registry |> shouldEqual Map.empty
+        let registry = FileDescriptorRegistry.removeEpollRegistration queueId key registry
+        registrationsOf queueFd registry |> shouldEqual Map.empty
         FileDescriptorRegistry.assertInvariants "after remove" registry |> ignore
 
     /// A removal takes the pending entry with it, and leaves every other
     /// entry's place alone; a modification moves nothing.
     [<Test>]
     let ``Remove drops the pending entry and Modify keeps its place`` () : unit =
-        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let aFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
         let bFd, registry = FileDescriptorRegistry.createSocket (SocketId 1L) registry
-        let portId = idOf portFd registry
+        let queueId = idOf queueFd registry
         let a = aFd, idOf aFd registry
         let b = bFd, idOf bFd registry
 
         let registry =
             registry
-            |> add portFd aFd 1UL
-            |> add portFd bFd 2UL
-            |> FileDescriptorRegistry.appendEpollReady portId a
-            |> FileDescriptorRegistry.appendEpollReady portId b
+            |> add queueFd aFd 1UL
+            |> add queueFd bFd 2UL
+            |> FileDescriptorRegistry.appendEpollReady queueId a
+            |> FileDescriptorRegistry.appendEpollReady queueId b
 
         let registry =
-            FileDescriptorRegistry.modifyEpollRegistration portId a EpollEvents.In 3UL registry
+            FileDescriptorRegistry.modifyEpollRegistration queueId a EpollEvents.In 3UL registry
 
-        readyOf portFd registry |> shouldEqual [ a ; b ]
+        readyOf queueFd registry |> shouldEqual [ a ; b ]
 
-        let registry = FileDescriptorRegistry.removeEpollRegistration portId a registry
-        readyOf portFd registry |> shouldEqual [ b ]
+        let registry = FileDescriptorRegistry.removeEpollRegistration queueId a registry
+        readyOf queueFd registry |> shouldEqual [ b ]
         FileDescriptorRegistry.assertInvariants "after remove" registry |> ignore
 
     /// Each primitive is the table half of a call whose other half has already
@@ -1895,31 +1895,31 @@ module TestFileDescriptorRegistry =
     /// the caller, reported loudly rather than answered.
     [<Test>]
     let ``the table primitives refuse a key in the wrong state`` () : unit =
-        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
-        let portId = idOf portFd registry
+        let queueId = idOf queueFd registry
         let key = sockFd, idOf sockFd registry
 
         Assert.Throws<System.Exception> (fun () ->
-            FileDescriptorRegistry.modifyEpollRegistration portId key readWrite 0UL registry
+            FileDescriptorRegistry.modifyEpollRegistration queueId key readWrite 0UL registry
             |> ignore
         )
         |> ignore
 
         Assert.Throws<System.Exception> (fun () ->
-            FileDescriptorRegistry.removeEpollRegistration portId key registry |> ignore
+            FileDescriptorRegistry.removeEpollRegistration queueId key registry |> ignore
         )
         |> ignore
 
-        let registry = add portFd sockFd 0UL registry
+        let registry = add queueFd sockFd 0UL registry
 
-        Assert.Throws<System.Exception> (fun () -> add portFd sockFd 0UL registry |> ignore)
+        Assert.Throws<System.Exception> (fun () -> add queueFd sockFd 0UL registry |> ignore)
         |> ignore
 
         // A description that is not a port.
         Assert.Throws<System.Exception> (fun () ->
-            FileDescriptorRegistry.addEpollRegistration (snd key) (portFd, portId) (registration 0UL) registry
+            FileDescriptorRegistry.addEpollRegistration (snd key) (queueFd, queueId) (registration 0UL) registry
             |> ignore
         )
         |> ignore
@@ -1931,7 +1931,7 @@ module TestFileDescriptorRegistry =
     /// readiness wake from delivering out of a corpse.
     [<Test>]
     let ``closing the target's last descriptor sweeps its registrations; a surviving dup keeps them`` () : unit =
-        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
 
@@ -1940,7 +1940,7 @@ module TestFileDescriptorRegistry =
             | Ok result -> result
             | Error error -> failwith $"dup failed: %O{error}"
 
-        let registry = add portFd sockFd 1UL registry
+        let registry = add queueFd sockFd 1UL registry
 
         // Closing `sockFd` leaves the description alive through the dup, so
         // the registration — keyed on the now-dead fd number — survives, which
@@ -1950,7 +1950,7 @@ module TestFileDescriptorRegistry =
             | Ok registry -> registry
             | Error error -> failwith $"close failed: %O{error}"
 
-        (registrationsOf portFd registry).Count |> shouldEqual 1
+        (registrationsOf queueFd registry).Count |> shouldEqual 1
         FileDescriptorRegistry.assertInvariants "dup still live" registry |> ignore
 
         // Closing the last descriptor destroys the description and sweeps.
@@ -1959,20 +1959,20 @@ module TestFileDescriptorRegistry =
             | Ok registry -> registry
             | Error error -> failwith $"close failed: %O{error}"
 
-        registrationsOf portFd registry |> shouldEqual Map.empty
+        registrationsOf queueFd registry |> shouldEqual Map.empty
         FileDescriptorRegistry.assertInvariants "after sweep" registry |> ignore
 
     [<Test>]
     let ``checkInvariants rejects a registration naming a dead description`` () : unit =
-        let portId = OpenFileDescriptionId 0L
+        let queueId = OpenFileDescriptionId 0L
         let deadId = OpenFileDescriptionId 99L
 
         let registry =
             FileDescriptorRegistry.Unchecked.ofParts
-                (Map.ofList [ 3, portId ])
+                (Map.ofList [ 3, queueId ])
                 (Map.ofList
                     [
-                        portId,
+                        queueId,
                         {
                             Target =
                                 OpenFileTarget.Epoll
@@ -1998,13 +1998,13 @@ module TestFileDescriptorRegistry =
                 (OpenFileDescriptionId 100L)
 
         FileDescriptorRegistry.checkInvariants registry
-        |> shouldEqual [ FileDescriptorRegistryDefect.EpollRegistrationTargetDead (portId, deadId) ]
+        |> shouldEqual [ FileDescriptorRegistryDefect.EpollRegistrationTargetDead (queueId, deadId) ]
 
     /// A port whose ready list disagrees with its interest table: one entry
     /// nothing registers, and one registered entry pending twice.
     [<Test>]
     let ``checkInvariants rejects unregistered and duplicated ready entries`` () : unit =
-        let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let sockFd, registry = FileDescriptorRegistry.createSocket (SocketId 0L) registry
 
@@ -2013,23 +2013,23 @@ module TestFileDescriptorRegistry =
             | Some id -> id
             | None -> failwith "socket fd not live"
 
-        let portId =
-            match FileDescriptorRegistry.tryFindId portFd registry with
+        let queueId =
+            match FileDescriptorRegistry.tryFindId queueFd registry with
             | Some id -> id
             | None -> failwith "port fd not live"
 
-        let registry = add portFd sockFd 1UL registry
+        let registry = add queueFd sockFd 1UL registry
 
         let withReady (ready : (int * OpenFileDescriptionId) list) : FileDescriptorRegistry =
             FileDescriptorRegistry.Unchecked.mapDescription
-                portId
+                queueId
                 (fun description ->
                     match description.Target with
-                    | OpenFileTarget.Epoll portState ->
+                    | OpenFileTarget.Epoll queueState ->
                         { description with
                             Target =
                                 OpenFileTarget.Epoll
-                                    { portState with
+                                    { queueState with
                                         Ready = ready
                                     }
                         }
@@ -2040,13 +2040,13 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.checkInvariants (withReady [ 7, OpenFileDescriptionId 55L ])
         |> shouldEqual
             [
-                FileDescriptorRegistryDefect.EpollReadyEntryUnregistered (portId, 7, OpenFileDescriptionId 55L)
+                FileDescriptorRegistryDefect.EpollReadyEntryUnregistered (queueId, 7, OpenFileDescriptionId 55L)
             ]
 
         FileDescriptorRegistry.checkInvariants (withReady [ sockFd, sockId ; sockFd, sockId ])
         |> shouldEqual
             [
-                FileDescriptorRegistryDefect.EpollReadyEntryDuplicated (portId, sockFd, sockId)
+                FileDescriptorRegistryDefect.EpollReadyEntryDuplicated (queueId, sockFd, sockId)
             ]
 
         FileDescriptorRegistry.checkInvariants (withReady [ sockFd, sockId ])

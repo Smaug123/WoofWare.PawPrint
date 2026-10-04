@@ -467,7 +467,7 @@ module TestPoll =
     /// descriptor.
     [<Test>]
     let ``an entry naming an epoll instance is refused`` () : unit =
-        let portFd, registry =
+        let queueFd, registry =
             FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
 
         let system =
@@ -478,14 +478,14 @@ module TestPoll =
                     }
             }
 
-        pollNow [ entry portFd everything ] 0 system
-        |> shouldEqual (Error (PollRefusal.UnmodelledTarget portFd))
+        pollNow [ entry queueFd everything ] 0 system
+        |> shouldEqual (Error (PollRefusal.UnmodelledTarget queueFd))
 
         // ...and it is refused from anywhere in the list, not only at the head:
         // the entries are all decoded before the answer, exactly as the caller
         // fills its whole array before the syscall.
-        pollNow [ entry 0 everything ; entry portFd everything ] 0 system
-        |> shouldEqual (Error (PollRefusal.UnmodelledTarget portFd))
+        pollNow [ entry 0 everything ; entry queueFd everything ] 0 system
+        |> shouldEqual (Error (PollRefusal.UnmodelledTarget queueFd))
 
     /// A real `poll` inspects its entries in order, so the entry a refusal
     /// names is the first one it could not answer: a client bisecting its

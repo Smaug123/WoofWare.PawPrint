@@ -156,7 +156,7 @@ module TestConnect =
         let fileFd, registry =
             FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
 
-        let portFd, registry = FileDescriptorRegistry.createEpoll registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll registry
 
         let system =
             { system with
@@ -166,7 +166,7 @@ module TestConnect =
                     }
             }
 
-        for fd in [ 0 ; fileFd ; portFd ] do
+        for fd in [ 0 ; fileFd ; queueFd ] do
             admitOrFail fd UserBuffer.Mapped 16u system
             |> shouldEqual (SockaddrCopyAdmission.Answered UnixError.ENOTSOCK)
 
