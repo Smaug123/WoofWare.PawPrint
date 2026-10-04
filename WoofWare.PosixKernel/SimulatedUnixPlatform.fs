@@ -890,6 +890,18 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> EmptyPathMeaning.NamesStartingPoint
         | SimulatedUnixFlavour.Darwin -> EmptyPathMeaning.Walked
 
+    /// Whether this platform's `readlink(2)` consults the link's own
+    /// permission bits: Linux never does, and Darwin refuses a caller the
+    /// read bit of the triple its standing selects. See
+    /// `PermissionBits.linkReadDenied`.
+    let linkReadRule (platform : SimulatedUnixPlatform) : LinkReadRule =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/readlink-mode.c`
+        // on Linux 6.18.5 (root and uid 1000, links whose modes debugfs set
+        // on ext4) and Darwin 27.0 (uid 501). Darwin's root was not measured.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> LinkReadRule.ModeIgnored
+        | SimulatedUnixFlavour.Darwin -> LinkReadRule.ReadBitOfSelectedTriple
+
     /// The bounds this platform's kernel puts on path resolution.
     ///
     /// The numbers are measured facts about real kernels, which is why they are

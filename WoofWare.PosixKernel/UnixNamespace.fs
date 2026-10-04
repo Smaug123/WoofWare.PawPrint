@@ -141,6 +141,9 @@ type ReadLinkRefusal =
     | Buffer of BufferRefusal
     /// This kernel will not resolve the path.
     | Path of PathRefusal
+    /// Whether the caller may read the symbolic link at `inode` has not been
+    /// measured for this caller.
+    | UnmeasuredLinkRead of inode : InodeNumber * refusal : LinkReadRefusal
 
 [<RequireQualifiedAccess>]
 module ReadLinkRefusal =
@@ -150,6 +153,8 @@ module ReadLinkRefusal =
         match refusal with
         | ReadLinkRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | ReadLinkRefusal.Path refusal -> PathRefusal.describe refusal
+        | ReadLinkRefusal.UnmeasuredLinkRead (inode, refusal) ->
+            $"reading inode %O{inode}: %s{LinkReadRefusal.describe refusal}"
 
 /// What `readlink(2)` puts in the caller's buffer and what it returns.
 [<RequireQualifiedAccess>]
@@ -1283,13 +1288,17 @@ module UnixNamespace =
         | Ok (Error error) -> Ok (ReadLinkAnswer.Failed error)
         | Ok (Ok inode) ->
 
-        match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
-        | None ->
-            failwith
-                $"UnixNamespace.readlink: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
-        | Some (InodeContent.Directory _)
-        | Some (InodeContent.RegularFile _)
-        | Some (InodeContent.CharacterDevice _) ->
+        let record =
+            match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
+            | Some record -> record
+            | None ->
+                failwith
+                    $"UnixNamespace.readlink: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        match record.Content with
+        | InodeContent.Directory _
+        | InodeContent.RegularFile _
+        | InodeContent.CharacterDevice _ ->
             // Not a link: EINVAL for a path, which is what distinguishes "not a
             // link" from a failure to read one, and ENOENT for an empty path
             // naming the starting point.
@@ -1298,7 +1307,22 @@ module UnixNamespace =
             // before it copies anything out. Measured on the host:
             // `readlink("f", (char*)8, 16)` is EINVAL, not EFAULT.
             Ok (ReadLinkAnswer.Failed notALink)
-        | Some (InodeContent.Symlink (target, _)) ->
+        | InodeContent.Symlink (target, bits) ->
+
+        // The link's own mode, on a flavour that consults it, is judged once
+        // the path is known to name a link and before the size or the buffer
+        // is: measured on Darwin (`readlink-mode.c`'s ORDER rows), a link the
+        // caller may not read is EACCES with a size of 0 and with a NULL or
+        // unmapped buffer, while a negative size is EINVAL first and a
+        // trailing separator ("ld/", "l/") follows the link whatever its mode.
+        let standing = Standing.toward system.Process.Credentials record.Owner
+
+        match
+            PermissionBits.linkReadDenied (SimulatedUnixPlatform.linkReadRule system.Machine.UnixPlatform) standing bits
+        with
+        | Error refusal -> Error (ReadLinkRefusal.UnmeasuredLinkRead (inode, refusal))
+        | Ok true -> Ok (ReadLinkAnswer.Failed UnixError.EACCES)
+        | Ok false ->
 
         match verdict with
         | ReadLinkCapacityVerdict.Refuse _ ->
@@ -1351,6 +1375,12 @@ module UnixNamespace =
     /// (`SimulatedUnixPlatform.readlinkCapacity`): EINVAL before the path is
     /// copied in on Linux and for a negative size on Darwin, and zero bytes
     /// from a resolved link on Darwin for a size of zero.
+    ///
+    /// The link's own mode is consulted as this system's flavour consults it
+    /// (`SimulatedUnixPlatform.linkReadRule`): never on Linux, and on Darwin a
+    /// caller whose standing selects a triple without the read bit gets
+    /// EACCES, ahead of a size of zero and of the buffer. A privileged Darwin
+    /// caller is refused an answer (`ReadLinkRefusal.UnmeasuredLinkRead`).
     ///
     /// `path` is the argument's bytes, copied in after that screen and before
     /// anything else: EFAULT if they were unreadable, ENAMETOOLONG if they run
