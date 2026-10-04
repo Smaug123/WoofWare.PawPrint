@@ -1,0 +1,4 @@
+# Linux 6.18.5 aarch64
+second bind: OK
+first connect: OK
+second connect: OK local=127.0.0.1:same peer=yes
