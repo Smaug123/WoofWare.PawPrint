@@ -102,6 +102,7 @@ public class Derived : Base, IBar { }
 public class SC : ISBar { }
 public struct SS : ISBar { }
 public struct GS<U> : ISBar { }
+public struct SPlain : ISFoo { }
 public class VNo : IVBar { }
 public class VDef : IVDefBar, IVDefBaz { }
 public class VExact : IVBar, IV<object> { }
@@ -149,6 +150,8 @@ public static class Cases
         return T.SFrob;
     }
 
+    public static unsafe delegate*<int> StaticFunctionPointer<T>() where T : ISFoo => &T.SFrob;
+
     // Uncaught, for the escape analysis to be asked about.
     public static int ConstrainedOnValueType() => Constrained(new S());
 
@@ -157,6 +160,16 @@ public static class Cases
     public static int StaticOnValueType() => Static<SS>();
 
     public static int InterfaceCallOnNewObject() => ((IFoo)new C()).Frob();
+
+    public static Func<int> StaticPointerOnValueType() => StaticPointer<SS>();
+
+    public static Func<int> StaticPointerOnClass() => StaticPointer<SC>();
+
+    public static Func<int> StaticPointerResolved() => StaticPointer<SPlain>();
+
+    public static unsafe delegate*<int> FunctionPointerOnValueType() => StaticFunctionPointer<SS>();
+
+    public static unsafe delegate*<int> FunctionPointerResolved() => StaticFunctionPointer<SPlain>();
 
     public static int CaseInterfaceCall() =>
         Expect<EntryPointNotFoundException>(() => ThroughInterface(new C()));

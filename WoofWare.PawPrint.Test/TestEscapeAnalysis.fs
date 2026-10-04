@@ -10629,3 +10629,120 @@ public static class Cases
                 (FsCheck.FSharp.Arb.fromGen (FsCheck.FSharp.Gen.nonEmptyListOf convertedDivisionGen))
                 property
         )
+
+    /// What the escape analysis says of each `ReabstractionEntry.Cases` or `AmbiguousEntry.Cases`
+    /// method named, which makes a delegate over `ISFoo.SFrob` with a `constrained. ldftn`: whether
+    /// it lets `exception` escape, and the places that make it unknown.
+    let private staticPointerAnswers
+        (assemblies : CrossAssemblySpec list)
+        (libraryName : string)
+        (entryName : string)
+        (typeName : string)
+        (methodNames : string list)
+        : (string * Set<string> * Set<string>) list
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let compiled = CrossAssemblyHarness.compileAssemblies assemblies
+
+        let read (name : string) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (compiled.[name]))
+
+        let library = read libraryName
+        let entry = read entryName
+
+        ((analysisOver [ library ; entry ] id, []), methodNames)
+        ||> List.fold (fun (analysis, answers) methodName ->
+            let key = methodNamed entry typeName methodName
+            let analysis, escapes = EscapeAnalysis.escapes analysis key
+            let analysis, sources = EscapeAnalysis.unknownSources analysis key
+            let sources = sources |> Seq.map (renderSite analysis) |> Set.ofSeq
+            analysis, (methodName, render analysis escapes, sources) :: answers
+        )
+        |> snd
+        |> List.rev
+
+    /// `TestCrossAssemblyReabstraction` pins that the real runtime throws `EntryPointNotFoundException`
+    /// at the `ldftn` where CoreCLR compiles the frame for its exact instantiation (`SS`), and from
+    /// the delegate where it shares the frame's code (`SC`), unless the JIT inlined the frame into
+    /// exact code. Either way, the `ldftn` may raise it.
+    [<Test>]
+    let ``a constrained ldftn landing on a reabstraction may raise EntryPointNotFoundException`` () : unit =
+        let answers =
+            staticPointerAnswers
+                [
+                    TestCrossAssemblyReabstraction.libraryBefore
+                    TestCrossAssemblyReabstraction.entryAssembly
+                    TestCrossAssemblyReabstraction.libraryAfter
+                ]
+                TestCrossAssemblyReabstraction.libraryName
+                TestCrossAssemblyReabstraction.entryName
+                "ReabstractionEntry.Cases"
+                [
+                    "StaticPointerOnValueType"
+                    "StaticPointerOnClass"
+                    "StaticPointerResolved"
+                    "StaticPointer"
+                    "FunctionPointerOnValueType"
+                    "FunctionPointerResolved"
+                    "StaticFunctionPointer"
+                ]
+
+        let failures =
+            answers
+            |> List.choose (fun (methodName, shown, sources) ->
+                let raises = shown.Contains "=System.EntryPointNotFoundException"
+
+                let ldftnOpaque =
+                    sources
+                    |> Set.exists (fun source -> source.EndsWith " Reabstraction.ISFoo::SFrob")
+
+                let ok =
+                    match methodName with
+                    | "StaticPointerResolved" -> not raises && not ldftnOpaque
+                    // No delegate constructor, whose native body is unknown, hides the `ldftn`.
+                    | "FunctionPointerResolved" -> not raises && sources.IsEmpty
+                    // Every instantiation at once: the type variable does not decide what the
+                    // `ldftn` resolves to.
+                    | "StaticPointer"
+                    | "StaticFunctionPointer" -> ldftnOpaque
+                    | _ -> raises
+
+                if ok then
+                    None
+                else
+                    Some $"Cases.%s{methodName}: %A{Set.toList shown}, unknown at %A{Set.toList sources}"
+            )
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" failures)
+
+    /// `TestCrossAssemblyAmbiguousDefault` pins that the real runtime throws
+    /// `AmbiguousImplementationException` from these.
+    [<Test>]
+    let ``a constrained ldftn whose most specific body is ambiguous may raise AmbiguousImplementationException``
+        ()
+        : unit
+        =
+        let answers =
+            staticPointerAnswers
+                [
+                    TestCrossAssemblyAmbiguousDefault.libraryBefore
+                    TestCrossAssemblyAmbiguousDefault.entryAssembly
+                    TestCrossAssemblyAmbiguousDefault.libraryAfter
+                ]
+                TestCrossAssemblyAmbiguousDefault.libraryName
+                TestCrossAssemblyAmbiguousDefault.entryName
+                "AmbiguousEntry.Cases"
+                [ "StaticPointerOnValueType" ; "StaticPointerOnClass" ]
+
+        let failures =
+            answers
+            |> List.choose (fun (methodName, shown, sources) ->
+                if shown.Contains "=System.Runtime.AmbiguousImplementationException" then
+                    None
+                else
+                    Some $"Cases.%s{methodName}: %A{Set.toList shown}, unknown at %A{Set.toList sources}"
+            )
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" failures)

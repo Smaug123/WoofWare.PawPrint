@@ -22,6 +22,12 @@ type Opacity =
     /// <c>ldvirtftn</c> of an interface method, which on an object implementing
     /// <c>IDynamicInterfaceCastable</c> asks that object's <c>GetInterfaceImplementation</c>.
     | InterfaceMethodPointer
+    /// <c>constrained. ldftn</c> of a static virtual method on a type that does not decide the
+    /// method it loads, such as a type variable of a definition analysed for every instantiation at
+    /// once. Where that method is a reabstraction or is ambiguous, CoreCLR raises
+    /// <c>EntryPointNotFoundException</c> or <c>AmbiguousImplementationException</c>, at the
+    /// instruction itself in code compiled for an exact instantiation.
+    | ConstrainedMethodPointer
     /// The method is <c>InternalCall</c>, <c>PInvoke</c> or runtime-provided: its behaviour is not IL.
     | NativeBody
     /// The method is abstract.
@@ -226,6 +232,10 @@ type internal LocalFacts =
         /// Each cast whose `CastHelpers` method only an instance decides, by its offset. `Calls`
         /// has the runtime's call of each one some instance calls there.
         Casts : (int * GenericCast) list
+        /// Each `constrained. ldftn` of a static virtual method, with the type its prefix names, a
+        /// token of the body's assembly. It calls nothing, but the type decides the method whose
+        /// pointer it loads, and dispatch failing there may raise at the `ldftn`.
+        ConstrainedPointers : (int * MetadataToken * Callee) list
         /// Each `rethrow`, with the `catch` or `filter` clause whose handler it is in: it re-raises
         /// what that clause caught.
         Rethrows : (int * ExceptionRegion) list
@@ -401,12 +411,13 @@ type internal Pending =
 
 /// What one instance of a method calls, each at the IL offset of the call: the instances it
 /// reaches, what calls raise instead of reaching anything, and the calls whose target the instance
-/// does not decide.
+/// does not decide. A `constrained. ldftn` counts as a call here, though it reaches nothing.
 type internal InstanceCalls =
     {
         Callees : (int * MethodInstance) list
         Raises : (int * ThrownType) list
         /// Each call whose target the instance does not decide, and the method its token names.
+        /// A `constrained. ldftn` whose target the instance does not decide is one.
         Undecided : (int * Opacity * MethodKey option) list
         /// What the runtime runs outside the body (`OutsideBodyFact.Runs`), past all its handlers.
         Outside : MethodInstance list
@@ -2553,6 +2564,7 @@ module EscapeAnalysis =
             Opaque = []
             Assumed = []
             Calls = []
+            ConstrainedPointers = []
             Rethrows = []
             Regions = []
             OutsideBody = Set.singleton (OutsideBodyFact.Opaque reason)
@@ -2777,6 +2789,7 @@ module EscapeAnalysis =
                 Opaque = []
                 Assumed = assumed |> List.map (fun assumption -> 0, assumption)
                 Calls = runs |> List.map (fun (method, passes) -> 0, runtimeRuns method, passes)
+                ConstrainedPointers = []
                 Rethrows = []
                 Regions = []
                 OutsideBody = Set.empty
@@ -4024,6 +4037,24 @@ module EscapeAnalysis =
                 | _ -> opaque, rethrows
             )
 
+        // Each `constrained. ldftn` of a static virtual a run can reach. One whose prefix fails to
+        // bind is opaque, as a call's is.
+        let opaque, pointers =
+            ((opaque, []), [ 0 .. ops.Length - 1 ])
+            ||> List.fold (fun (opaque, pointers) index ->
+                let op, offset = ops.[index]
+
+                match op, Map.tryFind index targets with
+                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldftn, MetadataOperand.FromMetadata _),
+                  Some (CallTarget.Method callee) when executed.Contains offset && isStaticVirtual state callee.Callee ->
+                    match constrainedPrefix index with
+                    | Some (prefix, constrainedType) when not (unbound.Contains prefix) ->
+                        opaque, (offset, constrainedType, callee) :: pointers
+                    | Some _ -> opaque @ [ offset, Opacity.ConstrainedMethodPointer, Some callee.Callee ], pointers
+                    | None -> opaque, pointers
+                | _ -> opaque, pointers
+            )
+
         // What each `ret` returns: the top of the stack there. A `jmp` returns whatever the
         // method it transfers to does, which this does not follow.
         let returnSites =
@@ -4104,6 +4135,7 @@ module EscapeAnalysis =
             Calls = List.rev calls
             LookedUp = List.rev lookedUp
             Casts = List.rev genericCasts
+            ConstrainedPointers = List.rev pointers
             Rethrows = List.rev rethrows
             Regions = regions
             OutsideBody = outsideBody
@@ -5451,6 +5483,25 @@ module EscapeAnalysis =
                     | state, Some outcomes -> dispatched offset callee (state, callees, raises, undecided) outcomes
                     | state, None ->
                         state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
+            )
+
+        // A `constrained. ldftn` calls nothing it resolves to. Where its dispatch fails, CoreCLR's
+        // `getCallInfo` (jitinterface.cpp) plants a throw at the `ldftn` in code compiled for an
+        // exact instantiation, which runs the constructor making the exception. In shared code the
+        // pointer is a stub that throws when called, unless the JIT inlined the frame into exact
+        // code, which turns on the JIT tier, so the `ldftn` may raise it in every instance. That is sound only while every use of
+        // the pointer is opaque (a delegate's constructor and `Invoke` are native, and `calli` is
+        // an indirect call): otherwise a handler around the `ldftn` that the pointer's call is
+        // outside would be credited with catching what the call raises in shared code.
+        let state, callees, raises, undecided =
+            ((state, callees, raises, undecided), facts.ConstrainedPointers)
+            ||> List.fold (fun (state, callees, raises, undecided) (offset, constrainedType, callee) ->
+                match constrainedInstance state assembly instance.Arguments constrainedType callee with
+                | state, DispatchOutcome.Reaches _ -> state, callees, raises, undecided
+                | state, DispatchOutcome.Raises (thrown, made) ->
+                    state, (offset, instanceOf state made [] []) :: callees, (offset, thrown) :: raises, undecided
+                | state, DispatchOutcome.Undecided ->
+                    state, callees, raises, (offset, Opacity.ConstrainedMethodPointer, Some callee.Callee) :: undecided
             )
 
         let state, outside =
