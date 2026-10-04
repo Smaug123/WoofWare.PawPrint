@@ -447,7 +447,7 @@ module NativeMetadataImport =
         // `MetadataReader` has no total lookup, so the row number is compared against the table's
         // length directly; an out-of-range handle would otherwise reach the reader as
         // `BadImageFormatException: Read out of bounds`. CoreCLR's own `GetParamDefProps` FCall
-        // makes exactly this check (`pScope->IsValidToken`, managedmdimport.cpp:305) and reports
+        // makes exactly this check (`pScope->IsValidToken`, managedmdimport.cpp:317) and reports
         // COR_E_BADIMAGEFORMAT.
         let rowNumber =
             System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
@@ -470,7 +470,7 @@ module NativeMetadataImport =
     /// metadata tokens, in the order the real runtime returns them.
     ///
     /// CoreCLR answers an <c>mdtTypeDef</c> enumeration by calling <c>GetNestedClasses</c> on the
-    /// parent (managedmdimport.cpp:547), not by enumerating TypeDefs in general;
+    /// parent (managedmdimport.cpp:559), not by enumerating TypeDefs in general;
     /// <c>MetadataImport.EnumNestedTypes</c> is its only managed caller. Nesting is *not*
     /// transitive here: a type nested inside a nested type belongs to that inner type's list, and
     /// CoreCLR's single pass over the NestedClass table matches only rows whose EnclosingClass is
@@ -1188,6 +1188,133 @@ module NativeMetadataImport =
             let state = writeInt32AtPointer ctx.BaseClassTypes state lengthOut values.Length
 
             NativeHandlerResult.completed state |> Some
+        | "MetadataImport_GetMarshalAs",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "MetadataImport",
+          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte))
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte))
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte))
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // CoreCLR's QCall (managedmdimport.cpp:15) runs `ParseNativeTypeInfo` over the blob
+            // `GetFieldMarshal` handed out, from a zeroed `NativeTypeParamInfo`, and on success
+            // copies its fields out, so a field the parse left unwritten reads as 0; see
+            // `NativeTypeParamInfo.parse` for the parsing. Each string comes back as a pointer to
+            // its first byte inside the blob beside its byte length, which is what the managed
+            // wrapper decodes. On a non-COM build it reports `SafeArraySubType = VT_EMPTY`, a null
+            // `SafeArrayUserDefinedSubType` of length 0 and `IidParamIndex = 0`. It touches no
+            // metadata and no module: the blob is the input.
+            let operation = "MetadataImport.GetMarshalAs"
+
+            let nativeTypePointer =
+                NativeCall.managedPointerOfPointerArgument operation "pNativeType" instruction.Arguments.[0]
+
+            let nativeTypeLength = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let outPointer (index : int) (name : string) : ManagedPointerSource =
+                NativeCall.managedPointerOfPointerArgument operation name instruction.Arguments.[index]
+
+            let unmanagedTypeOut = outPointer 2 "unmanagedType out pointer"
+            let safeArraySubTypeOut = outPointer 3 "safeArraySubType out pointer"
+
+            let safeArrayUserDefinedSubTypeOut =
+                outPointer 4 "safeArrayUserDefinedSubType out pointer"
+
+            let safeArrayUserDefinedSubTypeLengthOut =
+                outPointer 5 "safeArrayUserDefinedSubTypeLength out pointer"
+
+            let arraySubTypeOut = outPointer 6 "arraySubType out pointer"
+            let sizeParamIndexOut = outPointer 7 "sizeParamIndex out pointer"
+            let sizeConstOut = outPointer 8 "sizeConst out pointer"
+            let marshalTypeOut = outPointer 9 "marshalType out pointer"
+            let marshalTypeLengthOut = outPointer 10 "marshalTypeLength out pointer"
+            let marshalCookieOut = outPointer 11 "marshalCookie out pointer"
+            let marshalCookieLengthOut = outPointer 12 "marshalCookieLength out pointer"
+            let iidParamIndexOut = outPointer 13 "iidParamIndex out pointer"
+
+            // The QCall's `cbNativeType` is a `ULONG`, so a negative `ConstArray.Length` would be a
+            // multi-gigabyte blob to CoreCLR. Nothing mints one; `readCountedBytes` refuses it.
+            let blob =
+                NativeCall.readCountedBytes operation ctx.BaseClassTypes state nativeTypePointer nativeTypeLength
+                |> ImmutableArray.CreateRange
+
+            let state =
+                match NativeTypeParamInfo.parse blob with
+                | None ->
+                    // `return FALSE` before any out-param is written; the managed wrapper throws
+                    // BadImageFormatException without looking at them.
+                    IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread state
+                | Some info ->
+                    let byteType =
+                        NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
+
+                    // `LPUTF8`s into the blob, at the string's first byte. Nothing terminates the
+                    // string there: its length out-param is what bounds it.
+                    let stringPointer (s : MarshalSpecString option) : CliType =
+                        match s with
+                        | None -> ManagedPointerSource.Null
+                        | Some s -> ManagedPointerByteView.addByteOffset state byteType s.Offset nativeTypePointer
+                        |> CliRuntimePointer.Managed
+                        |> CliType.RuntimePointer
+
+                    // A string the parse left unwritten has the zeroed struct's length, 0.
+                    let stringLength (s : MarshalSpecString option) : int32 =
+                        s |> Option.map _.Length |> Option.defaultValue 0
+
+                    let writePointer
+                        (ptr : ManagedPointerSource)
+                        (value : CliType)
+                        (state : IlMachineState)
+                        : IlMachineState
+                        =
+                        IlMachineState.writeManagedByrefWithBase
+                            ctx.BaseClassTypes
+                            state
+                            (ManagedPointerSource.requireAddressed ptr)
+                            value
+
+                    let writeInt32
+                        (ptr : ManagedPointerSource)
+                        (value : int32)
+                        (state : IlMachineState)
+                        : IlMachineState
+                        =
+                        writeInt32AtPointer ctx.BaseClassTypes state ptr value
+
+                    // The conversions are CoreCLR's own assignments into `INT32*`: `m_NativeType` is
+                    // a byte, `m_CountParamIdx` a `UINT16` and the other two at most 2^29 - 1, so
+                    // none of them changes a value. A string's length is a `ULONG` read from a
+                    // compressed integer, so it too is at most 2^29 - 1.
+                    state
+                    |> writeInt32 unmanagedTypeOut (int32 info.NativeType)
+                    |> writeInt32 sizeParamIndexOut (info.CountParamIndex |> Option.map int32 |> Option.defaultValue 0)
+                    |> writeInt32 sizeConstOut (info.Additive |> Option.map int32 |> Option.defaultValue 0)
+                    |> writeInt32 arraySubTypeOut (info.ArrayElementType |> Option.map int32 |> Option.defaultValue 0)
+                    // The `#else` arm of the QCall's FEATURE_COMINTEROP block.
+                    |> writeInt32 iidParamIndexOut 0
+                    |> writeInt32 safeArraySubTypeOut 0
+                    |> writePointer
+                        safeArrayUserDefinedSubTypeOut
+                        (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
+                    |> writeInt32 safeArrayUserDefinedSubTypeLengthOut 0
+                    |> writePointer marshalTypeOut (stringPointer info.MarshalerTypeName)
+                    |> writeInt32 marshalTypeLengthOut (stringLength info.MarshalerTypeName)
+                    |> writePointer marshalCookieOut (stringPointer info.Cookie)
+                    |> writeInt32 marshalCookieLengthOut (stringLength info.Cookie)
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) ctx.Thread
+
+            NativeHandlerResult.completed state |> Some
         | _ -> None
 
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
@@ -1256,7 +1383,7 @@ module NativeMetadataImport =
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
             ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte)) ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
-            // CoreCLR's FCall (`managedmdimport.cpp:204`) answers seven token kinds, forwarding each
+            // CoreCLR's FCall (`managedmdimport.cpp:216`) answers seven token kinds, forwarding each
             // to a different `IMDInternalImport` accessor. This answers three.
             //
             // MethodDef, `mdtModule` and TypeDef have no managed caller at all: `RuntimeType.Name`
@@ -1346,7 +1473,7 @@ module NativeMetadataImport =
             ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
             ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
-            // CoreCLR's FCall (managedmdimport.cpp:80) unpacks one `MDDefaultValue`: a string
+            // CoreCLR's FCall (managedmdimport.cpp:92) unpacks one `MDDefaultValue`: a string
             // constant reports its blob as a `char*` with a length in *characters*, everything else
             // packs into the 64-bit buffer with a length in *bytes*, and a token with no Constant
             // row reports ELEMENT_TYPE_VOID, which `MdConstant` turns into DBNull.Value.
@@ -1615,7 +1742,7 @@ module NativeMetadataImport =
             constArrayGenerics.IsEmpty
             ->
             // CoreCLR's FCall forwards to `IMDInternalImport::GetSigOfFieldDef`
-            // (managedmdimport.cpp:372), so despite the `fieldMarshal` parameter name this returns
+            // (managedmdimport.cpp:384), so despite the `fieldMarshal` parameter name this returns
             // the FieldDef's *signature* blob; `GetFieldMarshal` is the separate call for
             // marshalling info. The sole managed caller is `MdFieldInfo.FieldType`, which exists
             // only for literal fields (a literal has no FieldDesc, so `PopulateLiteralFields`
@@ -1676,7 +1803,7 @@ module NativeMetadataImport =
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
-            // CoreCLR's FCall (managedmdimport.cpp:338) forwards to
+            // CoreCLR's FCall (managedmdimport.cpp:350) forwards to
             // `IMDInternalImport::GetFieldMarshal`, which binary-searches the FieldMarshal table for
             // a row whose HasFieldMarshal Parent is this token (mdinternalro.cpp:2233) — so, unlike
             // its `GetSigOfFieldDef` neighbour, it never reads the parent row itself. The FCall then
@@ -1698,13 +1825,11 @@ module NativeMetadataImport =
                     "fieldMarshal out pointer"
                     instruction.Arguments.[2]
 
-            // A pointer into the `#Blob` heap rather than into a copy of the one blob, because the
-            // blob's one consumer reads past its end: `MetadataImport.GetMarshalAs` hands back its
-            // strings as pointers into the blob, which the managed wrapper then scans for a NUL
-            // that a length-prefixed MarshalSpec string does not carry. CoreCLR's pointer is into
-            // the mapped metadata, so that scan runs on through the following `#Blob` bytes, and
-            // this pointer makes PawPrint's run on through the same ones. An absent row is
-            // `{m_length = 0; m_constArray = null}`, which is what CoreCLR writes.
+            // A pointer into the `#Blob` heap rather than into a copy of the one blob, as CoreCLR's
+            // is into the mapped metadata, so a read past the blob's end sees the bytes CoreCLR's
+            // would. The blob's one consumer, `MetadataImport_GetMarshalAs`, bounds each string it
+            // hands back by the string's length prefix, and so stays inside the blob. An absent
+            // row is `{m_length = 0; m_constArray = null}`, which is what CoreCLR writes.
             let constArrayValue, state =
                 match marshalDescriptorOfHasFieldMarshalToken operation assembly mdToken with
                 | None -> buildConstArray ctx.LoggerFactory ctx.BaseClassTypes operation ImmutableArray.Empty state
@@ -1746,116 +1871,6 @@ module NativeMetadataImport =
         | "System.Private.CoreLib",
           "System.Reflection",
           "MetadataImport",
-          "GetMarshalAs",
-          [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
-            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
-            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte))
-            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
-            ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte))
-            ConcreteByref (ConcretePointer (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Byte))
-            ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
-          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
-            // CoreCLR's FCall (managedmdimport.cpp:15) runs `ParseNativeTypeInfo` over the blob
-            // `GetFieldMarshal` handed out, from a zeroed `NativeTypeParamInfo`, and on success
-            // copies its fields out, so a field the parse left unwritten reads as 0; see
-            // `NativeTypeParamInfo.parse` for the parsing. On a non-COM build it reports
-            // `SafeArraySubType = VT_EMPTY`, a null `SafeArrayUserDefinedSubType` and
-            // `IidParamIndex = 0`. It touches no metadata and no module: the blob is the input.
-            let operation = "MetadataImport.GetMarshalAs"
-
-            let nativeTypePointer =
-                NativeCall.managedPointerOfPointerArgument operation "pNativeType" instruction.Arguments.[0]
-
-            let nativeTypeLength = NativeCall.int32Argument operation instruction.Arguments.[1]
-
-            let outPointer (index : int) (name : string) : ManagedPointerSource =
-                NativeCall.managedPointerOfPointerArgument operation name instruction.Arguments.[index]
-
-            let unmanagedTypeOut = outPointer 2 "unmanagedType out pointer"
-            let safeArraySubTypeOut = outPointer 3 "safeArraySubType out pointer"
-
-            let safeArrayUserDefinedSubTypeOut =
-                outPointer 4 "safeArrayUserDefinedSubType out pointer"
-
-            let arraySubTypeOut = outPointer 5 "arraySubType out pointer"
-            let sizeParamIndexOut = outPointer 6 "sizeParamIndex out pointer"
-            let sizeConstOut = outPointer 7 "sizeConst out pointer"
-            let marshalTypeOut = outPointer 8 "marshalType out pointer"
-            let marshalCookieOut = outPointer 9 "marshalCookie out pointer"
-            let iidParamIndexOut = outPointer 10 "iidParamIndex out pointer"
-
-            // The FCall's `cbNativeType` is a `ULONG`, so a negative `ConstArray.Length` would be a
-            // multi-gigabyte blob to CoreCLR. Nothing mints one; `readCountedBytes` refuses it.
-            let blob =
-                NativeCall.readCountedBytes operation ctx.BaseClassTypes state nativeTypePointer nativeTypeLength
-                |> ImmutableArray.CreateRange
-
-            let state =
-                match NativeTypeParamInfo.parse blob with
-                | None ->
-                    // `FC_RETURN_BOOL(FALSE)` before any out-param is written; the managed wrapper
-                    // throws BadImageFormatException without looking at them.
-                    IlMachineState.pushToEvalStack (CliType.ofBool false) ctx.Thread state
-                | Some info ->
-                    let byteType =
-                        NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
-
-                    // `LPUTF8`s into the blob, at the string's first byte. Nothing terminates the
-                    // string there; see the comment in `GetFieldMarshal` for what the managed
-                    // wrapper's NUL scan then reads.
-                    let stringPointer (s : MarshalSpecString option) : CliType =
-                        match s with
-                        | None -> ManagedPointerSource.Null
-                        | Some s -> ManagedPointerByteView.addByteOffset state byteType s.Offset nativeTypePointer
-                        |> CliRuntimePointer.Managed
-                        |> CliType.RuntimePointer
-
-                    let writePointer
-                        (ptr : ManagedPointerSource)
-                        (value : CliType)
-                        (state : IlMachineState)
-                        : IlMachineState
-                        =
-                        IlMachineState.writeManagedByrefWithBase
-                            ctx.BaseClassTypes
-                            state
-                            (ManagedPointerSource.requireAddressed ptr)
-                            value
-
-                    let writeInt32
-                        (ptr : ManagedPointerSource)
-                        (value : int32)
-                        (state : IlMachineState)
-                        : IlMachineState
-                        =
-                        writeInt32AtPointer ctx.BaseClassTypes state ptr value
-
-                    // The conversions are CoreCLR's own assignments into `INT32*`: `m_NativeType` is
-                    // a byte, `m_CountParamIdx` a `UINT16` and the other two at most 2^29 - 1, so
-                    // none of them changes a value.
-                    state
-                    |> writeInt32 unmanagedTypeOut (int32 info.NativeType)
-                    |> writeInt32 sizeParamIndexOut (info.CountParamIndex |> Option.map int32 |> Option.defaultValue 0)
-                    |> writeInt32 sizeConstOut (info.Additive |> Option.map int32 |> Option.defaultValue 0)
-                    |> writeInt32 arraySubTypeOut (info.ArrayElementType |> Option.map int32 |> Option.defaultValue 0)
-                    // The `#else` arm of the FCall's FEATURE_COMINTEROP block.
-                    |> writeInt32 iidParamIndexOut 0
-                    |> writeInt32 safeArraySubTypeOut 0
-                    |> writePointer
-                        safeArrayUserDefinedSubTypeOut
-                        (CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null))
-                    |> writePointer marshalTypeOut (stringPointer info.MarshalerTypeName)
-                    |> writePointer marshalCookieOut (stringPointer info.Cookie)
-                    |> IlMachineState.pushToEvalStack (CliType.ofBool true) ctx.Thread
-
-            NativeHandlerResult.completed state |> Some
-        | "System.Private.CoreLib",
-          "System.Reflection",
-          "MetadataImport",
           "GetPropertyProps",
           [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
@@ -1867,7 +1882,7 @@ module NativeMetadataImport =
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) when
             constArrayGenerics.IsEmpty
             ->
-            // CoreCLR's FCall (managedmdimport.cpp:330) forwards straight to
+            // CoreCLR's FCall (managedmdimport.cpp:342) forwards straight to
             // `IMDInternalImport::GetPropertyProps`, which reads one Property row and reports three
             // things: the `#Strings` name, the raw `Property.Flags` column, and a
             // `PCCOR_SIGNATURE`/length pair over the row's Type blob (mdinternalro.cpp:2329). No
@@ -2007,7 +2022,7 @@ module NativeMetadataImport =
           [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.IntPtr
             ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Boolean) ->
-            // `MetaDataImport::IsValidToken` (coreclr/vm/managedmdimport.cpp:124), which is
+            // `MetaDataImport::IsValidToken` (coreclr/vm/managedmdimport.cpp:136), which is
             // `pScope->IsValidToken(tk)`. CoreLib asks this to decide whether a token the guest
             // handed it names a row at all: `ModuleHandle.Resolve{Type,Method,Field}Handle` ask it
             // from inside a `catch` around the resolving QCall, and `RuntimeModule.ResolveField`
@@ -2179,7 +2194,7 @@ module NativeMetadataImport =
             ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32)
             ConcreteByref (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
-            // CoreCLR's FCall (managedmdimport.cpp:298) reports the Param row's `Sequence` and
+            // CoreCLR's FCall (managedmdimport.cpp:310) reports the Param row's `Sequence` and
             // `Flags` columns raw. `Sequence` is 1-based over the method's parameters, with 0
             // meaning the return value; `RuntimeParameterInfo.GetParameters` is what subtracts one
             // and turns -1 into the return parameter.

@@ -17,7 +17,7 @@ type MarshalSpecString =
 /// (`NATIVE_TYPE_INTF`, `IUNKNOWN`, `IDISPATCH`, `SAFEARRAY`) carry nothing beyond their leading byte.
 ///
 /// A field is `None` where the parse left it unwritten, because CoreCLR's two callers start from
-/// different structs: the `MetaDataImport::GetMarshalAs` FCall (managedmdimport.cpp) zeroes it, so
+/// different structs: the `MetadataImport_GetMarshalAs` QCall (managedmdimport.cpp) zeroes it, so
 /// an unwritten field reads as 0, while `MarshalInfo` (mlinfo.cpp), which lays out fields and
 /// parameters for marshalling, keeps the constructor's defaults — `NATIVE_TYPE_DEFAULT` (0x50) for
 /// the element type and 1 for the additive.

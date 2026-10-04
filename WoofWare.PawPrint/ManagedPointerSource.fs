@@ -45,9 +45,9 @@ type PeByteRangePointerSource =
     /// cursor, so a read that runs off the end of the blob carries on into whatever the heap holds
     /// next — as it does over CoreCLR's mapped metadata — and only the end of the heap bounds it.
     ///
-    /// That is the point of the variant: it is for blobs whose consumer is handed a pointer into
-    /// the blob and reads it for longer than the blob is, which CoreCLR's MarshalSpec consumers do
-    /// (`MetadataImport.GetMarshalAs` hands back its strings as unterminated `LPUTF8`s).
+    /// That is the point of the variant: it is for blobs CoreCLR hands out as a pointer into its
+    /// mapped metadata (`MetadataImport.GetFieldMarshal`'s MarshalSpec), so that a consumer reading
+    /// past such a blob's end sees what it would see over CoreCLR's.
     | BlobHeap
 
 type PeByteRangePointer =

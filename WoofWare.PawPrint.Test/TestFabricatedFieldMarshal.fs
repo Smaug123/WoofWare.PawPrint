@@ -17,7 +17,7 @@ open WoofWare.PawPrint
 /// no C# source can spell, against the real runtime.
 ///
 /// CoreCLR reads a field's blob with the same `ParseNativeTypeInfo` (mlinfo.cpp) as the
-/// `GetMarshalAs` FCall, so a blob it refuses marks the field `NativeFieldCategory::ILLEGAL` and
+/// `MetadataImport_GetMarshalAs` QCall, so a blob it refuses marks the field `NativeFieldCategory::ILLEGAL` and
 /// `Marshal.SizeOf` of the struct throws `ArgumentException`. Roslyn only ever writes canonical,
 /// complete blobs, so the shapes here — a compressed integer in more bytes than it needs, a
 /// truncated or corrupt blob, the `NATIVE_TYPE_DEFAULT` byte spelled explicitly, a `FieldMarshal`

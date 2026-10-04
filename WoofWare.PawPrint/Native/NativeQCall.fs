@@ -136,6 +136,7 @@ module NativeQCall =
             "GCInterface_AllocateNewArray", NativeGc.tryExecuteQCall "GCInterface_AllocateNewArray"
             "Enum_GetValuesAndNames", NativeEnum.tryExecuteQCall "Enum_GetValuesAndNames"
             "MetadataImport_Enum", NativeMetadataImport.tryExecuteQCall "MetadataImport_Enum"
+            "MetadataImport_GetMarshalAs", NativeMetadataImport.tryExecuteQCall "MetadataImport_GetMarshalAs"
             "AppDomain_CreateDynamicAssembly",
             NativeRuntimeAssemblyBuilder.tryExecuteQCall "AppDomain_CreateDynamicAssembly"
             "AssemblyNative_InitializeAssemblyLoadContext",
