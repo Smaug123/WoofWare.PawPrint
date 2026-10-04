@@ -3296,9 +3296,8 @@ module NativeSystemNative =
                         "Configure a user other than root (KernelConfig.UserId), or the Linux platform, to run this guest."
                     | AccessRefusal.ExtendedRights _ ->
                         "Only a guest calling the shim by hand can ask for Darwin's extended rights; model them before answering."
-                    | AccessRefusal.UnmodelledFlags _
-                    | AccessRefusal.UnmodelledDescriptor _ ->
-                        "access(2) takes no flags and no dirfd, so this is a bug in the kernel library."
+                    | AccessRefusal.UnmodelledFlags _ ->
+                        "access(2) takes no flags, so this is a bug in the kernel library."
                     | AccessRefusal.Path _ -> ""
 
                 failwith $"%s{operation}: AccessRefusal: %s{AccessRefusal.describe refusal} %s{advice}"

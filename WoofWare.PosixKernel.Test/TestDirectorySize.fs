@@ -524,7 +524,11 @@ module TestDirectorySize =
 
             let inodeOf (relative : string) : InodeNumber =
                 match
-                    UnixPathResolution.resolvePath SymlinkPolicy.Follow (UnixPath.parseOrFail context relative) system
+                    UnixPathResolution.resolvePath
+                        AtDirectory.CurrentDirectory
+                        SymlinkPolicy.Follow
+                        (UnixPath.parseOrFail context relative)
+                        system
                 with
                 | Ok inode -> inode
                 | Error error -> failwith $"resolving %s{relative}: %O{error}"

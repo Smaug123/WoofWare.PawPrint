@@ -637,6 +637,28 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> SetGroupIdOnWrite.StripWhenGroupExecutableOrWriterOutsideGroup
         | SimulatedUnixFlavour.Darwin -> SetGroupIdOnWrite.StripAlways
 
+    /// How this platform's `*at` syscalls find the directory a path starts
+    /// from; see `StartingPointRules`.
+    ///
+    /// Measured by `at-dirfd.c` on Linux 6.18.5 and Darwin 27.0, over nineteen
+    /// calls and thirteen kinds of `dirfd`. Linux answers the empty path
+    /// ENOENT before it looks `dirfd` up, and ENOTDIR for any open descriptor
+    /// that is not a directory. Darwin looks `dirfd` up first, and answers
+    /// ENOTDIR for a regular file or a device but ENOTSUP for a pipe, a socket
+    /// or a kqueue.
+    let startingPointRules (platform : SimulatedUnixPlatform) : StartingPointRules =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            {
+                EmptyPath = EmptyPathRule.NoSuchEntryBeforeDescriptor
+                NonDirectory = NonDirectoryDescriptorRule.NotADirectory
+            }
+        | SimulatedUnixFlavour.Darwin ->
+            {
+                EmptyPath = EmptyPathRule.NoSuchEntryAfterDescriptor
+                NonDirectory = NonDirectoryDescriptorRule.NotSupportedOffTheFileSystem
+            }
+
     /// How this platform's `open(2)` behaves when asked to create; see
     /// `CreatingOpenRules` for what each field means and how it was measured.
     let creatingOpenRules (platform : SimulatedUnixPlatform) : CreatingOpenRules =

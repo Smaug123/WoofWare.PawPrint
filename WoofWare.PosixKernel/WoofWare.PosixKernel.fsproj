@@ -40,6 +40,7 @@
         <Compile Include="SimulatedUnixFlavour.fs" />
         <Compile Include="SimulatedUnixArchitecture.fs" />
         <Compile Include="OpenFlagNumbering.fs" />
+        <Compile Include="StartingPointRules.fs" />
         <Compile Include="EmulatedFileSystemType.fs" />
         <Compile Include="DeviceFileSystem.fs" />
         <Compile Include="UserBuffer.fs" />

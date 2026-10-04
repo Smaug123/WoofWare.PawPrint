@@ -44,30 +44,6 @@ type AccessIds =
     /// with `AT_EACCESS`.
     | Effective
 
-/// The directory a relative path given to a `*at` syscall starts from: its
-/// `dirfd` argument, decoded.
-[<RequireQualifiedAccess>]
-type AtDirectory =
-    /// `AT_FDCWD`: the process's current directory.
-    | CurrentDirectory
-    /// Any other value, which the call looks up in the descriptor table if it
-    /// needs a starting directory at all.
-    | Descriptor of fd : int
-
-/// What `faccessat(2)` does with an empty path.
-[<RequireQualifiedAccess>]
-type AccessEmptyPath =
-    /// The call asks about the object `dirfd` names itself, which can be a
-    /// regular file as well as a directory. Linux's `AT_EMPTY_PATH`.
-    | NamesStartingPoint
-    /// ENOENT, before `dirfd` is looked at, so a `dirfd` that names nothing
-    /// does not matter. Linux without `AT_EMPTY_PATH`.
-    | NoSuchEntryBeforeDescriptor
-    /// ENOENT, but only once `dirfd` has been found to name a directory: a
-    /// `dirfd` naming nothing is EBADF, and one naming a regular file is
-    /// ENOTDIR. Darwin.
-    | NoSuchEntryAfterDescriptor
-
 /// The arguments of `faccessat(2)` other than its path and `dirfd`, once this
 /// kernel has screened its mode word and flag word.
 type AccessArguments =
@@ -83,8 +59,9 @@ type AccessArguments =
         /// Whether a symbolic link in the final position is followed:
         /// `AT_SYMLINK_NOFOLLOW` says not.
         FinalSymlink : SymlinkPolicy
-        /// What the call makes of an empty path.
-        EmptyPath : AccessEmptyPath
+        /// What the call makes of an empty path: Linux's `AT_EMPTY_PATH` asks
+        /// about the object `dirfd` names.
+        EmptyPath : EmptyPathMeaning
     }
 
 /// Why this kernel will not answer an `access(2)` or `faccessat(2)`.
@@ -101,9 +78,6 @@ type AccessRefusal =
     /// Whether the caller may execute the inode at `inode` has not been
     /// measured for this caller.
     | UnmeasuredExecution of inode : InodeNumber * refusal : ExecutionRefusal
-    /// The `dirfd` names something other than a directory or a regular file,
-    /// and the call would start from it.
-    | UnmodelledDescriptor of fd : int
     /// This kernel will not resolve the path.
     | Path of PathRefusal
 
@@ -119,8 +93,6 @@ module AccessRefusal =
             $"the mode word asks for Darwin's extended rights 0x%x{rights} of inode %O{inode} (_READ_OK to _CHOWN_OK, bits 9 to 21), which this library does not model. Measured as the owner, some are refused on a mode-0 file and _CHOWN_OK even on a 0777 one, so they are questions of their own rather than the permission bits restated."
         | AccessRefusal.UnmeasuredExecution (inode, refusal) ->
             $"executing inode %O{inode}: %s{ExecutionRefusal.describe refusal}"
-        | AccessRefusal.UnmodelledDescriptor fd ->
-            $"fd %d{fd} names neither a directory nor a regular file, and the call would start from it. What a kernel answers for a pipe (the standard streams among them), a socket or an event queue there has not been measured."
         | AccessRefusal.Path refusal -> PathRefusal.describe refusal
 
 /// What screening `faccessat(2)`'s mode word and flag word came to.
@@ -138,32 +110,15 @@ module AccessRules =
 
     // `<fcntl.h>`'s numbering, measured by `access-rules.c` on Linux 6.18.5
     // and Darwin 27.0.
-    let private linuxAtFdCwd : int = -100
     let private linuxAtSymlinkNoFollow : int = 0x100
     let private linuxAtEAccess : int = 0x200
     let private linuxAtEmptyPath : int = 0x1000
-    let private darwinAtFdCwd : int = -2
     let private darwinAtEAccess : int = 0x10
     let private darwinAtSymlinkNoFollow : int = 0x20
     // AT_SYMLINK_NOFOLLOW_ANY, AT_RESOLVE_BENEATH and AT_UNIQUE.
     let private darwinUnmodelledFlags : int = 0x800 ||| 0x2000 ||| 0x8000
     // `_ACCESS_EXTENDED_MASK`: `_READ_OK` (1 << 9) to `_CHOWN_OK` (1 << 21).
     let private darwinExtendedRights : int = 0x3FFE00
-
-    /// What a `*at` syscall's raw `dirfd` names under `flavour`: its own
-    /// `AT_FDCWD` (-100 on Linux, -2 on Darwin), or a descriptor. Each
-    /// flavour's `AT_FDCWD` is merely a descriptor number nothing holds under
-    /// the other.
-    let atDirectory (flavour : SimulatedUnixFlavour) (dirfd : int) : AtDirectory =
-        let atFdCwd =
-            match flavour with
-            | SimulatedUnixFlavour.Linux -> linuxAtFdCwd
-            | SimulatedUnixFlavour.Darwin -> darwinAtFdCwd
-
-        if dirfd = atFdCwd then
-            AtDirectory.CurrentDirectory
-        else
-            AtDirectory.Descriptor dirfd
 
     /// Screen `faccessat(2)`'s raw mode word and flag word as `flavour` does,
     /// before the path is copied in.
@@ -210,9 +165,9 @@ module AccessRules =
                             SymlinkPolicy.Follow
                     EmptyPath =
                         if flags &&& linuxAtEmptyPath <> 0 then
-                            AccessEmptyPath.NamesStartingPoint
+                            EmptyPathMeaning.NamesStartingPoint
                         else
-                            AccessEmptyPath.NoSuchEntryBeforeDescriptor
+                            EmptyPathMeaning.Walked
                 }
         | SimulatedUnixFlavour.Darwin ->
             // Refused whatever else the word carries: which of EINVAL and these
@@ -237,7 +192,7 @@ module AccessRules =
                             SymlinkPolicy.NoFollowFinal
                         else
                             SymlinkPolicy.Follow
-                    EmptyPath = AccessEmptyPath.NoSuchEntryAfterDescriptor
+                    EmptyPath = EmptyPathMeaning.Walked
                 }
 
     /// <summary>

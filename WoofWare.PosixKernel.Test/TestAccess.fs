@@ -236,23 +236,26 @@ module TestAccess =
     // ------------------------------------------------------------- the argument screens
 
     [<Test>]
-    let ``atDirectory knows each flavour's AT_FDCWD and no other`` () : unit =
+    let ``AtDirectory.decode knows each flavour's AT_FDCWD and no other`` () : unit =
         // CONST rows: AT_FDCWD is -100 on Linux and -2 on Darwin.
-        AccessRules.atDirectory SimulatedUnixFlavour.Linux -100
+        AtDirectory.atFdCwd SimulatedUnixFlavour.Linux |> shouldEqual -100
+        AtDirectory.atFdCwd SimulatedUnixFlavour.Darwin |> shouldEqual -2
+
+        AtDirectory.decode SimulatedUnixFlavour.Linux -100
         |> shouldEqual AtDirectory.CurrentDirectory
 
-        AccessRules.atDirectory SimulatedUnixFlavour.Linux -2
+        AtDirectory.decode SimulatedUnixFlavour.Linux -2
         |> shouldEqual (AtDirectory.Descriptor -2)
 
-        AccessRules.atDirectory SimulatedUnixFlavour.Darwin -2
+        AtDirectory.decode SimulatedUnixFlavour.Darwin -2
         |> shouldEqual AtDirectory.CurrentDirectory
 
-        AccessRules.atDirectory SimulatedUnixFlavour.Darwin -100
+        AtDirectory.decode SimulatedUnixFlavour.Darwin -100
         |> shouldEqual (AtDirectory.Descriptor -100)
 
         for flavour in [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ] do
             for fd in [ -1 ; 0 ; 3 ; 12345 ] do
-                AccessRules.atDirectory flavour fd |> shouldEqual (AtDirectory.Descriptor fd)
+                AtDirectory.decode flavour fd |> shouldEqual (AtDirectory.Descriptor fd)
 
     /// Whether the screen let the word through, failed it, or refused it, as
     /// the probe could tell: EINVAL or not. The probe asked every flag bit
@@ -353,9 +356,9 @@ module TestAccess =
                                     SymlinkPolicy.Follow
                             EmptyPath =
                                 match flavour with
-                                | SimulatedUnixFlavour.Linux when emptyPath -> AccessEmptyPath.NamesStartingPoint
-                                | SimulatedUnixFlavour.Linux -> AccessEmptyPath.NoSuchEntryBeforeDescriptor
-                                | SimulatedUnixFlavour.Darwin -> AccessEmptyPath.NoSuchEntryAfterDescriptor
+                                | SimulatedUnixFlavour.Linux when emptyPath -> EmptyPathMeaning.NamesStartingPoint
+                                | SimulatedUnixFlavour.Linux
+                                | SimulatedUnixFlavour.Darwin -> EmptyPathMeaning.Walked
                         }
 
             AccessRules.screen flavour word flags |> shouldEqual expected
@@ -1120,11 +1123,11 @@ module TestAccess =
         |> shouldEqual [ "ok" ; "ok" ; "EACCES" ; "ok" ]
 
     [<Test>]
-    let ``a dirfd naming neither a directory nor a regular file is refused only when a path starts from it`` () : unit =
-        for platform, atFdCwd in
+    let ``a dirfd naming a pipe is ENOTDIR on Linux and ENOTSUP on Darwin, only when a path starts from it`` () : unit =
+        for platform, atFdCwd, expected in
             [
-                SimulatedUnixPlatform.linuxX64, linuxAtFdCwd
-                SimulatedUnixPlatform.macOsArm64, darwinAtFdCwd
+                SimulatedUnixPlatform.linuxX64, linuxAtFdCwd, UnixError.ENOTDIR
+                SimulatedUnixPlatform.macOsArm64, darwinAtFdCwd, UnixError.ENOTSUP
             ] do
             let credentials =
                 UnixSystem.defaultCredentials (SimulatedUnixPlatform.flavour platform)
@@ -1138,7 +1141,13 @@ module TestAccess =
                 | other -> failwith $"pipe2 did not make a pipe: %A{other}"
 
             UnixPathResolution.faccessat readFd (bytes "screen_f") 0 0 system
-            |> shouldEqual (Error (AccessRefusal.UnmodelledDescriptor readFd))
+            |> shouldEqual (Ok (SyscallAnswer.Failed expected))
+
+            // Linux's AT_EMPTY_PATH would ask about the pipe itself, which is
+            // unmeasured.
+            if atFdCwd = linuxAtFdCwd then
+                UnixPathResolution.faccessat readFd (bytes "") 0 0x1000 system
+                |> shouldEqual (Error (AccessRefusal.Path (PathRefusal.UnmodelledStartingObject readFd)))
 
             // An absolute path never looks at the dirfd.
             UnixPathResolution.faccessat readFd (bytes "/b/screen_f") 0 0 system
@@ -1179,16 +1188,16 @@ module TestAccess =
         )
 
     [<Test>]
-    let ``access and faccessat are reachable through the syscall step, and change nothing`` () : unit =
+    let ``faccessat is reachable through the syscall step, and changes nothing`` () : unit =
         let credentials = UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux
 
         let system =
             systemOn SimulatedUnixPlatform.linuxX64 credentials "/b" (screenTree (InodeOwner.ofProcess credentials))
 
-        UnixSystem.step 0 (Syscall.Access (bytes "screen_f", 4)) system
+        UnixSystem.step 0 (Syscall.FAccessAt (linuxAtFdCwd, bytes "screen_f", 4, 0)) system
         |> shouldEqual (Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system))
 
-        UnixSystem.step 0 (Syscall.Access (bytes "screen_z", 4)) system
+        UnixSystem.step 0 (Syscall.FAccessAt (linuxAtFdCwd, bytes "screen_z", 4, 0)) system
         |> shouldEqual (Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EACCES), system))
 
         UnixSystem.step 0 (Syscall.FAccessAt (linuxAtFdCwd, bytes "screen_nx", 0, 0x200)) system
