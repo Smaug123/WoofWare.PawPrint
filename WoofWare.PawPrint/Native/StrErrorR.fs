@@ -47,7 +47,7 @@ module StrErrorR =
     /// The shim's answer, built against `library` and run on it.
     ///
     /// `platformErrno` is in the library's own numbering
-    /// (`CLibrary.errnoNumbering`), which is what CoreLib passes: the raw errno
+    /// (`CLibrary.errorOfNumber`), which is what CoreLib passes: the raw errno
     /// a call left, or `SystemNative_ConvertErrorPalToPlatform`'s answer.
     ///
     /// The shim's own arms come first (`StrErrorR`, pal_error_common.h): a
@@ -68,18 +68,18 @@ module StrErrorR =
             if platformErrno = 0 then
                 Some (CLibrary.successText library)
             else
-                match UnixError.ofRawErrnoUnder (CLibrary.errnoNumbering library) platformErrno with
+                match CLibrary.errorOfNumber library platformErrno with
                 | None -> None
                 | Some error ->
                     match CLibrary.errorText library error with
                     | Some text -> Some text
                     | None ->
                         failwith
-                            $"StrErrorR.answer: %d{platformErrno} decodes to %O{error} under %O{library}'s numbering, which has no text for it (this is a transcription bug in CLibrary)."
+                            $"StrErrorR.answer: %d{platformErrno} decodes to %O{error} under %O{library}, which has no text for it (this is a transcription bug in CLibrary)."
 
         match library, named with
-        | CLibrary.Glibc, Some text -> StrErrorRAnswer.LibraryText text
-        | CLibrary.Glibc, None ->
+        | CLibrary.Glibc _, Some text -> StrErrorRAnswer.LibraryText text
+        | CLibrary.Glibc _, None ->
             // `snprintf(buf, buflen, "Unknown error %d")`, into the buffer.
             StrErrorRAnswer.Buffer (fst (cut (CLibrary.unknownErrorText library platformErrno) bufferSize))
         | CLibrary.DarwinLibc, Some text ->
