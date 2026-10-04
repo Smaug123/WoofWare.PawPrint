@@ -109,7 +109,7 @@ module TestSocketAddressLength =
 
     let private localAddress (fd : int) (system : UnixSystem<int, string>) : InternetEndpoint =
         match UnixSocket.getsockname fd UserBuffer.Mapped 16u system with
-        | Ok (GetSockNameAnswer.Reported (endpoint, _)) -> endpoint
+        | Ok (GetSockNameAnswer.Reported (copiedOut, _)) -> CopyOut.endpoint copiedOut
         | other -> failwith $"getsockname of fd %d{fd}: %A{other}"
 
     let private admit
@@ -200,7 +200,7 @@ module TestSocketAddressLength =
                                     UnixError.EFAULT,
                                     (if isLinux platform then Some 16 else None)
                                 )
-                            | _ -> GetSockNameAnswer.Reported (loopback 6000us, 16)
+                            | _ -> GetSockNameAnswer.Reported (CopyOut.expected platform (loopback 6000us) word, 16)
 
                     match UnixSocket.getsockname fd destination word system with
                     | Ok actual when actual = expected -> ()
@@ -257,10 +257,10 @@ module TestSocketAddressLength =
                         with
                         | Ok (PollOutcome.Answered ([ revents ], 1), _) -> revents |> shouldEqual 0x2001s
                         | other -> failwith $"polling the client after the drop: %A{other}"
-                    | Ok (AcceptOutcome.Accepted (acceptedFd, peer, reportedLength), after) when
+                    | Ok (AcceptOutcome.Accepted (acceptedFd, copiedOut, reportedLength), after) when
                         not (isLinux platform && int word < 0)
                         ->
-                        peer |> shouldEqual client
+                        copiedOut |> shouldEqual (CopyOut.expected platform client word)
                         reportedLength |> shouldEqual 16
                         Map.containsKey acceptedFd fdsBefore |> shouldEqual false
                         queueOf listenerFd after |> shouldEqual []

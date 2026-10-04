@@ -1328,9 +1328,9 @@ module SimulatedUnixPlatform =
     /// describes the same byte travelling the other way, where it is a caller's
     /// own store; the two do not disagree.
     ///
-    /// Answers the struct's full length for the platform, so a caller bounded by
-    /// a shorter declared length truncates what it writes rather than asking for
-    /// a shorter blob.
+    /// Answers the struct's full length for the platform; what a syscall copies
+    /// out to a caller's shorter buffer is `copyOutInternetSockaddr`'s prefix
+    /// of it.
     let encodeInternetSockaddr (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
         let realLength = internetSocketAddressSize
         let blob = Array.zeroCreate<byte> realLength
@@ -1357,3 +1357,19 @@ module SimulatedUnixPlatform =
         | SockaddrFamilyField.TwoBytesAtOffsetZero -> ()
 
         blob
+
+    /// What a `getsockname(2)` or `accept(2)` copies out to a caller that
+    /// declared `declaredLength` bytes of room: the first
+    /// `min(declaredLength, sizeof(struct sockaddr_in))` bytes of
+    /// `encodeInternetSockaddr`. Measured on both flavours at every declared
+    /// length 0..20 (`sockaddr-decoding.c`, T): the bytes written are always a
+    /// prefix of the whole address, and a length past the struct writes the
+    /// struct and no more.
+    let internal copyOutInternetSockaddr
+        (platform : SimulatedUnixPlatform)
+        (endpoint : InternetEndpoint)
+        (declaredLength : uint32)
+        : ImmutableArray<byte>
+        =
+        let whole = encodeInternetSockaddr platform endpoint
+        ImmutableArray.Create<byte> (whole, 0, int (min declaredLength (uint32 whole.Length)))

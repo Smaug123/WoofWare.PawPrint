@@ -4870,10 +4870,14 @@ module TestUnixSystemStep =
                 }
         }
 
-    let private sockNameReported (answer : Result<GetSockNameAnswer, GetSockNameRefusal>) : InternetEndpoint * int =
+    let private sockNameCopied (answer : Result<GetSockNameAnswer, GetSockNameRefusal>) : ImmutableArray<byte> * int =
         match answer with
-        | Ok (GetSockNameAnswer.Reported (endpoint, reportedLength)) -> endpoint, reportedLength
+        | Ok (GetSockNameAnswer.Reported (copiedOut, reportedLength)) -> copiedOut, reportedLength
         | other -> failwith $"expected a reported address, got %O{other}"
+
+    let private sockNameReported (answer : Result<GetSockNameAnswer, GetSockNameRefusal>) : InternetEndpoint * int =
+        let copiedOut, reportedLength = sockNameCopied answer
+        CopyOut.endpoint copiedOut, reportedLength
 
     let private sockNameFailed (answer : Result<GetSockNameAnswer, GetSockNameRefusal>) : UnixError * int option =
         match answer with
@@ -4913,10 +4917,11 @@ module TestUnixSystemStep =
             let fd, system = withBoundSocket flavour
 
             for declared in [ 1u ; 2u ; 4u ; 8u ; 15u ; 16u ; 17u ; 128u ] do
-                UnixSocket.getsockname fd UserBuffer.Mapped declared system
-                |> sockNameReported
-                |> snd
-                |> shouldEqual 16
+                let copiedOut, reportedLength =
+                    UnixSocket.getsockname fd UserBuffer.Mapped declared system |> sockNameCopied
+
+                copiedOut.Length |> shouldEqual (int (min declared 16u))
+                reportedLength |> shouldEqual 16
 
     [<Test>]
     let ``a descriptor error outranks a destination that names nothing`` () : unit =
@@ -4963,9 +4968,11 @@ module TestUnixSystemStep =
                     UserBuffer.Addressless
                     UserBuffer.Mapped
                 ] do
-                UnixSocket.getsockname fd destination 0u system
-                |> sockNameReported
-                |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us, 16)
+                let copiedOut, reportedLength =
+                    UnixSocket.getsockname fd destination 0u system |> sockNameCopied
+
+                copiedOut.IsEmpty |> shouldEqual true
+                reportedLength |> shouldEqual 16
 
     [<Test>]
     let ``a destination that names nothing faults once a single byte would move`` () : unit =

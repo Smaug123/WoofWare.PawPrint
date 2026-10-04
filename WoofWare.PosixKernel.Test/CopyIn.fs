@@ -104,3 +104,27 @@ module CopyIn =
             declaredLength
             (admitted SockaddrCopySyscall.Connect fd destination declaredLength blob system)
             system
+
+/// What `getsockname(2)` and `accept(2)` copy out, read back and predicted
+/// without the library's own encoder.
+[<RequireQualifiedAccess>]
+module CopyOut =
+
+    /// The endpoint in a copied-out `struct sockaddr_in` that reaches
+    /// `sin_addr`: the port at 2 and the address at 4, both network order.
+    let endpoint (copiedOut : ImmutableArray<byte>) : InternetEndpoint =
+        if copiedOut.Length < 8 then
+            failwith $"CopyOut.endpoint: %d{copiedOut.Length} bytes do not reach sin_addr"
+
+        let span = copiedOut.AsSpan ()
+
+        InternetEndpoint.ofParts
+            (BinaryPrimitives.ReadUInt32BigEndian (span.Slice (4, 4)))
+            (BinaryPrimitives.ReadUInt16BigEndian (span.Slice (2, 2)))
+
+    /// What a kernel copies out of `endpoint` to a caller that declared
+    /// `declaredLength` bytes of room: the first `min(declaredLength, 16)` bytes
+    /// of the `struct sockaddr_in` holding it, which on Darwin begins with an
+    /// `sa_len` of 16 (`sockaddr-decoding.c`, T).
+    let expected (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) (declaredLength : uint32) =
+        CopyIn.prefix (CopyIn.inet platform endpoint) (int (min declaredLength 16u))

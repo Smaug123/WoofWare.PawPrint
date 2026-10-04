@@ -184,9 +184,9 @@ module TestAccept =
             failwith $"expected an accept, but the connection was dropped with %O{error}"
         | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
         | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
-        | AcceptOutcome.Accepted (acceptedFd, peer, reportedLength), system ->
+        | AcceptOutcome.Accepted (acceptedFd, copiedOut, reportedLength), system ->
 
-        peer |> shouldEqual (loopback 40000us)
+        CopyOut.endpoint copiedOut |> shouldEqual (loopback 40000us)
         reportedLength |> shouldEqual 16
 
         // The head is gone and the tail is not.
@@ -260,7 +260,8 @@ module TestAccept =
                         failwith $"expected an accept, but the connection was dropped with %O{error}"
                     | AcceptOutcome.WouldBlock _, _ -> failwith "expected an accept, but the call parked"
                     | AcceptOutcome.Restarts, _ -> failwith "expected an accept, but the call restarted"
-                    | AcceptOutcome.Accepted (_, peer, _), system -> peers @ [ peer ], system
+                    | AcceptOutcome.Accepted (_, copiedOut, _), system ->
+                        peers @ [ CopyOut.endpoint copiedOut ], system
                 )
                 ([], system)
                 [ 0..2 ]
