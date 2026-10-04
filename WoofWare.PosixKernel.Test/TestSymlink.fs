@@ -234,6 +234,19 @@ module TestSymlink =
         | "t -> ld/n" -> text "t", text "ld/n", "ld/n"
         | "t -> ." -> text "t", text ".", "."
         | "t -> ''" -> text "t", text "", ""
+        | "t -> lf/" -> text "t", text "lf/", "lf/"
+        | "t -> ld/" -> text "t", text "ld/", "ld/"
+        | "t -> cyc" -> text "t", text "cyc", "cyc"
+        | "t -> cyc/" -> text "t", text "cyc/", "cyc/"
+        | "t -> dang/" -> text "t", text "dang/", "dang/"
+        | "t -> e/" -> text "t", text "e/", "e/"
+        | "t -> ld/." -> text "t", text "ld/.", "ld/."
+        | "t -> d/." -> text "t", text "d/.", "d/."
+        | "t -> f/." -> text "t", text "f/.", "f/."
+        | "t -> .." -> text "t", text "..", ".."
+        | "t -> /" -> text "t", text "/", "/"
+        | "t -> lf//" -> text "t", text "lf//", "lf//"
+        | "t -> n//" -> text "t", text "n//", "n//"
         | other -> failwith $"%s{context}: the probe has no SYMLINK row %s{other}"
 
     /// What this library answers for one SYMLINK row, as the probe printed it:
@@ -274,7 +287,7 @@ module TestSymlink =
 
     let private replaySymlink (envelope : Envelope) : unit =
         let rows = section envelope "SYMLINK"
-        rows.Length |> shouldEqual 17
+        rows.Length |> shouldEqual 30
 
         [
             for row in rows do

@@ -476,6 +476,21 @@ int main(int argc, char **argv) {
         {"t -> ld/n", {"t", "ld/n"}},
         {"t -> .", {"t", "."}},
         {"t -> ''", {"t", ""}},
+        // Trailing separators after each kind of link, and the shapes with
+        // no final name.
+        {"t -> lf/", {"t", "lf/"}},
+        {"t -> ld/", {"t", "ld/"}},
+        {"t -> cyc", {"t", "cyc"}},
+        {"t -> cyc/", {"t", "cyc/"}},
+        {"t -> dang/", {"t", "dang/"}},
+        {"t -> e/", {"t", "e/"}},
+        {"t -> ld/.", {"t", "ld/."}},
+        {"t -> d/.", {"t", "d/."}},
+        {"t -> f/.", {"t", "f/."}},
+        {"t -> ..", {"t", ".."}},
+        {"t -> /", {"t", "/"}},
+        {"t -> lf//", {"t", "lf//"}},
+        {"t -> n//", {"t", "n//"}},
     };
     for (size_t i = 0; i < sizeof syms / sizeof syms[0]; i++) {
         printf("SYMLINK\t%s\t", syms[i].label);
