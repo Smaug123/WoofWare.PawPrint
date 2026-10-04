@@ -97,8 +97,7 @@ type ResultNullness =
     /// It returns a reference or byref that may be null.
     | MaybeNull
 
-/// What an intrinsic primitive, or a native method (`NativeMethod`), can do to its caller, as an
-/// analyser needs it. Unrecoverable failures (`StackOverflowException`, and `OutOfMemoryException`
+/// What an intrinsic primitive can do to its caller, as an analyser needs it. Unrecoverable failures (`StackOverflowException`, and `OutOfMemoryException`
 /// from an operation that allocates nothing) are out of scope, as for `OpcodeFaults`.
 type IntrinsicContract =
     {
