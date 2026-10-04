@@ -32,6 +32,11 @@ type Opacity =
     | IntrinsicExpansion
     /// A MemberRef whose target turns on how a type variable of this method is instantiated.
     | DependsOnInstantiation
+    /// A token naming a type in an assembly the analysis does not find. Before raising
+    /// <c>FileNotFoundException</c>, the runtime runs the program's <c>AssemblyLoadContext.Resolving</c>
+    /// and <c>AppDomain.AssemblyResolve</c> handlers, which may throw, or load an assembly whose
+    /// code then runs.
+    | UnresolvedAssembly
     /// A <c>throw</c> whose operand's type the analysis does not know.
     | UntypedThrow
     /// A <c>rethrow</c>: what it raises is what the enclosing handler caught.
@@ -234,6 +239,11 @@ type EscapeAnalysisState =
 /// <c>callvirt</c> on an object of a sealed class runs that class's implementation, and a
 /// <c>throw</c> of a value of a static type raises that type or a subtype. An object a call
 /// returns is of the classes the callee's <c>ret</c>s return in the instance the call reaches.
+///
+/// The native libraries the framework ships with its CoreLib (<c>FrameworkShim</c>) are assumed to
+/// be present and to export what its P/Invokes import, so that calling one of their functions
+/// raises nothing. Were one missing, the runtime would run the program's
+/// <c>ResolvingUnmanagedDll</c> handlers, which could throw anything.
 ///
 /// That holds for assemblies that agree with each other. A member or type that a body names and
 /// the loaded assembly it is looked for in lacks is reported, as the exception binding it throws,
@@ -811,16 +821,22 @@ module EscapeAnalysis =
     type private BindFailure =
         /// Its assembly binds and declares no such type: `TypeLoadException`.
         | TypeAbsent
-        /// No assembly is found for it: `FileNotFoundException`.
+        /// No assembly is found for it: `FileNotFoundException`, unless one of the program's resolve
+        /// handlers throws or supplies one (`Opacity.UnresolvedAssembly`).
         | AssemblyUnavailable
 
-    /// The exception binding fails with.
-    let private bindFailureRaises (state : EscapeAnalysisState) (failure : BindFailure) : OutsideBodyFact =
+    /// What failing to bind does.
+    let private bindFailureFacts (state : EscapeAnalysisState) (failure : BindFailure) : OutsideBodyFact list =
         match failure with
         | BindFailure.TypeAbsent ->
-            OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "TypeLoadException"))
+            [
+                OutsideBodyFact.Raises (ThrownType.Exactly (corelibException state "TypeLoadException"))
+            ]
         | BindFailure.AssemblyUnavailable ->
-            OutsideBodyFact.Raises (ThrownType.Exactly (corelibType state "System.IO" "FileNotFoundException"))
+            [
+                OutsideBodyFact.Raises (ThrownType.Exactly (corelibType state "System.IO" "FileNotFoundException"))
+                OutsideBodyFact.Opaque Opacity.UnresolvedAssembly
+            ]
 
     /// The first type reference in a spelling that fails to bind, and why, which makes binding the
     /// token that spells it throw; `None` if all of them bind. Custom modifiers and function pointer
@@ -1076,7 +1092,7 @@ module EscapeAnalysis =
         : EscapeAnalysisState * CallTarget option * OutsideBodyFact list
         =
         let raisesOf (failure : BindFailure option) : OutsideBodyFact list =
-            failure |> Option.map (bindFailureRaises state) |> Option.toList
+            failure |> Option.map (bindFailureFacts state) |> Option.defaultValue []
 
         let dependsOnInstantiation = OutsideBodyFact.Opaque Opacity.DependsOnInstantiation
 
@@ -1985,7 +2001,7 @@ module EscapeAnalysis =
             ||> Seq.fold (fun (state, failures) local ->
                 match spellingBindFailure state assembly local with
                 | state, None -> state, failures
-                | state, Some failure -> state, Set.add (bindFailureRaises state failure) failures
+                | state, Some failure -> state, Set.union failures (Set.ofList (bindFailureFacts state failure))
             )
 
         let state, localFailures =

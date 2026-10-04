@@ -347,15 +347,14 @@ module TestBind =
             |> fst
             |> shouldEqual (BindAnswer.Failed expected)
 
-    /// The other disagreeing pair, and the one that decides whether a multicast
-    /// address is *refused* or answered: an already-bound socket asking for one.
-    /// Linux ranks the address first and so reaches the refusal; Darwin ranks
-    /// already-bound first and answers EINVAL without ever judging the address.
-    ///
-    /// This is what "refused late" buys — a gap in the model that a fault the
-    /// platform ranks higher can hide.
+    /// A multicast address on a socket that is already bound. The flavours
+    /// judge it differently, not merely in a different place: Linux accepts it
+    /// as an address and answers EINVAL for the socket already being bound;
+    /// Darwin's stream bind rules it out with the family, EAFNOSUPPORT, before
+    /// it asks whether the socket is bound. Measured
+    /// (`sockaddr-bind-ladder.c`, Z).
     [<Test>]
-    let ``a multicast address is refused only where the address is judged first`` () : unit =
+    let ``a multicast address on a bound stream socket is answered as measured`` () : unit =
         let multicast = 0xE0000001u
 
         let attempt (platform : SimulatedUnixPlatform) =
@@ -370,12 +369,12 @@ module TestBind =
                 system
 
         match attempt SimulatedUnixPlatform.linuxX64 with
-        | Error (BindRefusal.UnmodelledMulticast (SocketId 0L, address)) -> address |> shouldEqual multicast
-        | other -> failwith $"Linux: expected the refusal, got %A{other}"
+        | Ok (BindAnswer.Failed UnixError.EINVAL, _) -> ()
+        | other -> failwith $"Linux: expected EINVAL, got %A{other}"
 
         match attempt SimulatedUnixPlatform.macOsArm64 with
-        | Ok (BindAnswer.Failed UnixError.EINVAL, _) -> ()
-        | other -> failwith $"Darwin: expected EINVAL, got %A{other}"
+        | Ok (BindAnswer.Failed UnixError.EAFNOSUPPORT, _) -> ()
+        | other -> failwith $"Darwin: expected EAFNOSUPPORT, got %A{other}"
 
     // ------------------------------------------------------------------
     // SO_REUSEADDR, which bind reads and never writes
@@ -418,19 +417,36 @@ module TestBind =
     // Refusals
     // ------------------------------------------------------------------
 
-    /// Refused *late*: a fault the platform ranks ahead of the address is one
-    /// this kernel does know the answer to, so it is reported instead.
+    /// A bind of a multicast address that would succeed is refused, since
+    /// nothing downstream could honour the binding: Linux's on a fresh stream
+    /// socket, and Darwin's on a fresh datagram one. Darwin's stream bind
+    /// answers EAFNOSUPPORT instead, which needs no model of multicast.
     [<TestCaseSource(nameof platforms)>]
-    let ``a multicast address is refused`` (platform : SimulatedUnixPlatform) : unit =
-        let fd, system = stream platform
+    let ``a multicast address that would bind is refused`` (platform : SimulatedUnixPlatform) : unit =
         let multicast = 0xE0000001u
 
-        CopyIn.bind
-            fd
-            UserBuffer.Mapped
-            exactLength
-            (CopyIn.inet platform (InternetEndpoint.ofParts multicast 5000us))
-            system
+        let attempt (fd : int) (system : UnixSystem<int, string>) =
+            CopyIn.bind
+                fd
+                UserBuffer.Mapped
+                exactLength
+                (CopyIn.inet platform (InternetEndpoint.ofParts multicast 5000us))
+                system
+
+        let fd, system = stream platform
+
+        let datagram, datagramSystem =
+            withSocket (SocketId 0L) (socketOfKind SocketKind.Datagram SocketPhase.Idle) (systemOn platform)
+
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            attempt fd system
+            |> shouldEqual (Error (BindRefusal.UnmodelledMulticast (SocketId 0L, multicast)))
+        | SimulatedUnixFlavour.Darwin ->
+            attempt fd system
+            |> shouldEqual (Ok (BindAnswer.Failed UnixError.EAFNOSUPPORT, system))
+
+        attempt datagram datagramSystem
         |> shouldEqual (Error (BindRefusal.UnmodelledMulticast (SocketId 0L, multicast)))
 
     /// The library refuses rather than inventing `EADDRINUSE` when a port-0 bind

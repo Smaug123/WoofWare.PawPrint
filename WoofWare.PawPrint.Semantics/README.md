@@ -49,8 +49,13 @@ What lives here:
 * `NativeMethod` — methods CoreCLR implements in native code (an `InternalCall` or a P/Invoke)
   whose behaviour is known, and what each can do to its caller, stated as an `IntrinsicPrimitive`
   contract is. So far these are the C runtime's maths functions that `Math` and `MathF` call,
-  none of which can fault. `TestNativeMethod` checks the recognition against both CoreLibs'
-  metadata, and calls each method on real .NET over its edge values.
+  and the functions of the native libraries the framework ships with CoreLib (`FrameworkShim`),
+  called through a P/Invoke whose stub only copies each value as its bytes, which CoreLib's
+  disabling of runtime marshalling allows; none of these can fault, the shims' on the
+  assumption that they are present. `TestNativeMethod` checks the recognition against both
+  CoreLibs' metadata and against fabricated images, calls each maths function on real .NET over
+  its edge values, and checks on real .NET that an exception thrown into native code by a
+  callback ends the process rather than reaching the caller.
 * `HardwareInstruction` — what a hardware-intrinsic placeholder's call to itself can raise when the
   JIT expands it into the instruction on a CPU that has it: `NullReferenceException` for a null
   address where the instruction touches memory, `ArgumentOutOfRangeException` where an immediate

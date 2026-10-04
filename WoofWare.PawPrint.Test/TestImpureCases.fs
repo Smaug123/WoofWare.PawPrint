@@ -1503,6 +1503,23 @@ module TestImpureCases =
             closeEndsCallCase "CloseEndsSleepingPipeTransfer.cs" SimulatedUnixPlatform.macOsArm64
             socketConnectPortZeroCase SimulatedUnixPlatform.linuxX64
             socketConnectPortZeroCase SimulatedUnixPlatform.macOsArm64
+            {
+                // A managed bind of a multicast and of the broadcast address under
+                // Darwin: EAFNOSUPPORT on a stream socket, EADDRNOTAVAIL for the
+                // broadcast address on a datagram one (`sockaddr-bind-ladder.c`,
+                // M and Z). Linux binds all three, which the kernel library
+                // refuses to record, so there is no Linux case.
+                FileName = "SocketBindGroupAddressDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
             processIdCase None
             // Small enough to fit in a byte, so the case above is not the only
             // one that pins the handler to the configuration.

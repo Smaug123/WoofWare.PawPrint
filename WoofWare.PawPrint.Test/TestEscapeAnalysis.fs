@@ -57,6 +57,9 @@ public static class Natives
     // An FCall no contract describes.
     public static int ThreadId() => Environment.CurrentManagedThreadId;
 
+    // A P/Invoke into libSystem.Native, the framework's own shim.
+    public static long Timestamp() => System.Diagnostics.Stopwatch.GetTimestamp();
+
     // The shadow `System.MathF` in this assembly, not CoreLib's.
     public static float Impostor() => MathF.Sin(1f);
 }
@@ -545,6 +548,9 @@ public static class MathF
             }
             { expect "Fixture.Natives" "ThreadId" with
                 Unknown = Some true
+            }
+            { expect "Fixture.Natives" "Timestamp" with
+                Unknown = Some false
             }
             { expect "Fixture.Natives" "Impostor" with
                 Unknown = Some true
@@ -1321,8 +1327,9 @@ public static class Uses
             if not (unbound.Contains failure) then
                 failwith $"%s{methodName} against the provider lacking what it uses: %A{Set.toList unbound}"
 
-        // With no provider at all, binding any token naming it fails to find the assembly, and the
-        // real runtime raises `FileNotFoundException`.
+        // With no provider at all, binding any token naming it fails to find the assembly. The real
+        // runtime raises `FileNotFoundException` if nothing else supplies one; but first it runs the
+        // program's resolve handlers, which may throw, or load an assembly whose code then runs.
         let againstNone =
             let mutable analysis = analysisOver [ clientAssembly ] id
 
@@ -1331,7 +1338,7 @@ public static class Uses
                     EscapeAnalysis.escapes analysis (methodNamed clientAssembly "Client.Uses" methodName)
 
                 analysis <- next
-                render analysis escapes
+                render analysis escapes, escapes.Unknown
 
         let unmet =
             [
@@ -1350,12 +1357,9 @@ public static class Uses
                 "CallGoneIndirectly"
             ]
             |> List.choose (fun methodName ->
-                let shown = againstNone methodName
-
-                if shown.Contains "=System.IO.FileNotFoundException" then
-                    None
-                else
-                    Some $"%s{methodName} with no provider: %A{Set.toList shown}"
+                match againstNone methodName with
+                | shown, true when shown.Contains "=System.IO.FileNotFoundException" -> None
+                | shown, unknown -> Some $"%s{methodName} with no provider: %A{Set.toList shown}, unknown %b{unknown}"
             )
 
         if not unmet.IsEmpty then
