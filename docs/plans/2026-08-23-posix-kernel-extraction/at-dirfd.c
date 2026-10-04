@@ -37,6 +37,8 @@
 //   PROT_NONE a mapped page the caller may not read
 //   overlong  PATH_MAX bytes of "a/a/..." with no NUL among them
 //   abs       an absolute path to an existing regular file
+//   dot       "."
+//   dotdot    ".."
 //
 // Every call goes through libc, as a client of the kernel sees it. glibc's
 // fchmodat with a non-zero flag word calls fchmodat2, and its utimensat passes
@@ -98,8 +100,8 @@ static const char *en(int e) {
 
 enum { D_CWD, D_OTHERCWD, D_MINUS1, D_CLOSED, D_DIR, D_FILE, D_PIPE, D_SOCKET, D_ORPHAN, D_MOVED, D_LOCKED, D_DEVNULL, D_EVENTQ, D_COUNT };
 static const char *dname[D_COUNT] = {"cwd", "othercwd", "minus1", "closed", "dir", "file", "pipe", "socket", "orphan", "moved", "locked", "devnull", "eventq"};
-enum { P_F, P_NX, P_EMPTY, P_NULL, P_PROTNONE, P_OVERLONG, P_ABS, P_COUNT };
-static const char *pname[P_COUNT] = {"f", "nx", "empty", "NULL", "PROT_NONE", "overlong", "abs"};
+enum { P_F, P_NX, P_EMPTY, P_NULL, P_PROTNONE, P_OVERLONG, P_ABS, P_DOT, P_DOTDOT, P_COUNT };
+static const char *pname[P_COUNT] = {"f", "nx", "empty", "NULL", "PROT_NONE", "overlong", "abs", "dot", "dotdot"};
 
 #ifdef __linux__
 static const int other_at_fdcwd = -2;
@@ -128,8 +130,12 @@ static void mkfile(const char *p) {
 // A fresh fixture in a directory of its own, entered as the cwd. Answers the
 // descriptor `kind` names.
 static int setup(int kind) {
+    // The cwd is a directory inside the cell's own, so that a call made on
+    // ".." from it changes nothing outside the cell.
     snprintf(celldir, sizeof celldir, "%s/c%05d", base, cellno);
     if (mkdir(celldir, 0755) < 0) die("mkdir cell");
+    strncat(celldir, "/w", sizeof celldir - strlen(celldir) - 1);
+    if (mkdir(celldir, 0755) < 0) die("mkdir cell/w");
     if (chdir(celldir) < 0) die("chdir cell");
     snprintf(absf, sizeof absf, "%s/f", celldir);
     mkfile("f");
@@ -198,6 +204,8 @@ static const char *path_of(int kind) {
     case P_PROTNONE: return protnone;
     case P_OVERLONG: return overlong;
     case P_ABS: return absf;
+    case P_DOT: return ".";
+    case P_DOTDOT: return "..";
     }
     abort();
 }
