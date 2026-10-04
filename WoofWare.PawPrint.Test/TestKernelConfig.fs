@@ -106,6 +106,7 @@ module TestKernelConfig =
                 Symlinks = SymlinkProtection.InWorldWritableStickyDirectories
                 RegularFiles = CreationProtection.InGroupOrWorldWritableStickyDirectories
                 Fifos = CreationProtection.InWorldWritableStickyDirectories
+                Hardlinks = HardlinkProtection.NonOwnersNeedReadAndWrite
             }
 
         UnixSystem.protectedFiles

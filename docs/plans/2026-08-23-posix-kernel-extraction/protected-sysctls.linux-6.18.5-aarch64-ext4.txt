@@ -6,6 +6,7 @@ DEFAULT	protected_hardlinks=0
 ADMITS	protected_symlinks	-1=EINVAL	0=ok	1=ok	2=EINVAL	3=EINVAL
 ADMITS	protected_regular	-1=EINVAL	0=ok	1=ok	2=ok	3=EINVAL
 ADMITS	protected_fifos	-1=EINVAL	0=ok	1=ok	2=ok	3=EINVAL
+ADMITS	protected_hardlinks	-1=EINVAL	0=ok	1=ok	2=EINVAL	3=EINVAL
 SYMLINKS	knob=0	dir=0755	dirowner=0	linkowner=0	caller=0	stat=ok	lstat=ok	open=ok	open-nofollow=ELOOP	readlink=ok	access=ok	access-nofollow=ok	chown=ok	lchown=ok	dir-slash=ok	dir-dot=ok	dir-child=ok	chdir=ok	opendir=ok	dangling-stat=ENOENT	dangling-creat=ok	dangling-created=EEXIST	cycle-stat=ELOOP	via-chain=ok	unlink=ok
 SYMLINKS	knob=0	dir=0755	dirowner=0	linkowner=0	caller=1000	stat=ok	lstat=ok	open=ok	open-nofollow=ELOOP	readlink=ok	access=ok	access-nofollow=ok	chown=ok	lchown=ok	dir-slash=ok	dir-dot=ok	dir-child=ok	chdir=ok	opendir=ok	dangling-stat=ENOENT	dangling-creat=ok	dangling-created=EEXIST	cycle-stat=ELOOP	via-chain=ok	unlink=EACCES
 SYMLINKS	knob=0	dir=0755	dirowner=0	linkowner=0	caller=1001	stat=ok	lstat=ok	open=ok	open-nofollow=ELOOP	readlink=ok	access=ok	access-nofollow=ok	chown=ok	lchown=ok	dir-slash=ok	dir-dot=ok	dir-child=ok	chdir=ok	opendir=ok	dangling-stat=ENOENT	dangling-creat=ok	dangling-created=EEXIST	cycle-stat=ELOOP	via-chain=ok	unlink=EACCES
