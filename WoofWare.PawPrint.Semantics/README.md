@@ -56,6 +56,12 @@ What lives here:
   CoreLibs' metadata and against fabricated images, calls each maths function on real .NET over
   its edge values, and checks on real .NET that an exception thrown into native code by a
   callback ends the process rather than reaching the caller.
+* `StringConstructor` — which method CoreCLR runs for a constructor of `System.String`: each is an
+  FCall whose implementation is the static `String.Ctor` with the same parameters, which a
+  `newobj` of the constructor calls in its place. The interpreter runs that `Ctor`, and an
+  analyser can follow the call into it. `TestStringConstructor` checks that every constructor in
+  both CoreLibs has one, and that a fabricated type's constructor has one only when exactly one
+  static `Ctor` takes its parameters and returns a string.
 * `HardwareInstruction` — what a hardware-intrinsic placeholder's call to itself can raise when the
   JIT expands it into the instruction on a CPU that has it: `NullReferenceException` for a null
   address where the instruction touches memory, `ArgumentOutOfRangeException` where an immediate

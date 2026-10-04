@@ -420,6 +420,9 @@ type CloneFileProgress<'Task, 'Handler when 'Task : comparison and 'Handler : eq
 /// Why this kernel will not answer an `open(2)`.
 [<RequireQualifiedAccess>]
 type OpenRefusal =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    | DescriptorLimit of DescriptorLimitRefusal
     /// An `O_TRUNC` open of the file at `inode`, whose effect on the file's
     /// set-ID bits has not been measured for this caller. Nothing was changed.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
@@ -446,6 +449,7 @@ module OpenRefusal =
     /// entry point asked, and with which path.
     let describe (refusal : OpenRefusal) : string =
         match refusal with
+        | OpenRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | OpenRefusal.UnmeasuredSetIdChange (inode, refusal) ->
             $"opening inode %O{inode} with O_TRUNC: %s{SetIdChangeRefusal.describe refusal}"
         | OpenRefusal.UnmodelledFlags (flags, unmodelled) ->
@@ -666,6 +670,19 @@ module UnixNamespace =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
+        // Measured (`fcntl-dup.c`, LIMIT rows): with no descriptor left below
+        // the limit, a missing file is EMFILE rather than ENOENT, on both: the
+        // descriptor comes before the path is resolved.
+        match
+            FileDescriptorRegistry.room
+                (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
+                0
+                1
+                system.Process.FileDescriptors
+        with
+        | Error refusal -> Error (OpenRefusal.DescriptorLimit refusal)
+        | Ok () ->
+
         let rules = SimulatedUnixPlatform.creatingOpenRules system.Machine.UnixPlatform
         let credentials = system.Process.Credentials
 
@@ -1002,9 +1019,11 @@ module UnixNamespace =
     /// exactly as the platform's own mask drops it.
     ///
     /// Refused, before anything is read or changed, for a flag word this kernel
-    /// does not model (see `OpenRefusal`), and for an `O_TRUNC` open whose
-    /// effect on set-ID bits is unmeasured. Every other outcome is a descriptor
-    /// or an errno.
+    /// does not model (see `OpenRefusal`), for an `O_TRUNC` open whose effect
+    /// on set-ID bits is unmeasured, and when no descriptor below the bound
+    /// (`SimulatedUnixPlatform.descriptorBound`) is free: under Darwin ahead of
+    /// every errno, and under Linux after the word's and the path's. Every
+    /// other outcome is a descriptor or an errno.
     let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (flags : int)
         (path : PathArgumentBytes)
@@ -1014,6 +1033,22 @@ module UnixNamespace =
         =
         // Before the path is copied in: measured (`open-flags.c`), each
         // kernel screens the word whatever the path pointer is.
+        // Measured (`fcntl-dup.c`, LIMIT rows): Darwin allocates the
+        // descriptor before it reads the word or the path, so with none left
+        // below the limit even its EINVAL and EFAULT are EMFILE; Linux reads
+        // both first.
+        let room =
+            FileDescriptorRegistry.room
+                (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
+                0
+                1
+                system.Process.FileDescriptors
+
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, room with
+        | SimulatedUnixFlavour.Darwin, Error refusal -> Error (OpenRefusal.DescriptorLimit refusal)
+        | SimulatedUnixFlavour.Darwin, Ok ()
+        | SimulatedUnixFlavour.Linux, _ ->
+
         match OpenFlagWord.decode system.Machine.UnixPlatform flags with
         | OpenFlagWord.Decoding.Refused refusal -> Error refusal
         | OpenFlagWord.Decoding.Fails error -> Ok (SyscallAnswer.Failed error, system)

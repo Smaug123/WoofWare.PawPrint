@@ -37,7 +37,8 @@ type PollRefusal =
     /// such a count exactly when it exceeds the process's `RLIMIT_NOFILE` soft
     /// limit, or for root only when it does and also exceeds 1024 (measured
     /// for a process that is not root, `poll-darwin.c` section N); this kernel
-    /// models no `RLIMIT_NOFILE`.
+    /// assumes only that the limit is at least
+    /// `SimulatedUnixPlatform.descriptorBound`.
     | UnmodelledEntryCount of count : int
     /// Under Darwin, a sleeping call has both something to report and reached
     /// its deadline. Darwin answers whichever reached the sleeping task first,
@@ -83,7 +84,7 @@ module PollRefusal =
         | PollRefusal.UnmeasuredNegativeTimeout milliseconds ->
             $"nothing is ready, and the timeout is %d{milliseconds}ms. Darwin waits for ever on -1 alone, and by its source reads any other negative timeout as an unsigned count of milliseconds (about 49.7 days for -2), which no measurement can tell from waiting for ever."
         | PollRefusal.UnmodelledEntryCount count ->
-            $"the poll has %d{count} entries, more than FD_SETSIZE (1024) and no more than OPEN_MAX (10240). Darwin answers EINVAL for such a count exactly when it exceeds the RLIMIT_NOFILE soft limit (for root, the source says, only when it exceeds 1024 too), and this kernel models no RLIMIT_NOFILE."
+            $"the poll has %d{count} entries, more than FD_SETSIZE (1024) and no more than OPEN_MAX (10240). Darwin answers EINVAL for such a count exactly when it exceeds the RLIMIT_NOFILE soft limit (for root, the source says, only when it exceeds 1024 too), and this kernel assumes only that the limit is at least the descriptor bound."
         | PollRefusal.EventsBesideDeadline ->
             "a task asleep in poll has both something to report and reached its deadline (0). Darwin answers whichever reached the sleeping task first, and this kernel does not record which did."
         | PollRefusal.DeadlineBeyondClock (now, timeoutMilliseconds) ->
@@ -101,6 +102,9 @@ module EpollCreateFlags =
 /// Why this kernel will not answer an `epoll_create1(2)`.
 [<RequireQualifiedAccess>]
 type EpollCreateRefusal =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    | DescriptorLimit of DescriptorLimitRefusal
     /// This kernel is not Linux-flavoured, and only Linux has epoll.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
@@ -110,6 +114,7 @@ module EpollCreateRefusal =
     /// its own half -- which of its entry points asked.
     let describe (refusal : EpollCreateRefusal) : string =
         match refusal with
+        | EpollCreateRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | EpollCreateRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and epoll_create1 exists on Linux only. This flavour's counterpart is kqueue (UnixKqueue.kqueue)."
 
@@ -1326,6 +1331,18 @@ module UnixPoll =
         if flags &&& ~~~EpollCreateFlags.CloseOnExec <> 0 then
             Ok (Error UnixError.EINVAL)
         else
+
+        // Measured (`fcntl-dup.c`, LIMIT rows): the flags' EINVAL ahead of the
+        // descriptor.
+        match
+            FileDescriptorRegistry.room
+                (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
+                0
+                1
+                system.Process.FileDescriptors
+        with
+        | Error refusal -> Error (EpollCreateRefusal.DescriptorLimit refusal)
+        | Ok () ->
 
         let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 

@@ -511,6 +511,7 @@ CLOEXEC	old 0x3	dup2 onto open (cloexec target)	old ok 0x3	new ok 0x0
 CLOEXEC	old 0x3	dup2 onto itself ok 3	old ok 0x3	new ok 0x3
 CLOEXEC	F_SETFD on the dup of a pair	old ok 0x0	new ok 0x1
 LIMIT	found	soft 1048576	hard 9223372036854775807
+LIMIT	bound	256
 LIMIT	F_DUPFD	from 3	arg -2147483648	EINVAL
 LIMIT	F_DUPFD	from closed 30	arg -2147483648	EBADF
 LIMIT	F_DUPFD	from -1	arg -2147483648	EBADF
@@ -526,18 +527,18 @@ LIMIT	F_DUPFD	from -1	arg 4	EBADF
 LIMIT	F_DUPFD	from 3	arg 6	ok 9
 LIMIT	F_DUPFD	from closed 30	arg 6	EBADF
 LIMIT	F_DUPFD	from -1	arg 6	EBADF
-LIMIT	F_DUPFD	from 3	arg 62	ok 62
-LIMIT	F_DUPFD	from closed 30	arg 62	EBADF
-LIMIT	F_DUPFD	from -1	arg 62	EBADF
-LIMIT	F_DUPFD	from 3	arg 63	ok 63
-LIMIT	F_DUPFD	from closed 30	arg 63	EBADF
-LIMIT	F_DUPFD	from -1	arg 63	EBADF
-LIMIT	F_DUPFD	from 3	arg 64	EINVAL
-LIMIT	F_DUPFD	from closed 30	arg 64	EBADF
-LIMIT	F_DUPFD	from -1	arg 64	EBADF
-LIMIT	F_DUPFD	from 3	arg 65	EINVAL
-LIMIT	F_DUPFD	from closed 30	arg 65	EBADF
-LIMIT	F_DUPFD	from -1	arg 65	EBADF
+LIMIT	F_DUPFD	from 3	arg 254	ok 254
+LIMIT	F_DUPFD	from closed 30	arg 254	EBADF
+LIMIT	F_DUPFD	from -1	arg 254	EBADF
+LIMIT	F_DUPFD	from 3	arg 255	ok 255
+LIMIT	F_DUPFD	from closed 30	arg 255	EBADF
+LIMIT	F_DUPFD	from -1	arg 255	EBADF
+LIMIT	F_DUPFD	from 3	arg 256	EINVAL
+LIMIT	F_DUPFD	from closed 30	arg 256	EBADF
+LIMIT	F_DUPFD	from -1	arg 256	EBADF
+LIMIT	F_DUPFD	from 3	arg 257	EINVAL
+LIMIT	F_DUPFD	from closed 30	arg 257	EBADF
+LIMIT	F_DUPFD	from -1	arg 257	EBADF
 LIMIT	F_DUPFD	from 3	arg 1048576	EINVAL
 LIMIT	F_DUPFD	from closed 30	arg 1048576	EBADF
 LIMIT	F_DUPFD	from -1	arg 1048576	EBADF
@@ -559,42 +560,71 @@ LIMIT	F_DUPFD_CLOEXEC	from -1	arg 4	EBADF
 LIMIT	F_DUPFD_CLOEXEC	from 3	arg 6	ok 9
 LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 6	EBADF
 LIMIT	F_DUPFD_CLOEXEC	from -1	arg 6	EBADF
-LIMIT	F_DUPFD_CLOEXEC	from 3	arg 62	ok 62
-LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 62	EBADF
-LIMIT	F_DUPFD_CLOEXEC	from -1	arg 62	EBADF
-LIMIT	F_DUPFD_CLOEXEC	from 3	arg 63	ok 63
-LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 63	EBADF
-LIMIT	F_DUPFD_CLOEXEC	from -1	arg 63	EBADF
-LIMIT	F_DUPFD_CLOEXEC	from 3	arg 64	EINVAL
-LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 64	EBADF
-LIMIT	F_DUPFD_CLOEXEC	from -1	arg 64	EBADF
-LIMIT	F_DUPFD_CLOEXEC	from 3	arg 65	EINVAL
-LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 65	EBADF
-LIMIT	F_DUPFD_CLOEXEC	from -1	arg 65	EBADF
+LIMIT	F_DUPFD_CLOEXEC	from 3	arg 254	ok 254
+LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 254	EBADF
+LIMIT	F_DUPFD_CLOEXEC	from -1	arg 254	EBADF
+LIMIT	F_DUPFD_CLOEXEC	from 3	arg 255	ok 255
+LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 255	EBADF
+LIMIT	F_DUPFD_CLOEXEC	from -1	arg 255	EBADF
+LIMIT	F_DUPFD_CLOEXEC	from 3	arg 256	EINVAL
+LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 256	EBADF
+LIMIT	F_DUPFD_CLOEXEC	from -1	arg 256	EBADF
+LIMIT	F_DUPFD_CLOEXEC	from 3	arg 257	EINVAL
+LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 257	EBADF
+LIMIT	F_DUPFD_CLOEXEC	from -1	arg 257	EBADF
 LIMIT	F_DUPFD_CLOEXEC	from 3	arg 1048576	EINVAL
 LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 1048576	EBADF
 LIMIT	F_DUPFD_CLOEXEC	from -1	arg 1048576	EBADF
 LIMIT	F_DUPFD_CLOEXEC	from 3	arg 2147483647	EINVAL
 LIMIT	F_DUPFD_CLOEXEC	from closed 30	arg 2147483647	EBADF
 LIMIT	F_DUPFD_CLOEXEC	from -1	arg 2147483647	EBADF
-LIMIT	filled	53 more	EMFILE
-LIMIT	F_DUPFD full	arg -2147483648	EINVAL
-LIMIT	F_DUPFD full	arg -1	EINVAL
-LIMIT	F_DUPFD full	arg 0	EMFILE
-LIMIT	F_DUPFD full	arg 4	EMFILE
-LIMIT	F_DUPFD full	arg 6	EMFILE
-LIMIT	F_DUPFD full	arg 62	EMFILE
-LIMIT	F_DUPFD full	arg 63	EMFILE
-LIMIT	F_DUPFD full	arg 64	EINVAL
-LIMIT	F_DUPFD full	arg 65	EINVAL
-LIMIT	F_DUPFD full	arg 1048576	EINVAL
-LIMIT	F_DUPFD full	arg 2147483647	EINVAL
-LIMIT	dup full	EMFILE
-LIMIT	dup2 full onto open 40	ok 40
-LIMIT	open full	EMFILE
+LIMIT	one left	dup	ok 255
+LIMIT	one left	dup of closed	EBADF
+LIMIT	one left	dup of -1	EBADF
+LIMIT	one left	F_DUPFD arg 0	ok 255
+LIMIT	one left	F_DUPFD of closed arg 0	EBADF
+LIMIT	one left	F_DUPFD arg -1	EINVAL
+LIMIT	one left	open	ok 255
+LIMIT	one left	open of a missing file	ENOENT
+LIMIT	one left	open with O_CREAT|O_DIRECTORY	EINVAL
+LIMIT	one left	socket	ok 255
+LIMIT	one left	socket of a bad family	EAFNOSUPPORT
+LIMIT	one left	socket of a bad type	EPROTONOSUPPORT
+LIMIT	one left	socket of a bad protocol	EPROTONOSUPPORT
+LIMIT	one left	open of NULL	EFAULT
+LIMIT	one left	pipe	EMFILE
+LIMIT	one left	kqueue	ok 255
+LIMIT	one left	dup2 onto open 254	ok 254
+LIMIT	one left	pipe2 bad flag	EINVAL
+LIMIT	one left	accept of closed	EBADF
+LIMIT	one left	accept of a file	ENOTSOCK
+LIMIT	one left	accept with nothing queued, non-blocking	EAGAIN
+LIMIT	one left	accept with a connection queued	ok 255
+LIMIT	full	dup	EMFILE
+LIMIT	full	dup of closed	EBADF
+LIMIT	full	dup of -1	EBADF
+LIMIT	full	F_DUPFD arg 0	EMFILE
+LIMIT	full	F_DUPFD of closed arg 0	EBADF
+LIMIT	full	F_DUPFD arg -1	EINVAL
+LIMIT	full	open	EMFILE
+LIMIT	full	open of a missing file	EMFILE
+LIMIT	full	open with O_CREAT|O_DIRECTORY	EMFILE
+LIMIT	full	socket	EMFILE
+LIMIT	full	socket of a bad family	EMFILE
+LIMIT	full	socket of a bad type	EMFILE
+LIMIT	full	socket of a bad protocol	EMFILE
+LIMIT	full	open of NULL	EMFILE
+LIMIT	full	pipe	EMFILE
+LIMIT	full	kqueue	EMFILE
+LIMIT	full	dup2 onto open 254	ok 254
+LIMIT	full	pipe2 bad flag	EINVAL
+LIMIT	full	accept of closed	EBADF
+LIMIT	full	accept of a file	ENOTSOCK
+LIMIT	full	accept with nothing queued, non-blocking	EAGAIN
+LIMIT	full	accept with a connection queued	EMFILE
 LIMIT	closed -1	F_GETFL EBADF	F_SETFL EBADF	F_GETFD EBADF	F_SETFD EBADF
-LIMIT	closed 63	F_GETFL EBADF	F_SETFL EBADF	F_GETFD EBADF	F_SETFD EBADF
-LIMIT	closed 64	F_GETFL EBADF	F_SETFL EBADF	F_GETFD EBADF	F_SETFD EBADF
+LIMIT	closed 255	F_GETFL EBADF	F_SETFL EBADF	F_GETFD EBADF	F_SETFD EBADF
+LIMIT	closed 256	F_GETFL EBADF	F_SETFL EBADF	F_GETFD EBADF	F_SETFD EBADF
 LIMIT	closed 2147483647	F_GETFL EBADF	F_SETFL EBADF	F_GETFD EBADF	F_SETFD EBADF
 LIMIT	command 9999	open ENOTTY	closed EBADF
 DUP2	dup2	open onto itself	3 -> 3	ok 3	target was open, is open
@@ -606,12 +636,12 @@ DUP2	dup2	closed onto open	20 -> 4	EBADF	target was open, is open
 DUP2	dup2	closed onto free	20 -> 21	EBADF	target was closed, is closed
 DUP2	dup2	open onto -1	3 -> -1	EBADF	target was closed, is closed
 DUP2	dup2	open onto INT_MIN	3 -> -2147483648	EBADF	target was closed, is closed
-DUP2	dup2	open onto 63 (soft limit 64)	3 -> 63	ok 63	target was closed, is open
-DUP2	dup2	open onto 64	3 -> 64	EBADF	target was closed, is closed
-DUP2	dup2	open onto 65	3 -> 65	EBADF	target was closed, is closed
+DUP2	dup2	open onto the bound less one	3 -> 255	ok 255	target was closed, is open
+DUP2	dup2	open onto the bound	3 -> 256	EBADF	target was closed, is closed
+DUP2	dup2	open onto the bound plus one	3 -> 257	EBADF	target was closed, is closed
 DUP2	dup2	open onto INT_MAX	3 -> 2147483647	EBADF	target was closed, is closed
-DUP2	dup2	closed onto 64	20 -> 64	EBADF	target was closed, is closed
-DUP2	dup2	-1 onto 64	-1 -> 64	EBADF	target was closed, is closed
+DUP2	dup2	closed onto the bound	20 -> 256	EBADF	target was closed, is closed
+DUP2	dup2	-1 onto the bound	-1 -> 256	EBADF	target was closed, is closed
 DUP2	dup2	-1 onto open	-1 -> 4	EBADF	target was open, is open
 DUP2	dup2	closed onto -1	20 -> -1	EBADF	target was closed, is closed
 ONTO	offset	dup2 ok 4	target at 5
@@ -634,11 +664,11 @@ SLEEP	write, dup kept	dup2 ok in 0 ms	sleeper EPIPE
 SLEEP	write, dup kept	afterwards the sleeper answered EPIPE
 SLEEP	accept	dup2 ok in 0 ms	sleeper ECONNABORTED
 SLEEP	accept	afterwards the sleeper answered ECONNABORTED
-SLEEP	accept, dup kept	dup2 ok in 0 ms	sleeper ECONNABORTED
+SLEEP	accept, dup kept	dup2 ok in 1 ms	sleeper ECONNABORTED
 SLEEP	accept, dup kept	afterwards the sleeper answered ECONNABORTED
 SLEEP	flock	dup2 still blocked at 100 ms	sleeper asleep
 SLEEP	flock	afterwards the sleeper answered ok 0
 SLEEP	flock, dup kept	dup2 still blocked at 100 ms	sleeper asleep
-SLEEP	flock, dup kept	afterwards the sleeper answered EINTR
+SLEEP	flock, dup kept	afterwards the sleeper answered ok 0
 SLEEP	poll	dup2 ok in 0 ms	sleeper asleep
 SLEEP	poll, dup kept	dup2 ok in 0 ms	sleeper asleep

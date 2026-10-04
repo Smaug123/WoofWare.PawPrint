@@ -408,7 +408,7 @@ module TestDirectoryReadAgainstHost =
                                     let hostFd = hostDup target.HostFd
                                     hostSucceeded "dup" hostFd
 
-                                    let modelFd, system = UnixDescriptor.dup target.ModelFd system |> completed "dup"
+                                    let modelFd, system = Answered.dup target.ModelFd system |> completed "dup"
 
                                     live <-
                                         live

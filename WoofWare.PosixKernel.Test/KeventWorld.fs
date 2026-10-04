@@ -104,7 +104,7 @@ module KeventWorld =
         | other -> failwith $"closing fd %d{fd}: %A{other}"
 
     let dup (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixDescriptor.dup fd system with
+        match Answered.dup fd system with
         | SyscallAnswer.Completed copy, system -> int copy, system
         | other, _ -> failwith $"dup of fd %d{fd}: %A{other}"
 

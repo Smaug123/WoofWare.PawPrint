@@ -254,6 +254,20 @@ module internal FcntlWorld =
         else
             fd, system
 
+    /// A blocking `connect` of the socket `client` to the loopback `port`,
+    /// which must not be refused.
+    let connect (client : int) (port : uint16) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match
+            CopyIn.connect
+                client
+                UserBuffer.Mapped
+                16u
+                (CopyIn.inet (UnixSystem.platform system) (loopback port))
+                system
+        with
+        | Ok (_, system) -> system
+        | Error refusal -> failwith $"connect: %s{ConnectRefusal.describe refusal}"
+
     /// A socket accepted from a listener at `port`, after a client connected
     /// to it: the accepted descriptor.
     let accepted
@@ -267,17 +281,7 @@ module internal FcntlWorld =
         let client, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-        let system =
-            match
-                CopyIn.connect
-                    client
-                    UserBuffer.Mapped
-                    16u
-                    (CopyIn.inet (UnixSystem.platform system) (loopback port))
-                    system
-            with
-            | Ok (_, system) -> system
-            | Error refusal -> failwith $"connect: %s{ConnectRefusal.describe refusal}"
+        let system = connect client port system
 
         match UnixConnection.accept 0 listenerFd UserBuffer.Mapped 16u system with
         | Ok (AcceptOutcome.Accepted (fd, _, _), system) -> fd, system

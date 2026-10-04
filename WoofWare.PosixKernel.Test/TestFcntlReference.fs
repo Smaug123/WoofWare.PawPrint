@@ -67,6 +67,14 @@ module TestFcntlReference =
             Written : bool
         }
 
+    /// What a call came to: an answer, a refusal at the descriptor bound, or
+    /// any other refusal.
+    [<RequireQualifiedAccess>]
+    type private Outcome =
+        | Answered of SyscallAnswer
+        | RefusedAtBound of DescriptorLimitRefusal
+        | Refused
+
     type private Reference =
         {
             Darwin : bool
@@ -111,6 +119,9 @@ module TestFcntlReference =
         ||| bit (not r.Darwin && d.NoFollow) (noFollowBit r)
         ||| bit (r.Darwin && d.Written) 0x10000
 
+    let private bound (r : Reference) : int =
+        SimulatedUnixPlatform.descriptorBound r.Platform
+
     let private lowestFreeFrom (minimum : int) (r : Reference) : int =
         Seq.initInfinite (fun i -> minimum + i)
         |> Seq.find (fun fd -> not (Map.containsKey fd r.Fds))
@@ -122,12 +133,22 @@ module TestFcntlReference =
             Next = r.Next + 1
         }
 
-    /// What the reference answers for `op`: `None` for a refusal.
-    let private step (op : FcntlOp) (r : Reference) : SyscallAnswer option * Reference =
+    /// What the reference answers for `op`. Every descriptor a call would make
+    /// must lie below the bound; one that would not is refused, naming the
+    /// lowest it could have had.
+    let private step (op : FcntlOp) (r : Reference) : Outcome * Reference =
         let ok (value : int) =
-            Some (SyscallAnswer.Completed (int64 value))
+            Outcome.Answered (SyscallAnswer.Completed (int64 value))
 
-        let failed (error : UnixError) = Some (SyscallAnswer.Failed error)
+        let failed (error : UnixError) =
+            Outcome.Answered (SyscallAnswer.Failed error)
+
+        let atBound (descriptor : int) =
+            Outcome.RefusedAtBound
+                {
+                    Descriptor = descriptor
+                    Bound = bound r
+                }
 
         let fresh (kind : Kind) (access : int) =
             {
@@ -149,6 +170,7 @@ module TestFcntlReference =
             }
 
         match op with
+        | FcntlOp.Open (_, _, _, _) when lowestFreeFrom 0 r >= bound r -> atBound (lowestFreeFrom 0 r), r
         | FcntlOp.Open (access, cloexec, synchronous, noFollow) ->
             let fd = lowestFreeFrom 0 r
 
@@ -168,6 +190,8 @@ module TestFcntlReference =
                 fd
                 cloexec
                 r
+        | FcntlOp.Pipe _ when lowestFreeFrom (lowestFreeFrom 0 r + 1) r >= bound r ->
+            atBound (lowestFreeFrom (lowestFreeFrom 0 r + 1) r), r
         | FcntlOp.Pipe (nonBlocking, cloexec) ->
             let readFd = lowestFreeFrom 0 r
 
@@ -193,16 +217,20 @@ module TestFcntlReference =
                 cloexec
                 r
         | FcntlOp.Dup fd ->
-            if Map.containsKey fd r.Fds then
+            if not (Map.containsKey fd r.Fds) then
+                failed UnixError.EBADF, r
+            elif lowestFreeFrom 0 r >= bound r then
+                atBound (lowestFreeFrom 0 r), r
+            else
                 let newFd = lowestFreeFrom 0 r
                 ok newFd, duplicate fd newFd false r
-            else
-                failed UnixError.EBADF, r
         | FcntlOp.DupFd (fd, minimum, cloexec) ->
             if not (Map.containsKey fd r.Fds) then
                 failed UnixError.EBADF, r
             elif minimum < 0 then
                 failed UnixError.EINVAL, r
+            elif lowestFreeFrom minimum r >= bound r then
+                atBound (lowestFreeFrom minimum r), r
             else
                 let newFd = lowestFreeFrom minimum r
                 ok newFd, duplicate fd newFd cloexec r
@@ -225,7 +253,7 @@ module TestFcntlReference =
         | FcntlOp.SetFl (fd, word) ->
             match Map.tryFind fd r.Fds with
             | None -> failed UnixError.EBADF, r
-            | Some _ when word &&& unmodelled r <> 0 -> None, r
+            | Some _ when word &&& unmodelled r <> 0 -> Outcome.Refused, r
             | Some (description, _, _) ->
                 let d = r.Descriptions.[description]
 
@@ -250,17 +278,21 @@ module TestFcntlReference =
                 failed UnixError.EBADF, r
             elif oldFd = newFd then
                 ok newFd, r
+            elif newFd >= bound r then
+                atBound newFd, r
             else
                 ok newFd, duplicate oldFd newFd false r
         | FcntlOp.Dup3 (oldFd, newFd, cloexec, stray) ->
             if r.Darwin then
-                None, r
+                Outcome.Refused, r
             elif stray then
                 failed UnixError.EINVAL, r
             elif oldFd = newFd then
                 failed UnixError.EINVAL, r
             elif newFd < 0 || not (Map.containsKey oldFd r.Fds) then
                 failed UnixError.EBADF, r
+            elif newFd >= bound r then
+                atBound newFd, r
             else
                 ok newFd, duplicate oldFd newFd cloexec r
         | FcntlOp.Write fd ->
@@ -332,19 +364,20 @@ module TestFcntlReference =
             }
         | Error fault -> failwith $"could not build the system: %A{fault}"
 
-    /// The library's answer to `op`: `None` for a refusal.
+    /// The library's answer to `op`.
     let private library
         (r : Reference)
         (op : FcntlOp)
         (system : UnixSystem<int, string>)
-        : SyscallAnswer option * UnixSystem<int, string>
+        : Outcome * UnixSystem<int, string>
         =
         let platform = r.Platform
 
         let ofFcntl (result : Result<SyscallAnswer * UnixSystem<int, string>, FcntlRefusal>) =
             match result with
-            | Ok (answer, system) -> Some answer, system
-            | Error (FcntlRefusal.UnmodelledStatusFlags _) -> None, system
+            | Ok (answer, system) -> Outcome.Answered answer, system
+            | Error (FcntlRefusal.UnmodelledStatusFlags _) -> Outcome.Refused, system
+            | Error (FcntlRefusal.DescriptorLimit refusal) -> Outcome.RefusedAtBound refusal, system
             | Error refusal -> failwith $"fcntl refused: %s{FcntlRefusal.describe refusal}"
 
         match op with
@@ -358,7 +391,8 @@ module TestFcntlReference =
                 }
 
             match OpenFlagWords.openPath flags (PathArg.ofText "f") 0o644 system with
-            | Ok (answer, system) -> Some answer, system
+            | Ok (answer, system) -> Outcome.Answered answer, system
+            | Error (OpenRefusal.DescriptorLimit refusal) -> Outcome.RefusedAtBound refusal, system
             | Error refusal -> failwith $"open refused: %A{refusal}"
         | FcntlOp.Pipe (nonBlocking, cloexec) ->
             let flags =
@@ -366,9 +400,14 @@ module TestFcntlReference =
                 ||| (if cloexec then cloexecBit r else 0)
 
             match UnixPipe.pipe2 flags UserBuffer.Mapped system with
-            | Ok (Pipe2Answer.Created (readFd, _), system) -> Some (SyscallAnswer.Completed (int64 readFd)), system
+            | Ok (Pipe2Answer.Created (readFd, _), system) ->
+                Outcome.Answered (SyscallAnswer.Completed (int64 readFd)), system
+            | Error (Pipe2Refusal.DescriptorLimit refusal) -> Outcome.RefusedAtBound refusal, system
             | other -> failwith $"pipe2: %A{other}"
-        | FcntlOp.Dup fd -> UnixDescriptor.dup fd system |> fun (answer, system) -> Some answer, system
+        | FcntlOp.Dup fd ->
+            match UnixDescriptor.dup fd system with
+            | Ok (answer, system) -> Outcome.Answered answer, system
+            | Error refusal -> Outcome.RefusedAtBound refusal, system
         | FcntlOp.DupFd (fd, minimum, cloexec) ->
             let command =
                 if cloexec then
@@ -383,14 +422,16 @@ module TestFcntlReference =
         | FcntlOp.SetFl (fd, word) -> ofFcntl (UnixDescriptor.fcntl fd FcntlWorld.SetFl word system)
         | FcntlOp.Dup2 (oldFd, newFd) ->
             match UnixDescriptor.dup2 oldFd newFd system with
-            | Ok (answer, system) -> Some answer, system
+            | Ok (answer, system) -> Outcome.Answered answer, system
+            | Error (Dup2Refusal.DescriptorLimit refusal) -> Outcome.RefusedAtBound refusal, system
             | Error refusal -> failwith $"dup2 refused: %s{Dup2Refusal.describe refusal}"
         | FcntlOp.Dup3 (oldFd, newFd, cloexec, stray) ->
             let flags = (if cloexec then cloexecBit r else 0) ||| (if stray then 0x800 else 0)
 
             match UnixDescriptor.dup3 oldFd newFd flags system with
-            | Ok (answer, system) -> Some answer, system
-            | Error (Dup3Refusal.NotProvided _) -> None, system
+            | Ok (answer, system) -> Outcome.Answered answer, system
+            | Error (Dup3Refusal.NotProvided _) -> Outcome.Refused, system
+            | Error (Dup3Refusal.DescriptorLimit refusal) -> Outcome.RefusedAtBound refusal, system
             | Error refusal -> failwith $"dup3 refused: %s{Dup3Refusal.describe refusal}"
         | FcntlOp.Write fd ->
             match
@@ -398,14 +439,14 @@ module TestFcntlReference =
             with
             | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, system))
             | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Completed n, _, system)) ->
-                Some (SyscallAnswer.Completed n), system
+                Outcome.Answered (SyscallAnswer.Completed n), system
             | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, system))
             | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed error, _, system)) ->
-                Some (SyscallAnswer.Failed error), system
+                Outcome.Answered (SyscallAnswer.Failed error), system
             | other -> failwith $"write: %A{other}"
         | FcntlOp.Close fd ->
             match UnixDescriptor.close fd system with
-            | Ok (answer, system) -> Some answer, system
+            | Ok (answer, system) -> Outcome.Answered answer, system
             | Error refusal -> failwith $"close refused: %s{CloseRefusal.describe refusal}"
 
     /// Which descriptors `fds` name a description in common: the partition the
@@ -449,8 +490,19 @@ module TestFcntlReference =
         }
 
     let private opGen (platform : SimulatedUnixPlatform) : Gen<FcntlOp> =
+        let bound = SimulatedUnixPlatform.descriptorBound platform
+        // Around the bound, so that F_DUPFD and dup2 put descriptors just below
+        // it and then reach it.
+        let nearBound =
+            Gen.elements [ bound - 3 ; bound - 2 ; bound - 1 ; bound ; bound + 1 ]
+
         let fd =
-            Gen.frequency [ 12, Gen.choose (0, 12) ; 1, Gen.elements [ -1 ; 40 ; System.Int32.MinValue ] ]
+            Gen.frequency
+                [
+                    12, Gen.choose (0, 12)
+                    1, Gen.elements [ -1 ; 40 ; System.Int32.MinValue ]
+                    2, nearBound
+                ]
 
         let bool = Gen.elements [ true ; false ]
 
@@ -471,7 +523,12 @@ module TestFcntlReference =
                 Gen.map3
                     (fun f m c -> FcntlOp.DupFd (f, m, c))
                     fd
-                    (Gen.frequency [ 8, Gen.choose (0, 14) ; 1, Gen.elements [ -1 ; System.Int32.MinValue ] ])
+                    (Gen.frequency
+                        [
+                            8, Gen.choose (0, 14)
+                            1, Gen.elements [ -1 ; System.Int32.MinValue ]
+                            3, nearBound
+                        ])
                     bool
                 3, Gen.map FcntlOp.GetFd fd
                 3, Gen.map2 (fun f w -> FcntlOp.SetFd (f, w)) fd (Gen.elements [ 0 ; 1 ; 2 ; 3 ; -1 ; 4 ; 0x80000 ])
@@ -556,15 +613,18 @@ module TestFcntlReference =
 
                 cover (
                     match op, actual with
-                    | _, None -> "refused"
-                    | FcntlOp.Dup2 (o, n), Some (SyscallAnswer.Completed _) when
+                    | _, Outcome.Refused -> "refused"
+                    | FcntlOp.DupFd _, Outcome.RefusedAtBound _ -> "F_DUPFD at the bound"
+                    | FcntlOp.Dup2 _, Outcome.RefusedAtBound _ -> "dup2 at the bound"
+                    | _, Outcome.RefusedAtBound _ -> "at the bound"
+                    | FcntlOp.Dup2 (o, n), Outcome.Answered (SyscallAnswer.Completed _) when
                         o <> n && Map.containsKey n reference.Fds
                         ->
                         "dup2 onto an open descriptor"
-                    | FcntlOp.DupFd (_, m, _), Some (SyscallAnswer.Completed fd) when fd > int64 m ->
+                    | FcntlOp.DupFd (_, m, _), Outcome.Answered (SyscallAnswer.Completed fd) when fd > int64 m ->
                         "F_DUPFD past a taken minimum"
-                    | _, Some (SyscallAnswer.Failed error) -> $"%A{error}"
-                    | op, Some (SyscallAnswer.Completed _) -> (sprintf "%A" op).Split(' ').[0]
+                    | _, Outcome.Answered (SyscallAnswer.Failed error) -> $"%A{error}"
+                    | op, Outcome.Answered (SyscallAnswer.Completed _) -> (sprintf "%A" op).Split(' ').[0]
                 )
 
                 reference <- after
@@ -609,6 +669,8 @@ module TestFcntlReference =
         for label in
             [
                 "refused"
+                "F_DUPFD at the bound"
+                "dup2 at the bound"
                 "dup2 onto an open descriptor"
                 "F_DUPFD past a taken minimum"
                 "EBADF"

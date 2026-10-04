@@ -874,6 +874,28 @@ type FileDescriptorRegistry =
             NextId : OpenFileDescriptionId
         }
 
+/// A call that would put a descriptor at `Descriptor`, at or above `Bound`.
+///
+/// This kernel models no `RLIMIT_NOFILE`. It assumes the process's soft limit
+/// is at least `Bound` (`SimulatedUnixPlatform.descriptorBound`), so it can
+/// answer every call whose descriptors all lie below it; one that would reach
+/// `Bound` is answered `EMFILE`, `EINVAL` or `EBADF` by a process whose limit is
+/// `Bound` and succeeds for one whose limit is higher, so this kernel refuses
+/// it.
+type DescriptorLimitRefusal =
+    {
+        /// The lowest number the call could have given its descriptor.
+        Descriptor : int
+        /// The bound it reaches.
+        Bound : int
+    }
+
+[<RequireQualifiedAccess>]
+module DescriptorLimitRefusal =
+    /// What this kernel knows about why it cannot answer.
+    let describe (refusal : DescriptorLimitRefusal) : string =
+        $"the call would put a descriptor at %d{refusal.Descriptor}, at or above %d{refusal.Bound}. This kernel assumes the process's RLIMIT_NOFILE soft limit is at least %d{refusal.Bound}, the default a process starts with, and models no higher one: a process whose limit is %d{refusal.Bound} gets EMFILE, EINVAL or EBADF here, and one whose limit is higher gets the descriptor."
+
 [<RequireQualifiedAccess>]
 type FileDescriptorDupError =
     /// The supplied fd is not a live entry in the table. `dup(2)` reports
@@ -1118,6 +1140,38 @@ module FileDescriptorRegistry =
             else scan (candidate + 1)
 
         scan minimum
+
+    /// Whether `count` descriptors, the lowest free at or above `minimum`, all
+    /// lie below `bound`: the room a call that makes them needs. The refusal
+    /// names the first that does not. Every syscall that makes a descriptor
+    /// asks this, with `SimulatedUnixPlatform.descriptorBound`, before it
+    /// allocates.
+    let internal room
+        (bound : int)
+        (minimum : int)
+        (count : int)
+        (registry : FileDescriptorRegistry)
+        : Result<unit, DescriptorLimitRefusal>
+        =
+        let rec find (candidate : int) (left : int) : Result<unit, DescriptorLimitRefusal> =
+            if candidate >= bound then
+                Error
+                    {
+                        Descriptor = candidate
+                        Bound = bound
+                    }
+            elif Map.containsKey candidate registry.Fds then
+                find (candidate + 1) left
+            elif left = 1 then
+                Ok ()
+            else
+                find (candidate + 1) (left - 1)
+
+        if count < 1 || minimum < 0 then
+            failwith
+                $"FileDescriptorRegistry.room: asked for %d{count} descriptors from %d{minimum} (this is a bug in this library)."
+
+        find minimum count
 
     /// Lowest non-negative integer not currently used as a file descriptor.
     let private lowestFree (fds : Map<int, DescriptorEntry>) : int =
@@ -1431,9 +1485,10 @@ module FileDescriptorRegistry =
     ///
     /// Total — there is no failure mode at this level. Whether the path
     /// resolves, whether the flags are ones this library honours, and whether the
-    /// process may open the file at all are decided before this is reached; a
-    /// real kernel's `EMFILE`/`ENFILE` would belong here, but this library
-    /// models no descriptor limit (`RLIMIT_NOFILE`).
+    /// process may open the file at all are decided before this is reached, and
+    /// so is whether a descriptor below the bound is free
+    /// (`SimulatedUnixPlatform.descriptorBound`), which `UnixSystem.checkInvariants`
+    /// holds every descriptor to.
     let openFile
         (inode : InodeNumber)
         (accessMode : FileAccessMode)
@@ -1573,8 +1628,7 @@ module FileDescriptorRegistry =
     /// real instance answers `EINVAL` — measured. Linux opens the underlying
     /// anonymous file `O_RDWR`.
     ///
-    /// Total, like `openFile` and for the same reason: this library models no
-    /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report.
+    /// Total, like `openFile` and for the same reason.
     let createEpoll (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
         createAnonymous
             (OpenFileTarget.Epoll
@@ -1623,9 +1677,8 @@ module FileDescriptorRegistry =
     /// real socket gives its own answer instead (measured on one with no peer:
     /// ENOTCONN, EINVAL, EPIPE, EDESTADDRREQ, EAGAIN or a block, never EBADF).
     ///
-    /// Total, like `openFile` and `createEpoll`: this library models no
-    /// descriptor limit, so there is no `EMFILE`/`ENFILE` to report, and no
-    /// resource a socket could exhaust.
+    /// Total, like `openFile` and `createEpoll`: there is no resource a socket
+    /// could exhaust, and the bound is the caller's to check.
     let createSocket (socketId : SocketId) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
         let id = registry.NextId
         let (OpenFileDescriptionId raw) = id
@@ -1664,7 +1717,8 @@ module FileDescriptorRegistry =
     /// `pipeId` is minted by the caller, because the pipe it names lives in the
     /// pipe table rather than here; `UnixPipe.pipe2` is the one caller.
     ///
-    /// Total, like `openFile`: this library models no descriptor limit.
+    /// Total, like `openFile`; the caller checks that both descriptors lie
+    /// below the bound.
     let internal createPipe
         (pipeId : PipeId)
         (nonBlocking : bool)

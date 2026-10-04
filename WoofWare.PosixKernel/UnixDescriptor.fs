@@ -258,15 +258,15 @@ module UnmodelledStatusFlag =
 /// Why this kernel will not answer an `fcntl(2)`.
 [<RequireQualifiedAccess>]
 type FcntlRefusal =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    | DescriptorLimit of DescriptorLimitRefusal
     /// The command is none of `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`,
     /// `F_SETFD`, `F_GETFL` and `F_SETFL` in the flavour's numbering.
     | UnmodelledCommand of command : int
     /// An `F_SETFL` word would set these flags, which change what later calls
     /// on the description do, in ways this kernel does not model.
     | UnmodelledStatusFlags of word : int * flags : UnmodelledStatusFlag list
-    /// An `F_DUPFD` or `F_DUPFD_CLOEXEC` asked for a descriptor at or above
-    /// `minimum`, and every one up to `Int32.MaxValue` is in use.
-    | NoDescriptorAtOrAbove of minimum : int
 
 [<RequireQualifiedAccess>]
 module FcntlRefusal =
@@ -274,17 +274,19 @@ module FcntlRefusal =
     /// its own half -- which entry point asked, and what it should do instead.
     let describe (refusal : FcntlRefusal) : string =
         match refusal with
+        | FcntlRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | FcntlRefusal.UnmodelledCommand command ->
             $"fcntl command %d{command} is none of F_DUPFD, F_DUPFD_CLOEXEC, F_GETFD, F_SETFD, F_GETFL and F_SETFL in this flavour's numbering. Both kernels answer EBADF for a descriptor that is not open whatever the command, and that is answered; what a command they know does is not modelled."
         | FcntlRefusal.UnmodelledStatusFlags (word, flags) ->
             let names = flags |> List.map UnmodelledStatusFlag.name |> String.concat ", "
             $"F_SETFL with 0x%x{word} would set %s{names}, which change what later reads and writes on the description do (or, for O_NOATIME and O_DIRECT, answer EPERM or EINVAL depending on the file's owner and filesystem), and this kernel models none of that."
-        | FcntlRefusal.NoDescriptorAtOrAbove minimum ->
-            $"every descriptor from %d{minimum} to Int32.MaxValue is in use. A real kernel bounds descriptors by RLIMIT_NOFILE, answering EINVAL for a minimum at or above it and EMFILE for a full table; this kernel models no RLIMIT_NOFILE."
 
 /// Why this kernel will not answer a `dup2(2)`.
 [<RequireQualifiedAccess>]
 type Dup2Refusal<'Task> =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    | DescriptorLimit of DescriptorLimitRefusal
     /// The target is open, and this kernel will not close it (`refusal`): a
     /// `dup2` onto an open descriptor closes it as `close(2)` does, sleeping
     /// calls and all.
@@ -295,12 +297,16 @@ module Dup2Refusal =
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : Dup2Refusal<'Task>) : string =
         match refusal with
+        | Dup2Refusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | Dup2Refusal.ClosingTarget refusal ->
             $"the target descriptor is open, and dup2 closes it as close(2) does, which this kernel will not do here: %s{CloseRefusal.describe refusal}"
 
 /// Why this kernel will not answer a `dup3(2)`.
 [<RequireQualifiedAccess>]
 type Dup3Refusal<'Task> =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    | DescriptorLimit of DescriptorLimitRefusal
     /// The flavour has no `dup3`.
     | NotProvided of flavour : SimulatedUnixFlavour
     /// As `Dup2Refusal.ClosingTarget`.
@@ -311,6 +317,7 @@ module Dup3Refusal =
     /// What this kernel knows about why it cannot answer.
     let describe (refusal : Dup3Refusal<'Task>) : string =
         match refusal with
+        | Dup3Refusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | Dup3Refusal.NotProvided flavour ->
             $"this kernel is %O{flavour}-flavoured, and only Linux has dup3; no program could have made the call."
         | Dup3Refusal.ClosingTarget refusal ->
@@ -552,22 +559,42 @@ module UnixDescriptor =
         | UserBuffer.Addressless -> Error (GetGroupsRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
 
     /// `dup(2)`: the lowest non-negative descriptor not in use, sharing `fd`'s
-    /// open file description. EBADF is its only failure.
+    /// open file description. EBADF is its only failure, and comes first: a
+    /// descriptor that is not open is EBADF even when the new one would reach
+    /// the bound (`SimulatedUnixPlatform.descriptorBound`), which is otherwise
+    /// refused.
     let dup<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, DescriptorLimitRefusal>
         =
-        match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
+        let registry = system.Process.FileDescriptors
+
+        // Measured (`fcntl-dup.c`, LIMIT rows): EBADF ahead of the allocation.
+        match FileDescriptorRegistry.tryFindId fd registry with
+        | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Some _ ->
+
+        match
+            FileDescriptorRegistry.room (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform) 0 1 registry
+        with
+        | Error refusal -> Error refusal
+        | Ok () ->
+
+        match FileDescriptorRegistry.dup fd registry with
         | Ok (newFd, registry) ->
-            SyscallAnswer.Completed (int64 newFd),
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
-        | Error FileDescriptorDupError.BadFd -> SyscallAnswer.Failed UnixError.EBADF, system
+            Ok (
+                SyscallAnswer.Completed (int64 newFd),
+                { system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors = registry
+                        }
+                }
+            )
+        | Error FileDescriptorDupError.BadFd ->
+            failwith
+                $"UnixDescriptor.dup: fd %d{fd} was open a moment ago and is not now (this is a bug in this library)."
 
     /// `lseek(2)`: move `fd`'s file offset and report where it lands.
     ///
@@ -2147,9 +2174,11 @@ module UnixDescriptor =
     ///   `F_DUPFD_CLOEXEC` gives it `FD_CLOEXEC`. A negative `argument` is
     ///   `EINVAL`.
     ///
-    /// This kernel models no `RLIMIT_NOFILE`: a real one also answers `EINVAL`
-    /// for an `F_DUPFD` at or above the soft limit, and `EMFILE` for a full
-    /// table. Every other command is refused (`FcntlRefusal.UnmodelledCommand`).
+    /// An `F_DUPFD` whose descriptor would lie at or above the bound
+    /// (`SimulatedUnixPlatform.descriptorBound`) is refused
+    /// (`FcntlRefusal.DescriptorLimit`), after `EBADF` and a negative
+    /// argument's `EINVAL`. Every other command is refused
+    /// (`FcntlRefusal.UnmodelledCommand`).
     let fcntl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (command : int)
@@ -2264,13 +2293,23 @@ module UnixDescriptor =
                 Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
             else
 
+            // Measured (`fcntl-dup.c`, LIMIT rows): EBADF and a negative
+            // argument's EINVAL come ahead of the limit; an argument at or
+            // above it is EINVAL, and a full table EMFILE, at a limit of the
+            // bound, and a descriptor at a higher one.
+            match FileDescriptorRegistry.room (SimulatedUnixPlatform.descriptorBound platform) argument 1 registry with
+            | Error refusal -> Error (FcntlRefusal.DescriptorLimit refusal)
+            | Ok () ->
+
             let flags =
                 { DescriptorFlags.none with
                     CloseOnExec = closeOnExec
                 }
 
             match FileDescriptorRegistry.dupAtOrAbove fd argument flags registry with
-            | None -> Error (FcntlRefusal.NoDescriptorAtOrAbove argument)
+            | None ->
+                failwith
+                    $"UnixDescriptor.fcntl: no descriptor at or above %d{argument} is free, though one below the bound was a moment ago (this is a bug in this library)."
             | Some (newFd, registry) -> Ok (SyscallAnswer.Completed (int64 newFd), withRegistry registry system)
 
     /// `dup2` and `dup3` once the screens peculiar to `dup3` have passed: make
@@ -2281,16 +2320,28 @@ module UnixDescriptor =
         (newFd : int)
         (flags : DescriptorFlags)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CloseRefusal<'Task>>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, Dup2Refusal<'Task>>
         =
         let registry = system.Process.FileDescriptors
+        let bound = SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform
 
         // Measured (`fcntl-dup.c`, DUP2 rows): a negative target, and a source
-        // that is not open, are each EBADF, and leave an open target open.
+        // that is not open, are each EBADF, and leave an open target open,
+        // whatever the limit. A good source onto a target at or above the
+        // limit is EBADF too, so onto one at or above the bound the answer
+        // turns on the limit.
         if newFd < 0 || (FileDescriptorRegistry.tryFindId oldFd registry).IsNone then
             Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         elif oldFd = newFd then
             Ok (SyscallAnswer.Completed (int64 newFd), system)
+        elif newFd >= bound then
+            Error (
+                Dup2Refusal.DescriptorLimit
+                    {
+                        Descriptor = newFd
+                        Bound = bound
+                    }
+            )
         else
 
         // Measured (`fcntl-dup.c`, ONTO and SLEEP rows): an open target is
@@ -2303,7 +2354,7 @@ module UnixDescriptor =
             | None -> Ok system
             | Some _ ->
                 match close newFd system with
-                | Error refusal -> Error refusal
+                | Error refusal -> Error (Dup2Refusal.ClosingTarget refusal)
                 | Ok (SyscallAnswer.Completed _, system) -> Ok system
                 | Ok (SyscallAnswer.Failed error, _) ->
                     failwith
@@ -2326,8 +2377,8 @@ module UnixDescriptor =
     /// (`Dup2Refusal.ClosingTarget`); so is one naming the same description as
     /// `oldFd`, whose flags the `dup2` then clears.
     ///
-    /// This kernel models no `RLIMIT_NOFILE`; a real one also answers `EBADF`
-    /// for a `newFd` at or above the soft limit.
+    /// A `newFd` at or above the bound (`SimulatedUnixPlatform.descriptorBound`)
+    /// is refused (`Dup2Refusal.DescriptorLimit`), after the `EBADF`s.
     let dup2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (oldFd : int)
         (newFd : int)
@@ -2335,7 +2386,6 @@ module UnixDescriptor =
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, Dup2Refusal<'Task>>
         =
         duplicateOnto oldFd newFd DescriptorFlags.none system
-        |> Result.mapError Dup2Refusal.ClosingTarget
 
     /// `dup3(2)`: `dup2`, but `flags` may carry `O_CLOEXEC` in Linux's
     /// numbering, which gives `newFd` `FD_CLOEXEC`, and `oldFd` and `newFd`
@@ -2343,7 +2393,8 @@ module UnixDescriptor =
     ///
     /// Any other bit in `flags` is `EINVAL`, ahead of everything; then the same
     /// descriptor on both sides is `EINVAL`, open or not; then `dup2`'s
-    /// answers. Refused under the Darwin flavour, which has no `dup3`.
+    /// answers and refusals. Refused under the Darwin flavour, which has no
+    /// `dup3`.
     let dup3<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (oldFd : int)
         (newFd : int)
@@ -2369,7 +2420,11 @@ module UnixDescriptor =
             }
 
         duplicateOnto oldFd newFd descriptorFlags system
-        |> Result.mapError Dup3Refusal.ClosingTarget
+        |> Result.mapError (fun refusal ->
+            match refusal with
+            | Dup2Refusal.ClosingTarget refusal -> Dup3Refusal.ClosingTarget refusal
+            | Dup2Refusal.DescriptorLimit refusal -> Dup3Refusal.DescriptorLimit refusal
+        )
 
     /// Set or clear `O_NONBLOCK` on the open file description `fd` names, as
     /// `fcntl(fd, F_GETFL)` and then `fcntl(fd, F_SETFL, word)` with the bit

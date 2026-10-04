@@ -61,6 +61,9 @@ type AcceptOutcome =
 /// answer to give.
 [<RequireQualifiedAccess>]
 type AcceptRefusal =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    | DescriptorLimit of DescriptorLimitRefusal
     /// The descriptor is a socket in a domain whose addresses this kernel does
     /// not model, so there is no peer address to report even if the accept
     /// itself would succeed.
@@ -117,6 +120,7 @@ module AcceptRefusal =
     /// could have come by such a socket or such a buffer.
     let describe (refusal : AcceptRefusal) : string =
         match refusal with
+        | AcceptRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | AcceptRefusal.UnmodelledDomain (socket, domain) ->
             $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a peer address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
         | AcceptRefusal.UnmeasuredKind (socket, kind) ->
@@ -1315,15 +1319,29 @@ module UnixConnection =
     /// client that wants to put a kernel into a state where a connection has
     /// been accepted. `accept` is what a syscall goes through.
     ///
-    /// Partial: `socketId` must be a listening socket with a non-empty queue.
-    /// `accept` answers EAGAIN (or parks) for an empty one, and
-    /// EINVAL/EOPNOTSUPP for a socket that is not a listening stream socket, so
-    /// reaching this in any other state is a bug in the caller.
+    /// Partial: `socketId` must be a listening socket with a non-empty queue,
+    /// and a descriptor below the bound (`SimulatedUnixPlatform.descriptorBound`)
+    /// must be free. `accept` answers EAGAIN (or parks) for an empty one, and
+    /// EINVAL/EOPNOTSUPP for a socket that is not a listening stream socket, and
+    /// refuses a full table, so reaching this in any other state is a bug in
+    /// the caller.
     let acceptConnection<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (system : UnixSystem<'Task, 'Handler>)
         : int * TcpConnection * UnixSystem<'Task, 'Handler>
         =
+        match
+            FileDescriptorRegistry.room
+                (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
+                0
+                1
+                system.Process.FileDescriptors
+        with
+        | Error refusal ->
+            failwith
+                $"UnixConnection.acceptConnection: %s{DescriptorLimitRefusal.describe refusal} `accept` refuses this before reaching here (this is a bug in the caller)."
+        | Ok () ->
+
         let listener = UnixMachineState.socket socketId system.Machine
 
         match listener.Phase with
@@ -1477,6 +1495,21 @@ module UnixConnection =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal>
         =
+        // A connection is there to take, which needs a descriptor below the
+        // limit: at a limit of the bound, EMFILE (measured, `fcntl-dup.c`,
+        // LIMIT rows). A Linux accept that reaches here from its park took its
+        // descriptor before it slept, which this kernel does not hold for it,
+        // so with none left now it is refused all the same.
+        match
+            FileDescriptorRegistry.room
+                (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
+                0
+                1
+                system.Process.FileDescriptors
+        with
+        | Error refusal -> Error (AcceptRefusal.DescriptorLimit refusal)
+        | Ok () ->
+
         let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
 
         // Measured (`socket-address-length.c`): Linux reads the length cell as
@@ -1615,6 +1648,24 @@ module UnixConnection =
         match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
         | None -> Ok (AcceptOutcome.Failed UnixError.EBADF, system)
         | Some (descriptionId, description) ->
+
+        // Measured (`fcntl-dup.c`, LIMIT rows): Linux takes the new descriptor
+        // right after EBADF, so with none left below the limit even a file's
+        // ENOTSOCK and an empty listener's EAGAIN are EMFILE. Darwin takes it
+        // only with a connection to hand over (`handOver`).
+        let linuxRoom =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> Ok ()
+            | SimulatedUnixFlavour.Linux ->
+                FileDescriptorRegistry.room
+                    (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
+                    0
+                    1
+                    system.Process.FileDescriptors
+
+        match linuxRoom with
+        | Error refusal -> Error (AcceptRefusal.DescriptorLimit refusal)
+        | Ok () ->
 
         match description.Target with
         | OpenFileTarget.File _

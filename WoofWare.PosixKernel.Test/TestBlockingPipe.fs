@@ -974,7 +974,13 @@ module TestBlockingPipe =
                                 newFd
                                 (fun system ->
                                     UnixDescriptor.dup2 oldFd newFd system
-                                    |> Result.mapError (fun (Dup2Refusal.ClosingTarget refusal) -> refusal)
+                                    |> Result.mapError (fun refusal ->
+                                        match refusal with
+                                        | Dup2Refusal.ClosingTarget refusal -> refusal
+                                        | Dup2Refusal.DescriptorLimit refusal ->
+                                            failwith
+                                                $"dup2 onto %d{newFd} reached the bound: %s{DescriptorLimitRefusal.describe refusal}"
+                                    )
                                 )
                                 (SyscallAnswer.Completed (int64 newFd))
                                 (fun reference ->
@@ -1009,7 +1015,7 @@ module TestBlockingPipe =
                             failwith
                                 $"%s{where}: dup2 onto a closed or the same descriptor was refused: %s{Dup2Refusal.describe refusal}"
                 | BlockingPipeOp.Dup fd ->
-                    let answer, after = UnixDescriptor.dup fd system
+                    let answer, after = Answered.dup fd system
 
                     match Map.tryFind fd reference.Fds with
                     | None -> answer |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)
@@ -1669,7 +1675,7 @@ module TestBlockingPipe =
 
             let system =
                 if dupKept then
-                    match UnixDescriptor.dup 3 system with
+                    match Answered.dup 3 system with
                     | SyscallAnswer.Completed _, system -> system
                     | other -> failwith $"%A{other}"
                 else
@@ -1721,7 +1727,7 @@ module TestBlockingPipe =
 
             let system =
                 if dupKept then
-                    match UnixDescriptor.dup 4 system with
+                    match Answered.dup 4 system with
                     | SyscallAnswer.Completed _, system -> system
                     | other -> failwith $"%A{other}"
                 else
@@ -1767,7 +1773,7 @@ module TestBlockingPipe =
         | other -> failwith $"expected task %d{task}'s read through fd %d{fd} to sleep, got %A{other}"
 
     let private dupped (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixDescriptor.dup fd system with
+        match Answered.dup fd system with
         | SyscallAnswer.Completed newFd, system -> int newFd, system
         | other -> failwith $"dup of %d{fd}: %A{other}"
 

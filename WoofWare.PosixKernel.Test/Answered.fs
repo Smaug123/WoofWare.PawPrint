@@ -81,3 +81,13 @@ module internal Answered =
         match result with
         | Ok answer -> answer
         | Error refusal -> failwith $"expected an answer, but it was refused: %A{refusal}"
+
+    /// `dup(2)`, which must not reach the descriptor bound.
+    let dup<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        match UnixDescriptor.dup fd system with
+        | Ok answer -> answer
+        | Error refusal -> failwith $"dup(%d{fd}) was refused: %s{DescriptorLimitRefusal.describe refusal}"

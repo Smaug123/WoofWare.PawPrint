@@ -345,6 +345,7 @@
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
     <Compile Include="TestConstrainedGetTypeNullByref.fs" />
     <Compile Include="TestAssemblyLoadContextRefusals.fs" />
+    <Compile Include="TestDescriptorBoundRefusal.fs" />
     <Compile Include="TestDynamicAssemblyImage.fs" />
     <Compile Include="TestDynamicAssemblyRefusals.fs" />
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />
@@ -361,6 +362,7 @@
     <Compile Include="TestHardwareInstruction.fs" />
     <Compile Include="TestIntrinsicContracts.fs" />
     <Compile Include="TestNativeMethod.fs" />
+    <Compile Include="TestStringConstructor.fs" />
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />
     <Compile Include="TestEmulatedRuntime.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />

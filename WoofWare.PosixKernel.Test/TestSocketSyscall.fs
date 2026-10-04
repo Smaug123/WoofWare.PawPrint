@@ -50,6 +50,7 @@ module TestSocketSyscall =
         | SocketRefusal.RawSocket _ -> "RawSocket"
         | SocketRefusal.IcmpDatagram _ -> "IcmpDatagram"
         | SocketRefusal.BuildDependentProtocol _ -> "BuildDependentProtocol"
+        | SocketRefusal.DescriptorLimit _ -> "DescriptorLimit"
 
     /// Every disagreement between the library and the measurement, and how many
     /// refusals of each kind it made.
@@ -143,6 +144,8 @@ module TestSocketSyscall =
                            | MeasuredSocketAnswer.Failed measured ->
                                measured = errno UnixError.EPROTONOSUPPORT
                                || measured = errno UnixError.ESOCKTNOSUPPORT
+                    // The matrix runs on a table far below the bound.
+                    | SocketRefusal.DescriptorLimit _, _ -> false
 
                 if not consistent then
                     describe $"library refused: %s{SocketRefusal.describe refusal}"
