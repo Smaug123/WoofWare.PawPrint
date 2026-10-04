@@ -102,7 +102,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | --- | --- |
 | `UnixDescriptor` | `dup`, `dup2`, `dup3`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `lseek`, `flock`, `ftruncate`, `posix_fadvise`, `close`, `ioctl` (`FICLONE` and `FIONREAD`), `tcgetattr`, `geteuid`, `getegid`, `getgroups` |
 | `UnixPathResolution` | `stat`, `fstat`, `fstatat`, `chmod`, `fchmod`, `chown`, `lchown`, `fchown`, `futimens`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
-| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `unlink`, `rmdir`, `unlinkat`, `rename`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
+| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `unlink`, `rmdir`, `unlinkat`, `rename`, `renameat`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
 | `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
 | `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt` |
