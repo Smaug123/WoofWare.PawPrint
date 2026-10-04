@@ -47,7 +47,8 @@ type EmptyPathMeaning =
 [<RequireQualifiedAccess>]
 type EmptyPathRule =
     /// ENOENT, before `dirfd` is looked at, so a `dirfd` that names nothing
-    /// does not matter. Linux.
+    /// does not matter. It is the copy-in's answer, so it also comes before
+    /// `openat` allocates the descriptor it would return. Linux.
     | NoSuchEntryBeforeDescriptor
     /// ENOENT, but only once `dirfd` has been found to name a directory: a
     /// `dirfd` naming nothing, or naming something other than a directory,
