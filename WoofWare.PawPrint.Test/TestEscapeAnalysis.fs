@@ -54,8 +54,18 @@ public static class Natives
     public static double Power(double x, double y) => Math.Pow(x, y);
     public static double Fused(double a, double b, double c) => Math.FusedMultiplyAdd(a, b, c);
 
-    // An FCall no contract describes.
+    // An FCall the contract table describes, which reads the thread's ID.
     public static int ThreadId() => Environment.CurrentManagedThreadId;
+
+    // An FCall no contract describes.
+    public static int Collections() => GC.CollectionCount(0);
+
+    // A QCall the contract table describes, which allocates the thread's object on first use.
+    public static System.Threading.Thread Current() => System.Threading.Thread.CurrentThread;
+
+    // An object's RuntimeType, which a QCall the contract table describes allocates on first use;
+    // a null object raises before that.
+    public static Type TypeOf(object o) => o.GetType();
 
     // A P/Invoke into libSystem.Native, the framework's own shim.
     public static long Timestamp() => System.Diagnostics.Stopwatch.GetTimestamp();
@@ -550,7 +560,18 @@ public static class MathF
                 Unknown = Some false
             }
             { expect "Fixture.Natives" "ThreadId" with
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "TypeOf" with
+                Contains = [ "=System.OutOfMemoryException" ; "=System.NullReferenceException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "Collections" with
                 Unknown = Some true
+            }
+            { expect "Fixture.Natives" "Current" with
+                Contains = [ "=System.OutOfMemoryException" ]
+                Unknown = Some false
             }
             { expect "Fixture.Natives" "Timestamp" with
                 Unknown = Some false
@@ -703,6 +724,48 @@ public static class MathF
         match unmet (analysisOver [ fixture ] id) fixture expectations with
         | _, [] -> ()
         | _, failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``a native method the contract table describes raises exactly what its row says`` () : unit =
+        let corelib = hostCoreLib ()
+
+        let tabulated =
+            [
+                for KeyValue (handle, _) in corelib.Methods do
+                    match NativeMethod.recognise corelib handle with
+                    | Some (NativeMethod.Tabulated row) -> yield MethodKey.make corelib handle, row
+                    | _ -> ()
+            ]
+
+        // Every row names at least one method.
+        tabulated
+        |> List.map snd
+        |> List.distinct
+        |> List.length
+        |> shouldEqual (NativeContractTable.rows.Force ()).Length
+
+        let analysis =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                []
+                id
+
+        let _ =
+            (analysis, tabulated)
+            ||> List.fold (fun analysis (key, row) ->
+                let analysis, escapes = EscapeAnalysis.escapes analysis key
+
+                render analysis escapes
+                |> shouldEqual (row.Contract.Raises |> List.map (fun name -> "=" + name.FullName) |> Set.ofList)
+
+                escapes.Unknown |> shouldEqual false
+                analysis
+            )
+
+        ()
 
     /// Code a capability query guards, compiled optimized as CoreLib is, so that the query's result
     /// is branched on directly.

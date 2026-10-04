@@ -1630,9 +1630,9 @@ module EscapeAnalysis =
     let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
         let assembly, method = methodOf state key
 
-        let contracted (contract : IntrinsicContract) : LocalFacts =
+        let contracted (raised : ThrownType list) : LocalFacts =
             {
-                Raises = contractRaises state contract |> List.map (fun thrown -> 0, thrown)
+                Raises = raised |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
                 Calls = []
                 Rethrows = []
@@ -1644,8 +1644,13 @@ module EscapeAnalysis =
 
         match runsFor assembly key with
         | Runs.Opaque reason -> state, opaqueFromEntry reason
-        | Runs.Primitive primitive -> state, contracted (IntrinsicPrimitive.contract primitive)
-        | Runs.Native native -> state, contracted (NativeMethod.contract native)
+        | Runs.Primitive primitive -> state, contracted (contractRaises state (IntrinsicPrimitive.contract primitive))
+        | Runs.Native native ->
+            let raised =
+                (NativeMethod.contract native).Raises
+                |> List.map (fun name -> ThrownType.Exactly (corelibType state name.Namespace name.Name))
+
+            state, contracted raised
         | Runs.Il (body, selfCall) ->
 
         let ops = body.Instructions |> Array.ofList

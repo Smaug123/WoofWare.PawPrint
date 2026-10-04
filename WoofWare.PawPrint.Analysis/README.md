@@ -34,8 +34,9 @@ method) may add more:
   raises what the JIT's tables say (`HardwareInstruction`); one of the runtime's primitives raises
   what its contract (`IntrinsicPrimitive`) says it can;
 * a method CoreCLR implements in native code is opaque, unless `NativeMethod` describes it (so far,
-  the maths functions `Math` and `MathF` call, and CoreLib's P/Invokes into the framework's own
-  native libraries), when it raises what that contract says. A `newobj` of a constructor of
+  the maths functions `Math` and `MathF` call, CoreLib's P/Invokes into the framework's own
+  native libraries, and the FCalls and QCalls of its contract table), when it raises what that
+  contract says. A `newobj` of a constructor of
   `System.String`, which is native, calls the `String.Ctor` CoreCLR runs in its place
   (`StringConstructor`);
 * code a capability query rules out on that CPU is left out. Where a call to an `IsSupported` or
