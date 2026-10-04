@@ -148,7 +148,7 @@ module TestSockaddrDecoding =
                 fd, system |> bindTo fd 5000us |> listen fd
             | Socket.NonBlockingFresh kind ->
                 let fd, system = create kind system
-                fd, snd (UnixSocket.setNonBlocking fd true system)
+                fd, snd (UnixDescriptor.setNonBlocking fd true system)
 
         (if closedDescriptor then 99 else fd), system
 

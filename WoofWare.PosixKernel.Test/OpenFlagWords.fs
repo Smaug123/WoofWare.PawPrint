@@ -108,7 +108,9 @@ module internal OpenFlagWords =
             | SimulatedUnixFlavour.Linux ->
                 bit flags.Synchronous OpenFlagBit.Synchronous
                 ||| bit flags.Synchronous OpenFlagBit.DataSynchronous
-            | SimulatedUnixFlavour.Darwin -> bit flags.Synchronous OpenFlagBit.Synchronous
+            | SimulatedUnixFlavour.Darwin ->
+                bit flags.Synchronous OpenFlagBit.Synchronous
+                ||| bit flags.DataSynchronous OpenFlagBit.DataSynchronous
 
         access
         ||| bit flags.Create OpenFlagBit.Create

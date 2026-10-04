@@ -259,7 +259,7 @@ module TestSocketErrorAgainstHost =
 
         let system =
             if nonBlocking then
-                match UnixSocket.setNonBlocking fd true system with
+                match UnixDescriptor.setNonBlocking fd true system with
                 | SetNonBlockingAnswer.Set, system -> system
                 | other, _ -> failwith $"the model would not set O_NONBLOCK: %A{other}"
             else

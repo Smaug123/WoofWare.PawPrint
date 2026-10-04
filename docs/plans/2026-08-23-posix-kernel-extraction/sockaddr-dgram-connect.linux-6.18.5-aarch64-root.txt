@@ -1,0 +1,152 @@
+# Linux 6.18.5 aarch64
+D stream 0.0.0.0         0 fresh    : ECONNREFUSED local=0.0.0.0:new peer=none
+D stream 0.0.0.0         0 bound    : ECONNREFUSED local=127.0.0.1:same peer=none
+D stream 0.0.0.0         0 wildbound: ECONNREFUSED local=0.0.0.0:same peer=none
+D stream 0.0.0.0         0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 0.0.0.0         0 listening: EISCONN local=127.0.0.1:same peer=none
+D stream 0.0.0.0         P fresh    : OK local=127.0.0.1:new peer=127.0.0.1:P
+D stream 0.0.0.0         P bound    : OK local=127.0.0.1:same peer=127.0.0.1:P
+D stream 0.0.0.0         P wildbound: OK local=127.0.0.1:same peer=127.0.0.1:P
+D stream 0.0.0.0         P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 0.0.0.0         P listening: EISCONN local=127.0.0.1:same peer=none
+D stream 127.0.0.1       0 fresh    : ECONNREFUSED local=0.0.0.0:new peer=none
+D stream 127.0.0.1       0 bound    : ECONNREFUSED local=127.0.0.1:same peer=none
+D stream 127.0.0.1       0 wildbound: ECONNREFUSED local=0.0.0.0:same peer=none
+D stream 127.0.0.1       0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 127.0.0.1       0 listening: EISCONN local=127.0.0.1:same peer=none
+D stream 127.0.0.1       P fresh    : OK local=127.0.0.1:new peer=127.0.0.1:P
+D stream 127.0.0.1       P bound    : OK local=127.0.0.1:same peer=127.0.0.1:P
+D stream 127.0.0.1       P wildbound: OK local=127.0.0.1:same peer=127.0.0.1:P
+D stream 127.0.0.1       P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 127.0.0.1       P listening: EISCONN local=127.0.0.1:same peer=none
+D stream 127.0.0.2       0 fresh    : ECONNREFUSED local=0.0.0.0:new peer=none
+D stream 127.0.0.2       0 bound    : ECONNREFUSED local=127.0.0.1:same peer=none
+D stream 127.0.0.2       0 wildbound: ECONNREFUSED local=0.0.0.0:same peer=none
+D stream 127.0.0.2       0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 127.0.0.2       0 listening: EISCONN local=127.0.0.1:same peer=none
+D stream 127.0.0.2       P fresh    : ECONNREFUSED local=0.0.0.0:new peer=none
+D stream 127.0.0.2       P bound    : ECONNREFUSED local=127.0.0.1:same peer=none
+D stream 127.0.0.2       P wildbound: ECONNREFUSED local=0.0.0.0:same peer=none
+D stream 127.0.0.2       P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 127.0.0.2       P listening: EISCONN local=127.0.0.1:same peer=none
+D stream 8.8.8.8         0 fresh    : errno4 local=192.168.64.8:new peer=none
+D stream 8.8.8.8         0 bound    : EINVAL local=127.0.0.1:same peer=none
+D stream 8.8.8.8         0 wildbound: errno4 local=192.168.64.8:same peer=none
+D stream 8.8.8.8         0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 8.8.8.8         0 listening: EISCONN local=127.0.0.1:same peer=none
+D stream 224.0.0.1       0 fresh    : ENETUNREACH local=0.0.0.0:0 peer=none
+D stream 224.0.0.1       0 bound    : ENETUNREACH local=127.0.0.1:same peer=none
+D stream 224.0.0.1       0 wildbound: ENETUNREACH local=0.0.0.0:same peer=none
+D stream 224.0.0.1       0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 224.0.0.1       0 listening: EISCONN local=127.0.0.1:same peer=none
+D stream 224.0.0.1       P fresh    : ENETUNREACH local=0.0.0.0:0 peer=none
+D stream 224.0.0.1       P bound    : ENETUNREACH local=127.0.0.1:same peer=none
+D stream 224.0.0.1       P wildbound: ENETUNREACH local=0.0.0.0:same peer=none
+D stream 224.0.0.1       P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 224.0.0.1       P listening: EISCONN local=127.0.0.1:same peer=none
+D stream 255.255.255.255 0 fresh    : ENETUNREACH local=0.0.0.0:0 peer=none
+D stream 255.255.255.255 0 bound    : ENETUNREACH local=127.0.0.1:same peer=none
+D stream 255.255.255.255 0 wildbound: ENETUNREACH local=0.0.0.0:same peer=none
+D stream 255.255.255.255 0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 255.255.255.255 0 listening: EISCONN local=127.0.0.1:same peer=none
+D stream 255.255.255.255 P fresh    : ENETUNREACH local=0.0.0.0:0 peer=none
+D stream 255.255.255.255 P bound    : ENETUNREACH local=127.0.0.1:same peer=none
+D stream 255.255.255.255 P wildbound: ENETUNREACH local=0.0.0.0:same peer=none
+D stream 255.255.255.255 P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 255.255.255.255 P listening: EISCONN local=127.0.0.1:same peer=none
+D dgram  0.0.0.0         0 fresh    : OK local=127.0.0.1:new peer=none
+D dgram  0.0.0.0         0 bound    : OK local=127.0.0.1:same peer=none
+D dgram  0.0.0.0         0 wildbound: OK local=127.0.0.1:same peer=none
+D dgram  0.0.0.0         0 connected: OK local=127.0.0.1:same peer=none
+D dgram  0.0.0.0         P fresh    : OK local=127.0.0.1:new peer=127.0.0.1:P
+D dgram  0.0.0.0         P bound    : OK local=127.0.0.1:same peer=127.0.0.1:P
+D dgram  0.0.0.0         P wildbound: OK local=127.0.0.1:same peer=127.0.0.1:P
+D dgram  0.0.0.0         P connected: OK local=127.0.0.1:same peer=old
+D dgram  127.0.0.1       0 fresh    : OK local=127.0.0.1:new peer=none
+D dgram  127.0.0.1       0 bound    : OK local=127.0.0.1:same peer=none
+D dgram  127.0.0.1       0 wildbound: OK local=127.0.0.1:same peer=none
+D dgram  127.0.0.1       0 connected: OK local=127.0.0.1:same peer=none
+D dgram  127.0.0.1       P fresh    : OK local=127.0.0.1:new peer=127.0.0.1:P
+D dgram  127.0.0.1       P bound    : OK local=127.0.0.1:same peer=127.0.0.1:P
+D dgram  127.0.0.1       P wildbound: OK local=127.0.0.1:same peer=127.0.0.1:P
+D dgram  127.0.0.1       P connected: OK local=127.0.0.1:same peer=old
+D dgram  127.0.0.2       0 fresh    : OK local=127.0.0.1:new peer=none
+D dgram  127.0.0.2       0 bound    : OK local=127.0.0.1:same peer=none
+D dgram  127.0.0.2       0 wildbound: OK local=127.0.0.1:same peer=none
+D dgram  127.0.0.2       0 connected: OK local=127.0.0.1:same peer=none
+D dgram  127.0.0.2       P fresh    : OK local=127.0.0.1:new peer=127.0.0.2:P
+D dgram  127.0.0.2       P bound    : OK local=127.0.0.1:same peer=127.0.0.2:P
+D dgram  127.0.0.2       P wildbound: OK local=127.0.0.1:same peer=127.0.0.2:P
+D dgram  127.0.0.2       P connected: OK local=127.0.0.1:same peer=127.0.0.2:P
+D dgram  8.8.8.8         0 fresh    : OK local=192.168.64.8:new peer=none
+D dgram  8.8.8.8         0 bound    : EINVAL local=127.0.0.1:same peer=none
+D dgram  8.8.8.8         0 wildbound: OK local=192.168.64.8:same peer=none
+D dgram  8.8.8.8         0 connected: EINVAL local=127.0.0.1:same peer=old
+D dgram  8.8.8.8         P fresh    : OK local=192.168.64.8:new peer=8.8.8.8:P
+D dgram  8.8.8.8         P bound    : EINVAL local=127.0.0.1:same peer=none
+D dgram  8.8.8.8         P wildbound: OK local=192.168.64.8:same peer=8.8.8.8:P
+D dgram  8.8.8.8         P connected: EINVAL local=127.0.0.1:same peer=old
+D dgram  224.0.0.1       0 fresh    : OK local=192.168.64.8:new peer=none
+D dgram  224.0.0.1       0 bound    : OK local=127.0.0.1:same peer=none
+D dgram  224.0.0.1       0 wildbound: OK local=192.168.64.8:same peer=none
+D dgram  224.0.0.1       0 connected: OK local=127.0.0.1:same peer=none
+D dgram  224.0.0.1       P fresh    : OK local=192.168.64.8:new peer=224.0.0.1:P
+D dgram  224.0.0.1       P bound    : OK local=127.0.0.1:same peer=224.0.0.1:P
+D dgram  224.0.0.1       P wildbound: OK local=192.168.64.8:same peer=224.0.0.1:P
+D dgram  224.0.0.1       P connected: OK local=127.0.0.1:same peer=224.0.0.1:P
+D dgram  255.255.255.255 0 fresh    : EACCES local=0.0.0.0:new peer=none
+D dgram  255.255.255.255 0 bound    : EACCES local=127.0.0.1:same peer=none
+D dgram  255.255.255.255 0 wildbound: EACCES local=0.0.0.0:same peer=none
+D dgram  255.255.255.255 0 connected: EACCES local=127.0.0.1:same peer=old
+D dgram  255.255.255.255 P fresh    : EACCES local=0.0.0.0:new peer=none
+D dgram  255.255.255.255 P bound    : EACCES local=127.0.0.1:same peer=none
+D dgram  255.255.255.255 P wildbound: EACCES local=0.0.0.0:same peer=none
+D dgram  255.255.255.255 P connected: EACCES local=127.0.0.1:same peer=old
+M stream AF_INET   224.0.0.1       fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_INET   224.0.0.1       fresh len 16..128: ENETUNREACH local=0.0.0.0:0 peer=none
+M stream AF_INET   224.0.0.1       fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_INET   255.255.255.255 fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_INET   255.255.255.255 fresh len 16..128: ENETUNREACH local=0.0.0.0:0 peer=none
+M stream AF_INET   255.255.255.255 fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 224.0.0.1       fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 224.0.0.1       fresh len 2..128: OK local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 224.0.0.1       fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 255.255.255.255 fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 255.255.255.255 fresh len 2..128: OK local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 255.255.255.255 fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_INET   224.0.0.1       fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_INET   224.0.0.1       fresh len 2..15: EINVAL local=0.0.0.0:new peer=none
+M dgram  AF_INET   224.0.0.1       fresh len 16..128: OK local=192.168.64.8:new peer=224.0.0.1:P
+M dgram  AF_INET   224.0.0.1       fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_INET   255.255.255.255 fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_INET   255.255.255.255 fresh len 2..15: EINVAL local=0.0.0.0:new peer=none
+M dgram  AF_INET   255.255.255.255 fresh len 16..128: EACCES local=0.0.0.0:new peer=none
+M dgram  AF_INET   255.255.255.255 fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 224.0.0.1       fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 224.0.0.1       fresh len 2..128: OK local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 224.0.0.1       fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 255.255.255.255 fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 255.255.255.255 fresh len 2..128: OK local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 255.255.255.255 fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=1   fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=1   fresh len 2..15: EINVAL local=0.0.0.0:new peer=none
+B dgram family=1   fresh len 16..128: EAFNOSUPPORT local=0.0.0.0:new peer=none
+B dgram family=1   fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=2   fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=2   fresh len 2..15: EINVAL local=0.0.0.0:new peer=none
+B dgram family=2   fresh len 16..128: OK local=127.0.0.1:new peer=127.0.0.1:P
+B dgram family=2   fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=10  fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=10  fresh len 2..15: EINVAL local=0.0.0.0:new peer=none
+B dgram family=10  fresh len 16..128: EAFNOSUPPORT local=0.0.0.0:new peer=none
+B dgram family=10  fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=255 fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=255 fresh len 2..15: EINVAL local=0.0.0.0:new peer=none
+B dgram family=255 fresh len 16..128: EAFNOSUPPORT local=0.0.0.0:new peer=none
+B dgram family=255 fresh len 129..300: EINVAL local=0.0.0.0:0 peer=none
+L dgram family=2   connected len 0..15: EINVAL local=127.0.0.1:same peer=old
+L dgram family=2   connected len 16..128: OK local=127.0.0.1:same peer=old
+L dgram family=2   connected len 129..300: EINVAL local=127.0.0.1:same peer=old
+L dgram family=1   connected len 0..15: EINVAL local=127.0.0.1:same peer=old
+L dgram family=1   connected len 16..128: EAFNOSUPPORT local=127.0.0.1:same peer=old
+L dgram family=1   connected len 129..300: EINVAL local=127.0.0.1:same peer=old

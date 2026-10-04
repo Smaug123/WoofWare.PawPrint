@@ -42,6 +42,7 @@ module TestDeviceDescriptors =
             NoFollow = false
             CloseOnExec = false
             Synchronous = false
+            DataSynchronous = false
             Directory = false
         }
 
@@ -604,7 +605,7 @@ module TestDeviceDescriptors =
             let fd, system = openDevice device FileAccessMode.ReadOnly booted
 
             let nonBlocking =
-                match UnixSocket.setNonBlocking fd true system with
+                match UnixDescriptor.setNonBlocking fd true system with
                 | SetNonBlockingAnswer.Set, system -> system
                 | other -> failwith $"F_SETFL O_NONBLOCK: %A{other}"
 

@@ -174,6 +174,7 @@ module TestKqueue =
                         AccessMode = FileAccessMode.ReadWrite
                         NonBlocking = false
                         Flock = None
+                        Status = OpenFileStatus.none
                     }
 
                 // A fresh description, not one any other descriptor shares.

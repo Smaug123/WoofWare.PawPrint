@@ -104,7 +104,7 @@ module TestSocketSyscallAgainstHost =
                             | SocketKind.Datagram -> 2
                             | SocketKind.SeqPacket -> 5
 
-                        Some (Ok (soType, UnixSocket.isNonBlocking fd after = Some true))
+                        Some (Ok (soType, UnixDescriptor.isNonBlocking fd after = Some true))
 
                 match library with
                 | None -> ()

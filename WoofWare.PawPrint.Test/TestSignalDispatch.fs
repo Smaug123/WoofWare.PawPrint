@@ -834,7 +834,7 @@ module TestSignalDispatch =
 
         let nonBlocking =
             state.MapKernel (fun kernel ->
-                match UnixSocket.setNonBlocking (pipeOf state).ReadEnd true kernel.System with
+                match UnixDescriptor.setNonBlocking (pipeOf state).ReadEnd true kernel.System with
                 | SetNonBlockingAnswer.Set, system -> EmulatedKernel.withUnix system kernel
                 | other -> failwith $"setting O_NONBLOCK answered %O{other}"
             )
@@ -943,7 +943,7 @@ module TestSignalDispatch =
 
             let state =
                 state.MapKernel (fun kernel ->
-                    match UnixSocket.setNonBlocking (pipeOf state).ReadEnd true kernel.System with
+                    match UnixDescriptor.setNonBlocking (pipeOf state).ReadEnd true kernel.System with
                     | SetNonBlockingAnswer.Set, system -> EmulatedKernel.withUnix system kernel
                     | other -> failwith $"setting O_NONBLOCK answered %O{other}"
                 )

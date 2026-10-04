@@ -1,0 +1,7 @@
+# Darwin 27.0.0 arm64
+R not-connected to 127.0.0.1: OK local=iface port=same peer=127.0.0.1
+R not-connected to 0.0.0.0  : OK local=iface port=same peer=127.0.0.1
+R connected     to 127.0.0.1: OK local=127.0.0.1 port=same peer=127.0.0.1
+R connected     to 0.0.0.0  : OK local=127.0.0.1 port=same peer=127.0.0.1
+S not-connected to 127.0.0.1: OK local=iface port=same peer=127.0.0.1
+S not-connected to 0.0.0.0  : OK local=iface port=same peer=127.0.0.1
