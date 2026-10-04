@@ -1,0 +1,169 @@
+# Darwin 27.0.0 arm64
+D stream 0.0.0.0         0 fresh    : EADDRNOTAVAIL local=0.0.0.0:new peer=none
+D stream 0.0.0.0         0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D stream 0.0.0.0         0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D stream 0.0.0.0         0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 0.0.0.0         0 listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 0.0.0.0         P fresh    : OK local=127.0.0.1:new peer=127.0.0.1:P
+D stream 0.0.0.0         P bound    : OK local=127.0.0.1:same peer=127.0.0.1:P
+D stream 0.0.0.0         P wildbound: OK local=127.0.0.1:same peer=127.0.0.1:P
+D stream 0.0.0.0         P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 0.0.0.0         P listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 127.0.0.1       0 fresh    : EADDRNOTAVAIL local=0.0.0.0:new peer=none
+D stream 127.0.0.1       0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D stream 127.0.0.1       0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D stream 127.0.0.1       0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 127.0.0.1       0 listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 127.0.0.1       P fresh    : OK local=127.0.0.1:new peer=127.0.0.1:P
+D stream 127.0.0.1       P bound    : OK local=127.0.0.1:same peer=127.0.0.1:P
+D stream 127.0.0.1       P wildbound: OK local=127.0.0.1:same peer=127.0.0.1:P
+D stream 127.0.0.1       P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 127.0.0.1       P listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 127.0.0.2       0 fresh    : EADDRNOTAVAIL local=0.0.0.0:new peer=none
+D stream 127.0.0.2       0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D stream 127.0.0.2       0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D stream 127.0.0.2       0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 127.0.0.2       0 listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 127.0.0.2       P fresh    : errno4 local=127.0.0.1:new peer=none
+D stream 127.0.0.2       P bound    : errno4 local=127.0.0.1:same peer=none
+D stream 127.0.0.2       P wildbound: errno4 local=127.0.0.1:same peer=none
+D stream 127.0.0.2       P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 127.0.0.2       P listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 8.8.8.8         0 fresh    : EADDRNOTAVAIL local=0.0.0.0:new peer=none
+D stream 8.8.8.8         0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D stream 8.8.8.8         0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D stream 8.8.8.8         0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 8.8.8.8         0 listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 8.8.8.8         P fresh    : errno4 local=172.20.10.8:new peer=none
+D stream 8.8.8.8         P bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D stream 8.8.8.8         P wildbound: errno4 local=172.20.10.8:same peer=none
+D stream 8.8.8.8         P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 8.8.8.8         P listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 224.0.0.1       0 fresh    : EAFNOSUPPORT local=0.0.0.0:0 peer=none
+D stream 224.0.0.1       0 bound    : EAFNOSUPPORT local=127.0.0.1:same peer=none
+D stream 224.0.0.1       0 wildbound: EAFNOSUPPORT local=0.0.0.0:same peer=none
+D stream 224.0.0.1       0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 224.0.0.1       0 listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 224.0.0.1       P fresh    : EAFNOSUPPORT local=0.0.0.0:0 peer=none
+D stream 224.0.0.1       P bound    : EAFNOSUPPORT local=127.0.0.1:same peer=none
+D stream 224.0.0.1       P wildbound: EAFNOSUPPORT local=0.0.0.0:same peer=none
+D stream 224.0.0.1       P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 224.0.0.1       P listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 255.255.255.255 0 fresh    : EAFNOSUPPORT local=0.0.0.0:0 peer=none
+D stream 255.255.255.255 0 bound    : EAFNOSUPPORT local=127.0.0.1:same peer=none
+D stream 255.255.255.255 0 wildbound: EAFNOSUPPORT local=0.0.0.0:same peer=none
+D stream 255.255.255.255 0 connected: EISCONN local=127.0.0.1:same peer=old
+D stream 255.255.255.255 0 listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D stream 255.255.255.255 P fresh    : EAFNOSUPPORT local=0.0.0.0:0 peer=none
+D stream 255.255.255.255 P bound    : EAFNOSUPPORT local=127.0.0.1:same peer=none
+D stream 255.255.255.255 P wildbound: EAFNOSUPPORT local=0.0.0.0:same peer=none
+D stream 255.255.255.255 P connected: EISCONN local=127.0.0.1:same peer=old
+D stream 255.255.255.255 P listening: EOPNOTSUPP local=127.0.0.1:same peer=none
+D dgram  0.0.0.0         0 fresh    : EADDRNOTAVAIL local=0.0.0.0:0 peer=none
+D dgram  0.0.0.0         0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D dgram  0.0.0.0         0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  0.0.0.0         0 connected: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  0.0.0.0         P fresh    : OK local=127.0.0.1:new peer=127.0.0.1:P
+D dgram  0.0.0.0         P bound    : OK local=127.0.0.1:same peer=127.0.0.1:P
+D dgram  0.0.0.0         P wildbound: OK local=127.0.0.1:same peer=127.0.0.1:P
+D dgram  0.0.0.0         P connected: OK local=127.0.0.1:same peer=old
+D dgram  127.0.0.1       0 fresh    : EADDRNOTAVAIL local=0.0.0.0:0 peer=none
+D dgram  127.0.0.1       0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D dgram  127.0.0.1       0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  127.0.0.1       0 connected: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  127.0.0.1       P fresh    : OK local=127.0.0.1:new peer=127.0.0.1:P
+D dgram  127.0.0.1       P bound    : OK local=127.0.0.1:same peer=127.0.0.1:P
+D dgram  127.0.0.1       P wildbound: OK local=127.0.0.1:same peer=127.0.0.1:P
+D dgram  127.0.0.1       P connected: OK local=127.0.0.1:same peer=old
+D dgram  127.0.0.2       0 fresh    : EADDRNOTAVAIL local=0.0.0.0:0 peer=none
+D dgram  127.0.0.2       0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D dgram  127.0.0.2       0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  127.0.0.2       0 connected: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  127.0.0.2       P fresh    : OK local=127.0.0.1:new peer=127.0.0.2:P
+D dgram  127.0.0.2       P bound    : OK local=127.0.0.1:same peer=127.0.0.2:P
+D dgram  127.0.0.2       P wildbound: OK local=127.0.0.1:same peer=127.0.0.2:P
+D dgram  127.0.0.2       P connected: OK local=127.0.0.1:same peer=127.0.0.2:P
+D dgram  8.8.8.8         0 fresh    : EADDRNOTAVAIL local=0.0.0.0:0 peer=none
+D dgram  8.8.8.8         0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D dgram  8.8.8.8         0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  8.8.8.8         0 connected: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  8.8.8.8         P fresh    : OK local=172.20.10.8:new peer=8.8.8.8:P
+D dgram  8.8.8.8         P bound    : OK local=127.0.0.1:same peer=8.8.8.8:P
+D dgram  8.8.8.8         P wildbound: OK local=172.20.10.8:same peer=8.8.8.8:P
+D dgram  8.8.8.8         P connected: OK local=172.20.10.8:same peer=8.8.8.8:P
+D dgram  224.0.0.1       0 fresh    : EADDRNOTAVAIL local=0.0.0.0:0 peer=none
+D dgram  224.0.0.1       0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D dgram  224.0.0.1       0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  224.0.0.1       0 connected: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  224.0.0.1       P fresh    : OK local=172.20.10.8:new peer=224.0.0.1:P
+D dgram  224.0.0.1       P bound    : OK local=127.0.0.1:same peer=224.0.0.1:P
+D dgram  224.0.0.1       P wildbound: OK local=172.20.10.8:same peer=224.0.0.1:P
+D dgram  224.0.0.1       P connected: OK local=172.20.10.8:same peer=224.0.0.1:P
+D dgram  255.255.255.255 0 fresh    : EADDRNOTAVAIL local=0.0.0.0:0 peer=none
+D dgram  255.255.255.255 0 bound    : EADDRNOTAVAIL local=127.0.0.1:same peer=none
+D dgram  255.255.255.255 0 wildbound: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  255.255.255.255 0 connected: EADDRNOTAVAIL local=0.0.0.0:same peer=none
+D dgram  255.255.255.255 P fresh    : OK local=172.20.10.8:new peer=255.255.255.255:P
+D dgram  255.255.255.255 P bound    : OK local=127.0.0.1:same peer=255.255.255.255:P
+D dgram  255.255.255.255 P wildbound: OK local=172.20.10.8:same peer=255.255.255.255:P
+D dgram  255.255.255.255 P connected: OK local=172.20.10.8:same peer=255.255.255.255:P
+M stream AF_INET   224.0.0.1       fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_INET   224.0.0.1       fresh len 2..4: EINVAL local=0.0.0.0:new peer=none
+M stream AF_INET   224.0.0.1       fresh len 5..255: EAFNOSUPPORT local=0.0.0.0:0 peer=none
+M stream AF_INET   224.0.0.1       fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+M stream AF_INET   255.255.255.255 fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_INET   255.255.255.255 fresh len 2..7: EINVAL local=0.0.0.0:new peer=none
+M stream AF_INET   255.255.255.255 fresh len 8..255: EAFNOSUPPORT local=0.0.0.0:0 peer=none
+M stream AF_INET   255.255.255.255 fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 224.0.0.1       fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 224.0.0.1       fresh len 2..15: EINVAL local=0.0.0.0:new peer=none
+M stream AF_UNSPEC 224.0.0.1       fresh len 16..16: EAFNOSUPPORT local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 224.0.0.1       fresh len 17..255: EINVAL local=0.0.0.0:new peer=none
+M stream AF_UNSPEC 224.0.0.1       fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 255.255.255.255 fresh len 0..1: EINVAL local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 255.255.255.255 fresh len 2..15: EINVAL local=0.0.0.0:new peer=none
+M stream AF_UNSPEC 255.255.255.255 fresh len 16..16: EAFNOSUPPORT local=0.0.0.0:0 peer=none
+M stream AF_UNSPEC 255.255.255.255 fresh len 17..255: EINVAL local=0.0.0.0:new peer=none
+M stream AF_UNSPEC 255.255.255.255 fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+M dgram  AF_INET   224.0.0.1       fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_INET   224.0.0.1       fresh len 16..16: OK local=172.20.10.8:new peer=224.0.0.1:P
+M dgram  AF_INET   224.0.0.1       fresh len 17..255: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_INET   224.0.0.1       fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+M dgram  AF_INET   255.255.255.255 fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_INET   255.255.255.255 fresh len 16..16: OK local=172.20.10.8:new peer=255.255.255.255:P
+M dgram  AF_INET   255.255.255.255 fresh len 17..255: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_INET   255.255.255.255 fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 224.0.0.1       fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 224.0.0.1       fresh len 16..16: EAFNOSUPPORT local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 224.0.0.1       fresh len 17..255: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 224.0.0.1       fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 255.255.255.255 fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 255.255.255.255 fresh len 16..16: EAFNOSUPPORT local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 255.255.255.255 fresh len 17..255: EINVAL local=0.0.0.0:0 peer=none
+M dgram  AF_UNSPEC 255.255.255.255 fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+B dgram family=1   fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=1   fresh len 16..16: EAFNOSUPPORT local=0.0.0.0:0 peer=none
+B dgram family=1   fresh len 17..255: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=1   fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+B dgram family=2   fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=2   fresh len 16..16: OK local=127.0.0.1:new peer=127.0.0.1:P
+B dgram family=2   fresh len 17..255: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=2   fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+B dgram family=30  fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=30  fresh len 16..16: EAFNOSUPPORT local=0.0.0.0:0 peer=none
+B dgram family=30  fresh len 17..255: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=30  fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+B dgram family=255 fresh len 0..15: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=255 fresh len 16..16: EAFNOSUPPORT local=0.0.0.0:0 peer=none
+B dgram family=255 fresh len 17..255: EINVAL local=0.0.0.0:0 peer=none
+B dgram family=255 fresh len 256..300: ENAMETOOLONG local=0.0.0.0:0 peer=none
+L dgram family=2   connected len 0..1: EINVAL local=127.0.0.1:same peer=old
+L dgram family=2   connected len 2..15: EINVAL local=0.0.0.0:same peer=none
+L dgram family=2   connected len 16..16: OK local=127.0.0.1:same peer=old
+L dgram family=2   connected len 17..255: EINVAL local=0.0.0.0:same peer=none
+L dgram family=2   connected len 256..300: ENAMETOOLONG local=127.0.0.1:same peer=old
+L dgram family=1   connected len 0..1: EINVAL local=127.0.0.1:same peer=old
+L dgram family=1   connected len 2..15: EINVAL local=0.0.0.0:same peer=none
+L dgram family=1   connected len 16..16: EAFNOSUPPORT local=0.0.0.0:same peer=none
+L dgram family=1   connected len 17..255: EINVAL local=0.0.0.0:same peer=none
+L dgram family=1   connected len 256..300: ENAMETOOLONG local=127.0.0.1:same peer=old
