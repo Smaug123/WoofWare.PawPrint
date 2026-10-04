@@ -473,10 +473,13 @@ type LinkRefusal =
     /// The flag word `flags` carries flags the flavour accepts and this library
     /// does not model; see `LinkScreen.Unmodelled`.
     | UnmodelledFlags of flags : int
-    /// Linux's `AT_EMPTY_PATH`, asked by a caller that is not privileged.
-    /// Whether Linux admits that depends on the credentials the descriptor
-    /// was opened with, which this library does not record.
-    | EmptyPathUnprivileged
+    /// Linux's `AT_EMPTY_PATH`, from a caller that is not privileged, with a
+    /// path (an empty one included) relative to a descriptor. Linux then
+    /// answers `ENOENT` unless the descriptor was opened with the very
+    /// credentials the caller now holds: compared by identity, so that a fork,
+    /// or a change of credentials that keeps every ID, fails it. This library
+    /// does not record the credentials a descriptor was opened with.
+    | OpenTimeCredentials
     /// `AT_EMPTY_PATH` names `inode`, which has no name left and is not a
     /// regular file: which of the call's refusals such an inode meets first
     /// has not been measured.
@@ -494,8 +497,8 @@ module LinkRefusal =
         | LinkRefusal.Path refusal -> PathRefusal.describe refusal
         | LinkRefusal.UnmodelledFlags flags ->
             $"the flag word 0x%x{flags} carries a flag Darwin accepts and this library does not model: AT_SYMLINK_NOFOLLOW_ANY (0x800), AT_RESOLVE_BENEATH (0x2000) or AT_UNIQUE (0x8000)."
-        | LinkRefusal.EmptyPathUnprivileged ->
-            "AT_EMPTY_PATH from a caller that is not privileged: Linux admits it only for a descriptor opened with the caller's own credentials, and this library does not record the credentials a descriptor was opened with."
+        | LinkRefusal.OpenTimeCredentials ->
+            "AT_EMPTY_PATH from a caller that is not privileged, with a path relative to a descriptor: Linux admits it only if the descriptor was opened with the caller's present credentials, and this library does not record the credentials a descriptor was opened with."
         | LinkRefusal.NamelessSource inode ->
             $"AT_EMPTY_PATH names inode %O{inode}, which has no name left and is not a regular file; which refusal such an inode meets first has not been measured."
         | LinkRefusal.UnmeasuredFileSystem fileSystem ->
@@ -2467,11 +2470,24 @@ module UnixNamespace =
             UnixPath.isEmpty path
             && arguments.EmptyPath = EmptyPathMeaning.NamesStartingPoint
 
+        // Measured by `link-empty-path.c` (CRED) on Linux 6.18.5: with
+        // `AT_EMPTY_PATH`, a path relative to a descriptor, empty or not, is
+        // checked against the descriptor's open-time credentials, unless the
+        // caller is privileged. `AT_FDCWD` and a rooted path are not.
+        let relativeToDescriptor =
+            match source with
+            | AtDirectory.Descriptor _ -> not (UnixPath.isRooted path)
+            | AtDirectory.CurrentDirectory -> false
+
         let privileged =
             Credentials.privilege system.Process.Credentials = CallerPrivilege.Privileged
 
-        if namesStartingPoint && not privileged then
-            Error LinkRefusal.EmptyPathUnprivileged
+        if
+            arguments.EmptyPath = EmptyPathMeaning.NamesStartingPoint
+            && relativeToDescriptor
+            && not privileged
+        then
+            Error LinkRefusal.OpenTimeCredentials
         else
 
         let resolved : Result<Result<InodeNumber, UnixError>, LinkRefusal> =
@@ -2480,10 +2496,9 @@ module UnixNamespace =
                 | Error (PathFailure.Errno error) -> Ok (Error error)
                 | Error (PathFailure.Refused refusal) -> Error (LinkRefusal.Path refusal)
                 | Ok (PathStart.StartingObject inode) ->
+                    // An unlinked regular file goes on: `LinkRules.verdict`
+                    // answers it once the destination has been looked at.
                     match VirtualFileSystem.tryGetContent inode vfs with
-                    | Some (InodeContent.RegularFile _) when VirtualFileSystem.bindingCount inode vfs = 0 ->
-                        // Measured: an unlinked file's descriptor is ENOENT.
-                        Ok (Error UnixError.ENOENT)
                     | Some (InodeContent.Directory _) when VirtualFileSystem.isOrphanedDirectory inode vfs ->
                         Error (LinkRefusal.NamelessSource inode)
                     | Some _ -> Ok (Ok inode)

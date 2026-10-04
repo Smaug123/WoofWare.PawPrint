@@ -658,8 +658,48 @@ module TestLink =
                     (row.[0], row.[1], row.[2], actual)
                     |> shouldEqual (row.[0], row.[1], row.[2], probe)
 
+    /// `p` opened read-only, as the system's caller.
+    let private opened (p : string) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let flags =
+            {
+                Access = FileAccessMode.ReadOnly
+                Create = false
+                Exclusive = false
+                Truncate = false
+                NoFollow = false
+                CloseOnExec = false
+                Synchronous = false
+                DataSynchronous = false
+                Directory = false
+            }
+
+        match Answered.openPath flags (UnixPath.parseOrFail context p) 0 system with
+        | SyscallAnswer.Completed fd, system -> int fd, system
+        | other -> failwith $"%s{context}: open(%s{p}) did not open: %O{other}"
+
+    let private linuxEmptyPath : int = 0x1000
+    let private linuxAtFdCwd : int = -100
+
+    /// What this library must answer a Linux `linkat` that the probe answered
+    /// `probe`: refuse an unprivileged `AT_EMPTY_PATH` whose path is relative
+    /// to a descriptor, whose answer turns on credentials it does not record,
+    /// and otherwise answer as the probe did.
+    let private expectedEmptyPath (caller : int) (dirfd : int) (path : string) (flags : int) (probe : string) : string =
+        if
+            caller <> 0
+            && flags &&& linuxEmptyPath <> 0
+            && dirfd <> linuxAtFdCwd
+            && not (path.StartsWith "/")
+        then
+            $"refused: %s{LinkRefusal.describe LinkRefusal.OpenTimeCredentials}"
+        else
+            probe
+
     [<Test>]
-    let ``Linux's AT_EMPTY_PATH answers as measured for root, and is refused to anyone else`` () : unit =
+    let ``Linux's AT_EMPTY_PATH answers as measured, unless an unprivileged caller's answer turns on a descriptor's credentials``
+        ()
+        : unit
+        =
         let rows = section rulesLinux "EMPTY"
         rows.Length |> shouldEqual 32
 
@@ -671,25 +711,7 @@ module TestLink =
                 let probe = probeAnswer row.[3]
                 let system = rulesSystem false protection caller
 
-                let opened (p : string) (system : UnixSystem<int, string>) =
-                    let flags =
-                        {
-                            Access = FileAccessMode.ReadOnly
-                            Create = false
-                            Exclusive = false
-                            Truncate = false
-                            NoFollow = false
-                            CloseOnExec = false
-                            Synchronous = false
-                            DataSynchronous = false
-                            Directory = false
-                        }
-
-                    match Answered.openPath flags (UnixPath.parseOrFail context p) 0 system with
-                    | SyscallAnswer.Completed fd, system -> int fd, system
-                    | other -> failwith $"%s{context}: open(%s{p}) did not open: %O{other}"
-
-                let emptyPath = 0x1000
+                let emptyPath = linuxEmptyPath
                 let follow = 0x400
 
                 let fd, path, flags, system =
@@ -722,15 +744,129 @@ module TestLink =
                 let actual =
                     UnixNamespace.linkat fd (text path) -100 (text "n") flags system |> rendered
 
-                let expected =
-                    if caller <> 0 && path = "" && flags &&& emptyPath <> 0 then
-                        $"refused: %s{LinkRefusal.describe LinkRefusal.EmptyPathUnprivileged}"
-                    else
-                        probe
+                let expected = expectedEmptyPath caller fd path flags probe
 
                 if actual <> expected then
                     yield
                         $"protected_hardlinks=%d{protection} caller=%d{caller} %s{label}: the probe answered %s{probe}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    // -------------------------------------------------------- link-empty-path.c
+
+    let private emptyPathLinux : string =
+        "WoofWare.PosixKernel.Test.linkEmptyPath.linux.txt"
+
+    /// `link-empty-path.c`'s cell: f, g (the caller's, 0644), u/ (0555) and d/.
+    let private emptyPathSystem (caller : int) : UnixSystem<int, string> =
+        let credentials = if caller = 0 then Owners.root else user1000
+        let owner = Some (InodeOwner.ofProcess credentials)
+
+        [
+            "f", File (0o644, owner)
+            "g", File (0o644, owner)
+            "u", Dir (0o555, owner)
+            "d", Dir (0o777, owner)
+        ]
+        |> seedOf (Some rootOwner)
+        |> boot linux credentials HardlinkProtection.Off
+
+    [<Test>]
+    let ``AT_EMPTY_PATH's credential check is refused wherever Linux makes it, and modelled where it does not``
+        ()
+        : unit
+        =
+        let rows = section emptyPathLinux "CRED"
+        rows.Length |> shouldEqual 16
+
+        [
+            for row in rows do
+                let label = row.[0]
+                let probe = probeAnswer row.[1]
+                let caller = if label.StartsWith "root calling" then 0 else 1000
+                let system = emptyPathSystem caller
+
+                // This library cannot tell who opened a descriptor, so each is
+                // opened by the caller: the rows that differ only in that must
+                // all be refused.
+                let descriptorOf (what : string) (system : UnixSystem<int, string>) =
+                    if what.Contains "dirfd" then opened "." system
+                    elif what.Contains "file descriptor" then opened "f" system
+                    else linuxAtFdCwd, system
+
+                let dirfd, system = descriptorOf label system
+
+                let path, flags =
+                    if label.EndsWith ", flags 0" then
+                        "f", 0
+                    elif label.Contains "rooted path" then
+                        "/c/f", linuxEmptyPath
+                    elif label.Contains "\"x\"" then
+                        "x", linuxEmptyPath
+                    elif label.Contains "\"f\"" then
+                        "f", linuxEmptyPath
+                    elif label.Contains "\"\"" then
+                        "", linuxEmptyPath
+                    else
+                        failwith $"%s{context}: the probe has no CRED row %s{label}"
+
+                let actual =
+                    UnixNamespace.linkat dirfd (text path) linuxAtFdCwd (text "n") flags system
+                    |> rendered
+
+                let expected = expectedEmptyPath caller dirfd path flags probe
+
+                if actual <> expected then
+                    yield
+                        $"%s{label}: the probe answered %s{probe}, so this library must answer %s{expected}; it answered %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``an unlinked file's ENOENT comes after every refusal of its destination`` () : unit =
+        let rows = section emptyPathLinux "UNLINKED"
+        rows.Length |> shouldEqual 22
+
+        [
+            for row in rows do
+                let caller = int (header row "caller")
+                let label = row.[1]
+                let probe = probeAnswer row.[2]
+                let system = emptyPathSystem caller
+                let fd, system = opened "g" system
+                let _, system = Answered.unlink (UnixPath.parseOrFail context "g") system
+
+                let dest, destFd =
+                    match label with
+                    | "\"n\"" -> text "n", linuxAtFdCwd
+                    | "taken name \"f\"" -> text "f", linuxAtFdCwd
+                    | "NULL" -> PathArgumentBytes.Unreadable, linuxAtFdCwd
+                    | "\"\"" -> text "", linuxAtFdCwd
+                    | "PATH_MAX bytes" -> overlong linux, linuxAtFdCwd
+                    | "newdirfd -1, \"n\"" -> text "n", -1
+                    | "\"/dev/n\"" -> text "/dev/n", linuxAtFdCwd
+                    | "unwritable \"u/n\"" -> text "u/n", linuxAtFdCwd
+                    | "\"f/n\"" -> text "f/n", linuxAtFdCwd
+                    | "\"n/\"" -> text "n/", linuxAtFdCwd
+                    | "\"nx/n\"" -> text "nx/n", linuxAtFdCwd
+                    | other -> failwith $"%s{context}: the probe has no UNLINKED row %s{other}"
+
+                let actual =
+                    UnixNamespace.linkat fd (text "") destFd dest linuxEmptyPath system |> rendered
+
+                let expected = expectedEmptyPath caller fd "" linuxEmptyPath probe
+
+                // A free name in /dev is refused: this library's device
+                // filesystem knows only the nodes it has drivers for.
+                let ok =
+                    if caller = 0 && label = "\"/dev/n\"" then
+                        refusedForDevices actual
+                    else
+                        actual = expected
+
+                if not ok then
+                    yield
+                        $"caller=%d{caller} %s{label}: the probe answered %s{probe}, so this library must answer %s{expected}; it answered %s{actual}"
         ]
         |> shouldEqual []
 

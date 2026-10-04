@@ -128,6 +128,8 @@ module LinkRules =
     ///    EACCES;
     ///  * a directory source is EPERM, where the flavour refuses it last (see
     ///    `LinkRules.DirectorySource`);
+    ///  * a source with no name left, which only Linux's `AT_EMPTY_PATH` can
+    ///    name, is ENOENT;
     ///  * a name `bindable` does not admit is EILSEQ.
     let verdict
         (rules : LinkRules)
@@ -196,7 +198,12 @@ module LinkRules =
         | DirectorySourceRefusal.Last
         | DirectorySourceRefusal.BeforeDestination ->
 
-        if not (BindableEntryNames.admits bindable name) then
+        // Measured by `link-empty-path.c` (UNLINKED) on Linux 6.18.5: a file
+        // with no name left, which only Linux's `AT_EMPTY_PATH` reaches, is
+        // ENOENT only once every other check has passed.
+        if VirtualFileSystem.bindingCount source vfs = 0 then
+            LinkVerdict.Refuse UnixError.ENOENT
+        elif not (BindableEntryNames.admits bindable name) then
             LinkVerdict.Refuse UnixError.EILSEQ
         else
             LinkVerdict.Create (directory, name)

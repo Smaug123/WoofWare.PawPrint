@@ -1,0 +1,39 @@
+UNAME	Linux 6.18.5 aarch64	euid=0
+CRED	root's dirfd, "f"	ENOENT
+CRED	root's dirfd, "f", flags 0	ok
+CRED	root's dirfd, ""	ENOENT
+CRED	root's dirfd, rooted path to f	ok
+CRED	root's cwd (AT_FDCWD), "f"	ok
+CRED	root's cwd (AT_FDCWD), ""	EPERM
+CRED	root's file descriptor, ""	ENOENT
+CRED	root's file descriptor, "x"	ENOENT
+CRED	own dirfd, "f"	ok
+CRED	own file descriptor, ""	ok
+CRED	own dirfd opened before PR_SET_KEEPCAPS, "f"	ENOENT
+CRED	own file descriptor opened before PR_SET_KEEPCAPS, ""	ENOENT
+CRED	own dirfd opened before fork, "f" in the child	ENOENT
+CRED	own file descriptor opened before fork, "" in the child	ENOENT
+CRED	root calling: uid 1000's dirfd, "f"	ok
+CRED	root calling: uid 1000's file descriptor, ""	ok
+UNLINKED	caller=1000	"n"	ENOENT
+UNLINKED	caller=1000	taken name "f"	EEXIST
+UNLINKED	caller=1000	NULL	EFAULT
+UNLINKED	caller=1000	""	ENOENT
+UNLINKED	caller=1000	PATH_MAX bytes	ENAMETOOLONG
+UNLINKED	caller=1000	newdirfd -1, "n"	EBADF
+UNLINKED	caller=1000	"/dev/n"	EXDEV
+UNLINKED	caller=1000	unwritable "u/n"	EACCES
+UNLINKED	caller=1000	"f/n"	ENOTDIR
+UNLINKED	caller=1000	"n/"	ENOENT
+UNLINKED	caller=1000	"nx/n"	ENOENT
+UNLINKED	caller=0	"n"	ENOENT
+UNLINKED	caller=0	taken name "f"	EEXIST
+UNLINKED	caller=0	NULL	EFAULT
+UNLINKED	caller=0	""	ENOENT
+UNLINKED	caller=0	PATH_MAX bytes	ENAMETOOLONG
+UNLINKED	caller=0	newdirfd -1, "n"	EBADF
+UNLINKED	caller=0	"/dev/n"	EXDEV
+UNLINKED	caller=0	unwritable "u/n"	ENOENT
+UNLINKED	caller=0	"f/n"	ENOTDIR
+UNLINKED	caller=0	"n/"	ENOENT
+UNLINKED	caller=0	"nx/n"	ENOENT
