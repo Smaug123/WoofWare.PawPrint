@@ -11,14 +11,18 @@ open Microsoft.CodeAnalysis.Text
 [<RequireQualifiedAccess>]
 module Roslyn =
 
-    let private metadataReferences (extraReferences : MetadataReference list) : MetadataReference[] =
-        let runtimeDir = Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory ()
+    // Made once and shared by every compilation: each reference holds a copy of its assembly's
+    // image in native memory, which only its finalizer frees and which the GC does not count.
+    let private runtimeReferences : Lazy<MetadataReference[]> =
+        lazy
+            (let runtimeDir = Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory ()
 
-        let runtimeReferences =
-            Directory.GetFiles (runtimeDir, "*.dll")
-            |> Array.map (fun path -> MetadataReference.CreateFromFile path :> MetadataReference)
+             Directory.GetFiles (runtimeDir, "*.dll")
+             |> Array.map (fun path -> MetadataReference.CreateFromFile path :> MetadataReference))
 
-        Array.append runtimeReferences (extraReferences |> List.toArray)
+    /// What a compilation references: the test host's framework, then `extraReferences`.
+    let metadataReferences (extraReferences : MetadataReference list) : MetadataReference[] =
+        Array.append (runtimeReferences.Force ()) (extraReferences |> List.toArray)
 
     /// Whether the emitted image carries an embedded portable PDB.
     ///
