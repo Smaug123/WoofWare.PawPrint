@@ -49,7 +49,11 @@ class StrErrorLinux
         if (Fails(Marshal.GetPInvokeErrorMessage(95) == "Operation not supported")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(133) == "Memory page has hardware error")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(41) == "Unknown error 41")) return check;
-        if (Fails(Marshal.GetPInvokeErrorMessage(134) == "Unknown error 134")) return check;
+        // Whether glibc names 134 depends on the Linux headers it was built
+        // against, so the text is the case's to say: "Unknown error 134", or
+        // EFTYPE's "Inappropriate file type or format" from a glibc built
+        // against Linux 7.2's.
+        if (Fails(Marshal.GetPInvokeErrorMessage(134) == Environment.GetEnvironmentVariable("STRERROR_134"))) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(4096) == "Unknown error 4096")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(-1) == "Unknown error -1")) return check;
         if (Fails(Marshal.GetPInvokeErrorMessage(int.MinValue) == "Unknown error -2147483648")) return check;

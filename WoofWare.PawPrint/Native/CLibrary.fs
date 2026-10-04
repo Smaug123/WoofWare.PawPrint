@@ -2,24 +2,42 @@ namespace WoofWare.PawPrint
 
 open WoofWare.PosixKernel
 
+/// Which errors a glibc build names in its `strerror` table. glibc generates
+/// that table when it is compiled, from its manual's list of errors, keeping
+/// each one whose macro the Linux uapi headers it is compiled against define
+/// (`stdio-common/errlist-data-gen.c`). So the set is a fact about how a glibc
+/// was built rather than about its version or the kernel it runs on: one glibc
+/// version built against two header sets names different numbers.
+[<RequireQualifiedAccess>]
+type GlibcErrnoSet =
+    /// The errors of Linux's uapi headers up to at least 6.18.7, which end at
+    /// `EHWPOISON` (133). Debian trixie's glibc 2.41 and Ubuntu noble's 2.39,
+    /// which Microsoft's .NET runtime images run, are built this way.
+    | ThroughEHWPOISON
+    /// Those, and `EFTYPE` (134), which Linux 7.2's `asm-generic/errno.h`
+    /// defines; glibc's manual names it "Inappropriate file type or format". A
+    /// glibc built this way names 134 on any kernel, though the 6.x kernels
+    /// `SimulatedUnixPlatform` describes never return it.
+    | ThroughEFTYPE
+
 /// The C library a process's native code runs against: whose `strerror_r` the
 /// System.Native shim calls, and so whose words an errno-built exception
 /// message is in.
 ///
-/// Decided by the simulated platform's flavour (`ofPlatform`): a Linux process
-/// gets glibc, which is what the linux-x64 runtime pack's shim is built
-/// against, and a Darwin process Darwin's own libc. No other pairing is
-/// modelled. A Linux process on musl (the linux-musl runtime packs) would make
-/// this a choice of its own, alongside the platform rather than derived from
-/// it, and the glibc facts PawPrint keys on the Linux flavour elsewhere (its
-/// reserved signals 32 and 33, `StartupSignalDispositions`) would move onto it
-/// with it.
+/// The simulated platform's flavour decides which library (`ofPlatform` gives
+/// its default): a Linux process gets glibc, which is what the linux-x64
+/// runtime pack's shim is built against, and a Darwin process Darwin's own
+/// libc. No other pairing is modelled. A Linux process on musl (the linux-musl
+/// runtime packs) would make this a choice of its own, alongside the platform
+/// rather than derived from it, and the glibc facts PawPrint keys on the Linux
+/// flavour elsewhere (its reserved signals 32 and 33,
+/// `StartupSignalDispositions`) would move onto it with it.
 [<RequireQualifiedAccess>]
 type CLibrary =
-    /// GNU libc. Its `strerror_r` is the GNU one, which returns a string of its
-    /// own for an error it names and writes into the caller's buffer only for
-    /// a number it does not.
-    | Glibc
+    /// GNU libc, built so that it names `errnoSet`. Its `strerror_r` is the
+    /// GNU one, which returns a string of its own for an error it names and
+    /// writes into the caller's buffer only for a number it does not.
+    | Glibc of errnoSet : GlibcErrnoSet
     /// Darwin's libc (libsystem_c). Its `strerror_r` is the XSI one, which
     /// always writes into the caller's buffer and reports ERANGE when the text
     /// did not fit.
@@ -28,45 +46,91 @@ type CLibrary =
 [<RequireQualifiedAccess>]
 module CLibrary =
 
-    /// The C library a process on `platform` runs against.
+    /// The C library a process on `platform` runs against unless it is
+    /// configured otherwise: on Linux, glibc as the mainstream distributions
+    /// build it, `GlibcErrnoSet.ThroughEHWPOISON`.
     let ofPlatform (platform : SimulatedUnixPlatform) : CLibrary =
         match SimulatedUnixPlatform.flavour platform with
-        | SimulatedUnixFlavour.Linux -> CLibrary.Glibc
+        | SimulatedUnixFlavour.Linux -> CLibrary.Glibc GlibcErrnoSet.ThroughEHWPOISON
         | SimulatedUnixFlavour.Darwin -> CLibrary.DarwinLibc
 
-    /// The `<errno.h>` numbering the library is built against.
+    /// Whether `library` is one a process on a platform of `flavour` can run
+    /// against: glibc on Linux, Darwin's libc on Darwin.
+    let suits (flavour : SimulatedUnixFlavour) (library : CLibrary) : bool =
+        match flavour, library with
+        | SimulatedUnixFlavour.Linux, CLibrary.Glibc _
+        | SimulatedUnixFlavour.Darwin, CLibrary.DarwinLibc -> true
+        | SimulatedUnixFlavour.Linux, CLibrary.DarwinLibc
+        | SimulatedUnixFlavour.Darwin, CLibrary.Glibc _ -> false
+
+    /// The kernel `<errno.h>` numbering the library is built against. A glibc
+    /// build can name numbers past it; `errorOfNumber` is the whole decoding.
     let errnoNumbering (library : CLibrary) : RawErrnoNumbering =
         match library with
-        | CLibrary.Glibc -> RawErrnoNumbering.Linux
+        | CLibrary.Glibc _ -> RawErrnoNumbering.Linux
         | CLibrary.DarwinLibc -> RawErrnoNumbering.Darwin
+
+    /// The errors a glibc build names that `RawErrnoNumbering.Linux` does
+    /// not number, with the numbers that build gives them.
+    let private glibcNumbersPastTheKernel (errnoSet : GlibcErrnoSet) : (int * UnixError) list =
+        match errnoSet with
+        | GlibcErrnoSet.ThroughEHWPOISON -> []
+        | GlibcErrnoSet.ThroughEFTYPE -> [ 134, UnixError.EFTYPE ]
+
+    /// The error `library` names `number` as, or `None` for a number it names
+    /// nothing for.
+    let errorOfNumber (library : CLibrary) (number : int) : UnixError option =
+        let pastTheKernel =
+            match library with
+            | CLibrary.Glibc errnoSet -> glibcNumbersPastTheKernel errnoSet
+            | CLibrary.DarwinLibc -> []
+
+        match List.tryFind (fun (n, _) -> n = number) pastTheKernel with
+        | Some (_, error) -> Some error
+        | None -> UnixError.ofRawErrnoUnder (errnoNumbering library) number
+
+    /// The number `library` gives `error`, or `None` for an error it does not
+    /// name.
+    let numberOfError (library : CLibrary) (error : UnixError) : int option =
+        let pastTheKernel =
+            match library with
+            | CLibrary.Glibc errnoSet -> glibcNumbersPastTheKernel errnoSet
+            | CLibrary.DarwinLibc -> []
+
+        match List.tryFind (fun (_, e) -> e = error) pastTheKernel with
+        | Some (n, _) -> Some n
+        | None -> UnixError.tryToRawErrnoUnder (errnoNumbering library) error
 
     // The texts below are each library's `strerror_r` in the "C" locale, which
     // is the only one a .NET process runs it in: the runtime never calls
     // `setlocale`, so LANG and LC_ALL change nothing (measured,
     // docs/plans/2026-08-23-posix-kernel-extraction/strerror-r-locale.cs).
     // Transcribed from the measured output beside strerror-r.c, which
-    // `TestStrErrorR` holds every row of them to: glibc 2.41 (and 2.39, the
-    // same bytes) and Darwin 27.0.
+    // `TestStrErrorR` holds every row of them to: for
+    // `GlibcErrnoSet.ThroughEHWPOISON`, Debian trixie's glibc 2.41 (and Ubuntu
+    // noble's 2.39, the same bytes); for `GlibcErrnoSet.ThroughEFTYPE`, glibc
+    // 2.44 built against Linux 7.2's headers, whose bytes are those but for
+    // errno 134; and Darwin 27.0.
 
     /// `strerror(0)`.
     let successText (library : CLibrary) : string =
         match library with
-        | CLibrary.Glibc -> "Success"
+        | CLibrary.Glibc _ -> "Success"
         | CLibrary.DarwinLibc -> "Undefined error: 0"
 
     /// `gai_strerror(EAI_NONAME)`.
     let nameNotKnownText (library : CLibrary) : string =
         match library with
-        | CLibrary.Glibc -> "Name or service not known"
+        | CLibrary.Glibc _ -> "Name or service not known"
         | CLibrary.DarwinLibc -> "nodename nor servname provided, or not known"
 
     /// `strerror_r`'s text for a number the library names no error for.
     let unknownErrorText (library : CLibrary) (number : int) : string =
         match library with
-        | CLibrary.Glibc -> $"Unknown error %d{number}"
+        | CLibrary.Glibc _ -> $"Unknown error %d{number}"
         | CLibrary.DarwinLibc -> $"Unknown error: %d{number}"
 
-    let private glibcErrorText (error : UnixError) : string option =
+    let private glibcErrorText (errnoSet : GlibcErrnoSet) (error : UnixError) : string option =
         match error with
         | UnixError.EPERM -> Some "Operation not permitted"
         | UnixError.ENOENT -> Some "No such file or directory"
@@ -200,13 +264,16 @@ module CLibrary =
         | UnixError.EKEYREJECTED -> Some "Key was rejected by service"
         | UnixError.ERFKILL -> Some "Operation not possible due to RF-kill"
         | UnixError.EHWPOISON -> Some "Memory page has hardware error"
+        | UnixError.EFTYPE ->
+            match errnoSet with
+            | GlibcErrnoSet.ThroughEFTYPE -> Some "Inappropriate file type or format"
+            | GlibcErrnoSet.ThroughEHWPOISON -> None
         | UnixError.EPROCLIM
         | UnixError.EBADRPC
         | UnixError.ERPCMISMATCH
         | UnixError.EPROGUNAVAIL
         | UnixError.EPROGMISMATCH
         | UnixError.EPROCUNAVAIL
-        | UnixError.EFTYPE
         | UnixError.EAUTH
         | UnixError.ENEEDAUTH
         | UnixError.EPWROFF
@@ -374,10 +441,10 @@ module CLibrary =
         | UnixError.ERFKILL
         | UnixError.EHWPOISON -> None
 
-    /// `strerror`'s text for `error`, or `None` for an error the library's
-    /// numbering does not have (Darwin's `EAUTH` under glibc, Linux's `ENOKEY`
-    /// under Darwin's libc).
+    /// `strerror`'s text for `error`, or `None` for an error the library does
+    /// not name (Darwin's `EAUTH` under glibc, Linux's `ENOKEY` under Darwin's
+    /// libc).
     let errorText (library : CLibrary) (error : UnixError) : string option =
         match library with
-        | CLibrary.Glibc -> glibcErrorText error
+        | CLibrary.Glibc errnoSet -> glibcErrorText errnoSet error
         | CLibrary.DarwinLibc -> darwinErrorText error

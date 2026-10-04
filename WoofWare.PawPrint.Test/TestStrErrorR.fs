@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
 open System
+open System.Collections.Immutable
 open System.IO
 open System.Reflection
 open System.Runtime.InteropServices
@@ -18,13 +19,15 @@ open WoofWare.PosixKernel.Test
 /// against each C library, and `CLibrary` the text that library's `strerror_r`
 /// answers. The oracles are the shim itself: its measured answers on both
 /// flavours (`docs/plans/2026-08-23-posix-kernel-extraction/strerror-r.c`,
-/// whose every row this regenerates from the model and compares), and this
-/// host's own shim, asked directly.
+/// whose every row this regenerates from the model and compares, for each glibc
+/// build and for Darwin's libc), and this host's own shim, asked directly.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStrErrorR =
 
-    let private libraries : CLibrary list = [ CLibrary.Glibc ; CLibrary.DarwinLibc ]
+    let private glibcBuilds : CLibrary list = HostCLibrary.glibcBuilds
+
+    let private libraries : CLibrary list = glibcBuilds @ [ CLibrary.DarwinLibc ]
 
     /// The byte the probe fills its buffer with before every call.
     let private fill : byte = 0xAAuy
@@ -184,7 +187,8 @@ module TestStrErrorR =
     let private measuredLines (library : CLibrary) : string list =
         let name =
             match library with
-            | CLibrary.Glibc -> "WoofWare.PawPrint.Test.strerrorR.glibc.txt"
+            | CLibrary.Glibc GlibcErrnoSet.ThroughEHWPOISON -> "WoofWare.PawPrint.Test.strerrorR.glibc.txt"
+            | CLibrary.Glibc GlibcErrnoSet.ThroughEFTYPE -> "WoofWare.PawPrint.Test.strerrorR.glibc-eftype.txt"
             | CLibrary.DarwinLibc -> "WoofWare.PawPrint.Test.strerrorR.darwin.txt"
 
         let assembly = Assembly.GetExecutingAssembly ()
@@ -254,16 +258,60 @@ module TestStrErrorR =
                 | StrErrorRAnswer.LibraryText _ -> List.contains n others |> shouldEqual true
                 | _ -> List.contains n others |> shouldEqual false
 
-    /// Every error the library's numbering names has a text, and no error it
-    /// does not name has one.
+    /// Every error the library numbers has a text, and no error it does not
+    /// number has one; and its numbering and its decoding agree.
     [<Test>]
-    let ``errorText names exactly the errors the library's numbering has`` () : unit =
+    let ``errorText names exactly the errors the library numbers`` () : unit =
         for library in libraries do
-            let numbering = CLibrary.errnoNumbering library
-
             for error in UnixError.all do
-                let named = UnixError.tryToRawErrnoUnder numbering error |> Option.isSome
-                CLibrary.errorText library error |> Option.isSome |> shouldEqual named
+                let number = CLibrary.numberOfError library error
+                CLibrary.errorText library error |> Option.isSome |> shouldEqual number.IsSome
+
+                // Decoding a number gives an error with that number: aliases
+                // such as ENOTSUP and EOPNOTSUPP share one, so not always
+                // `error` itself.
+                match number with
+                | Some n ->
+                    CLibrary.errorOfNumber library n
+                    |> Option.bind (CLibrary.numberOfError library)
+                    |> shouldEqual (Some n)
+                | None -> ()
+
+    /// The two glibc builds differ by one row of the table: errno 134, which
+    /// only the build against Linux 7.2's headers names. Everything else the
+    /// shim answers, at every size, is the same.
+    [<Test>]
+    let ``the glibc builds answer alike but for errno 134`` () : unit =
+        let older = CLibrary.Glibc GlibcErrnoSet.ThroughEHWPOISON
+        let newer = CLibrary.Glibc GlibcErrnoSet.ThroughEFTYPE
+
+        StrErrorR.answer newer 134 1024
+        |> shouldEqual (StrErrorRAnswer.LibraryText "Inappropriate file type or format")
+
+        StrErrorR.answer older 134 1024
+        |> shouldEqual (
+            StrErrorRAnswer.Buffer (ImmutableArray.Create<byte> (Encoding.ASCII.GetBytes "Unknown error 134\000"))
+        )
+
+        let property (n : int, size : int) : bool =
+            n = 134 || StrErrorR.answer older n size = StrErrorR.answer newer n size
+
+        let gen =
+            gen {
+                let! n =
+                    Gen.oneof
+                        [
+                            ArbMap.defaults |> ArbMap.generate<int>
+                            Gen.choose (-300, 4200)
+                            Gen.choose (120, 140)
+                            Gen.elements extremes
+                        ]
+
+                let! size = Gen.oneof [ Gen.choose (-3, 100) ; Gen.choose (Int32.MinValue, 1024) ]
+                return n, size
+            }
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 4000, Prop.forAll (Arb.fromGen gen) property)
 
     /// The fallback past the sweep: the text for a number the library names
     /// nothing for is its fixed prefix and the number in decimal, which the
@@ -272,13 +320,11 @@ module TestStrErrorR =
     let ``an unnamed number's text is the measured fallback, for every int32`` () : unit =
         let fallback =
             function
-            | CLibrary.Glibc -> Regex @"^Unknown error (-?[0-9]+)$"
+            | CLibrary.Glibc _ -> Regex @"^Unknown error (-?[0-9]+)$"
             | CLibrary.DarwinLibc -> Regex @"^Unknown error: (-?[0-9]+)$"
 
         let property (library : CLibrary) (n : int) : bool =
-            let numbering = CLibrary.errnoNumbering library
-
-            let named = n = 0 || (UnixError.ofRawErrnoUnder numbering n).IsSome
+            let named = n = 0 || (CLibrary.errorOfNumber library n).IsSome
             // The two pseudo-errnos the shim answers itself.
             let pseudo = n = -0x20001 || n = -0x20002
 
@@ -325,8 +371,7 @@ module TestStrErrorR =
 
                 let fits = size > text.Length
 
-                let named =
-                    n = 0 || (UnixError.ofRawErrnoUnder (CLibrary.errnoNumbering library) n).IsSome
+                let named = n = 0 || (CLibrary.errorOfNumber library n).IsSome
 
                 match StrErrorR.answer library n size with
                 | StrErrorRAnswer.NullAfterWriting written ->
@@ -335,7 +380,7 @@ module TestStrErrorR =
                     && not fits
                     && written.AsSpan().SequenceEqual (ReadOnlySpan expectedWritten)
                 | StrErrorRAnswer.Buffer written ->
-                    (library = CLibrary.Glibc || not named || fits)
+                    (library.IsGlibc || not named || fits)
                     && written.AsSpan().SequenceEqual (ReadOnlySpan expectedWritten)
                 | _ -> false
             | StrErrorRAnswer.RefusedSize -> false
@@ -372,18 +417,64 @@ module TestStrErrorR =
 
     [<Test>]
     let ``the C library follows the platform's flavour`` () : unit =
-        CLibrary.ofPlatform SimulatedUnixPlatform.linuxX64 |> shouldEqual CLibrary.Glibc
+        // By default, glibc as the mainstream distributions build it.
+        CLibrary.ofPlatform SimulatedUnixPlatform.linuxX64
+        |> shouldEqual (CLibrary.Glibc GlibcErrnoSet.ThroughEHWPOISON)
 
         CLibrary.ofPlatform SimulatedUnixPlatform.linuxArm64
-        |> shouldEqual CLibrary.Glibc
+        |> shouldEqual (CLibrary.Glibc GlibcErrnoSet.ThroughEHWPOISON)
 
         CLibrary.ofPlatform SimulatedUnixPlatform.macOsArm64
         |> shouldEqual CLibrary.DarwinLibc
 
-        CLibrary.errnoNumbering CLibrary.Glibc |> shouldEqual RawErrnoNumbering.Linux
+        for library in glibcBuilds do
+            CLibrary.errnoNumbering library |> shouldEqual RawErrnoNumbering.Linux
 
         CLibrary.errnoNumbering CLibrary.DarwinLibc
         |> shouldEqual RawErrnoNumbering.Darwin
+
+    [<Test>]
+    let ``a configured C library reaches the kernel, and one of the other flavour is refused`` () : unit =
+        (KernelConfig.toKernel KernelConfig.Default).CLibrary
+        |> shouldEqual (CLibrary.Glibc GlibcErrnoSet.ThroughEHWPOISON)
+
+        for library in glibcBuilds do
+            (KernelConfig.toKernel
+                { KernelConfig.Default with
+                    CLibrary = Some library
+                })
+                .CLibrary
+            |> shouldEqual library
+
+        (KernelConfig.toKernel
+            { KernelConfig.Default with
+                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+            })
+            .CLibrary
+        |> shouldEqual CLibrary.DarwinLibc
+
+        let refused =
+            Assert.Throws<exn> (fun () ->
+                KernelConfig.toKernel
+                    { KernelConfig.Default with
+                        CLibrary = Some CLibrary.DarwinLibc
+                    }
+                |> ignore
+            )
+
+        refused.Message |> shouldContainText "KernelConfig.CLibrary"
+
+        let refused =
+            Assert.Throws<exn> (fun () ->
+                KernelConfig.toKernel
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        CLibrary = Some (CLibrary.Glibc GlibcErrnoSet.ThroughEFTYPE)
+                    }
+                |> ignore
+            )
+
+        refused.Message |> shouldContainText "KernelConfig.CLibrary"
 
     // ---------------------------------------------------------------------
     // Against this host's own shim.
@@ -419,9 +510,11 @@ module TestStrErrorR =
         finally
             Marshal.FreeHGlobal buffer
 
-    let private hostLibrary () : CLibrary option =
-        HostPlatform.flavour ()
-        |> Option.map (fun flavour -> CLibrary.ofPlatform (HostPlatform.platformOf flavour))
+    /// The modelled C library this host's shim runs against, asked of the host
+    /// (see `HostCLibrary.detect`): the glibc build is the one whose answer for
+    /// errno 134 the host gives, and every other row is then compared against
+    /// that build's model. A host that is neither build fails rather than skips.
+    let private hostLibrary () : CLibrary option = HostCLibrary.detect ()
 
     /// The probe's whole sweep, repeated against whatever shim this host has:
     /// the Darwin half on a dev box, the Linux half in CI.

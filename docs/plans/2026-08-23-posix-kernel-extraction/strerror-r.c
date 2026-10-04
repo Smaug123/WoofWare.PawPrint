@@ -20,6 +20,14 @@
 //         (That image's own apt mirror failed intermittently; the arm64
 //         binary built on trixie was also run inside it, against its glibc
 //         2.39, and printed the same bytes.)
+// Linux, a glibc built against Linux 7.2's uapi headers (whose table names
+// errno 134, EFTYPE): nixpkgs c9fe7d1 ships one, glibc 2.44, and links its
+// dotnet's shim against it. In the nixos/nix image, with
+// N="nix --extra-experimental-features 'nix-command flakes'" and
+// P=github:NixOS/nixpkgs/c9fe7d12cd78d1adcd12dd15e24432dde5b155a0:
+//           SDK=$($N build --no-link --print-out-paths $P#dotnetCorePackages.sdk_10_0 | grep -v -- -man$)
+//           $N shell $P#gcc -c gcc -Wall -o /tmp/p strerror-r.c -ldl
+//           /tmp/p $SDK/share/dotnet/shared/Microsoft.NETCore.App/10.0.12/libSystem.Native.so
 //
 // The probe never calls setlocale, so the C library answers in the "C" locale.
 // So does a .NET process, whatever LANG and LC_ALL say: strerror-r-locale.cs
