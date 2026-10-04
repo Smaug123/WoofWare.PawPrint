@@ -1520,6 +1520,7 @@ module TestImpureCases =
                     Symlinks = SymlinkProtection.InWorldWritableStickyDirectories
                     RegularFiles = CreationProtection.InWorldWritableStickyDirectories
                     Fifos = CreationProtection.Off
+                    Hardlinks = HardlinkProtection.Off
                 }
                 [
                     Some UnixError.EACCES

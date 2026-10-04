@@ -69,11 +69,19 @@ module TestProtectedFiles =
             CreationProtection.InGroupOrWorldWritableStickyDirectories
         ]
 
+    let private allHardlinkProtections : HardlinkProtection list =
+        [ HardlinkProtection.Off ; HardlinkProtection.NonOwnersNeedReadAndWrite ]
+
     /// The sysctl's value for each case.
     let private symlinkKnob (protection : SymlinkProtection) : int =
         match protection with
         | SymlinkProtection.Off -> 0
         | SymlinkProtection.InWorldWritableStickyDirectories -> 1
+
+    let private hardlinkKnob (protection : HardlinkProtection) : int =
+        match protection with
+        | HardlinkProtection.Off -> 0
+        | HardlinkProtection.NonOwnersNeedReadAndWrite -> 1
 
     let private creationKnob (protection : CreationProtection) : int =
         match protection with
@@ -203,6 +211,7 @@ module TestProtectedFiles =
                     { ProtectedFiles.off with
                         RegularFiles = regular
                         Fifos = fifos
+                        Hardlinks = HardlinkProtection.Off
                         Symlinks = SymlinkProtection.InWorldWritableStickyDirectories
                     }
 
@@ -233,6 +242,7 @@ module TestProtectedFiles =
         ProtectedFiles.off.Symlinks |> symlinkKnob |> shouldEqual 0
         ProtectedFiles.off.RegularFiles |> creationKnob |> shouldEqual 0
         ProtectedFiles.off.Fifos |> creationKnob |> shouldEqual 0
+        ProtectedFiles.off.Hardlinks |> hardlinkKnob |> shouldEqual 0
 
     // ------------------------------------------------------------- the probe's output
 
@@ -322,6 +332,9 @@ module TestProtectedFiles =
 
             admitted "protected_fifos"
             |> shouldEqual (allCreationProtections |> List.map creationKnob)
+
+            admitted "protected_hardlinks"
+            |> shouldEqual (allHardlinkProtections |> List.map hardlinkKnob)
 
     [<Test>]
     let ``a FIFO is screened exactly as a regular file is, value for value`` () =
@@ -862,6 +875,7 @@ module TestProtectedFiles =
                     Symlinks = symlinks
                     RegularFiles = regular
                     Fifos = CreationProtection.Off
+                    Hardlinks = HardlinkProtection.Off
                 }
 
             let system = systemOn linux protection (caller c) vfs
@@ -903,6 +917,7 @@ module TestProtectedFiles =
                                 Symlinks = symlinks
                                 RegularFiles = regular
                                 Fifos = regular
+                                Hardlinks = HardlinkProtection.Off
                             }
             ] do
             for bits in [ 0o755 ; 0o1777 ; 0o1775 ; 0o1757 ; 0o777 ] do
@@ -986,37 +1001,39 @@ module TestProtectedFiles =
         for symlinks in allSymlinkProtections do
             for regular in allCreationProtections do
                 for fifos in allCreationProtections do
-                    let protection =
-                        {
-                            Symlinks = symlinks
-                            RegularFiles = regular
-                            Fifos = fifos
-                        }
-
-                    if protection <> ProtectedFiles.off then
-                        let thrown =
-                            try
-                                UnixBootImage.withProtectedFiles "test" protection image |> ignore
-                                None
-                            with e ->
-                                Some e.Message
-
-                        match thrown with
-                        | Some message -> message |> shouldContainText "test:"
-                        | None -> failwith $"%A{protection} was admitted on Darwin"
-
-                        let forged =
-                            { system with
-                                Machine =
-                                    { system.Machine with
-                                        ProtectedFiles = protection
-                                    }
+                    for hardlinks in allHardlinkProtections do
+                        let protection =
+                            {
+                                Symlinks = symlinks
+                                RegularFiles = regular
+                                Fifos = fifos
+                                Hardlinks = hardlinks
                             }
 
-                        UnixSystem.checkInvariants forged
-                        |> shouldContain (
-                            UnixSystemDefect.ProtectedFilesNotOfFlavour (protection, SimulatedUnixFlavour.Darwin)
-                        )
+                        if protection <> ProtectedFiles.off then
+                            let thrown =
+                                try
+                                    UnixBootImage.withProtectedFiles "test" protection image |> ignore
+                                    None
+                                with e ->
+                                    Some e.Message
+
+                            match thrown with
+                            | Some message -> message |> shouldContainText "test:"
+                            | None -> failwith $"%A{protection} was admitted on Darwin"
+
+                            let forged =
+                                { system with
+                                    Machine =
+                                        { system.Machine with
+                                            ProtectedFiles = protection
+                                        }
+                                }
+
+                            UnixSystem.checkInvariants forged
+                            |> shouldContain (
+                                UnixSystemDefect.ProtectedFilesNotOfFlavour (protection, SimulatedUnixFlavour.Darwin)
+                            )
 
     [<Test>]
     let ``a Linux machine starts with every sysctl Off and admits any setting`` () =
@@ -1029,15 +1046,17 @@ module TestProtectedFiles =
         for symlinks in allSymlinkProtections do
             for regular in allCreationProtections do
                 for fifos in allCreationProtections do
-                    let protection =
-                        {
-                            Symlinks = symlinks
-                            RegularFiles = regular
-                            Fifos = fifos
-                        }
+                    for hardlinks in allHardlinkProtections do
+                        let protection =
+                            {
+                                Symlinks = symlinks
+                                RegularFiles = regular
+                                Fifos = fifos
+                                Hardlinks = hardlinks
+                            }
 
-                    let set =
-                        UnixBootImage.withProtectedFiles "test" protection image |> UnixBootImage.boot
+                        let set =
+                            UnixBootImage.withProtectedFiles "test" protection image |> UnixBootImage.boot
 
-                    set.Machine.ProtectedFiles |> shouldEqual protection
-                    UnixSystem.checkInvariants set |> shouldEqual []
+                        set.Machine.ProtectedFiles |> shouldEqual protection
+                        UnixSystem.checkInvariants set |> shouldEqual []

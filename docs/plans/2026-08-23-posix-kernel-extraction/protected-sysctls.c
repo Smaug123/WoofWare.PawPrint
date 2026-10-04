@@ -1,5 +1,6 @@
 // Measures Linux's fs.protected_symlinks, fs.protected_regular and
-// fs.protected_fifos: which symbolic links a caller may follow, and which
+// fs.protected_fifos (and which values fs.protected_hardlinks admits): which
+// symbolic links a caller may follow, and which
 // existing files and FIFOs an O_CREAT open may land on, in a sticky directory,
 // for each value of each knob, each combination of the directory's sticky,
 // group-write and other-write bits, and each relationship between the
@@ -30,6 +31,10 @@
 // permission-standing.c does). Edit the arguments to inodes on the machine at
 // hand: /private/tmp/FTABHarvest/centauri-symlink-ftab.bin and
 // /private/tmp/.AppleMiniSetupDidRun were used.
+//
+// The ADMITS row for protected_hardlinks was measured on 2026-10-04 and added
+// to both Linux outputs; that rerun's other rows matched them, but for one
+// ORDER row the dentry cache decides (see below).
 //
 // Measured on Linux 6.18.5 (aarch64, root in the container) on ext4 (/tmp)
 // and tmpfs (/dev/shm), and on Darwin 27.0 (arm64, uid 501), on 2026-10-01;
@@ -693,7 +698,7 @@ int main(int argc, char **argv) {
     }
     // Which values each knob admits.
     const char *candidates[] = {"-1", "0", "1", "2", "3"};
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         p("ADMITS\t%s", knobs[i]);
         for (int j = 0; j < 5; j++) {
             int e = write_knob(knobs[i], candidates[j]);

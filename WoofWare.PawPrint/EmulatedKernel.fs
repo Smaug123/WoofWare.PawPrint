@@ -1894,11 +1894,13 @@ type KernelConfig =
         /// free space. Only `None` is admitted on Linux, which reads nothing
         /// of it. See `UnixBootImage.withTcpSendSpace`.
         TcpSendSpace : int option
-        /// Linux's `fs.protected_symlinks`, `fs.protected_regular` and
-        /// `fs.protected_fifos` sysctls, which forbid following another user's
-        /// symbolic link, or opening another user's file with `O_CREAT`, in a
-        /// sticky world-writable (or, for `protected_regular=2`, group-writable)
-        /// directory. Defaults to `ProtectedFiles.off`, the kernel's own default;
+        /// Linux's `fs.protected_symlinks`, `fs.protected_regular`,
+        /// `fs.protected_fifos` and `fs.protected_hardlinks` sysctls, which forbid
+        /// following another user's symbolic link, or opening another user's file
+        /// with `O_CREAT`, in a sticky world-writable (or, for
+        /// `protected_regular=2`, group-writable) directory, and hard-linking
+        /// another user's file the caller may not read and write (which nothing
+        /// reads yet, since `link(2)` is not modelled). Defaults to `ProtectedFiles.off`, the kernel's own default;
         /// many distributions set them non-zero through `sysctl.d`. Only
         /// `ProtectedFiles.off` is admitted on Darwin, which has none of them.
         ///

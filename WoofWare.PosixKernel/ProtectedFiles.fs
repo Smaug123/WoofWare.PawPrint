@@ -35,11 +35,28 @@ type CreationProtection =
     /// world-writable as well.
     | InGroupOrWorldWritableStickyDirectories
 
-/// Linux's `fs.protected_*` sysctls that decide what a caller may do with
-/// another user's files in a sticky directory: machine configuration rather
-/// than a fact of the kernel, since an administrator sets them.
+/// Linux's `fs.protected_hardlinks` sysctl: which inodes a caller that does
+/// not own them may hard-link.
 ///
-/// `fs.protected_hardlinks` is not here: this library models no `link(2)`.
+/// Linux admits only 0 and 1 for it; Darwin has no such setting, and behaves
+/// as `Off`.
+[<RequireQualifiedAccess>]
+type HardlinkProtection =
+    /// 0, the kernel's own default: a caller may link any inode it may reach.
+    | Off
+    /// 1: a caller that does not own a regular file may link it only if it may
+    /// both read and write it, and `link(2)` answers EPERM otherwise.
+    ///
+    /// Many distributions set this through `sysctl.d`.
+    // Measured by `link-symlink.c` (LINKPERM, protected_hardlinks=1) on Linux
+    // 6.18.5: as uid 1000, root's 0600 and 0644 files are EPERM and its 0666
+    // file links. What the setting does to set-ID files and to other kinds of
+    // inode is unmeasured, and is `link(2)`'s to measure.
+    | NonOwnersNeedReadAndWrite
+
+/// Linux's `fs.protected_*` sysctls that decide what a caller may do with
+/// another user's files: machine configuration rather than a fact of the
+/// kernel, since an administrator sets them.
 type ProtectedFiles =
     {
         /// `fs.protected_symlinks`.
@@ -50,6 +67,10 @@ type ProtectedFiles =
         ///
         /// No inode this library models is a FIFO, so this decides nothing yet.
         Fifos : CreationProtection
+        /// `fs.protected_hardlinks`.
+        ///
+        /// This library models no `link(2)`, so this decides nothing yet.
+        Hardlinks : HardlinkProtection
     }
 
 [<RequireQualifiedAccess>]
@@ -65,6 +86,7 @@ module ProtectedFiles =
             Symlinks = SymlinkProtection.Off
             RegularFiles = CreationProtection.Off
             Fifos = CreationProtection.Off
+            Hardlinks = HardlinkProtection.Off
         }
 
     /// Whether a walk on behalf of `credentials`, following a symbolic link
