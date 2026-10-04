@@ -77,6 +77,12 @@ public sealed class SealedC : ILeft, IRight { }
 public struct S : ILeft, IRight { }
 public class SC : ISLeft, ISRight { }
 public struct SS : ISLeft, ISRight { }
+public struct GS<U> : ISLeft, ISRight { }
+
+public static class Holder<T> where T : ISFoo
+{
+    public static Func<int> Pointer() => T.SFrob;
+}
 
 public static class Cases
 {
@@ -111,6 +117,16 @@ public static class Cases
     public static int Static<T>() where T : ISFoo => T.SFrob();
 
     public static Func<int> StaticPointer<T>() where T : ISFoo => T.SFrob;
+
+    public static int reached;
+
+    /// Counts its runs before the `ldftn`, so a case can tell the `ldftn` throwing from the call
+    /// throwing on entry.
+    public static Func<int> CountedStaticPointer<T>() where T : ISFoo
+    {
+        reached++;
+        return T.SFrob;
+    }
 
     public static int CaseInterfaceCall() => ExpectAmbiguous(() => ThroughInterface(new C()));
 
@@ -164,14 +180,16 @@ public static class Cases
         return ExpectAmbiguous(() => d(new C()));
     }
 
-    /// Measured: the delegate is made, and invoking it throws.
-    public static int CaseStaticPointer()
+    /// Measured: where CoreCLR runs the method `make` names as shared generic code, the delegate is
+    /// made, and invoking it throws. Calling it through a delegate keeps the JIT from inlining it
+    /// into exact code, where the `ldftn` would throw.
+    public static int MadeThenThrows(Func<Func<int>> make)
     {
         Func<int> d;
 
         try
         {
-            d = StaticPointer<SC>();
+            d = make();
         }
         catch (Exception e)
         {
@@ -180,6 +198,32 @@ public static class Cases
         }
 
         return ExpectAmbiguous(d);
+    }
+
+    public static int CaseStaticPointer() => MadeThenThrows(StaticPointer<SC>);
+
+    public static int CaseStaticPointerOnSharedValueType() => MadeThenThrows(StaticPointer<GS<string>>);
+
+    public static int CaseStaticPointerInSharedType() => MadeThenThrows(Holder<SC>.Pointer);
+
+    /// Measured: CoreCLR compiles `CountedStaticPointer<SS>` for `SS` alone and puts the throw at
+    /// the `ldftn`, so the delegate is never made.
+    public static int CaseStaticPointerOnValueType()
+    {
+        bool made = false;
+
+        int result =
+            ExpectAmbiguous(() =>
+            {
+                Func<int> d = CountedStaticPointer<SS>();
+                made = true;
+                return d();
+            });
+
+        if (made)
+            return 50;
+
+        return reached == 1 ? result : 60;
     }
 }
 """
@@ -207,6 +251,14 @@ public static class Program
             ExpectedReturnCode = 0
         }
         |> CrossAssemblyHarness.runTestReplacing [ libraryAfter ]
+
+    let private refuses (case : string) : unit =
+        {
+            Assemblies = [ libraryBefore ; entry case ]
+            EntryAssemblyName = entryName
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal [ "Ldftn" ; "ambiguous" ; "shared" ] [] [ libraryAfter ]
 
     [<Test>]
     let ``an ambiguous interface call throws AmbiguousImplementationException`` () : unit = agrees "CaseInterfaceCall"
@@ -236,10 +288,16 @@ public static class Program
     let ``an open delegate invoked on a receiver whose slot is ambiguous throws`` () : unit = agrees "CaseOpenDelegate"
 
     [<Test>]
-    let ``a pointer to an ambiguous static virtual is refused`` () : unit =
-        {
-            Assemblies = [ libraryBefore ; entry "CaseStaticPointer" ]
-            EntryAssemblyName = entryName
-            ExpectedReturnCode = 0
-        }
-        |> CrossAssemblyHarness.runTestExpectingRefusal [ "Ldftn" ; "ambiguous" ] [] [ libraryAfter ]
+    let ``a pointer to an ambiguous static virtual in exact code throws at the ldftn`` () : unit =
+        agrees "CaseStaticPointerOnValueType"
+
+    [<Test>]
+    let ``a pointer to an ambiguous static virtual in shared code is refused`` () : unit = refuses "CaseStaticPointer"
+
+    [<Test>]
+    let ``a pointer to an ambiguous static virtual over a value type with a class argument is refused`` () : unit =
+        refuses "CaseStaticPointerOnSharedValueType"
+
+    [<Test>]
+    let ``a pointer to an ambiguous static virtual in a type CoreCLR shares is refused`` () : unit =
+        refuses "CaseStaticPointerInSharedType"
