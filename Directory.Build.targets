@@ -7,4 +7,14 @@
        reads those variables, and with one version per package they would be meaningless
        anyway. This file is imported after NuGet packages' targets, so this definition wins. -->
   <Target Name="SetCloudBuildVersionVars" />
+  <!-- The FSharp.Core version every F# project references, and so the floor each published
+       package's nuspec states. Left implicit, it is whatever the SDK that ran `pack` ships
+       (10.1.203 for SDK 10.0.203, 10.1.401 for 10.0.401), so moving the devshell's SDK would
+       silently raise what every consumer must reference. This is an Update of the SDK's implicit
+       reference rather than an Include of our own: that reference is declared in the SDK's
+       Microsoft.FSharp.NetSdk.props, which is evaluated after Directory.Build.props and before
+       this file, and an Update applies only to items already declared. -->
+  <ItemGroup>
+    <PackageReference Update="FSharp.Core" Version="10.1.203" />
+  </ItemGroup>
 </Project>
