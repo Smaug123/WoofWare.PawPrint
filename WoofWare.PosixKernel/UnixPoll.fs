@@ -93,7 +93,7 @@ module PollRefusal =
 /// The flags `epoll_create1(2)` accepts, in Linux's numbering.
 [<RequireQualifiedAccess>]
 module EpollCreateFlags =
-    /// `EPOLL_CLOEXEC`: set `FD_CLOEXEC` on the new descriptor. The same value
+    /// `EPOLL_CLOEXEC`: give the new descriptor `FD_CLOEXEC`. The same value
     /// as `O_CLOEXEC`.
     [<Literal>]
     let CloseOnExec : int = OpenFlagNumbering.LinuxCloseOnExec
@@ -1306,10 +1306,9 @@ module UnixPoll =
     /// `epoll_create1(2)`: create an epoll instance and a descriptor onto it, the
     /// lowest one not in use.
     ///
-    /// `flags` is Linux's: 0, or `EpollCreateFlags.CloseOnExec`, which is
-    /// accepted and has no effect here, since it sets `FD_CLOEXEC`, which
-    /// matters only across `exec`, and this kernel models neither `exec` nor any
-    /// per-descriptor flag. Any other bit is `EINVAL`, and changes nothing.
+    /// `flags` is Linux's: 0, or `EpollCreateFlags.CloseOnExec`, which gives
+    /// the new descriptor `FD_CLOEXEC`. Any other bit is `EINVAL`, and changes
+    /// nothing.
     ///
     /// Under the Darwin flavour every call is refused: Darwin has no epoll.
     let epollCreate1<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1329,6 +1328,14 @@ module UnixPoll =
         else
 
         let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+
+        let registry =
+            FileDescriptorRegistry.setFlags
+                fd
+                { DescriptorFlags.none with
+                    CloseOnExec = flags &&& EpollCreateFlags.CloseOnExec <> 0
+                }
+                registry
 
         Ok (
             Ok (

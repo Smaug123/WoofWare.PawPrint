@@ -96,12 +96,12 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 
 | Module | Syscalls |
 | --- | --- |
-| `UnixDescriptor` | `dup`, `lseek`, `flock`, `ftruncate`, `posix_fadvise`, `close`, `ioctl` (`FICLONE` and `FIONREAD`), `tcgetattr`, `geteuid`, `getegid`, `getgroups` |
+| `UnixDescriptor` | `dup`, `dup2`, `dup3`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `lseek`, `flock`, `ftruncate`, `posix_fadvise`, `close`, `ioctl` (`FICLONE` and `FIONREAD`), `tcgetattr`, `geteuid`, `getegid`, `getgroups` |
 | `UnixPathResolution` | `stat`, `fstat`, `chmod`, `fchmod`, `chown`, `lchown`, `fchown`, `futimens`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
 | `UnixNamespace` | `open`, `readlink`, reading a directory, `mkdir`, `unlink`, `rmdir`, `rename`, `clonefile` |
 | `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
-| `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt`, and the `O_NONBLOCK` half of `fcntl` |
+| `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt` |
 | `UnixConnection` | `connect`, `accept` |
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
 | `UnixKqueue` | `kqueue`, `kevent` |

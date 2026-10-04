@@ -95,7 +95,7 @@ module TestBlockingAccept =
         | other, _ -> failwith $"dup of %d{fd} answered %A{other}"
 
     let private setNonBlocking (fd : int) (value : bool) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        UnixSocket.setNonBlocking fd value system |> snd
+        UnixDescriptor.setNonBlocking fd value system |> snd
 
     /// `task` parks in an accept through `fd`, whose queue must be empty.
     let private parkIn (task : int) (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -362,7 +362,7 @@ module TestBlockingAccept =
             | SimulatedUnixFlavour.Linux -> false
             | SimulatedUnixFlavour.Darwin -> true
 
-        UnixSocket.isNonBlocking accepted system |> shouldEqual (Some expected)
+        UnixDescriptor.isNonBlocking accepted system |> shouldEqual (Some expected)
 
     // ------------------------------------------------------------------
     // Several accepters

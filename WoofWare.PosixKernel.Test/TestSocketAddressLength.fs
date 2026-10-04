@@ -323,7 +323,7 @@ module TestSocketAddressLength =
                     let clientFd, system =
                         if nonBlocking then
                             let fd, system = streamSocket system
-                            let system = UnixSocket.setNonBlocking fd true system |> snd
+                            let system = UnixDescriptor.setNonBlocking fd true system |> snd
 
                             match
                                 CopyIn.connect

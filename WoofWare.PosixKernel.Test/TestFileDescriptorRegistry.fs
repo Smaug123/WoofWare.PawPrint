@@ -26,6 +26,7 @@ module TestFileDescriptorRegistry =
             AccessMode = FileAccessMode.ReadOnly
             NonBlocking = false
             Flock = None
+            Status = OpenFileStatus.none
         }
 
     /// `close`, for tests whose subject is the descriptor table rather than the
@@ -1054,6 +1055,7 @@ module TestFileDescriptorRegistry =
                 AccessMode = FileAccessMode.ReadOnly
                 NonBlocking = false
                 Flock = Some mode
+                Status = OpenFileStatus.none
             }
 
         let table (first : FlockMode) (second : FlockMode) =
@@ -1093,6 +1095,7 @@ module TestFileDescriptorRegistry =
                 AccessMode = FileAccessMode.ReadOnly
                 NonBlocking = false
                 Flock = Some FlockMode.Exclusive
+                Status = OpenFileStatus.none
             }
 
         FileDescriptorRegistry.Unchecked.ofParts
@@ -1434,6 +1437,7 @@ module TestFileDescriptorRegistry =
             AccessMode = FileAccessMode.ReadWrite
             NonBlocking = false
             Flock = None
+            Status = OpenFileStatus.none
         }
 
     /// Two descriptions naming one socket. PawPrint models no way to produce
@@ -1612,6 +1616,7 @@ module TestFileDescriptorRegistry =
                             AccessMode = FileAccessMode.ReadOnly
                             NonBlocking = false
                             Flock = None
+                            Status = OpenFileStatus.none
                         }
                     ])
                 (OpenFileDescriptionId 9L)
@@ -1732,7 +1737,7 @@ module TestFileDescriptorRegistry =
     /// The store is flavour-free: measured on both kernels, `F_SETFL` on an
     /// event port genuinely toggles the bit (on Darwin the call *also* reports
     /// ENOTTY, which is the caller's business — the flavour split lives in
-    /// `UnixSocket.setNonBlocking`, which stores before reporting).
+    /// `UnixDescriptor.setNonBlocking`, which stores before reporting).
     [<Test>]
     let ``setNonBlocking round-trips on a socket event port`` () : unit =
         let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
@@ -1986,6 +1991,7 @@ module TestFileDescriptorRegistry =
                             AccessMode = FileAccessMode.ReadWrite
                             NonBlocking = false
                             Flock = None
+                            Status = OpenFileStatus.none
                         }
                     ])
                 (OpenFileDescriptionId 100L)

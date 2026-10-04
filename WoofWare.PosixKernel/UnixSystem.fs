@@ -16,6 +16,12 @@ type Syscall =
     | GetEffectiveGroupId
     | GetProcessId
     | Dup of fd : int
+    /// `command` and `argument` are raw, in the flavour's `<fcntl.h>`
+    /// numbering; see `UnixDescriptor.fcntl`.
+    | Fcntl of fd : int * command : int * argument : int
+    | Dup2 of oldFd : int * newFd : int
+    /// `flags` is raw, in Linux's numbering.
+    | Dup3 of oldFd : int * newFd : int * flags : int
     | LSeek of fd : int * offset : int64 * whence : int
     /// `operation` is raw: which combinations of LOCK_SH/LOCK_EX/LOCK_UN/LOCK_NB
     /// are legal, and what an illegal one earns, is behaviour this kernel models
@@ -75,6 +81,9 @@ type Syscall =
 /// refusal means for it; nothing here is recoverable by retrying.
 [<RequireQualifiedAccess>]
 type SyscallRefusal<'Task> =
+    | Fcntl of FcntlRefusal
+    | Dup2 of Dup2Refusal<'Task>
+    | Dup3 of Dup3Refusal<'Task>
     | LSeek of LSeekRefusal
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
@@ -217,6 +226,22 @@ type UnixSystemDefect<'Task> =
         description : OpenFileDescriptionId *
         target : OpenFileTarget *
         flavour : SimulatedUnixFlavour
+    /// A descriptor carries `FD_CLOFORK` under the Linux flavour, which has no
+    /// such flag.
+    | CloseOnForkUnderLinux of fd : int
+    /// A description carries one of `O_SYNC` and `O_DSYNC` without the other
+    /// under the Linux flavour, whose `open(2)` sets both together and whose
+    /// `F_SETFL` changes neither.
+    | UnpairedSynchronisationUnderLinux of description : OpenFileDescriptionId
+    /// A description's status holds a fact the flavour's `F_GETFL` does not
+    /// report, which `OpenFileStatus` keeps only under the other flavour.
+    | StatusNotOfFlavour of
+        description : OpenFileDescriptionId *
+        status : OpenFileStatus *
+        flavour : SimulatedUnixFlavour
+    /// Under the Darwin flavour, a description holds an `flock` lock and its
+    /// status does not record that one was granted (`OpenFileStatus.Flocked`).
+    | FlockHeldNotRecorded of description : OpenFileDescriptionId
     /// A task is parked in a `poll` watching an event queue, which `poll`
     /// refuses before it parks and whose readiness is not modelled.
     | ParkedPollOnEventQueue of task : 'Task * description : OpenFileDescriptionId
@@ -780,6 +805,18 @@ module UnixSystem =
                 system
             )
         | Syscall.Dup fd -> Ok (UnixDescriptor.dup fd system) |> answered
+        | Syscall.Fcntl (fd, command, argument) ->
+            UnixDescriptor.fcntl fd command argument system
+            |> answered
+            |> Result.mapError SyscallRefusal.Fcntl
+        | Syscall.Dup2 (oldFd, newFd) ->
+            UnixDescriptor.dup2 oldFd newFd system
+            |> answered
+            |> Result.mapError SyscallRefusal.Dup2
+        | Syscall.Dup3 (oldFd, newFd, flags) ->
+            UnixDescriptor.dup3 oldFd newFd flags system
+            |> answered
+            |> Result.mapError SyscallRefusal.Dup3
         | Syscall.LSeek (fd, offset, whence) ->
             UnixDescriptor.lseek fd offset whence system
             |> answered
@@ -1129,6 +1166,58 @@ module UnixSystem =
         // task waits on, and the wake reads the description back; the park
         // holds it until the call returns, so an absent one was parked on
         // without going through the syscall or destroyed around it.
+        let statusOfFlavour =
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            |> Map.toList
+            |> List.collect (fun (id, description) ->
+                let status = description.Status
+
+                let foreign =
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux -> status.Written || status.Flocked
+                    | SimulatedUnixFlavour.Darwin -> status.OpenedDirectory || status.OpenedNoFollow
+
+                let unrecorded =
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux -> false
+                    | SimulatedUnixFlavour.Darwin -> description.Flock.IsSome && not status.Flocked
+
+                [
+                    if foreign then
+                        yield UnixSystemDefect.StatusNotOfFlavour (id, status, flavour)
+                    if unrecorded then
+                        yield UnixSystemDefect.FlockHeldNotRecorded id
+                ]
+            )
+
+        let linuxDescriptorFlags =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> []
+            | SimulatedUnixFlavour.Linux ->
+                let registry = system.Process.FileDescriptors
+
+                let closeOnFork =
+                    FileDescriptorRegistry.fds registry
+                    |> Map.toList
+                    |> List.filter (fun (fd, _) ->
+                        match FileDescriptorRegistry.tryFindFlags fd registry with
+                        | Some flags -> flags.CloseOnFork
+                        | None -> false
+                    )
+                    |> List.map (fun (fd, _) -> UnixSystemDefect.CloseOnForkUnderLinux fd)
+
+                let unpaired =
+                    FileDescriptorRegistry.descriptions registry
+                    |> Map.toList
+                    |> List.filter (fun (_, description) ->
+                        description.Status.Synchronous <> description.Status.DataSynchronous
+                    )
+                    |> List.map (fun (id, _) -> UnixSystemDefect.UnpairedSynchronisationUnderLinux id)
+
+                closeOnFork @ unpaired
+
         let parks =
             let descriptions =
                 FileDescriptorRegistry.descriptions system.Process.FileDescriptors
@@ -1740,6 +1829,8 @@ module UnixSystem =
         @ connectionFreshness
         @ ordinalFreshness
         @ ordinalDuplicates
+        @ linuxDescriptorFlags
+        @ statusOfFlavour
         @ parks
         @ unreferencedDescriptions
         @ parkOrdinalFreshness

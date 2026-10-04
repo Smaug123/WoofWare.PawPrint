@@ -108,6 +108,7 @@ module TestUnixSystemInvariants =
                                             AccessMode = FileAccessMode.ReadWrite
                                             NonBlocking = false
                                             Flock = None
+                                            Status = OpenFileStatus.none
                                         }
                                     ])
                                 (OpenFileDescriptionId 1L)
@@ -173,6 +174,7 @@ module TestUnixSystemInvariants =
                                             AccessMode = FileAccessMode.ReadWrite
                                             NonBlocking = false
                                             Flock = None
+                                            Status = OpenFileStatus.none
                                         }
                                     ])
                                 (OpenFileDescriptionId 1L)
@@ -229,6 +231,7 @@ module TestUnixSystemInvariants =
                                             AccessMode = FileAccessMode.ReadWrite
                                             NonBlocking = false
                                             Flock = None
+                                            Status = OpenFileStatus.none
                                         }
                                     ])
                                 (OpenFileDescriptionId 1L)

@@ -410,7 +410,7 @@ module TestUnconnectedSocketTransfer =
         built
         |> Option.map (fun system ->
             if row.NonBlocking then
-                match UnixSocket.setNonBlocking fd true system with
+                match UnixDescriptor.setNonBlocking fd true system with
                 | SetNonBlockingAnswer.Set, system -> fd, system
                 | other, _ -> failwith $"the kernel would not set O_NONBLOCK: %A{other}"
             else

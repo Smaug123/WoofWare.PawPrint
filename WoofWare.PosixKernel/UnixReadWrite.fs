@@ -614,6 +614,69 @@ module UnixReadWrite =
             failwith
                 $"UnixReadWrite.%s{syscall}: given %d{bytes.Length} bytes, more than the %d{maxTransfer} one call moves on this platform. Pass the bytes the admission said to transfer, whose count is already one call's worth (this is a bug in the caller)."
 
+    /// Mark the description `id` as written through (`OpenFileStatus.Written`),
+    /// under the flavour that records it, if it is still in the table.
+    let private markWritten<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (id : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let darwin =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> true
+            | SimulatedUnixFlavour.Linux -> false
+
+        if
+            darwin
+            && Map.containsKey id (FileDescriptorRegistry.descriptions system.Process.FileDescriptors)
+        then
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors =
+                            FileDescriptorRegistry.mapStatus
+                                id
+                                (fun status ->
+                                    { status with
+                                        Written = true
+                                    }
+                                )
+                                system.Process.FileDescriptors
+                    }
+            }
+        else
+            system
+
+    /// Whether a write that had moved `alreadyMoved` bytes before this step,
+    /// and returns `answer`, returns having moved any: its answer counts them,
+    /// or it fails having moved some earlier.
+    let private returnsHavingMoved (alreadyMoved : int) (answer : WriteAnswer) : bool =
+        match answer with
+        | WriteAnswer.Completed written -> written > 0L || alreadyMoved > 0
+        | WriteAnswer.Failed _ -> alreadyMoved > 0
+
+    /// A step of a write through the description `id`, marking the description
+    /// written if the call returns and `moved` says it moved bytes. Measured on
+    /// Darwin (`fcntl-dup.c`, WRITTEN rows): a write that returns having moved
+    /// bytes marks the description, whatever it answers, and one asleep part
+    /// way does not yet.
+    let private markedAfterWrite<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (id : OpenFileDescriptionId)
+        (moved : 'Answer -> bool)
+        (outcome : WriteOutcome<'Answer, 'Task, 'Handler>)
+        : WriteOutcome<'Answer, 'Task, 'Handler>
+        =
+        match outcome with
+        | WriteOutcome.Returns (answer, system) when moved answer ->
+            WriteOutcome.Returns (answer, markWritten id system)
+        | WriteOutcome.ReturnsRaising (answer, signal, system) when moved answer ->
+            WriteOutcome.ReturnsRaising (answer, signal, markWritten id system)
+        | WriteOutcome.Returns _
+        | WriteOutcome.ReturnsRaising _
+        | WriteOutcome.ProcessEnded _
+        | WriteOutcome.WouldBlock _
+        | WriteOutcome.Restarts _ -> outcome
+
     /// `system` with `pipeId`'s table entry replaced by `pipe`.
     let private withPipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
@@ -2077,31 +2140,8 @@ module UnixReadWrite =
         | UserBuffer.Addressless -> Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped -> Ok (unchanged (WriteAdmission.Transfer count))
 
-    /// `write(2)`, given the bytes the caller extracted after `admitWrite` said
-    /// to.
-    ///
-    /// Takes no buffer: every question about the caller's buffer is settled by
-    /// `admitWrite`, and a signature that could not ask them again is the point.
-    /// Still answers the descriptor questions itself, so a caller that skipped
-    /// the admission gets a kernel's answer rather than an inconsistent one.
-    ///
-    /// `bytes` is at most one call's worth, as the admission's
-    /// `WriteAdmission.Transfer` says; a longer array is refused as the
-    /// caller's mistake.
-    ///
-    /// Short only for a non-blocking write into a pipe with room for part of
-    /// it: this kernel's filesystem cannot run out of space. A blocking write
-    /// into a pipe with room for part of it puts that part in and sleeps for
-    /// the rest (`WriteOutcome.WouldBlock`), as one with room for none does.
-    ///
-    /// A write into a pipe the client drains is read by the client as it is
-    /// written, and recorded in `UnixMachineState.Delivered`. A write into a
-    /// pipe with no reader answers `EPIPE` and raises `SIGPIPE`, and a socket
-    /// answers or is refused, as `admitWrite` describes.
-    ///
-    /// Fails loudly if `task` is not one of the process's tasks, or is already
-    /// asleep in a syscall.
-    let write<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `write`, without marking the description written.
+    let private writeUnmarked<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (bytes : ImmutableArray<byte>)
@@ -2295,6 +2335,43 @@ module UnixReadWrite =
                     }
             }
 
+    /// `write(2)`, given the bytes the caller extracted after `admitWrite` said
+    /// to.
+    ///
+    /// Takes no buffer: every question about the caller's buffer is settled by
+    /// `admitWrite`, and a signature that could not ask them again is the point.
+    /// Still answers the descriptor questions itself, so a caller that skipped
+    /// the admission gets a kernel's answer rather than an inconsistent one.
+    ///
+    /// `bytes` is at most one call's worth, as the admission's
+    /// `WriteAdmission.Transfer` says; a longer array is refused as the
+    /// caller's mistake.
+    ///
+    /// Short only for a non-blocking write into a pipe with room for part of
+    /// it: this kernel's filesystem cannot run out of space. A blocking write
+    /// into a pipe with room for part of it puts that part in and sleeps for
+    /// the rest (`WriteOutcome.WouldBlock`), as one with room for none does.
+    ///
+    /// A write into a pipe the client drains is read by the client as it is
+    /// written, and recorded in `UnixMachineState.Delivered`. A write into a
+    /// pipe with no reader answers `EPIPE` and raises `SIGPIPE`, and a socket
+    /// answers or is refused, as `admitWrite` describes.
+    ///
+    /// Fails loudly if `task` is not one of the process's tasks, or is already
+    /// asleep in a syscall.
+    let write<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (bytes : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
+        =
+        let outcome = writeUnmarked task fd bytes system
+
+        match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+        | None -> outcome
+        | Some id -> outcome |> Result.map (markedAfterWrite id (returnsHavingMoved 0))
+
     /// `outcome`, with the open file descriptions `held`, which the write held
     /// while it slept, released if nothing references them now: the call's
     /// reference goes as it returns, and with it the write end, if no
@@ -2316,6 +2393,29 @@ module UnixReadWrite =
         | WriteOutcome.WouldBlock (condition, system) -> WriteOutcome.WouldBlock (condition, release system)
         | WriteOutcome.Restarts system -> WriteOutcome.Restarts (release system)
         | WriteOutcome.ProcessEnded ended -> WriteOutcome.ProcessEnded ended
+
+    /// The description the write `task` is asleep in was made through, and
+    /// how many bytes it has moved so far; `None` once a close has ended it,
+    /// which marked the description then (`UnixDescriptor.close`).
+    let private waitingWriter<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : (OpenFileDescriptionId * int) option
+        =
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some (ParkedSyscall.PipeWrite {
+                                            Writer = SleepTarget.Waiting (description, _)
+                                            Written = written
+                                        }) -> Some (description, written)
+        | Some (ParkedSyscall.PipeWrite _)
+        | Some (ParkedSyscall.PipeRead _)
+        | Some (ParkedSyscall.Accept _)
+        | Some (ParkedSyscall.EpollWait _)
+        | Some (ParkedSyscall.Kevent _)
+        | Some (ParkedSyscall.Flock _)
+        | Some (ParkedSyscall.Poll _)
+        | Some (ParkedSyscall.KqueuePoll _)
+        | None -> None
 
     /// The write `task` is asleep in.
     let private parkedWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -2518,7 +2618,20 @@ module UnixReadWrite =
             | Some parked -> ParkedSyscall.descriptions parked
             | None -> []
 
+        // An admission that answers is the call returning.
+        let moved (written : int) (resumption : WriteResumption) : bool =
+            match resumption with
+            | WriteResumption.Answered answer -> returnsHavingMoved written answer
+            | WriteResumption.Transfer _ -> false
+
+        let marking = waitingWriter task system
+
         admitFinishWriteHolding task system
+        |> Result.map (fun outcome ->
+            match marking with
+            | Some (description, written) -> markedAfterWrite description (moved written) outcome
+            | None -> outcome
+        )
         |> Result.map (releasedAfterWrite "UnixReadWrite.admitFinishWrite" held)
 
 
@@ -2604,7 +2717,14 @@ module UnixReadWrite =
             | Some parked -> ParkedSyscall.descriptions parked
             | None -> []
 
+        let marking = waitingWriter task system
+
         finishWriteHolding task bytes system
+        |> Result.map (fun outcome ->
+            match marking with
+            | Some (description, written) -> markedAfterWrite description (returnsHavingMoved written) outcome
+            | None -> outcome
+        )
         |> Result.map (releasedAfterWrite "UnixReadWrite.finishWrite" held)
 
 
@@ -2843,30 +2963,8 @@ module UnixReadWrite =
         | UserBuffer.Addressless -> Error (PWriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped -> Ok (PWriteAdmission.Transfer count)
 
-    /// `pwrite(2)`, given the bytes the caller extracted after `admitPWrite` said
-    /// to: place them at `offset` without consulting or moving the description's
-    /// own file offset.
-    ///
-    /// Takes no buffer, for the reason `write` does not: every question about the
-    /// caller's buffer is settled by the admission, and a signature that could
-    /// not ask them again is the point. Still answers the descriptor questions
-    /// itself, so a caller that skipped the admission gets a kernel's answer
-    /// rather than an inconsistent one.
-    ///
-    /// A system comes back, unlike `pread`'s: the offset does not move, but the
-    /// file's contents and timestamps do.
-    ///
-    /// `bytes` is at most one call's worth, as the admission's
-    /// `PWriteAdmission.Transfer` says; a longer array is refused as the
-    /// caller's mistake.
-    ///
-    /// Never short and never `EINTR`: this kernel has nothing that could push
-    /// back on a write, and its filesystem cannot run out of space. A write of
-    /// more than a page to `/dev/urandom` by a task with a signal pending,
-    /// which a real kernel would cut short, is refused.
-    ///
-    /// `task` is as `admitPWrite`'s.
-    let pwrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// `pwrite`, without marking the description written.
+    let private pwriteUnmarked<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (fd : int)
         (bytes : ImmutableArray<byte>)
@@ -2939,6 +3037,47 @@ module UnixReadWrite =
                     }
             }
         )
+
+    /// `pwrite(2)`, given the bytes the caller extracted after `admitPWrite` said
+    /// to: place them at `offset` without consulting or moving the description's
+    /// own file offset.
+    ///
+    /// Takes no buffer, for the reason `write` does not: every question about the
+    /// caller's buffer is settled by the admission, and a signature that could
+    /// not ask them again is the point. Still answers the descriptor questions
+    /// itself, so a caller that skipped the admission gets a kernel's answer
+    /// rather than an inconsistent one.
+    ///
+    /// A system comes back, unlike `pread`'s: the offset does not move, but the
+    /// file's contents and timestamps do.
+    ///
+    /// `bytes` is at most one call's worth, as the admission's
+    /// `PWriteAdmission.Transfer` says; a longer array is refused as the
+    /// caller's mistake.
+    ///
+    /// Never short and never `EINTR`: this kernel has nothing that could push
+    /// back on a write, and its filesystem cannot run out of space. A write of
+    /// more than a page to `/dev/urandom` by a task with a signal pending,
+    /// which a real kernel would cut short, is refused.
+    ///
+    /// `task` is as `admitPWrite`'s.
+    let pwrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (bytes : ImmutableArray<byte>)
+        (offset : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteAnswer * UnixSystem<'Task, 'Handler>, PWriteRefusal>
+        =
+        // Marked as a write is (`markedAfterWrite`): a pwrite that moved bytes
+        // marks the description it was made through.
+        match
+            pwriteUnmarked task fd bytes offset system,
+            FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors
+        with
+        | Ok (WriteAnswer.Completed written, system), Some id when written > 0L ->
+            Ok (WriteAnswer.Completed written, markWritten id system)
+        | result, _ -> result
 
     /// `copy_file_range(inFd, NULL, outFd, NULL, length, flags)`: copy up to
     /// `length` bytes from `inFd`'s offset to `outFd`'s, inside the kernel,

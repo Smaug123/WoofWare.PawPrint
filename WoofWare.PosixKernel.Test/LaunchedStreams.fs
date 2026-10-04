@@ -38,4 +38,5 @@ module LaunchedStreams =
                 | PipeEnd.Write -> FileAccessMode.WriteOnly
             NonBlocking = false
             Flock = None
+            Status = OpenFileStatus.none
         }
