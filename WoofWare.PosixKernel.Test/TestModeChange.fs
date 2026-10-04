@@ -244,6 +244,7 @@ module TestModeChange =
         VirtualFileSystem.createSymlink
             (inodeAt vfs parent)
             (name child)
+            SymlinkModes.linux
             Owners.linuxDefault
             epoch
             (SymlinkTarget.parseOrFail context target)
@@ -286,9 +287,7 @@ module TestModeChange =
         | None -> failwith $"%s{p} is absent"
 
     let private modeOf (p : string) (system : UnixSystem<int, string>) : int =
-        match Inode.permissions (inodeOf p system) with
-        | InodePermissions.Stored bits -> PermissionBits.toInt bits
-        | InodePermissions.PlatformSymlinkDefault -> failwith $"%s{p} is a symlink"
+        PermissionBits.toInt (Inode.permissions (inodeOf p system))
 
     /// u1000, whose effective group is 1000 and supplementary groups 1000 and
     /// 2000: the probe's unprivileged Linux caller.
@@ -574,7 +573,7 @@ module TestModeChange =
             match fchmodAnswer fd 0o400 unlinked with
             | SyscallAnswer.Completed 0L, after ->
                 match VirtualFileSystem.tryGet inode after.Machine.FileSystem with
-                | Some orphan -> Inode.permissions orphan |> shouldEqual (InodePermissions.Stored (mode 0o400))
+                | Some orphan -> Inode.permissions orphan |> shouldEqual (mode 0o400)
                 | None -> failwith "the orphan was freed while a descriptor held it"
             | other -> failwith $"fchmod of an orphan: %A{other}"
 

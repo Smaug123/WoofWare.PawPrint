@@ -1518,6 +1518,7 @@ module TestUnixSystemStep =
                 VirtualFileSystem.createSymlink
                     rootInode
                     (DirectoryEntryName.parseOrFail context "l")
+                    (SymlinkModes.at022 system.Machine.UnixPlatform)
                     (InodeOwner.ofProcess system.Process.Credentials)
                     epoch
                     (SymlinkTarget.parseOrFail context "abcdefg")
@@ -1573,7 +1574,7 @@ module TestUnixSystemStep =
         status.Size |> shouldEqual 40L
 
     [<Test>]
-    let ``a symlink reports its target's byte length and the platform's own bits`` () : unit =
+    let ``a symlink reports its target's byte length and the bits it was created with`` () : unit =
         // Reachable only through `statOf`: `open` resolves a link, so no
         // descriptor ever names one and `fstat` cannot see it.
         for flavour in [ linux ; darwin ] do
@@ -1589,19 +1590,14 @@ module TestUnixSystemStep =
             status.Size |> shouldEqual 7L
 
             let expected =
-                SimulatedUnixPlatform.symlinkPermissions system.Machine.UnixPlatform
-                |> PermissionBits.toInt
+                SymlinkModes.at022 system.Machine.UnixPlatform |> PermissionBits.toInt
 
             status.Mode |> shouldEqual (0o120000 ||| expected)
 
-        // And the two flavours disagree about those bits, so the row above is
-        // reading the platform rather than a constant.
-        (SimulatedUnixPlatform.symlinkPermissions SimulatedUnixPlatform.linuxX64
-         |> PermissionBits.toInt)
-        |> shouldNotEqual (
-            SimulatedUnixPlatform.symlinkPermissions SimulatedUnixPlatform.macOsArm64
-            |> PermissionBits.toInt
-        )
+        // And the two flavours create those bits differently, so the row above
+        // is reading the link's own bits rather than a constant.
+        (SymlinkModes.at022 SimulatedUnixPlatform.linuxX64 |> PermissionBits.toInt)
+        |> shouldNotEqual (SymlinkModes.at022 SimulatedUnixPlatform.macOsArm64 |> PermissionBits.toInt)
 
     [<Test>]
     let ``a birth time is withheld on the flavour whose stat has no such field`` () : unit =
@@ -1782,6 +1778,7 @@ module TestUnixSystemStep =
             VirtualFileSystem.createSymlink
                 rootInode
                 (DirectoryEntryName.parseOrFail context "l")
+                SymlinkModes.linux
                 (InodeOwner.ofProcess system.Process.Credentials)
                 epoch
                 (SymlinkTarget.parseOrFail context "/d/inner/t")
@@ -1795,6 +1792,7 @@ module TestUnixSystemStep =
             VirtualFileSystem.createSymlink
                 rootInode
                 (DirectoryEntryName.parseOrFail context "dangling")
+                SymlinkModes.linux
                 (InodeOwner.ofProcess system.Process.Credentials)
                 epoch
                 (SymlinkTarget.parseOrFail context "/d/inner/gone")
@@ -4567,6 +4565,7 @@ module TestUnixSystemStep =
                     VirtualFileSystem.createSymlink
                         (VirtualFileSystem.root system.Machine.FileSystem)
                         (DirectoryEntryName.parseOrFail context "ld")
+                        SymlinkModes.linux
                         (InodeOwner.ofProcess system.Process.Credentials)
                         epoch
                         (SymlinkTarget.parseOrFail context "/d/inner")
@@ -4777,6 +4776,7 @@ module TestUnixSystemStep =
                     VirtualFileSystem.createSymlink
                         (VirtualFileSystem.root system.Machine.FileSystem)
                         (DirectoryEntryName.parseOrFail context "wide")
+                        SymlinkModes.linux
                         (InodeOwner.ofProcess system.Process.Credentials)
                         epoch
                         (SymlinkTarget.parseOrFail context "/éé")
@@ -5148,6 +5148,7 @@ module TestUnixSystemStep =
             VirtualFileSystem.createSymlink
                 rootInode
                 (n name)
+                SymlinkModes.linux
                 (InodeOwner.ofProcess system.Process.Credentials)
                 epoch
                 (SymlinkTarget.parseOrFail context target)
@@ -5762,6 +5763,7 @@ module TestUnixSystemStep =
             VirtualFileSystem.createSymlink
                 rootInode
                 (n name)
+                SymlinkModes.linux
                 (InodeOwner.ofProcess system.Process.Credentials)
                 epoch
                 (SymlinkTarget.parseOrFail context target)

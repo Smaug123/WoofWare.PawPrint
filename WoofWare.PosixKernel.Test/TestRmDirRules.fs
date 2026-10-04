@@ -80,7 +80,14 @@ module TestRmDirRules =
             |> snd
 
         let link (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createSymlink parent (name n) Owners.linuxDefault buildTime (target t) vfs
+            VirtualFileSystem.createSymlink
+                parent
+                (name n)
+                SymlinkModes.linux
+                Owners.linuxDefault
+                buildTime
+                (target t)
+                vfs
             |> ok
             |> snd
 

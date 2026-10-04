@@ -25,18 +25,21 @@ The test that separates the first two: **could two machines running the same
 kernel image disagree?** A sysctl, a mount option, a uid — yes, so it is
 configuration. `sizeof(struct sockaddr_un)` — no, so it is the platform.
 
-Three entries currently in `SimulatedUnixPlatform` do not pass that test, and are
+Two entries currently in `SimulatedUnixPlatform` do not pass that test, and are
 there as deliberate approximations rather than as precedent. `pathLimits` holds a
 `NAME_MAX` that varies per mount on Linux, and `bindableEntryNames` holds which
 names APFS will bind, because PawPrint models exactly one filesystem a name can be
 created in per flavour (the device filesystem at `/dev` is closed: no name is
-created in it).
-`symlinkPermissions` holds Darwin's `umask 022` answer, because a
-symlink can only enter this filesystem through a *seed* — a tree some other
-process built, to which this run's configured umask never applied. Each has a
-named trigger for becoming configuration, stated beside it: a second filesystem
-for the first two, and `SystemNative_SymLink` letting a guest create a link. Do
-not cite any of them as a reason to put a machine-dependent fact in the platform.
+created in it). Each has a named trigger for becoming configuration, stated
+beside it: a second filesystem. Do not cite either as a reason to put a
+machine-dependent fact in the platform.
+
+A symbolic link's mode is a worked example of the line between the two: the
+*rule* (`symlinkCreationPermissions`: Linux 0777, Darwin `0777 & ~umask`) is the
+platform's, the *umask* it is applied to is the creating process's, and the
+result is stored on the inode. A seeded link was created by some other process,
+so it gets the rule applied to `SeedEntry.symlinkCreatorsUmask` (022), not to
+this run's configured umask.
 `SystemNative_GetFileSystemType` is the worked example: the value is a *mount*
 fact, so it lives in `KernelConfig.Mount`, even though the flavour
 constrains which types are possible (`Tmpfs` is Linux-only, `Apfs` Darwin-only).

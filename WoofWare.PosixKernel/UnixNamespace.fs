@@ -920,12 +920,7 @@ module UnixNamespace =
         // caller that wants to know what it opened asks `fstat`. So does a
         // device's node, for every access mode, its permission bits checked as
         // a file's are (`devices.c`, OPEN rows).
-        let permissionBits =
-            match Inode.permissions entry with
-            | InodePermissions.Stored bits -> bits
-            | InodePermissions.PlatformSymlinkDefault ->
-                failwith
-                    $"UnixNamespace.openPath: inode %O{inode} reports platform-default symlink permissions, but the symlink arm above answered ELOOP for every link (this is a bug in this library)."
+        let permissionBits = Inode.permissions entry
 
         // What `open(2)` itself checks: whether this process may open *this
         // object* for the access it asked for. Measured identically on macOS and
@@ -1105,7 +1100,7 @@ module UnixNamespace =
             // before it copies anything out. Measured on the host:
             // `readlink("f", (char*)8, 16)` is EINVAL, not EFAULT.
             Ok (ReadLinkAnswer.Failed UnixError.EINVAL)
-        | Some (InodeContent.Symlink target) ->
+        | Some (InodeContent.Symlink (target, _)) ->
 
         match verdict with
         | ReadLinkCapacityVerdict.Refuse _ ->

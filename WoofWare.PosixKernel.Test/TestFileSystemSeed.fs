@@ -42,7 +42,7 @@ module TestFileSystemSeed =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 250_000_000
 
     let private realise (seed : Map<DirectoryEntryName, SeedEntry>) : VirtualFileSystem =
-        VirtualFileSystem.ofFileSystemSeed createdAt Owners.linuxDefault seed
+        VirtualFileSystem.ofFileSystemSeed createdAt Owners.linuxDefault SymlinkModes.linux seed
 
     // ----------------------------------------------------------------- basics
 
@@ -88,7 +88,7 @@ module TestFileSystemSeed =
         | other -> failwith $"expected a regular file, got %A{other}"
 
         match contentAt "/etc/localtime" SymlinkPolicy.NoFollowFinal with
-        | InodeContent.Symlink stored ->
+        | InodeContent.Symlink (stored, _) ->
             // Verbatim, and in particular *not* resolved when the seed was
             // realised: this target names nothing the seed declares.
             PathText.ofTarget stored |> shouldEqual "/usr/share/zoneinfo/UTC"
@@ -332,15 +332,15 @@ module TestFileSystemSeed =
                     name "explicit", SeedEntry.File (bytes "x", mode 0o600, None)
                     name "dirByDefault", SeedEntry.directory Map.empty
                     name "dirExplicit", SeedEntry.Directory (Map.empty, mode 0o711, None)
-                    // A symlink has no seedable mode at all; what `stat` reports
-                    // for one is the platform's business, not the seed's.
+                    // A symlink has no seedable mode at all: it gets the bits the
+                    // seed is realised with.
                     name "link", SeedEntry.Symlink (target "byDefault", None)
                 ]
 
         let vfs = realise seed
         let root = VirtualFileSystem.root vfs
 
-        let permissionsAt (p : string) : InodePermissions =
+        let permissionsAt (p : string) : PermissionBits =
             match
                 PathWalk.resolveExisting
                     limits
@@ -358,21 +358,19 @@ module TestFileSystemSeed =
             | Some entry -> Inode.permissions entry
             | None -> failwith $"%s{p} resolved to an inode the graph does not contain"
 
-        permissionsAt "/explicit" |> shouldEqual (InodePermissions.Stored (mode 0o600))
+        permissionsAt "/explicit" |> shouldEqual (mode 0o600)
 
-        permissionsAt "/dirExplicit"
-        |> shouldEqual (InodePermissions.Stored (mode 0o711))
+        permissionsAt "/dirExplicit" |> shouldEqual (mode 0o711)
 
         // The smart constructors' defaults are what a `umask 022` process would
         // have produced, and are asserted as literals rather than by reference
         // to `SeedEntry.defaultPermsForRegularFile` — otherwise this test would
         // agree with any value that constant happened to take.
-        permissionsAt "/byDefault" |> shouldEqual (InodePermissions.Stored (mode 0o644))
+        permissionsAt "/byDefault" |> shouldEqual (mode 0o644)
 
-        permissionsAt "/dirByDefault"
-        |> shouldEqual (InodePermissions.Stored (mode 0o755))
+        permissionsAt "/dirByDefault" |> shouldEqual (mode 0o755)
 
-        permissionsAt "/link" |> shouldEqual InodePermissions.PlatformSymlinkDefault
+        permissionsAt "/link" |> shouldEqual (mode 0o777)
 
     [<Test>]
     let ``every platform can answer every question stat asks of it`` () : unit =
@@ -382,13 +380,12 @@ module TestFileSystemSeed =
         let linux = SimulatedUnixPlatform.linuxX64
         let darwin = SimulatedUnixPlatform.macOsArm64
 
-        SimulatedUnixPlatform.symlinkPermissions linux
+        SimulatedUnixPlatform.symlinkCreationPermissions linux SeedEntry.symlinkCreatorsUmask
         |> PermissionBits.toInt
         |> shouldEqual 0o777
 
-        // Measured: macOS applies the creating umask to a symlink, so 0o755
-        // under the umask 022 PawPrint assumes until it models one.
-        SimulatedUnixPlatform.symlinkPermissions darwin
+        // Measured: macOS applies the creating umask to a symlink.
+        SimulatedUnixPlatform.symlinkCreationPermissions darwin SeedEntry.symlinkCreatorsUmask
         |> PermissionBits.toInt
         |> shouldEqual 0o755
 
@@ -417,7 +414,7 @@ module TestFileSystemSeed =
         SimulatedUnixPlatform.rawErrnoNumbering custom
         |> shouldEqual RawErrnoNumbering.Linux
 
-        SimulatedUnixPlatform.symlinkPermissions custom
+        SimulatedUnixPlatform.symlinkCreationPermissions custom SeedEntry.symlinkCreatorsUmask
         |> PermissionBits.toInt
         |> shouldEqual 0o777
 

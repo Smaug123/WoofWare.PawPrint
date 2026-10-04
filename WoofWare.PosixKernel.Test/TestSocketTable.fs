@@ -351,6 +351,7 @@ module TestSocketTable =
                 VirtualFileSystem.ofFileSystemSeed
                     (UnixTimestamp.createOrFail "test" 1_700_000_000L 0)
                     Owners.linuxDefault
+                    SymlinkModes.linux
                     lifetimeSeed
 
             let mutable kernel =

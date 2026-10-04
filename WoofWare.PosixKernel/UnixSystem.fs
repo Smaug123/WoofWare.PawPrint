@@ -398,6 +398,14 @@ type UnixSystemDefect<'Task> =
     /// The machine sets an `fs.protected_*` sysctl its flavour does not have:
     /// anything but `ProtectedFiles.off` on Darwin.
     | ProtectedFilesNotOfFlavour of protection : ProtectedFiles * flavour : SimulatedUnixFlavour
+    /// The symbolic link at `inode` has permission bits no link of the
+    /// platform's flavour is created with, under any umask: anything but 0o777
+    /// on Linux, and anything outside 0o777 on Darwin. See
+    /// `SimulatedUnixPlatform.symlinkCreationPermissions`.
+    | SymlinkPermissionsNotOfFlavour of
+        inode : InodeNumber *
+        permissions : PermissionBits *
+        flavour : SimulatedUnixFlavour
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in. `UnixBootImage.withFileSystemAndCurrentDirectory` returns one instead of
@@ -1627,6 +1635,36 @@ module UnixSystem =
             else
                 []
 
+        // Every symbolic link's bits are ones its flavour creates a link with,
+        // under the umask that would leave exactly those bits.
+        let symlinkPermissions =
+            let platform = system.Machine.UnixPlatform
+
+            VirtualFileSystem.inodes system.Machine.FileSystem
+            |> Map.toList
+            |> List.choose (fun (inode, entry) ->
+                match entry.Content with
+                | InodeContent.Symlink (_, bits) ->
+                    let umask =
+                        PermissionBits.parseOrFail
+                            "UnixSystem.checkInvariants"
+                            (0o777 &&& ~~~(PermissionBits.toInt bits))
+
+                    if SimulatedUnixPlatform.symlinkCreationPermissions platform umask = bits then
+                        None
+                    else
+                        Some (
+                            UnixSystemDefect.SymlinkPermissionsNotOfFlavour (
+                                inode,
+                                bits,
+                                SimulatedUnixPlatform.flavour platform
+                            )
+                        )
+                | InodeContent.RegularFile _
+                | InodeContent.Directory _
+                | InodeContent.CharacterDevice _ -> None
+            )
+
         let umask =
             let platform = system.Machine.UnixPlatform
             let stored = PermissionBits.toInt (SimulatedUnixPlatform.umaskStoredBits platform)
@@ -1847,6 +1885,7 @@ module UnixSystem =
         @ signals
         @ fileSystemType
         @ protectedFiles
+        @ symlinkPermissions
         @ userBufferCheck
         @ supplementaryGroups
         @ umask

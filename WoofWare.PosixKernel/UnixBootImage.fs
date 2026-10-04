@@ -318,7 +318,11 @@ module UnixBootImage =
         | None ->
 
         match
-            VirtualFileSystem.ofFileSystemSeed createdAt defaultOwner seed
+            VirtualFileSystem.ofFileSystemSeed
+                createdAt
+                defaultOwner
+                (SimulatedUnixPlatform.symlinkCreationPermissions platform SeedEntry.symlinkCreatorsUmask)
+                seed
             |> UnixSystem.mountDeviceFileSystem system.Machine.DeviceMount createdAt
         with
         | Error (MountFault.CoveredEntryNotAnEmptyDirectory name) ->

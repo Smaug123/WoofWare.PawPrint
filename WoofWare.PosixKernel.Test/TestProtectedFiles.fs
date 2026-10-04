@@ -167,7 +167,14 @@ module TestProtectedFiles =
             |> snd
 
         let vfs =
-            VirtualFileSystem.createSymlink root (name "l") by epoch (SymlinkTarget.parseOrFail context "f") vfs
+            VirtualFileSystem.createSymlink
+                root
+                (name "l")
+                SymlinkModes.linux
+                by
+                epoch
+                (SymlinkTarget.parseOrFail context "f")
+                vfs
             |> ok
             |> snd
 
@@ -404,6 +411,7 @@ module TestProtectedFiles =
         VirtualFileSystem.createSymlink
             (inodeAt vfs parent)
             (name child)
+            SymlinkModes.linux
             (owner by)
             epoch
             (SymlinkTarget.parseOrFail context target)

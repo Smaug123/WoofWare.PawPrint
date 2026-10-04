@@ -70,7 +70,7 @@ module TestVirtualFileSystem =
         |> snd
 
     let private mklink (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createSymlink parent (name n) Owners.linuxDefault buildTime (target t) vfs
+        VirtualFileSystem.createSymlink parent (name n) SymlinkModes.linux Owners.linuxDefault buildTime (target t) vfs
         |> ok
         |> snd
 
@@ -861,7 +861,7 @@ module TestVirtualFileSystem =
             |> ok
 
         match VirtualFileSystem.tryGetContent link vfs with
-        | Some (InodeContent.Symlink stored) ->
+        | Some (InodeContent.Symlink (stored, _)) ->
             PathText.ofTarget stored |> shouldEqual raw
 
             UnixByteString.length (SymlinkTarget.toByteString stored)
@@ -984,7 +984,14 @@ module TestVirtualFileSystem =
         VirtualFileSystem.createFile absent (name "x") filePerms Owners.linuxDefault buildTime noBytes vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
-        VirtualFileSystem.createSymlink absent (name "x") Owners.linuxDefault buildTime (target "y") vfs
+        VirtualFileSystem.createSymlink
+            absent
+            (name "x")
+            SymlinkModes.linux
+            Owners.linuxDefault
+            buildTime
+            (target "y")
+            vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -1234,6 +1241,7 @@ module TestVirtualFileSystem =
                 VirtualFileSystem.createSymlink
                     (rootOf vfs)
                     (name "l")
+                    SymlinkModes.linux
                     Owners.linuxDefault
                     buildTime
                     Unchecked.defaultof<SymlinkTarget>
@@ -1285,7 +1293,14 @@ module TestVirtualFileSystem =
                     |> Result.map snd
                 )
                 (fun n ->
-                    VirtualFileSystem.createSymlink (rootOf vfs) n Owners.linuxDefault buildTime (target "x") vfs
+                    VirtualFileSystem.createSymlink
+                        (rootOf vfs)
+                        n
+                        SymlinkModes.linux
+                        Owners.linuxDefault
+                        buildTime
+                        (target "x")
+                        vfs
                     |> Result.map snd
                 )
             ] do
@@ -1370,7 +1385,14 @@ module TestVirtualFileSystem =
                 VirtualFileSystem.createFile (pick directories p) (name n) filePerms Owners.linuxDefault now noBytes vfs
                 |> Result.map snd
             | Step.MakeSymlink (p, n, t) ->
-                VirtualFileSystem.createSymlink (pick directories p) (name n) Owners.linuxDefault now (target t) vfs
+                VirtualFileSystem.createSymlink
+                    (pick directories p)
+                    (name n)
+                    SymlinkModes.linux
+                    Owners.linuxDefault
+                    now
+                    (target t)
+                    vfs
                 |> Result.map snd
             | Step.MakeHardLink (p, n, t) ->
                 if List.isEmpty files then
@@ -1599,7 +1621,7 @@ module TestVirtualFileSystem =
                     mklink (rootOf emptyFs) "l" "f"
                 ]
 
-        let permissionsOf (p : string) : InodePermissions =
+        let permissionsOf (p : string) : PermissionBits =
             let inode =
                 PathWalk.resolveExisting
                     limits
@@ -1615,14 +1637,9 @@ module TestVirtualFileSystem =
             | Some entry -> Inode.permissions entry
             | None -> failwith "missing inode"
 
-        permissionsOf "/f" |> shouldEqual (InodePermissions.Stored filePerms)
-        permissionsOf "/d" |> shouldEqual (InodePermissions.Stored dirPerms)
-
-        // Not `Stored 0o777`: a symlink's bits are a property of the platform
-        // (Linux always 0o777; macOS applies the creating umask — probed), and
-        // no syscall PawPrint models can make two links differ, so storing one
-        // could only ever describe a filesystem no kernel produced.
-        permissionsOf "/l" |> shouldEqual InodePermissions.PlatformSymlinkDefault
+        permissionsOf "/f" |> shouldEqual filePerms
+        permissionsOf "/d" |> shouldEqual dirPerms
+        permissionsOf "/l" |> shouldEqual SymlinkModes.linux
 
     [<Test>]
     let ``a fresh inode's four times are all the moment it was created`` () : unit =
@@ -4744,13 +4761,49 @@ module TestMkDirRules =
                     vfs
             )
         |> fun vfs ->
-            apply (VirtualFileSystem.createSymlink root (name "lf") Owners.linuxDefault buildTime (target "f") vfs)
+            apply (
+                VirtualFileSystem.createSymlink
+                    root
+                    (name "lf")
+                    SymlinkModes.linux
+                    Owners.linuxDefault
+                    buildTime
+                    (target "f")
+                    vfs
+            )
         |> fun vfs ->
-            apply (VirtualFileSystem.createSymlink root (name "ld") Owners.linuxDefault buildTime (target "d") vfs)
+            apply (
+                VirtualFileSystem.createSymlink
+                    root
+                    (name "ld")
+                    SymlinkModes.linux
+                    Owners.linuxDefault
+                    buildTime
+                    (target "d")
+                    vfs
+            )
         |> fun vfs ->
-            apply (VirtualFileSystem.createSymlink root (name "dang") Owners.linuxDefault buildTime (target "nx") vfs)
+            apply (
+                VirtualFileSystem.createSymlink
+                    root
+                    (name "dang")
+                    SymlinkModes.linux
+                    Owners.linuxDefault
+                    buildTime
+                    (target "nx")
+                    vfs
+            )
         |> fun vfs ->
-            apply (VirtualFileSystem.createSymlink root (name "cyc") Owners.linuxDefault buildTime (target "cyc") vfs)
+            apply (
+                VirtualFileSystem.createSymlink
+                    root
+                    (name "cyc")
+                    SymlinkModes.linux
+                    Owners.linuxDefault
+                    buildTime
+                    (target "cyc")
+                    vfs
+            )
         |> fun vfs ->
             // `locked` holds a child, so that a row can ask what an *existing*
             // name inside an unreachable directory answers. The builder applies
@@ -5109,11 +5162,29 @@ module TestWalkSearchPermission =
             | Error error -> failwith $"could not build the tree: %O{error}"
 
         let vfs =
-            match VirtualFileSystem.createSymlink p (name "cyc") Owners.linuxDefault buildTime (target "cyc") vfs with
+            match
+                VirtualFileSystem.createSymlink
+                    p
+                    (name "cyc")
+                    SymlinkModes.linux
+                    Owners.linuxDefault
+                    buildTime
+                    (target "cyc")
+                    vfs
+            with
             | Ok (_, vfs) -> vfs
             | Error error -> failwith $"could not build the tree: %O{error}"
 
-        match VirtualFileSystem.createSymlink root (name "lp") Owners.linuxDefault buildTime (target "p") vfs with
+        match
+            VirtualFileSystem.createSymlink
+                root
+                (name "lp")
+                SymlinkModes.linux
+                Owners.linuxDefault
+                buildTime
+                (target "p")
+                vfs
+        with
         | Ok (_, vfs) -> vfs
         | Error error -> failwith $"could not build the tree: %O{error}"
 

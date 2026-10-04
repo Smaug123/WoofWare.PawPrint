@@ -127,12 +127,7 @@ module private RemovalChecks =
         : Inode * PermissionBits
         =
         match VirtualFileSystem.tryGet directory vfs with
-        | Some parent ->
-            match Inode.permissions parent with
-            | InodePermissions.Stored bits -> parent, bits
-            | InodePermissions.PlatformSymlinkDefault ->
-                failwith
-                    $"RemovalChecks.holding: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is a bug in this library's path walk, or in a caller that assembled the resolution itself)."
+        | Some parent -> parent, Inode.permissions parent
         | None ->
             failwith
                 $"RemovalChecks.holding: resolution named inode %O{directory} as the directory holding \"%s{DirectoryEntryName.toEscaped name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
