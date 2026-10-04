@@ -62,6 +62,9 @@ public static class Natives
 
     // The shadow `System.MathF` in this assembly, not CoreLib's.
     public static float Impostor() => MathF.Sin(1f);
+
+    // A String constructor, an FCall whose implementation is `String.Ctor(char, int)`'s IL.
+    public static string Repeat(int count) => new string('a', count);
 }
 
 public static class Cases
@@ -553,6 +556,12 @@ public static class MathF
                 Unknown = Some false
             }
             { expect "Fixture.Natives" "Impostor" with
+                Unknown = Some true
+            }
+            // `String.Ctor(char, int)` throws for a negative count. It allocates through an FCall
+            // no contract describes, so it is not wholly known.
+            { expect "Fixture.Natives" "Repeat" with
+                Contains = [ "=System.ArgumentOutOfRangeException" ]
                 Unknown = Some true
             }
         ]

@@ -780,6 +780,17 @@ module EscapeAnalysis =
         let _, method = methodOf state key
         method.IsStatic && method.IsVirtual
 
+    /// The method a `newobj` of `key` runs, when `key` is a constructor of `System.String`: the
+    /// static `String.Ctor` CoreCLR runs in its place (`StringConstructor`), or `None` if there is
+    /// no such `Ctor`, when what CoreCLR does is not known.
+    let private stringConstructorImplementation (state : EscapeAnalysisState) (key : MethodKey) : MethodKey option =
+        let assembly, method = methodOf state key
+
+        match StringConstructor.implementation state.BaseTypes.String method with
+        | Ok implementation ->
+            Some (MethodKey.make assembly (MethodInfo.requireMetadata "String.Ctor" implementation).Handle)
+        | Error _ -> None
+
     /// The runtime's own exceptions from one of the methods it supplies on an array type: those of
     /// the instruction each stands in for, `ldelem`, `stelem.ref`, `ldelema` and `newarr`, and for a
     /// multidimensional array's constructor taking lower bounds, `ArgumentOutOfRangeException` for
@@ -1973,6 +1984,21 @@ module EscapeAnalysis =
                                 | Some receivers ->
                                     state, raises, opaque, (offset, CallSite.Virtual (receivers, callee)) :: calls
                                 | None -> state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
+                        elif
+                            call = UnaryMetadataTokenIlOp.Newobj
+                            && declaringTypeOf state callee.Callee = state.BaseTypes.String.Identity
+                        then
+                            match stringConstructorImplementation state callee.Callee with
+                            | Some implementation ->
+                                let implementation =
+                                    CallSite.Direct
+                                        {
+                                            Callee = implementation
+                                            Spelling = CalleeSpelling.Fixed
+                                        }
+
+                                state, raises, opaque, (offset, implementation) :: calls
+                            | None -> state, raises, (offset, Opacity.NativeBody) :: opaque, calls
                         else
                             state, raises, opaque, (offset, CallSite.Direct callee) :: calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)), _ ->
