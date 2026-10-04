@@ -1550,8 +1550,10 @@ module UnixNamespace =
 
         Ok (ReadDirectoryAnswer.Entry record, withPosition (DirectoryPosition.Cursor next) system)
 
-    /// `mkdir`, of a path this kernel has already copied in.
+    /// `mkdirat`, of a path this kernel has already copied in, starting from
+    /// `directory` if it is relative.
     let internal mkdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (path : UnixPath)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1565,12 +1567,7 @@ module UnixNamespace =
         // only thing that can reach past it, and only on Darwin — see
         // `MkDirRules.TrailingSeparator`.
         match
-            UnixPathResolution.resolvePathFull
-                AtDirectory.CurrentDirectory
-                SymlinkPolicy.NoFollowFinal
-                rules.TrailingSeparator
-                path
-                system
+            UnixPathResolution.resolvePathFull directory SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
         with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error refusal
@@ -1613,7 +1610,19 @@ module UnixNamespace =
             }
         )
 
-    /// `mkdir(2)`: bind a new directory at `path`.
+    let private mkdirFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
+        =
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> mkdirParsed directory path mode system
+
+    /// `mkdir(2)`: bind a new directory at `path`. It is `mkdirat` from
+    /// `AT_FDCWD`.
     ///
     /// `mode` is raw, exactly as the caller passed it, so what the created
     /// directory's permissions actually are depends on the umask and, on one
@@ -1631,9 +1640,25 @@ module UnixNamespace =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
         =
-        match UnixPathResolution.copyIn path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> mkdirParsed path mode system
+        mkdirFrom AtDirectory.CurrentDirectory path mode system
+
+    /// `mkdirat(2)`: `mkdir` of `path`, starting from `dirfd` if it is
+    /// relative; `mkdir` is this from `AT_FDCWD`.
+    ///
+    /// `dirfd` is raw, in this platform's own numbering. Everything `mkdir`
+    /// says holds, with one more step: once the path is copied in, a relative
+    /// path starts where `dirfd` says, as every `*at` call's does
+    /// (`UnixPathResolution.walkStart`). Nothing about `mode` is screened, so
+    /// it never decides an answer ahead of the path or `dirfd`.
+    let mkdirat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+        mkdirFrom (AtDirectory.decode flavour dirfd) path mode system
 
     /// `unlink`, of a path this kernel has already copied in.
     let internal unlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

@@ -3218,12 +3218,13 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
         // `int32_t SystemNative_MkDir(const char* path, int32_t mode)`
-        // (pal_io.c:696), an EINTR-retrying `mkdir(2)` and nothing else. The mode
-        // parameter is matched loosely for the same reason `SystemNative_Open`'s
-        // flags are: CoreLib declares it as `(int)UnixFileMode` while a guest
-        // hand-rolling the P/Invoke writes `int`. Unlike `open`'s flags it is a
-        // *raw* mode rather than a PAL value -- the C passes it straight to
-        // `mkdir`.
+        // (pal_io.c:696), an EINTR-retrying `mkdir(2)` and nothing else, which
+        // is `mkdirat(2)` from `AT_FDCWD` (on Linux, glibc's `mkdir` is that
+        // very syscall). The mode parameter is matched loosely for the same
+        // reason `SystemNative_Open`'s flags are: CoreLib declares it as
+        // `(int)UnixFileMode` while a guest hand-rolling the P/Invoke writes
+        // `int`. Unlike `open`'s flags it is a *raw* mode rather than a PAL
+        // value -- the C passes it straight to `mkdir`.
         | Some "SystemNative_MkDir",
           [ ConcretePointer _ ; _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
@@ -3236,7 +3237,13 @@ module NativeSystemNative =
             pathSyscall
                 ctx
                 operation
-                (fun path system -> UnixNamespace.mkdir path mode system |> Result.mapError PathRefusal.describe)
+                (fun path system ->
+                    let atFdCwd =
+                        AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour (UnixSystem.platform system))
+
+                    UnixNamespace.mkdirat atFdCwd path mode system
+                    |> Result.mapError PathRefusal.describe
+                )
                 state
         // `int32_t SystemNative_Unlink(const char* path)` (pal_io.c:368), an
         // EINTR-retrying `unlink(2)` and nothing else. CoreLib declares it as

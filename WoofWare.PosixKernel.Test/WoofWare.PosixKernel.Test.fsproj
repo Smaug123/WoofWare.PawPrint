@@ -257,6 +257,8 @@
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\readlinkat-empty-path.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.readlinkatEmptyPath.darwin.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\openat-limit.linux-6.18.5-aarch64-root.txt" LogicalName="WoofWare.PosixKernel.Test.openatLimit.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\openat-limit.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.openatLimit.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\mkdirat-rules.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.mkdiratRules.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\mkdirat-rules.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.mkdiratRules.darwin.txt" />
     <!-- Whether `readlink(2)` consults a symbolic link's own mode, measured per
          flavour by docs/plans/2026-08-23-posix-kernel-extraction/readlink-mode.c.
          `TestReadLinkMode` replays them. -->
