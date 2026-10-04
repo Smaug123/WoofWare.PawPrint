@@ -101,6 +101,7 @@ public class Base : IFoo { public int Frob() => 5; }
 public class Derived : Base, IBar { }
 public class SC : ISBar { }
 public struct SS : ISBar { }
+public struct GS<U> : ISBar { }
 public class VNo : IVBar { }
 public class VDef : IVDefBar, IVDefBaz { }
 public class VExact : IVBar, IV<object> { }
@@ -137,6 +138,16 @@ public static class Cases
     public static int Static<T>() where T : ISFoo => T.SFrob();
 
     public static Func<int> StaticPointer<T>() where T : ISFoo => T.SFrob;
+
+    public static int reached;
+
+    /// Counts its runs before the `ldftn`, so a case can tell the `ldftn` throwing from the call
+    /// throwing on entry.
+    public static Func<int> CountedStaticPointer<T>() where T : ISFoo
+    {
+        reached++;
+        return T.SFrob;
+    }
 
     // Uncaught, for the escape analysis to be asked about.
     public static int ConstrainedOnValueType() => Constrained(new S());
@@ -229,14 +240,16 @@ public static class Cases
     public static int CaseVarianceOnlyReabstraction() =>
         Expect<EntryPointNotFoundException>(() => ((IV<object>)new VExact()).Frob());
 
-    /// Measured: the delegate is made, and invoking it throws.
-    public static int CaseStaticPointer()
+    /// Measured: where CoreCLR runs the method `make` names as shared generic code, the delegate is
+    /// made, and invoking it throws. Calling it through a delegate keeps the JIT from inlining it
+    /// into exact code, where the `ldftn` would throw.
+    public static int MadeThenThrows(Func<Func<int>> make)
     {
         Func<int> d;
 
         try
         {
-            d = StaticPointer<SC>();
+            d = make();
         }
         catch (Exception e)
         {
@@ -245,6 +258,30 @@ public static class Cases
         }
 
         return Expect<EntryPointNotFoundException>(d);
+    }
+
+    public static int CaseStaticPointer() => MadeThenThrows(StaticPointer<SC>);
+
+    public static int CaseStaticPointerOnSharedValueType() => MadeThenThrows(StaticPointer<GS<string>>);
+
+    /// Measured: CoreCLR compiles `CountedStaticPointer<SS>` for `SS` alone and puts the throw at
+    /// the `ldftn`, so the delegate is never made.
+    public static int CaseStaticPointerOnValueType()
+    {
+        bool made = false;
+
+        int result =
+            Expect<EntryPointNotFoundException>(() =>
+            {
+                Func<int> d = CountedStaticPointer<SS>();
+                made = true;
+                return d();
+            });
+
+        if (made)
+            return 50;
+
+        return reached == 1 ? result : 60;
     }
 }
 """
@@ -342,5 +379,13 @@ public static class Program
     let ``a reabstraction as specific as a body is ambiguous`` () : unit = agrees "CaseDiamond" 0
 
     [<Test>]
-    let ``a pointer to a reabstracted static virtual is refused`` () : unit =
-        refuses "CaseStaticPointer" 0 [ "Ldftn" ; "reabstract" ]
+    let ``a pointer to a reabstracted static virtual in exact code throws at the ldftn`` () : unit =
+        agrees "CaseStaticPointerOnValueType" 0
+
+    [<Test>]
+    let ``a pointer to a reabstracted static virtual in shared code is refused`` () : unit =
+        refuses "CaseStaticPointer" 0 [ "Ldftn" ; "reabstract" ; "shared" ]
+
+    [<Test>]
+    let ``a pointer to a reabstracted static virtual over a value type with a class argument is refused`` () : unit =
+        refuses "CaseStaticPointerOnSharedValueType" 0 [ "Ldftn" ; "reabstract" ; "shared" ]
