@@ -113,8 +113,8 @@ class CommandLineArgsWithArguments
 
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
-        use loggerFactory =
-            LoggerFactory.Create (fun b -> b.SetMinimumLevel LogLevel.Warning |> ignore)
+        let _logs, loggerFactory = LoggerFactory.makeTest ()
+        use loggerFactory = loggerFactory
 
         use peImage = new MemoryStream (image : byte[])
 
@@ -154,8 +154,8 @@ class EchoArgv0
     let private argv0Reported (assemblyPath : string option) (image : byte[]) : string =
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
-        use loggerFactory =
-            LoggerFactory.Create (fun b -> b.SetMinimumLevel LogLevel.Warning |> ignore)
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use loggerFactory = loggerFactory
 
         use peImage = new MemoryStream (image)
 
@@ -210,8 +210,8 @@ class EchoArgv0
     let private refusalFor (assemblyPath : string option) (argv : string list) (image : byte[]) : string =
         let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
-        use loggerFactory =
-            LoggerFactory.Create (fun b -> b.SetMinimumLevel LogLevel.Warning |> ignore)
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use loggerFactory = loggerFactory
 
         use peImage = new MemoryStream (image)
 
