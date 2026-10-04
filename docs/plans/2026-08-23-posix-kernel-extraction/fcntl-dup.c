@@ -37,12 +37,16 @@
 //          descriptor, dup2 of a descriptor onto itself, dup3 with and without
 //          O_CLOEXEC (Linux), and F_SETFD on one of a dup pair; each row shows
 //          F_GETFD of the old and the new descriptor.
-//   LIMIT  RLIMIT_NOFILE as found, then lowered to 64: F_DUPFD and
-//          F_DUPFD_CLOEXEC from an open and a closed descriptor at each of
-//          INT_MIN, -1, 0, a gap, 62, 63, 64, 65, 1<<20 and INT_MAX; the same
-//          with the table full; and F_GETFL, F_SETFL, F_GETFD and F_SETFD on
-//          descriptors -1, 63, 64 and INT_MAX, none open.
-//   DUP2   with the soft limit at 64: dup2 of open, closed and negative
+//   LIMIT  RLIMIT_NOFILE as found, then set to the flavour's default at
+//          process start (BOUND: 256 on Darwin, 1024 on Linux; see
+//          rlimit-nofile.c): F_DUPFD and F_DUPFD_CLOEXEC from an open, a
+//          closed and a negative descriptor at each of INT_MIN, -1, 0, a gap,
+//          BOUND - 2, BOUND - 1, BOUND, BOUND + 1, 1<<20 and INT_MAX; what
+//          every allocator, dup2 onto an open descriptor, and the screens ahead
+//          of them answer with one descriptor below the bound left and with
+//          none; and F_GETFL, F_SETFL, F_GETFD and F_SETFD on descriptors -1,
+//          BOUND - 1, BOUND and INT_MAX, none open.
+//   DUP2   with the soft limit at BOUND: dup2 of open, closed and negative
 //          descriptors onto themselves, onto free, open, negative and
 //          out-of-range targets, and whether a closed or open target was
 //          changed; dup3 (Linux) with each flag bit, the same descriptor on
@@ -73,7 +77,8 @@
 //
 // Measured 2026-10-03 on Darwin 27.0.0 arm64 (uid 501) three times and on
 // Linux 6.18.5 aarch64 (Apple `container`, gcc:14 image, ext4) twice as root
-// and twice as uid 1000; the first run of each is beside this file. Runs
+// and twice as uid 1000, and the LIMIT and DUP2 sections again at the bound
+// on 2026-10-04; the first run of each is beside this file. Runs
 // agreed but for the milliseconds and the SLEEP rows' "afterwards" lines for
 // flock, which race the probe's own cleanup (it releases the holder and
 // signals the sleeper together) and are not measurements.
@@ -116,10 +121,22 @@
 // - F_DUPFD and F_DUPFD_CLOEXEC take the lowest free descriptor at or above
 //   the argument; a negative argument, or one at or above RLIMIT_NOFILE's soft
 //   limit, is EINVAL, a full table EMFILE, and a descriptor that is not open
-//   EBADF ahead of all of them. An unknown command is EBADF on a closed
+//   EBADF ahead of all of them.
+// - With every descriptor below the limit taken, the allocators answer EMFILE,
+//   and pipe does with one left. Ahead of that allocation, on both flavours:
+//   dup's and F_DUPFD's EBADF, F_DUPFD's EINVAL for a negative argument,
+//   pipe2's EINVAL for a bad flag, and accept's EBADF. Linux answers ahead of
+//   it too open's flag screen and its EFAULT for the path, socket's every
+//   screen (family, type, protocol), and epoll_create1's flag screen; but its
+//   accept allocates first, so ENOTSOCK and a non-blocking EAGAIN become
+//   EMFILE. Darwin allocates first for open (the flag screen and EFAULT become
+//   EMFILE), for socket (every screen) and for kqueue, but its accept only
+//   once a connection is there to take: ENOTSOCK and EAGAIN are answered.
+//   dup2 onto an open descriptor needs no new one, and succeeds. An unknown command is EBADF on a closed
 //   descriptor and EINVAL (Linux) or ENOTTY (Darwin) on an open one.
 // - dup2: a target that is negative or at or above the soft limit, or a
-//   source that is not open, is EBADF, and leaves an open target open. A
+//   source that is not open, is EBADF, and leaves an open target open; so a
+//   source that is not open is EBADF whatever the limit. A
 //   source onto itself answers itself. Onto an open target the target's
 //   description is released as close(2) releases it (a pipe's last writer
 //   gone, an flock dropped; a dup of the target keeps it), and a call asleep
@@ -179,6 +196,12 @@ static const char *en(int e)
 {
     switch (e) {
     case EBADF: return "EBADF";
+    case ENOENT: return "ENOENT";
+    case EAFNOSUPPORT: return "EAFNOSUPPORT";
+    case EPROTONOSUPPORT: return "EPROTONOSUPPORT";
+    case EPROTOTYPE: return "EPROTOTYPE";
+    case ENOTSOCK: return "ENOTSOCK";
+    case ESOCKTNOSUPPORT: return "ESOCKTNOSUPPORT";
     case EINVAL: return "EINVAL";
     case EMFILE: return "EMFILE";
     case EPERM: return "EPERM";
@@ -838,18 +861,36 @@ static void section_cloexec(void)
 
 // ---------------------------------------------------------------- LIMIT
 
-static const int limit_args[] = {INT_MIN, -1, 0, 4, 6, 62, 63, 64, 65, 1 << 20, INT_MAX};
+// The soft RLIMIT_NOFILE the LIMIT and DUP2 sections run at: each flavour's
+// default at process start (rlimit-nofile.c), which is the bound
+// WoofWare.PosixKernel assumes every process's limit reaches.
+#ifdef __APPLE__
+#define BOUND 256
+#else
+#define BOUND 1024
+#endif
+
+static int limit_args[] = {INT_MIN, -1, 0, 4, 6, BOUND - 2, BOUND - 1, BOUND, BOUND + 1, 1 << 20, INT_MAX};
+
+static void close_all(void)
+{
+    for (int i = 3; i < BOUND + 2; i++) close(i);
+}
+
+// A null path the compiler cannot see is null.
+static const char *volatile no_path = NULL;
 
 static void section_limit(void)
 {
     struct rlimit rl;
     getrlimit(RLIMIT_NOFILE, &rl);
     printf("LIMIT\tfound\tsoft %lld\thard %lld\n", (long long)rl.rlim_cur, (long long)rl.rlim_max);
-    rl.rlim_cur = 64;
+    rl.rlim_cur = BOUND;
     if (setrlimit(RLIMIT_NOFILE, &rl) != 0) die("setrlimit");
+    printf("LIMIT\tbound\t%d\n", BOUND);
     // Leave 0, 1 and 2 and open 3..12, then close 5 and 9, so that a scan
     // from 4 finds 5 and one from 6 finds 9.
-    for (int i = 3; i < 64; i++) close(i);
+    close_all();
     seed_file("f");
     for (int i = 3; i <= 12; i++) {
         if (open("f", O_RDONLY) != i) die("limit seed");
@@ -873,19 +914,74 @@ static void section_limit(void)
             if (r >= 0) close(r);
         }
     }
-    // Fill the table to 63.
-    int filled = 0;
-    while (fcntl(3, F_DUPFD, 0) >= 0) filled++;
-    printf("LIMIT\tfilled\t%d more\t%s\n", filled, en(errno));
-    for (size_t i = 0; i < sizeof limit_args / sizeof limit_args[0]; i++) {
-        int a = limit_args[i];
-        printf("LIMIT\tF_DUPFD full\targ %d\t%s\n", a, num(fcntl(3, F_DUPFD, a)));
+    // Every descriptor below the bound but one, BOUND - 1: what each
+    // allocator answers with one left, and then with none. Two listeners at
+    // 4 and 5, one with a connection queued from a client at 6, the other
+    // non-blocking with none.
+    for (int stage = 0; stage < 2; stage++) {
+        close_all();
+        if (open("f", O_RDONLY) != 3) die("limit seed 3");
+        struct sockaddr_in queued_addr, empty_addr;
+        int queued = listener_on(&queued_addr);
+        int empty = listener_on(&empty_addr);
+        fcntl(empty, F_SETFL, fcntl(empty, F_GETFL) | O_NONBLOCK);
+        int client = connect_to(&queued_addr);
+        if (queued != 4 || empty != 5 || client != 6) die("limit listeners");
+        sleep_ms(10);
+        while (fcntl(3, F_DUPFD, 0) >= 0) {}
+        if (stage == 0) close(BOUND - 1);
+        const char *state = stage == 0 ? "one left" : "full";
+        int r;
+        printf("LIMIT\t%s\tdup\t%s\n", state, num(r = dup(3)));
+        if (r >= 0) close(r);
+        printf("LIMIT\t%s\tdup of closed\t%s\n", state, num(r = dup(BOUND + 1)));
+        printf("LIMIT\t%s\tdup of -1\t%s\n", state, num(r = dup(-1)));
+        printf("LIMIT\t%s\tF_DUPFD arg 0\t%s\n", state, num(r = fcntl(3, F_DUPFD, 0)));
+        if (r >= 0) close(r);
+        printf("LIMIT\t%s\tF_DUPFD of closed arg 0\t%s\n", state, num(fcntl(BOUND + 1, F_DUPFD, 0)));
+        printf("LIMIT\t%s\tF_DUPFD arg -1\t%s\n", state, num(fcntl(3, F_DUPFD, -1)));
+        printf("LIMIT\t%s\topen\t%s\n", state, num(r = open("f", O_RDONLY)));
+        if (r >= 0) close(r);
+        printf("LIMIT\t%s\topen of a missing file\t%s\n", state, num(open("nx-missing", O_RDONLY)));
+        printf("LIMIT\t%s\topen with O_CREAT|O_DIRECTORY\t%s\n", state, num(open("nx-missing", O_CREAT | O_DIRECTORY, 0644)));
+        printf("LIMIT\t%s\tsocket\t%s\n", state, num(r = socket(AF_INET, SOCK_STREAM, 0)));
+        if (r >= 0) close(r);
+        printf("LIMIT\t%s\tsocket of a bad family\t%s\n", state, num(socket(12345, SOCK_STREAM, 0)));
+        printf("LIMIT\t%s\tsocket of a bad type\t%s\n", state, num(socket(AF_INET, 99, 0)));
+        printf("LIMIT\t%s\tsocket of a bad protocol\t%s\n", state, num(socket(AF_INET, SOCK_STREAM, 99)));
+        printf("LIMIT\t%s\topen of NULL\t%s\n", state, num(open(no_path, O_RDONLY)));
+        int p[2];
+        printf("LIMIT\t%s\tpipe\t%s\n", state, num(r = pipe(p)));
+        if (r >= 0) {
+            close(p[0]);
+            close(p[1]);
+        }
+#ifdef __APPLE__
+        printf("LIMIT\t%s\tkqueue\t%s\n", state, num(r = kqueue()));
+#else
+        printf("LIMIT\t%s\tepoll_create1\t%s\n", state, num(r = epoll_create1(0)));
+        printf("LIMIT\t%s\tepoll_create1 bad flag\t%s\n", state, num(epoll_create1(1)));
+#endif
+        if (r >= 0) close(r);
+        printf("LIMIT\t%s\tdup2 onto open %d\t%s\n", state, BOUND - 2, num(dup2(3, BOUND - 2)));
+#ifndef __APPLE__
+        printf("LIMIT\t%s\tpipe2 bad flag\t%s\n", state, num(r = pipe2(p, 1)));
+#else
+        printf("LIMIT\t%s\tpipe2 bad flag\t%s\n", state, num(r = pipe2(p, 0x10)));
+#endif
+        if (r >= 0) {
+            close(p[0]);
+            close(p[1]);
+        }
+        printf("LIMIT\t%s\taccept of closed\t%s\n", state, num(accept(BOUND + 1, NULL, NULL)));
+        printf("LIMIT\t%s\taccept of a file\t%s\n", state, num(accept(3, NULL, NULL)));
+        printf("LIMIT\t%s\taccept with nothing queued, non-blocking\t%s\n", state, num(r = accept(empty, NULL, NULL)));
+        if (r >= 0) close(r);
+        printf("LIMIT\t%s\taccept with a connection queued\t%s\n", state, num(r = accept(queued, NULL, NULL)));
+        if (r >= 0) close(r);
     }
-    printf("LIMIT\tdup full\t%s\n", num(dup(3)));
-    printf("LIMIT\tdup2 full onto open 40\t%s\n", num(dup2(3, 40)));
-    printf("LIMIT\topen full\t%s\n", num(open("f", O_RDONLY)));
-    for (int i = 3; i < 64; i++) close(i);
-    int bad[] = {-1, 63, 64, INT_MAX};
+    close_all();
+    int bad[] = {-1, BOUND - 1, BOUND, INT_MAX};
     for (size_t i = 0; i < 4; i++) {
         int b = bad[i];
         printf("LIMIT\tclosed %d\tF_GETFL %s\tF_SETFL %s\tF_GETFD %s\tF_SETFD %s\n", b, word(fcntl(b, F_GETFL)),
@@ -924,7 +1020,7 @@ static void dup3_row(const char *label, int oldfd, int newfd, int flags)
 
 static void reset_table(void)
 {
-    for (int i = 3; i < 64; i++) close(i);
+    close_all();
     seed_file("f");
     if (open("f", O_RDONLY) != 3) die("dup2 seed 3");
     if (open("f", O_RDONLY) != 4) die("dup2 seed 4");
@@ -944,13 +1040,13 @@ static void section_dup2(void)
     dup2_row("closed onto free", 20, 21);
     dup2_row("open onto -1", 3, -1);
     dup2_row("open onto INT_MIN", 3, INT_MIN);
-    dup2_row("open onto 63 (soft limit 64)", 3, 63);
-    close(63);
-    dup2_row("open onto 64", 3, 64);
-    dup2_row("open onto 65", 3, 65);
+    dup2_row("open onto the bound less one", 3, BOUND - 1);
+    close(BOUND - 1);
+    dup2_row("open onto the bound", 3, BOUND);
+    dup2_row("open onto the bound plus one", 3, BOUND + 1);
     dup2_row("open onto INT_MAX", 3, INT_MAX);
-    dup2_row("closed onto 64", 20, 64);
-    dup2_row("-1 onto 64", -1, 64);
+    dup2_row("closed onto the bound", 20, BOUND);
+    dup2_row("-1 onto the bound", -1, BOUND);
     dup2_row("-1 onto open", -1, 4);
     dup2_row("closed onto -1", 20, -1);
 #ifndef __APPLE__
@@ -967,9 +1063,9 @@ static void section_dup2(void)
     dup3_row("open onto itself, bad flag", 3, 3, 1);
     dup3_row("closed onto free, bad flag", 20, 21, 1);
     dup3_row("closed onto free, 0", 20, 21, 0);
-    dup3_row("open onto 64, 0", 3, 64, 0);
-    dup3_row("open onto 64, bad flag", 3, 64, 1);
-    dup3_row("closed onto 64, 0", 20, 64, 0);
+    dup3_row("open onto the bound, 0", 3, BOUND, 0);
+    dup3_row("open onto the bound, bad flag", 3, BOUND, 1);
+    dup3_row("closed onto the bound, 0", 20, BOUND, 0);
     dup3_row("open onto -1, 0", 3, -1, 0);
     dup3_row("closed onto open, 0", 20, 4, 0);
     dup3_row("open onto open, O_CLOEXEC", 3, 4, O_CLOEXEC);

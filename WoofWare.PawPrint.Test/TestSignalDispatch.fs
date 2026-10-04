@@ -748,7 +748,7 @@ module TestSignalDispatch =
                 | other -> failwith $"closing %d{fd} answered %O{other}"
 
             match UnixDescriptor.dup 1 system with
-            | SyscallAnswer.Completed newFd, system when newFd = int64 fd -> EmulatedKernel.withUnix system kernel
+            | Ok (SyscallAnswer.Completed newFd, system) when newFd = int64 fd -> EmulatedKernel.withUnix system kernel
             | other -> failwith $"duplicating stdout onto %d{fd} answered %O{other}"
         )
 

@@ -81,6 +81,7 @@ type Syscall =
 /// refusal means for it; nothing here is recoverable by retrying.
 [<RequireQualifiedAccess>]
 type SyscallRefusal<'Task> =
+    | Dup of DescriptorLimitRefusal
     | Fcntl of FcntlRefusal
     | Dup2 of Dup2Refusal<'Task>
     | Dup3 of Dup3Refusal<'Task>
@@ -226,6 +227,10 @@ type UnixSystemDefect<'Task> =
         description : OpenFileDescriptionId *
         target : OpenFileTarget *
         flavour : SimulatedUnixFlavour
+    /// A descriptor is open at or above the bound this kernel assumes the
+    /// process's `RLIMIT_NOFILE` reaches (`SimulatedUnixPlatform.descriptorBound`),
+    /// which no call hands out.
+    | DescriptorAtOrAboveBound of fd : int * bound : int
     /// A descriptor carries `FD_CLOFORK` under the Linux flavour, which has no
     /// such flag.
     | CloseOnForkUnderLinux of fd : int
@@ -804,7 +809,7 @@ module UnixSystem =
                 SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (ProcessId.toInt32 (processId system)))),
                 system
             )
-        | Syscall.Dup fd -> Ok (UnixDescriptor.dup fd system) |> answered
+        | Syscall.Dup fd -> UnixDescriptor.dup fd system |> answered |> Result.mapError SyscallRefusal.Dup
         | Syscall.Fcntl (fd, command, argument) ->
             UnixDescriptor.fcntl fd command argument system
             |> answered
@@ -1191,6 +1196,14 @@ module UnixSystem =
                         yield UnixSystemDefect.FlockHeldNotRecorded id
                 ]
             )
+
+        let beyondBound =
+            let bound = SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform
+
+            FileDescriptorRegistry.fds system.Process.FileDescriptors
+            |> Map.toList
+            |> List.filter (fun (fd, _) -> fd >= bound)
+            |> List.map (fun (fd, _) -> UnixSystemDefect.DescriptorAtOrAboveBound (fd, bound))
 
         let linuxDescriptorFlags =
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
@@ -1829,6 +1842,7 @@ module UnixSystem =
         @ connectionFreshness
         @ ordinalFreshness
         @ ordinalDuplicates
+        @ beyondBound
         @ linuxDescriptorFlags
         @ statusOfFlavour
         @ parks
@@ -2039,7 +2053,8 @@ module UnixSystem =
     /// process started, at that number: a pipe end of its own, whose other end
     /// is the client's, as the entry says (see `LaunchDescriptor`). The pipes
     /// are the first the machine makes, in descriptor order. A launch table
-    /// naming a negative descriptor is refused.
+    /// naming a negative descriptor, or one at or above the bound
+    /// (`SimulatedUnixPlatform.descriptorBound`), is refused.
     ///
     /// It has one task, `leader`, on the logical processor `leaderCpu`. The
     /// leader's thread ID is the process ID, `defaultProcessId`: on Linux because
@@ -2108,6 +2123,10 @@ module UnixSystem =
                 if fd < 0 then
                     failwith
                         $"UnixSystem.initial: the launch table names descriptor %d{fd}, which is negative; no process has a descriptor below 0."
+
+                if fd >= SimulatedUnixPlatform.descriptorBound platform then
+                    failwith
+                        $"UnixSystem.initial: the launch table names descriptor %d{fd}, at or above the bound %d{SimulatedUnixPlatform.descriptorBound platform} this kernel assumes the process's RLIMIT_NOFILE reaches; it hands out no descriptor there."
 
                 let pipeId = PipeId (int64 index)
                 let pipe, pipeEnd = PipeState.launch platform fd descriptor

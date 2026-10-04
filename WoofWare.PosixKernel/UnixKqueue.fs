@@ -79,6 +79,9 @@ type KeventTimeout =
 /// Why this kernel will not answer a `kqueue(2)`.
 [<RequireQualifiedAccess>]
 type KqueueRefusal =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    | DescriptorLimit of DescriptorLimitRefusal
     /// This kernel is not Darwin-flavoured, and only Darwin has kqueue.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
 
@@ -88,6 +91,7 @@ module KqueueRefusal =
     /// its own half -- which of its entry points asked.
     let describe (refusal : KqueueRefusal) : string =
         match refusal with
+        | KqueueRefusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | KqueueRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and kqueue exists on Darwin only."
 
@@ -229,6 +233,16 @@ module UnixKqueue =
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux -> Error (KqueueRefusal.UnmodelledFlavour SimulatedUnixFlavour.Linux)
         | SimulatedUnixFlavour.Darwin ->
+
+        match
+            FileDescriptorRegistry.room
+                (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
+                0
+                1
+                system.Process.FileDescriptors
+        with
+        | Error refusal -> Error (KqueueRefusal.DescriptorLimit refusal)
+        | Ok () ->
 
         // Measured on 27.0.0 (`kqueue-kevent.c`, section A): the lowest free
         // descriptor, O_RDWR, not O_NONBLOCK; and (`fcntl-dup.c`, KIND rows)

@@ -90,7 +90,7 @@ module TestBlockingAccept =
         | other -> failwith $"fd %d{fd} names %A{other}, not a socket"
 
     let private dupOf (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match UnixDescriptor.dup fd system with
+        match Answered.dup fd system with
         | SyscallAnswer.Completed newFd, system -> int newFd, system
         | other, _ -> failwith $"dup of %d{fd} answered %A{other}"
 
@@ -1194,7 +1194,7 @@ module TestBlockingAccept =
                             }
                     | other -> failwith $"%s{where}: dies %b{dies}, %A{other}"
                 | AcceptOp.Dup fd ->
-                    let answer, after = UnixDescriptor.dup fd system
+                    let answer, after = Answered.dup fd system
 
                     match Map.tryFind fd reference.Fds with
                     | None -> answer |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)

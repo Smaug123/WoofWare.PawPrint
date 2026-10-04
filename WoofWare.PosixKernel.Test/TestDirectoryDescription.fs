@@ -104,7 +104,7 @@ module TestDirectoryDescription =
         int fd, system
 
     let private dup (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        let fd, system = UnixDescriptor.dup fd system |> completed $"dup %d{fd}"
+        let fd, system = Answered.dup fd system |> completed $"dup %d{fd}"
         int fd, system
 
     let private read (fd : int) (system : UnixSystem<int, string>) =

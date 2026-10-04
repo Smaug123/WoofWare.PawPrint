@@ -188,6 +188,11 @@ module NativeSystemNative =
     let private unmeasuredDarwinRow : string =
         "Only a Darwin kernel refuses this, and only for an inode whose owner or group is not the caller's, which a guest meets when `KernelConfig.FileSystem` or `KernelConfig.FileSystemRootOwner` states another owner. Measuring the row needs root, or a second user, on Darwin; the flavour-divergence table in the emulated-posix-kernel skill lists what has been measured."
 
+    /// The failure a handler raises when the kernel library will not hand out a
+    /// descriptor at or above its bound.
+    let private descriptorLimitMessage (operation : string) (refusal : DescriptorLimitRefusal) : string =
+        $"%s{operation}: %s{DescriptorLimitRefusal.describe refusal} The guest has that many descriptors open; PawPrint answers only below the bound, which is the soft limit a process starts with."
+
     /// Store the errno a failed syscall earned, in the raw numbering this
     /// kernel's flavour uses, and hand back the state to push a sentinel from.
     ///
@@ -3135,6 +3140,7 @@ module NativeSystemNative =
             let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
 
             match UnixNamespace.openPath openFlags path mode state.Kernel.System with
+            | Error (OpenRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} %s{unmeasuredDarwinRow}"
             | Ok (SyscallAnswer.Failed error, system) ->
@@ -3350,6 +3356,7 @@ module NativeSystemNative =
             let flags = OpenFlagsPal.directoryStream state.Kernel.UnixPlatform
 
             match UnixNamespace.openPath flags path 0 state.Kernel.System with
+            | Error (OpenRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith
                     $"%s{operation}: OpenRefusal: %s{OpenRefusal.describe refusal} This open asks only for O_RDONLY|O_DIRECTORY|O_CLOEXEC, which the kernel models, and not for O_TRUNC, whose set-ID change is the only other thing it refuses an open for (this is an interpreter bug)."
@@ -4513,6 +4520,7 @@ module NativeSystemNative =
 
             match UnixPipe.pipe2 kernelFlags (BufferPointer.toUserBuffer pipeFds) state.Kernel.System with
             | Error (Pipe2Refusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage pipeFds refusal)
+            | Error (Pipe2Refusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith
                     $"%s{operation}: %s{Pipe2Refusal.describe refusal} CoreLib passes only 0 or PAL_O_CLOEXEC and a two-int array of its own, so this is a hand-rolled P/Invoke."
@@ -4752,6 +4760,7 @@ module NativeSystemNative =
             | Ok (domain, socketType, protocol) ->
 
             match UnixSocket.socket domain socketType protocol state.Kernel.System with
+            | Error (SocketRefusal.DescriptorLimit refusal) -> failwith (descriptorLimitMessage operation refusal)
             | Error refusal ->
                 failwith
                     $"%s{operation}: PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} pass every screen the native shim applies, so a real run would call socket(%d{domain}, 0x%x{socketType}, %d{protocol}), and WoofWare.PosixKernel has no answer: %s{SocketRefusal.describe refusal}"
@@ -5080,6 +5089,7 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} `socketAddress` is %O{addressArgument}; pass a real buffer."
                 | Error (AcceptRefusal.UnmeasuredKind _ as refusal)
+                | Error (AcceptRefusal.DescriptorLimit _ as refusal)
                 | Error (AcceptRefusal.Interruption _ as refusal)
                 | Error (AcceptRefusal.Release _ as refusal)
                 | Error (AcceptRefusal.DarwinDrainedListener _ as refusal) ->
@@ -5586,9 +5596,9 @@ module NativeSystemNative =
             // `LastSystemError` is not touched: the sole managed caller,
             // `SocketAsyncEngine`, switches on the returned value.
             //
-            // PawPrint's allocation cannot fail — no descriptor limit is
-            // modelled, `RLIMIT_NOFILE` not being in the interop surface — so
-            // the only failure here is the wrapper's own null screen.
+            // The wrapper's own failure is its null screen; a port that would
+            // reach the kernel library's descriptor bound is refused, which
+            // fails the run.
             let operation = "SystemNative_CreateSocketEventPort"
 
             let portArgument = bufferPointerArgument operation "port" instruction.Arguments.[0]
@@ -6500,22 +6510,11 @@ module NativeSystemNative =
                 // such.
                 //
                 // A real `poll(2)` bounds `nfds` by RLIMIT_NOFILE (measured,
-                // pollnfds.c: EINVAL above it), and PawPrint does not reproduce
-                // that bound. This is a modelling choice rather than a gap:
-                // PawPrint behaves as `RLIMIT_NOFILE = RLIM_INFINITY`, which is
-                // a lawful setting, and it is the *only* self-consistent one
-                // here, because the descriptor table answers `EMFILE`/`ENFILE`
-                // nowhere either. Enforcing the bound in `poll` alone would let
-                // a guest open five thousand descriptors and then be told that
-                // polling two thousand is EINVAL — a worse model than no limit.
-                // Nothing can observe the difference: `getrlimit` is not in the
-                // interop surface.
-                //
-                // If a descriptor limit ever enters `KernelConfig`, this becomes
-                // EINVAL above the soft limit, and `open`/`socket`/`dup` gain
-                // their `EMFILE` at the same time.
+                // pollnfds.c: EINVAL above it). The kernel library assumes only
+                // that the limit is at least its descriptor bound, which is far
+                // below a count this large.
                 failwith
-                    $"%s{operation}: eventCount %d{eventCount} spans %d{totalBytes} bytes, which overflows the int32 byte offsets PawPrint's address space uses. PawPrint models no descriptor limit (RLIMIT_NOFILE is not in the interop surface), so this is a limit of the interpreter rather than a kernel refusal to reproduce."
+                    $"%s{operation}: eventCount %d{eventCount} spans %d{totalBytes} bytes, which overflows the int32 byte offsets PawPrint's address space uses. This is a limit of the interpreter rather than a kernel refusal to reproduce."
             else
 
             // Write back only `TriggeredEvents`. The C leaves `FileDescriptor`

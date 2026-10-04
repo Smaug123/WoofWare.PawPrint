@@ -1045,7 +1045,7 @@ module TestDeviceDescriptors =
             let fd, system = openDevice device FileAccessMode.ReadWrite booted
 
             let copy, system =
-                match UnixDescriptor.dup fd system with
+                match Answered.dup fd system with
                 | SyscallAnswer.Completed copy, system -> int copy, system
                 | other -> failwith $"dup: %A{other}"
 

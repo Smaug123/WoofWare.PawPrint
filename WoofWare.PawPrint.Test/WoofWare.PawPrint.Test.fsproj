@@ -345,6 +345,7 @@
     <Compile Include="TestFabricatedNullByrefArgument.fs" />
     <Compile Include="TestConstrainedGetTypeNullByref.fs" />
     <Compile Include="TestAssemblyLoadContextRefusals.fs" />
+    <Compile Include="TestDescriptorBoundRefusal.fs" />
     <Compile Include="TestDynamicAssemblyImage.fs" />
     <Compile Include="TestDynamicAssemblyRefusals.fs" />
     <Compile Include="TestFabricatedCallArgumentCoercion.fs" />

@@ -115,6 +115,8 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 `UnixSystem.step` puts the syscalls whose answer is a single integer behind one entry point, as cases of the `Syscall` type, for a client that wants to log, replay or generate them.
 A syscall whose answer carries more than that, such as the bytes `read` returns, has no `Syscall` case, and is reached only through its own function.
 
+Every descriptor lies below `SimulatedUnixPlatform.descriptorBound`, the soft `RLIMIT_NOFILE` a process of the flavour starts with (1024 on Linux, 256 on Darwin): the library assumes the process's limit is at least that, and refuses a call that would put a descriptor at or above it (`DescriptorLimitRefusal`), whose answer would depend on the limit.
+
 `UnixSystem.checkInvariants` lists every way a system's tables disagree with each other.
 No sequence of syscalls should ever produce one.
 

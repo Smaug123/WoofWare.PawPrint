@@ -13,6 +13,9 @@ type Pipe2Answer =
 /// Why this kernel will not answer a `pipe2(2)`.
 [<RequireQualifiedAccess>]
 type Pipe2Refusal =
+    /// A descriptor the call would make lies at or above the bound this kernel
+    /// assumes the process's `RLIMIT_NOFILE` reaches.
+    | DescriptorLimit of DescriptorLimitRefusal
     /// Linux's `O_DIRECT`, which makes the pipe a packet pipe: each write is a
     /// packet that a read takes whole or truncates. This kernel's pipes carry
     /// a byte stream only.
@@ -36,6 +39,7 @@ module Pipe2Refusal =
     /// its own half -- which entry point asked, and what the destination was.
     let describe (refusal : Pipe2Refusal) : string =
         match refusal with
+        | Pipe2Refusal.DescriptorLimit refusal -> DescriptorLimitRefusal.describe refusal
         | Pipe2Refusal.PacketMode flags ->
             $"flags 0x%x{flags} carry O_DIRECT, which Linux accepts and answers with a packet pipe: a write is one packet of at most PIPE_BUF bytes and a read takes one packet, truncating it to the count. This kernel's pipes carry a byte stream only; model packets before answering."
         | Pipe2Refusal.NotificationPipe flags ->
@@ -159,6 +163,19 @@ module UnixPipe =
         | Pipe2Flags.Fails error -> Ok (Pipe2Answer.Failed error, system)
         | Pipe2Flags.Refused refusal -> Error refusal
         | Pipe2Flags.Creates (nonBlocking, descriptorFlags) ->
+
+        // Measured (`fcntl-dup.c`, LIMIT rows): the flags' EINVAL comes first on
+        // both; then a pipe needs two descriptors below the limit, and with one
+        // left is EMFILE at a limit of the bound.
+        match
+            FileDescriptorRegistry.room
+                (SimulatedUnixPlatform.descriptorBound platform)
+                0
+                2
+                system.Process.FileDescriptors
+        with
+        | Error refusal -> Error (Pipe2Refusal.DescriptorLimit refusal)
+        | Ok () ->
 
         match destination with
         | UserBuffer.Opaque -> Error (Pipe2Refusal.Buffer BufferRefusal.OpaqueAtTransfer)

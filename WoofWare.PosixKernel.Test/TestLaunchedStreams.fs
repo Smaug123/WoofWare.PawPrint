@@ -308,7 +308,7 @@ module TestLaunchedStreams =
             | Ok (ReadOutcome.Restarts, _) -> failwith "a read that never slept restarted"
             | Error _ -> None
         | Op.Dup fd ->
-            let answer, after = UnixDescriptor.dup fd system
+            let answer, after = Answered.dup fd system
             Some (Answer.Syscall answer, after)
         | Op.Close fd ->
             match UnixDescriptor.close fd system with
