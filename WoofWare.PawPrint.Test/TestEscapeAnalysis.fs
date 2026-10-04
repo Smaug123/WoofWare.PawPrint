@@ -10716,6 +10716,46 @@ public static class Cases
         if not failures.IsEmpty then
             failwith (String.concat "\n" failures)
 
+    /// In shared code a `constrained. ldftn` whose dispatch fails may make its pointer, which
+    /// raises when called, and the analysis attributes that raise to the `ldftn`. That is sound only
+    /// while calling the pointer is opaque: a handler around the `ldftn` that the call is outside
+    /// would otherwise be credited with catching it. Before making a delegate's `Invoke` or `calli`
+    /// transparent, revisit how `callsOf` attributes `LocalFacts.ConstrainedPointers`.
+    [<Test>]
+    let ``calling a pointer a constrained ldftn loads stays opaque`` () : unit =
+        let answers =
+            staticPointerAnswers
+                [
+                    TestCrossAssemblyReabstraction.libraryBefore
+                    TestCrossAssemblyReabstraction.entryAssembly
+                    TestCrossAssemblyReabstraction.libraryAfter
+                ]
+                TestCrossAssemblyReabstraction.libraryName
+                TestCrossAssemblyReabstraction.entryName
+                "ReabstractionEntry.Cases"
+                [ "InvokeStaticPointerOnValueType" ; "CallFunctionPointerOnValueType" ]
+
+        let expected =
+            Map.ofList
+                [
+                    "InvokeStaticPointerOnValueType", "System.Func`1::Invoke entry NativeBody"
+                    "CallFunctionPointerOnValueType",
+                    "ReabstractionEntry.Cases::CallFunctionPointerOnValueType IL IndirectCall"
+                ]
+
+        let failures =
+            answers
+            |> List.choose (fun (methodName, _, sources) ->
+                if sources.Contains expected.[methodName] then
+                    None
+                else
+                    Some
+                        $"Cases.%s{methodName}: unknown at %A{Set.toList sources}, lacking %s{expected.[methodName]}; revisit how callsOf attributes ConstrainedPointers before making the call transparent"
+            )
+
+        if not failures.IsEmpty then
+            failwith (String.concat "\n" failures)
+
     /// `TestCrossAssemblyAmbiguousDefault` pins that the real runtime throws
     /// `AmbiguousImplementationException` from these.
     [<Test>]

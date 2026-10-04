@@ -171,6 +171,10 @@ public static class Cases
 
     public static unsafe delegate*<int> FunctionPointerResolved() => StaticFunctionPointer<SPlain>();
 
+    public static int InvokeStaticPointerOnValueType() => StaticPointer<SS>()();
+
+    public static unsafe int CallFunctionPointerOnValueType() => StaticFunctionPointer<SS>()();
+
     public static int CaseInterfaceCall() =>
         Expect<EntryPointNotFoundException>(() => ThroughInterface(new C()));
 

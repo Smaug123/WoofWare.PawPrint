@@ -5489,10 +5489,12 @@ module EscapeAnalysis =
         // `getCallInfo` (jitinterface.cpp) plants a throw at the `ldftn` in code compiled for an
         // exact instantiation, which runs the constructor making the exception. In shared code the
         // pointer is a stub that throws when called, unless the JIT inlined the frame into exact
-        // code, which turns on the JIT tier, so the `ldftn` may raise it in every instance. That is sound only while every use of
-        // the pointer is opaque (a delegate's constructor and `Invoke` are native, and `calli` is
-        // an indirect call): otherwise a handler around the `ldftn` that the pointer's call is
-        // outside would be credited with catching what the call raises in shared code.
+        // code, which turns on the JIT tier, so the `ldftn` may raise it in every instance. That is
+        // sound only while every use of the pointer is opaque (a delegate's constructor and
+        // `Invoke` are native, and `calli` is an indirect call): otherwise a handler around the
+        // `ldftn` that the pointer's call is outside would be credited with catching what the call
+        // raises in shared code. `TestEscapeAnalysis` pins that opacity ("calling a pointer a
+        // constrained ldftn loads stays opaque").
         let state, callees, raises, undecided =
             ((state, callees, raises, undecided), facts.ConstrainedPointers)
             ||> List.fold (fun (state, callees, raises, undecided) (offset, constrainedType, callee) ->
