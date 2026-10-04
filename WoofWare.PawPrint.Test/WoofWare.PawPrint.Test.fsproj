@@ -362,6 +362,7 @@
     <Compile Include="TestHardwareInstruction.fs" />
     <Compile Include="TestIntrinsicContracts.fs" />
     <Compile Include="TestNativeMethod.fs" />
+    <Compile Include="TestStringConstructor.fs" />
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />
     <Compile Include="TestEmulatedRuntime.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
