@@ -94,6 +94,9 @@ type internal LocalFacts =
     {
         Raises : (int * ThrownType) list
         Opaque : (int * Opacity) list
+        /// Where an assumption's contract stands in for code the body runs: an exception the
+        /// contract does not list may arise there if the assumption fails.
+        Assumed : (int * Assumption) list
         Calls : (int * CallSite) list
         /// Each `rethrow`, with the `catch` or `filter` clause whose handler it is in: it re-raises
         /// what that clause caught.
@@ -121,6 +124,16 @@ type internal Rethrown =
     /// Something the analysis cannot name.
     | Unknown
 
+/// Something a body raises, as a handler may catch it and a `rethrow` re-raise it.
+[<RequireQualifiedAccess>]
+type internal Raised =
+    | Named of ThrownType
+    /// Something the analysis cannot name.
+    | Unnamed
+    /// Something an assumption's contract leaves out, which arises only if the assumption fails:
+    /// of the type a `rethrow` narrowed it to, if one did, or else unnamed.
+    | Assumed of Assumption * narrowed : ThrownType option
+
 /// What a call instruction's token names.
 [<RequireQualifiedAccess>]
 type internal CallTarget =
@@ -141,6 +154,9 @@ type internal Runs =
     | Primitive of IntrinsicPrimitive
     /// Native code whose behaviour `NativeMethod` describes, the whole of the method.
     | Native of NativeMethod
+    /// The method this assumption summarises, whose contract the analysis takes in place of its
+    /// body.
+    | Assumed of Assumption
     /// Nothing the analysis can see into.
     | Opaque of Opacity
 
@@ -200,6 +216,8 @@ type EscapeAnalysisState =
             /// query answers, and whether a hardware instruction is emitted or throws.
             Target : JitTarget
             Profile : HardwareIntrinsicsProfile
+            /// The assumptions the analysis may take a contract from in place of a method's body.
+            Assumptions : Set<Assumption>
             /// The assemblies loaded so far, the concrete types instantiated so far, and what the type
             /// system has memoised about them.
             TypeSystem : TypeSystemState
@@ -245,6 +263,9 @@ type EscapeAnalysisState =
 /// raises nothing. Were one missing, the runtime would run the program's
 /// <c>ResolvingUnmanagedDll</c> handlers, which could throw anything.
 ///
+/// A caller may allow further assumptions (<c>Assumption</c>), each of which replaces a method's
+/// body with a contract; an answer lists those it relied on in <c>Escapes.Assumes</c>.
+///
 /// That holds for assemblies that agree with each other. A member or type that a body names and
 /// the loaded assembly it is looked for in lacks is reported, as the exception binding it throws,
 /// and signals that they do not. What else such a disagreement can break is not checked, and the
@@ -267,12 +288,15 @@ module EscapeAnalysis =
     /// Begin an analysis over the assemblies `context` has loaded, loading any others it needs from
     /// `runtimeDirs`, of what they do when CoreCLR's JIT compiles them for `target` on a CPU
     /// `profile` describes. `profile` must not mark as supported a class of another target's
-    /// instruction sets: CoreLib gives those bodies that throw, whatever the CPU.
+    /// instruction sets: CoreLib gives those bodies that throw, whatever the CPU. The analysis takes
+    /// the contract of each of `assumptions` in place of the method it summarises; with none, every
+    /// answer follows from the code alone.
     let create
         (loggerFactory : ILoggerFactory)
         (runtimeDirs : string seq)
         (target : JitTarget)
         (profile : HardwareIntrinsicsProfile)
+        (assumptions : Set<Assumption>)
         (context : TypeConcretization.ConcretizationContext<DumpedAssembly>)
         : EscapeAnalysisState
         =
@@ -293,6 +317,7 @@ module EscapeAnalysis =
             RuntimeDirs = List.ofSeq runtimeDirs
             Target = target
             Profile = profile
+            Assumptions = assumptions
             TypeSystem =
                 { TypeSystemState.Empty with
                     _LoadedAssemblies = context.LoadedAssemblies
@@ -1558,6 +1583,7 @@ module EscapeAnalysis =
         {
             Raises = []
             Opaque = [ 0, reason ]
+            Assumed = []
             Calls = []
             Rethrows = []
             Regions = []
@@ -1585,9 +1611,10 @@ module EscapeAnalysis =
         | InstructionFault.ZeroDivisor -> Some (ThrownType.Exactly (corelibException state "DivideByZeroException"))
         | InstructionFault.QuotientOverflow -> Some (ThrownType.Exactly (corelibException state "OverflowException"))
 
-    /// What CoreCLR runs when `key` is called. The VM's substitute for an intrinsic runs whatever IL
-    /// CoreLib ships in its place, working or not.
-    let private runsFor (assembly : DumpedAssembly) (key : MethodKey) : Runs =
+    /// What CoreCLR runs when `key` is called, or the contract of one of `assumptions` that stands
+    /// in for it. The VM's substitute for an intrinsic runs whatever IL CoreLib ships in its place,
+    /// working or not.
+    let private runsFor (assumptions : Set<Assumption>) (assembly : DumpedAssembly) (key : MethodKey) : Runs =
         let method = assembly.Methods.[key.Method.Get]
 
         let intrinsic =
@@ -1600,6 +1627,10 @@ module EscapeAnalysis =
             match intrinsic with
             | Some _ -> VmSubstitution.unsafeStub assembly key.Method.Get
             | None -> None
+
+        match Assumption.summarises assembly key.Method.Get with
+        | Some assumption when assumptions.Contains assumption -> Runs.Assumed assumption
+        | _ ->
 
         match substituted, intrinsic with
         | Some stub, _ -> Runs.Il (stub, None)
@@ -1630,10 +1661,11 @@ module EscapeAnalysis =
     let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
         let assembly, method = methodOf state key
 
-        let contracted (raised : ThrownType list) : LocalFacts =
+        let contracted (raised : ThrownType list) (assumed : Assumption list) : LocalFacts =
             {
                 Raises = raised |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
+                Assumed = assumed |> List.map (fun assumption -> 0, assumption)
                 Calls = []
                 Rethrows = []
                 Regions = []
@@ -1642,15 +1674,16 @@ module EscapeAnalysis =
                 Returns = StackValue.Unknown
             }
 
-        match runsFor assembly key with
-        | Runs.Opaque reason -> state, opaqueFromEntry reason
-        | Runs.Primitive primitive -> state, contracted (contractRaises state (IntrinsicPrimitive.contract primitive))
-        | Runs.Native native ->
-            let raised =
-                (NativeMethod.contract native).Raises
-                |> List.map (fun name -> ThrownType.Exactly (corelibType state name.Namespace name.Name))
+        let exactly (names : ExceptionName list) : ThrownType list =
+            names
+            |> List.map (fun name -> ThrownType.Exactly (corelibType state name.Namespace name.Name))
 
-            state, contracted raised
+        match runsFor state.Assumptions assembly key with
+        | Runs.Opaque reason -> state, opaqueFromEntry reason
+        | Runs.Primitive primitive ->
+            state, contracted (contractRaises state (IntrinsicPrimitive.contract primitive)) []
+        | Runs.Native native -> state, contracted (exactly (NativeMethod.contract native).Raises) []
+        | Runs.Assumed assumption -> state, contracted (exactly (Assumption.raises assumption)) [ assumption ]
         | Runs.Il (body, selfCall) ->
 
         let ops = body.Instructions |> Array.ofList
@@ -2165,6 +2198,7 @@ module EscapeAnalysis =
         {
             Raises = List.rev raises
             Opaque = opaque
+            Assumed = []
             Calls = List.rev calls
             Rethrows = List.rev rethrows
             Regions = regions
@@ -2979,7 +3013,7 @@ module EscapeAnalysis =
             (state : EscapeAnalysisState)
             (key : MethodInstance)
             (summaryOf : MethodInstance -> Escapes)
-            : EscapeAnalysisState * (int * ThrownType option) list
+            : EscapeAnalysisState * (int * Raised) list
             =
             let facts = state.Facts.[key.Definition]
             let calls = state.InstanceCalls.[key]
@@ -2994,8 +3028,8 @@ module EscapeAnalysis =
 
             let rec solve
                 (state : EscapeAnalysisState)
-                (current : Map<int, Set<ThrownType option>>)
-                : EscapeAnalysisState * Map<int, Set<ThrownType option>>
+                (current : Map<int, Set<Raised>>)
+                : EscapeAnalysisState * Map<int, Set<Raised>>
                 =
                 let state, next =
                     ((state, Map.empty), facts.Rethrows)
@@ -3009,19 +3043,25 @@ module EscapeAnalysis =
                             [
                                 for at, thrown in facts.Raises @ calls.Raises do
                                     if inside at then
-                                        yield at, Some thrown
+                                        yield at, Raised.Named thrown
                                 for at, _ in facts.Opaque @ calls.Undecided do
                                     if inside at then
-                                        yield at, None
+                                        yield at, Raised.Unnamed
+                                for at, assumption in facts.Assumed do
+                                    if inside at then
+                                        yield at, Raised.Assumed (assumption, None)
                                 for at, callee in calls.Callees do
                                     if inside at then
                                         let calleeEscapes = summaryOf callee
 
                                         for thrown in calleeEscapes.Types do
-                                            yield at, Some thrown
+                                            yield at, Raised.Named thrown
 
                                         if calleeEscapes.Unknown then
-                                            yield at, None
+                                            yield at, Raised.Unnamed
+
+                                        for assumption in calleeEscapes.Assumes do
+                                            yield at, Raised.Assumed (assumption, None)
                                 for KeyValue (at, rethrownThere) in current do
                                     if inside at then
                                         for thrown in rethrownThere do
@@ -3034,14 +3074,26 @@ module EscapeAnalysis =
 
                         let state, here =
                             ((state, Set.empty), raised)
-                            ||> List.fold (fun (state, here) (at, thrown) ->
+                            ||> List.fold (fun (state, here) (at, raised) ->
+                                let thrown =
+                                    match raised with
+                                    | Raised.Named thrown -> Some thrown
+                                    | Raised.Unnamed -> None
+                                    | Raised.Assumed (_, narrowed) -> narrowed
+
                                 match escapesHandlers state assembly before at thrown with
                                 | state, false -> state, here
                                 | state, true ->
-                                    match rethrownBy state assembly clause thrown with
-                                    | state, Rethrown.Nothing -> state, here
-                                    | state, Rethrown.Thrown thrown -> state, Set.add (Some thrown) here
-                                    | state, Rethrown.Unknown -> state, Set.add None here
+                                    match raised, rethrownBy state assembly clause thrown with
+                                    | _, (state, Rethrown.Nothing) -> state, here
+                                    // What arises only if an assumption fails is re-raised only then,
+                                    // as the clause narrows it.
+                                    | Raised.Assumed (assumption, _), (state, Rethrown.Thrown thrown) ->
+                                        state, Set.add (Raised.Assumed (assumption, Some thrown)) here
+                                    | Raised.Assumed (assumption, _), (state, Rethrown.Unknown) ->
+                                        state, Set.add (Raised.Assumed (assumption, None)) here
+                                    | _, (state, Rethrown.Thrown thrown) -> state, Set.add (Raised.Named thrown) here
+                                    | _, (state, Rethrown.Unknown) -> state, Set.add Raised.Unnamed here
                             )
 
                         state, Map.add offset here next
@@ -3098,10 +3150,22 @@ module EscapeAnalysis =
                         escapesAt state key offset None
                 )
 
+            let state, assumes =
+                ((state, Set.empty), facts.Assumed)
+                ||> List.fold (fun (state, assumes) (offset, assumption) ->
+                    if Set.contains assumption assumes then
+                        state, assumes
+                    else
+                        match escapesAt state key offset None with
+                        | state, true -> state, Set.add assumption assumes
+                        | state, false -> state, assumes
+                )
+
             state,
             {
                 Types = types
                 Unknown = unknown
+                Assumes = assumes
             }
 
         let state, seeds =
@@ -3146,10 +3210,22 @@ module EscapeAnalysis =
                                 else
                                     escapesAt state key offset None
 
+                            let state, assumes =
+                                ((state, acc.Assumes), calleeEscapes.Assumes)
+                                ||> Set.fold (fun (state, assumes) assumption ->
+                                    if Set.contains assumption assumes then
+                                        state, assumes
+                                    else
+                                        match escapesAt state key offset None with
+                                        | state, true -> state, Set.add assumption assumes
+                                        | state, false -> state, assumes
+                                )
+
                             state,
                             {
                                 Types = types
                                 Unknown = unknown
+                                Assumes = assumes
                             }
                         )
 
@@ -3157,9 +3233,9 @@ module EscapeAnalysis =
 
                     let state, escaping =
                         ((state, escaping), rethrows)
-                        ||> List.fold (fun (state, acc) (offset, thrown) ->
-                            match thrown with
-                            | Some thrown when not (acc.Types.Contains thrown) ->
+                        ||> List.fold (fun (state, acc) (offset, raised) ->
+                            match raised with
+                            | Raised.Named thrown when not (acc.Types.Contains thrown) ->
                                 match escapesAt state key offset (Some thrown) with
                                 | state, true ->
                                     state,
@@ -3167,15 +3243,24 @@ module EscapeAnalysis =
                                         Types = acc.Types.Add thrown
                                     }
                                 | state, false -> state, acc
-                            | Some _ -> state, acc
-                            | None when not acc.Unknown ->
+                            | Raised.Named _ -> state, acc
+                            | Raised.Unnamed when not acc.Unknown ->
                                 match escapesAt state key offset None with
                                 | state, unknown ->
                                     state,
                                     { acc with
                                         Unknown = unknown
                                     }
-                            | None -> state, acc
+                            | Raised.Unnamed -> state, acc
+                            | Raised.Assumed (assumption, narrowed) when not (acc.Assumes.Contains assumption) ->
+                                match escapesAt state key offset narrowed with
+                                | state, true ->
+                                    state,
+                                    { acc with
+                                        Assumes = acc.Assumes.Add assumption
+                                    }
+                                | state, false -> state, acc
+                            | Raised.Assumed _ -> state, acc
                         )
 
                     state, Map.add key escaping next

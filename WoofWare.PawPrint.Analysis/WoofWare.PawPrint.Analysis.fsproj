@@ -17,6 +17,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="Assumption.fs" />
         <Compile Include="Escapes.fs" />
         <Compile Include="StackValues.fs" />
         <Compile Include="EscapeAnalysis.fs" />
