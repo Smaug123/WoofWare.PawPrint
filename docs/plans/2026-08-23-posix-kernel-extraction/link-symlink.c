@@ -15,6 +15,11 @@
 //   SYMLINK   symlink(target, name) for each target and name kind, and on
 //             success whether anything else appeared.
 //   SYMEMPTY  where symlink("", name) succeeds, what walking through it gives.
+//   SYMORDER  symlinkat with a bad argument in each position at once: which
+//             of the target's copy-in, the name's copy-in, the dirfd and the
+//             walk is reported; and, unprivileged, an unwritable or
+//             unsearchable directory against a taken name, a trailing
+//             separator and (Darwin) a name APFS will not bind.
 //   SYMMODE   a new symbolic link's permission bits under each umask.
 //   SYMGROUP  a new symbolic link's group in a directory whose group is not
 //             the caller's, with and without the set-group-ID bit.
@@ -277,6 +282,32 @@ static void symlink_body(const void *v) {
     }
 }
 
+// ------------------------------------------------------------------ SYMORDER
+static char overlongname[PATH_MAX + 2];
+struct symorder { const char *target; int dirfd; const char *name; };
+static void symorder_body(const void *v) {
+    const struct symorder *a = v;
+    fixture();
+    printf("%s", en(rc(symlinkat(a->target, a->dirfd, a->name))));
+}
+// Unprivileged rows: u/ is 0555 holding f and a dangling link dl, s/ is 0600
+// holding f, and w/ is writable.
+struct symperm { const char *target; const char *name; };
+static void symperm_body(const void *v) {
+    const struct symperm *a = v;
+    fixture();
+    if (mkdir("u", 0755) < 0 || mkdir("s", 0755) < 0 || mkdir("w", 0755) < 0) die("mkdir u s w");
+    mkfile("u/f", 0644);
+    mkfile("s/f", 0644);
+    if (symlink("nx", "u/dl") < 0) die("u/dl");
+    if (chmod("u", 0555) < 0 || chmod("s", 0600) < 0) die("chmod u s");
+    if (geteuid() == 0) {
+        printf("root");
+        return;
+    }
+    printf("%s", en(rc(symlink(a->target, a->name))));
+}
+
 // ------------------------------------------------------------------ SYMEMPTY
 // Where a link with an empty target can be made at all: what each walk
 // through it answers.
@@ -450,6 +481,49 @@ int main(int argc, char **argv) {
         printf("SYMLINK\t%s\t", syms[i].label);
         in_child(symlink_body, &syms[i].row);
         printf("\n");
+    }
+
+    memset(overlongname, 'a', PATH_MAX);
+    overlongname[PATH_MAX] = 0;
+    {
+        const char *targets[] = {"t", "", NULL, fulltarget};
+        const char *targetnames[] = {"t", "empty", "NULL", "overlong"};
+        const char *names[] = {"n", NULL, "", overlongname, "nxdir/n", "f", "n/"};
+        const char *namenames[] = {"n", "NULL", "empty", "overlong", "nxdir/n", "f", "n/"};
+        int dirfds[] = {AT_FDCWD, -1};
+        for (int t = 0; t < 4; t++)
+            for (int d = 0; d < 2; d++) {
+                printf("SYMORDER\ttarget=%s dirfd=%s", targetnames[t], d == 0 ? "AT_FDCWD" : "-1");
+                for (int n = 0; n < 7; n++) {
+                    struct symorder a = {targets[t], dirfds[d], names[n]};
+                    printf("\t%s=", namenames[n]);
+                    in_child(symorder_body, &a);
+                }
+                printf("\n");
+            }
+    }
+    {
+        struct {
+            const char *label;
+            struct symperm row;
+        } perms[] = {
+            {"unwritable: free name", {"t", "u/n"}},
+            {"unwritable: taken name", {"t", "u/f"}},
+            {"unwritable: free name/", {"t", "u/n/"}},
+            {"unwritable: dangling/", {"t", "u/dl/"}},
+            {"unwritable: file/", {"t", "u/f/"}},
+            {"unsearchable: free name", {"t", "s/n"}},
+            {"unsearchable: taken name", {"t", "s/f"}},
+            {"writable: unbindable name", {"t", "w/\xff\xfe"}},
+            {"unwritable: unbindable name", {"t", "u/\xff\xfe"}},
+            {"writable: unbindable target", {"\xff\xfe", "w/n"}},
+            {"writable: name of 292 bytes", {"t", "w/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+        };
+        for (size_t i = 0; i < sizeof perms / sizeof perms[0]; i++) {
+            printf("SYMPERM\t%s\t", perms[i].label);
+            in_child(symperm_body, &perms[i].row);
+            printf("\n");
+        }
     }
 
     printf("SYMEMPTY\t");
