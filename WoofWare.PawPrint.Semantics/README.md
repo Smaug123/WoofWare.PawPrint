@@ -47,12 +47,21 @@ What lives here:
   under what conditions, whether it returns, and the nullness of its result. `TestIntrinsicContracts`
   holds the contracts to real .NET, and PawPrint's implementations to the contracts.
 * `NativeMethod` — methods CoreCLR implements in native code (an `InternalCall` or a P/Invoke)
-  whose behaviour is known, and what each can do to its caller, stated as an `IntrinsicPrimitive`
-  contract is. So far these are the C runtime's maths functions that `Math` and `MathF` call,
-  and the functions of the native libraries the framework ships with CoreLib (`FrameworkShim`),
-  called through a P/Invoke whose stub only copies each value as its bytes, which CoreLib's
-  disabling of runtime marshalling allows; none of these can fault, the shims' on the
-  assumption that they are present. `TestNativeMethod` checks the recognition against both
+  whose behaviour is known, and what each can do to its caller (a `NativeContract`: the CoreLib
+  exception types it can raise, whether it returns, and its result's nullness). These are the C
+  runtime's maths functions that `Math` and `MathF` call, the functions of the native libraries
+  the framework ships with CoreLib (`FrameworkShim`), called through a P/Invoke whose stub only
+  copies each value as its bytes, which CoreLib's disabling of runtime marshalling allows, and
+  the FCalls and QCalls the contract table describes. None of the first two can fault, the
+  shims' on the assumption that they are present.
+* `NativeContractTable` — the contract table: what each of a list of CoreLib's FCalls and QCalls
+  can raise, read from the pinned runtime's C++, one row each in the embedded
+  `NativeContractTable.tsv` with the functions it was read from and a sentence saying why. Every
+  native a row names runs no managed code. A QCall is described only when it is called as a
+  shim function is. `TestNativeContractTable` checks that each row names a native both CoreLibs
+  declare and recognise as that row, raises only CoreLib exception types, and cites code the
+  pinned source defines and binds the native to; `TestEscapeAnalysis` checks that the analysis
+  reports exactly what each row says. `TestNativeMethod` checks the recognition against both
   CoreLibs' metadata and against fabricated images, calls each maths function on real .NET over
   its edge values, and checks on real .NET that an exception thrown into native code by a
   callback ends the process rather than reaching the caller.

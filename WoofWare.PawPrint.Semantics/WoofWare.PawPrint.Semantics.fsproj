@@ -28,11 +28,13 @@
         <Compile Include="IlStub.fs" />
         <Compile Include="VmSubstitution.fs" />
         <Compile Include="IntrinsicPrimitive.fs" />
+        <Compile Include="NativeContract.fs" />
         <Compile Include="NativeMethod.fs" />
         <Compile Include="StringConstructor.fs" />
         <Compile Include="IntrinsicBody.fs" />
         <Compile Include="HardwareInstruction.fs" />
         <EmbeddedResource Include="HardwareIntrinsicTable.tsv" LogicalName="WoofWare.PawPrint.Semantics.HardwareIntrinsicTable.tsv" />
+        <EmbeddedResource Include="NativeContractTable.tsv" LogicalName="WoofWare.PawPrint.Semantics.NativeContractTable.tsv" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 

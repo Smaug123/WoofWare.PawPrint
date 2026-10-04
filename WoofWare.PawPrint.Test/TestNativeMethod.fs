@@ -61,7 +61,8 @@ module TestNativeMethod =
                         caseName fn |> shouldEqual method.Name
                         recognisedWidth |> shouldEqual width
                         yield native
-                    | Some (NativeMethod.ShimFunction _), None -> ()
+                    | Some (NativeMethod.ShimFunction _), None
+                    | Some (NativeMethod.Tabulated _), None -> ()
                     | Some native, _ ->
                         failwith $"%s{method.Name} is recognised as %A{native}, but is not a float-only Math FCall"
                     | None, Some _ ->
@@ -151,7 +152,8 @@ module TestNativeMethod =
                 | _ -> None
 
             match NativeMethod.recognise corelib handle, expected with
-            | Some (NativeMethod.MathFunction _), None -> ()
+            | Some (NativeMethod.MathFunction _), None
+            | Some (NativeMethod.Tabulated _), None -> ()
             | recognised, expected ->
                 if recognised <> expected then
                     let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
@@ -642,11 +644,6 @@ module TestNativeMethod =
 
         dynamicMethod.CreateDelegate delegateType
 
-    let private faultType (fault : PrimitiveFault) : Type =
-        match fault with
-        | PrimitiveFault.NullReference -> typeof<NullReferenceException>
-        | PrimitiveFault.DataMisaligned -> typeof<DataMisalignedException>
-
     [<Test>]
     let ``every native method raises only what its contract says, on this runtime`` () : unit =
         let corelib = TestIntrinsicBody.coreLib "host"
@@ -657,7 +654,8 @@ module TestNativeMethod =
             // Calling one with values chosen here could do anything to this process; the callback
             // test holds what its contract rests on to the runtime instead.
             | None
-            | Some (NativeMethod.ShimFunction _) -> ()
+            | Some (NativeMethod.ShimFunction _)
+            | Some (NativeMethod.Tabulated _) -> ()
             | Some (NativeMethod.MathFunction (_, width) as native) ->
                 let contract = NativeMethod.contract native
                 let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
@@ -720,7 +718,7 @@ module TestNativeMethod =
                         match raised call with
                         | None -> contract.CanReturn |> shouldEqual true
                         | Some thrown ->
-                            if not (contract.Raises |> List.exists (fun (fault, _) -> faultType fault = thrown)) then
+                            if not (contract.Raises |> List.exists (fun name -> name.FullName = thrown.FullName)) then
                                 failwith
                                     $"%s{runtimeType.Name}.%s{method.Name}%A{args} raised %s{thrown.Name}, which its contract %A{contract} leaves out"
 

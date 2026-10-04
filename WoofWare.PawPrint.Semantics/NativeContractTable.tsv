@@ -1,0 +1,19 @@
+# What CoreLib's native methods can do to their callers, read from the pinned runtime source.
+# Every native a row names runs no managed code.
+# Seven tab-separated fields:
+#   kind     FCall (an InternalCall, named Namespace.Type::Method) or QCall (named by its entry point)
+#   name
+#   raises   the CoreLib exception types it can raise, by full name, separated by |; - for none
+#   returns  returns, or never
+#   result   none (not a reference), nonnull, or maybenull
+#   sources  path:symbol under src/coreclr, separated by |, the function it is bound to first
+#   reason   why, in a sentence
+FCall	System.Environment::get_CurrentManagedThreadId	-	returns	none	vm/jithelpers.cpp:JIT_GetCurrentManagedThreadId	Reads the current thread's managed ID.
+FCall	System.Runtime.InteropServices.Marshal::GetLastPInvokeError	-	returns	none	vm/marshalnative.cpp:MarshalNative::GetLastPInvokeError	Reads a thread-local integer.
+FCall	System.Runtime.InteropServices.Marshal::SetLastPInvokeError	-	returns	none	vm/marshalnative.cpp:MarshalNative::SetLastPInvokeError	Writes a thread-local integer.
+FCall	System.String::FastAllocateString	System.OutOfMemoryException	returns	nonnull	vm/ecall.h:RhpNewVariableSizeObject|vm/jitinterfacegen.cpp:RhNewString|runtime/amd64/AllocFast.S:RhNewString|runtime/arm64/AllocFast.S:RhNewString|runtime/arm64/AllocFast.S:RhpNewVariableSizeObject|vm/gchelpers.cpp:RhpGcAlloc|vm/gchelpers.cpp:AllocateString|vm/gchelpers.cpp:RhExceptionHandling_FailedAllocation_Helper	Allocates a string, by RhNewString or (when allocations are tracked) RhpNewVariableSizeObject, each of which throws OutOfMemoryException when allocating fails or the length, read unsigned, exceeds the longest a string can be.
+QCall	TypeHandle_GetCorElementType	-	returns	none	vm/comutilnative.cpp:TypeHandle_GetCorElementType	Reads the element type from the type handle.
+QCall	Buffer_Clear	-	returns	none	vm/comutilnative.cpp:Buffer_Clear	Zeroes memory; an invalid address faults in native code, which ends the process.
+QCall	ThreadNative_GetCurrentThread	System.OutOfMemoryException	returns	none	vm/comsynchronizable.cpp:ThreadNative_GetCurrentThread|vm/threads.cpp:Thread::GetExposedObject|vm/comsynchronizable.cpp:ThreadBaseObject::InitExisting	Allocates the current thread's Thread object on first use, initialising its fields without running a constructor.
+QCall	RuntimeTypeHandle_GetRuntimeTypeFromHandleSlow	System.OutOfMemoryException	returns	none	vm/runtimehandles.cpp:RuntimeTypeHandle_GetRuntimeTypeFromHandleSlow|vm/typehandle.cpp:TypeHandle::AllocateManagedClassObject	Allocates the type's RuntimeType object on first use, setting its fields without running a constructor.
+QCall	ExceptionNative_GetMessageFromNativeResources	System.OutOfMemoryException	returns	none	vm/comutilnative.cpp:ExceptionNative_GetMessageFromNativeResources	Loads a resource string, falling back to a constant one, and allocates it.

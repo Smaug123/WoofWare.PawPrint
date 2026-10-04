@@ -57,11 +57,18 @@ type NativeMethod =
     /// HRESULT to throw from, sets no last error, adds no locale argument, and passes a fixed
     /// argument list by a convention that takes no `this`.
     | ShimFunction of FrameworkShim * entryPoint : string
+    /// A method of CoreLib's that the contract table (`NativeContractTable`) describes: an FCall,
+    /// or a QCall called by a P/Invoke whose stub copies every value as its bytes and does nothing
+    /// besides, as for `ShimFunction`.
+    | Tabulated of NativeContractRow
 
 [<RequireQualifiedAccess>]
 module NativeMethod =
 
     let private corelib : string = "System.Private.CoreLib"
+
+    /// The library name by which CoreLib's P/Invokes call CoreCLR's own functions.
+    let private qcall : string = "QCall"
 
     /// Each function, with the number of arguments it takes.
     let private mathFunctions : Map<string * int, MathFunction> =
@@ -236,8 +243,14 @@ module NativeMethod =
                 returnsAsIs
                 && definition.Signature.ParameterTypes |> List.forall (copiedAsIs assembly)
                 ->
-                Map.tryFind import.ModuleName shims
-                |> Option.map (fun shim -> NativeMethod.ShimFunction (shim, import.EntryPointName))
+                match Map.tryFind import.ModuleName shims with
+                | Some shim -> Some (NativeMethod.ShimFunction (shim, import.EntryPointName))
+                // CoreCLR binds CoreLib's P/Invokes into `QCall` to its own functions by entry point
+                // (`vm/qcallentrypoints.cpp`), without loading a library.
+                | None when import.ModuleName = qcall ->
+                    Map.tryFind import.EntryPointName (NativeContractTable.qcalls.Force ())
+                    |> Option.map NativeMethod.Tabulated
+                | None -> None
             | _ -> None
         | MethodBody.InternalCall when
             assembly.ThisAssemblyDefinition.Name.Name = corelib
@@ -251,23 +264,45 @@ module NativeMethod =
                 | "System", "MathF" -> Some (FloatWidth.Single, PrimitiveType.Single)
                 | _ -> None
 
-            match width with
-            | None -> None
-            | Some (width, primitive) ->
-                let float = TypeDefn.PrimitiveType primitive
+            // A row names an FCall by its name alone, as `vm/ecalllist.h` binds most, so it names one
+            // only when its type declares no other FCall of that name.
+            let tabulated () =
+                let fcallsNamed =
+                    declaringType.Methods
+                    |> List.filter (fun candidate ->
+                        match candidate.Body with
+                        | MethodBody.InternalCall -> candidate.Name = definition.Name
+                        | _ -> false
+                    )
 
-                if
-                    definition.Signature.ParameterTypes |> List.forall ((=) float)
-                    && definition.Signature.ReturnType = MethodReturnType.Returns float
-                then
-                    Map.tryFind (definition.Name, definition.Signature.ParameterTypes.Length) mathFunctions
-                    |> Option.map (fun fn -> NativeMethod.MathFunction (fn, width))
-                else
-                    None
+                match fcallsNamed with
+                | [ _ ] when declaringType.Generics.IsEmpty ->
+                    Map.tryFind
+                        (declaringType.Namespace + "." + declaringType.Name, definition.Name)
+                        (NativeContractTable.fcalls.Force ())
+                    |> Option.map NativeMethod.Tabulated
+                | _ -> None
+
+            let mathFunction =
+                match width with
+                | None -> None
+                | Some (width, primitive) ->
+                    let float = TypeDefn.PrimitiveType primitive
+
+                    if
+                        definition.Signature.ParameterTypes |> List.forall ((=) float)
+                        && definition.Signature.ReturnType = MethodReturnType.Returns float
+                    then
+                        Map.tryFind (definition.Name, definition.Signature.ParameterTypes.Length) mathFunctions
+                        |> Option.map (fun fn -> NativeMethod.MathFunction (fn, width))
+                    else
+                        None
+
+            mathFunction |> Option.orElseWith tabulated
         | _ -> None
 
     /// What `native` can do to its caller.
-    let contract (native : NativeMethod) : IntrinsicContract =
+    let contract (native : NativeMethod) : NativeContract =
         match native with
         // CoreCLR's FCall returns the C runtime's result (`COMDouble` and `COMSingle`,
         // floatdouble.cpp and floatsingle.cpp), and the instruction the JIT may emit instead
@@ -290,3 +325,4 @@ module NativeMethod =
                 CanReturn = true
                 Result = ResultNullness.NotAReference
             }
+        | NativeMethod.Tabulated row -> row.Contract
