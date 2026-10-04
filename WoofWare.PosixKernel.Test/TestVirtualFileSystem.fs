@@ -27,7 +27,7 @@ module TestVirtualFileSystem =
     /// The limits every test here resolves under unless it is specifically about
     /// the limits themselves. Obtained from a platform rather than constructed,
     /// so no test can accidentally pin behaviour under a `MAXSYMLINKS` no real
-    /// kernel has; Linux because that is what `KernelConfig` defaults to.
+    /// kernel has; Linux because that is `UnixSystem.defaultUnixPlatform`.
     let private limits : PathLimits =
         SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
 
@@ -470,7 +470,7 @@ module TestVirtualFileSystem =
                 mklink r "dang" "nx"
                 mklink r "cyc" "cyc"
                 // A link whose *target* carries the separator, so the demand arrives
-                // from a splice rather than from the guest's own path.
+                // from a splice rather than from the caller's own path.
                 mklink r "lslash" "d/"
                 mklink r "cycslash" "cycslash/"
             ]
@@ -530,7 +530,7 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``RefuseIsDirectory sees a separator spliced in from a symlink target`` () : unit =
-        // The guest's own path has no trailing separator here: it arrives when
+        // The caller's own path has no trailing separator here: it arrives when
         // the walk splices "d/" in. Measured on Linux, `l -> "d/"` opened with
         // O_CREAT is EISDIR, and `l -> "cyc2/"` is EISDIR rather than ELOOP —
         // so a check at the syscall boundary, on the path as passed, would be
@@ -679,7 +679,7 @@ module TestVirtualFileSystem =
     [<Test>]
     let ``NAME_MAX applies to a component spliced in from a symlink target`` () : unit =
         // The reason this check lives in the walk rather than at the syscall
-        // boundary: the guest's own path is short, and the over-long component
+        // boundary: the caller's own path is short, and the over-long component
         // only exists after the link is expanded. A check on the incoming
         // pathname could not see this at all.
         let tooLong = String.replicate 300 "a"
@@ -2158,7 +2158,7 @@ module TestVirtualFileSystem =
         |> shouldEqual 0o6644
 
     [<Test>]
-    let ``writing to something that cannot hold bytes is an interpreter bug, not an errno`` () : unit =
+    let ``writing to something that cannot hold bytes is a crash, not an errno`` () : unit =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "l" "d" ]
         let some = ImmutableArray.CreateRange [| 1uy |]
 
@@ -2593,7 +2593,8 @@ module TestVirtualFileSystem =
 
     [<Test>]
     let ``forget refuses the root and an absent inode`` () : unit =
-        // Both are interpreter bugs rather than anything a guest can cause, and
+        // Both are bugs in whatever calls `forget` rather than anything a
+        // process can cause, and
         // both are silently catastrophic if allowed: forgetting the root leaves
         // no filesystem, and forgetting an absent inode hides the double-free
         // that produced the call.
@@ -2804,7 +2805,7 @@ module TestVirtualFileSystem =
 
         // 1024 is *not* measurable on a live Darwin: `symlink(2)` refuses to
         // create a target that long, so no real filesystem can hold one. A
-        // PawPrint seed can, and this expectation is therefore extrapolated
+        // seeded filesystem can, and this expectation is therefore extrapolated
         // from the formula rather than bisected out of a kernel — which is
         // worth saying plainly, because every other row here was measured.
         throughLink SimulatedUnixPlatform.macOsArm64 1024 ""
@@ -4014,7 +4015,7 @@ module TestWrittenContents =
         Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
 
     /// The length is what `writtenLength` said it would be. These are the two
-    /// halves a handler uses — `stat` reports the length while the bytes come back
+    /// halves a file is read through — `stat` reports the length while the bytes come back
     /// through `pread` — so a disagreement between them is a file whose reported
     /// size does not match its contents.
     [<Test>]
@@ -4026,7 +4027,7 @@ module TestWrittenContents =
 
         Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
 
-    /// The round trip a guest actually performs: write, then read the same window
+    /// The round trip a process actually performs: write, then read the same window
     /// back. Composes the two halves of the model, so an offset convention that
     /// disagreed between them would show up here even though each is internally
     /// consistent.
@@ -4106,11 +4107,6 @@ module TestWrittenContents =
         // Writing into an empty file at a non-zero offset is all hole.
         written [||] 2L [| byte 'x' |] |> shouldEqual [| 0uy ; 0uy ; byte 'x' |]
 
-/// `VirtualFileSystem.seekTarget`: the whole of what `lseek(2)` computes, once the descriptor and
-/// the whence have been resolved. Property-tested here because as a function of four integers it
-/// can be, where the same arithmetic inlined in a handler is reachable only through a guest — and
-/// the two faults it distinguishes are *indistinguishable* through a Linux-flavoured guest, both
-/// being EINVAL.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestTruncatedContents =
@@ -4180,6 +4176,10 @@ module TestTruncatedContents =
         VirtualFileSystem.truncatedLength tooLong
         |> shouldEqual (Error (FileTruncationRefusal.WouldExceedMaxLength tooLong))
 
+/// `VirtualFileSystem.seekTarget`: the whole of what `lseek(2)` computes, once the descriptor and
+/// the whence have been resolved. Property-tested here because as a function of four integers it
+/// can be — and the two faults it distinguishes are *indistinguishable* through `lseek(2)` on
+/// Linux, both being EINVAL.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSeekTarget =
@@ -4292,9 +4292,9 @@ module TestSeekTarget =
         Check.One (config, Prop.forAll (Arb.fromGen hugeCase) property)
 
     /// `SEEK_CUR` with a zero offset reports where the description already is, without moving it.
-    /// Stated separately because it is not merely a special case: it is the call the BCL makes —
-    /// `SafeFileHandle.GetCanSeek` and `OSFileStreamStrategy`'s constructor both issue exactly this
-    /// — and it is the joint property that lets a guest read back what a `read` advanced.
+    /// Stated separately because it is not merely a special case: it is the call a process makes to
+    /// learn its position, or whether a descriptor can seek at all — and it is the joint property
+    /// that lets a process read back what a `read` advanced.
     [<Test>]
     let ``SEEK_CUR by zero is the identity on the current position`` () : unit =
         let property (_, current : int64, size : int64, _) : bool =
@@ -4316,10 +4316,9 @@ module TestSeekTarget =
         Check.One (config, Prop.forAll (Arb.fromGen smallCase) property)
         Check.One (config, Prop.forAll (Arb.fromGen hugeCase) property)
 
-    /// The size is consulted *only* by `SEEK_END`. The
-    /// `SystemNative_LSeek` handler passes a thunk that refuses for a directory, whose size is a
-    /// filesystem artefact PawPrint will not invent, so `SEEK_SET` and `SEEK_CUR` on a directory
-    /// work precisely because this holds.
+    /// The size is consulted *only* by `SEEK_END`. `UnixDescriptor.lseek` looks a size up for
+    /// `SEEK_END` alone, and hands `SEEK_SET` and `SEEK_CUR` a thunk that fails if forced, so those
+    /// two work on a directory of any filesystem precisely because this holds.
     [<Test>]
     let ``only SEEK_END forces the size`` () : unit =
         let exploding : Lazy<int64> =
@@ -4538,7 +4537,7 @@ module TestCreatingOpenRules =
     let ``O_EXCL on an existing directory beats the directory refusal`` () : unit =
         // Measured on both: `open(".", O_CREAT|O_EXCL)` is EEXIST while
         // `open(".", O_CREAT)` is EISDIR on Linux. So the two refusals are
-        // ordered, and a handler that checked the directory rule first would
+        // ordered, and an `open` that checked the directory rule first would
         // report EISDIR where every kernel reports EEXIST.
         for rules in [ linux ; darwin ] do
             verdict rules CallerPrivilege.Unprivileged true tree "/d"
@@ -4637,7 +4636,7 @@ module TestCreatingOpenRules =
     let ``the created mode is masked by the platform and then by the umask`` () : unit =
         // Measured with umask 022: `mode 0o7777` creates 0o7755 on Linux and
         // 0o0755 on macOS, because XNU masks the mode with ACCESSPERMS and so a
-        // Darwin guest cannot create a setuid, setgid or sticky file at all.
+        // Darwin process cannot create a setuid, setgid or sticky file at all.
         let umask = mode 0o022
 
         CreatingOpenRules.createdPermissions linux ownedPlainParent (mode 0o755) umask 0o7777
@@ -4674,7 +4673,7 @@ module TestCreatingOpenRules =
         // Measured on Linux: `umask(2)` stores `mask & 0o777`, so `umask(0o4000)`
         // reads back 0o0000 and a requested 0o4644 stays 0o4644. A mask that
         // kept the bit would clear the set-user-ID bit instead, making a setuid
-        // file impossible for a guest to create at all.
+        // file impossible for a process to create at all.
         let linuxStored (argument : int) : PermissionBits =
             argument
             &&& PermissionBits.toInt (SimulatedUnixPlatform.umaskStoredBits SimulatedUnixPlatform.linuxX64)
@@ -4830,14 +4829,14 @@ module TestMkDirRules =
 
     /// Resolve as a `mkdir` of the given flavour would, then ask for the verdict
     /// — so the `Resolution` under test is one the walk really produces rather
-    /// than one this test hand-assembled. Mirrors what `SystemNative_MkDir`
+    /// than one this test hand-assembled. Mirrors what `UnixNamespace.mkdir`
     /// does, which is why a wrong policy here would be a wrong policy there too.
     ///
     /// `privilege` reaches the walk as well as the verdict, because the two now
     /// split the permission rule between them: the walk refuses a directory this
     /// caller may not search, and the verdict one it may not write. A row that
     /// hands privilege only to the verdict would be testing a resolution no
-    /// handler could produce.
+    /// `mkdir` could produce.
     let private verdict
         (rules : MkDirRules)
         (privilege : CallerPrivilege)
@@ -5275,7 +5274,7 @@ module TestWalkSearchPermission =
     [<Test>]
     let ``a component spliced from a symlink target is looked up like any other`` () : unit =
         // "lp" is a link to "p", so this resolves "kid" *inside* p having got
-        // there by splicing. A check that ran only on components the guest wrote
+        // there by splicing. A check that ran only on components the caller wrote
         // would let this through.
         refuses 0o666 "/lp/kid"
         resolves 0o755 "/lp/kid"

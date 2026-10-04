@@ -125,8 +125,8 @@ module TestPathArgument =
     let ``a forged limit is rejected rather than making every path too long`` () : unit =
         // The failure worth catching is not a crash: a defaulted `PathLimits`
         // has a PATH_MAX of zero, under which every path is over-long, so a
-        // caller would get a confident ENAMETOOLONG for every path a guest ever
-        // names.
+        // caller would get a confident ENAMETOOLONG for every path a process
+        // ever names.
         let exn =
             Assert.Throws<Exception> (fun () ->
                 parse Unchecked.defaultof<PathLimits> (bytesOf "/etc") |> ignore<PathArgument>
@@ -152,7 +152,7 @@ module TestPathArgument =
     let ``an empty argument parses rather than refusing`` () : unit =
         // `open("")` is ENOENT, which is an answer about resolution rather than
         // about the bytes, so this stage must let it through: refusing here
-        // would turn a guest's ordinary mistake into a crash.
+        // would turn a caller's ordinary mistake into a crash.
         match parse linux ImmutableArray<byte>.Empty with
         | PathArgument.Parsed path -> UnixPath.isEmpty path |> shouldEqual true
         | other -> failwith $"expected an empty path, got %O{other}"

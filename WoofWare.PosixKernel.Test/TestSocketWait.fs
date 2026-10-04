@@ -242,8 +242,8 @@ module TestSocketWait =
     /// A negative count is answered as 0 is: epoll's EINVAL behind the
     /// descriptor's EBADF (measured, `epoll-wait.c` section G), and kqueue's
     /// immediate return with no events (measured, `kevent-negative-count.c`).
-    /// A shim that calls the wait again after a signal reads its count afresh,
-    /// unscreened, so either kernel can be asked one.
+    /// A client that calls the wait again after a signal may read its count
+    /// afresh, unscreened, so either kernel can be asked one.
     [<TestCaseSource(nameof platforms)>]
     let ``a negative event count is answered as zero is`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = withEventQueue (systemOn platform)
@@ -343,7 +343,7 @@ module TestSocketWait =
     /// A buffer with no address at all reaches the screen with nothing to
     /// compare, so the flavour that screens refuses and the flavour that does
     /// not proceeds. Answering "in range" on the screening flavour would be a
-    /// guess, and a guest-visible one.
+    /// guess, and one visible to a process.
     [<Test>]
     let ``an addressless buffer is refused only where the flavour screens`` () : unit =
         let linuxFd, linux = withEventQueue (systemOn SimulatedUnixPlatform.linuxX64)

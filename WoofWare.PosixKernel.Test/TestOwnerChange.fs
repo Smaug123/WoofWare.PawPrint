@@ -1277,7 +1277,7 @@ module TestOwnerChange =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixBootImage.boot
 
-        // The flavour's own event port: an epoll instance, or a kqueue.
+        // The flavour's own event queue: an epoll instance, or a kqueue.
         let port (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
             let create =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with

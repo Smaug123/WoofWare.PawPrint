@@ -60,8 +60,8 @@ module TestUnixSystemInitial =
         system.Machine.Mount |> shouldEqual expected
 
         // The rule the pair exists to satisfy, asserted directly: a machine
-        // claiming a type its flavour never mounts would hand a guest a fact no
-        // real system could tell it.
+        // claiming a type its flavour never mounts would hand a process a fact
+        // no real system could tell it.
         EmulatedFileSystemType.isReportableUnder
             (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
             (EmulatedMount.fileSystemType system.Machine.Mount)
@@ -164,7 +164,7 @@ module TestUnixSystemInitial =
 
     /// Both clocks belong to the simulation rather than to the machine it
     /// claims to be, so a recorded trace's timestamps must not depend on which
-    /// flavour the guest thinks it is running on.
+    /// flavour the process thinks it is running on.
     ///
     /// `TestMonotonicTimestamp` and `TestSystemTimeAsTicks` derive every reading
     /// they check from a system booted on one arbitrary flavour, on the strength

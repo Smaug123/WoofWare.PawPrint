@@ -81,9 +81,10 @@ module TestSocketFuzz =
     /// The distinction is what the live fuzzer does with it: a `Refused`
     /// sequence is outside the modelled envelope and gets skipped and counted,
     /// while a `Defect` fails the run. `executeEmulated` tells them apart by
-    /// looking for a marker in the `failwith` text, so a generator-bug failure
-    /// that forgets the marker is silently downgraded to a skip -- and the fuzzer
-    /// goes on reporting agreement it never checked.
+    /// exception type -- the model's typed refusals are skips, and any other
+    /// failure is a defect -- so a generator-bug failure raised as a refusal is
+    /// silently downgraded to a skip, and the fuzzer goes on reporting agreement
+    /// it never checked.
     ///
     /// An interest mask outside the five bits the op language defines is the
     /// cheapest such shape to construct: `parse` does not screen it, so it
@@ -274,7 +275,7 @@ module TestSocketFuzz =
 
         if not (List.isEmpty defects) then
             Assert.Fail (
-                $"seed %d{seed}: %d{defects.Length} sequences hit an interpreter defect:\n\n"
+                $"seed %d{seed}: %d{defects.Length} sequences hit a defect in the model or the fuzz driver:\n\n"
                 + String.concat "\n\n" defects
             )
 

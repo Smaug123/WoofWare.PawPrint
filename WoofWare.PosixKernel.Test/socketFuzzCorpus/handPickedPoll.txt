@@ -34,8 +34,8 @@ sock:1 conndead:1 poll:1:0	ok EINPROGRESS <ERR+HUP>
 sock:1 conndead:1 poll:1:5	ok EINPROGRESS <IN+OUT+ERR+HUP>
 # 6. THE IN MASK. A listener with a queued connection has IN in its level and
 #    nothing else; asked for OUT alone it must answer empty. Kills
-#    `In = level.In`, which answers <IN>. No managed guest can pin this —
-#    `SocketPal.Poll` masks the returned revents a second time.
+#    `In = level.In`, which answers <IN>. A client that masks the returned
+#    revents a second time cannot pin this.
 sock:1 lstn:1 sock:2 conn:2:1 poll:1:4	ok ok ok EINPROGRESS <>
 # 7. The positive control for row 6: the same listener asked for IN does report
 #    it, so row 6 is a mask rather than a listener that reports nothing.

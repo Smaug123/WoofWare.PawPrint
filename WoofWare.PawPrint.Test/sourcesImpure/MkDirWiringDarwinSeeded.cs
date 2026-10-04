@@ -17,6 +17,11 @@ using System.Runtime.InteropServices;
 // `SimulatedUnixPlatform.mkDirRules` and hardcoded either answer would satisfy
 // every one of them plus one of these two guests.
 //
+// It also pins which name `mkdir("dang/")` binds on Darwin: the link's target,
+// `nx`. `WoofWare.PosixKernel.Test`'s `TestVirtualFileSystemAgainstHost`
+// compares only whether such a call succeeds, because the host side cannot say
+// what it bound.
+//
 // The kernel is registered with a umask of 0o027 and a uid of 1000 — neither of
 // them `KernelConfig`'s default — so a handler that reached for a constant
 // instead of `Kernel.Umask`, or that assumed privilege, fails here and nowhere

@@ -12,7 +12,7 @@ open WoofWare.PosixKernel
 /// Both type parameters are `SignalState`'s, and these rows instantiate them at
 /// `int` and `string` — which is the point: naming a scheduling entity and
 /// naming a signal handler are the client's business, and nothing here knows
-/// what PawPrint's `ThreadId` or `SignalHandler` is.
+/// what types a client uses for them.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixProcessState =
@@ -57,8 +57,8 @@ module TestUnixProcessState =
     [<Test>]
     let ``the signal state is keyed by whatever the client names tasks`` () : unit =
         // The claim the two type parameters exist to make. `int` names a task and
-        // `string` is a handler; a record that had kept PawPrint's `ThreadId` and
-        // `SignalHandler` would not compile here at all.
+        // `string` is a handler; a record that fixed either type to one client's
+        // own would not compile here at all.
         let proc =
             { empty with
                 Signals =
@@ -159,7 +159,7 @@ module TestUnixProcessState =
     let ``no path is an answer rather than a request for a default`` () : unit =
         let system =
             image
-            |> UnixBootImage.withProcessPath context (Some (AbsoluteUnixPath.parseOrFail context "/bin/guest"))
+            |> UnixBootImage.withProcessPath context (Some (AbsoluteUnixPath.parseOrFail context "/bin/app"))
             |> UnixBootImage.withProcessPath context None
             |> UnixBootImage.boot
 

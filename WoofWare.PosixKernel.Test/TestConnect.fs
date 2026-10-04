@@ -8,12 +8,10 @@ open WoofWare.PosixKernel
 /// `UnixSocket.admitSockaddrCopy` and `UnixConnection.connect`, driven directly on a
 /// constructed system.
 ///
-/// Two jobs. The first is the admission itself, which is new: which screens
-/// precede the sockaddr copy, and how many of its bytes the copy takes. The
-/// second is a floor under `connectSocket`, which arrived in this library with
-/// its exhaustive rows still in `WoofWare.PawPrint.Test/TestEmulatedKernelSockets.fs`
-/// — a client that is not PawPrint had, until this fixture, no test of the
-/// largest function in the library.
+/// Two jobs. The first is the admission itself: which screens precede the
+/// sockaddr copy, and how many of its bytes the copy takes. The second is a
+/// floor under `connectSocket`, the largest function in the library, beside the
+/// rows `TestSocketTable` drives it through.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestConnect =

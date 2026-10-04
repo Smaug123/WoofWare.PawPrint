@@ -7,7 +7,7 @@ open WoofWare.PosixKernel
 
 /// `UnixSocket.listen`.
 ///
-/// It takes no buffer and has no shim screens of its own, so unlike `bind` there
+/// It takes no buffer and has no caller-side screens of its own, so unlike `bind` there
 /// is nothing here that belongs to a caller: every row is `listen(2)`. The two
 /// that only this tier can reach are the re-screen, which one flavour performs
 /// and the other does not, and the implicit bind's exhaustion.

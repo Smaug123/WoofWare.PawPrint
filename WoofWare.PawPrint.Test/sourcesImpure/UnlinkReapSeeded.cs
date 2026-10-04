@@ -8,9 +8,11 @@ using System.Runtime.InteropServices;
 // guest below only sets the state up — that a descriptor still reads its bytes
 // after the name has gone is asserted in sourcesPure/UnlinkSeeded.cs, against
 // the real kernel — and the registration's `AssertTerminalState` inspects the
-// emulated filesystem afterwards. That is the only place the reaping rule is
-// visible at all: `EmulatedKernel.forgetIfUnheld` frees an inode nothing holds,
-// and a real `close(2)` frees no memory a guest can see either.
+// emulated filesystem afterwards. A guest cannot see the reaping rule at all:
+// `ObjectLifetime.forgetIfUnheld` frees an inode nothing holds, and a real
+// `close(2)` frees no memory a guest can see either. `WoofWare.PosixKernel.Test`'s
+// `TestInodeLifetime` drives the rule directly; this checks that PawPrint's
+// handlers reach it.
 //
 // At exit exactly one inode besides the root must survive, and it must be the
 // one this guest still has open.

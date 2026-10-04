@@ -134,7 +134,7 @@ module TestRmDirRules =
     /// Resolve as an `rmdir` of the given flavour would, then ask for the
     /// verdict — so the `Resolution` under test is one the walk really produces
     /// rather than one this test hand-assembled. Mirrors what
-    /// `SystemNative_RmDir` does, which is why a wrong policy here would be a
+    /// `UnixNamespace.rmdir` does, which is why a wrong policy here would be a
     /// wrong policy there too.
     ///
     /// `privilege` reaches the walk as well as the verdict, because the two
@@ -335,9 +335,9 @@ module TestRmDirRules =
     [<Test>]
     let ``Darwin specialises the root inode rather than the path`` () : unit =
         // XNU refuses a mount's root vnode before it looks at which navigation
-        // got there; PawPrint mounts one filesystem, so that is the root. Below
-        // the root, "." and ".." are both EINVAL, which is what `nest/inner`
-        // pins.
+        // got there; this corpus is one filesystem, so its root is `/`.
+        // Below the root, "." and ".." are both EINVAL, which is what
+        // `nest/inner` pins.
         // "d/.." is in the EBUSY list rather than the EINVAL one because `d`
         // is a child of *this* root, so climbing out of it reaches the root.
         // That is why the corpus carries `nest/inner`: only a directory two
@@ -360,7 +360,7 @@ module TestRmDirRules =
     let ``Darwin removes the target of a final symlink`` () : unit =
         // The destructive divergence, and the reason this syscall dispatches on
         // the flavour instead of picking a column: with `ld -> d`, Darwin's
-        // `rmdir("ld/")` removes `d` while Linux's is ENOTDIR. A handler that
+        // `rmdir("ld/")` removes `d` while Linux's is ENOTDIR. A model that
         // hardcoded either would delete the wrong object on the other platform.
         removed (verdict darwin CallerPrivilege.Unprivileged "ld/") |> shouldEqual "d"
 
@@ -401,7 +401,7 @@ module TestRmDirRules =
     let ``the flavours disagree about the removed directory's own ctime`` () : unit =
         // Measured through a descriptor held across the call, reproduced 3/3 on
         // each: Linux drops `st_nlink` 2 -> 0 and moves the directory's `ctime`,
-        // Darwin leaves both alone. Guest-observable through `fstat` on a
+        // Darwin leaves both alone. A process observes it through `fstat` on a
         // directory descriptor.
         (SimulatedUnixPlatform.rmDirRules linux).RemovedDirectoryEffect
         |> shouldEqual UnbindTargetEffect.LostALink

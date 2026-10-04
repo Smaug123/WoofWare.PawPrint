@@ -7,9 +7,9 @@ open WoofWare.PosixKernel
 /// One operation of the socket/epoll differential fuzzer's op language
 /// (docs/plans/2026-08-22-socket-epoll-fuzzer.md). Slots name descriptors on
 /// both sides of the comparison; each side keeps its own slot-to-fd map, and
-/// raw fd numbers never appear in a transcript. `Add` and `Mod` carry the
-/// .NET shim's `SocketEvents` bits (0..0x1F), which both sides translate 1:1 to
-/// epoll bits and register edge-triggered, as the shim does; `EpollAdd` and
+/// raw fd numbers never appear in a transcript. `Add` and `Mod` carry the op
+/// language's five interest bits (0..0x1F), which both sides translate 1:1 to
+/// epoll bits and register edge-triggered; `EpollAdd` and
 /// `EpollMod` carry raw `<sys/epoll.h>` events, which reach both kernels
 /// unconverted.
 [<RequireQualifiedAccess>]
@@ -33,7 +33,7 @@ type FuzzOp =
     /// `poll(2)` over a single slot, with timeout 0. The `events` mask is
     /// Linux's own `<poll.h>` numbering, any value in 0..0xFFFF, and it reaches
     /// both kernels unconverted — a *different* alphabet from the
-    /// `SocketEvents` bits `Add`/`Mod` carry, which number different
+    /// interest bits `Add`/`Mod` carry, which number different
     /// conditions with the same small integers.
     | Poll of slot : int * events : int
 
@@ -53,7 +53,7 @@ type EmulatedRun =
 [<RequireQualifiedAccess>]
 module SocketFuzz =
 
-    /// The op language's interest mask, as the events the .NET shim passes
+    /// The op language's interest mask, as the events it passes
     /// `epoll_ctl`.
     ///
     /// The mirror of `harness.c`'s `interest_to_epoll`, which maps the same five
@@ -66,15 +66,15 @@ module SocketFuzz =
     /// is a generator bug, and a fuzzer that quietly accepted one would compare
     /// two sides that had been asked different questions.
     ///
-    /// Carries the `INTERPRETER-DRIVER BUG` marker every other generator-bug
-    /// failure in this file carries, because that is what `executeEmulated`
-    /// classifies on: without it the sequence would come back as
-    /// `EmulatedRun.Refused`, which the live fuzzer *skips*, and a generator
-    /// regression would be counted rather than reported.
+    /// Fails with `failwith`, as every other generator-bug failure in this file
+    /// does, because that is what `executeEmulated` classifies as a defect: a
+    /// `ModelRefusal` would come back as `EmulatedRun.Refused`, which the live
+    /// fuzzer *skips*, and a generator regression would be counted rather than
+    /// reported.
     let private eventsOfMask (mask : int) : uint32 =
         if mask &&& ~~~0x1F <> 0 then
             failwith
-                $"INTERPRETER-DRIVER BUG: interest mask 0x%x{mask} has bits outside the five the op language defines (0x1F); the generator should never have produced it."
+                $"FUZZ-DRIVER BUG: interest mask 0x%x{mask} has bits outside the five the op language defines (0x1F); the generator should never have produced it."
 
         EpollEvents.EdgeTriggered
         ||| (if mask &&& 0x01 <> 0 then EpollEvents.In else 0u)
@@ -161,7 +161,7 @@ module SocketFuzz =
         |> List.ofSeq
 
     /// `epoll_wait`'s reported events, in the order `harness.c`'s
-    /// `mask_string` prints them: the five conditions the .NET shim names
+    /// `mask_string` prints them: the five conditions the interest bits name
     /// first, in the order the corpus has always printed them, then the rest
     /// of Linux's named readiness bits.
     let private epollBitNames : (uint32 * string) list =
@@ -185,7 +185,7 @@ module SocketFuzz =
         let known = epollBitNames |> List.fold (fun acc (bit, _) -> acc ||| bit) 0u
 
         if events &&& ~~~known <> 0u then
-            failwith $"INTERPRETER-DRIVER BUG: epoll_wait reported events 0x%08x{events}, outside Linux's named bits."
+            failwith $"FUZZ-DRIVER BUG: epoll_wait reported events 0x%08x{events}, outside Linux's named bits."
 
         epollBitNames
         |> List.choose (fun (bit, name) -> if events &&& bit <> 0u then Some name else None)
@@ -221,8 +221,7 @@ module SocketFuzz =
         let known = pollBitNames |> List.fold (fun acc (bit, _) -> acc ||| bit) 0s
 
         if revents &&& ~~~known <> 0s then
-            failwith
-                $"INTERPRETER-DRIVER BUG: poll reported revents 0x%04x{uint16 revents}, outside Linux's named bits."
+            failwith $"FUZZ-DRIVER BUG: poll reported revents 0x%04x{uint16 revents}, outside Linux's named bits."
 
         pollBitNames
         |> List.choose (fun (bit, name) -> if revents &&& bit <> 0s then Some name else None)
@@ -254,19 +253,19 @@ module SocketFuzz =
         | Some fd -> fd
         | None ->
             failwith
-                $"INTERPRETER-DRIVER BUG: op names slot %d{slot}, which holds no fd — the generator is supposed to be constructive."
+                $"FUZZ-DRIVER BUG: op names slot %d{slot}, which holds no fd — the generator is supposed to be constructive."
 
     let private socketIdOfSlot (slot : int) (state : ExecState) : SocketId =
         match FileDescriptorRegistry.tryFind (slotFd slot state) state.Kernel.Process.FileDescriptors with
         | Some description ->
             match description.Target with
             | OpenFileTarget.Socket socketId -> socketId
-            | other -> failwith $"INTERPRETER-DRIVER BUG: slot %d{slot} is %O{other}, not a socket."
-        | None -> failwith $"INTERPRETER-DRIVER BUG: slot %d{slot}'s fd is not live."
+            | other -> failwith $"FUZZ-DRIVER BUG: slot %d{slot} is %O{other}, not a socket."
+        | None -> failwith $"FUZZ-DRIVER BUG: slot %d{slot}'s fd is not live."
 
     let private assignSlot (slot : int) (fd : int) (state : ExecState) : ExecState =
         if Map.containsKey slot state.SlotFd then
-            failwith $"INTERPRETER-DRIVER BUG: slot %d{slot} assigned twice."
+            failwith $"FUZZ-DRIVER BUG: slot %d{slot} assigned twice."
 
         { state with
             SlotFd = Map.add slot fd state.SlotFd
@@ -276,9 +275,9 @@ module SocketFuzz =
     /// slot number, as the harness passes it.
     ///
     /// A refusal is a skip only for raw events, which may ask for modes the
-    /// model refuses. The `SocketEvents` ops register exactly what the .NET
-    /// shim registers, which the model answers in full, so a refusal of one is
-    /// a finding.
+    /// model refuses. The interest-bit ops register only edge-triggered
+    /// readiness interest, which the model answers in full, so a refusal of one
+    /// is a finding.
     let private epollCtl
         (rawEvents : bool)
         (port : int)
@@ -304,11 +303,11 @@ module SocketFuzz =
         | Ok (EpollCtlAnswer.Failed reason, _) -> registrationErrName reason, state
         | Error refusal when rawEvents ->
             raise (ModelRefusal $"epoll_ctl refused: %s{EpollCtlRefusal.describe refusal}")
-        | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{EpollCtlRefusal.describe refusal}"
+        | Error refusal -> failwith $"FUZZ-DRIVER BUG: %s{EpollCtlRefusal.describe refusal}"
 
     /// One op against the emulated kernel: the transcript token, and the state
-    /// after. Any `failwith` escaping this is the kernel refusing (or, if it
-    /// says "interpreter bug", a finding); `executeEmulated` classifies.
+    /// after. A `ModelRefusal` escaping this is the kernel refusing, and any
+    /// other exception is a finding; `executeEmulated` classifies.
     let private execOp (op : FuzzOp) (state : ExecState) : string * ExecState =
         match op with
         | FuzzOp.NewSocket slot ->
@@ -324,16 +323,14 @@ module SocketFuzz =
                 }
         | FuzzOp.Listen slot ->
             // The trivially-conflict-free composite bind+listen, constructed
-            // directly: bind/listen semantics live in the native handler, not
-            // in UnixSystem<int, string>, and are deliberately outside the fuzzed
-            // vocabulary (see the plan doc's altitude option).
+            // directly: bind/listen semantics are deliberately outside the
+            // fuzzed vocabulary (see the plan doc's altitude option).
             let socketId = socketIdOfSlot slot state
             let sock = UnixMachineState.socket socketId state.Kernel.Machine
 
             match sock.Phase with
             | SocketPhase.Idle -> ()
-            | phase ->
-                failwith $"INTERPRETER-DRIVER BUG: lstn on a socket in %A{phase}; the generator listens only on Idle."
+            | phase -> failwith $"FUZZ-DRIVER BUG: lstn on a socket in %A{phase}; the generator listens only on Idle."
 
             let port = state.NextListenerPort
 
@@ -377,7 +374,7 @@ module SocketFuzz =
             let endpoint =
                 match (UnixMachineState.socket (socketIdOfSlot listener state) state.Kernel.Machine).Binding with
                 | Some binding when binding.Endpoint.Port <> 0us -> binding.Endpoint
-                | _ -> failwith $"INTERPRETER-DRIVER BUG: conn targets slot %d{listener}, whose socket never listened."
+                | _ -> failwith $"FUZZ-DRIVER BUG: conn targets slot %d{listener}, whose socket never listened."
 
             let socketId = socketIdOfSlot client state
 
@@ -466,7 +463,7 @@ module SocketFuzz =
                 // because it is `close(2)`'s only errno and a generator that
                 // learned to close twice should find this arm waiting rather
                 // than a crash; measured by mutation, which turned EBADF into
-                // success here and left the whole PawPrint suite green.
+                // success here and failed no test.
                 "EBADF", state
             | Error error ->
                 // EBADF is `close(2)`'s only errno; anything else means the
@@ -516,10 +513,10 @@ module SocketFuzz =
             let portId =
                 match FileDescriptorRegistry.tryFindId (slotFd port state) state.Kernel.Process.FileDescriptors with
                 | Some id -> id
-                | None -> failwith $"INTERPRETER-DRIVER BUG: wait's port slot %d{port} is not live."
+                | None -> failwith $"FUZZ-DRIVER BUG: wait's port slot %d{port} is not live."
 
             // The predicate a parked waiter is polled against and the drain its
-            // woken handler performs read the same annotated walk, so they
+            // woken call performs read the same annotated walk, so they
             // cannot disagree; asked here because a generated sequence drives
             // the port through phases no hand-written row reaches.
             let system = state.Kernel
@@ -528,7 +525,7 @@ module SocketFuzz =
 
             if List.isEmpty delivered = predicted then
                 failwith
-                    $"INTERPRETER-DRIVER BUG: EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
+                    $"FUZZ-DRIVER BUG: EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
 
             let kernel = system
 
@@ -548,7 +545,7 @@ module SocketFuzz =
             // against the kernel's rather than against a hand-written row.
             // `poll(2)` mutates nothing, so the state passes through.
             if events < 0 || events > 0xFFFF then
-                failwith $"INTERPRETER-DRIVER BUG: poll events %d{events} is not a 16-bit mask."
+                failwith $"FUZZ-DRIVER BUG: poll events %d{events} is not a 16-bit mask."
 
             let fd = slotFd slot state
 
@@ -556,7 +553,7 @@ module SocketFuzz =
                 FileDescriptorRegistry.tryFindId fd state.Kernel.Process.FileDescriptors
                 |> Option.isNone
             then
-                failwith $"INTERPRETER-DRIVER BUG: poll's slot %d{slot} is not live."
+                failwith $"FUZZ-DRIVER BUG: poll's slot %d{slot} is not live."
 
             let entry : PollEntry =
                 {
@@ -571,13 +568,13 @@ module SocketFuzz =
             match UnixPoll.poll pollTask [ entry ] 0 polling with
             | Error refusal -> raise (ModelRefusal $"poll of fd %d{fd} refused: %s{PollRefusal.describe refusal}")
             | Ok (PollOutcome.WouldBlock condition, _) ->
-                failwith $"INTERPRETER-DRIVER BUG: a poll at timeout 0 parked on %A{condition}."
+                failwith $"FUZZ-DRIVER BUG: a poll at timeout 0 parked on %A{condition}."
             | Ok (PollOutcome.Failed error, _) ->
                 failwith
-                    $"INTERPRETER-DRIVER BUG: a poll at timeout 0 failed with %A{error}, which only a finishing call answers."
+                    $"FUZZ-DRIVER BUG: a poll at timeout 0 failed with %A{error}, which only a finishing call answers."
             | Ok (PollOutcome.Answered ([ reported ], _), _) -> $"<%s{pollMaskString reported}>", state
             | Ok (PollOutcome.Answered (reported, _), _) ->
-                failwith $"INTERPRETER-DRIVER BUG: one poll entry was answered with %d{List.length reported} reports."
+                failwith $"FUZZ-DRIVER BUG: one poll entry was answered with %d{List.length reported} reports."
 
     /// Run one sequence against a fresh `UnixSystem.initial SimulatedUnixPlatform.linuxX64` (Linux
     /// flavour, matching the harness's kernel). Both invariant checkers run
@@ -683,16 +680,16 @@ module SocketFuzz =
         | 2 -> 0x02 // WRITE
         | 3 -> 0x04 // READCLOSE
         | 4
-        | 5 -> 0x07 // READ|WRITE|READCLOSE — what SocketAsyncEngine registers
+        | 5 -> 0x07 // READ|WRITE|READCLOSE — what a client typically registers
         | 6 -> 0x03
         | 7 -> 0x05
         | 8 -> rng.Next 0x20 // anything, CLOSE/ERROR bits included
         | _ -> 0x1F
 
-    /// Raw `<sys/epoll.h>` events for `EpollAdd` and `EpollMod`: the readiness
-    /// bits the .NET shim never asks for, alone and together, and bits epoll
-    /// names nothing for, which it stores and never reports. Edge-triggered
-    /// but for one draw in 32, which asks for a mode the model refuses
+    /// Raw `<sys/epoll.h>` events for `EpollAdd` and `EpollMod`: Linux's named
+    /// readiness bits, including those the interest bits cannot express, alone
+    /// and together, and bits epoll names nothing for, which it stores and
+    /// never reports. Edge-triggered but for one draw in 32, which asks for a mode the model refuses
     /// (level-triggering, `EPOLLEXCLUSIVE`, `EPOLLONESHOT` or `EPOLLWAKEUP`),
     /// so that the failures which precede a refusal are compared too.
     let private randomEpollEvents (rng : Random) : uint32 =
@@ -742,8 +739,8 @@ module SocketFuzz =
     /// were asked for, so a generator that only ever asked for `IN`/`OUT`
     /// would never exercise the one rule this projection can get wrong. `PRI`
     /// is included for the same reason in the other direction — no modelled
-    /// level sets it, so every draw of it must come back empty. The bits the
-    /// .NET shim never asks for (`RDNORM`, `WRNORM`, `WRBAND`, `RDHUP`) are
+    /// level sets it, so every draw of it must come back empty. The bits a
+    /// client typically never asks for (`RDNORM`, `WRNORM`, `WRBAND`, `RDHUP`) are
     /// drawn alone as well as inside the whole 16-bit space, so each is asked
     /// of every phase a sequence reaches.
     let private randomPollMask (rng : Random) : int =
@@ -752,7 +749,7 @@ module SocketFuzz =
         | 1 -> 0x01 // IN
         | 2 -> 0x04 // OUT
         | 3
-        | 4 -> 0x05 // IN|OUT — what SocketPal.SelectViaPoll asks for
+        | 4 -> 0x05 // IN|OUT — what a client typically asks for
         | 5 -> 0x02 // PRI alone
         | 6 -> 0x08 // ERR alone, an output-only bit in the request
         | 7 -> 0x10 // HUP alone, likewise
@@ -760,9 +757,9 @@ module SocketFuzz =
         | 9 -> 0x40 // RDNORM, which rides with IN
         | 10 -> 0x100 // WRNORM, which rides with OUT
         | 11 -> 0x200 // WRBAND, which TCP never presents
-        | 12 -> 0x2000 // RDHUP, which the .NET shim never asks for
+        | 12 -> 0x2000 // RDHUP, which a client typically never asks for
         | 13 -> 0xFFFF // everything: the level itself
-        | 14 -> rng.Next 0x40 // anything inside the six bits the .NET shim asks for
+        | 14 -> rng.Next 0x40 // anything inside the low six bits: IN, PRI, OUT, ERR, HUP, NVAL
         | _ -> rng.Next 0x10000 // anything at all, unnamed bits included
 
     /// One generated sequence. Constructive: every op names live slots and

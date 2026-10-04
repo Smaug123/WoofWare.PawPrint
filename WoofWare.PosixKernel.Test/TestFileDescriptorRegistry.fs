@@ -32,7 +32,7 @@ module TestFileDescriptorRegistry =
     /// `close`, for tests whose subject is the descriptor table rather than the
     /// kernel object a close may have destroyed. That second half is
     /// `UnixDescriptor.close`'s business, and is asserted in
-    /// `TestEmulatedKernelSockets`.
+    /// `TestSocketTable`.
     let private closeOnly
         (fd : int)
         (registry : FileDescriptorRegistry)
@@ -97,9 +97,9 @@ module TestFileDescriptorRegistry =
     /// `flock(LOCK_EX|LOCK_NB)` succeeds on each. Two epoll ports on
     /// `anon_inodefs` share one inode and so exclude one another.
     ///
-    /// No guest observer: Darwin refuses `flock` on a socket outright, and the
-    /// Linux-flavour observation would need two sockets and two locks in one
-    /// guest, which is what this asserts instead.
+    /// No end-to-end observer: Darwin refuses `flock` on a socket outright, and
+    /// the Linux-flavour observation would need two sockets and two locks in one
+    /// process, which is what this asserts instead.
     [<Test>]
     let ``two sockets are two descriptions and two flock objects`` () : unit =
         let a, registry =
@@ -148,10 +148,10 @@ module TestFileDescriptorRegistry =
         |> shouldEqual (FileDescriptorRegistry.tryFindObject a registry)
 
     /// The description a socket gets. The triple it names is the socket table's
-    /// business, and is asserted in `TestEmulatedKernelSockets`.
+    /// business, and is asserted in `TestSocketTable`.
     ///
-    /// The access mode is not cosmetic: `SystemNative_Read` and
-    /// `SystemNative_Write` test it *before* they look at the target, so
+    /// The access mode is not cosmetic: `UnixReadWrite`'s `read` and `write`
+    /// test it *before* they look at the target, so
     /// anything narrower than `ReadWrite` would answer EBADF where a real socket
     /// answers about its connection state (measured: ENOTCONN, EINVAL, or a
     /// block — never EBADF).
@@ -192,10 +192,10 @@ module TestFileDescriptorRegistry =
     /// shares a single inode, so an exclusive lock on one port excludes the
     /// other, while the descriptions themselves stay distinct.
     ///
-    /// The object half has a guest observer — `SocketEventPortLinux.cs` locks
-    /// one port and finds the other excluded — so this test exists for the
-    /// description half, which has none: nothing a guest can call tells two
-    /// ports apart. That half matters for the wait rather than for `flock`.
+    /// The object half is observable from a process — it can lock one instance
+    /// and find the other excluded — so this test exists for the description
+    /// half, which is not: nothing a process can call tells two instances
+    /// apart. That half matters for the wait rather than for `flock`.
     /// `ParkedEpollWait` keys a parked task on the port's
     /// `OpenFileDescriptionId`, so two ports sharing one description identity
     /// would wake the wrong waiter.
@@ -338,7 +338,7 @@ module TestFileDescriptorRegistry =
     /// `O_RDWR` — that is the same fact as their sharing one description.
     ///
     /// Asserted here rather than left to the helper above, because these are the
-    /// modes every readability and writability answer in the syscall handlers is
+    /// modes every readability and writability answer in the syscalls is
     /// derived from.
     [<Test>]
     let ``ofLaunchedPipes opens a read end read-only and a write end write-only`` () : unit =
@@ -351,7 +351,7 @@ module TestFileDescriptorRegistry =
         modeOf 1 |> shouldEqual FileAccessMode.WriteOnly
         modeOf 2 |> shouldEqual FileAccessMode.WriteOnly
 
-        // ...and hence, through the accessors the handlers actually consult:
+        // ...and hence, through the accessors the syscalls actually consult:
         // stdin is readable and not writable, and the output streams the reverse.
         FileAccessMode.permitsRead (modeOf 0) |> shouldEqual true
         FileAccessMode.permitsWrite (modeOf 0) |> shouldEqual false
@@ -899,7 +899,7 @@ module TestFileDescriptorRegistry =
     /// releasing `b` lets `a` take the exclusive lock either way. Only a bystander asking for an
     /// exclusive lock after `b` releases can tell whether `a` is still holding one.
     ///
-    /// Measured (scratchpad/flockconv.c): Linux drops it, Darwin keeps it. PawPrint simulates
+    /// Measured (scratchpad/flockconv.c): Linux drops it, Darwin keeps it. The registry simulates
     /// Linux. The *error* the failed conversion reports is `EWOULDBLOCK` on both, so nothing
     /// about the return value distinguishes them.
     [<Test>]
@@ -1033,7 +1033,8 @@ module TestFileDescriptorRegistry =
         |> shouldEqual None
 
     /// A standard stream is lockable — Linux permits `flock` on a pipe — and can
-    /// never contend, because PawPrint gives each role exactly one description.
+    /// never contend, because a launch onto pipes gives each role exactly one
+    /// description.
     /// Asserted rather than left implicit: it is the one place where "no
     /// conflict" is a consequence of the process model rather than of the lock
     /// rule, so a future shared-pipe model would need to revisit it.
@@ -1380,7 +1381,7 @@ module TestFileDescriptorRegistry =
         error |> shouldEqual (Some FlockError.WouldBlock)
 
     /// `setOffset` is deliberately partial in the descriptor: both callers have already resolved the
-    /// description and answered EBADF/ESPIPE, so reaching it otherwise is an interpreter bug, and a
+    /// description and answered EBADF/ESPIPE, so reaching it otherwise is a caller's bug, and a
     /// silent no-op would hide it.
     [<Test>]
     let ``setOffset refuses a descriptor that cannot hold an offset`` () : unit =
@@ -1440,9 +1441,9 @@ module TestFileDescriptorRegistry =
             Status = OpenFileStatus.none
         }
 
-    /// Two descriptions naming one socket. PawPrint models no way to produce
+    /// Two descriptions naming one socket. The library models no way to produce
     /// this — `dup(2)` shares a description rather than copying it — and it
-    /// would be guest-visible: `flock` contends *between* descriptions naming one
+    /// would be visible to a process: `flock` contends *between* descriptions naming one
     /// object but not within one, so a duplicated identity would make a socket
     /// contend with itself.
     [<Test>]
@@ -1642,9 +1643,9 @@ module TestFileDescriptorRegistry =
         for fd in [ 0 ; 1 ; 2 ] do
             nonBlockingOf fd LaunchedStreams.registry |> shouldEqual false
 
-        // ...and each of the three creators: `SystemNative_Open` accepts no
-        // O_NONBLOCK bit, `socket(2)` is given no SOCK_NONBLOCK, and an event
-        // port is handed out as `epoll_create1`/`kqueue` make it.
+        // ...and each of the three creators: `openFile` accepts no
+        // O_NONBLOCK bit, `socket(2)` is given no SOCK_NONBLOCK, and an epoll
+        // instance is handed out as `epoll_create1` makes it.
         let fd, registry =
             FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly LaunchedStreams.registry
 
@@ -1735,11 +1736,11 @@ module TestFileDescriptorRegistry =
             |> ignore<FileDescriptorRegistry>
 
     /// The store is flavour-free: measured on both kernels, `F_SETFL` on an
-    /// event port genuinely toggles the bit (on Darwin the call *also* reports
+    /// epoll or kqueue descriptor genuinely toggles the bit (on Darwin the call *also* reports
     /// ENOTTY, which is the caller's business — the flavour split lives in
     /// `UnixDescriptor.setNonBlocking`, which stores before reporting).
     [<Test>]
-    let ``setNonBlocking round-trips on a socket event port`` () : unit =
+    let ``setNonBlocking round-trips on an epoll instance`` () : unit =
         let portFd, registry = FileDescriptorRegistry.createEpoll LaunchedStreams.registry
 
         let registry = FileDescriptorRegistry.setNonBlocking portFd true registry
@@ -1924,7 +1925,7 @@ module TestFileDescriptorRegistry =
         |> ignore
 
     /// Linux removes a destroyed description's registrations at file-release
-    /// time (`eventpoll_release`); PawPrint's `close` does the same sweep. No
+    /// time (`eventpoll_release`); the registry's `close` does the same sweep. No
     /// syscall can see the difference — the dead key can never be probed again
     /// — so this is the only observer, and it is what keeps the future
     /// readiness wake from delivering out of a corpse.

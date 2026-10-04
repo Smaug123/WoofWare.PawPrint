@@ -6,8 +6,8 @@ open WoofWare.PosixKernel
 
 /// The socket readiness delivery, row by measured row: every claim here is a
 /// row of `docs/plans/2026-08-21-socket-readiness-wake.md`'s tables (probes
-/// `et.c`/`order2.c`/`order3.c`/`order4.c`, Linux 6.18.5). Guests can see the
-/// delivered batches; what they cannot see is the ready list itself — which
+/// `et.c`/`order2.c`/`order3.c`/`order4.c`, Linux 6.18.5). A process can see
+/// the delivered batches; what it cannot see is the ready list itself — which
 /// entries are pending, what consumption removed, where truncation stopped —
 /// so those are pinned here.
 [<TestFixture>]
@@ -20,8 +20,8 @@ module TestSocketEventDelivery =
     let private inetFamily : int option =
         Some SimulatedUnixPlatform.internetAddressFamily
 
-    /// The events a registration through the shim asks for when it wants every
-    /// condition the shim names: `EPOLLIN|EPOLLOUT|EPOLLRDHUP`, with the
+    /// The events a client registers when it wants every readiness
+    /// condition: `EPOLLIN|EPOLLOUT|EPOLLRDHUP`, with the
     /// `EPOLLERR|EPOLLHUP` the kernel adds anyway, edge-triggered.
     let private allInterest : uint32 =
         EpollEvents.In
@@ -43,8 +43,8 @@ module TestSocketEventDelivery =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> UnixBootImage.boot
 
-    /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
-    /// guest; an errno comes back, because that is an answer.
+    /// `close(2)`. A refusal crashes; an errno comes back, because that is an
+    /// answer.
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
         match UnixDescriptor.close fd system with
         | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
@@ -62,7 +62,7 @@ module TestSocketEventDelivery =
 
     /// `EpollReadyList.drain` against a kernel, with the claim its two readers
     /// exist to satisfy checked on every call: the predicate a parked waiter is
-    /// polled against and the drain its woken handler performs read the same
+    /// polled against and the drain its woken call performs read the same
     /// annotated walk, so a drain reports something exactly when the predicate
     /// said it would. Nothing else asserts that, and each reader looks correct
     /// alone — a lost wakeup is a waiter that sleeps through an event the drain
@@ -291,7 +291,8 @@ module TestSocketEventDelivery =
         assertSound kernel
 
     /// The complement of row E: an ADD of a target that is not ready pends
-    /// nothing, which is what keeps the no-spurious-wake guests parked.
+    /// nothing, which is what keeps a waiter on the instance parked rather than
+    /// spuriously woken.
     [<Test>]
     let ``an ADD of an unready target pends nothing`` () : unit =
         let portFd, portId, kernel = addEpoll initialSystem
@@ -995,8 +996,7 @@ module TestSocketEventDelivery =
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
         assertSound kernel
 
-    /// The close-time retention rule (measured, see
-    /// `SocketEventWaitSurvivesCloseLinux.cs` and `open-file-references.c`
+    /// The close-time retention rule (measured, see `open-file-references.c`
     /// section E): every close of an in-flight-waited epoll instance proceeds,
     /// the last one included, because the wait holds the description. Darwin's
     /// kqueue has its own rule, in `TestKqueue`.
