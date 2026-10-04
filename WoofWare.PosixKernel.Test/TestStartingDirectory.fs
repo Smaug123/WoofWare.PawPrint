@@ -175,6 +175,18 @@ module TestStartingDirectory =
             match UnixPipe.pipe2 0 UserBuffer.Mapped system with
             | Ok (Pipe2Answer.Created (readFd, _), system) -> Some (readFd, system)
             | other -> failwith $"%s{context}: pipe2 did not make a pipe: %A{other}"
+        | "pipe-write" ->
+            match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+            | Ok (Pipe2Answer.Created (_, writeFd), system) -> Some (writeFd, system)
+            | other -> failwith $"%s{context}: pipe2 did not make a pipe: %A{other}"
+        | "unlinked" ->
+            let fd, system = opened "f2" system
+
+            let system =
+                Answered.unlink (UnixPath.parseOrFail context "f2") system
+                |> completed "unlink(f2)"
+
+            Some (fd, system)
         | "socket" -> Some (NewSocket.create SocketDomain.Unix SocketKind.Stream SocketProtocol.Default system)
         | "orphan" ->
             let system =
@@ -370,6 +382,273 @@ module TestStartingDirectory =
     let ``linkat's destination answers every dirfd and path the probe tried, under every envelope`` () : unit =
         for envelope in envelopes do
             replayLinkAt "new" envelope
+
+    // ------------------------------------------------------------ fstatat
+
+    let private renderedStatus (result : Result<FileStatusAnswer, FStatAtRefusal>) : string =
+        match result with
+        | Ok (FileStatusAnswer.Reported _) -> "ok"
+        | Ok (FileStatusAnswer.Failed error) -> $"%A{error}"
+        | Error refusal -> $"refused: %s{FStatAtRefusal.describe refusal}"
+
+    let private atSymlinkNoFollow (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 0x100
+        | SimulatedUnixFlavour.Darwin -> 0x20
+
+    let private linuxAtEmptyPath : int = 0x1000
+
+    let private replayFStatAt (envelope : Envelope) : unit =
+        let flavour = SimulatedUnixPlatform.flavour envelope.Platform
+
+        let rows =
+            atRows envelope
+            |> Map.filter (fun (call, _, _) _ -> call = "fstatat" || call = "fstatat(NOFOLLOW)")
+
+        rows.Count |> shouldEqual (2 * 13 * 9)
+        let skipped = faccessatNotReplayed envelope
+
+        [
+            for KeyValue ((call, kind, path), expected) in rows do
+                if not (skipped.Contains kind) then
+                    match directoryArgument kind envelope with
+                    | None -> yield $"%s{call} %s{kind} %s{path}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+                        let flags = if call = "fstatat" then 0 else atSymlinkNoFollow flavour
+
+                        let actual =
+                            UnixPathResolution.fstatat dirfd (pathArgument path envelope.Platform) flags system
+                            |> renderedStatus
+
+                        if actual <> expected then
+                            yield
+                                $"%s{call} %s{kind} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``fstatat answers every dirfd and path the probe tried as Linux root`` () : unit = replayFStatAt linuxRoot
+
+    [<Test>]
+    let ``fstatat answers every dirfd and path the probe tried as a Linux user`` () : unit = replayFStatAt linuxUser
+
+    [<Test>]
+    let ``fstatat answers every dirfd and path the probe tried on Darwin`` () : unit = replayFStatAt darwinUser
+
+    /// The fields of the probe's lines beginning `tag`, from `resource`.
+    let private probeLines (resource : string) (tag : string) : string list list =
+        use stream = Assembly.GetExecutingAssembly().GetManifestResourceStream resource
+
+        if isNull stream then
+            failwith $"%s{context}: no embedded resource %s{resource}"
+
+        use reader = new StreamReader (stream)
+
+        reader.ReadToEnd().Split ('\n', StringSplitOptions.RemoveEmptyEntries)
+        |> Seq.map (fun line -> line.Split '\t' |> List.ofArray)
+        |> Seq.filter (fun fields -> List.head fields = tag)
+        |> Seq.map List.tail
+        |> List.ofSeq
+
+    let private replayFStatAtFlags (envelope : Envelope) : unit =
+        let flavour = SimulatedUnixPlatform.flavour envelope.Platform
+        let atFdCwd = atFdCwd flavour
+
+        let row =
+            probeLines envelope.Resource "FLAGS"
+            |> List.find (fun row -> row.[0] = "fstatat")
+
+        row.[1] |> shouldEqual "0=ok"
+
+        // "rejected:" lists each bit the call did not answer 0 for, with its
+        // errno where that is not EINVAL.
+        let rejected =
+            (List.item 2 row).Substring("rejected:".Length).Split (' ', StringSplitOptions.RemoveEmptyEntries)
+            |> Seq.map (fun token ->
+                match token.Split '=' with
+                | [| bit ; error |] -> Convert.ToInt32 (bit, 16), error
+                | _ -> Convert.ToInt32 (token, 16), "EINVAL"
+            )
+            |> Map.ofSeq
+
+        let refused =
+            [
+                for bit in 0..31 do
+                    let flag = 1 <<< bit
+                    let expected = Map.tryFind flag rejected |> Option.defaultValue "ok"
+
+                    let actual =
+                        UnixPathResolution.fstatat atFdCwd (PathArg.ofText "f") flag (boot envelope)
+                        |> renderedStatus
+
+                    if actual.StartsWith "refused: the flag word" then
+                        yield flag
+                    elif actual <> expected then
+                        failwith
+                            $"%s{context}: fstatat with flags 0x%x{flag}: the probe answered %s{expected}, this library %s{actual}"
+            ]
+
+        // Every flag refused is one the probe saw accepted, or answered other
+        // than EINVAL.
+        let expectedRefused =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> [ 0x800 ; 0x2000 ; 0x4000 ]
+            | SimulatedUnixFlavour.Darwin -> [ 0x200 ; 0x400 ; 0x800 ; 0x2000 ; 0x8000 ]
+
+        refused |> shouldEqual expectedRefused
+
+        for flag in refused do
+            Map.tryFind flag rejected |> Option.defaultValue "ok" |> shouldNotEqual "EINVAL"
+
+        let order =
+            probeLines envelope.Resource "FLAGORDER"
+            |> List.find (fun row -> row.[0] = "fstatat")
+
+        order.[1] |> shouldEqual "flags=0x40000000"
+
+        [
+            for cell in order.[2..] do
+                let at = cell.IndexOf '='
+                let label = cell.Substring (0, at)
+                let expected = cell.Substring (at + 1)
+
+                let dirfd, path =
+                    match label with
+                    | "NULL" -> atFdCwd, PathArgumentBytes.Unreadable
+                    | "minus1+f" -> -1, PathArg.ofText "f"
+                    | "empty" -> atFdCwd, PathArg.ofText ""
+                    | "nx" -> atFdCwd, PathArg.ofText "nx"
+                    | other -> failwith $"%s{context}: the probe has no FLAGORDER cell %s{other}"
+
+                let actual =
+                    UnixPathResolution.fstatat dirfd path 0x40000000 (boot envelope)
+                    |> renderedStatus
+
+                if actual <> expected then
+                    yield $"FLAGORDER %s{label}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``fstatat screens every flag bit as measured as Linux root`` () : unit = replayFStatAtFlags linuxRoot
+
+    [<Test>]
+    let ``fstatat screens every flag bit as measured as a Linux user`` () : unit = replayFStatAtFlags linuxUser
+
+    [<Test>]
+    let ``fstatat screens every flag bit as measured on Darwin`` () : unit = replayFStatAtFlags darwinUser
+
+    let private emptyPathResource : string =
+        "WoofWare.PosixKernel.Test.fstatatEmptyPath.linux.txt"
+
+    /// `fstatat-empty-path.c`'s name for a dirfd kind, as `directoryArgument`
+    /// names it.
+    let private emptyPathKind (kind : string) : string =
+        match kind with
+        | "pipe-read" -> "pipe"
+        | "epoll" -> "eventq"
+        | other -> other
+
+    let private emptyPathEnvelope (row : string list) : Envelope =
+        match row.[0] with
+        | "caller=0" -> linuxRoot
+        | "caller=1000" -> linuxUser
+        | other -> failwith $"%s{context}: the probe has no caller %s{other}"
+
+    [<Test>]
+    let ``Linux's AT_EMPTY_PATH reports what fstat reports, for every dirfd the probe tried`` () : unit =
+        let rows = probeLines emptyPathResource "EMPTY"
+        rows.Length |> shouldEqual 28
+
+        [
+            for row in rows do
+                let envelope = emptyPathEnvelope row
+                let kind = row.[1]
+
+                for cell in row.[2..] do
+                    let at = cell.LastIndexOf '='
+                    let label = cell.Substring (0, at)
+                    let expected = cell.Substring (at + 1)
+
+                    match directoryArgument (emptyPathKind kind) envelope with
+                    | None -> yield $"%s{kind}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+
+                    let path =
+                        if label.StartsWith "NULL" then
+                            PathArgumentBytes.Unreadable
+                        else
+                            PathArg.ofText ""
+
+                    let flags = linuxAtEmptyPath ||| (if label.EndsWith "NOFOLLOW" then 0x100 else 0)
+
+                    let actual = UnixPathResolution.fstatat dirfd path flags system
+
+                    // What `fstat`, or `stat(".")` for AT_FDCWD, reports.
+                    let reference =
+                        if kind = "cwd" then
+                            UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText ".") system
+                            |> Result.mapError FStatAtRefusal.Stat
+                        else
+                            UnixPathResolution.fstat dirfd system
+                            |> Result.mapError FStatAtRefusal.Descriptor
+
+                    let ok =
+                        match expected, actual with
+                        | _, Error FStatAtRefusal.UnreadableEmptyPath -> label.StartsWith "NULL"
+                        | _ when label.StartsWith "NULL" -> false
+                        | "same", Error _ ->
+                            // This library cannot report what the probe compared;
+                            // it must refuse exactly as `fstat` does.
+                            actual = reference
+                        | "same", Ok (FileStatusAnswer.Reported _) -> actual = reference
+                        | errno, Ok (FileStatusAnswer.Failed error) -> errno = $"%A{error}" && actual = reference
+                        | _ -> false
+
+                    if not ok then
+                        yield
+                            $"%s{row.[0]} %s{kind} %s{label}: the probe answered %s{expected}; this library %s{renderedStatus actual}, against %s{renderedStatus reference}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``Linux's AT_EMPTY_PATH changes nothing for a path that is not empty`` () : unit =
+        let rows = probeLines emptyPathResource "PATH"
+        rows.Length |> shouldEqual 28
+
+        [
+            for row in rows do
+                let envelope = emptyPathEnvelope row
+                let kind = row.[1]
+
+                for cell in row.[2..] do
+                    let at = cell.LastIndexOf '='
+                    let label = cell.Substring (0, at)
+                    let expected = cell.Substring (at + 1)
+
+                    match directoryArgument (emptyPathKind kind) envelope with
+                    | None -> yield $"%s{kind}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+
+                    let path =
+                        match label with
+                        | "rooted f" -> "/c/w/f"
+                        | other -> other
+
+                    let without = UnixPathResolution.fstatat dirfd (PathArg.ofText path) 0 system
+
+                    let flagged =
+                        UnixPathResolution.fstatat dirfd (PathArg.ofText path) linuxAtEmptyPath system
+
+                    let actual =
+                        $"%s{renderedStatus without}/%s{renderedStatus flagged}"
+                        + (if without <> flagged then " differs" else "")
+
+                    if actual <> expected then
+                        yield
+                            $"%s{row.[0]} %s{kind} %s{label}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
 
     [<Test>]
     let ``only Darwin's /dev/null is left unreplayed`` () : unit =
@@ -685,6 +964,68 @@ module TestStartingDirectory =
             |> shouldEqual (
                 UnixPathResolution.resolvePathParent AtDirectory.CurrentDirectory policy trailing path inCwd
                 |> Result.bind PathWalk.completeResolution
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen walkCase) property)
+
+    [<Test>]
+    let ``stat is fstatat from AT_FDCWD, and fstatat from a descriptor on a directory is stat from that directory``
+        ()
+        : unit
+        =
+        let property (platform, credentials, cwd, path : UnixPath, policy, _ : TrailingSeparatorPolicy) : unit =
+            let flavour = SimulatedUnixPlatform.flavour platform
+            let argument = PathArgumentBytes.Bytes (UnixPath.toByteString path)
+
+            let flags =
+                match policy with
+                | SymlinkPolicy.Follow -> 0
+                | SymlinkPolicy.NoFollowFinal -> atSymlinkNoFollow flavour
+
+            let inCwd = walkSystem platform credentials cwd
+
+            let viaStat =
+                UnixPathResolution.stat policy argument inCwd
+                |> Result.mapError FStatAtRefusal.Stat
+
+            UnixPathResolution.fstatat (atFdCwd flavour) argument flags inCwd
+            |> shouldEqual viaStat
+
+            // Opened as root, as the descriptor property above does.
+            let fd, held =
+                match
+                    Answered.openPath
+                        readOnly
+                        (UnixPath.parseOrFail context cwd)
+                        0
+                        (walkSystem platform Owners.root cwd)
+                with
+                | SyscallAnswer.Completed fd, system -> int fd, system
+                | other -> failwith $"%s{context}: open(%s{cwd}) did not open: %O{other}"
+
+            let atRoot =
+                { held with
+                    Process =
+                        { held.Process with
+                            Credentials = credentials
+                            CurrentDirectoryInode = VirtualFileSystem.root held.Machine.FileSystem
+                        }
+                }
+
+            // The tree was built by root, so its unowned entries are root's:
+            // compare with stat from the same tree, by the same caller.
+            let heldInCwd =
+                { held with
+                    Process =
+                        { held.Process with
+                            Credentials = credentials
+                        }
+                }
+
+            UnixPathResolution.fstatat fd argument flags atRoot
+            |> shouldEqual (
+                UnixPathResolution.stat policy argument heldInCwd
+                |> Result.mapError FStatAtRefusal.Stat
             )
 
         Check.One (config, Prop.forAll (Arb.fromGen walkCase) property)

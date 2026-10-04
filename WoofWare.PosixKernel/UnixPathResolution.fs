@@ -165,6 +165,35 @@ module FStatRefusal =
         | FStatRefusal.NfsDirectorySize inode -> StatRefusal.describe (StatRefusal.NfsDirectorySize inode)
         | FStatRefusal.DeviceFileSystemRoot inode -> StatRefusal.describe (StatRefusal.DeviceFileSystemRoot inode)
 
+/// Why this kernel will not answer an `fstatat(2)`.
+[<RequireQualifiedAccess>]
+type FStatAtRefusal =
+    /// The flag word carries flags the flavour accepts and this library does
+    /// not model; see `StatScreen.Unmodelled`. `flags` is the whole word.
+    | UnmodelledFlags of flags : int
+    /// Linux's `AT_EMPTY_PATH`, with a pathname the caller could not read.
+    /// Linux reads a NULL pathname under `AT_EMPTY_PATH` as the empty one, and
+    /// reports what `dirfd` names; `PathArgumentBytes.Unreadable` does not say
+    /// whether the pathname was NULL or some other address it could not read.
+    | UnreadableEmptyPath
+    /// The path resolved, or would have, and `stat(2)` refuses what it names.
+    | Stat of StatRefusal
+    /// The empty path named `dirfd` itself, and `fstat(2)` refuses it.
+    | Descriptor of FStatRefusal
+
+[<RequireQualifiedAccess>]
+module FStatAtRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which path.
+    let describe (refusal : FStatAtRefusal) : string =
+        match refusal with
+        | FStatAtRefusal.UnmodelledFlags flags ->
+            $"the flag word 0x%x{flags} carries a flag this flavour accepts and this library does not model: Linux's AT_NO_AUTOMOUNT (0x800) or AT_STATX_SYNC_TYPE bits (0x2000, 0x4000), or Darwin's AT_REALDEV (0x200), AT_FDONLY (0x400), AT_SYMLINK_NOFOLLOW_ANY (0x800), AT_RESOLVE_BENEATH (0x2000) or AT_UNIQUE (0x8000)."
+        | FStatAtRefusal.UnreadableEmptyPath ->
+            "AT_EMPTY_PATH with a pathname that could not be read: Linux reads a NULL pathname under AT_EMPTY_PATH as the empty one, and this library is not told whether the pathname was NULL."
+        | FStatAtRefusal.Stat refusal -> StatRefusal.describe refusal
+        | FStatAtRefusal.Descriptor refusal -> FStatRefusal.describe refusal
+
 /// Why this kernel will not answer a `chmod(2)`.
 [<RequireQualifiedAccess>]
 type ChModRefusal =
@@ -707,14 +736,16 @@ module UnixPathResolution =
                 }
         )
 
-    /// `stat`, of a path this kernel has already copied in.
+    /// `fstatat` without `AT_EMPTY_PATH`, of a path this kernel has already
+    /// copied in, starting from `directory` if it is relative.
     let internal statParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<FileStatusAnswer, StatRefusal>
         =
-        match resolvePath AtDirectory.CurrentDirectory policy path system with
+        match resolvePath directory policy path system with
         | Error (PathFailure.Errno error) -> Ok (FileStatusAnswer.Failed error)
         | Error (PathFailure.Refused refusal) -> Error (StatRefusal.Path refusal)
         | Ok inode ->
@@ -728,7 +759,8 @@ module UnixPathResolution =
 
     /// `stat(2)` and `lstat(2)`: report the status of the inode `path` names,
     /// the two differing only in whether a symbolic link in the final position
-    /// is followed.
+    /// is followed. Each is `fstatat` from `AT_FDCWD`, with
+    /// `AT_SYMLINK_NOFOLLOW` for `lstat`.
     ///
     /// Changes nothing and returns no system, for the reason `fstat` does not:
     /// a `stat` records no access.
@@ -750,7 +782,7 @@ module UnixPathResolution =
         =
         match copyIn path system with
         | Error error -> Ok (FileStatusAnswer.Failed error)
-        | Ok path -> statParsed policy path system
+        | Ok path -> statParsed AtDirectory.CurrentDirectory policy path system
 
     /// `fstat(2)`: report the status of the inode `fd` names.
     ///
@@ -860,6 +892,74 @@ module UnixPathResolution =
         | None ->
             failwith
                 $"UnixPathResolution.fstat: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
+
+    /// `fstatat(2)`: report the status of the inode `path` names, starting
+    /// from `dirfd` if it is relative; `stat(2)` and `lstat(2)` are this from
+    /// the current directory.
+    ///
+    /// `dirfd` and `flags` are raw, in this platform's own numbering;
+    /// `StatRules.screen` says which flag words each flavour rejects, before
+    /// anything else, and what the rest mean. `path` is the argument's bytes,
+    /// copied in next. A relative path then starts where `dirfd` says, as
+    /// every `*at` call's does, and resolves as `stat`'s does.
+    ///
+    /// Under Linux's `AT_EMPTY_PATH` an empty path names what `dirfd` names,
+    /// whatever kind of descriptor it is, and the call reports exactly what
+    /// `fstat` would of it, or what `stat` would of the current directory for
+    /// `AT_FDCWD`. A path that is not empty is resolved as if the flag were
+    /// absent.
+    ///
+    /// Changes nothing and returns no system, as `stat` and `fstat` do not.
+    ///
+    /// Refuses the flags `StatRules.screen` does not model, a pathname this
+    /// kernel cannot read under `AT_EMPTY_PATH`, and whatever `stat` or
+    /// `fstat` refuses of what the call reaches; see `FStatAtRefusal`.
+    let fstatat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<FileStatusAnswer, FStatAtRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match StatRules.screen flavour flags with
+        | StatScreen.Failed error -> Ok (FileStatusAnswer.Failed error)
+        | StatScreen.Unmodelled flags -> Error (FStatAtRefusal.UnmodelledFlags flags)
+        | StatScreen.Screened arguments ->
+
+        let directory = AtDirectory.decode flavour dirfd
+
+        match arguments.EmptyPath, path with
+        | EmptyPathMeaning.NamesStartingPoint, PathArgumentBytes.Unreadable -> Error FStatAtRefusal.UnreadableEmptyPath
+        | EmptyPathMeaning.NamesStartingPoint, PathArgumentBytes.Bytes _
+        | EmptyPathMeaning.Walked, _ ->
+
+        match copyIn path system with
+        | Error error -> Ok (FileStatusAnswer.Failed error)
+        | Ok path ->
+
+        // Measured by `fstatat-empty-path.c` on Linux 6.18.5: under
+        // AT_EMPTY_PATH an empty path reports, byte for byte, what fstat of
+        // the descriptor does (or stat of "." for AT_FDCWD), for every kind of
+        // descriptor, AT_SYMLINK_NOFOLLOW or not; and a path that is not
+        // empty answers as it does without the flag.
+        match arguments.EmptyPath, directory with
+        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
+            fstat fd system |> Result.mapError FStatAtRefusal.Descriptor
+        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
+            let cwd = system.Process.CurrentDirectoryInode
+
+            match statOf cwd system with
+            | Some (Ok status) -> Ok (FileStatusAnswer.Reported status)
+            | Some (Error refusal) -> Error (FStatAtRefusal.Stat refusal)
+            | None ->
+                failwith
+                    $"UnixPathResolution.fstatat: the current directory is inode %O{cwd}, which the filesystem does not contain. Run UnixSystem.checkInvariants (this is a bug in this library)."
+        | EmptyPathMeaning.NamesStartingPoint, _
+        | EmptyPathMeaning.Walked, _ ->
+            statParsed directory arguments.FinalSymlink path system
+            |> Result.mapError FStatAtRefusal.Stat
 
     /// What `chmod` and `fchmod` do once they have reached `inode`, which is a
     /// regular file or a directory this filesystem holds: EPERM changing
