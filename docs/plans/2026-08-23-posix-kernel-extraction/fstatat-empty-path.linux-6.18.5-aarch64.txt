@@ -1,0 +1,57 @@
+UNAME	Linux 6.18.5 aarch64	euid=0
+EMPTY	caller=0	cwd	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	minus1	""=EBADF	NULL=EBADF	"" NOFOLLOW=EBADF	NULL NOFOLLOW=EBADF
+EMPTY	caller=0	closed	""=EBADF	NULL=EBADF	"" NOFOLLOW=EBADF	NULL NOFOLLOW=EBADF
+EMPTY	caller=0	dir	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	file	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	pipe-read	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	pipe-write	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	socket	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	epoll	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	devnull	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	orphan	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	unlinked	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	locked	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=0	moved	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+PATH	caller=0	cwd	f=ok/ok	.=ok/ok	nx=ENOENT/ENOENT	rooted f=ok/ok
+PATH	caller=0	minus1	f=EBADF/EBADF	.=EBADF/EBADF	nx=EBADF/EBADF	rooted f=ok/ok
+PATH	caller=0	closed	f=EBADF/EBADF	.=EBADF/EBADF	nx=EBADF/EBADF	rooted f=ok/ok
+PATH	caller=0	dir	f=ok/ok	.=ok/ok	nx=ENOENT/ENOENT	rooted f=ok/ok
+PATH	caller=0	file	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=0	pipe-read	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=0	pipe-write	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=0	socket	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=0	epoll	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=0	devnull	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=0	orphan	f=ENOENT/ENOENT	.=ok/ok	nx=ENOENT/ENOENT	rooted f=ok/ok
+PATH	caller=0	unlinked	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=0	locked	f=ok/ok	.=ok/ok	nx=ENOENT/ENOENT	rooted f=ok/ok
+PATH	caller=0	moved	f=ok/ok	.=ok/ok	nx=ENOENT/ENOENT	rooted f=ok/ok
+EMPTY	caller=1000	cwd	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	minus1	""=EBADF	NULL=EBADF	"" NOFOLLOW=EBADF	NULL NOFOLLOW=EBADF
+EMPTY	caller=1000	closed	""=EBADF	NULL=EBADF	"" NOFOLLOW=EBADF	NULL NOFOLLOW=EBADF
+EMPTY	caller=1000	dir	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	file	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	pipe-read	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	pipe-write	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	socket	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	epoll	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	devnull	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	orphan	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	unlinked	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	locked	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+EMPTY	caller=1000	moved	""=same	NULL=same	"" NOFOLLOW=same	NULL NOFOLLOW=same
+PATH	caller=1000	cwd	f=ok/ok	.=ok/ok	nx=ENOENT/ENOENT	rooted f=ok/ok
+PATH	caller=1000	minus1	f=EBADF/EBADF	.=EBADF/EBADF	nx=EBADF/EBADF	rooted f=ok/ok
+PATH	caller=1000	closed	f=EBADF/EBADF	.=EBADF/EBADF	nx=EBADF/EBADF	rooted f=ok/ok
+PATH	caller=1000	dir	f=ok/ok	.=ok/ok	nx=ENOENT/ENOENT	rooted f=ok/ok
+PATH	caller=1000	file	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=1000	pipe-read	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=1000	pipe-write	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=1000	socket	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=1000	epoll	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=1000	devnull	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=1000	orphan	f=ENOENT/ENOENT	.=ok/ok	nx=ENOENT/ENOENT	rooted f=ok/ok
+PATH	caller=1000	unlinked	f=ENOTDIR/ENOTDIR	.=ENOTDIR/ENOTDIR	nx=ENOTDIR/ENOTDIR	rooted f=ok/ok
+PATH	caller=1000	locked	f=EACCES/EACCES	.=EACCES/EACCES	nx=EACCES/EACCES	rooted f=ok/ok
+PATH	caller=1000	moved	f=ok/ok	.=ok/ok	nx=ENOENT/ENOENT	rooted f=ok/ok

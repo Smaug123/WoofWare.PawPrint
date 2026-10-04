@@ -555,7 +555,7 @@ module TestPathCopyIn =
                 {
                     Name = $"stat %A{policy}"
                     Bytes = UnixPathResolution.stat policy
-                    Parsed = UnixPathResolution.statParsed policy
+                    Parsed = UnixPathResolution.statParsed AtDirectory.CurrentDirectory policy
                     FailedWithoutChange = fun error _ answer -> answer = Ok (FileStatusAnswer.Failed error)
                 }
 
