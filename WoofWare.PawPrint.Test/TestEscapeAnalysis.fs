@@ -239,6 +239,45 @@ public static class Cases
         catch (Exception) { throw; }
     }
 
+    // The inner `throw;` rethrows what the outer one did.
+    public static void RethrowsARethrow(Animal a)
+    {
+        try { CallsVirtual(a); }
+        catch (Exception)
+        {
+            try { throw; }
+            catch (Exception) { throw; }
+        }
+    }
+
+    // The first clause absorbs everything, so the second, tried after it, rethrows nothing.
+    public static void RethrowsWhatAnEarlierClauseLeaves(Animal a)
+    {
+        try { CallsVirtual(a); }
+        catch (Exception) { }
+        catch { throw; }
+    }
+
+    // The rethrow re-raises only what its own protected block raises, not the virtual call after it,
+    // which its own clause absorbs.
+    public static int RethrowsBesideAnAbsorbedCall(Animal a, int x, int y)
+    {
+        int r;
+        try { r = Divide(x, y); }
+        catch (Exception) { throw; }
+        try { _ = a.Speak(); }
+        catch (Exception) { }
+        return r;
+    }
+
+    // What the first call raises is absorbed; only the second's escapes.
+    public static void OneOfTwoCaught(object o, Animal a)
+    {
+        try { _ = o.ToString(); }
+        catch (Exception) { }
+        _ = a.Speak();
+    }
+
     // `throw;` rethrows what the innermost enclosing handler caught.
     public static int RethrowsInnermost(int[] a, int i, int d)
     {
@@ -424,6 +463,8 @@ public static class SR
             Unknown : bool option
             /// Exactly the assumptions the answer relied on.
             Assumes : Assumption list option
+            /// Exactly the places that make the answer unknown, as `renderSite` spells them.
+            Sources : string list option
         }
 
     let private expect (ty : string) (name : string) : Expectation =
@@ -433,6 +474,7 @@ public static class SR
             Excludes = []
             Unknown = None
             Assumes = None
+            Sources = None
         }
 
     let private expectations : Expectation list =
@@ -520,9 +562,28 @@ public static class SR
             { expect "Fixture.Cases" "RethrowsTheTypeItCatches" with
                 Contains = [ "<:System.InvalidOperationException" ]
                 Unknown = Some false
+                Sources = Some []
             }
             { expect "Fixture.Cases" "RethrowsAnythingCaughtAsException" with
                 Unknown = Some true
+                Sources = Some [ "Fixture.Cases::CallsVirtual IL VirtualCall Fixture.Animal::Speak" ]
+            }
+            { expect "Fixture.Cases" "RethrowsARethrow" with
+                Unknown = Some true
+                Sources = Some [ "Fixture.Cases::CallsVirtual IL VirtualCall Fixture.Animal::Speak" ]
+            }
+            { expect "Fixture.Cases" "RethrowsWhatAnEarlierClauseLeaves" with
+                Unknown = Some false
+                Sources = Some []
+            }
+            { expect "Fixture.Cases" "RethrowsBesideAnAbsorbedCall" with
+                Contains = [ "=System.DivideByZeroException" ]
+                Unknown = Some false
+                Sources = Some []
+            }
+            { expect "Fixture.Cases" "OneOfTwoCaught" with
+                Unknown = Some true
+                Sources = Some [ "Fixture.Cases::OneOfTwoCaught IL VirtualCall Fixture.Animal::Speak" ]
             }
             { expect "Fixture.Cases" "RethrowsInnermost" with
                 Contains = [ "=System.DivideByZeroException" ]
@@ -562,6 +623,7 @@ public static class SR
             }
             { expect "Fixture.Cases" "CallsVirtual" with
                 Unknown = Some true
+                Sources = Some [ "Fixture.Cases::CallsVirtual IL VirtualCall Fixture.Animal::Speak" ]
             }
             { expect "Fixture.Cases" "CallsNonVirtualViaCallvirt" with
                 Contains = [ "=System.FormatException" ]
@@ -583,6 +645,7 @@ public static class SR
             }
             { expect "Fixture.StaticVirtualCases" "CallParse" with
                 Unknown = Some true
+                Sources = Some [ "Fixture.StaticVirtualCases::CallParse IL VirtualCall Fixture.IParse::Parse" ]
             }
             { expect "Fixture.G`1" ".cctor" with
                 Contains = [ "=System.TypeInitializationException" ]
@@ -633,6 +696,7 @@ public static class SR
             }
             { expect "Fixture.Natives" "Impostor" with
                 Unknown = Some true
+                Sources = Some [ "System.MathF::Sin entry NativeBody" ]
             }
             // `String.Ctor(char, int)` throws for a negative count. It allocates through an FCall
             // no contract describes, so it is not wholly known.
@@ -650,6 +714,7 @@ public static class SR
                 Excludes = [ ioe ]
                 Unknown = Some false
                 Assumes = Some [ Assumption.CoreLibResourceLookup ]
+                Sources = Some []
             }
             // Whatever the lookup raises is caught, so the answer holds whether or not the
             // assumption does.
@@ -695,6 +760,22 @@ public static class SR
             | ThrownType.SubtypeOf ty -> "<:" + EscapeAnalysis.typeName analysis ty
         )
         |> Set.ofSeq
+
+    /// A place the analysis cannot see through, as the expectations spell it: the method it is in,
+    /// `IL` at an instruction of the method's IL or `entry` at none, why, and the method the
+    /// instruction names.
+    let private renderSite (analysis : EscapeAnalysisState) (site : OpaqueSite) : string =
+        let where =
+            match site.Offset with
+            | Some _ -> "IL"
+            | None -> "entry"
+
+        let names =
+            match site.Names with
+            | Some named -> " " + EscapeAnalysis.methodName analysis named
+            | None -> ""
+
+        $"%s{EscapeAnalysis.methodName analysis site.Method} %s{where} %A{site.Reason}%s{names}"
 
     /// The method of this name on the type of this full name, in `assembly`.
     let private methodNamed (assembly : DumpedAssembly) (typeName : string) (methodName : string) : MethodKey =
@@ -821,7 +902,22 @@ public static class SR
                     | _ -> ()
                 ]
 
-            analysis, failures
+            match expectation.Sources with
+            | None -> analysis, failures
+            | Some sources ->
+                let analysis, found =
+                    EscapeAnalysis.unknownSources
+                        analysis
+                        (methodNamed fixture (fst expectation.Method) (snd expectation.Method))
+
+                let found = found |> Seq.map (renderSite analysis) |> Set.ofSeq
+
+                if found = Set.ofList sources then
+                    analysis, failures
+                else
+                    analysis,
+                    failures
+                    @ [ $"%s{describe ()}, unknown from %A{Set.toList found}, expected %A{sources}" ]
         )
 
     [<Test>]
@@ -837,6 +933,117 @@ public static class SR
         match unmet (analysisOver [ fixture ] id) fixture expectations with
         | _, [] -> ()
         | _, failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// How the places `unknownSources` reports for each of `methods` fail to agree with `escapes`:
+    /// there is one exactly when the answer is unknown, and each at an instruction is at one of the
+    /// IL CoreCLR runs for its method. `assemblies` must hold every method a place is in.
+    let private sourcesDisagree
+        (analysis : EscapeAnalysisState)
+        (assemblies : DumpedAssembly list)
+        (methods : MethodKey list)
+        : string list
+        =
+        let instructionAt (key : MethodKey) (offset : int) : bool =
+            let assembly =
+                match
+                    assemblies
+                    |> List.tryFind (fun a -> a.DefinitionFullName = key.AssemblyFullName)
+                with
+                | Some assembly -> assembly
+                | None -> failwith $"A place is in %O{key}, of an assembly the test does not hold"
+
+            let instructions =
+                match VmSubstitution.unsafeStub assembly key.Method.Get, assembly.Methods.[key.Method.Get].Body with
+                | Some stub, _
+                | None, MethodBody.Il stub -> stub.Instructions
+                | None, _ -> []
+
+            instructions |> List.exists (fun (_, at) -> at = offset)
+
+        ((analysis, []), methods)
+        ||> List.fold (fun (analysis, failures) key ->
+            let analysis, escapes = EscapeAnalysis.escapes analysis key
+            let analysis, sources = EscapeAnalysis.unknownSources analysis key
+
+            let failures =
+                [
+                    yield! failures
+
+                    if Set.isEmpty sources = escapes.Unknown then
+                        yield
+                            $"%s{EscapeAnalysis.methodName analysis key}: unknown %b{escapes.Unknown}, from %d{sources.Count} places"
+
+                    for site in sources do
+                        match site.Offset with
+                        | Some offset when not (instructionAt site.Method offset) ->
+                            yield
+                                $"%s{EscapeAnalysis.methodName analysis key}: %A{site.Reason} in %s{EscapeAnalysis.methodName analysis site.Method} at IL_%04x{offset}, which is no instruction"
+                        | _ -> ()
+                ]
+
+            analysis, failures
+        )
+        |> snd
+
+    [<Test>]
+    let ``a fixture method has a place the analysis cannot see through exactly when its answer is unknown`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "EscapeFixture" OutputKind.DynamicallyLinkedLibrary [] [ source ; shadow ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "EscapeFixture.dll") (new MemoryStream (image))
+
+        let corelib = hostCoreLib ()
+
+        let methods =
+            fixture.Methods
+            |> Seq.map (fun (KeyValue (handle, _)) -> MethodKey.make fixture handle)
+            |> List.ofSeq
+
+        // Without the assumption, the places are deep in CoreLib, past its own handlers and rethrows.
+        for assumptions in [ Assumption.all ; Set.empty ] do
+            let analysis =
+                analysisOf
+                    corelib
+                    (FrameworkUnderTest.runtimeDirs ())
+                    (hostTarget ())
+                    HardwareIntrinsicsProfile.ScalarOnly
+                    assumptions
+                    [ fixture ]
+                    id
+
+            match sourcesDisagree analysis [ fixture ; corelib ] methods with
+            | [] -> ()
+            | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``a CoreLib method has a place the analysis cannot see through exactly when its answer is unknown`` () : unit =
+        let corelib = hostCoreLib ()
+
+        let analysis =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Assumption.all
+                []
+                id
+
+        // Every fortieth method definition: a sample spread over the whole of CoreLib.
+        let methods =
+            corelib.Methods
+            |> Seq.map (fun (KeyValue (handle, _)) -> MethodKey.make corelib handle)
+            |> Seq.sort
+            |> Seq.chunkBySize 40
+            |> Seq.map Array.head
+            |> List.ofSeq
+
+        match sourcesDisagree analysis [ corelib ] methods with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
 
     [<Test>]
     let ``allowed no assumption, constructing a CoreLib exception is unknown and no answer assumes anything``
@@ -2533,10 +2740,25 @@ public static class Uses
         let analysis = analysisOver [ assembly ] id
 
         for name in [ "ReadField" ; "CallMethod" ] do
-            let _, escapes =
-                EscapeAnalysis.escapes analysis (methodNamed assembly "W.Binds" name)
+            let key = methodNamed assembly "W.Binds" name
+            let _, escapes = EscapeAnalysis.escapes analysis key
 
             escapes.Unknown |> shouldEqual true
+
+            // The catch-all absorbs what the instruction may raise when it runs, but not the
+            // failure to bind it, before the method runs.
+            let _, sources = EscapeAnalysis.unknownSources analysis key
+
+            sources
+            |> shouldEqual (
+                Set.singleton
+                    {
+                        Method = key
+                        Offset = None
+                        Reason = Opacity.DependsOnInstantiation
+                        Names = None
+                    }
+            )
 
     /// Where the object a `throw` raises comes from, in an emitted method.
     [<RequireQualifiedAccess>]
