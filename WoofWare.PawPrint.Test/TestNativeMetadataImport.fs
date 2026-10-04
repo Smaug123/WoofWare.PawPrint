@@ -272,8 +272,8 @@ public class ParameterShapes
 // length-prefixed UTF-8 strings, which is what separates handing back the row's bytes from
 // reconstructing them.
 //
-// No `SafeArray` shape: CoreCLR's `MetaDataImport::GetMarshalAs` reports `SafeArraySubType` only
-// under FEATURE_COMINTEROP (managedmdimport.cpp:48-60), so the host CLR's decoded view of one
+// No `SafeArray` shape: CoreCLR's `MetadataImport_GetMarshalAs` reports `SafeArraySubType` only
+// under FEATURE_COMINTEROP (managedmdimport.cpp:57-71), so the host CLR's decoded view of one
 // differs between a Windows host and a Unix host — and this fixture uses the host as an oracle.
 public class MarshalShapes
 {
@@ -2081,7 +2081,7 @@ public class MarshalShapes
 
         // "No FieldMarshal row" is a *successful* call, not an error HRESULT: the FCall turns
         // `CLDB_E_RECORD_NOTFOUND` into S_OK with a null, zero-length ConstArray
-        // (managedmdimport.cpp:344-350), and `GetMarshalAsCustomAttribute` distinguishes the two
+        // (managedmdimport.cpp:356-362), and `GetMarshalAsCustomAttribute` distinguishes the two
         // answers by `nativeType.Length == 0` alone. A handler that reported failure here would
         // make every unattributed field throw BadImageFormatException.
         returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
@@ -2148,16 +2148,12 @@ public class MarshalShapes
         bytes |> shouldEqual [||]
         pointer |> shouldEqual ManagedPointerSource.Null
 
-    /// The fields of a `MarshalAsAttribute` that CoreCLR's `MetaDataImport::GetMarshalAs` fills from
-    /// a MarshalSpec on every platform. Deliberately not `MarshalType`/`MarshalCookie`: the FCall
-    /// hands back raw pointers into the blob (managedmdimport.cpp:62-64) and the managed wrapper
-    /// reads them with `CreateReadOnlySpanFromNullTerminated` (MdImport.cs:265-270), but MarshalSpec
-    /// strings are length-prefixed rather than NUL-terminated, so the real runtime over-reads into
-    /// whatever `#Blob` bytes follow, which the blob alone cannot predict. Those two are pinned
-    /// byte-exactly by the spec-derived test above instead, and compared against the host through
-    /// the `GetMarshalAs` handler further down. `SafeArraySubType` and `IidParameterIndex` are
-    /// omitted for a different reason: the
-    /// FCall fills them only under FEATURE_COMINTEROP, so they differ between host platforms.
+    /// The fields of a `MarshalAsAttribute` that CoreCLR's `MetadataImport_GetMarshalAs` QCall fills
+    /// from a MarshalSpec on every platform, without its strings: `MarshalType` and `MarshalCookie`
+    /// are compared against the host, with the lengths the QCall reports for them, through the
+    /// `GetMarshalAs` handler further down. `SafeArraySubType` and `IidParameterIndex` are omitted
+    /// because the QCall fills them only under FEATURE_COMINTEROP, so they differ between host
+    /// platforms.
     type private DecodedMarshalAs =
         {
             Value : System.Runtime.InteropServices.UnmanagedType
@@ -2431,25 +2427,28 @@ public class MarshalShapes
             },
         state
 
-    /// Everything `GetMarshalAs` wrote, read back: the six integers, and each of the three `byte*`
-    /// out-params followed to the NUL the managed wrapper's scan stops at, as that wrapper decodes
-    /// it (`None` for a null pointer).
+    /// Everything `GetMarshalAs` wrote, read back: the six integers, the three lengths, and each of
+    /// the three `byte*` out-params decoded as the managed wrapper decodes it, as UTF-8 over exactly
+    /// the bytes its length out-param reports (`None` for a null pointer).
     type private MarshalAsOut =
         {
             UnmanagedType : int32
             SafeArraySubType : int32
             SafeArrayUserDefinedSubType : string option
+            SafeArrayUserDefinedSubTypeLength : int32
             ArraySubType : int32
             SizeParamIndex : int32
             SizeConst : int32
             MarshalType : string option
+            MarshalTypeLength : int32
             MarshalCookie : string option
+            MarshalCookieLength : int32
             IidParamIndex : int32
         }
 
-    /// Call the handler with its nine out-params seeded away from every value it writes, so an
+    /// Call the handler with its twelve out-params seeded away from every value it writes, so an
     /// out-param it failed to write cannot pass for one it wrote. Returns those out-params' slots in
-    /// the FCall's order.
+    /// the QCall's order.
     let private invokeGetMarshalAsRaw
         (fixture : MetadataImportFixture)
         (nativeTypePointer : ManagedPointerSource)
@@ -2458,7 +2457,7 @@ public class MarshalShapes
         : EvalStackValue * ManagedPointerSource list * IlMachineState
         =
         let state, metadataImportType, getMarshalAsMethod =
-            metadataImportMethod fixture state "GetMarshalAs" 11
+            metadataImportQCallMethod fixture state "MetadataImport_GetMarshalAs"
 
         let int32Out (state : IlMachineState) : ManagedPointerSource * IlMachineState =
             allocateInt32Out fixture 0x5A5A5A5A state
@@ -2473,11 +2472,14 @@ public class MarshalShapes
         let unmanagedTypeOut, state = int32Out state
         let safeArraySubTypeOut, state = int32Out state
         let safeArrayUserDefinedSubTypeOut, state = pointerOut state
+        let safeArrayUserDefinedSubTypeLengthOut, state = int32Out state
         let arraySubTypeOut, state = int32Out state
         let sizeParamIndexOut, state = int32Out state
         let sizeConstOut, state = int32Out state
         let marshalTypeOut, state = pointerOut state
+        let marshalTypeLengthOut, state = int32Out state
         let marshalCookieOut, state = pointerOut state
+        let marshalCookieLengthOut, state = int32Out state
         let iidParamIndexOut, state = int32Out state
 
         let outs =
@@ -2485,11 +2487,14 @@ public class MarshalShapes
                 unmanagedTypeOut
                 safeArraySubTypeOut
                 safeArrayUserDefinedSubTypeOut
+                safeArrayUserDefinedSubTypeLengthOut
                 arraySubTypeOut
                 sizeParamIndexOut
                 sizeConstOut
                 marshalTypeOut
+                marshalTypeLengthOut
                 marshalCookieOut
+                marshalCookieLengthOut
                 iidParamIndexOut
             ]
 
@@ -2519,39 +2524,45 @@ public class MarshalShapes
             invokeGetMarshalAsRaw fixture nativeTypePointer nativeTypeLength state
 
         let out (index : int) : ManagedPointerSource = List.item index outs
-        let unmanagedTypeOut = out 0
-        let safeArraySubTypeOut = out 1
-        let safeArrayUserDefinedSubTypeOut = out 2
-        let arraySubTypeOut = out 3
-        let sizeParamIndexOut = out 4
-        let sizeConstOut = out 5
-        let marshalTypeOut = out 6
-        let marshalCookieOut = out 7
-        let iidParamIndexOut = out 8
 
-        let readString (ptr : ManagedPointerSource) : string option =
+        let readInt32 (index : int) : int32 =
+            readInt32Out fixture.BaseClassTypes state (out index)
+
+        // The managed wrapper's `new ReadOnlySpan<byte>(pointer, length)`, then UTF-8.
+        let readString (pointerIndex : int) (lengthIndex : int) : string option =
             match
-                IlMachineState.readManagedByref fixture.BaseClassTypes state (ManagedPointerSource.requireAddressed ptr)
+                IlMachineState.readManagedByref
+                    fixture.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed (out pointerIndex))
                 |> CliType.unwrapPrimitiveLikeDeep
             with
             | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
             | CliType.RuntimePointer (CliRuntimePointer.Managed target) ->
-                NativeCall.readNullTerminatedBytes "invokeGetMarshalAs" fixture.BaseClassTypes state target
+                NativeCall.readCountedBytes
+                    "invokeGetMarshalAs"
+                    fixture.BaseClassTypes
+                    state
+                    target
+                    (readInt32 lengthIndex)
                 |> System.Text.Encoding.UTF8.GetString
                 |> Some
             | other -> failwith $"expected a managed pointer in a byte* out-param, got %O{other}"
 
         let out =
             {
-                UnmanagedType = readInt32Out fixture.BaseClassTypes state unmanagedTypeOut
-                SafeArraySubType = readInt32Out fixture.BaseClassTypes state safeArraySubTypeOut
-                SafeArrayUserDefinedSubType = readString safeArrayUserDefinedSubTypeOut
-                ArraySubType = readInt32Out fixture.BaseClassTypes state arraySubTypeOut
-                SizeParamIndex = readInt32Out fixture.BaseClassTypes state sizeParamIndexOut
-                SizeConst = readInt32Out fixture.BaseClassTypes state sizeConstOut
-                MarshalType = readString marshalTypeOut
-                MarshalCookie = readString marshalCookieOut
-                IidParamIndex = readInt32Out fixture.BaseClassTypes state iidParamIndexOut
+                UnmanagedType = readInt32 0
+                SafeArraySubType = readInt32 1
+                SafeArrayUserDefinedSubType = readString 2 3
+                SafeArrayUserDefinedSubTypeLength = readInt32 3
+                ArraySubType = readInt32 4
+                SizeParamIndex = readInt32 5
+                SizeConst = readInt32 6
+                MarshalType = readString 7 8
+                MarshalTypeLength = readInt32 8
+                MarshalCookie = readString 9 10
+                MarshalCookieLength = readInt32 10
+                IidParamIndex = readInt32 11
             }
 
         returnValue, out, state
@@ -2582,23 +2593,29 @@ public class MarshalShapes
 
             state <- nextState
 
+            // BOOL TRUE.
             returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
 
-            // The strings included. The host's managed wrapper decodes the same unterminated
-            // pointers the same way, so for `Custom` both sides read on past the blob into the
-            // `#Blob` bytes that follow it — and agreeing on *those* bytes is what shows the pointer
-            // really addresses the heap, not a copy of the one blob.
+            let byteLength (s : string) : int32 =
+                match s with
+                | null -> 0
+                | s -> System.Text.Encoding.UTF8.GetByteCount s
+
+            // The strings included, decoded by length as the host's managed wrapper decodes them.
             ours
             |> shouldEqual
                 {
                     UnmanagedType = int32 host.Value
                     SafeArraySubType = int32 host.SafeArraySubType
                     SafeArrayUserDefinedSubType = None
+                    SafeArrayUserDefinedSubTypeLength = 0
                     ArraySubType = int32 host.ArraySubType
                     SizeParamIndex = int32 host.SizeParamIndex
                     SizeConst = host.SizeConst
                     MarshalType = Option.ofObj host.MarshalType
+                    MarshalTypeLength = byteLength host.MarshalType
                     MarshalCookie = Option.ofObj host.MarshalCookie
+                    MarshalCookieLength = byteLength host.MarshalCookie
                     IidParamIndex = host.IidParameterIndex
                 }
 
@@ -2606,7 +2623,7 @@ public class MarshalShapes
     let ``MetadataImport GetMarshalAs returns false without writing on a blob CoreCLR rejects`` () : unit =
         let fixture = makeFixture ()
 
-        // NATIVE_TYPE_FIXEDARRAY with no size: `ParseNativeTypeInfo` returns FALSE, and the FCall
+        // NATIVE_TYPE_FIXEDARRAY with no size: `ParseNativeTypeInfo` returns FALSE, and the QCall
         // returns before writing any out-param.
         let blob, state =
             NativeCall.allocateBlobByteArray fixture.BaseClassTypes [| 0x1Euy |] fixture.State
@@ -2625,9 +2642,8 @@ public class MarshalShapes
             | other -> failwith $"GetMarshalAs wrote %O{other} to an out-param despite returning false"
 
     [<Test>]
-    let ``MetadataImport GetMarshalAs reads a CustomMarshaler cookie past the end of its blob`` () : unit =
+    let ``MetadataImport GetMarshalAs bounds a CustomMarshaler's strings by their length prefixes`` () : unit =
         let fixture = makeFixture ()
-        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
         let field = fieldNamed fixture.MarshalShapesType "Custom"
 
         let _, (length, _, pointer), state =
@@ -2635,28 +2651,14 @@ public class MarshalShapes
 
         let _, ours, _ = invokeGetMarshalAs fixture pointer length state
 
-        // Independently of the host: the cookie is the blob's last two bytes, "ck", and the scan
-        // then continues through the `#Blob` heap to its next NUL. So the answer is "ck" followed by
-        // exactly the heap bytes between the blob's end and that NUL.
-        let descriptor = (mr.GetFieldDefinition field.Handle).GetMarshallingDescriptor ()
-        let heapStart = mr.GetHeapMetadataOffset HeapIndex.Blob
-        let metadata = fixture.Assembly.PeReader.GetMetadata ()
-        let blobEnd = MetadataTokens.GetHeapOffset descriptor + 1 + length
-
-        let following =
-            Seq.initInfinite (fun i -> metadata.GetContent(heapStart + blobEnd + i, 1).[0])
-            |> Seq.takeWhile (fun b -> b <> 0uy)
-            |> Seq.toArray
-
-        let expected =
-            Array.append (System.Text.Encoding.UTF8.GetBytes "ck") following
-            |> System.Text.Encoding.UTF8.GetString
-
-        ours.MarshalCookie |> shouldEqual (Some expected)
-        // And the marshaler's type name runs on into the cookie's length prefix and the cookie.
-        ours.MarshalType
-        |> Option.map (fun s -> s.StartsWith "Some.Marshaller\u0002ck")
-        |> shouldEqual (Some true)
+        // Independently of the host: the blob ends with the marshaler's type name and then the
+        // cookie, each behind its own length prefix. Nothing in the blob terminates either string,
+        // so only the lengths bound them: the type name stops before the cookie's prefix, and the
+        // cookie stops at the end of the blob rather than running on into the `#Blob` heap.
+        ours.MarshalType |> shouldEqual (Some "Some.Marshaller")
+        ours.MarshalTypeLength |> shouldEqual "Some.Marshaller".Length
+        ours.MarshalCookie |> shouldEqual (Some "ck")
+        ours.MarshalCookieLength |> shouldEqual 2
 
     [<Test>]
     let ``MetadataImport GetFieldMarshal rejects a token that is not a HasFieldMarshal parent`` () : unit =
@@ -3632,7 +3634,7 @@ public class MarshalShapes
 
             pairs |> List.map snd |> shouldEqual expectedSemantics
 
-            // `resultLength = associatesCount * 2` (managedmdimport.cpp:562): the reported length
+            // `resultLength = associatesCount * 2` (managedmdimport.cpp:574): the reported length
             // counts INT32s, not records, and the managed caller divides by two to get the record
             // count. Reporting the record count would silently halve every accessor list.
             //

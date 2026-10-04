@@ -25,10 +25,10 @@
       # The .NET servicing version we emulate. This must equal what nixpkgs provides (enforced by
       # the `runtime-version-pin` check below). The same build is pinned in
       # WoofWare.PawPrint/EmulatedRuntime.fs (`EmulatedRuntime.pin`), as the build identity the
-      # CoreLib's AssemblyInformationalVersion states (e.g. "10.0.7-servicing.26217.108"); the
+      # CoreLib's AssemblyInformationalVersion states (e.g. "10.0.12-servicing.26422.108"); the
       # TestEmulatedRuntime drift test compares that against the CoreLib the suite loads. When
       # nixpkgs bumps the SDK, bump all of these together.
-      expectedRuntimeVersion = "10.0.7";
+      expectedRuntimeVersion = "10.0.12";
       # Pinned, read-only dotnet/runtime source, for checking upstream behaviour (BCL / QCall /
       # native helpers) from the devshell as $DOTNET_RUNTIME_SRC. Sparse-checked-out to just the
       # trees we actually read, to keep the closure small.
@@ -37,14 +37,14 @@
       # binary's internal `.version` / `dotnet --info` build commit, which is frequently not pushed
       # to the public repo and so cannot be fetched.
       #
-      # Heads-up on a dotnet quirk: the release commit is tagged BEFORE the in-tree version is
-      # bumped, so this tree's `eng/Versions.props` self-reports `<PatchVersion>6` even though it is
-      # the v10.0.7 release source. The tag is the release identity; the in-tree version lags by one
-      # (confirmed: v10.0.5 -> 4, v10.0.7 -> 6, v10.0.8 -> 7). Pin by the tag, not the in-tree string.
+      # Heads-up on a dotnet quirk: a tagged tree's `eng/Versions.props` need not state the tag's
+      # patch version. Some release commits are tagged before the in-tree version is bumped, and
+      # self-report the previous patch (v10.0.5 -> 4, v10.0.7 -> 6, v10.0.8 -> 7); others agree
+      # (v10.0.12 -> 12). The tag is the release identity: pin by it, not by the in-tree string.
       dotnet-runtime-src = pkgs.fetchgit {
         url = "https://github.com/dotnet/runtime";
-        rev = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"; # v10.0.7 (tree self-reports 10.0.6; see above)
-        hash = "sha256-c1dVfl47a163mSGgRkrLUM/is3NvIISmU6NdvhmcYK0=";
+        rev = "4271d88e0aebf3d04f188f1334c2220d80555ef6"; # v10.0.12
+        hash = "sha256-rSa1KZND+LRcz3iVLq0rzZx4KBmxFJ5tkj+Ums3cOOM=";
         sparseCheckout = [
           "src/coreclr"
           "src/libraries/System.Private.CoreLib"
@@ -101,7 +101,7 @@
         version = expectedRuntimeVersion;
         src = pkgs.fetchurl {
           url = "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.linux-x64/${expectedRuntimeVersion}/microsoft.netcore.app.runtime.linux-x64.${expectedRuntimeVersion}.nupkg";
-          hash = "sha256-0IUm9tRbSam4/WKnyawtfKs/q1pHOxxJ4AUOAPJSYvo=";
+          hash = "sha256-iGni+5dLyBD/5AuPuOGLf/sdGgPlKglMgEZoxNeTsa4=";
         };
         nativeBuildInputs = [pkgs.unzip];
         # A .nupkg is a zip, but the default unpackPhase dispatches on file extension and does

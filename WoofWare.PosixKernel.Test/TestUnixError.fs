@@ -338,19 +338,43 @@ module TestUnixError =
     let private strerrorKnows (raw : int) : bool =
         not ((Marshal.GetPInvokeErrorMessage raw).StartsWith ("Unknown error", StringComparison.Ordinal))
 
+    /// Numbers a libc may name although the kernels the table describes never
+    /// return them, with the text it names each by. glibc builds its table from
+    /// the errors its Linux uapi headers define, and Linux 7.2's headers add
+    /// EFTYPE (134), which the 6.x kernels lack: a glibc built against them
+    /// names 134 (measured: glibc 2.44 against 7.2 headers), one built against
+    /// 6.x headers does not.
+    let private libcOnlyNames (flavour : SimulatedUnixFlavour) : Map<int, string> =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> Map.ofList [ 134, "Inappropriate file type or format" ]
+        | SimulatedUnixFlavour.Darwin -> Map.empty
+
     [<Test>]
-    let ``this host's strerror names exactly the numbers the table decodes`` () : unit =
+    let ``this host's strerror names exactly the numbers the table decodes, and its build's own`` () : unit =
         HostPlatform.onUnixHost (fun flavour ->
             let numbering = hostNumbering flavour
+            let libcOnly = libcOnlyNames flavour
 
             // 0 is "no error", which libc names and the table does not.
             for raw in 1..4096 do
                 let known = strerrorKnows raw
                 let decoded = UnixError.ofRawErrnoUnder numbering raw
+                let text = Marshal.GetPInvokeErrorMessage raw
 
-                if known <> Option.isSome decoded then
+                match decoded, Map.tryFind raw libcOnly with
+                | Some _, Some _ ->
                     failwith
-                        $"TestUnixError: this host's strerror(%d{raw}) is %s{Marshal.GetPInvokeErrorMessage raw}, but under %O{numbering} the table decodes it as %A{decoded}."
+                        $"TestUnixError: %d{raw} is listed as a number only a libc names, but under %O{numbering} the table decodes it as %A{decoded}."
+                | Some _, None when not known ->
+                    failwith
+                        $"TestUnixError: under %O{numbering} the table decodes %d{raw} as %A{decoded}, but this host's strerror(%d{raw}) is %s{text}."
+                | None, None when known ->
+                    failwith
+                        $"TestUnixError: this host's strerror(%d{raw}) is %s{text}, but under %O{numbering} the table decodes it as None."
+                | None, Some expected when known && text <> expected ->
+                    failwith
+                        $"TestUnixError: this host's strerror(%d{raw}) is %s{text}; a libc that names %d{raw} names it %s{expected}."
+                | _ -> ()
         )
 
     // ---------------------------------------------------------------------

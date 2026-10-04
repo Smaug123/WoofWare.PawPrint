@@ -24,7 +24,7 @@ type EmulatedRuntime =
     | Net10
 
 /// A runtime build's identity: its CoreLib's `AssemblyInformationalVersion` with the SemVer build
-/// metadata (a `+` and everything after it) removed, e.g. `10.0.7-servicing.26217.108`.
+/// metadata (a `+` and everything after it) removed, e.g. `10.0.12-servicing.26422.108`.
 ///
 /// Kept as the exact text, never parsed into a `System.Version`: a preview build's label (as in
 /// `11.0.0-preview.7.25380.108`) is part of the identity, and `System.Version` cannot hold it. The
@@ -64,7 +64,7 @@ type RuntimePin =
         TargetFramework : string
         /// The build the Nix devshell pins, as the loaded CoreLib reports it.
         Build : RuntimeBuild
-        /// The dotnet/runtime git tag the native implementations were validated against, e.g. "v10.0.7".
+        /// The dotnet/runtime git tag the native implementations were validated against, e.g. "v10.0.12".
         SourceRef : string
         /// The full dotnet/runtime commit SHA that `SourceRef` resolves to: the public release-tag
         /// commit, i.e. the upstream source PawPrint's native code is read against and mirrors.
@@ -106,9 +106,9 @@ module EmulatedRuntime =
             // `sync-dotnet-runtime` process establishes them.
             {
                 TargetFramework = "net10.0"
-                Build = RuntimeBuild.OfInformationalVersion "10.0.7-servicing.26217.108"
-                SourceRef = "v10.0.7"
-                SourceCommit = "7706f546bac1a99b3d891afe3591dc88c67f0cc4"
+                Build = RuntimeBuild.OfInformationalVersion "10.0.12-servicing.26422.108"
+                SourceRef = "v10.0.12"
+                SourceCommit = "4271d88e0aebf3d04f188f1334c2220d80555ef6"
             }
 
     /// The supported runtime whose CoreLib states `coreLibMajor` as its `AssemblyVersion` major,

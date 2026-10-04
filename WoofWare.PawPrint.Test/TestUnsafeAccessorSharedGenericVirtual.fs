@@ -5,14 +5,15 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// An `[UnsafeAccessor]` naming a value type's generic virtual method, called with a type argument
-/// that CoreCLR's `ClassLoader::CanonicalizeGenericArg` shares over `System.__Canon`, kills the
-/// real process with SIGSEGV. That is not an answer PawPrint can give, so it must refuse exactly
-/// those instantiations and run every other one.
+/// An `[UnsafeAccessor]` naming a value type's generic virtual method, called with type arguments
+/// that CoreCLR's `ClassLoader::CanonicalizeGenericArg` shares over `System.__Canon` and with ones
+/// it does not. The accessor's receiver is a `ref` to the struct, and CoreCLR strips that byref
+/// from the owning type before it emits the member token (unsafeaccessors.cpp:1089), so a shared
+/// instantiation finds its generic context like an unshared one, and every case runs the method on
+/// the caller's struct.
 ///
-/// Each case is run on real .NET as well, so which instantiations crash is measured rather than
-/// asserted: a case's expectation is checked against the real runtime before PawPrint is held to
-/// it.
+/// Each case is run on real .NET as well, so the expectation is measured rather than asserted: a
+/// case is checked against the real runtime before PawPrint is held to it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnsafeAccessorSharedGenericVirtual =
@@ -58,29 +59,27 @@ public static class Program
 }
 """
 
-    /// The exit code real .NET reports for a process killed by SIGSEGV: 128 + 11.
-    [<Literal>]
-    let private SigsegvExitCode = 139
-
-    [<TestCase("long", false)>]
-    [<TestCase("DayOfWeek", false)>]
-    [<TestCase("int?", false)>]
-    [<TestCase("ValueTuple<int>", false)>]
-    [<TestCase("Wrap<Wrap<int>>", false)>]
-    [<TestCase("KeyValuePair<int, long>", false)>]
-    [<TestCase("string", true)>]
-    [<TestCase("IDisposable", true)>]
-    [<TestCase("int[]", true)>]
-    [<TestCase("ValueTuple<string>", true)>]
-    [<TestCase("KeyValuePair<int, string>", true)>]
-    [<TestCase("Wrap<Wrap<string>>", true)>]
-    [<TestCase("Wrap<int[]>", true)>]
-    let ``a shared instantiation is refused and an unshared one runs`` (typeArgument : string) (shared : bool) : unit =
+    // The first six are not shared over `System.__Canon`; the rest are, by a reference type at the
+    // top or inside a value type.
+    [<TestCase("long")>]
+    [<TestCase("DayOfWeek")>]
+    [<TestCase("int?")>]
+    [<TestCase("ValueTuple<int>")>]
+    [<TestCase("Wrap<Wrap<int>>")>]
+    [<TestCase("KeyValuePair<int, long>")>]
+    [<TestCase("string")>]
+    [<TestCase("IDisposable")>]
+    [<TestCase("int[]")>]
+    [<TestCase("ValueTuple<string>")>]
+    [<TestCase("KeyValuePair<int, string>")>]
+    [<TestCase("Wrap<Wrap<string>>")>]
+    [<TestCase("Wrap<int[]>")>]
+    let ``every instantiation runs the method on the caller's struct`` (typeArgument : string) : unit =
         let image = Roslyn.compile [ source typeArgument ]
 
         match RealRuntime.executeWithRealRuntime [||] image with
-        | RealRuntimeResult.NormalExit code -> code |> shouldEqual (if shared then SigsegvExitCode else 0)
-        | other -> failwith $"real .NET neither ran nor crashed on Echo<%s{typeArgument}>: %O{other}"
+        | RealRuntimeResult.NormalExit code -> code |> shouldEqual 0
+        | other -> failwith $"real .NET did not exit normally on Echo<%s{typeArgument}>: %O{other}"
 
         let name = "SharedGenericVirtual.cs"
 
@@ -103,10 +102,6 @@ public static class Program
                 (HostConfig.Default dotnetRuntimes)
             |> ExpectRun.ended
 
-        if shared then
-            let exn = Assert.Catch (fun () -> run () |> ignore<RunOutcome>)
-            exn.Message |> shouldContainText "SIGSEGV"
-        else
-            match run () with
-            | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
-            | other -> failwith $"expected a normal exit, got %O{other}"
+        match run () with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 0
+        | other -> failwith $"expected a normal exit, got %O{other}"

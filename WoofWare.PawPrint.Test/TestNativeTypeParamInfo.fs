@@ -1,7 +1,6 @@
-// Native pointers are how the host runtime's own FCall has to be called: its string out-params
-// are `byte*`.
+// Native pointers are how the host runtime's own QCall has to be called: it takes the blob and
+// every out-param by address.
 #nowarn "9"
-#nowarn "51"
 
 namespace WoofWare.PawPrint.Test
 
@@ -17,19 +16,23 @@ open Microsoft.FSharp.NativeInterop
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// Everything one call to `MetaDataImport::GetMarshalAs` is observable by, with its three string
-/// pointers given as offsets from the start of the blob (`None` for null). `None` overall means the
-/// call returned FALSE having written none of its out-params.
+/// Everything one call to the `MetadataImport_GetMarshalAs` QCall is observable by, with its three
+/// string pointers given as offsets from the start of the blob (`None` for null), each beside the
+/// byte length the QCall reports for it. `None` overall means the call returned FALSE having
+/// written none of its out-params.
 type MarshalAsOutcome =
     {
         UnmanagedType : int
         SafeArraySubType : int
         SafeArrayUserDefinedSubType : int64 option
+        SafeArrayUserDefinedSubTypeLength : int
         ArraySubType : int
         SizeParamIndex : int
         SizeConst : int
         MarshalType : int64 option
+        MarshalTypeLength : int
         MarshalCookie : int64 option
+        MarshalCookieLength : int
         IidParamIndex : int
     }
 
@@ -37,27 +40,49 @@ type MarshalAsOutcome =
 [<Parallelizable(ParallelScope.All)>]
 module TestNativeTypeParamInfo =
 
-    /// The FCall's signature with each `byte*&` spelled `nativeint&`. F# cannot spell a byref to a
-    /// pointer (`byref<nativeptr<byte>>` compiles to `IntPtr&`), so the delegate cannot bind to the
-    /// FCall directly and `hostGetMarshalAs` bridges the two with a trampoline.
+    /// The QCall stub's signature with every pointer spelled `nativeint`, which is how the JIT
+    /// sees an `int*` or a `byte**` anyway: the blob, its length, then the twelve out-params.
     type private GetMarshalAsDelegate =
         delegate of
             nativeint *
             int *
-            byref<int> *
-            byref<int> *
-            byref<nativeint> *
-            byref<int> *
-            byref<int> *
-            byref<int> *
-            byref<nativeint> *
-            byref<nativeint> *
-            byref<int> ->
-                bool
+            nativeint *
+            nativeint *
+            nativeint *
+            nativeint *
+            nativeint *
+            nativeint *
+            nativeint *
+            nativeint *
+            nativeint *
+            nativeint *
+            nativeint *
+            nativeint ->
+                int
 
-    /// The host runtime's *own* `MetadataImport.GetMarshalAs` FCall — the primitive PawPrint's
-    /// handler reimplements, reached by private reflection because CoreLib exposes it nowhere
-    /// else. If a future runtime renames or reshapes it, this fails loudly.
+    /// The out-params in the QCall's order, and whether each is an `INT32*` (as opposed to an
+    /// `LPUTF8*`).
+    let private outParams : (string * bool) list =
+        [
+            "unmanagedType", true
+            "safeArraySubType", true
+            "safeArrayUserDefinedSubType", false
+            "safeArrayUserDefinedSubTypeLength", true
+            "arraySubType", true
+            "sizeParamIndex", true
+            "sizeConst", true
+            "marshalType", false
+            "marshalTypeLength", true
+            "marshalCookie", false
+            "marshalCookieLength", true
+            "iidParamIndex", true
+        ]
+
+    /// The host runtime's *own* `MetadataImport_GetMarshalAs` QCall — the primitive PawPrint's
+    /// handler reimplements — reached through the P/Invoke stub CoreLib's `[LibraryImport]`
+    /// generated for it. Not through the managed `GetMarshalAs` partial method: that zeroes every
+    /// out-param before the call, which would hide whether the QCall wrote them. If a future
+    /// runtime renames or reshapes it, this fails loudly.
     let private hostGetMarshalAs : Lazy<GetMarshalAsDelegate> =
         lazy
             let declaring =
@@ -67,19 +92,20 @@ module TestNativeTypeParamInfo =
                     failwith "System.Reflection.MetadataImport is not present in the host's corelib"
                 )
 
-            // The eleven-argument overload is the FCall; the two-argument one is its managed wrapper.
-            let fcall =
+            // The stub's name carries source-generator counters, so it is found by its prefix and
+            // its arity: the blob, its length and the twelve out-params.
+            let stub =
                 declaring.GetMethods (BindingFlags.NonPublic ||| BindingFlags.Static)
-                |> Array.filter (fun m -> m.Name = "GetMarshalAs" && m.GetParameters().Length = 11)
+                |> Array.filter (fun m ->
+                    m.Name.StartsWith ("<GetMarshalAs>g____PInvoke", StringComparison.Ordinal)
+                    && m.GetParameters().Length = 2 + outParams.Length
+                )
                 |> Array.tryExactlyOne
                 |> Option.defaultWith (fun () ->
                     failwith
-                        "the host's corelib has no eleven-argument System.Reflection.MetadataImport.GetMarshalAs; the oracle needs updating for this runtime"
+                        "the host's corelib has no fourteen-argument MetadataImport_GetMarshalAs P/Invoke stub; the oracle needs updating for this runtime"
                 )
 
-            // Forward all eleven arguments unchanged. `IntPtr&` and `byte*&` are the same thing
-            // to the JIT; only the verifier, which a skip-visibility dynamic method bypasses,
-            // would tell them apart.
             let parameterTypes =
                 // F# gives a private delegate type's `Invoke` assembly visibility.
                 typeof<GetMarshalAsDelegate>
@@ -87,10 +113,13 @@ module TestNativeTypeParamInfo =
                     .GetParameters ()
                 |> Array.map (fun p -> p.ParameterType)
 
+            // Forward every argument unchanged. A `nativeint` and an `int*` are the same thing to
+            // the JIT; only the verifier, which a skip-visibility dynamic method bypasses, would
+            // tell them apart.
             let trampoline =
                 Emit.DynamicMethod (
                     "CallGetMarshalAs",
-                    typeof<bool>,
+                    typeof<int>,
                     parameterTypes,
                     typeof<GetMarshalAsDelegate>.Module,
                     true
@@ -101,76 +130,80 @@ module TestNativeTypeParamInfo =
             for i in 0 .. parameterTypes.Length - 1 do
                 il.Emit (Emit.OpCodes.Ldarg, int16 i)
 
-            il.Emit (Emit.OpCodes.Call, fcall)
+            il.Emit (Emit.OpCodes.Call, stub)
             il.Emit Emit.OpCodes.Ret
 
             trampoline.CreateDelegate typeof<GetMarshalAsDelegate> :?> GetMarshalAsDelegate
 
-    /// One call with every out-param seeded to values derived from `seed`: the result, the six
-    /// integer out-params, the three pointer out-params as raw addresses, and the address the blob
-    /// was pinned at for this call.
-    let private hostCall (blob : byte array) (seed : int) : bool * int list * nativeint list * nativeint =
+    /// One call with out-param `i` seeded to `seed + i`: the result, every out-param read back in
+    /// the QCall's order (an `INT32` widened, a pointer as its raw address), and the address the
+    /// blob was pinned at for this call.
+    let private hostCall (blob : byte array) (seed : int) : int * int64 list * nativeint =
         let getMarshalAs = hostGetMarshalAs.Force ()
-        // `fixed` on an empty array yields a null pointer, which the FCall never dereferences
+        // `fixed` on an empty array yields a null pointer, which the QCall never dereferences
         // because it refuses a zero-length blob first.
         use pinned = fixed blob
         let basis = NativePtr.toNativeInt pinned
-        let mutable unmanagedType = seed
-        let mutable safeArraySubType = seed + 1
-        let mutable safeArrayUserDefinedSubType = nativeint (seed + 2)
-        let mutable arraySubType = seed + 3
-        let mutable sizeParamIndex = seed + 4
-        let mutable sizeConst = seed + 5
-        let mutable marshalType = nativeint (seed + 6)
-        let mutable marshalCookie = nativeint (seed + 7)
-        let mutable iidParamIndex = seed + 8
+        // One pointer-sized slot per out-param, so a pointer write fits wherever it lands.
+        let slots = Marshal.AllocHGlobal (IntPtr.Size * outParams.Length)
 
-        let result =
-            getMarshalAs.Invoke (
-                basis,
-                blob.Length,
-                &unmanagedType,
-                &safeArraySubType,
-                &safeArrayUserDefinedSubType,
-                &arraySubType,
-                &sizeParamIndex,
-                &sizeConst,
-                &marshalType,
-                &marshalCookie,
-                &iidParamIndex
+        try
+            let slot (i : int) : nativeint = slots + nativeint (i * IntPtr.Size)
+
+            outParams
+            |> List.iteri (fun i (_, isInt32) ->
+                if isInt32 then
+                    Marshal.WriteInt32 (slot i, seed + i)
+                else
+                    Marshal.WriteIntPtr (slot i, nativeint (seed + i))
             )
 
-        result,
-        [
-            unmanagedType
-            safeArraySubType
-            arraySubType
-            sizeParamIndex
-            sizeConst
-            iidParamIndex
-        ],
-        [ safeArrayUserDefinedSubType ; marshalType ; marshalCookie ],
-        basis
+            let result =
+                getMarshalAs.Invoke (
+                    basis,
+                    blob.Length,
+                    slot 0,
+                    slot 1,
+                    slot 2,
+                    slot 3,
+                    slot 4,
+                    slot 5,
+                    slot 6,
+                    slot 7,
+                    slot 8,
+                    slot 9,
+                    slot 10,
+                    slot 11
+                )
+
+            let values =
+                outParams
+                |> List.mapi (fun i (_, isInt32) ->
+                    if isInt32 then
+                        int64 (Marshal.ReadInt32 (slot i))
+                    else
+                        int64 (Marshal.ReadIntPtr (slot i))
+                )
+
+            result, values, basis
+        finally
+            Marshal.FreeHGlobal slots
 
     /// The host's verdict. Two calls with different seeds tell "wrote nothing" apart from "wrote a
-    /// value equal to the seed", and the FCall's contract is all-or-nothing: FALSE writes no
+    /// value equal to the seed", and the QCall's contract is all-or-nothing: FALSE writes no
     /// out-param and TRUE writes every one.
     let private hostOutcome (blob : byte array) : MarshalAsOutcome option =
-        let seedOf (seed : int) : int list * nativeint list =
-            [ seed ; seed + 1 ; seed + 3 ; seed + 4 ; seed + 5 ; seed + 8 ],
-            [ nativeint (seed + 2) ; nativeint (seed + 6) ; nativeint (seed + 7) ]
+        let seeded (seed : int) : int64 list =
+            outParams |> List.mapi (fun i _ -> int64 (seed + i))
 
-        let firstResult, firstInts, firstPointers, firstBasis = hostCall blob 0x5A5A5A00
-        let secondResult, secondInts, secondPointers, secondBasis = hostCall blob 0x0F0F0F00
+        let firstResult, first, firstBasis = hostCall blob 0x5A5A5A00
+        let secondResult, second, secondBasis = hostCall blob 0x0F0F0F00
 
         if firstResult <> secondResult then
             failwith $"the host's GetMarshalAs is not deterministic on %s{BitConverter.ToString blob}"
 
-        if not firstResult then
-            if
-                (firstInts, firstPointers) = seedOf 0x5A5A5A00
-                && (secondInts, secondPointers) = seedOf 0x0F0F0F00
-            then
+        if firstResult = 0 then
+            if first = seeded 0x5A5A5A00 && second = seeded 0x0F0F0F00 then
                 None
             else
                 failwith
@@ -179,35 +212,55 @@ module TestNativeTypeParamInfo =
 
         // A written pointer is null or points into the blob, so it is compared as an offset from
         // wherever the blob was pinned for that call.
-        let offsets (basis : nativeint) (pointers : nativeint list) : int64 option list =
-            pointers
-            |> List.map (fun p -> if p = 0n then None else Some (int64 (p - basis)))
+        let normalise (basis : nativeint) (values : int64 list) : int64 list =
+            List.map2
+                (fun (_, isInt32) value -> if isInt32 || value = 0L then value else value - int64 basis)
+                outParams
+                values
 
-        let firstOffsets = offsets firstBasis firstPointers
+        let first = normalise firstBasis first
 
-        if firstInts <> secondInts || firstOffsets <> offsets secondBasis secondPointers then
+        if first <> normalise secondBasis second then
             failwith
                 $"the host's GetMarshalAs returned TRUE on %s{BitConverter.ToString blob} but left an out-param unwritten"
 
-        match firstInts, firstOffsets with
-        | [ unmanagedType ; safeArraySubType ; arraySubType ; sizeParamIndex ; sizeConst ; iidParamIndex ],
-          [ safeArrayUserDefinedSubType ; marshalType ; marshalCookie ] ->
+        let pointer (offset : int64) : int64 option =
+            // `normalise` left a null pointer as 0, and no string starts at the blob's first byte,
+            // which is the native type.
+            if offset = 0L then None else Some offset
+
+        match first with
+        | [ unmanagedType
+            safeArraySubType
+            safeArrayUserDefinedSubType
+            safeArrayUserDefinedSubTypeLength
+            arraySubType
+            sizeParamIndex
+            sizeConst
+            marshalType
+            marshalTypeLength
+            marshalCookie
+            marshalCookieLength
+            iidParamIndex ] ->
             Some
                 {
-                    UnmanagedType = unmanagedType
-                    SafeArraySubType = safeArraySubType
-                    SafeArrayUserDefinedSubType = safeArrayUserDefinedSubType
-                    ArraySubType = arraySubType
-                    SizeParamIndex = sizeParamIndex
-                    SizeConst = sizeConst
-                    MarshalType = marshalType
-                    MarshalCookie = marshalCookie
-                    IidParamIndex = iidParamIndex
+                    UnmanagedType = int unmanagedType
+                    SafeArraySubType = int safeArraySubType
+                    SafeArrayUserDefinedSubType = pointer safeArrayUserDefinedSubType
+                    SafeArrayUserDefinedSubTypeLength = int safeArrayUserDefinedSubTypeLength
+                    ArraySubType = int arraySubType
+                    SizeParamIndex = int sizeParamIndex
+                    SizeConst = int sizeConst
+                    MarshalType = pointer marshalType
+                    MarshalTypeLength = int marshalTypeLength
+                    MarshalCookie = pointer marshalCookie
+                    MarshalCookieLength = int marshalCookieLength
+                    IidParamIndex = int iidParamIndex
                 }
-        | _ -> failwith "unreachable: hostCall returns six ints and three pointers"
+        | _ -> failwith "unreachable: hostCall returns one value per out-param"
 
     /// PawPrint's verdict: the parse, mapped to out-params exactly as the `GetMarshalAs` handler
-    /// writes them, with every field the parse left unwritten read from the FCall's zeroed struct.
+    /// writes them, with every field the parse left unwritten read from the QCall's zeroed struct.
     let private ourOutcome (blob : byte array) : MarshalAsOutcome option =
         NativeTypeParamInfo.parse (ImmutableArray.CreateRange blob)
         |> Option.map (fun info ->
@@ -215,11 +268,14 @@ module TestNativeTypeParamInfo =
                 UnmanagedType = int info.NativeType
                 SafeArraySubType = 0
                 SafeArrayUserDefinedSubType = None
+                SafeArrayUserDefinedSubTypeLength = 0
                 ArraySubType = info.ArrayElementType |> Option.map int |> Option.defaultValue 0
                 SizeParamIndex = info.CountParamIndex |> Option.map int |> Option.defaultValue 0
                 SizeConst = info.Additive |> Option.map int |> Option.defaultValue 0
                 MarshalType = info.MarshalerTypeName |> Option.map (fun s -> int64 s.Offset)
+                MarshalTypeLength = info.MarshalerTypeName |> Option.map _.Length |> Option.defaultValue 0
                 MarshalCookie = info.Cookie |> Option.map (fun s -> int64 s.Offset)
+                MarshalCookieLength = info.Cookie |> Option.map _.Length |> Option.defaultValue 0
                 IidParamIndex = 0
             }
         )
@@ -236,6 +292,7 @@ module TestNativeTypeParamInfo =
         if ours <> theirs then
             failwith
                 $"blob [%s{BitConverter.ToString blob}]\n  PawPrint: %A{ours}\n  host:     %A{theirs}\n  (PawPrint's parse: %A{NativeTypeParamInfo.parse (ImmutableArray.CreateRange blob)})"
+
 
     // ---- the MarshalSpec model and its encoder -------------------------------
 
@@ -521,8 +578,8 @@ module TestNativeTypeParamInfo =
         }
 
     /// The strongest statement available: on any byte string, PawPrint's parse maps to exactly what
-    /// the host runtime's own FCall reports — the verdict, every number, and where each string
-    /// pointer points.
+    /// the host runtime's own QCall reports — the verdict, every number, and where each string
+    /// pointer points and how many bytes it reports there.
     [<Test>]
     let ``agrees with the host runtime on generated blobs`` () : unit =
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 3000, Prop.forAll (Arb.fromGen perturbedGen) agreesWithHost)
@@ -557,8 +614,8 @@ module TestNativeTypeParamInfo =
         agreesWithHost [||]
 
     [<Test>]
-    let ``absent optional fields are unwritten, which the FCall reports as zero`` () : unit =
-        // The FCall zeroes the struct before parsing, so an LPArray with nothing after its leading
+    let ``absent optional fields are unwritten, which the QCall reports as zero`` () : unit =
+        // The QCall zeroes the struct before parsing, so an LPArray with nothing after its leading
         // byte reports `ArraySubType = 0` rather than NATIVE_TYPE_DEFAULT (0x50), and `SizeConst = 0`
         // rather than the constructor's 1.
         let parsed = NativeTypeParamInfo.parse (ImmutableArray.Create 0x2Auy) |> Option.get
@@ -724,7 +781,7 @@ module TestNativeTypeParamInfo =
                 fail ()
 
             match elementType with
-            // The FCall reports an unwritten element type as 0, where `MarshalInfo` keeps 0x50.
+            // The QCall reports an unwritten element type as 0, where `MarshalInfo` keeps 0x50.
             | None ->
                 if host.ArraySubType <> 0 && host.ArraySubType <> 0x50 then
                     fail ()
