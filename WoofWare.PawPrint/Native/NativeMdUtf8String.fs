@@ -25,7 +25,7 @@ module NativeMdUtf8String =
     /// `{ code, LOWER_CASE, opposingCode }` rows of the generated table that
     /// `minipal_toupper_invariant` binary-searches, transcribed from
     /// `src/native/minipal/unicodedata.c` at the dotnet/runtime revision pinned by `flake.nix`'s
-    /// `dotnet-runtime-src` (7706f546bac1a99b3d891afe3591dc88c67f0cc4, v10.0.7). The 26 rows
+    /// `dotnet-runtime-src` (4271d88e0aebf3d04f188f1334c2220d80555ef6, v10.0.12). The 26 rows
     /// below 0x80 are exactly `a`-`z` -> `A`-`Z` and are covered by the ASCII branch of
     /// `simpleUpperInvariant`; the `UPPER_CASE` rows encode the reverse (lowercasing) direction
     /// and are irrelevant here.
