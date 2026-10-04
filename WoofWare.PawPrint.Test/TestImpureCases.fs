@@ -753,6 +753,36 @@ module TestImpureCases =
                 SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o666, None)
             ]
 
+    /// Shared by the two `symlink` wiring guests, so that the only thing that
+    /// differs between them is the configured flavour.
+    let private symLinkWiringSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
+        let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
+
+        // A directory of another group, which the caller may write: a new link
+        // in it takes the caller's group on Linux and the directory's on Darwin.
+        let otherGroup : InodeOwner option =
+            Some
+                {
+                    User = UserId.root
+                    Group = GroupId.parseOrFail "test seed" 4242u
+                }
+
+        Map.ofList
+            [
+                name "f", SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
+                name "lf", SeedEntry.Symlink (target "f", None)
+                // "nx" is deliberately absent.
+                name "dang", SeedEntry.Symlink (target "nx", None)
+                name "grp", SeedEntry.Directory (Map.empty, mode 0o777, otherGroup)
+                name "sg", SeedEntry.Directory (Map.empty, mode 0o2777, otherGroup)
+            ]
+
     /// Shared by the two guests that bind names which are not UTF-8, so that the
     /// only thing that differs between them is the configured flavour.
     let private bindNonUtf8WiringSeed : Map<DirectoryEntryName, SeedEntry> =
@@ -2695,6 +2725,41 @@ module TestImpureCases =
                         Umask = PermissionBits.parseOrFail "test" 0o027
                         UserId = Some 1000u
                         FileSystem = mkDirWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `symlink`'s flavour-dependent rows under a Linux-configured
+                // kernel, with the umask, uid and gid away from their defaults
+                // so that only a handler reading the process's own can pass.
+                FileName = "SymLinkWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        Umask = PermissionBits.parseOrFail "test" 0o027
+                        UserId = Some 1000u
+                        GroupId = Some 1000u
+                        FileSystem = symLinkWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same checks under the Darwin flavour.
+                FileName = "SymLinkWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        Umask = PermissionBits.parseOrFail "test" 0o027
+                        UserId = Some 1000u
+                        GroupId = Some 1000u
+                        FileSystem = symLinkWiringSeed
                     }
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never

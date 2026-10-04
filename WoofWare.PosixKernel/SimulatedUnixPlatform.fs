@@ -649,6 +649,23 @@ module SimulatedUnixPlatform =
                 NonDirectory = NonDirectoryDescriptorRule.NotSupportedOffTheFileSystem
             }
 
+    /// How this platform's `symlink(2)` differs from the other's; see
+    /// `SymlinkRules`.
+    let symlinkRules (platform : SimulatedUnixPlatform) : SymlinkRules =
+        // Measured by `link-symlink.c` (SYMLINK, SYMORDER) on Linux 6.18.5
+        // and Darwin 27.0.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            {
+                TrailingSeparator = TrailingSeparatorPolicy.Ignore
+                EmptyTarget = EmptySymlinkTarget.NoSuchEntry
+            }
+        | SimulatedUnixFlavour.Darwin ->
+            {
+                TrailingSeparator = TrailingSeparatorPolicy.Demand
+                EmptyTarget = EmptySymlinkTarget.Accepted
+            }
+
     /// How this platform's `open(2)` behaves when asked to create; see
     /// `CreatingOpenRules` for what each field means and how it was measured.
     let creatingOpenRules (platform : SimulatedUnixPlatform) : CreatingOpenRules =

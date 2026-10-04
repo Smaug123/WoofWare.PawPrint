@@ -417,6 +417,54 @@ type CloneFileProgress<'Task, 'Handler when 'Task : comparison and 'Handler : eq
     /// `UnixNamespace.cloneFileWithDestination`.
     | NeedsDestination of paused : PausedCloneFile<'Task, 'Handler>
 
+/// Why this kernel will not answer a `symlink(2)` or `symlinkat(2)`.
+[<RequireQualifiedAccess>]
+type SymlinkRefusal =
+    /// This kernel will not resolve the link's pathname.
+    | Path of refusal : PathRefusal
+    /// The call would create a link whose target is empty, which Darwin does
+    /// and this library does not represent: see `SymlinkTargetError.Empty`.
+    /// Every check that would fail the call has already passed.
+    | EmptyTarget
+
+[<RequireQualifiedAccess>]
+module SymlinkRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which pathnames.
+    let describe (refusal : SymlinkRefusal) : string =
+        match refusal with
+        | SymlinkRefusal.Path refusal -> PathRefusal.describe refusal
+        | SymlinkRefusal.EmptyTarget ->
+            "the call would create a symbolic link with an empty target. Darwin creates one, which every walk through answers ENOENT; this library does not represent an empty target (SymlinkTargetError.Empty)."
+
+/// A `symlink(2)` or `symlinkat(2)` whose target this kernel has copied in,
+/// paused at the point where it copies the link's own pathname in. Obtain one
+/// from `UnixNamespace.symlinkatTargetPhase` or `symlinkTargetPhase`, and finish
+/// it with `UnixNamespace.symlinkWithPath`.
+[<NoEquality ; NoComparison>]
+type PausedSymlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    private
+        {
+            System : UnixSystem<'Task, 'Handler>
+            Directory : AtDirectory
+            /// `None` for an empty target, which only a flavour that accepts one
+            /// gets this far with.
+            Target : SymlinkTarget option
+        }
+
+/// What copying in a `symlink(2)`'s target found: either the call is over
+/// without the link's pathname having been read at all, or the kernel has
+/// reached the point where it copies that pathname in.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type SymlinkProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// Finished, and changing nothing. The link's pathname was never read, and
+    /// must not be: an unreadable target is EFAULT whatever that pathname is.
+    | Answered of answer : SyscallAnswer
+    /// The kernel is at the link's pathname's copy-in. Hand its bytes to
+    /// `UnixNamespace.symlinkWithPath`.
+    | NeedsPath of paused : PausedSymlink<'Task, 'Handler>
+
 /// Why this kernel will not answer an `open(2)`.
 [<RequireQualifiedAccess>]
 type OpenRefusal =
@@ -2160,3 +2208,175 @@ module UnixNamespace =
         | Error refusal -> Error refusal
         | Ok (CloneFileProgress.Answered (answer, system)) -> Ok (answer, system)
         | Ok (CloneFileProgress.NeedsDestination paused) -> cloneFileWithDestination destination paused
+
+    let private symlinkTargetFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (target : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SymlinkProgress<'Task, 'Handler>
+        =
+        // Measured by `link-symlink.c` (SYMORDER) on Linux 6.18.5 and Darwin
+        // 27.0: the target is copied in before anything else, so an unreadable
+        // or over-long one wins against every other argument, and Linux's
+        // empty target is ENOENT before the link's pathname is read. Darwin
+        // goes on, and fails the call at whatever else fails it.
+        match UnixPathResolution.copyIn target system with
+        | Error error -> SymlinkProgress.Answered (SyscallAnswer.Failed error)
+        | Ok target ->
+
+        match SymlinkTarget.ofByteString (UnixPath.toByteString target) with
+        | Ok target ->
+            SymlinkProgress.NeedsPath
+                {
+                    System = system
+                    Directory = directory
+                    Target = Some target
+                }
+        | Error SymlinkTargetError.Empty ->
+            match (SimulatedUnixPlatform.symlinkRules system.Machine.UnixPlatform).EmptyTarget with
+            | EmptySymlinkTarget.NoSuchEntry -> SymlinkProgress.Answered (SyscallAnswer.Failed UnixError.ENOENT)
+            | EmptySymlinkTarget.Accepted ->
+                SymlinkProgress.NeedsPath
+                    {
+                        System = system
+                        Directory = directory
+                        Target = None
+                    }
+        | Error (SymlinkTargetError.Text defect) ->
+            failwith
+                $"UnixNamespace.symlink: the copied-in target has a text defect (%A{defect}), which only a target parsed from a .NET string can have (this is a bug in this library)."
+
+    /// The first half of `symlinkat(2)`: decode its raw `dirfd` and copy its
+    /// `target` in, before the link's own pathname is read.
+    ///
+    /// A client that reads pathnames out of a caller's memory calls this first,
+    /// and reads the link's pathname only on `SymlinkProgress.NeedsPath`.
+    let symlinkatTargetPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (target : PathArgumentBytes)
+        (dirfd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SymlinkProgress<'Task, 'Handler>
+        =
+        let directory =
+            AtDirectory.decode (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) dirfd
+
+        symlinkTargetFrom directory target system
+
+    /// The first half of `symlink(2)`, as `symlinkatTargetPhase` is of
+    /// `symlinkat`: `symlink` is `symlinkat` from the current directory.
+    let symlinkTargetPhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (target : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SymlinkProgress<'Task, 'Handler>
+        =
+        symlinkTargetFrom AtDirectory.CurrentDirectory target system
+
+    /// The second half of `symlink(2)` or `symlinkat(2)`: copy in `path`, the
+    /// link's own pathname, and create the link the paused call describes.
+    ///
+    /// A relative `path` starts where the call's `dirfd` says. A final symbolic
+    /// link is never followed, and a trailing separator reaches past the final
+    /// name only as the flavour's `SymlinkRules.TrailingSeparator` says;
+    /// `SymlinkRules.verdict` decides the rest. The new link holds the target
+    /// byte for byte, has the bits `SimulatedUnixPlatform.symlinkCreationPermissions`
+    /// gives under the process's umask, and is owned as any new inode in that
+    /// directory is (`InodeOwner.ofNewInode`); the directory's modification and
+    /// status-change times move.
+    ///
+    /// Refuses a pathname this kernel will not resolve, and a call that would
+    /// create a link with an empty target; see `SymlinkRefusal`.
+    let symlinkWithPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (paused : PausedSymlink<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, SymlinkRefusal>
+        =
+        match box paused with
+        | null ->
+            failwith
+                "UnixNamespace.symlinkWithPath: this paused symlink is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixNamespace.symlinkatTargetPhase or symlinkTargetPhase instead."
+        | _ -> ()
+
+        let system = paused.System
+        let rules = SimulatedUnixPlatform.symlinkRules system.Machine.UnixPlatform
+
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path ->
+
+        match
+            UnixPathResolution.resolvePathFull
+                paused.Directory
+                SymlinkPolicy.NoFollowFinal
+                rules.TrailingSeparator
+                path
+                system
+        with
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (SymlinkRefusal.Path refusal)
+        | Ok resolution ->
+
+        match
+            SymlinkRules.verdict
+                (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
+                system.Process.Credentials
+                resolution
+                system.Machine.FileSystem
+        with
+        | SymlinkVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
+        | SymlinkVerdict.Create (directory, name) ->
+
+        match paused.Target with
+        | None -> Error SymlinkRefusal.EmptyTarget
+        | Some target ->
+
+        let permissions =
+            SimulatedUnixPlatform.symlinkCreationPermissions system.Machine.UnixPlatform system.Process.Umask
+
+        let owner = newInodeOwner "UnixNamespace.symlink" directory system
+        let now = UnixMachineState.realtime system.Machine
+
+        match VirtualFileSystem.createSymlink directory name permissions owner now target system.Machine.FileSystem with
+        | Error error ->
+            failwith
+                $"UnixNamespace.symlink: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
+        | Ok (_, filesystem) ->
+
+        Ok (
+            SyscallAnswer.Completed 0L,
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+            }
+        )
+
+    /// `symlinkat(2)`: create, at `path` relative to `dirfd`, a symbolic link
+    /// whose target is `target`.
+    ///
+    /// `dirfd` is raw, in this platform's own numbering. `target` and `path`
+    /// are the arguments' bytes, copied in in that order: a client that has yet
+    /// to read the second should call `symlinkatTargetPhase` and
+    /// `symlinkWithPath` instead. See `symlinkWithPath` for what the call
+    /// answers and refuses.
+    let symlinkat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (target : PathArgumentBytes)
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, SymlinkRefusal>
+        =
+        match symlinkatTargetPhase target dirfd system with
+        | SymlinkProgress.Answered answer -> Ok (answer, system)
+        | SymlinkProgress.NeedsPath paused -> symlinkWithPath path paused
+
+    /// `symlink(2)`: `symlinkat` from the current directory.
+    let symlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (target : PathArgumentBytes)
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, SymlinkRefusal>
+        =
+        match symlinkTargetPhase target system with
+        | SymlinkProgress.Answered answer -> Ok (answer, system)
+        | SymlinkProgress.NeedsPath paused -> symlinkWithPath path paused

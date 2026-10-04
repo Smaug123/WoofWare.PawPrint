@@ -1322,6 +1322,37 @@ module NativeSystemNative =
             |> fun destination -> UnixNamespace.renameWithDestination destination paused
             |> answer
 
+    /// `SystemNative_SymLink`, whose two pathnames are read as `rename`'s are:
+    /// the link's own pathname not until the kernel has copied the target in
+    /// and reached the point of copying it, since an unreadable target, and
+    /// Linux's empty one, finish the call without it ever being read.
+    let private symlinkSyscall (ctx : NativeCallContext) (state : IlMachineState) : NativeHandlerResult option =
+        let operation = "SystemNative_SymLink"
+
+        let answer (outcome : Result<SyscallAnswer * UnixSystem<ThreadId, NativeSignalHandler>, SymlinkRefusal>) =
+            match outcome with
+            | Error refusal -> failwith $"%s{operation}: %s{SymlinkRefusal.describe refusal}"
+            | Ok (SyscallAnswer.Failed error, system) ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (SyscallAnswer.Completed _, system) ->
+                withAnswered system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+        let target =
+            pathArgumentBytes ctx operation "target" ctx.Instruction.Arguments.[0] state
+
+        match UnixNamespace.symlinkTargetPhase target state.Kernel.System with
+        | SymlinkProgress.Answered syscallAnswer -> answer (Ok (syscallAnswer, state.Kernel.System))
+        | SymlinkProgress.NeedsPath paused ->
+            pathArgumentBytes ctx operation "linkPath" ctx.Instruction.Arguments.[1] state
+            |> fun path -> UnixNamespace.symlinkWithPath path paused
+            |> answer
+
     /// The `major.minor` at the start of a kernel release string, read as
     /// `sscanf(release, "%u.%u", &major, &minor)` reads it into two zeroes: a
     /// field it cannot read stays 0, and so does everything after it.
@@ -3321,6 +3352,15 @@ module NativeSystemNative =
           [ ConcretePointer _ ; ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             renameSyscall ctx state
+        // `int32_t SystemNative_SymLink(const char* target, const char*
+        // linkPath)` (pal_io.c): an EINTR-retrying `symlink(2)` and nothing
+        // else. CoreLib declares it as `int SymLink(string, string)` under
+        // UTF-8 marshalling, so what arrives is a pair of NUL-terminated byte
+        // pointers, the target first.
+        | Some "SystemNative_SymLink",
+          [ ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            symlinkSyscall ctx state
         // `DIR* SystemNative_OpenDir(const char* path)` (pal_io.c:532), an
         // EINTR-retrying `opendir(3)` and nothing else. NULL with errno set on
         // failure; the handle is opaque to the guest, which only passes it back

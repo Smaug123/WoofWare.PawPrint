@@ -57,6 +57,9 @@ type Syscall =
     /// `access(2)` is this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`)
     /// and no flags.
     | FAccessAt of dirfd : int * path : PathArgumentBytes * mode : int * flags : int
+    /// `dirfd` is raw, as `symlinkat(2)` takes it. `symlink(2)` is this with
+    /// the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`).
+    | SymlinkAt of target : PathArgumentBytes * dirfd : int * path : PathArgumentBytes
     /// `futimens(2)` with two explicit times; see `UnixPathResolution.futimens`.
     | FUTimens of fd : int * access : UnixTimestamp * modification : UnixTimestamp
     /// `copy_file_range(2)` at both descriptions' own offsets. `length` is the
@@ -96,6 +99,7 @@ type SyscallRefusal<'Task> =
     | ChOwn of ChOwnRefusal
     | FChOwn of FChOwnRefusal
     | Access of AccessRefusal
+    | Symlink of SymlinkRefusal
     | Close of CloseRefusal<'Task>
     | FUTimens of FUTimensRefusal
     | CopyFileRange of CopyFileRangeRefusal
@@ -887,6 +891,10 @@ module UnixSystem =
             UnixPathResolution.faccessat dirfd path mode flags system
             |> Result.map (fun answer -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Access
+        | Syscall.SymlinkAt (target, dirfd, path) ->
+            UnixNamespace.symlinkat target dirfd path system
+            |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
+            |> Result.mapError SyscallRefusal.Symlink
         | Syscall.FUTimens (fd, access, modification) ->
             UnixPathResolution.futimens fd access modification system
             |> answered

@@ -50,6 +50,7 @@
         <Compile Include="Sockaddr.fs" />
         <Compile Include="CreatingOpenRules.fs" />
         <Compile Include="MkDirRules.fs" />
+        <Compile Include="SymlinkRules.fs" />
         <Compile Include="RemovalRules.fs" />
         <Compile Include="RenameRules.fs" />
         <Compile Include="AccessRules.fs" />

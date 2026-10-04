@@ -57,6 +57,38 @@ SYMLINK	t -> f/n	ENOTDIR(nx2=absent nx=absent n=absent)
 SYMLINK	t -> ld/n	ok(nx2=absent nx=absent n=absent)(readlink=1 size=1)
 SYMLINK	t -> .	EEXIST(nx2=absent nx=absent n=absent)
 SYMLINK	t -> ''	ENOENT(nx2=absent nx=absent n=absent)
+SYMLINK	t -> lf/	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> ld/	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> cyc	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> cyc/	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> dang/	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> e/	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> ld/.	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> d/.	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> f/.	ENOTDIR(nx2=absent nx=absent n=absent)
+SYMLINK	t -> ..	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> /	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> lf//	EEXIST(nx2=absent nx=absent n=absent)
+SYMLINK	t -> n//	ENOENT(nx2=absent nx=absent n=absent)
+SYMORDER	target=t dirfd=AT_FDCWD	n=ok	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	nxdir/n=ENOENT	f=EEXIST	n/=ENOENT
+SYMORDER	target=t dirfd=-1	n=EBADF	NULL=EFAULT	empty=ENOENT	overlong=ENAMETOOLONG	nxdir/n=EBADF	f=EBADF	n/=EBADF
+SYMORDER	target=empty dirfd=AT_FDCWD	n=ENOENT	NULL=ENOENT	empty=ENOENT	overlong=ENOENT	nxdir/n=ENOENT	f=ENOENT	n/=ENOENT
+SYMORDER	target=empty dirfd=-1	n=ENOENT	NULL=ENOENT	empty=ENOENT	overlong=ENOENT	nxdir/n=ENOENT	f=ENOENT	n/=ENOENT
+SYMORDER	target=NULL dirfd=AT_FDCWD	n=EFAULT	NULL=EFAULT	empty=EFAULT	overlong=EFAULT	nxdir/n=EFAULT	f=EFAULT	n/=EFAULT
+SYMORDER	target=NULL dirfd=-1	n=EFAULT	NULL=EFAULT	empty=EFAULT	overlong=EFAULT	nxdir/n=EFAULT	f=EFAULT	n/=EFAULT
+SYMORDER	target=overlong dirfd=AT_FDCWD	n=ENAMETOOLONG	NULL=ENAMETOOLONG	empty=ENAMETOOLONG	overlong=ENAMETOOLONG	nxdir/n=ENAMETOOLONG	f=ENAMETOOLONG	n/=ENAMETOOLONG
+SYMORDER	target=overlong dirfd=-1	n=ENAMETOOLONG	NULL=ENAMETOOLONG	empty=ENAMETOOLONG	overlong=ENAMETOOLONG	nxdir/n=ENAMETOOLONG	f=ENAMETOOLONG	n/=ENAMETOOLONG
+SYMPERM	unwritable: free name	root
+SYMPERM	unwritable: taken name	root
+SYMPERM	unwritable: free name/	root
+SYMPERM	unwritable: dangling/	root
+SYMPERM	unwritable: file/	root
+SYMPERM	unsearchable: free name	root
+SYMPERM	unsearchable: taken name	root
+SYMPERM	writable: unbindable name	root
+SYMPERM	unwritable: unbindable name	root
+SYMPERM	writable: unbindable target	root
+SYMPERM	writable: name of 292 bytes	root
 SYMEMPTY	create=ENOENT
 SYMMODE	umask=00	ok mode=0777
 SYMMODE	umask=022	ok mode=0777

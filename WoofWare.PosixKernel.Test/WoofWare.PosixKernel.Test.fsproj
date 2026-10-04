@@ -46,6 +46,7 @@
     <Compile Include="TestAccess.fs" />
     <Compile Include="TestStartingDirectory.fs" />
     <Compile Include="TestSymlinkMode.fs" />
+    <Compile Include="TestSymlink.fs" />
     <Compile Include="TestOwnerChange.fs" />
     <Compile Include="TestProtectedFiles.fs" />
     <Compile Include="TestWakeCondition.fs" />

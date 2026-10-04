@@ -363,6 +363,17 @@ module TestPureCases =
                     name "lf", SeedEntry.Symlink (target "f", None)
                     name "d", SeedEntry.directory (Map.ofList [ name "in", file "in" ])
                 ]
+            "SymLinkSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "hello"
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", file "nested" ])
+                    name "lf", SeedEntry.Symlink (target "f", None)
+                    name "ld", SeedEntry.Symlink (target "d", None)
+                    // A dangling link: `symlink` answers EEXIST for it, which
+                    // is what says it never follows the name it binds.
+                    name "dang", SeedEntry.Symlink (target "nx", None)
+                ]
             "MkDirSeeded.cs",
             Map.ofList
                 [
