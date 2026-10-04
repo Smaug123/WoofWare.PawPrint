@@ -34,8 +34,12 @@ type Syscall =
     /// behaviour this kernel models, and models per flavour. `mkdir(2)` is
     /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`).
     | MkDirAt of dirfd : int * path : PathArgumentBytes * mode : int
-    | Unlink of path : PathArgumentBytes
-    | RmDir of path : PathArgumentBytes
+    /// `dirfd` and `flags` are raw, as `unlinkat(2)` takes them: each flavour
+    /// numbers `AT_FDCWD` and `AT_REMOVEDIR` its own way, and which other bits
+    /// it rejects is behaviour this kernel models per flavour. `unlink(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no
+    /// flags, and `rmdir(2)` with `AT_REMOVEDIR` (`UnlinkAtRules.atRemoveDir`).
+    | UnlinkAt of dirfd : int * path : PathArgumentBytes * flags : int
     | ChDir of path : PathArgumentBytes
     /// `mode` is raw, as `chmod(2)` takes it: which of its bits the inode gets
     /// is behaviour this kernel models.
@@ -100,8 +104,7 @@ type SyscallRefusal<'Task> =
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
     | MkDir of PathRefusal
-    | Unlink of RemovalRefusal
-    | RmDir of RemovalRefusal
+    | UnlinkAt of UnlinkAtRefusal
     | ChDir of PathRefusal
     | ChMod of ChModRefusal
     | FChMod of FChModRefusal
@@ -862,14 +865,10 @@ module UnixSystem =
             UnixNamespace.mkdirat dirfd path mode system
             |> answered
             |> Result.mapError SyscallRefusal.MkDir
-        | Syscall.Unlink path ->
-            UnixNamespace.unlink path system
+        | Syscall.UnlinkAt (dirfd, path, flags) ->
+            UnixNamespace.unlinkat dirfd path flags system
             |> answered
-            |> Result.mapError SyscallRefusal.Unlink
-        | Syscall.RmDir path ->
-            UnixNamespace.rmdir path system
-            |> answered
-            |> Result.mapError SyscallRefusal.RmDir
+            |> Result.mapError SyscallRefusal.UnlinkAt
         | Syscall.ChDir path ->
             UnixPathResolution.chdir path system
             |> answered
