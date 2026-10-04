@@ -654,7 +654,7 @@ module TestDirectorySize =
 
             let property (steps : DirectorySizeStep list) : unit =
                 let unique = Guid.NewGuid().ToString "N"
-                let root = Path.Combine (hostBase, $"pawprint-dirsize-%s{unique}")
+                let root = Path.Combine (hostBase, $"posixkernel-dirsize-%s{unique}")
                 hostMkdir (root, 0o755u) |> hostSucceeded "mkdir root"
 
                 try

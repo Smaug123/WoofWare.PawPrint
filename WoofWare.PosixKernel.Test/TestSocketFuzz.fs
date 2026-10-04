@@ -14,7 +14,7 @@ open NUnit.Framework
 /// must agree.
 ///
 /// The live test needs the container and so is gated on
-/// `PAWPRINT_SOCKET_FUZZ=1`; the corpus test replays previously-measured real
+/// `POSIXKERNEL_SOCKET_FUZZ=1`; the corpus test replays previously-measured real
 /// transcripts and runs everywhere.
 [<TestFixture>]
 module TestSocketFuzz =
@@ -91,7 +91,7 @@ module TestSocketFuzz =
     /// reaches the conversion exactly as a generator regression would.
     [<Test>]
     let ``an op outside the language is a defect rather than a skip`` () : unit =
-        match SocketFuzz.executeEmulated (SocketFuzz.parse "port:0 sock:1 add:0:1:32") with
+        match SocketFuzz.executeEmulated (SocketFuzz.parse "epoll:0 sock:1 add:0:1:32") with
         | EmulatedRun.Defect (_, message) -> message |> shouldContainText "0x20"
         | EmulatedRun.Refused (_, message) ->
             Assert.Fail
@@ -209,7 +209,7 @@ module TestSocketFuzz =
         | FuzzOp.Accept _ -> "acpt"
         | FuzzOp.Close _ -> "close"
         | FuzzOp.Dup _ -> "dup"
-        | FuzzOp.NewPort _ -> "port"
+        | FuzzOp.NewEpoll _ -> "epoll"
         | FuzzOp.Add _ -> "add"
         | FuzzOp.Mod _ -> "mod"
         | FuzzOp.Del _ -> "del"
@@ -227,7 +227,7 @@ module TestSocketFuzz =
             "acpt"
             "close"
             "dup"
-            "port"
+            "epoll"
             "add"
             "mod"
             "del"
@@ -239,18 +239,18 @@ module TestSocketFuzz =
 
     [<Test>]
     let ``SocketFuzzLive: generated sequences agree with the real kernel`` () : unit =
-        if Environment.GetEnvironmentVariable "PAWPRINT_SOCKET_FUZZ" <> "1" then
+        if Environment.GetEnvironmentVariable "POSIXKERNEL_SOCKET_FUZZ" <> "1" then
             Assert.Ignore
-                "differential fuzzing needs the `container` CLI; opt in with PAWPRINT_SOCKET_FUZZ=1 (see docs/plans/2026-08-22-socket-epoll-fuzzer.md)"
+                "differential fuzzing needs the `container` CLI; opt in with POSIXKERNEL_SOCKET_FUZZ=1 (see docs/plans/2026-08-22-socket-epoll-fuzzer.md)"
 
         let sequenceCount =
-            match Environment.GetEnvironmentVariable "PAWPRINT_SOCKET_FUZZ_SEQUENCES" with
+            match Environment.GetEnvironmentVariable "POSIXKERNEL_SOCKET_FUZZ_SEQUENCES" with
             | null
             | "" -> 150
             | s -> int s
 
         let seed =
-            match Environment.GetEnvironmentVariable "PAWPRINT_SOCKET_FUZZ_SEED" with
+            match Environment.GetEnvironmentVariable "POSIXKERNEL_SOCKET_FUZZ_SEED" with
             | null
             | "" -> 20260822
             | s -> int s
@@ -336,7 +336,7 @@ module TestSocketFuzz =
                 + String.concat "\n\n" rendered
             )
 
-        match Environment.GetEnvironmentVariable "PAWPRINT_SOCKET_FUZZ_WRITE_CORPUS" with
+        match Environment.GetEnvironmentVariable "POSIXKERNEL_SOCKET_FUZZ_WRITE_CORPUS" with
         | null
         | "" -> ()
         | path ->

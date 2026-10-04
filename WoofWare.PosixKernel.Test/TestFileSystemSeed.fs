@@ -62,7 +62,7 @@ module TestFileSystemSeed =
                     SeedEntry.directory (
                         Map.ofList
                             [
-                                name "hostname", SeedEntry.file (bytes "pawprint")
+                                name "hostname", SeedEntry.file (bytes "testhost")
                                 name "localtime", SeedEntry.Symlink (target "/usr/share/zoneinfo/UTC", None)
                             ]
                     )
@@ -83,7 +83,7 @@ module TestFileSystemSeed =
 
         match contentAt "/etc/hostname" SymlinkPolicy.Follow with
         | InodeContent.RegularFile (contents, permissions) ->
-            contents |> Seq.toArray |> shouldEqual (bytes "pawprint" |> Seq.toArray)
+            contents |> Seq.toArray |> shouldEqual (bytes "testhost" |> Seq.toArray)
             permissions |> shouldEqual SeedEntry.defaultPermsForRegularFile
         | other -> failwith $"expected a regular file, got %A{other}"
 

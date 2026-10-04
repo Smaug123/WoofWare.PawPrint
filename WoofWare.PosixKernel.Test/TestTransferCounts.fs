@@ -665,7 +665,7 @@ module TestTransferCounts =
                         FileDescriptors = registry
                     }
             }
-        | "port" ->
+        | "event queue" ->
             // The flavour's own: an epoll instance, or a kqueue.
             let create =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
@@ -838,7 +838,7 @@ module TestTransferCounts =
                 "read", "closed", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
                 "read", "writeonly", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
                 "read", "stdout", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
-                "read", "port", [ einval ; einval ; einval ; einval ], [ enxio ; enxio ; einval ; einval ]
+                "read", "event queue", [ einval ; einval ; einval ; einval ], [ enxio ; enxio ; einval ; einval ]
                 "read", "dir", [ eisdir ; eisdir ; eisdir ; efault ], [ eisdir ; eisdir ; einval ; einval ]
                 "read",
                 "stdin",
@@ -853,7 +853,7 @@ module TestTransferCounts =
                 "pread", "writeonly", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
                 "pread", "stdin", [ espipe ; espipe ; espipe ; espipe ], [ espipe ; espipe ; einval ; einval ]
                 "pread", "stdout", [ espipe ; espipe ; espipe ; espipe ], [ ebadf ; ebadf ; einval ; einval ]
-                "pread", "port", [ espipe ; espipe ; espipe ; espipe ], [ espipe ; espipe ; einval ; einval ]
+                "pread", "event queue", [ espipe ; espipe ; espipe ; espipe ], [ espipe ; espipe ; einval ; einval ]
                 "pread", "socket", [ espipe ; espipe ; espipe ; espipe ], [ espipe ; espipe ; einval ; einval ]
                 "pread", "dir", [ eisdir ; eisdir ; eisdir ; efault ], [ eisdir ; eisdir ; einval ; einval ]
 
@@ -861,7 +861,7 @@ module TestTransferCounts =
                 "write", "readonly", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
                 "write", "stdin", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
                 "write", "dir", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
-                "write", "port", [ einval ; einval ; einval ; einval ], [ enxio ; enxio ; einval ; einval ]
+                "write", "event queue", [ einval ; einval ; einval ; einval ], [ enxio ; enxio ; einval ; einval ]
                 "write",
                 "stdout",
                 [ Seen.Moved 0 ; Seen.Moved 5 ; maxLinux ; efault ],
@@ -873,7 +873,7 @@ module TestTransferCounts =
                 "pwrite", "dir", [ ebadf ; ebadf ; ebadf ; ebadf ], [ ebadf ; ebadf ; einval ; einval ]
                 "pwrite", "stdin", [ espipe ; espipe ; espipe ; espipe ], [ ebadf ; ebadf ; einval ; einval ]
                 "pwrite", "stdout", [ espipe ; espipe ; espipe ; espipe ], [ espipe ; espipe ; einval ; einval ]
-                "pwrite", "port", [ espipe ; espipe ; espipe ; espipe ], [ espipe ; espipe ; einval ; einval ]
+                "pwrite", "event queue", [ espipe ; espipe ; espipe ; espipe ], [ espipe ; espipe ; einval ; einval ]
                 "pwrite", "socket", [ espipe ; espipe ; espipe ; espipe ], [ espipe ; espipe ; einval ; einval ]
             ]
 

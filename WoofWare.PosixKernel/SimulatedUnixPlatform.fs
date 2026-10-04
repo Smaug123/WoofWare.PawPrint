@@ -878,6 +878,18 @@ module SimulatedUnixPlatform =
             else
                 ReadLinkCapacityVerdict.Refuse UnixError.EINVAL
 
+    /// What this platform's `readlinkat(2)` makes of an empty path, measured
+    /// on both (`at-dirfd.c`, `readlinkat-empty-path.c`):
+    ///
+    /// * Linux names the object `dirfd` names: a symbolic link is read, and
+    ///   anything else, the current directory included, is ENOENT, after a
+    ///   `dirfd` that names nothing is EBADF.
+    /// * Darwin walks it as every `*at` call does (`StartingPointRules`).
+    let readlinkEmptyPath (platform : SimulatedUnixPlatform) : EmptyPathMeaning =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> EmptyPathMeaning.NamesStartingPoint
+        | SimulatedUnixFlavour.Darwin -> EmptyPathMeaning.Walked
+
     /// The bounds this platform's kernel puts on path resolution.
     ///
     /// The numbers are measured facts about real kernels, which is why they are

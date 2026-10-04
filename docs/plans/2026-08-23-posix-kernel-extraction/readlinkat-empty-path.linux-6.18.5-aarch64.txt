@@ -1,0 +1,9 @@
+UNAME	Linux 6.18.5 aarch64	euid=0
+EMPTY	caller=0	cwd=ENOENT	minus1=EBADF	dir=ENOENT	file=ENOENT	pipe=ENOENT	socket=ENOENT	link=ok:f	dangling-link=ok:nx	dir-link=ok:d
+SIZE	caller=0	size=0	minus1=EINVAL	link=EINVAL
+SIZE	caller=0	size=-1	minus1=EINVAL	link=EINVAL
+NULL	caller=0	size=0=EINVAL	size=-1=EINVAL	size=64=EFAULT
+EMPTY	caller=1000	cwd=ENOENT	minus1=EBADF	dir=ENOENT	file=ENOENT	pipe=ENOENT	socket=ENOENT	link=ok:f	dangling-link=ok:nx	dir-link=ok:d
+SIZE	caller=1000	size=0	minus1=EINVAL	link=EINVAL
+SIZE	caller=1000	size=-1	minus1=EINVAL	link=EINVAL
+NULL	caller=1000	size=0=EINVAL	size=-1=EINVAL	size=64=EFAULT

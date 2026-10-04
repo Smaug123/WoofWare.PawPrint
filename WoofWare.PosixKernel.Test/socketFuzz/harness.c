@@ -291,7 +291,7 @@ static void run_op(const char *op)
         assign_slot(b, fd);
         emit("ok");
     }
-    else if (sscanf(op, "port:%d", &a) == 1)
+    else if (sscanf(op, "epoll:%d", &a) == 1)
     {
         int fd = epoll_create1(0);
         if (fd < 0)

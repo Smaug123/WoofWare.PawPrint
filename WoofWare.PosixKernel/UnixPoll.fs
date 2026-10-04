@@ -207,7 +207,7 @@ type EpollCtlError =
     /// `EFAULT`. First of everything.
     | EventUnreadable
     /// `epfd` is not a live descriptor; `EBADF`.
-    | BadPortFd
+    | BadEpollFd
     /// The target fd is not a live descriptor; `EBADF`.
     | BadTargetFd
     /// The target supports no poll -- a regular file or a directory; `EPERM`.
@@ -216,7 +216,7 @@ type EpollCtlError =
     | TargetNotPollable
     /// `epfd` is not an epoll instance, or `epfd` and the target name the same
     /// open file description (a `dup` of the epoll instance included); `EINVAL`.
-    | NotAnEventPort
+    | NotAnEpollInstance
     /// The event carries `EPOLLEXCLUSIVE` where it is not permitted: on
     /// `EPOLL_CTL_MOD`, or on `EPOLL_CTL_ADD` with an epoll instance as the
     /// target or with any bit outside `EPOLLIN`, `EPOLLOUT`, `EPOLLERR`,
@@ -242,10 +242,10 @@ module EpollCtlError =
     let toErrno (error : EpollCtlError) : UnixError =
         match error with
         | EpollCtlError.EventUnreadable -> UnixError.EFAULT
-        | EpollCtlError.BadPortFd
+        | EpollCtlError.BadEpollFd
         | EpollCtlError.BadTargetFd -> UnixError.EBADF
         | EpollCtlError.TargetNotPollable -> UnixError.EPERM
-        | EpollCtlError.NotAnEventPort
+        | EpollCtlError.NotAnEpollInstance
         | EpollCtlError.ExclusiveNotPermitted
         | EpollCtlError.UnrecognisedOperation -> UnixError.EINVAL
         | EpollCtlError.AlreadyRegistered -> UnixError.EEXIST
@@ -277,7 +277,7 @@ type EpollCtlRefusal =
     /// Linux accepts one, subject to a loop check and a nesting depth of at
     /// most four epoll instances (`ELOOP` beyond either). This library does not model
     /// what a nested epoll instance reports or how a wake propagates through it.
-    | NestedPort of targetFd : int
+    | NestedEpoll of targetFd : int
     /// The event carries `EPOLLEXCLUSIVE`, which changes which of several epoll instances
     /// on one target a wake reaches. This library's wakes reach every epoll instance.
     | Exclusive
@@ -308,7 +308,7 @@ module EpollCtlRefusal =
         match refusal with
         | EpollCtlRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and epoll_ctl exists on Linux only. This flavour's counterpart is a kevent changelist (UnixKqueue.kevent)."
-        | EpollCtlRefusal.NestedPort targetFd ->
+        | EpollCtlRefusal.NestedEpoll targetFd ->
             $"fd %d{targetFd} is itself an epoll instance. Linux would register it (subject to a loop check and a nesting depth of four, both ELOOP), but what a nested epoll instance reports and how a wake propagates through one are not modelled."
         | EpollCtlRefusal.Exclusive ->
             "the event carries EPOLLEXCLUSIVE, and the registration would succeed. An exclusive registration changes which of several epoll instances on one target a wake reaches, and this library's wakes reach every epoll instance. Model wake-one delivery before answering."
@@ -459,7 +459,7 @@ module UnixPoll =
         let registry = system.Process.FileDescriptors
 
         match FileDescriptorRegistry.tryFindWithId epfd registry with
-        | None -> failed EpollCtlError.BadPortFd
+        | None -> failed EpollCtlError.BadEpollFd
         | Some (epollId, epollDescription) ->
 
         match FileDescriptorRegistry.tryFindWithId fd registry with
@@ -496,10 +496,10 @@ module UnixPoll =
             | OpenFileTarget.Pipe _ -> None
 
         match epollState with
-        | None -> failed EpollCtlError.NotAnEventPort
+        | None -> failed EpollCtlError.NotAnEpollInstance
         | Some epollState ->
 
-        let targetIsPort =
+        let targetIsEpoll =
             match targetDescription.Target with
             | OpenFileTarget.Epoll _ -> true
             | OpenFileTarget.Kqueue _
@@ -526,14 +526,14 @@ module UnixPoll =
         if
             exclusive
             && (op = modify
-                || op = add && (targetIsPort || events &&& ~~~exclusivePermitted <> 0u))
+                || op = add && (targetIsEpoll || events &&& ~~~exclusivePermitted <> 0u))
         then
             failed EpollCtlError.ExclusiveNotPermitted
         // Where Linux runs its loop and depth checks, which cannot fail on any
         // table this library builds (it never holds a nested epoll instance) but which
         // precede EEXIST in the kernel.
-        elif op = add && targetIsPort then
-            Error (EpollCtlRefusal.NestedPort fd)
+        elif op = add && targetIsEpoll then
+            Error (EpollCtlRefusal.NestedEpoll fd)
         else
 
         let key = fd, targetId

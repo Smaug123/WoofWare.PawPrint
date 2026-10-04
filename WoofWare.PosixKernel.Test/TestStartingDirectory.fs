@@ -650,6 +650,151 @@ module TestStartingDirectory =
         ]
         |> shouldEqual []
 
+    // ------------------------------------------------------------ readlinkat
+
+    let private renderedLink (result : Result<ReadLinkAnswer, ReadLinkRefusal>) : string =
+        match result with
+        | Ok (ReadLinkAnswer.Reported bytes) -> "ok:" + Text.Encoding.ASCII.GetString (bytes.AsSpan ())
+        | Ok (ReadLinkAnswer.Failed error) -> $"%A{error}"
+        | Error refusal -> $"refused: %s{ReadLinkRefusal.describe refusal}"
+
+    let private replayReadLinkAt (envelope : Envelope) : unit =
+        let rows = atRows envelope |> Map.filter (fun (call, _, _) _ -> call = "readlinkat")
+        rows.Count |> shouldEqual (13 * 9)
+        let skipped = faccessatNotReplayed envelope
+
+        [
+            for KeyValue ((_, kind, path), expected) in rows do
+                if not (skipped.Contains kind) then
+                    match directoryArgument kind envelope with
+                    | None -> yield $"%s{kind} %s{path}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+                        // The probe's buffer was 64 bytes.
+                        let actual =
+                            UnixNamespace.readlinkat
+                                dirfd
+                                (pathArgument path envelope.Platform)
+                                UserBuffer.Mapped
+                                64
+                                system
+                            |> renderedLink
+
+                        if actual <> expected then
+                            yield $"%s{kind} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``readlinkat answers every dirfd and path the probe tried as Linux root`` () : unit = replayReadLinkAt linuxRoot
+
+    [<Test>]
+    let ``readlinkat answers every dirfd and path the probe tried as a Linux user`` () : unit =
+        replayReadLinkAt linuxUser
+
+    [<Test>]
+    let ``readlinkat answers every dirfd and path the probe tried on Darwin`` () : unit = replayReadLinkAt darwinUser
+
+    /// `readlinkat-empty-path.c`'s kinds of dirfd that name a symbolic link
+    /// itself, through Linux's `O_PATH | O_NOFOLLOW` or Darwin's `O_SYMLINK`.
+    /// Neither open flag is modelled, so no descriptor here can name one.
+    let private symlinkDescriptors : Set<string> =
+        set [ "link" ; "dangling-link" ; "dir-link" ]
+
+    let private replayReadLinkEmptyPath (resource : string) (envelopeOf : string -> Envelope) : unit =
+        let emptyRows = probeLines resource "EMPTY"
+        let sizeRows = probeLines resource "SIZE"
+        let nullRows = probeLines resource "NULL"
+        emptyRows.Length |> shouldBeGreaterThan 0
+        sizeRows.Length |> shouldBeGreaterThan 0
+        nullRows.Length |> shouldBeGreaterThan 0
+
+        let cells (row : string list) =
+            row.[1..]
+            |> List.map (fun cell ->
+                let at = cell.IndexOf '='
+                cell.Substring (0, at), cell.Substring (at + 1)
+            )
+
+        [
+            for row in emptyRows do
+                let envelope = envelopeOf row.[0]
+
+                for kind, expected in cells row do
+                    if not (symlinkDescriptors.Contains kind) then
+                        match directoryArgument kind envelope with
+                        | None -> yield $"%s{kind}: no such dirfd could be made"
+                        | Some (dirfd, system) ->
+                            let actual =
+                                UnixNamespace.readlinkat dirfd (PathArg.ofText "") UserBuffer.Mapped 64 system
+                                |> renderedLink
+
+                            if actual <> expected then
+                                yield
+                                    $"EMPTY %s{row.[0]} %s{kind}: the probe answered %s{expected}, this library %s{actual}"
+
+            for row in sizeRows do
+                let envelope = envelopeOf row.[0]
+                let size = int (row.[1].Substring "size=".Length)
+
+                for kind, expected in cells row.[1..] do
+                    if not (symlinkDescriptors.Contains kind) then
+                        match directoryArgument kind envelope with
+                        | None -> yield $"%s{kind}: no such dirfd could be made"
+                        | Some (dirfd, system) ->
+                            let actual =
+                                UnixNamespace.readlinkat dirfd (PathArg.ofText "") UserBuffer.Mapped size system
+                                |> renderedLink
+
+                            if actual <> expected then
+                                yield
+                                    $"SIZE %s{row.[0]} size=%d{size} %s{kind}: the probe answered %s{expected}, this library %s{actual}"
+
+            // The size against an unreadable path, from AT_FDCWD.
+            for row in nullRows do
+                let envelope = envelopeOf row.[0]
+                let atFdCwd = atFdCwd (SimulatedUnixPlatform.flavour envelope.Platform)
+
+                for cell in row.[1..] do
+                    let at = cell.LastIndexOf '='
+                    let size = int (cell.Substring ("size=".Length, at - "size=".Length))
+                    let expected = cell.Substring (at + 1)
+
+                    let actual =
+                        UnixNamespace.readlinkat
+                            atFdCwd
+                            PathArgumentBytes.Unreadable
+                            UserBuffer.Mapped
+                            size
+                            (boot envelope)
+                        |> renderedLink
+
+                    if actual <> expected then
+                        yield
+                            $"NULL %s{row.[0]} size=%d{size}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``Linux's readlinkat names the dirfd's own object by an empty path, as measured`` () : unit =
+        replayReadLinkEmptyPath
+            "WoofWare.PosixKernel.Test.readlinkatEmptyPath.linux.txt"
+            (fun caller ->
+                match caller with
+                | "caller=0" -> linuxRoot
+                | "caller=1000" -> linuxUser
+                | other -> failwith $"%s{context}: the probe has no caller %s{other}"
+            )
+
+    [<Test>]
+    let ``Darwin's readlinkat treats an empty path as every call does, as measured`` () : unit =
+        replayReadLinkEmptyPath
+            "WoofWare.PosixKernel.Test.readlinkatEmptyPath.darwin.txt"
+            (fun caller ->
+                match caller with
+                | "caller=501" -> darwinUser
+                | other -> failwith $"%s{context}: the probe has no caller %s{other}"
+            )
+
     [<Test>]
     let ``only Darwin's /dev/null is left unreplayed`` () : unit =
         envelopes
@@ -676,16 +821,22 @@ module TestStartingDirectory =
         | Error error -> Some $"%A{error}"
         | Ok _ -> None
 
-    /// The cells where a call answers before, or instead of, the starting
-    /// point the other calls share, as (call, pathname) for every `dirfd`:
-    /// Linux's `readlinkat` looks an empty path's `dirfd` up, Linux's
-    /// `utimensat` acts on `dirfd` itself for a NULL path, and Darwin's
-    /// `mknodat` refuses an unprivileged caller before it copies the path in.
-    /// (That EPERM shows for every pathname but the absolute one, where the
-    /// start fails nothing and EPERM is not an answer only a start can give.)
+    /// The calls this fixture replays end to end above, which the start-alone
+    /// check below leaves to those replays: a call with a rule of its own
+    /// about the empty path, as Linux's `readlinkat` has, is held to it there.
+    let private replayedEndToEnd : Set<string> =
+        set [ "faccessat" ; "symlinkat" ; "fstatat" ; "fstatat(NOFOLLOW)" ; "readlinkat" ]
+
+    /// The cells where a call not replayed end to end answers before, or
+    /// instead of, the starting point the other calls share, as (call,
+    /// pathname) for every `dirfd`: Linux's `utimensat` acts on `dirfd` itself
+    /// for a NULL path, and Darwin's `mknodat` refuses an unprivileged caller
+    /// before it copies the path in. (That EPERM shows for every pathname but
+    /// the absolute one, where the start fails nothing and EPERM is not an
+    /// answer only a start can give.)
     let private ownRules (envelope : Envelope) : Set<string * string> =
         match SimulatedUnixPlatform.flavour envelope.Platform with
-        | SimulatedUnixFlavour.Linux -> set [ "readlinkat", "empty" ; "utimensat", "NULL" ]
+        | SimulatedUnixFlavour.Linux -> set [ "utimensat", "NULL" ]
         | SimulatedUnixFlavour.Darwin ->
             set
                 [
@@ -716,6 +867,7 @@ module TestStartingDirectory =
 
         rows
         |> Map.toSeq
+        |> Seq.filter (fun ((call, _, _), _) -> not (replayedEndToEnd.Contains call))
         |> Seq.choose (fun ((call, kind, path), expected) ->
             match Map.tryFind kind fixtures with
             | None -> None
@@ -1027,5 +1179,57 @@ module TestStartingDirectory =
                 UnixPathResolution.stat policy argument heldInCwd
                 |> Result.mapError FStatAtRefusal.Stat
             )
+
+        Check.One (config, Prop.forAll (Arb.fromGen walkCase) property)
+
+    [<Test>]
+    let ``readlink is readlinkat from AT_FDCWD, and readlinkat from a descriptor on a directory is readlink from that directory``
+        ()
+        : unit
+        =
+        let property
+            (platform, credentials, cwd, path : UnixPath, _ : SymlinkPolicy, _ : TrailingSeparatorPolicy)
+            : unit
+            =
+            let flavour = SimulatedUnixPlatform.flavour platform
+            let argument = PathArgumentBytes.Bytes (UnixPath.toByteString path)
+            let inCwd = walkSystem platform credentials cwd
+
+            UnixNamespace.readlinkat (atFdCwd flavour) argument UserBuffer.Mapped 64 inCwd
+            |> shouldEqual (UnixNamespace.readlink argument UserBuffer.Mapped 64 inCwd)
+
+            // Opened as root, as the descriptor properties above do, and
+            // compared with readlink from the same tree, whose unowned
+            // entries are root's.
+            let fd, held =
+                match
+                    Answered.openPath
+                        readOnly
+                        (UnixPath.parseOrFail context cwd)
+                        0
+                        (walkSystem platform Owners.root cwd)
+                with
+                | SyscallAnswer.Completed fd, system -> int fd, system
+                | other -> failwith $"%s{context}: open(%s{cwd}) did not open: %O{other}"
+
+            let atRoot =
+                { held with
+                    Process =
+                        { held.Process with
+                            Credentials = credentials
+                            CurrentDirectoryInode = VirtualFileSystem.root held.Machine.FileSystem
+                        }
+                }
+
+            let heldInCwd =
+                { held with
+                    Process =
+                        { held.Process with
+                            Credentials = credentials
+                        }
+                }
+
+            UnixNamespace.readlinkat fd argument UserBuffer.Mapped 64 atRoot
+            |> shouldEqual (UnixNamespace.readlink argument UserBuffer.Mapped 64 heldInCwd)
 
         Check.One (config, Prop.forAll (Arb.fromGen walkCase) property)

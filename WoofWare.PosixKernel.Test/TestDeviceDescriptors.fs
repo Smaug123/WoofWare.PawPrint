@@ -1021,7 +1021,7 @@ module TestDeviceDescriptors =
         for device in CharacterDevice.all do
             let fd, system = openDevice device FileAccessMode.ReadOnly booted
 
-            let portFd, registry =
+            let queueFd, registry =
                 FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
 
             let system =
@@ -1033,7 +1033,7 @@ module TestDeviceDescriptors =
                 }
 
             for op in [ 1 ; 2 ; 3 ] do
-                match UnixPoll.epollCtl portFd op fd (EpollEventArgument.Readable (1u, 42UL)) system with
+                match UnixPoll.epollCtl queueFd op fd (EpollEventArgument.Readable (1u, 42UL)) system with
                 | Ok (EpollCtlAnswer.Failed EpollCtlError.TargetNotPollable, after) -> after |> shouldEqual system
                 | other -> failwith $"%O{device}, op %d{op}: expected EPERM, got %A{other}"
 

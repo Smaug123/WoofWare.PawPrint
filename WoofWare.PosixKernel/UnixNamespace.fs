@@ -1174,8 +1174,10 @@ module UnixNamespace =
         | Error error -> Ok (SyscallAnswer.Failed error, system)
         | Ok path -> openPathParsed flags path mode system
 
-    /// `readlink`, of a path this kernel has already copied in.
+    /// `readlinkat`, of a path this kernel has already copied in, starting
+    /// from `directory` if it is relative.
     let internal readlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (path : UnixPath)
         (destination : UserBuffer)
         (capacity : int)
@@ -1190,15 +1192,51 @@ module UnixNamespace =
         | ReadLinkCapacityVerdict.ReportNothing
         | ReadLinkCapacityVerdict.Admit ->
 
-        // `NoFollowFinal` is what makes this `readlink` rather than an expensive
-        // way of asking about the target: a final symlink is the thing being
-        // read, not something to step through. A trailing separator still
-        // overrides that -- "lf/" demands that `lf` be a directory -- and the
-        // resolver owns that rule, answering ENOTDIR.
-        match UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.NoFollowFinal path system with
-        | Error (PathFailure.Errno error) -> Ok (ReadLinkAnswer.Failed error)
-        | Error (PathFailure.Refused refusal) -> Error (ReadLinkRefusal.Path refusal)
-        | Ok inode ->
+        // The inode to read, and what the call answers if it is not a link.
+        let (target : Result<Result<InodeNumber, UnixError>, ReadLinkRefusal>), (notALink : UnixError) =
+            match SimulatedUnixPlatform.readlinkEmptyPath system.Machine.UnixPlatform, directory with
+            | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
+                // Measured (`readlinkat-empty-path.c`, and `at-dirfd.c`'s
+                // eventq rows): a pipe, a socket or an epoll instance is
+                // ENOENT, as a file or directory that is not a link is.
+                let named =
+                    match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+                    | None -> Error UnixError.EBADF
+                    | Some description ->
+
+                    match description.Target with
+                    | OpenFileTarget.File (inode, _)
+                    | OpenFileTarget.Directory (inode, _)
+                    | OpenFileTarget.CharacterDevice (inode, _) -> Ok inode
+                    | OpenFileTarget.Pipe _
+                    | OpenFileTarget.Socket _
+                    | OpenFileTarget.Epoll _
+                    | OpenFileTarget.Kqueue _ -> Error UnixError.ENOENT
+
+                Ok named, UnixError.ENOENT
+            | EmptyPathMeaning.NamesStartingPoint, _
+            | EmptyPathMeaning.Walked, _ ->
+                // An empty path from AT_FDCWD names the current directory,
+                // which is not a link, so it is ENOENT, as the walk answers it.
+                //
+                // `NoFollowFinal` is what makes this `readlink` rather than an
+                // expensive way of asking about the target: a final symlink is
+                // the thing being read, not something to step through. A
+                // trailing separator still overrides that -- "lf/" demands
+                // that `lf` be a directory -- and the resolver owns that rule,
+                // answering ENOTDIR.
+                let resolved =
+                    match UnixPathResolution.resolvePath directory SymlinkPolicy.NoFollowFinal path system with
+                    | Error (PathFailure.Errno error) -> Ok (Error error)
+                    | Error (PathFailure.Refused refusal) -> Error (ReadLinkRefusal.Path refusal)
+                    | Ok inode -> Ok (Ok inode)
+
+                resolved, UnixError.EINVAL
+
+        match target with
+        | Error refusal -> Error refusal
+        | Ok (Error error) -> Ok (ReadLinkAnswer.Failed error)
+        | Ok (Ok inode) ->
 
         match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
         | None ->
@@ -1207,13 +1245,14 @@ module UnixNamespace =
         | Some (InodeContent.Directory _)
         | Some (InodeContent.RegularFile _)
         | Some (InodeContent.CharacterDevice _) ->
-            // Not a link: EINVAL, which is what distinguishes "not a link" from
-            // a failure to read one.
+            // Not a link: EINVAL for a path, which is what distinguishes "not a
+            // link" from a failure to read one, and ENOENT for an empty path
+            // naming the starting point.
             // Decided before the destination is looked at, which is what a real
             // kernel does -- `vfs_readlink` refuses on the inode's operations
             // before it copies anything out. Measured on the host:
             // `readlink("f", (char*)8, 16)` is EINVAL, not EFAULT.
-            Ok (ReadLinkAnswer.Failed UnixError.EINVAL)
+            Ok (ReadLinkAnswer.Failed notALink)
         | Some (InodeContent.Symlink (target, _)) ->
 
         match verdict with
@@ -1248,7 +1287,8 @@ module UnixNamespace =
         else
             Ok (ReadLinkAnswer.Reported (ImmutableArray.CreateRange (Seq.truncate capacity all)))
 
-    /// `readlink(2)`: report what the symbolic link at `path` points at.
+    /// `readlink(2)`: report what the symbolic link at `path` points at. It is
+    /// `readlinkat` from `AT_FDCWD`.
     ///
     /// Changes nothing and returns no system. That is *not* quite what POSIX
     /// says: a successful `readlink` marks the link's access time for update,
@@ -1288,7 +1328,37 @@ module UnixNamespace =
 
         match UnixPathResolution.copyIn path system with
         | Error error -> Ok (ReadLinkAnswer.Failed error)
-        | Ok path -> readlinkParsed path destination capacity system
+        | Ok path -> readlinkParsed AtDirectory.CurrentDirectory path destination capacity system
+
+    /// `readlinkat(2)`: `readlink` of `path`, starting from `dirfd` if it is
+    /// relative; `readlink` is this from `AT_FDCWD`.
+    ///
+    /// `dirfd` is raw, in this platform's own numbering. The size is screened
+    /// as `readlink` screens it, before `path` is copied in, and a relative
+    /// path then starts where `dirfd` says, as every `*at` call's does,
+    /// except for the empty path on Linux: that names what `dirfd` names
+    /// (`SimulatedUnixPlatform.readlinkEmptyPath`), which is EBADF if it
+    /// names nothing and ENOENT if it is not a symbolic link. No descriptor
+    /// here names a symbolic link, since this library models neither
+    /// `O_PATH` nor `O_SYMLINK`.
+    let readlinkat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (destination : UserBuffer)
+        (capacity : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadLinkAnswer, ReadLinkRefusal>
+        =
+        match SimulatedUnixPlatform.readlinkCapacity system.Machine.UnixPlatform capacity with
+        | ReadLinkCapacityVerdict.Refuse error -> Ok (ReadLinkAnswer.Failed error)
+        | ReadLinkCapacityVerdict.ReportNothing
+        | ReadLinkCapacityVerdict.Admit ->
+
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (ReadLinkAnswer.Failed error)
+        | Ok path ->
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+            readlinkParsed (AtDirectory.decode flavour dirfd) path destination capacity system
 
     /// Read the next entry of the directory `fd` names, and move its open file
     /// description's position past it: one record of `getdents(2)` (Linux) or

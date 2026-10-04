@@ -21,15 +21,15 @@ type FuzzOp =
     | Accept of listener : int * newSlot : int
     | Close of slot : int
     | Dup of slot : int * newSlot : int
-    | NewPort of slot : int
-    | Add of port : int * target : int * mask : int
-    | Mod of port : int * target : int * mask : int
-    | Del of port : int * target : int
+    | NewEpoll of slot : int
+    | Add of epoll : int * target : int * mask : int
+    | Mod of epoll : int * target : int * mask : int
+    | Del of epoll : int * target : int
     /// `EPOLL_CTL_ADD` with raw `<sys/epoll.h>` events, any 32-bit value.
-    | EpollAdd of port : int * target : int * events : uint32
+    | EpollAdd of epoll : int * target : int * events : uint32
     /// `EPOLL_CTL_MOD` with raw `<sys/epoll.h>` events, any 32-bit value.
-    | EpollMod of port : int * target : int * events : uint32
-    | Wait of port : int * maxEvents : int
+    | EpollMod of epoll : int * target : int * events : uint32
+    | Wait of epoll : int * maxEvents : int
     /// `poll(2)` over a single slot, with timeout 0. The `events` mask is
     /// Linux's own `<poll.h>` numbering, any value in 0..0xFFFF, and it reaches
     /// both kernels unconverted — a *different* alphabet from the
@@ -110,7 +110,7 @@ module SocketFuzz =
         | FuzzOp.Accept (l, s) -> $"acpt:%d{l}:%d{s}"
         | FuzzOp.Close s -> $"close:%d{s}"
         | FuzzOp.Dup (s, s2) -> $"dup:%d{s}:%d{s2}"
-        | FuzzOp.NewPort p -> $"port:%d{p}"
+        | FuzzOp.NewEpoll p -> $"epoll:%d{p}"
         | FuzzOp.Add (p, t, m) -> $"add:%d{p}:%d{t}:%d{m}"
         | FuzzOp.Mod (p, t, m) -> $"mod:%d{p}:%d{t}:%d{m}"
         | FuzzOp.Del (p, t) -> $"del:%d{p}:%d{t}"
@@ -145,7 +145,7 @@ module SocketFuzz =
         | "acpt", 3 -> FuzzOp.Accept (arg 1, arg 2)
         | "close", 2 -> FuzzOp.Close (arg 1)
         | "dup", 3 -> FuzzOp.Dup (arg 1, arg 2)
-        | "port", 2 -> FuzzOp.NewPort (arg 1)
+        | "epoll", 2 -> FuzzOp.NewEpoll (arg 1)
         | "add", 4 -> FuzzOp.Add (arg 1, arg 2, arg 3)
         | "mod", 4 -> FuzzOp.Mod (arg 1, arg 2, arg 3)
         | "del", 3 -> FuzzOp.Del (arg 1, arg 2)
@@ -271,7 +271,7 @@ module SocketFuzz =
             SlotFd = Map.add slot fd state.SlotFd
         }
 
-    /// `epoll_ctl` of the target slot on the port slot, with `data` the target's
+    /// `epoll_ctl` of the target slot on the epoll slot, with `data` the target's
     /// slot number, as the harness passes it.
     ///
     /// A refusal is a skip only for raw events, which may ask for modes the
@@ -280,7 +280,7 @@ module SocketFuzz =
     /// is a finding.
     let private epollCtl
         (rawEvents : bool)
-        (port : int)
+        (epoll : int)
         (op : int)
         (target : int)
         (events : uint32)
@@ -289,7 +289,7 @@ module SocketFuzz =
         =
         match
             UnixPoll.epollCtl
-                (slotFd port state)
+                (slotFd epoll state)
                 op
                 (slotFd target state)
                 (EpollEventArgument.Readable (events, uint64 target))
@@ -487,7 +487,7 @@ module SocketFuzz =
                             }
                     }
             | Error FileDescriptorDupError.BadFd -> "EBADF", state
-        | FuzzOp.NewPort slot ->
+        | FuzzOp.NewEpoll slot ->
             let fd, registry =
                 FileDescriptorRegistry.createEpoll state.Kernel.Process.FileDescriptors
 
@@ -504,28 +504,28 @@ module SocketFuzz =
                                 }
                         }
                 }
-        | FuzzOp.Add (port, target, mask) -> epollCtl false port 1 target (eventsOfMask mask) state
-        | FuzzOp.Mod (port, target, mask) -> epollCtl false port 3 target (eventsOfMask mask) state
-        | FuzzOp.EpollAdd (port, target, events) -> epollCtl true port 1 target events state
-        | FuzzOp.EpollMod (port, target, events) -> epollCtl true port 3 target events state
-        | FuzzOp.Del (port, target) -> epollCtl false port 2 target 0u state
-        | FuzzOp.Wait (port, maxEvents) ->
-            let portId =
-                match FileDescriptorRegistry.tryFindId (slotFd port state) state.Kernel.Process.FileDescriptors with
+        | FuzzOp.Add (epoll, target, mask) -> epollCtl false epoll 1 target (eventsOfMask mask) state
+        | FuzzOp.Mod (epoll, target, mask) -> epollCtl false epoll 3 target (eventsOfMask mask) state
+        | FuzzOp.EpollAdd (epoll, target, events) -> epollCtl true epoll 1 target events state
+        | FuzzOp.EpollMod (epoll, target, events) -> epollCtl true epoll 3 target events state
+        | FuzzOp.Del (epoll, target) -> epollCtl false epoll 2 target 0u state
+        | FuzzOp.Wait (epoll, maxEvents) ->
+            let queueId =
+                match FileDescriptorRegistry.tryFindId (slotFd epoll state) state.Kernel.Process.FileDescriptors with
                 | Some id -> id
-                | None -> failwith $"FUZZ-DRIVER BUG: wait's port slot %d{port} is not live."
+                | None -> failwith $"FUZZ-DRIVER BUG: wait's epoll slot %d{epoll} is not live."
 
             // The predicate a parked waiter is polled against and the drain its
             // woken call performs read the same annotated walk, so they
             // cannot disagree; asked here because a generated sequence drives
-            // the port through phases no hand-written row reaches.
+            // the epoll instance through phases no hand-written row reaches.
             let system = state.Kernel
-            let predicted = EpollReadyList.hasDeliverableEvent portId system
-            let delivered, system = EpollReadyList.drain portId maxEvents system
+            let predicted = EpollReadyList.hasDeliverableEvent queueId system
+            let delivered, system = EpollReadyList.drain queueId maxEvents system
 
             if List.isEmpty delivered = predicted then
                 failwith
-                    $"FUZZ-DRIVER BUG: EpollReadyList.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
+                    $"FUZZ-DRIVER BUG: EpollReadyList.hasDeliverableEvent answered %b{predicted} of epoll instance %O{queueId}, but draining it reported %d{List.length delivered} events."
 
             let kernel = system
 
@@ -653,7 +653,7 @@ module SocketFuzz =
         /// A conndead is in flight; the next connect delivers the refusal.
         | Refused
         | Established
-        | Port
+        | Epoll
 
     type private GenState =
         {
@@ -661,7 +661,7 @@ module SocketFuzz =
             SlotSocket : Map<int, int>
             /// Shadow socket to its phase.
             SocketShadow : Map<int, Shadow>
-            /// (port slot, target slot) pairs the shadow believes registered.
+            /// (epoll slot, target slot) pairs the shadow believes registered.
             Registrations : Set<int * int>
             NextSlot : int
             NextSocket : int
@@ -765,7 +765,7 @@ module SocketFuzz =
     /// One generated sequence. Constructive: every op names live slots and
     /// stays inside the modelled envelope where the shadow can tell — e.g. no
     /// slot of a listener with a nonempty shadow queue is ever closed (a
-    /// modelled refusal), and a port is never a registration target (nested
+    /// modelled refusal), and an epoll instance is never a registration target (nested
     /// epoll is refused). The op-kind weights are themselves drawn from
     /// `rng`, so the distribution is fuzzed too.
     let generate (rng : Random) : FuzzOp list =
@@ -823,9 +823,9 @@ module SocketFuzz =
 
         let ops = ResizeArray<FuzzOp> ()
 
-        // Give every sequence something to fuzz: a port and a socket exist
+        // Give every sequence something to fuzz: an epoll instance and a socket exist
         // before the weighted walk starts.
-        ops.Add (FuzzOp.NewPort (freshSlot (Some Shadow.Port)))
+        ops.Add (FuzzOp.NewEpoll (freshSlot (Some Shadow.Epoll)))
         ops.Add (FuzzOp.NewSocket (freshSlot (Some Shadow.Idle)))
 
         while ops.Count < targetLength do
@@ -835,7 +835,7 @@ module SocketFuzz =
                 |> List.filter (fun (_, socket) -> predicate (Map.find socket state.SocketShadow))
                 |> List.map fst
 
-            let ports = slotsWhere ((=) Shadow.Port)
+            let epolls = slotsWhere ((=) Shadow.Epoll)
             let idle = slotsWhere ((=) Shadow.Idle)
 
             let listeners =
@@ -861,7 +861,7 @@ module SocketFuzz =
 
             let connecting = slotsWhere ((=) Shadow.Connecting)
             let refused = slotsWhere ((=) Shadow.Refused)
-            let allSockets = slotsWhere ((<>) Shadow.Port)
+            let allSockets = slotsWhere ((<>) Shadow.Epoll)
 
             // Weighted candidate thunks; each appends its op and updates the
             // shadow. Multiplicity in the list is the weight.
@@ -873,8 +873,8 @@ module SocketFuzz =
 
             addWeighted wNew (fun () -> ops.Add (FuzzOp.NewSocket (freshSlot (Some Shadow.Idle))))
 
-            if ports.Length < 2 then
-                addWeighted 1 (fun () -> ops.Add (FuzzOp.NewPort (freshSlot (Some Shadow.Port))))
+            if epolls.Length < 2 then
+                addWeighted 1 (fun () -> ops.Add (FuzzOp.NewEpoll (freshSlot (Some Shadow.Epoll))))
 
             if not (List.isEmpty idle) then
                 addWeighted
@@ -987,22 +987,22 @@ module SocketFuzz =
                             }
                     )
 
-            if not (List.isEmpty ports) && not (List.isEmpty allSockets) then
+            if not (List.isEmpty epolls) && not (List.isEmpty allSockets) then
                 addWeighted
                     (wRegister * 2)
                     (fun () ->
-                        let port = pick rng ports
+                        let epoll = pick rng epolls
                         let target = pick rng allSockets
 
                         if rng.Next 3 = 0 then
-                            ops.Add (FuzzOp.EpollAdd (port, target, randomEpollEvents rng))
+                            ops.Add (FuzzOp.EpollAdd (epoll, target, randomEpollEvents rng))
                         else
-                            ops.Add (FuzzOp.Add (port, target, randomMask rng))
+                            ops.Add (FuzzOp.Add (epoll, target, randomMask rng))
                         // A duplicate Add is the EEXIST row; the shadow set
                         // is unchanged either way.
                         state <-
                             { state with
-                                Registrations = Set.add (port, target) state.Registrations
+                                Registrations = Set.add (epoll, target) state.Registrations
                             }
                     )
 
@@ -1015,64 +1015,64 @@ module SocketFuzz =
                 addWeighted
                     wRegister
                     (fun () ->
-                        let port, target = pick rng registered
+                        let epoll, target = pick rng registered
 
                         if rng.Next 3 = 0 then
-                            ops.Add (FuzzOp.EpollMod (port, target, randomEpollEvents rng))
+                            ops.Add (FuzzOp.EpollMod (epoll, target, randomEpollEvents rng))
                         else
-                            ops.Add (FuzzOp.Mod (port, target, randomMask rng))
+                            ops.Add (FuzzOp.Mod (epoll, target, randomMask rng))
                     )
 
                 addWeighted
                     wChurn
                     (fun () ->
-                        let port, target = pick rng registered
-                        ops.Add (FuzzOp.Del (port, target))
+                        let epoll, target = pick rng registered
+                        ops.Add (FuzzOp.Del (epoll, target))
 
                         state <-
                             { state with
-                                Registrations = Set.remove (port, target) state.Registrations
+                                Registrations = Set.remove (epoll, target) state.Registrations
                             }
                     )
 
-            if not (List.isEmpty ports) && not (List.isEmpty allSockets) then
+            if not (List.isEmpty epolls) && not (List.isEmpty allSockets) then
                 // The ENOENT rows: MOD/DEL of a pair that may never have been
                 // registered.
                 addWeighted
                     1
                     (fun () ->
-                        let port = pick rng ports
+                        let epoll = pick rng epolls
                         let target = pick rng allSockets
 
                         if rng.Next 2 = 0 then
-                            ops.Add (FuzzOp.Mod (port, target, randomMask rng))
+                            ops.Add (FuzzOp.Mod (epoll, target, randomMask rng))
                         else
-                            ops.Add (FuzzOp.Del (port, target))
+                            ops.Add (FuzzOp.Del (epoll, target))
 
                         state <-
                             { state with
-                                Registrations = Set.remove (port, target) state.Registrations
+                                Registrations = Set.remove (epoll, target) state.Registrations
                             }
                     )
 
             if not (List.isEmpty allSockets) then
                 addWeighted wPoll (fun () -> ops.Add (FuzzOp.Poll (pick rng allSockets, randomPollMask rng)))
 
-            if not (List.isEmpty ports) then
+            if not (List.isEmpty epolls) then
                 addWeighted
                     wWait
                     (fun () ->
-                        let port = pick rng ports
+                        let epoll = pick rng epolls
                         let maxEvents = pick rng [ 1 ; 2 ; 8 ]
-                        ops.Add (FuzzOp.Wait (port, maxEvents))
+                        ops.Add (FuzzOp.Wait (epoll, maxEvents))
                     )
 
             (pick rng (List.ofSeq candidates)) ()
 
-        // Drain every port so each sequence ends by observing whatever the
+        // Drain every epoll instance so each sequence ends by observing whatever the
         // walk left pending.
         for slot, socket in Map.toList state.SlotSocket do
-            if Map.find socket state.SocketShadow = Shadow.Port then
+            if Map.find socket state.SocketShadow = Shadow.Epoll then
                 ops.Add (FuzzOp.Wait (slot, 8))
 
         List.ofSeq ops

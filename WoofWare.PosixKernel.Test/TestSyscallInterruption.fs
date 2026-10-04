@@ -47,7 +47,7 @@ module TestSyscallInterruption =
         | Poll of milliseconds : int
         /// `poll` of nothing but an ignored entry, for ever.
         | PollOfNothing
-        /// `epoll_wait` on a port holding the listener, for ever or for this
+        /// `epoll_wait` on an epoll instance holding the listener, for ever or for this
         /// many milliseconds.
         | EpollWait of milliseconds : int
 
@@ -85,7 +85,7 @@ module TestSyscallInterruption =
         {
             System : UnixSystem<int, string>
             Listener : int
-            Port : int
+            Epoll : int
             LockedThrough : int
             WaitingThrough : int
         }
@@ -103,7 +103,7 @@ module TestSyscallInterruption =
         }
 
     /// A system on `platform` with tasks 1 to 3, a blocking listener at
-    /// loopback port 5000, on Linux an epoll port holding it edge-triggered,
+    /// loopback port 5000, on Linux an epoll instance holding it edge-triggered,
     /// and a file opened twice, the first description locked exclusively by
     /// `holder`.
     let private worldOn (platform : SimulatedUnixPlatform) : World =
@@ -133,25 +133,25 @@ module TestSyscallInterruption =
             | Ok (ListenAnswer.Listening _, system) -> system
             | other -> failwith $"listening: %A{other}"
 
-        let port, system =
+        let epoll, system =
             match SimulatedUnixPlatform.flavour platform with
             | SimulatedUnixFlavour.Darwin -> -1, system
             | SimulatedUnixFlavour.Linux ->
 
-            let port, system =
+            let epoll, system =
                 match UnixPoll.epollCreate1 0 system with
                 | Ok (Ok (fd, system)) -> fd, system
-                | other -> failwith $"expected a port, got %A{other}"
+                | other -> failwith $"expected an epoll instance, got %A{other}"
 
             match
                 UnixPoll.epollCtl
-                    port
+                    epoll
                     1
                     listener
                     (EpollEventArgument.Readable (EpollEvents.In ||| EpollEvents.EdgeTriggered, 7UL))
                     system
             with
-            | Ok (EpollCtlAnswer.Changed, system) -> port, system
+            | Ok (EpollCtlAnswer.Changed, system) -> epoll, system
             | other -> failwith $"expected the registration to succeed, got %A{other}"
 
         let inode, filesystem =
@@ -190,7 +190,7 @@ module TestSyscallInterruption =
         {
             System = system
             Listener = listener
-            Port = port
+            Epoll = epoll
             LockedThrough = lockedThrough
             WaitingThrough = waitingThrough
         }
@@ -263,7 +263,7 @@ module TestSyscallInterruption =
         | Sleep.EpollWait milliseconds ->
             parked
                 "the epoll_wait"
-                (UnixPoll.epollWait task world.Port 8 UserBuffer.Mapped milliseconds world.System)
+                (UnixPoll.epollWait task world.Epoll 8 UserBuffer.Mapped milliseconds world.System)
                 (function
                 | EpollWaitOutcome.WouldBlock _ -> true
                 | _ -> false
@@ -443,7 +443,7 @@ module TestSyscallInterruption =
         match sleep with
         | Sleep.Flock -> Some world.WaitingThrough
         | Sleep.Accept -> Some world.Listener
-        | Sleep.EpollWait _ -> Some world.Port
+        | Sleep.EpollWait _ -> Some world.Epoll
         | Sleep.Poll _
         | Sleep.PollOfNothing -> None
 

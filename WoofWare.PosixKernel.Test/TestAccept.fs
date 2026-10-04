@@ -332,7 +332,7 @@ module TestAccept =
         let fileFd, registry =
             FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
 
-        let portFd, registry = FileDescriptorRegistry.createEpoll registry
+        let queueFd, registry = FileDescriptorRegistry.createEpoll registry
 
         let system =
             { system with
@@ -342,7 +342,7 @@ module TestAccept =
                     }
             }
 
-        for fd in [ 0 ; fileFd ; portFd ] do
+        for fd in [ 0 ; fileFd ; queueFd ] do
             acceptOrFail fd UserBuffer.Mapped 16u system
             |> fst
             |> shouldEqual (AcceptOutcome.Failed UnixError.ENOTSOCK)
