@@ -165,14 +165,14 @@ module ListenRefusal =
 /// What `getsockname(2)` reports about a socket's own address.
 [<RequireQualifiedAccess>]
 type GetSockNameAnswer =
-    /// The address the socket is bound to, and the length the call reports.
+    /// The call succeeded: the kernel wrote `copiedOut` to the start of the
+    /// caller's buffer and `reportedLength` to its length cell.
     ///
-    /// The endpoint rather than the bytes: a `struct sockaddr_in` is the
-    /// client's to lay out, and the client that decoded one for `bind(2)` is the
-    /// one that encodes this. `reportedLength` is that structure's *untruncated*
-    /// size, which the caller's declared length does not bound -- see the
-    /// entry point.
-    | Reported of endpoint : InternetEndpoint * reportedLength : int
+    /// `copiedOut` is the socket's address as this platform's
+    /// `struct sockaddr_in`, cut to the length the caller declared, and so
+    /// possibly empty; `reportedLength` is that structure's *untruncated* size,
+    /// which the declared length does not bound -- see the entry point.
+    | Reported of copiedOut : ImmutableArray<byte> * reportedLength : int
     /// The entry point returns -1, the caller stores `error` wherever its libc
     /// keeps errno, and `lengthOverwritten` is what the kernel had already put
     /// in the caller's length cell before it discovered the fault.
@@ -1309,15 +1309,13 @@ module UnixSocket =
 
     /// `getsockname(2)`: report the local address the socket `fd` names.
     ///
-    /// Answers an endpoint rather than a `struct sockaddr_in`: the layout is the
-    /// client's, which is the same division `bind(2)` and `connect(2)` already
-    /// use in the other direction.
+    /// Answers the bytes the kernel copies out, laid out for the platform, and
+    /// the length it writes back.
     ///
     /// `declaredLength` is how much of the caller's buffer may be written, and
     /// **does not bound what is reported**. Measured on both flavours: a call
     /// declaring 8 writes eight bytes and reports 16, and one declaring 128
-    /// writes 16 and still reports 16. A client writes
-    /// `min declaredLength reportedLength` bytes of the address it encodes.
+    /// writes 16 and still reports 16.
     ///
     /// `declaredLength` is the 32-bit word the caller read out of its length
     /// cell. Linux reads it as an `int` and answers `EINVAL` for a negative one,
@@ -1385,8 +1383,16 @@ module UnixSocket =
         // full 16. There is no up-front address screen to fail either: that is
         // why an `Addressless` destination is refused at the transfer below and
         // not here.
+        let reported () : Result<GetSockNameAnswer, GetSockNameRefusal> =
+            Ok (
+                GetSockNameAnswer.Reported (
+                    SimulatedUnixPlatform.copyOutInternetSockaddr system.Machine.UnixPlatform endpoint declaredLength,
+                    reportedLength
+                )
+            )
+
         if declaredLength = 0u then
-            Ok (GetSockNameAnswer.Reported (endpoint, reportedLength))
+            reported ()
         else
 
         match destination with
@@ -1399,7 +1405,7 @@ module UnixSocket =
                 | GetSockNameFaultLength.AlreadyReported -> Some reportedLength
 
             Ok (GetSockNameAnswer.Failed (UnixError.EFAULT, overwritten))
-        | UserBuffer.Mapped -> Ok (GetSockNameAnswer.Reported (endpoint, reportedLength))
+        | UserBuffer.Mapped -> reported ()
 
     /// `sizeof(int)`: what both kernels copy in for `SO_REUSEADDR` whatever
     /// length the caller declares, and the most they copy out of either option.

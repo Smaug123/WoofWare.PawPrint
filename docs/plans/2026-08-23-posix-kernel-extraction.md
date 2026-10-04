@@ -2774,6 +2774,16 @@ Ordered so that each has an oracle before the next depends on it.
   `struct sockaddr_in` is raw kernel ABI rather than PAL, would have made
   `getsockname` the only socket entry point whose bytes cross.
 
+  **Revisited 2026-10-04 (audit item #14): the blob now crosses, both ways.**
+  Once `bind` and `connect` took the bytes they copy in and decoded them
+  themselves, the division above pointed the other way. `GetSockNameAnswer.Reported`
+  and `AcceptOutcome.Accepted` now carry `copiedOut`, the first
+  `min(declared, 16)` bytes of the encoded `sockaddr_in`
+  (`SimulatedUnixPlatform.copyOutInternetSockaddr`), and the shim writes them as
+  they stand, so the truncation rule is the kernel's. It was measured identical
+  on both flavours at every declared length 0..20, for `getpeername` too
+  (`sockaddr-decoding.c`, section T), and `TestCopyOutMeasured` replays it.
+
   Two of its rules were confirmed rather than changed, both by the size sweep: a
   descriptor error outranks a destination that names nothing (EBADF and ENOTSOCK
   at every declared length probed, against unmapped, read-only and null

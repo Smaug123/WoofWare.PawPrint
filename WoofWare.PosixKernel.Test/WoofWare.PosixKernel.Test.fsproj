@@ -148,6 +148,7 @@
     <Compile Include="TestConnectLadderMeasured.fs" />
     <Compile Include="TestBindLadderMeasured.fs" />
     <Compile Include="TestConnectDestinationMeasured.fs" />
+    <Compile Include="TestCopyOutMeasured.fs" />
     <Compile Include="TestPoll.fs" />
     <Compile Include="TestPollTimeout.fs" />
     <Compile Include="TestSocketWait.fs" />

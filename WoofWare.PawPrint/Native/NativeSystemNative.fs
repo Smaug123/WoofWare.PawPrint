@@ -5125,7 +5125,7 @@ module NativeSystemNative =
                     |> Scheduler.parkInSyscall ctx.Thread
                     |> NativeHandlerResult.blockedRetainingFrame
                     |> Some
-                | Ok (AcceptOutcome.Accepted (acceptedFd, peer, reportedLength), unix) ->
+                | Ok (AcceptOutcome.Accepted (acceptedFd, copiedOut, reportedLength), unix) ->
 
                 // FD_CLOEXEC: Linux's `accept4(..., SOCK_CLOEXEC)` sets it as
                 // it accepts, and on Darwin the shim's `fcntl(F_SETFD,
@@ -5162,16 +5162,8 @@ module NativeSystemNative =
 
                 let state = state.MapKernel (EmulatedKernel.withUnix unix)
 
-                let blob =
-                    SimulatedUnixPlatform.encodeInternetSockaddr state.Kernel.UnixPlatform peer
-
-                // The caller's declared length bounds what is *written* and not
-                // what is *reported*, exactly as for `getsockname(2)`: both come
-                // out of the kernel's one sockaddr copy-out helper.
-                let written = min declaredLength reportedLength
-
                 let state =
-                    if written = 0 then
+                    if copiedOut.IsEmpty then
                         // A call that writes nothing never resolves the destination,
                         // which is why a declared length of zero succeeds through a
                         // pointer naming no storage.
@@ -5184,12 +5176,7 @@ module NativeSystemNative =
                                 failwith
                                     $"%s{operation}: `socketAddress` is %O{addressArgument}, which names no storage, yet the library accepted a connection rather than refusing the copy-out. This is an interpreter bug."
 
-                        writeBytesThrough
-                            ctx
-                            operation
-                            storage
-                            (ImmutableArray.CreateRange (Array.sub blob 0 written))
-                            state
+                        writeBytesThrough ctx operation storage copiedOut state
 
                 let reported = Array.zeroCreate<byte> 4
                 BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> reported, reportedLength)
@@ -5464,18 +5451,10 @@ module NativeSystemNative =
                 // the shim's stack and dies there. A client speaking raw POSIX
                 // would have to honour it.
                 failFromSyscall error state
-            | Ok (GetSockNameAnswer.Reported (endpoint, reportedLength)) ->
-
-            let blob =
-                SimulatedUnixPlatform.encodeInternetSockaddr state.Kernel.UnixPlatform endpoint
-
-            // The caller's declared length bounds what is *written*, and does not
-            // bound what is *reported* -- see `UnixSocket.getsockname`, which is
-            // where that measurement is recorded.
-            let written = min declaredLength reportedLength
+            | Ok (GetSockNameAnswer.Reported (copiedOut, reportedLength)) ->
 
             let state =
-                if written = 0 then
+                if copiedOut.IsEmpty then
                     // A call that writes nothing never resolves the destination,
                     // which is why a declared length of zero succeeds through a
                     // pointer naming no storage.
@@ -5486,14 +5465,9 @@ module NativeSystemNative =
                         | Some storage -> storage
                         | None ->
                             failwith
-                                $"%s{operation}: `socketAddress` is %O{addressArgument}, which names no storage, yet the library answered with %d{written} bytes to write rather than EFAULT. This is an interpreter bug."
+                                $"%s{operation}: `socketAddress` is %O{addressArgument}, which names no storage, yet the library answered with %d{copiedOut.Length} bytes to write rather than EFAULT. This is an interpreter bug."
 
-                    writeBytesThrough
-                        ctx
-                        operation
-                        storage
-                        (ImmutableArray.CreateRange (Array.sub blob 0 written))
-                        state
+                    writeBytesThrough ctx operation storage copiedOut state
 
             let reported = Array.zeroCreate<byte> 4
             BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> reported, reportedLength)

@@ -24,12 +24,13 @@ type AcceptOutcome =
     /// A connection was dequeued and a socket materialised onto it. `fd` is the
     /// descriptor that socket is open on.
     ///
-    /// `peer` is the client's address, which is what `accept(2)` copies out, and
-    /// `reportedLength` what the caller's length cell is owed. As for
-    /// `getsockname`, the declared length bounds what a client *writes* and not
-    /// what is reported: a call declaring 8 writes eight bytes of the encoded
-    /// address and still reports 16.
-    | Accepted of fd : int * peer : InternetEndpoint * reportedLength : int
+    /// The kernel wrote `copiedOut` to the start of the caller's address buffer
+    /// and `reportedLength` to its length cell: the client's address as this
+    /// platform's `struct sockaddr_in`, cut to the length the caller declared
+    /// and so possibly empty, and that structure's untruncated size. As for
+    /// `getsockname`, the declared length bounds what is written and not what
+    /// is reported: a call declaring 8 writes eight bytes and still reports 16.
+    | Accepted of fd : int * copiedOut : ImmutableArray<byte> * reportedLength : int
     /// The call failed with this errno after it had taken the oldest connection
     /// off the accept queue, and the connection is gone: its server end is
     /// closed as `close` closes an accepted socket, so the client sees an
@@ -1541,7 +1542,13 @@ module UnixConnection =
             else
                 system
 
-        Ok (AcceptOutcome.Accepted (acceptedFd, connection.ClientAddress, reportedLength), system)
+        let copiedOut =
+            SimulatedUnixPlatform.copyOutInternetSockaddr
+                system.Machine.UnixPlatform
+                connection.ClientAddress
+                declaredLength
+
+        Ok (AcceptOutcome.Accepted (acceptedFd, copiedOut, reportedLength), system)
 
     /// `accept(2)`, made by `task`: take the oldest completed connection off
     /// `fd`'s accept queue and hand back a descriptor onto the server side of
