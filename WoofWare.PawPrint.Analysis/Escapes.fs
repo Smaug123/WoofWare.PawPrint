@@ -40,11 +40,16 @@ type ThrownType =
 ///
 /// <c>Types</c> are the exception types the analysis can name. <c>Unknown</c> says that somewhere
 /// on a path the analysis could not see through (a virtual call, a native method, a <c>rethrow</c>),
-/// so anything at all may escape besides; with it false, <c>Types</c> is a complete answer.
+/// so anything at all may escape besides; with it false, <c>Types</c> is a complete answer, provided
+/// every assumption in <c>Assumes</c> holds. <c>Assumes</c> lists every assumption whose contract
+/// stands in for a body that something escaping could come from. It may also list one that a
+/// handler in a method this one calls would have made unnecessary: a callee's answer records that
+/// it relied on an assumption, not which types would escape it if the assumption failed.
 type Escapes =
     {
         Types : Set<ThrownType>
         Unknown : bool
+        Assumes : Set<Assumption>
     }
 
 [<RequireQualifiedAccess>]
@@ -54,6 +59,7 @@ module Escapes =
         {
             Types = Set.empty
             Unknown = false
+            Assumes = Set.empty
         }
 
     /// Everything either may let escape.
@@ -61,4 +67,5 @@ module Escapes =
         {
             Types = Set.union a.Types b.Types
             Unknown = a.Unknown || b.Unknown
+            Assumes = Set.union a.Assumes b.Assumes
         }

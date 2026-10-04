@@ -107,6 +107,27 @@ caller can catch, and an exception thrown by a managed function it calls back en
 Were one of those libraries missing, the runtime would run the program's `ResolvingUnmanagedDll`
 handlers, which could throw anything.
 
+Other assumptions are the caller's to allow (`Assumption`, given to `EscapeAnalysis.create`). Each
+lets the analysis take a contract in place of a method's body, and each answer lists in
+`Escapes.Assumes` those it relied on: the ones whose contract stands in for code that something
+escaping could come from, so that without them the answer could be "unknown". It may also list one
+that a handler in a method this one calls made unnecessary, since a callee's answer records only
+that it relied on the assumption. Allowed none, every
+answer follows from the code alone. There is one so far:
+
+* `CoreLibResourceLookup`: CoreLib's lookup of its own resource strings,
+  `SR.InternalGetResourceString`, which gives every CoreLib exception its message, raises only
+  `OutOfMemoryException`, `TypeInitializationException`, `NullReferenceException` (for a null key),
+  `ThreadInterruptedException` (while it waits for its lock) and `StackOverflowException`. That holds
+  when only CoreLib writes CoreLib's private static fields, the runtime is installed completely and
+  intact, and every culture the lookup walks (the current UI culture and its `Parent` chain) that is
+  of a `CultureInfo` subclass the program defines behaves as CoreLib's own `CultureInfo` would for
+  that culture: its overrides raise nothing, its `Name` is a valid culture name, its `Parent` chain
+  ends at the invariant culture, and it changes no culture state. The program's `AssemblyResolve` and `Resolving` handlers do not run
+  there: CoreCLR runs none for CoreLib's own satellite assembly. Without this assumption,
+  constructing almost any CoreLib exception is "unknown", because the lookup reaches culture data,
+  formatting, collections, event tracing and reflection.
+
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set
 needs rebuilding (or, for a package, a different version). Other ways such a change can break a

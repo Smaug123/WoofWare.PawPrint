@@ -85,6 +85,8 @@ type EndToEndTestCase =
         AssertTerminalState : (IlMachineState -> unit) option
     }
 
+    override this.ToString () = this.FileName
+
 [<RequireQualifiedAccess>]
 module OraclePolicy =
 
