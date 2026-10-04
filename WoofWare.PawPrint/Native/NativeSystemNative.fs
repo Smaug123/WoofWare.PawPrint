@@ -2510,7 +2510,7 @@ module NativeSystemNative =
             let bufferArgument = instruction.Arguments.[1]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            let library = CLibrary.ofPlatform state.Kernel.UnixPlatform
+            let library = state.Kernel.CLibrary
 
             // Only an answer that writes resolves the buffer, as only that one
             // dereferences it in C: a GNU answer of the library's own string

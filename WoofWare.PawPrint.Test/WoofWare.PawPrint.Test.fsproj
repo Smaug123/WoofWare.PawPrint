@@ -46,6 +46,7 @@
              Link="HostPlatform.fs" />
     <Compile Include="..\WoofWare.PosixKernel.Test\HostStat.fs"
              Link="HostStat.fs" />
+    <Compile Include="HostCLibrary.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestRealRuntimeOracle.fs" />
     <Compile Include="TestHarness.fs"/>
@@ -439,6 +440,7 @@
          and buffer size its probe sweeps, against glibc and Darwin's libc.
          `TestStrErrorR` regenerates every row from the model. -->
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\strerror-r.linux-6.18.5-glibc-2.41.txt" LogicalName="WoofWare.PawPrint.Test.strerrorR.glibc.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\strerror-r.linux-6.18.5-glibc-2.44-uapi-7.2.txt" LogicalName="WoofWare.PawPrint.Test.strerrorR.glibc-eftype.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\strerror-r.darwin-27.0.txt" LogicalName="WoofWare.PawPrint.Test.strerrorR.darwin.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\open-flags.linux-6.12.111-x86_64-root.txt" LogicalName="WoofWare.PawPrint.Test.openFlags.linuxX64.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\open-flags.linux-6.18.5-aarch64-root.txt" LogicalName="WoofWare.PawPrint.Test.openFlags.linuxArm64.txt" />

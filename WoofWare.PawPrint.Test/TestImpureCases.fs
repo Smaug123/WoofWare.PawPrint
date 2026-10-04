@@ -2097,13 +2097,44 @@ module TestImpureCases =
             {
                 // `SystemNative_StrErrorR` under glibc: the C library's text,
                 // which the flavours do not share, and GNU `strerror_r`'s
-                // returned pointers.
+                // returned pointers. Once per glibc build, which differ in
+                // errno 134 alone; the guest reads that row's text from its
+                // environment. This is the mainstream build, as Microsoft's
+                // .NET images run it.
                 FileName = "StrErrorLinux.cs"
                 ExpectedReturnCode = 0
-                KernelConfig = KernelConfig.Default
+                KernelConfig =
+                    { KernelConfig.Default with
+                        CLibrary = Some (CLibrary.Glibc GlibcErrnoSet.ThroughEHWPOISON)
+                        Environment = [ "STRERROR_134=Unknown error 134" ]
+                    }
                 AppContext = AppContextProperties.empty
-                // Compared: real .NET on a Linux host runs glibc's shim.
-                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                // Compared only on a host whose shim runs this build.
+                Oracle =
+                    if HostCLibrary.runs (CLibrary.Glibc GlibcErrnoSet.ThroughEHWPOISON) then
+                        OraclePolicy.WhenHostMatchesEmulatedFlavour
+                    else
+                        OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same, under the glibc built against Linux 7.2's headers,
+                // which names errno 134.
+                FileName = "StrErrorLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        CLibrary = Some (CLibrary.Glibc GlibcErrnoSet.ThroughEFTYPE)
+                        Environment = [ "STRERROR_134=Inappropriate file type or format" ]
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared only on a host whose shim runs this build.
+                Oracle =
+                    if HostCLibrary.runs (CLibrary.Glibc GlibcErrnoSet.ThroughEFTYPE) then
+                        OraclePolicy.WhenHostMatchesEmulatedFlavour
+                    else
+                        OraclePolicy.Never
                 ExpectsUnhandledException = false
                 AssertTerminalState = None
             }

@@ -600,6 +600,10 @@ type EmulatedKernel =
         /// `PosixSignalShim`; what it reads from, a descriptor or
         /// `getentropy(2)`, is the kernel's.
         ProcessRandom : ProcessRandom
+        /// The C library the process runs against: whose words an errno-built
+        /// exception message is in (`StrErrorR`). It matches the platform's
+        /// flavour; see `CLibrary.suits`.
+        CLibrary : CLibrary
         /// System.Native's own signal state: see `PosixSignalShim`. Userspace
         /// state rather than kernel state, like `ProcessRandom`: the shim keeps
         /// it in its own globals, and no syscall reports it.
@@ -1052,6 +1056,7 @@ module EmulatedKernel =
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
             ProcessRandom = processRandom
+            CLibrary = CLibrary.ofPlatform platform
             PosixSignalShim = PosixSignalShim.initial
             CopyFileRangeSupport = CopyFileRangeSupport.Unprobed
             DirectoryStreamFds = Map.empty
@@ -1185,6 +1190,19 @@ module EmulatedKernel =
 
 
 
+
+    /// Run the process against `library`, which must suit the platform's
+    /// flavour (`CLibrary.suits`); `context` names the setting in the refusal.
+    let withCLibrary (context : string) (library : CLibrary) (kernel : EmulatedKernel) : EmulatedKernel =
+        let flavour = SimulatedUnixPlatform.flavour kernel.UnixPlatform
+
+        if not (CLibrary.suits flavour library) then
+            failwith
+                $"%s{context}: a %O{flavour} process cannot run against %O{library}; glibc is Linux's C library and Darwin's libc Darwin's."
+
+        { kernel with
+            CLibrary = library
+        }
 
     /// Set the virtual time charged per retired instruction. See
     /// `EmulatedKernel.InstructionCostTicks` for what the number means and why it is
@@ -1780,6 +1798,11 @@ type KernelConfig =
         /// Unix platform identity the guest observes via
         /// `Environment.OSVersion` (on a Unix CoreLib).
         UnixPlatform : SimulatedUnixPlatform
+        /// The C library the simulated process runs against, which decides the
+        /// words of every errno-built exception message. `None` takes the one
+        /// `UnixPlatform`'s flavour runs by default (`CLibrary.ofPlatform`); one
+        /// that does not suit the flavour is refused.
+        CLibrary : CLibrary option
         /// Current working directory the guest observes via
         /// `Environment.CurrentDirectory`, and against which it resolves every
         /// relative `Path.GetFullPath`. Obtain one with
@@ -1965,6 +1988,7 @@ type KernelConfig =
             OptimalMaxSpinWaitsPerSpinIteration = EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration
             WallClockEpochMs = 0L
             UnixPlatform = UnixSystem.defaultUnixPlatform
+            CLibrary = None
             CurrentDirectory = UnixSystem.defaultCurrentDirectory
             ProcessPath = UnixSystem.defaultProcessPath
             FileSystem = FileSystemSeed.empty
@@ -2096,6 +2120,10 @@ module KernelConfig =
             | None -> system
             | Some pidMax -> UnixSystem.writePidMaxSysctl "KernelConfig.PidMax" pidMax system
         )
+        |> fun kernel ->
+            match config.CLibrary with
+            | None -> kernel
+            | Some library -> EmulatedKernel.withCLibrary "KernelConfig.CLibrary" library kernel
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
         |> EmulatedKernel.withClockJitter config.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
