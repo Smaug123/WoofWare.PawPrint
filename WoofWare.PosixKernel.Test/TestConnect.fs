@@ -495,3 +495,49 @@ module TestConnect =
         match UnixConnection.connect fd UserBuffer.Addressless 16u ImmutableArray.Empty system with
         | Error (ConnectRefusal.Copy _) -> ()
         | other -> failwith $"expected a copy refusal, got %A{other}"
+
+    /// A datagram connect that would give the socket the source and peer
+    /// another datagram socket already holds is refused: a real kernel refuses
+    /// the duplicate, and how is unmeasured. Darwin reaches it when a connected
+    /// socket bound to an interface address reconnects to the wildcard, which
+    /// resolves its source to 127.0.0.1.
+    [<Test>]
+    let ``a duplicate datagram four-tuple is refused`` () : unit =
+        let platform = SimulatedUnixPlatform.macOsArm64
+        let iface = 0x0A000005u
+
+        let system =
+            systemOnWith (UnixBootImage.withLocalAddresses [ InternetEndpoint.LoopbackAddress ; iface ] []) platform
+
+        let udp (system : UnixSystem<int, string>) =
+            NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
+
+        let bindTo fd (endpoint : InternetEndpoint) system =
+            match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
+            | Ok (BindAnswer.Bound _, system) -> system
+            | other -> failwith $"bind answered %A{other}"
+
+        let connectTo fd (endpoint : InternetEndpoint) system =
+            CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system
+
+        let completes fd endpoint system =
+            match connectTo fd endpoint system with
+            | Ok (ConnectOutcome.Completed, system) -> system
+            | other -> failwith $"connect answered %A{other}"
+
+        let first, system = udp system
+
+        let system =
+            system |> bindTo first (loopback 5000us) |> completes first (loopback 6000us)
+
+        let second, system = udp system
+
+        let system =
+            system
+            |> bindTo second (InternetEndpoint.ofParts iface 5000us)
+            |> completes second (InternetEndpoint.ofParts iface 6000us)
+
+        match connectTo second (InternetEndpoint.ofParts 0u 6000us) system with
+        | Error (ConnectRefusal.DuplicateFourTuple (source, destination)) ->
+            (source, destination) |> shouldEqual (loopback 5000us, loopback 6000us)
+        | other -> failwith $"expected the duplicate to be refused, got %A{other}"
