@@ -1922,8 +1922,8 @@ type KernelConfig =
         /// following another user's symbolic link, or opening another user's file
         /// with `O_CREAT`, in a sticky world-writable (or, for
         /// `protected_regular=2`, group-writable) directory, and hard-linking
-        /// another user's file the caller may not read and write (which nothing
-        /// reads yet, since `link(2)` is not modelled). Defaults to `ProtectedFiles.off`, the kernel's own default;
+        /// another user's file the caller may not read and write. Defaults to
+        /// `ProtectedFiles.off`, the kernel's own default;
         /// many distributions set them non-zero through `sysctl.d`. Only
         /// `ProtectedFiles.off` is admitted on Darwin, which has none of them.
         ///

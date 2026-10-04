@@ -465,6 +465,72 @@ type SymlinkProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equa
     /// `UnixNamespace.symlinkWithPath`.
     | NeedsPath of paused : PausedSymlink<'Task, 'Handler>
 
+/// Why this kernel will not answer a `link(2)` or `linkat(2)`.
+[<RequireQualifiedAccess>]
+type LinkRefusal =
+    /// This kernel will not resolve one of the pathnames.
+    | Path of refusal : PathRefusal
+    /// The flag word `flags` carries flags the flavour accepts and this library
+    /// does not model; see `LinkScreen.Unmodelled`.
+    | UnmodelledFlags of flags : int
+    /// Linux's `AT_EMPTY_PATH`, from a caller that is not privileged, with a
+    /// path (an empty one included) relative to a descriptor. Linux then
+    /// answers `ENOENT` unless the descriptor was opened with the very
+    /// credentials the caller now holds: compared by identity, so that a fork,
+    /// or a change of credentials that keeps every ID, fails it. This library
+    /// does not record the credentials a descriptor was opened with.
+    | OpenTimeCredentials
+    /// `AT_EMPTY_PATH` names `inode`, which has no name left and is not a
+    /// regular file: which of the call's refusals such an inode meets first
+    /// has not been measured.
+    | NamelessSource of inode : InodeNumber
+    /// The source is on a `fileSystem` whose rules for `link(2)`, its ceiling
+    /// on a file's names among them, have not been measured.
+    | UnmeasuredFileSystem of fileSystem : EmulatedFileSystemType
+
+[<RequireQualifiedAccess>]
+module LinkRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which pathnames.
+    let describe (refusal : LinkRefusal) : string =
+        match refusal with
+        | LinkRefusal.Path refusal -> PathRefusal.describe refusal
+        | LinkRefusal.UnmodelledFlags flags ->
+            $"the flag word 0x%x{flags} carries a flag Darwin accepts and this library does not model: AT_SYMLINK_NOFOLLOW_ANY (0x800), AT_RESOLVE_BENEATH (0x2000) or AT_UNIQUE (0x8000)."
+        | LinkRefusal.OpenTimeCredentials ->
+            "AT_EMPTY_PATH from a caller that is not privileged, with a path relative to a descriptor: Linux admits it only if the descriptor was opened with the caller's present credentials, and this library does not record the credentials a descriptor was opened with."
+        | LinkRefusal.NamelessSource inode ->
+            $"AT_EMPTY_PATH names inode %O{inode}, which has no name left and is not a regular file; which refusal such an inode meets first has not been measured."
+        | LinkRefusal.UnmeasuredFileSystem fileSystem ->
+            $"the source is on a %O{fileSystem} filesystem, whose rules for link(2) (its ceiling on a file's names among them) have not been measured."
+
+/// A `link(2)` or `linkat(2)` whose source has resolved, paused at the point
+/// where the kernel copies the new pathname in. Obtain one from
+/// `UnixNamespace.linkatSourcePhase` or `linkSourcePhase`, and finish it with
+/// `UnixNamespace.linkWithDestination`.
+[<NoEquality ; NoComparison>]
+type PausedLink<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    private
+        {
+            System : UnixSystem<'Task, 'Handler>
+            Rules : LinkRules
+            Source : InodeNumber
+            Destination : AtDirectory
+        }
+
+/// What resolving a `link(2)`'s source found: either the call is over without
+/// the new pathname having been read at all, or the kernel has reached the
+/// point where it copies that pathname in.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type LinkProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// Finished, and changing nothing. The new pathname was never read, and
+    /// must not be.
+    | Answered of answer : SyscallAnswer
+    /// The kernel is at the new pathname's copy-in. Hand its bytes to
+    /// `UnixNamespace.linkWithDestination`.
+    | NeedsDestination of paused : PausedLink<'Task, 'Handler>
+
 /// Why this kernel will not answer an `open(2)`.
 [<RequireQualifiedAccess>]
 type OpenRefusal =
@@ -2380,3 +2446,259 @@ module UnixNamespace =
         match symlinkTargetPhase target system with
         | SymlinkProgress.Answered answer -> Ok (answer, system)
         | SymlinkProgress.NeedsPath paused -> symlinkWithPath path paused
+
+    let private linkSourceFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (arguments : LinkArguments)
+        (source : AtDirectory)
+        (destination : AtDirectory)
+        (path : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<LinkProgress<'Task, 'Handler>, LinkRefusal>
+        =
+        let rules = SimulatedUnixPlatform.linkRules system.Machine.UnixPlatform
+        let vfs = system.Machine.FileSystem
+
+        // Measured by `link-rules.c` (ORDER, DESTORDER, EMPTY) and `at-dirfd.c`
+        // (ORDER2) on Linux 6.18.5 and Darwin 27.0: the source is copied in and
+        // resolved completely, its final lookup included, before the new
+        // pathname is copied in, on both flavours.
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (LinkProgress.Answered (SyscallAnswer.Failed error))
+        | Ok path ->
+
+        let namesStartingPoint =
+            UnixPath.isEmpty path
+            && arguments.EmptyPath = EmptyPathMeaning.NamesStartingPoint
+
+        // Measured by `link-empty-path.c` (CRED) on Linux 6.18.5: with
+        // `AT_EMPTY_PATH`, a path relative to a descriptor, empty or not, is
+        // checked against the descriptor's open-time credentials, unless the
+        // caller is privileged. `AT_FDCWD` and a rooted path are not.
+        let relativeToDescriptor =
+            match source with
+            | AtDirectory.Descriptor _ -> not (UnixPath.isRooted path)
+            | AtDirectory.CurrentDirectory -> false
+
+        let privileged =
+            Credentials.privilege system.Process.Credentials = CallerPrivilege.Privileged
+
+        if
+            arguments.EmptyPath = EmptyPathMeaning.NamesStartingPoint
+            && relativeToDescriptor
+            && not privileged
+        then
+            Error LinkRefusal.OpenTimeCredentials
+        else
+
+        let resolved : Result<Result<InodeNumber, UnixError>, LinkRefusal> =
+            if namesStartingPoint then
+                match UnixPathResolution.startOf source arguments.EmptyPath path system with
+                | Error (PathFailure.Errno error) -> Ok (Error error)
+                | Error (PathFailure.Refused refusal) -> Error (LinkRefusal.Path refusal)
+                | Ok (PathStart.StartingObject inode) ->
+                    // An unlinked regular file goes on: `LinkRules.verdict`
+                    // answers it once the destination has been looked at.
+                    match VirtualFileSystem.tryGetContent inode vfs with
+                    | Some (InodeContent.Directory _) when VirtualFileSystem.isOrphanedDirectory inode vfs ->
+                        Error (LinkRefusal.NamelessSource inode)
+                    | Some _ -> Ok (Ok inode)
+                    | None ->
+                        failwith
+                            $"UnixNamespace.linkat: the descriptor names inode %O{inode}, which the filesystem does not contain (this is a bug in this library)."
+                | Ok (PathStart.Walk _) ->
+                    failwith
+                        "UnixNamespace.linkat: an empty path naming its starting point walked instead (this is a bug in this library)."
+            else
+                match
+                    UnixPathResolution.resolvePathFull
+                        source
+                        arguments.Source
+                        TrailingSeparatorPolicy.Demand
+                        path
+                        system
+                with
+                | Error (PathFailure.Errno error) -> Ok (Error error)
+                | Error (PathFailure.Refused refusal) -> Error (LinkRefusal.Path refusal)
+                | Ok resolution -> Ok (PathWalk.existingOf resolution.Target)
+
+        match resolved with
+        | Error refusal -> Error refusal
+        | Ok (Error error) -> Ok (LinkProgress.Answered (SyscallAnswer.Failed error))
+        | Ok (Ok inode) ->
+
+        match UnixMachineState.fileSystemTypeOf inode system.Machine with
+        | EmulatedFileSystemType.Nfs -> Error (LinkRefusal.UnmeasuredFileSystem EmulatedFileSystemType.Nfs)
+        | EmulatedFileSystemType.Tmpfs
+        | EmulatedFileSystemType.Apfs ->
+
+        let isDirectory =
+            match VirtualFileSystem.tryGetContent inode vfs with
+            | Some (InodeContent.Directory _) -> true
+            | Some _
+            | None -> false
+
+        match rules.DirectorySource with
+        | DirectorySourceRefusal.BeforeDestination when isDirectory ->
+            Ok (LinkProgress.Answered (SyscallAnswer.Failed UnixError.EPERM))
+        | DirectorySourceRefusal.BeforeDestination
+        | DirectorySourceRefusal.Last ->
+            Ok (
+                LinkProgress.NeedsDestination
+                    {
+                        System = system
+                        Rules = rules
+                        Source = inode
+                        Destination = destination
+                    }
+            )
+
+    /// The first half of `linkat(2)`: screen its raw flag word, decode its raw
+    /// `dirfd`s, and copy in and resolve the source, before the new pathname is
+    /// read. A client that reads pathnames out of a caller's memory reads the
+    /// new one only on `LinkProgress.NeedsDestination`.
+    let linkatSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (olddirfd : int)
+        (oldpath : PathArgumentBytes)
+        (newdirfd : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<LinkProgress<'Task, 'Handler>, LinkRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match LinkRules.screen flavour flags with
+        | LinkScreen.Failed error -> Ok (LinkProgress.Answered (SyscallAnswer.Failed error))
+        | LinkScreen.Unmodelled flags -> Error (LinkRefusal.UnmodelledFlags flags)
+        | LinkScreen.Screened arguments ->
+            linkSourceFrom
+                arguments
+                (AtDirectory.decode flavour olddirfd)
+                (AtDirectory.decode flavour newdirfd)
+                oldpath
+                system
+
+    /// The first half of `link(2)`, as `linkatSourcePhase` is of `linkat`:
+    /// `link` is `linkat` from the current directory on both sides, following
+    /// a final symbolic link in the source on Darwin and not on Linux
+    /// (`LinkRules.PlainLinkSource`).
+    let linkSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (oldpath : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<LinkProgress<'Task, 'Handler>, LinkRefusal>
+        =
+        let rules = SimulatedUnixPlatform.linkRules system.Machine.UnixPlatform
+
+        linkSourceFrom
+            {
+                Source = rules.PlainLinkSource
+                EmptyPath = EmptyPathMeaning.Walked
+            }
+            AtDirectory.CurrentDirectory
+            AtDirectory.CurrentDirectory
+            oldpath
+            system
+
+    /// The second half of `link(2)` or `linkat(2)`: copy in `newpath`, and give
+    /// the paused call's source that name.
+    ///
+    /// A relative `newpath` starts where the call's new `dirfd` says; a final
+    /// symbolic link is never followed, and a trailing separator reaches past
+    /// the final name only as `LinkRules.TrailingSeparator` says.
+    /// `LinkRules.verdict` decides the rest. On success the source gains a
+    /// name, its status-change time moves, and so do the new name's
+    /// directory's modification and status-change times.
+    let linkWithDestination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (newpath : PathArgumentBytes)
+        (paused : PausedLink<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, LinkRefusal>
+        =
+        match box paused with
+        | null ->
+            failwith
+                "UnixNamespace.linkWithDestination: this paused link is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixNamespace.linkatSourcePhase or linkSourcePhase instead."
+        | _ -> ()
+
+        let system = paused.System
+
+        match UnixPathResolution.copyIn newpath system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok newpath ->
+
+        match
+            UnixPathResolution.resolvePathFull
+                paused.Destination
+                SymlinkPolicy.NoFollowFinal
+                paused.Rules.TrailingSeparator
+                newpath
+                system
+        with
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (LinkRefusal.Path refusal)
+        | Ok resolution ->
+
+        match
+            LinkRules.verdict
+                paused.Rules
+                system.Machine.ProtectedFiles.Hardlinks
+                (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
+                system.Process.Credentials
+                paused.Source
+                resolution
+                system.Machine.FileSystem
+        with
+        | LinkVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
+        | LinkVerdict.Create (directory, name) ->
+
+        let now = UnixMachineState.realtime system.Machine
+
+        match VirtualFileSystem.hardLink directory name paused.Source now system.Machine.FileSystem with
+        | Error error ->
+            failwith
+                $"UnixNamespace.link: binding inode %O{paused.Source} as \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the verdict had just established that it may be (this is a bug in this library)."
+        | Ok filesystem ->
+
+        Ok (
+            SyscallAnswer.Completed 0L,
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+            }
+        )
+
+    /// `linkat(2)`: give the inode `oldpath` names, relative to `olddirfd`, the
+    /// further name `newpath`, relative to `newdirfd`.
+    ///
+    /// `olddirfd`, `newdirfd` and `flags` are raw, in this platform's own
+    /// numbering; `LinkRules.screen` says which flags each flavour accepts.
+    /// The pathnames are the arguments' bytes, copied in source first: a client
+    /// that has yet to read the second should call `linkatSourcePhase` and
+    /// `linkWithDestination` instead.
+    ///
+    /// Refuses what `LinkRefusal` lists.
+    let linkat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (olddirfd : int)
+        (oldpath : PathArgumentBytes)
+        (newdirfd : int)
+        (newpath : PathArgumentBytes)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, LinkRefusal>
+        =
+        match linkatSourcePhase olddirfd oldpath newdirfd flags system with
+        | Error refusal -> Error refusal
+        | Ok (LinkProgress.Answered answer) -> Ok (answer, system)
+        | Ok (LinkProgress.NeedsDestination paused) -> linkWithDestination newpath paused
+
+    /// `link(2)`: see `linkSourcePhase` for how it is `linkat`.
+    let link<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (oldpath : PathArgumentBytes)
+        (newpath : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, LinkRefusal>
+        =
+        match linkSourcePhase oldpath system with
+        | Error refusal -> Error refusal
+        | Ok (LinkProgress.Answered answer) -> Ok (answer, system)
+        | Ok (LinkProgress.NeedsDestination paused) -> linkWithDestination newpath paused
