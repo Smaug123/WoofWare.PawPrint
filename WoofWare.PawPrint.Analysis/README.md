@@ -85,6 +85,14 @@ The answer is an over-approximation: whatever a run can let escape is in it, nam
 "unknown". Resource exhaustion is in it too, so almost every method can escape
 `StackOverflowException`.
 
+`EscapeAnalysis.unknownSources` says why an answer is "unknown". It lists the places (`OpaqueSite`)
+where something the analysis cannot name may arise and then escape the method, past every handler
+and through every `rethrow` on the way. Each gives the method the place is in, and the IL offset of
+its instruction. There is no offset for a method with no IL the analysis follows, or for a binding
+that fails before the body runs. Each also says why the analysis cannot see through it (`Opacity`),
+and which method the instruction names, such as the virtual method a call names. The list is empty
+exactly when the answer is not "unknown".
+
 One callback is assumed to behave as documented rather than analysed. Casting an object to an
 interface, or storing it in an array (whose element type may be an interface), calls
 `IDynamicInterfaceCastable.IsInterfaceImplemented` if the object's class implements that interface.

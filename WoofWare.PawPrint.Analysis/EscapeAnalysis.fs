@@ -44,6 +44,24 @@ type Opacity =
     /// An instruction <c>OpcodeFaults</c> declines to classify.
     | UnmodelledOpcode
 
+/// A place the analysis cannot see through, from which something it cannot name may escape: one of
+/// those that make an answer's <c>Escapes.Unknown</c> true (<c>EscapeAnalysis.unknownSources</c>).
+type OpaqueSite =
+    {
+        /// The method the place is in.
+        Method : MethodKey
+        /// The offset of the instruction in the IL CoreCLR runs for the method: its own, or what the
+        /// VM substitutes for it. <c>None</c> where the place is no instruction: the method has no IL
+        /// the analysis follows (<c>NativeBody</c>, <c>AbstractBody</c>, <c>IntrinsicExpansion</c>),
+        /// or binding what its body names fails in a way the analysis cannot follow, before any of
+        /// it runs (<c>DependsOnInstantiation</c>, <c>UnresolvedAssembly</c>).
+        Offset : int option
+        Reason : Opacity
+        /// The method the instruction's token names, where it names one. For a call, that need not
+        /// be the method that runs.
+        Names : MethodKey option
+    }
+
 /// Something that happens outside a method's body, so that none of its own handlers can catch it.
 [<RequireQualifiedAccess>]
 type internal OutsideBodyFact =
@@ -93,7 +111,8 @@ type internal CallSite =
 type internal LocalFacts =
     {
         Raises : (int * ThrownType) list
-        Opaque : (int * Opacity) list
+        /// Each instruction the body cannot see through, and the method its token names, if any.
+        Opaque : (int * Opacity * MethodKey option) list
         /// Where an assumption's contract stands in for code the body runs: an exception the
         /// contract does not list may arise there if the assumption fails.
         Assumed : (int * Assumption) list
@@ -107,6 +126,7 @@ type internal LocalFacts =
         /// throws before it runs (a member or type the assembly it is looked for in does not have,
         /// a module initializer that fails, or a member of a type variable, which turns on the
         /// instantiation), and what taking and releasing a synchronized method's monitor throws.
+        /// A method with no IL the analysis follows is opaque here, as a whole.
         OutsideBody : Set<OutsideBodyFact>
         /// The types the body spells for the objects on its evaluation stack, which a
         /// `SpelledObject` names by index.
@@ -202,7 +222,8 @@ type internal InstanceCalls =
     {
         Callees : (int * MethodInstance) list
         Raises : (int * ThrownType) list
-        Undecided : (int * Opacity) list
+        /// Each call whose target the instance does not decide, and the method its token names.
+        Undecided : (int * Opacity * MethodKey option) list
     }
 
 /// An escape analysis in progress: the assemblies loaded so far and every answer computed so far.
@@ -1582,12 +1603,12 @@ module EscapeAnalysis =
     let private opaqueFromEntry (reason : Opacity) : LocalFacts =
         {
             Raises = []
-            Opaque = [ 0, reason ]
+            Opaque = []
             Assumed = []
             Calls = []
             Rethrows = []
             Regions = []
-            OutsideBody = Set.empty
+            OutsideBody = Set.singleton (OutsideBodyFact.Opaque reason)
             Spellings = [||]
             Returns = StackValue.Unknown
         }
@@ -1843,7 +1864,7 @@ module EscapeAnalysis =
             (
                 state : EscapeAnalysisState,
                 raises : (int * ThrownType) list,
-                opaque : (int * Opacity) list,
+                opaque : (int * Opacity * MethodKey option) list,
                 calls : (int * CallSite) list
             )
             (index : int)
@@ -1858,7 +1879,7 @@ module EscapeAnalysis =
                 | OpcodeFaults.Unmodelled ->
                     match op with
                     | IlOp.Nullary NullaryIlOp.Rethrow -> state, raises, opaque
-                    | _ -> state, raises, (offset, Opacity.UnmodelledOpcode) :: opaque
+                    | _ -> state, raises, (offset, Opacity.UnmodelledOpcode, None) :: opaque
                 | OpcodeFaults.Raises faults ->
                     let state, raises =
                         ((state, raises), faults)
@@ -1916,31 +1937,35 @@ module EscapeAnalysis =
                     match thrown with
                     | Some thrown ->
                         state, (thrown |> List.distinct |> List.map (fun thrown -> offset, thrown)) @ raises, opaque
-                    | None -> state, raises, (offset, Opacity.UntypedThrow) :: opaque
+                    | None -> state, raises, (offset, Opacity.UntypedThrow, None) :: opaque
                 | _ -> state, raises, opaque
 
             // 3. What the instruction calls.
             let state, raises, opaque, calls =
                 match op with
                 | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, _) ->
-                    state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
+                    state, raises, (offset, Opacity.IndirectCall, None) :: opaque, calls
                 | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldvirtftn, MetadataOperand.FromMetadata _) ->
                     let onInterface =
                         match methodTarget with
                         | Some (CallTarget.Method target) ->
                             let _, declaring = definitionOf state (declaringTypeOf state target.Callee)
-                            declaring.TypeAttributes.HasFlag TypeAttributes.Interface
-                        | _ -> false
 
-                    if onInterface then
-                        state, raises, (offset, Opacity.InterfaceMethodPointer) :: opaque, calls
-                    else
-                        state, raises, opaque, calls
+                            if declaring.TypeAttributes.HasFlag TypeAttributes.Interface then
+                                Some target.Callee
+                            else
+                                None
+                        | _ -> None
+
+                    match onInterface with
+                    | Some target ->
+                        state, raises, (offset, Opacity.InterfaceMethodPointer, Some target) :: opaque, calls
+                    | None -> state, raises, opaque, calls
                 | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp) as call,
                                            operand) ->
                     match operand, methodTarget, selfCall with
                     | MetadataOperand.FromDynamicScope _, _, _ ->
-                        state, raises, (offset, Opacity.IndirectCall) :: opaque, calls
+                        state, raises, (offset, Opacity.IndirectCall, None) :: opaque, calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee), Some expansion when
                         callee.Callee = key
                         && call <> UnaryMetadataTokenIlOp.Newobj
@@ -1995,9 +2020,9 @@ module EscapeAnalysis =
                                 else
                                     state, raises, opaque, calls
                             | InstructionContract.Unknown ->
-                                state, raises, (offset, Opacity.IntrinsicExpansion) :: opaque, calls
+                                state, raises, (offset, Opacity.IntrinsicExpansion, Some key) :: opaque, calls
                         | SelfCallExpansion.Unrecognised ->
-                            state, raises, (offset, Opacity.IntrinsicExpansion) :: opaque, calls
+                            state, raises, (offset, Opacity.IntrinsicExpansion, Some key) :: opaque, calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.Method callee), _ ->
                         // A static virtual is dispatched on the type a `constrained.` prefix names,
                         // which is how the only legal call to one is written; an overridable
@@ -2009,7 +2034,8 @@ module EscapeAnalysis =
                             match constrainedPrefix index with
                             | Some (prefix, constrainedType) when not (unbound.Contains prefix) ->
                                 state, raises, opaque, (offset, CallSite.Constrained (constrainedType, callee)) :: calls
-                            | Some _ -> state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
+                            | Some _ ->
+                                state, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: opaque, calls
                             | None ->
                                 // A `callvirt` dispatches on its receiver, below the arguments.
                                 let receivers =
@@ -2021,7 +2047,8 @@ module EscapeAnalysis =
                                 match receivers with
                                 | Some receivers ->
                                     state, raises, opaque, (offset, CallSite.Virtual (receivers, callee)) :: calls
-                                | None -> state, raises, (offset, Opacity.VirtualCall) :: opaque, calls
+                                | None ->
+                                    state, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: opaque, calls
                         elif
                             call = UnaryMetadataTokenIlOp.Newobj
                             && declaringTypeOf state callee.Callee = state.BaseTypes.String.Identity
@@ -2036,7 +2063,7 @@ module EscapeAnalysis =
                                         }
 
                                 state, raises, opaque, (offset, implementation) :: calls
-                            | None -> state, raises, (offset, Opacity.NativeBody) :: opaque, calls
+                            | None -> state, raises, (offset, Opacity.NativeBody, Some callee.Callee) :: opaque, calls
                         else
                             state, raises, opaque, (offset, CallSite.Direct callee) :: calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)), _ ->
@@ -2046,7 +2073,7 @@ module EscapeAnalysis =
 
                         state, raised @ raises, opaque, calls
                     | MetadataOperand.FromMetadata _, Some CallTarget.DependsOnInstantiation, _ ->
-                        state, raises, (offset, Opacity.DependsOnInstantiation) :: opaque, calls
+                        state, raises, (offset, Opacity.DependsOnInstantiation, None) :: opaque, calls
                     // Binding the token fails, which step 0 recorded; there is nothing to call.
                     | MetadataOperand.FromMetadata _, Some CallTarget.Missing, _
                     | MetadataOperand.FromMetadata _, Some CallTarget.TypeMissing, _
@@ -2174,7 +2201,7 @@ module EscapeAnalysis =
 
                     match blocks |> List.sortBy (fun (_, length, _) -> length) with
                     | (_, _, Some clause) :: _ -> opaque, (offset, clause) :: rethrows
-                    | _ -> opaque @ [ offset, Opacity.Rethrow ], rethrows
+                    | _ -> opaque @ [ offset, Opacity.Rethrow, None ], rethrows
                 | _ -> opaque, rethrows
             )
 
@@ -2908,7 +2935,7 @@ module EscapeAnalysis =
         // receiver leaves it so.
         let dispatched offset callee (state, callees, raises, undecided) (outcomes : DispatchOutcome list) =
             if outcomes |> List.contains DispatchOutcome.Undecided then
-                state, callees, raises, (offset, Opacity.VirtualCall) :: undecided
+                state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
             else
                 ((state, callees, raises, undecided), List.distinct outcomes)
                 ||> List.fold (fun (state, callees, raises, undecided) outcome ->
@@ -2920,7 +2947,8 @@ module EscapeAnalysis =
 
                         state, (offset, reached) :: callees, raises, undecided
                     | DispatchOutcome.Raises thrown -> state, callees, (offset, thrown) :: raises, undecided
-                    | DispatchOutcome.Undecided -> state, callees, raises, (offset, Opacity.VirtualCall) :: undecided
+                    | DispatchOutcome.Undecided ->
+                        state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
                 )
 
         let state, callees, raises, undecided =
@@ -2939,7 +2967,8 @@ module EscapeAnalysis =
                     // A null receiver raises what `callvirt` itself does, and calls nothing.
                     match virtualOutcomes state Set.empty instance facts receivers callee with
                     | state, Some outcomes -> dispatched offset callee (state, callees, raises, undecided) outcomes
-                    | state, None -> state, callees, raises, (offset, Opacity.VirtualCall) :: undecided
+                    | state, None ->
+                        state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
             )
 
         state,
@@ -2954,6 +2983,32 @@ module EscapeAnalysis =
         let assembly, ty = definitionOf state identity
         TypeInfo.fullName (fun handle -> assembly.TypeDefs.[handle]) ty
 
+    /// The full name of a method the analysis has loaded, `Type::Method`, for reporting.
+    let methodName (state : EscapeAnalysisState) (key : MethodKey) : string =
+        let _, method = methodOf state key
+        typeName state (declaringTypeOf state key) + "::" + method.Name
+
+    /// The instance `escapes` summarises for `method`: a generic definition is asked about for every
+    /// instantiation at once.
+    let private rootOf (state : EscapeAnalysisState) (method : MethodKey) : MethodInstance =
+        let _, definition = methodOf state method
+
+        if definition.DeclaringTypeGenerics.IsEmpty && definition.Generics.IsEmpty then
+            instanceOf state method [] []
+        else
+            {
+                Definition = method
+                Arguments = Instantiation.Open
+            }
+
+    /// The block a clause protects.
+    let private protectedBy (clause : ExceptionRegion) : ExceptionOffset =
+        match clause with
+        | ExceptionRegion.Catch (_, o)
+        | ExceptionRegion.Filter (_, o)
+        | ExceptionRegion.Finally o
+        | ExceptionRegion.Fault o -> o
+
     /// <summary>
     /// What may escape `method`, and the state to ask the next question of.
     /// </summary>
@@ -2963,17 +3018,7 @@ module EscapeAnalysis =
     /// and remembers them all.
     /// </remarks>
     let escapes (state : EscapeAnalysisState) (method : MethodKey) : EscapeAnalysisState * Escapes =
-        // A generic definition is asked about for every instantiation at once.
-        let root =
-            let _, definition = methodOf state method
-
-            if definition.DeclaringTypeGenerics.IsEmpty && definition.Generics.IsEmpty then
-                instanceOf state method [] []
-            else
-                {
-                    Definition = method
-                    Arguments = Instantiation.Open
-                }
+        let root = rootOf state method
 
         match state.Summaries.TryFind root with
         | Some known -> state, known
@@ -3019,13 +3064,6 @@ module EscapeAnalysis =
             let calls = state.InstanceCalls.[key]
             let assembly = assemblyOf state key.Definition.AssemblyFullName
 
-            let protectedBy (clause : ExceptionRegion) : ExceptionOffset =
-                match clause with
-                | ExceptionRegion.Catch (_, o)
-                | ExceptionRegion.Filter (_, o)
-                | ExceptionRegion.Finally o
-                | ExceptionRegion.Fault o -> o
-
             let rec solve
                 (state : EscapeAnalysisState)
                 (current : Map<int, Set<Raised>>)
@@ -3044,7 +3082,7 @@ module EscapeAnalysis =
                                 for at, thrown in facts.Raises @ calls.Raises do
                                     if inside at then
                                         yield at, Raised.Named thrown
-                                for at, _ in facts.Opaque @ calls.Undecided do
+                                for at, _, _ in facts.Opaque @ calls.Undecided do
                                     if inside at then
                                         yield at, Raised.Unnamed
                                 for at, assumption in facts.Assumed do
@@ -3143,7 +3181,7 @@ module EscapeAnalysis =
 
             let state, unknown =
                 ((state, opaqueOutside), facts.Opaque @ calls.Undecided)
-                ||> List.fold (fun (state, unknown) (offset, _) ->
+                ||> List.fold (fun (state, unknown) (offset, _, _) ->
                     if unknown then
                         state, true
                     else
@@ -3281,3 +3319,135 @@ module EscapeAnalysis =
             }
 
         state, state.Summaries.[root]
+
+    /// Where `unknownSources` looks for something the analysis cannot name.
+    [<RequireQualifiedAccess>]
+    type private UnnamedAt =
+        /// Escaping this instance.
+        | Escaping of MethodInstance
+        /// Re-raised by the `rethrow` at this offset of this instance.
+        | Rethrown of MethodInstance * offset : int
+
+    /// <summary>
+    /// The places that make the answer of <c>escapes state method</c> unknown, and the state to ask
+    /// the next question of.
+    /// </summary>
+    /// <remarks>
+    /// A place is one where something the analysis cannot name may arise and then escape
+    /// <c>method</c>, as <c>escapes</c> follows it: past every handler on the way, out of every
+    /// method it is raised in or called through, and through every <c>rethrow</c> that re-raises it
+    /// unnamed. The set is empty exactly when <c>Escapes.Unknown</c> is false. Where an assumption's
+    /// contract stands in for code is not such a place: <c>Escapes.Assumes</c> lists those.
+    /// </remarks>
+    let unknownSources (state : EscapeAnalysisState) (method : MethodKey) : EscapeAnalysisState * Set<OpaqueSite> =
+        let state, _ = escapes state method
+
+        let instanceCalls (key : MethodInstance) : InstanceCalls =
+            match state.InstanceCalls.TryFind key with
+            | Some calls -> calls
+            | None ->
+                failwith
+                    $"BUG: %O{key.Definition} is reachable from %O{method}, which escapes summarised, but its calls are not recorded"
+
+        let site (key : MethodInstance) (offset : int option) (reason : Opacity) (names : MethodKey option) =
+            {
+                Method = key.Definition
+                Offset = offset
+                Reason = reason
+                Names = names
+            }
+
+        // What arises unnamed at an offset of `key`'s body that `within` admits and gets past
+        // `regions`: the places it arises at, and where else to look for what arises there.
+        let reaching
+            (state : EscapeAnalysisState)
+            (key : MethodInstance)
+            (regions : ExceptionRegion list)
+            (within : int -> bool)
+            : EscapeAnalysisState * OpaqueSite list * UnnamedAt list
+            =
+            let facts = state.Facts.[key.Definition]
+            let calls = instanceCalls key
+            let assembly = assemblyOf state key.Definition.AssemblyFullName
+
+            let passes (state : EscapeAnalysisState) (offset : int) : EscapeAnalysisState * bool =
+                if within offset then
+                    escapesHandlers state assembly regions offset None
+                else
+                    state, false
+
+            let state, sites =
+                ((state, []), facts.Opaque @ calls.Undecided)
+                ||> List.fold (fun (state, sites) (offset, reason, names) ->
+                    match passes state offset with
+                    | state, true -> state, site key (Some offset) reason names :: sites
+                    | state, false -> state, sites
+                )
+
+            let onward =
+                (calls.Callees
+                 |> List.map (fun (offset, callee) -> offset, UnnamedAt.Escaping callee))
+                @ (facts.Rethrows
+                   |> List.map (fun (offset, _) -> offset, UnnamedAt.Rethrown (key, offset)))
+
+            let state, onward =
+                ((state, []), onward)
+                ||> List.fold (fun (state, onward) (offset, next) ->
+                    match passes state offset with
+                    | state, true -> state, next :: onward
+                    | state, false -> state, onward
+                )
+
+            state, sites, onward
+
+        let rec walk
+            (state : EscapeAnalysisState)
+            (pending : UnnamedAt list)
+            (visited : Set<UnnamedAt>)
+            (sources : Set<OpaqueSite>)
+            : EscapeAnalysisState * Set<OpaqueSite>
+            =
+            match pending with
+            | [] -> state, sources
+            | next :: rest when visited.Contains next -> walk state rest visited sources
+            | next :: rest ->
+
+            let state, sites, onward =
+                match next with
+                | UnnamedAt.Escaping key ->
+                    let facts = state.Facts.[key.Definition]
+
+                    // What happens outside the body is past all its handlers.
+                    let outside =
+                        facts.OutsideBody
+                        |> Seq.choose (fun fact ->
+                            match fact with
+                            | OutsideBodyFact.Opaque reason -> Some (site key None reason None)
+                            | OutsideBodyFact.Raises _ -> None
+                        )
+                        |> List.ofSeq
+
+                    let state, sites, onward = reaching state key facts.Regions (fun _ -> true)
+                    state, outside @ sites, onward
+                | UnnamedAt.Rethrown (key, offset) ->
+                    let facts = state.Facts.[key.Definition]
+                    let assembly = assemblyOf state key.Definition.AssemblyFullName
+
+                    let clause =
+                        facts.Rethrows
+                        |> List.pick (fun (at, clause) -> if at = offset then Some clause else None)
+
+                    // It re-raises what its clause caught of what the clause's protected block
+                    // raised past the clauses the runtime tries first, and that unnamed only where
+                    // the clause does not narrow it.
+                    match rethrownBy state assembly clause None with
+                    | state, Rethrown.Unknown ->
+                        let o = protectedBy clause
+                        let before = facts.Regions |> List.takeWhile (fun region -> region <> clause)
+                        reaching state key before (fun at -> at >= o.TryOffset && at < o.TryOffset + o.TryLength)
+                    | state, Rethrown.Nothing
+                    | state, Rethrown.Thrown _ -> state, [], []
+
+            walk state (onward @ rest) (visited.Add next) (Set.union sources (Set.ofList sites))
+
+        walk state [ UnnamedAt.Escaping (rootOf state method) ] Set.empty Set.empty
