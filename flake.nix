@@ -11,7 +11,9 @@
     flake-utils,
     ...
   }:
-    flake-utils.lib.eachDefaultSystem (system: let
+  # flake-utils' default systems less x86_64-darwin, whose support nixpkgs dropped
+  # in 26.11: from then on, evaluating anything for it fails.
+    flake-utils.lib.eachSystem ["aarch64-darwin" "aarch64-linux" "x86_64-linux"] (system: let
       pkgs = import nixpkgs {
         inherit system;
         config.allowUnfree = true;
