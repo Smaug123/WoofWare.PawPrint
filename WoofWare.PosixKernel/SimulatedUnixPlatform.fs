@@ -649,6 +649,25 @@ module SimulatedUnixPlatform =
                 NonDirectory = NonDirectoryDescriptorRule.NotSupportedOffTheFileSystem
             }
 
+    /// How this platform's `link(2)` and `linkat(2)` differ from the other's;
+    /// see `LinkRules`.
+    let linkRules (platform : SimulatedUnixPlatform) : LinkRules =
+        // Measured by `link-symlink.c` (LINKSRC, LINKDST) and `link-rules.c`
+        // (ORDER, DESTORDER) on Linux 6.18.5 and Darwin 27.0.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            {
+                PlainLinkSource = SymlinkPolicy.NoFollowFinal
+                TrailingSeparator = TrailingSeparatorPolicy.Ignore
+                DirectorySource = DirectorySourceRefusal.Last
+            }
+        | SimulatedUnixFlavour.Darwin ->
+            {
+                PlainLinkSource = SymlinkPolicy.Follow
+                TrailingSeparator = TrailingSeparatorPolicy.Demand
+                DirectorySource = DirectorySourceRefusal.BeforeDestination
+            }
+
     /// How this platform's `symlink(2)` differs from the other's; see
     /// `SymlinkRules`.
     let symlinkRules (platform : SimulatedUnixPlatform) : SymlinkRules =

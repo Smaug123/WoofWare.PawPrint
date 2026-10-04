@@ -44,14 +44,12 @@ type CreationProtection =
 type HardlinkProtection =
     /// 0, the kernel's own default: a caller may link any inode it may reach.
     | Off
-    /// 1: a caller that does not own a regular file may link it only if it may
-    /// both read and write it, and `link(2)` answers EPERM otherwise.
+    /// 1: a caller that neither owns an inode nor is privileged may link only a
+    /// regular file it may both read and write and that is neither
+    /// set-user-ID nor set-group-ID and group-executable; `link(2)` answers
+    /// EPERM otherwise. See `ProtectedFiles.refusesToLink`.
     ///
     /// Many distributions set this through `sysctl.d`.
-    // Measured by `link-symlink.c` (LINKPERM, protected_hardlinks=1) on Linux
-    // 6.18.5: as uid 1000, root's 0600 and 0644 files are EPERM and its 0666
-    // file links. What the setting does to set-ID files and to other kinds of
-    // inode is unmeasured, and is `link(2)`'s to measure.
     | NonOwnersNeedReadAndWrite
 
 /// Linux's `fs.protected_*` sysctls that decide what a caller may do with
@@ -67,9 +65,7 @@ type ProtectedFiles =
         ///
         /// No inode this library models is a FIFO, so this decides nothing yet.
         Fifos : CreationProtection
-        /// `fs.protected_hardlinks`.
-        ///
-        /// This library models no `link(2)`, so this decides nothing yet.
+        /// `fs.protected_hardlinks`, which `link(2)` consults.
         Hardlinks : HardlinkProtection
     }
 
@@ -164,3 +160,36 @@ module ProtectedFiles =
             governing = Some CreationProtection.InGroupOrWorldWritableStickyDirectories
         else
             false
+
+    /// Whether `link(2)` on behalf of `credentials` may not give the inode
+    /// `source` another name, under `protection`: a caller that neither owns
+    /// the inode nor is privileged may link only a regular file that is
+    /// neither set-user-ID nor set-group-ID and group-executable, and that it
+    /// may both read and write.
+    let refusesToLink (protection : HardlinkProtection) (credentials : Credentials) (source : Inode) : bool =
+        // Measured on Linux 6.18.5 (`link-rules.c`, ORDER rows, as uid 1000
+        // and root): another user's 0600 and 0644 files, a 04666 file, a 02676
+        // file, a symbolic link and a directory are refused; a 0666 and a
+        // 02666 file are linked; root and the owner are never refused.
+        match protection with
+        | HardlinkProtection.Off -> false
+        | HardlinkProtection.NonOwnersNeedReadAndWrite ->
+
+        let standing = Standing.toward credentials source.Owner
+
+        if standing.Owns || standing.Privilege = CallerPrivilege.Privileged then
+            false
+        else
+
+        match source.Content with
+        | InodeContent.RegularFile (_, bits) ->
+            let raw = PermissionBits.toInt bits
+
+            raw &&& PermissionBits.setUserId <> 0
+            || (raw &&& PermissionBits.setGroupId <> 0
+                && raw &&& PermissionBits.groupExecute <> 0)
+            || PermissionBits.deniedTo standing AccessRequest.Read bits
+            || PermissionBits.deniedTo standing AccessRequest.Write bits
+        | InodeContent.Directory _
+        | InodeContent.Symlink _
+        | InodeContent.CharacterDevice _ -> true

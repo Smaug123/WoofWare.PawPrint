@@ -327,6 +327,50 @@ module TestStartingDirectory =
     [<Test>]
     let ``symlinkat answers every dirfd and path the probe tried on Darwin`` () : unit = replaySymlinkAt darwinUser
 
+    let private replayLinkAt (side : string) (envelope : Envelope) : unit =
+        let call = $"linkat[%s{side}]"
+        let rows = atRows envelope |> Map.filter (fun (c, _, _) _ -> c = call)
+        let skipped = faccessatNotReplayed envelope
+        let atFdCwd = AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour envelope.Platform)
+
+        let renderedLink (result : Result<SyscallAnswer * UnixSystem<int, string>, LinkRefusal>) : string =
+            match result with
+            | Ok (SyscallAnswer.Completed _, _) -> "ok"
+            | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+            | Error refusal -> $"refused: %s{LinkRefusal.describe refusal}"
+
+        rows.Count |> shouldEqual (13 * 9)
+
+        [
+            for KeyValue ((_, kind, path), expected) in rows do
+                if not (skipped.Contains kind) then
+                    match directoryArgument kind envelope with
+                    | None -> yield $"%s{kind} %s{path}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+                        let p = pathArgument path envelope.Platform
+
+                        let actual =
+                            match side with
+                            | "old" -> UnixNamespace.linkat dirfd p atFdCwd (PathArg.ofText "newlink") 0 system
+                            | _ -> UnixNamespace.linkat atFdCwd (PathArg.ofText "f2") dirfd p 0 system
+                            |> renderedLink
+
+                        if actual <> expected then
+                            yield
+                                $"%s{call} %s{kind} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``linkat's source answers every dirfd and path the probe tried, under every envelope`` () : unit =
+        for envelope in envelopes do
+            replayLinkAt "old" envelope
+
+    [<Test>]
+    let ``linkat's destination answers every dirfd and path the probe tried, under every envelope`` () : unit =
+        for envelope in envelopes do
+            replayLinkAt "new" envelope
+
     [<Test>]
     let ``only Darwin's /dev/null is left unreplayed`` () : unit =
         envelopes

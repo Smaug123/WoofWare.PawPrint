@@ -753,6 +753,38 @@ module TestImpureCases =
                 SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o666, None)
             ]
 
+    /// Shared by the two `link` wiring guests, so that the only thing that
+    /// differs between them is the configured flavour.
+    let private linkWiringSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
+        let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
+
+        let mode (raw : int) =
+            PermissionBits.parseOrFail "test seed" raw
+
+        let root : InodeOwner option =
+            Some
+                {
+                    User = UserId.root
+                    Group = GroupId.parseOrFail "test seed" 0u
+                }
+
+        let hello = Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange
+
+        Map.ofList
+            [
+                name "f", SeedEntry.file hello
+                name "g", SeedEntry.file hello
+                name "lf", SeedEntry.Symlink (target "f", None)
+                // "nx" is deliberately absent.
+                name "dang", SeedEntry.Symlink (target "nx", None)
+                name "ro", SeedEntry.File (hello, mode 0o644, root)
+                name "rw", SeedEntry.File (hello, mode 0o666, root)
+                name "su", SeedEntry.File (hello, mode 0o4666, root)
+            ]
+
     /// Shared by the two `symlink` wiring guests, so that the only thing that
     /// differs between them is the configured flavour.
     let private symLinkWiringSeed : Map<DirectoryEntryName, SeedEntry> =
@@ -2757,6 +2789,42 @@ module TestImpureCases =
                         Umask = PermissionBits.parseOrFail "test" 0o027
                         UserId = Some 1000u
                         FileSystem = mkDirWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `link`'s flavour-dependent rows under a Linux-configured
+                // kernel with protected_hardlinks on, as uid 1000.
+                FileName = "LinkWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UserId = Some 1000u
+                        GroupId = Some 1000u
+                        ProtectedFiles =
+                            { ProtectedFiles.off with
+                                Hardlinks = HardlinkProtection.NonOwnersNeedReadAndWrite
+                            }
+                        FileSystem = linkWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The same checks under the Darwin flavour.
+                FileName = "LinkWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        UserId = Some 1000u
+                        GroupId = Some 1000u
+                        FileSystem = linkWiringSeed
                     }
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
