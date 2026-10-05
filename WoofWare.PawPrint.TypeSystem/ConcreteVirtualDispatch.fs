@@ -850,15 +850,16 @@ module ConcreteVirtualDispatch =
                     let state, matchingMethodImplBodies =
                         findMatchingMethodImplBodies currentTy currentTypeInfo state
 
-                    match matchingMethodImplBodies with
+                    // Rows naming the same body are one override. Different bodies for one slot make a
+                    // type CoreCLR refuses to load (`AddMethodImplDispatchMapping`, methodtablebuilder.cpp),
+                    // so no call ever reaches it.
+                    match matchingMethodImplBodies |> List.distinctBy _.IdentityKey with
                     | [ impl ] -> state, Some (currentTypeHandle, impl, "Found concrete implementation from MethodImpl")
-                    | _ :: _ ->
-                        matchingMethodImplBodies
-                        |> List.map (fun m -> m.Name)
-                        |> String.concat ", "
-                        // TODO: throw guest System.Runtime.AmbiguousImplementationException here.
-                        |> failwithf
-                            "multiple MethodImpl bodies matched this virtual slot; overload/interface disambiguation is not implemented: %s"
+                    | _ :: _ :: _ as bodies ->
+                        let names = bodies |> List.map _.Name |> String.concat ", "
+
+                        failwith
+                            $"virtual dispatch of %s{methodToCall.Name}: %s{currentTypeInfo.Namespace}.%s{currentTypeInfo.Name} carries MethodImpls that override it with different bodies (%s{names}); CoreCLR rejects this type at load time with a TypeLoadException (IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES)"
                     | [] when methodDeclaringType.IsInterface ->
                         failwith
                             $"virtual dispatch of %s{methodToCall.Name}: an instance interface method reached the class walk, though its implementation is found through the dispatch map"
