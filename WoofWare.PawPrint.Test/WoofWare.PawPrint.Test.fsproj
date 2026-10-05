@@ -325,6 +325,7 @@
     <Compile Include="TestVirtualMethodSlots.fs" />
     <Compile Include="TestInterfaceDispatchMap.fs" />
     <Compile Include="TestFabricatedInterfaceMethodImpl.fs" />
+    <Compile Include="TestFabricatedClassSlotMethodImpl.fs" />
     <Compile Include="TestFabricatedDefaultBodyOrder.fs" />
     <Compile Include="TestFabricatedAbstractMethodCall.fs" />
     <Compile Include="TestMethodAtSlotShapes.fs" />
