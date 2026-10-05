@@ -116,7 +116,9 @@ type internal LocalFacts =
         /// Where an assumption's contract stands in for code the body runs: an exception the
         /// contract does not list may arise there if the assumption fails.
         Assumed : (int * Assumption) list
-        Calls : (int * CallSite) list
+        /// Each call, and what it passes: the object each argument may be, `this` first, or for
+        /// `newobj` the object it makes. Empty for a call the JIT emits in place of the body's own.
+        Calls : (int * CallSite * StackValue list) list
         /// Each `rethrow`, with the `catch` or `filter` clause whose handler it is in: it re-raises
         /// what that clause caught.
         Rethrows : (int * ExceptionRegion) list
@@ -133,6 +135,9 @@ type internal LocalFacts =
         Spellings : SpelledType[]
         /// What the body's `ret`s return, over every path to them.
         Returns : StackValue
+        /// The arguments, by index, whose objects can decide something of what the body does: what
+        /// it passes to a call, a virtual call's receiver among them, and what it returns.
+        Consults : Set<int>
     }
 
 /// What a `rethrow` re-raises of one thing its clause's protected block raised.
@@ -189,11 +194,17 @@ type internal Instantiation =
     /// One instantiation: the declaring type's arguments, then the method's own.
     | Closed of typeArguments : ConcreteTypeHandle list * methodArguments : ConcreteTypeHandle list
 
-/// One instantiation of a method definition, which a summary is computed for.
+/// One instantiation of a method definition, as the calls reaching it call it, which a summary is
+/// computed for.
 type internal MethodInstance =
     {
         Definition : MethodKey
         Arguments : Instantiation
+        /// The classes of the objects these calls pass as some of the method's arguments, by
+        /// index, `this` at 0: each type, and whether the object's class is exactly it; empty for
+        /// an argument they pass only null. An argument absent here may be any object of its
+        /// declared type.
+        Passed : Map<int, Set<ConcreteTypeHandle * bool>>
     }
 
 /// What a call dispatched on a receiver's type does in one instance of the method making it.
@@ -239,6 +250,10 @@ type EscapeAnalysisState =
             Profile : HardwareIntrinsicsProfile
             /// The assumptions the analysis may take a contract from in place of a method's body.
             Assumptions : Set<Assumption>
+            /// Whether a callee's summary takes the classes of the objects its caller passes it
+            /// (`MethodInstance.Passed`), rather than every call sharing the one its declared
+            /// parameter types give.
+            ArgumentContexts : bool
             /// The assemblies loaded so far, the concrete types instantiated so far, and what the type
             /// system has memoised about them.
             TypeSystem : TypeSystemState
@@ -278,6 +293,12 @@ type EscapeAnalysisState =
 /// <c>callvirt</c> on an object of a sealed class runs that class's implementation, and a
 /// <c>throw</c> of a value of a static type raises that type or a subtype. An object a call
 /// returns is of the classes the callee's <c>ret</c>s return in the instance the call reaches.
+///
+/// A method's summary is computed for each combination of classes its callers pass it, as the
+/// arguments its body makes a virtual call on, returns or passes on: an object passed is of the
+/// classes the caller says, so a helper called with a <c>new Dog()</c> runs <c>Dog</c>'s overrides
+/// there. Asked about by itself, a method may be passed any object its parameter types admit, and
+/// so may one whose body stores to the argument or takes its address.
 ///
 /// The native libraries the framework ships with its CoreLib (<c>FrameworkShim</c>) are assumed to
 /// be present and to export what its P/Invokes import, so that calling one of their functions
@@ -339,6 +360,7 @@ module EscapeAnalysis =
             Target = target
             Profile = profile
             Assumptions = assumptions
+            ArgumentContexts = true
             TypeSystem =
                 { TypeSystemState.Empty with
                     _LoadedAssemblies = context.LoadedAssemblies
@@ -350,6 +372,16 @@ module EscapeAnalysis =
             DispatchBinds = Map.empty
             Summaries = Map.empty
             Bases = Map.empty
+            Returns = Map.empty
+        }
+
+    /// The analysis `state` begins, with nothing summarised yet, summarising every call of a method
+    /// alike, whatever its caller passes it.
+    let internal withoutArgumentContexts (state : EscapeAnalysisState) : EscapeAnalysisState =
+        { state with
+            ArgumentContexts = false
+            InstanceCalls = Map.empty
+            Summaries = Map.empty
             Returns = Map.empty
         }
 
@@ -1480,7 +1512,32 @@ module EscapeAnalysis =
                 | state, _, true -> state, [ StackValue.Unknown ]
                 | state, spelling, false -> state, [ objectOf false true spelling identity.AssemblyFullName ]
 
-        let arguments = this @ (method.Signature.ParameterTypes |> List.map ofOwnSpelling)
+        // The arguments the body stores to or takes the address of, which then need not hold what
+        // the caller passed.
+        let written =
+            body.Instructions
+            |> List.choose (fun (op, _) ->
+                match op with
+                | IlOp.UnaryConst (UnaryConstIlOp.Starg_s index)
+                | IlOp.UnaryConst (UnaryConstIlOp.Ldarga_s index) -> Some (int index)
+                | IlOp.UnaryConst (UnaryConstIlOp.Starg index)
+                | IlOp.UnaryConst (UnaryConstIlOp.Ldarga index) -> Some (int index)
+                | _ -> None
+            )
+            |> Set.ofList
+
+        let passed (index : int) (declared : StackValue) : StackValue =
+            match declared with
+            | StackValue.Objects objects when not (written.Contains index) ->
+                match Set.toList objects with
+                | [ SpelledObject.Within spelling ] ->
+                    StackValue.Objects (Set.singleton (SpelledObject.Argument (index, spelling)))
+                | _ -> declared
+            | _ -> declared
+
+        let arguments =
+            this @ (method.Signature.ParameterTypes |> List.map ofOwnSpelling)
+            |> List.mapi passed
 
         let locals =
             body.LocalVars
@@ -1611,6 +1668,7 @@ module EscapeAnalysis =
             OutsideBody = Set.singleton (OutsideBodyFact.Opaque reason)
             Spellings = [||]
             Returns = StackValue.Unknown
+            Consults = Set.empty
         }
 
     /// The exceptions an operation of the runtime's own can raise. Its contract says under which
@@ -1693,6 +1751,7 @@ module EscapeAnalysis =
                 OutsideBody = Set.empty
                 Spellings = [||]
                 Returns = StackValue.Unknown
+                Consults = Set.empty
             }
 
         let exactly (names : ExceptionName list) : ThrownType list =
@@ -1861,11 +1920,12 @@ module EscapeAnalysis =
             (spellings : SpelledType[])
             (objectsAt : int -> int -> SpelledObject list option)
             (calleeArguments : int -> int option)
+            (passedAt : int -> bool -> StackValue list)
             (
                 state : EscapeAnalysisState,
                 raises : (int * ThrownType) list,
                 opaque : (int * Opacity * MethodKey option) list,
-                calls : (int * CallSite) list
+                calls : (int * CallSite * StackValue list) list
             )
             (index : int)
             =
@@ -1909,12 +1969,14 @@ module EscapeAnalysis =
                         | Some objects ->
                             ((state, Some []), objects)
                             ||> List.fold (fun (state, thrown) object ->
-                                // A call's result is named by its declared return type.
+                                // A call's result, or an argument, is named by the type declared
+                                // for it.
                                 let named =
                                     match object with
                                     | SpelledObject.Null -> Some None
                                     | SpelledObject.Exactly index -> Some (Some (index, true))
                                     | SpelledObject.Within index
+                                    | SpelledObject.Argument (_, index)
                                     | SpelledObject.Returned (_, Some index) -> Some (Some (index, false))
                                     | SpelledObject.Returned (_, None) -> None
 
@@ -1993,7 +2055,7 @@ module EscapeAnalysis =
                                         Spelling = CalleeSpelling.Fixed
                                     }
 
-                            state, raises, opaque, (offset, helper) :: calls
+                            state, raises, opaque, (offset, helper, []) :: calls
                         | SelfCallExpansion.Primitive primitive ->
                             raisedHere (contractRaises state (IntrinsicPrimitive.contract primitive))
                         | SelfCallExpansion.HardwareInstruction intrinsicClass ->
@@ -2016,7 +2078,7 @@ module EscapeAnalysis =
                                                 Spelling = CalleeSpelling.Fixed
                                             }
 
-                                    state, raises, opaque, (offset, helper) :: calls
+                                    state, raises, opaque, (offset, helper, []) :: calls
                                 else
                                     state, raises, opaque, calls
                             | InstructionContract.Unknown ->
@@ -2033,7 +2095,11 @@ module EscapeAnalysis =
                         then
                             match constrainedPrefix index with
                             | Some (prefix, constrainedType) when not (unbound.Contains prefix) ->
-                                state, raises, opaque, (offset, CallSite.Constrained (constrainedType, callee)) :: calls
+                                state,
+                                raises,
+                                opaque,
+                                (offset, CallSite.Constrained (constrainedType, callee), passedAt offset false)
+                                :: calls
                             | Some _ ->
                                 state, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: opaque, calls
                             | None ->
@@ -2046,7 +2112,10 @@ module EscapeAnalysis =
 
                                 match receivers with
                                 | Some receivers ->
-                                    state, raises, opaque, (offset, CallSite.Virtual (receivers, callee)) :: calls
+                                    state,
+                                    raises,
+                                    opaque,
+                                    (offset, CallSite.Virtual (receivers, callee), passedAt offset false) :: calls
                                 | None ->
                                     state, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: opaque, calls
                         elif
@@ -2062,10 +2131,14 @@ module EscapeAnalysis =
                                             Spelling = CalleeSpelling.Fixed
                                         }
 
-                                state, raises, opaque, (offset, implementation) :: calls
+                                state, raises, opaque, (offset, implementation, passedAt offset false) :: calls
                             | None -> state, raises, (offset, Opacity.NativeBody, Some callee.Callee) :: opaque, calls
                         else
-                            state, raises, opaque, (offset, CallSite.Direct callee) :: calls
+                            state,
+                            raises,
+                            opaque,
+                            (offset, CallSite.Direct callee, passedAt offset (call = UnaryMetadataTokenIlOp.Newobj))
+                            :: calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)), _ ->
                         let raised =
                             arrayAccessorRaises state arrayType accessor
@@ -2148,6 +2221,31 @@ module EscapeAnalysis =
             Map.tryFind offset bodySpellings.Effects.Callees
             |> Option.map (fun arity -> arity.Arguments)
 
+        // What the call at `offset` passes, `this` first, which is the object it makes where
+        // `makesObject`. A slot the flow could not type may hold anything.
+        let passedAt (offset : int) (makesObject : bool) : StackValue list =
+            let made =
+                if makesObject then
+                    [
+                        Map.tryFind offset bodySpellings.Tokens
+                        |> Option.defaultValue StackValue.Unknown
+                    ]
+                else
+                    []
+
+            let arguments =
+                match calleeArguments offset with
+                | None -> []
+                | Some count ->
+                    [
+                        for fromTop in count - 1 .. -1 .. 0 do
+                            match objectsAt offset fromTop with
+                            | Some objects -> StackValue.Objects (Set.ofList objects)
+                            | None -> StackValue.Unknown
+                    ]
+
+            made @ arguments
+
         // What each call to a capability query returns on this CPU, which decides a branch on it.
         let constants =
             ops
@@ -2170,7 +2268,7 @@ module EscapeAnalysis =
             ((state, [], [], []), [ 0 .. ops.Length - 1 ])
             ||> List.fold (fun acc index ->
                 if executed.Contains (snd ops.[index]) then
-                    folder targets unbound spellings objectsAt calleeArguments acc index
+                    folder targets unbound spellings objectsAt calleeArguments passedAt acc index
                 else
                     acc
             )
@@ -2221,6 +2319,29 @@ module EscapeAnalysis =
             |> Option.map StackValue.Objects
             |> Option.defaultValue StackValue.Unknown
 
+        let consults =
+            let ofValue (value : StackValue) : int list =
+                match value with
+                | StackValue.Objects objects ->
+                    objects
+                    |> Seq.choose (fun object ->
+                        match object with
+                        | SpelledObject.Argument (index, _) -> Some index
+                        | _ -> None
+                    )
+                    |> List.ofSeq
+                | StackValue.Unknown -> []
+
+            [
+                // A virtual call's receiver is among what it passes.
+                for _, _, passes in calls do
+                    for passed in passes do
+                        yield! ofValue passed
+
+                yield! ofValue returns
+            ]
+            |> Set.ofList
+
         state,
         {
             Raises = List.rev raises
@@ -2232,6 +2353,7 @@ module EscapeAnalysis =
             OutsideBody = bindingFailures
             Spellings = spellings
             Returns = returns
+            Consults = consults
         }
 
     /// How deeply an instance's type arguments may nest. A generic method can call itself at a
@@ -2294,6 +2416,7 @@ module EscapeAnalysis =
         {
             Definition = definition
             Arguments = arguments
+            Passed = Map.empty
         }
 
     /// A type a body of `assembly` spells, as that body's instantiation makes it.
@@ -2394,6 +2517,7 @@ module EscapeAnalysis =
             {
                 Definition = callee.Callee
                 Arguments = Instantiation.Open
+                Passed = Map.empty
             }
 
         match callee.Spelling with
@@ -2731,8 +2855,8 @@ module EscapeAnalysis =
             },
             facts
 
-    /// How many classes an object a call returns may be of before only the call's declared return
-    /// type says what it is.
+    /// How many classes an object a call returns, or passes, may be of before only the type
+    /// declared for it says what it is.
     let private returnedClassesLimit : int = 8
 
     /// The classes an object among `objects` may be of in `instance`, whose definition's facts are
@@ -2775,11 +2899,77 @@ module EscapeAnalysis =
                                 match declared with
                                 | Some index -> ofSpelling state index false
                                 | None -> state, None
+                        | SpelledObject.Argument (index, declared) ->
+                            match instance.Passed.TryFind index with
+                            | Some types -> state, Some (Set.toList types)
+                            | None -> ofSpelling state declared false
 
                     state, types |> Option.map (fun types -> soFar @ types)
             )
 
         state, types |> Option.map List.distinct
+
+    /// `reached`, as a call in `instance` that passes `passes` (`LocalFacts.Calls`) reaches it:
+    /// with the classes of the objects it passes as each argument `reached`'s body consults, where
+    /// `instance` decides them. A call dispatched on a receiver of a class passes an object of that
+    /// class, `receiver`, as `this`.
+    and private passedTo
+        (state : EscapeAnalysisState)
+        (inProgress : Set<Pending>)
+        (instance : MethodInstance)
+        (facts : LocalFacts)
+        (passes : StackValue list)
+        (receiver : (ConcreteTypeHandle * bool) option)
+        (reached : MethodInstance)
+        : EscapeAnalysisState * MethodInstance
+        =
+        if not state.ArgumentContexts then
+            state, reached
+        else
+
+        let state, reachedFacts = factsFor state reached.Definition
+
+        let state, passed =
+            ((state, Map.empty), reachedFacts.Consults)
+            ||> Set.fold (fun (state, passed) index ->
+                match index, receiver with
+                | 0, Some receiver -> state, Map.add 0 (Set.singleton receiver) passed
+                | _ ->
+                    match List.tryItem index passes with
+                    | Some (StackValue.Objects objects) ->
+                        match objectTypes state inProgress instance facts objects with
+                        | state, Some types when types.Length <= returnedClassesLimit ->
+                            state, Map.add index (Set.ofList types) passed
+                        | state, _ -> state, passed
+                    | Some StackValue.Unknown
+                    | None -> state, passed
+            )
+
+        state,
+        { reached with
+            Passed = passed
+        }
+
+    /// What `outcome`, of dispatching a call in `instance` that passes `passes`, reaches, as
+    /// `passedTo` makes it.
+    and private passedToOutcome
+        (state : EscapeAnalysisState)
+        (inProgress : Set<Pending>)
+        (instance : MethodInstance)
+        (facts : LocalFacts)
+        (passes : StackValue list)
+        (receiver : (ConcreteTypeHandle * bool) option)
+        (outcome : DispatchOutcome)
+        : EscapeAnalysisState * DispatchOutcome
+        =
+        match outcome with
+        | DispatchOutcome.Reaches reached ->
+            let state, reached =
+                passedTo state inProgress instance facts passes receiver reached
+
+            state, DispatchOutcome.Reaches reached
+        | DispatchOutcome.Raises _
+        | DispatchOutcome.Undecided -> state, outcome
 
     /// What the call at the offset `call` of `instance` returns: what every instance it reaches
     /// returns. `None` where the call is not decided, or what one of those returns is not known.
@@ -2822,18 +3012,24 @@ module EscapeAnalysis =
                 None
 
         let state, reached =
-            match facts.Calls |> List.tryFind (fun (offset, _) -> offset = call) with
+            match facts.Calls |> List.tryFind (fun (offset, _, _) -> offset = call) with
             | None -> state, None
-            | Some (_, CallSite.Direct callee) ->
+            | Some (_, CallSite.Direct callee, passes) ->
                 let state, reached = calleeInstance state assembly instance.Arguments callee
+
+                let state, reached = passedTo state inProgress instance facts passes None reached
+
                 state, Some [ reached ]
-            | Some (_, CallSite.Constrained (constrainedType, callee)) ->
+            | Some (_, CallSite.Constrained (constrainedType, callee), passes) ->
                 let state, outcome =
                     constrainedInstance state assembly instance.Arguments constrainedType callee
 
+                let state, outcome =
+                    passedToOutcome state inProgress instance facts passes None outcome
+
                 state, reachedBy [ outcome ]
-            | Some (_, CallSite.Virtual (receivers, callee)) ->
-                match virtualOutcomes state inProgress instance facts receivers callee with
+            | Some (_, CallSite.Virtual (receivers, callee), passes) ->
+                match virtualOutcomes state inProgress instance facts passes receivers callee with
                 | state, Some outcomes -> state, reachedBy outcomes
                 | state, None -> state, None
 
@@ -2850,13 +3046,15 @@ module EscapeAnalysis =
                     | state, None -> state, None
             )
 
-    /// What a `callvirt` of `callee` in `instance` does on each class its receiver, one of
-    /// `receivers`, may be of; `None` where the instance does not decide those classes.
+    /// What a `callvirt` of `callee` in `instance`, passing `passes`, does on each class its
+    /// receiver, one of `receivers`, may be of; `None` where the instance does not decide those
+    /// classes.
     and private virtualOutcomes
         (state : EscapeAnalysisState)
         (inProgress : Set<Pending>)
         (instance : MethodInstance)
         (facts : LocalFacts)
+        (passes : StackValue list)
         (receivers : Set<SpelledObject>)
         (callee : Callee)
         : EscapeAnalysisState * DispatchOutcome list option
@@ -2871,6 +3069,9 @@ module EscapeAnalysis =
                 ||> List.fold (fun (state, outcomes) (receiver, exact) ->
                     let state, outcome =
                         dispatchOn state assembly instance.Arguments receiver exact callee
+
+                    let state, outcome =
+                        passedToOutcome state inProgress instance facts passes (Some (receiver, exact)) outcome
 
                     state, outcome :: outcomes
                 )
@@ -2953,19 +3154,25 @@ module EscapeAnalysis =
 
         let state, callees, raises, undecided =
             ((state, [], [], []), facts.Calls)
-            ||> List.fold (fun (state, callees, raises, undecided) (offset, site) ->
+            ||> List.fold (fun (state, callees, raises, undecided) (offset, site, passes) ->
                 match site with
                 | CallSite.Direct callee ->
                     let state, reached = calleeInstance state assembly instance.Arguments callee
+
+                    let state, reached = passedTo state Set.empty instance facts passes None reached
+
                     state, (offset, reached) :: callees, raises, undecided
                 | CallSite.Constrained (constrainedType, callee) ->
                     let state, outcome =
                         constrainedInstance state assembly instance.Arguments constrainedType callee
 
+                    let state, outcome =
+                        passedToOutcome state Set.empty instance facts passes None outcome
+
                     dispatched offset callee (state, callees, raises, undecided) [ outcome ]
                 | CallSite.Virtual (receivers, callee) ->
                     // A null receiver raises what `callvirt` itself does, and calls nothing.
-                    match virtualOutcomes state Set.empty instance facts receivers callee with
+                    match virtualOutcomes state Set.empty instance facts passes receivers callee with
                     | state, Some outcomes -> dispatched offset callee (state, callees, raises, undecided) outcomes
                     | state, None ->
                         state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
@@ -2999,6 +3206,7 @@ module EscapeAnalysis =
             {
                 Definition = method
                 Arguments = Instantiation.Open
+                Passed = Map.empty
             }
 
     /// The block a clause protects.
