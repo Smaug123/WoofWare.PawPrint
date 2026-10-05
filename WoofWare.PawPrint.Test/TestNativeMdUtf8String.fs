@@ -189,8 +189,40 @@ module TestNativeMdUtf8String =
 
         exn.Message |> shouldContainText "is not valid UTF-8"
 
-    /// Alphabet for the property. Every BMP code unit except the surrogate range and the two
+    /// Whether the host's casing of `c` reaches outside the Unicode version this runtime's own
+    /// character data describes: `c`, or the host's upper- or lowercase of it, is a code point
+    /// `CharUnicodeInfo` calls unassigned. The host cases through ICU, which may be newer than
+    /// that data (Unicode 17 added U+A7CE, U+A7D2 and U+A7D4 as uppercase partners of U+A7CF,
+    /// U+A7D3 and U+A7D5), and CoreCLR's casing table, like the runtime's character data, does
+    /// not case them, so over such a code unit the host is no oracle for the table.
+    let private outsideRuntimeUnicode (c : char) : bool =
+        let unassigned (x : char) : bool =
+            Globalization.CharUnicodeInfo.GetUnicodeCategory x = Globalization.UnicodeCategory.OtherNotAssigned
+
+        unassigned c
+        || unassigned (Char.ToUpperInvariant c)
+        || unassigned (Char.ToLowerInvariant c)
+
+    [<Test>]
+    let ``the host departs from CoreCLR's casing table only at its two known code points, within the runtime's Unicode``
+        ()
+        : unit
+        =
+        let departures =
+            allCodeUnits
+            |> List.filter (fun c -> not (Char.IsSurrogate c) && not (outsideRuntimeUnicode c))
+            |> List.filter (fun c ->
+                let table = NativeMdUtf8String.simpleUpperInvariant c
+
+                Char.ToUpperInvariant c <> table
+                || not (String.Equals (string c, string table, StringComparison.OrdinalIgnoreCase))
+            )
+
+        departures |> shouldEqual [ 'ı' ; 'ſ' ]
+
+    /// Alphabet for the property. Every BMP code unit except the surrogate range, the two
     /// code points where the oracle below is known to disagree (see the dedicated test above),
+    /// and those whose host casing is outside the runtime's Unicode (`outsideRuntimeUnicode`),
     /// weighted so that ASCII, cased Latin/Greek/Cyrillic and uncased characters all appear.
     let private genCodeUnit : Gen<char> =
         let ranges =
@@ -206,7 +238,12 @@ module TestNativeMdUtf8String =
         |> List.map (fun (weight, (lo, hi)) -> weight, Gen.choose (lo, hi))
         |> Gen.frequency
         |> Gen.map char
-        |> Gen.filter (fun c -> not (Char.IsSurrogate c) && c <> 'ı' && c <> 'ſ')
+        |> Gen.filter (fun c ->
+            not (Char.IsSurrogate c)
+            && c <> 'ı'
+            && c <> 'ſ'
+            && not (outsideRuntimeUnicode c)
+        )
 
     /// A pair of strings that agree on length and mostly agree on content, so that "equal",
     /// "equal only after folding" and "differs in exactly one position" all occur often. Also
@@ -246,11 +283,12 @@ module TestNativeMdUtf8String =
     [<Test>]
     let ``agrees with OrdinalIgnoreCase away from its two known divergences`` () : unit =
         // `String.Equals(_, _, OrdinalIgnoreCase)` is an independent BCL implementation of
-        // "compare UTF-16 code units under invariant simple uppercase". Sweeping all 65536 x
-        // 65536 single-code-unit pairs shows it agrees with CoreCLR's casing table everywhere
-        // except U+017F versus 'S'/'s' (and, separately from the oracle, `Char.ToUpperInvariant`
-        // differs only at U+0131) -- both excluded from `genCodeUnit` and asserted directly in
-        // the dedicated test above. So over this alphabet the oracle is exact.
+        // "compare UTF-16 code units under invariant simple uppercase". Within the runtime's
+        // Unicode it agrees with CoreCLR's casing table everywhere except U+017F versus 'S'/'s'
+        // (and, separately from the oracle, `Char.ToUpperInvariant` differs only at U+0131), as
+        // the sweep above checks code unit by code unit. `genCodeUnit` excludes both, and every
+        // code unit the host cases outside the runtime's Unicode, so over this alphabet the
+        // oracle is exact.
         let mutable equalCases = 0
         let mutable foldedEqualCases = 0
         let mutable sameLengthUnequalCases = 0
