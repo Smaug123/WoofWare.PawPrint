@@ -1,0 +1,60 @@
+RUN	Linux 6.18.5 aarch64	uid=0	scratch-f_type=0xef53
+PLAIN	reader=0	link-owner=0	lmode=0777	readlink=ok:t
+PLAIN	reader=1000	link-owner=0	lmode=0777	readlink=ok:t
+PLAIN	reader=1000	link-owner=1000	lmode=0777	readlink=ok:t
+CRAFTEDROW	reader=0	class=owner	uid=1000	gid=1000	lmode=0000	readlink=ok:t
+CRAFTEDROW	reader=0	class=owner	uid=1000	gid=1000	lmode=0004	readlink=ok:t
+CRAFTEDROW	reader=0	class=owner	uid=1000	gid=1000	lmode=0040	readlink=ok:t
+CRAFTEDROW	reader=0	class=owner	uid=1000	gid=1000	lmode=0333	readlink=ok:t
+CRAFTEDROW	reader=0	class=owner	uid=1000	gid=1000	lmode=0400	readlink=ok:t
+CRAFTEDROW	reader=0	class=owner	uid=1000	gid=1000	lmode=0444	readlink=ok:t
+CRAFTEDROW	reader=0	class=owner	uid=1000	gid=1000	lmode=0777	readlink=ok:t
+CRAFTEDROW	reader=0	class=owner	uid=1000	gid=1000	lmode=7000	readlink=ok:t
+CRAFTED	reader=0	class=owner	uid=1000	gid=1000	modes=4096	ok=4096	EACCES=0	other=0	setup-mismatch=0
+CRAFTEDROW	reader=0	class=group	uid=2000	gid=1000	lmode=0000	readlink=ok:t
+CRAFTEDROW	reader=0	class=group	uid=2000	gid=1000	lmode=0004	readlink=ok:t
+CRAFTEDROW	reader=0	class=group	uid=2000	gid=1000	lmode=0040	readlink=ok:t
+CRAFTEDROW	reader=0	class=group	uid=2000	gid=1000	lmode=0333	readlink=ok:t
+CRAFTEDROW	reader=0	class=group	uid=2000	gid=1000	lmode=0400	readlink=ok:t
+CRAFTEDROW	reader=0	class=group	uid=2000	gid=1000	lmode=0444	readlink=ok:t
+CRAFTEDROW	reader=0	class=group	uid=2000	gid=1000	lmode=0777	readlink=ok:t
+CRAFTEDROW	reader=0	class=group	uid=2000	gid=1000	lmode=7000	readlink=ok:t
+CRAFTED	reader=0	class=group	uid=2000	gid=1000	modes=4096	ok=4096	EACCES=0	other=0	setup-mismatch=0
+CRAFTEDROW	reader=0	class=other	uid=2000	gid=2000	lmode=0000	readlink=ok:t
+CRAFTEDROW	reader=0	class=other	uid=2000	gid=2000	lmode=0004	readlink=ok:t
+CRAFTEDROW	reader=0	class=other	uid=2000	gid=2000	lmode=0040	readlink=ok:t
+CRAFTEDROW	reader=0	class=other	uid=2000	gid=2000	lmode=0333	readlink=ok:t
+CRAFTEDROW	reader=0	class=other	uid=2000	gid=2000	lmode=0400	readlink=ok:t
+CRAFTEDROW	reader=0	class=other	uid=2000	gid=2000	lmode=0444	readlink=ok:t
+CRAFTEDROW	reader=0	class=other	uid=2000	gid=2000	lmode=0777	readlink=ok:t
+CRAFTEDROW	reader=0	class=other	uid=2000	gid=2000	lmode=7000	readlink=ok:t
+CRAFTED	reader=0	class=other	uid=2000	gid=2000	modes=4096	ok=4096	EACCES=0	other=0	setup-mismatch=0
+CRAFTEDEMPTY	reader=0	lmode=0000	readlinkat(fd, "")=ok:t
+CRAFTEDROW	reader=1000	class=owner	uid=1000	gid=1000	lmode=0000	readlink=ok:t
+CRAFTEDROW	reader=1000	class=owner	uid=1000	gid=1000	lmode=0004	readlink=ok:t
+CRAFTEDROW	reader=1000	class=owner	uid=1000	gid=1000	lmode=0040	readlink=ok:t
+CRAFTEDROW	reader=1000	class=owner	uid=1000	gid=1000	lmode=0333	readlink=ok:t
+CRAFTEDROW	reader=1000	class=owner	uid=1000	gid=1000	lmode=0400	readlink=ok:t
+CRAFTEDROW	reader=1000	class=owner	uid=1000	gid=1000	lmode=0444	readlink=ok:t
+CRAFTEDROW	reader=1000	class=owner	uid=1000	gid=1000	lmode=0777	readlink=ok:t
+CRAFTEDROW	reader=1000	class=owner	uid=1000	gid=1000	lmode=7000	readlink=ok:t
+CRAFTED	reader=1000	class=owner	uid=1000	gid=1000	modes=4096	ok=4096	EACCES=0	other=0	setup-mismatch=0
+CRAFTEDROW	reader=1000	class=group	uid=2000	gid=1000	lmode=0000	readlink=ok:t
+CRAFTEDROW	reader=1000	class=group	uid=2000	gid=1000	lmode=0004	readlink=ok:t
+CRAFTEDROW	reader=1000	class=group	uid=2000	gid=1000	lmode=0040	readlink=ok:t
+CRAFTEDROW	reader=1000	class=group	uid=2000	gid=1000	lmode=0333	readlink=ok:t
+CRAFTEDROW	reader=1000	class=group	uid=2000	gid=1000	lmode=0400	readlink=ok:t
+CRAFTEDROW	reader=1000	class=group	uid=2000	gid=1000	lmode=0444	readlink=ok:t
+CRAFTEDROW	reader=1000	class=group	uid=2000	gid=1000	lmode=0777	readlink=ok:t
+CRAFTEDROW	reader=1000	class=group	uid=2000	gid=1000	lmode=7000	readlink=ok:t
+CRAFTED	reader=1000	class=group	uid=2000	gid=1000	modes=4096	ok=4096	EACCES=0	other=0	setup-mismatch=0
+CRAFTEDROW	reader=1000	class=other	uid=2000	gid=2000	lmode=0000	readlink=ok:t
+CRAFTEDROW	reader=1000	class=other	uid=2000	gid=2000	lmode=0004	readlink=ok:t
+CRAFTEDROW	reader=1000	class=other	uid=2000	gid=2000	lmode=0040	readlink=ok:t
+CRAFTEDROW	reader=1000	class=other	uid=2000	gid=2000	lmode=0333	readlink=ok:t
+CRAFTEDROW	reader=1000	class=other	uid=2000	gid=2000	lmode=0400	readlink=ok:t
+CRAFTEDROW	reader=1000	class=other	uid=2000	gid=2000	lmode=0444	readlink=ok:t
+CRAFTEDROW	reader=1000	class=other	uid=2000	gid=2000	lmode=0777	readlink=ok:t
+CRAFTEDROW	reader=1000	class=other	uid=2000	gid=2000	lmode=7000	readlink=ok:t
+CRAFTED	reader=1000	class=other	uid=2000	gid=2000	modes=4096	ok=4096	EACCES=0	other=0	setup-mismatch=0
+CRAFTEDEMPTY	reader=1000	lmode=0000	readlinkat(fd, "")=ok:t

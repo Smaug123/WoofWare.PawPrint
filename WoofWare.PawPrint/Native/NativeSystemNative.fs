@@ -4450,6 +4450,8 @@ module NativeSystemNative =
             with
             | Error (ReadLinkRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage destination refusal)
             | Error (ReadLinkRefusal.Path refusal) -> failwith $"%s{operation}: %s{PathRefusal.describe refusal}"
+            | Error (ReadLinkRefusal.UnmeasuredLinkRead _ as refusal) ->
+                failwith $"%s{operation}: %s{ReadLinkRefusal.describe refusal}"
             | Ok (ReadLinkAnswer.Failed error) -> fail error
             | Ok (ReadLinkAnswer.Reported written) ->
 

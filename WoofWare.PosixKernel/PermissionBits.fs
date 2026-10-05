@@ -258,6 +258,41 @@ module ExecutionRefusal =
         | ExecutionRefusal.UnmeasuredPrivilegedCaller (standing, bits) ->
             $"whether Darwin lets a privileged caller, standing %A{standing} towards it, execute a non-directory carrying %O{bits} has not been measured. What has been measured: every unprivileged caller's answer, which is the owner, group or other triple's execute bit. Linux grants root execution exactly when some execute bit is set; measuring Darwin's root needs root."
 
+/// Whether reading a symbolic link's target, `readlink(2)`, consults the
+/// link's own permission bits.
+[<RequireQualifiedAccess>]
+type LinkReadRule =
+    /// The link's bits are never consulted: a caller that reaches the link
+    /// reads it, whatever its mode, owner and group.
+    ///
+    /// This is Linux, where no syscall gives a link any mode but 0777.
+    | ModeIgnored
+    /// An unprivileged caller is refused unless the triple its standing
+    /// selects has the read bit, as `PermissionBits.deniedTo` judges
+    /// `AccessRequest.Read`. What a privileged caller is granted has not been
+    /// measured, so `PermissionBits.linkReadDenied` answers
+    /// `LinkReadRefusal.UnmeasuredPrivilegedCaller` rather than guess.
+    ///
+    /// This is Darwin, where measuring the privileged caller needs root.
+    | ReadBitOfSelectedTriple
+
+/// Why this library will not say whether a caller may read a symbolic link's
+/// target: the kernel's answer for that caller has not been measured.
+[<RequireQualifiedAccess>]
+type LinkReadRefusal =
+    /// A privileged caller, under `LinkReadRule.ReadBitOfSelectedTriple`,
+    /// standing as `standing` towards a link carrying `bits`.
+    | UnmeasuredPrivilegedCaller of standing : Standing * bits : PermissionBits
+
+[<RequireQualifiedAccess>]
+module LinkReadRefusal =
+    /// What this library knows about why it will not answer. A client adds
+    /// which call it was answering and which link it was.
+    let describe (refusal : LinkReadRefusal) : string =
+        match refusal with
+        | LinkReadRefusal.UnmeasuredPrivilegedCaller (standing, bits) ->
+            $"whether Darwin lets a privileged caller, standing %A{standing} towards it, read the target of a symbolic link carrying %O{bits} has not been measured. What has been measured: an unprivileged caller is refused unless the owner, group or other triple its standing selects has the read bit. Measuring Darwin's root needs root."
+
 /// What a privileged caller's `chmod(2)` or `fchmod(2)` does to the mode it
 /// asks for.
 ///
@@ -410,6 +445,35 @@ module PermissionBits =
             | PrivilegedExecution.NeedsAnExecuteBit -> Ok (toInt bits &&& 0o111 = 0)
             | PrivilegedExecution.Unmeasured -> Error (ExecutionRefusal.UnmeasuredPrivilegedCaller (standing, bits))
         | CallerPrivilege.Unprivileged -> Ok (selectedTripleLacks standing 0o100 bits)
+
+    /// <summary>
+    /// Whether a caller standing as <c>standing</c> towards a symbolic link carrying
+    /// <c>bits</c> is refused reading its target, under <c>rule</c>.
+    /// </summary>
+    /// <remarks>
+    /// Under <c>LinkReadRule.ReadBitOfSelectedTriple</c> an unprivileged caller is
+    /// judged exactly as <c>deniedTo</c> judges <c>AccessRequest.Read</c>, and a
+    /// privileged one is refused an answer.
+    /// </remarks>
+    let linkReadDenied
+        (rule : LinkReadRule)
+        (standing : Standing)
+        (bits : PermissionBits)
+        : Result<bool, LinkReadRefusal>
+        =
+        // Measured by `readlink-mode.c`. Linux 6.18.5 (ext4, the modes set by
+        // debugfs): every mode 0 to 07777, for a link uid 1000 owns, one in its
+        // group and one in neither, read by uid 1000 and by root, all read.
+        // Darwin 27.0 at uid 501: the owner over all 4096 modes, in the link's
+        // group and out of it, read exactly when the owner's read bit is set;
+        // root's links of 0700 (refused), 0644 and 0755 (read), and one of
+        // 0755 in the caller's group (read).
+        match rule with
+        | LinkReadRule.ModeIgnored -> Ok false
+        | LinkReadRule.ReadBitOfSelectedTriple ->
+            match standing.Privilege with
+            | CallerPrivilege.Privileged -> Error (LinkReadRefusal.UnmeasuredPrivilegedCaller (standing, bits))
+            | CallerPrivilege.Unprivileged -> Ok (deniedTo standing AccessRequest.Read bits)
 
     /// What the sticky bit of a directory carrying <c>directoryBits</c> says about
     /// removing, renaming or replacing one of its entries, for a caller standing as
