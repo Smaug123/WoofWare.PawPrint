@@ -16,7 +16,11 @@ method) may add more:
   others derive from is opaque. An object a call returns is of the classes the callee's `ret`s
   return, in the instance the call reaches, which may be narrower than its declared return type
   (`Encoding.UTF8` returns a field of a sealed class); a return that depends on itself is only its
-  declared type;
+  declared type. An argument is of the classes the call reaching the method passes it, where the
+  caller decides them: a method's summary is computed for each combination of classes its callers
+  pass as the arguments its body uses as a receiver, returns or passes on, so a helper called with a
+  `new Dog()` runs `Dog`'s overrides there. Asked about by itself, a method may be passed any object
+  its parameter types admit, and so may one whose body stores to the argument or takes its address;
 * `throw null` raises the `NullReferenceException` that throwing a null does, and nothing else;
 * a `rethrow` re-raises what its `catch` clause caught: what the clause's protected block raises and
   no clause tried before it stops, of the clause's type. Something the analysis cannot name, caught

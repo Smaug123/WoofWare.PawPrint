@@ -18,6 +18,11 @@ type internal SpelledObject =
     /// each instance of the body decides; or, where that is not known, `Within` the declared return
     /// type, if it is spelled.
     | Returned of call : int * declared : int option
+    /// What the caller passed as the argument at this index, `this` at 0: what the call reaching
+    /// each instance of the body says it passes (`MethodInstance.Passed`); or, where that is not
+    /// known, `Within` the declared parameter type. The body never stores to the argument or takes
+    /// its address, so it holds that object throughout.
+    | Argument of index : int * declared : int
 
 /// What a stack slot holds, as far as the body's spellings say.
 [<RequireQualifiedAccess>]
