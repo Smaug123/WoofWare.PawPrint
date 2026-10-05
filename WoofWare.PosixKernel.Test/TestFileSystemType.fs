@@ -784,9 +784,9 @@ module TestFileSystemType =
                 if s < 0 then
                     failwith $"socket(2) failed: errno %d{Marshal.GetLastWin32Error ()}"
 
-            let port = anonymousInode ()
+            let eventQueue = anonymousInode ()
 
-            if port < 0 then
+            if eventQueue < 0 then
                 failwith $"anonymous-inode object failed: errno %d{Marshal.GetLastWin32Error ()}"
 
             try
@@ -797,7 +797,7 @@ module TestFileSystemType =
                         "AF_INET stream socket", inet, Some (OpenFileObject.Socket (SocketId 1L))
                         "AF_INET datagram socket", datagram, Some (OpenFileObject.Socket (SocketId 2L))
                         "AF_UNIX stream socket", local, Some (OpenFileObject.Socket (SocketId 3L))
-                        "anonymous inode", port, Some OpenFileObject.AnonymousInode
+                        "anonymous inode", eventQueue, Some OpenFileObject.AnonymousInode
                         // An fd this process does not hold. 4242 rather than -1, so
                         // that a libc screening negative numbers before the syscall
                         // could not be what produced the answer.
@@ -819,7 +819,7 @@ module TestFileSystemType =
                 close inet |> ignore<int>
                 close datagram |> ignore<int>
                 close local |> ignore<int>
-                close port |> ignore<int>
+                close eventQueue |> ignore<int>
         )
 
     [<Test>]

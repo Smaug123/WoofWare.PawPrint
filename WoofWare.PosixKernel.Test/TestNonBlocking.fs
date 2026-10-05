@@ -475,9 +475,9 @@ module TestNonBlocking =
             ]
 
         for platform, expected in rows do
-            let portFd, system = withEventQueue (systemOn platform)
+            let queueFd, system = withEventQueue (systemOn platform)
 
             for value in [ true ; false ; true ] do
-                let answer, after = setOrFail portFd value system
-                UnixDescriptor.isNonBlocking portFd after |> shouldEqual (Some value)
+                let answer, after = setOrFail queueFd value system
+                UnixDescriptor.isNonBlocking queueFd after |> shouldEqual (Some value)
                 answer |> shouldEqual expected

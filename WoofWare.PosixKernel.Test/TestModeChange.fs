@@ -616,7 +616,7 @@ module TestModeChange =
             |> UnixBootImage.boot
 
         // The flavour's own event queue: an epoll instance, or a kqueue.
-        let port (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let eventQueue (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
             let create =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
                 | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
@@ -629,15 +629,15 @@ module TestModeChange =
         // Linux's epoll instance is on the shared anonymous inode, whose mode
         // fchmod may not change: EOPNOTSUPP. Darwin's kqueue, like every
         // descriptor that is not a vnode there, is EINVAL.
-        let fd, withPort = port linux
+        let fd, queueSystem = eventQueue linux
 
-        fchmodAnswer fd 0o600 withPort
-        |> shouldEqual (SyscallAnswer.Failed UnixError.EOPNOTSUPP, withPort)
+        fchmodAnswer fd 0o600 queueSystem
+        |> shouldEqual (SyscallAnswer.Failed UnixError.EOPNOTSUPP, queueSystem)
 
-        let fd, withPort = port darwin
+        let fd, queueSystem = eventQueue darwin
 
-        fchmodAnswer fd 0o600 withPort
-        |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL, withPort)
+        fchmodAnswer fd 0o600 queueSystem
+        |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL, queueSystem)
 
         // A socket and a standard stream (one end of a pipe the process was
         // launched with) are EINVAL on Darwin. On Linux both have a mode fchmod

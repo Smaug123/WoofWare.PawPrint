@@ -418,11 +418,30 @@ module internal UnaryMetadataTokenOps =
             with
             | state, ConstrainedStaticImplementation.Runs (implementation, _declaringTypeHandle) ->
                 pushTarget implementation state
-            | _, ConstrainedStaticImplementation.Fails failure ->
+            | state, ConstrainedStaticImplementation.Fails failure ->
                 let thrown = DispatchFailure.exceptionType ctx.BaseClassTypes failure
+                let frame = state.ThreadState.[thread].MethodState.ExecutingMethod
 
-                failwith
-                    $"TODO: constrained. Ldftn of %s{method.Name} resolved to %s{DispatchFailure.describe failure}. Measured: real .NET makes a delegate over the pointer, and invoking it throws %s{thrown.Namespace}.%s{thrown.Name}; PawPrint has no function pointer to push that would do so"
+                // Where CoreCLR raises depends on whether it compiled this frame as shared code.
+                // In exact code the JIT resolves the slot as it compiles, and `getCallInfo`
+                // (jitinterface.cpp) plants a throw helper at the `ldftn` itself. In shared code
+                // the pointer comes from a generic dictionary slot holding a stub that resolves and
+                // throws when called (`CreateStubForStaticVirtualDispatch`, genericdict.cpp) —
+                // unless the JIT inlined this frame into exact code, where the `ldftn` throws.
+                // Measured: under default tiering the delegate is made, and under
+                // `DOTNET_TieredCompilation=0` an inlined one throws at the `ldftn`.
+                if CodeSharing.isShared ctx.BaseClassTypes state.TypeSystem frame then
+                    failwith
+                        $"TODO: constrained. Ldftn of %s{method.Name} resolved to %s{DispatchFailure.describe failure}, in %s{frame.Name}, which CoreCLR runs as shared generic code. Measured: real .NET then makes a delegate over a stub, and invoking it throws %s{thrown.Namespace}.%s{thrown.Name}, unless the JIT inlined the frame into exact code, where the ldftn throws; which one happens depends on the JIT"
+                else
+                    // With the parameterless constructor's message, as at a virtual call's dispatch
+                    // in `callMethodWithCommitment`.
+                    IlMachineStateExecution.raiseRuntimeException
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        thrown
+                        thread
+                        state
         | None ->
 
         match concretizedMethod.Body with

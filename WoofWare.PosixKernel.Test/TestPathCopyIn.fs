@@ -513,7 +513,7 @@ module TestPathCopyIn =
                 changing
                     $"open %A{openFlags}"
                     (fun path -> OpenFlagWords.openPath openFlags path 0o640)
-                    (fun path -> UnixNamespace.openPathParsed openFlags path 0o640)
+                    (fun path -> UnixNamespace.openPathParsed AtDirectory.CurrentDirectory openFlags path 0o640)
             )
 
     [<Test>]

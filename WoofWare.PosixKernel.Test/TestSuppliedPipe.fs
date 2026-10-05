@@ -444,15 +444,15 @@ module TestSuppliedPipe =
         for name, length, interest, steps, atAdd in epollCases do
             let system = launch SimulatedUnixPlatform.linuxArm64 (patterned length)
 
-            let port, system =
+            let epoll, system =
                 match UnixPoll.epollCreate1 0 system with
-                | Ok (Ok (port, system)) -> port, system
+                | Ok (Ok (epoll, system)) -> epoll, system
                 | other -> failwith $"%s{name}: epoll_create1 answered %A{other}"
 
             let system =
                 match
                     UnixPoll.epollCtl
-                        port
+                        epoll
                         1
                         0
                         (EpollEventArgument.Readable (interest ||| EpollEvents.EdgeTriggered, 7UL))
@@ -462,7 +462,7 @@ module TestSuppliedPipe =
                 | other -> failwith $"%s{name}: the registration answered %A{other}"
 
             let wait (where : string) (system : UnixSystem<int, string>) : uint32 option * UnixSystem<int, string> =
-                match UnixPoll.epollWait 0 port 8 UserBuffer.Mapped 0 system with
+                match UnixPoll.epollWait 0 epoll 8 UserBuffer.Mapped 0 system with
                 | Ok (EpollWaitOutcome.Answered [], system) -> None, system
                 | Ok (EpollWaitOutcome.Answered [ 7UL, events ], system) -> Some events, system
                 | other -> failwith $"%s{where}: epoll_wait answered %A{other}"

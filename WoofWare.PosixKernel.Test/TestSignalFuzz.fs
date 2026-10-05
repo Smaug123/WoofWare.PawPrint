@@ -183,13 +183,13 @@ module TestSignalFuzz =
             let numbering = SimulatedUnixPlatform.signalNumbering platform
 
             let seed =
-                match Environment.GetEnvironmentVariable "PAWPRINT_SIGNAL_FUZZ_SEED" with
+                match Environment.GetEnvironmentVariable "POSIXKERNEL_SIGNAL_FUZZ_SEED" with
                 | null
                 | "" -> 20260930
                 | s -> int s
 
             let count =
-                match Environment.GetEnvironmentVariable "PAWPRINT_SIGNAL_FUZZ_SEQUENCES" with
+                match Environment.GetEnvironmentVariable "POSIXKERNEL_SIGNAL_FUZZ_SEQUENCES" with
                 | null
                 | "" -> 400
                 | s -> int s
@@ -200,7 +200,9 @@ module TestSignalFuzz =
                 List.init count (fun _ -> SignalFuzz.generate numbering rng |> SignalFuzz.serialise)
 
             let unique = Guid.NewGuid().ToString "N"
-            let workDir = Path.Combine (Path.GetTempPath (), $"pawprint-signal-fuzz-%s{unique}")
+
+            let workDir =
+                Path.Combine (Path.GetTempPath (), $"posixkernel-signal-fuzz-%s{unique}")
 
             try
                 let binary = buildHarness workDir

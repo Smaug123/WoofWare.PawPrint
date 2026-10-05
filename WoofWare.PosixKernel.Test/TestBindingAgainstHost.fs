@@ -131,7 +131,7 @@ module TestBindingAgainstHost =
     /// Run `call` in a fresh copy of the probe tree on this host.
     let private onHost (flavour : SimulatedUnixFlavour) (call : BindingProbeCall) : int option =
         let root =
-            Path.Combine (Path.GetTempPath (), "pawprint-binding-" + Path.GetRandomFileName ())
+            Path.Combine (Path.GetTempPath (), "posixkernel-binding-" + Path.GetRandomFileName ())
 
         Directory.CreateDirectory root |> ignore<DirectoryInfo>
 
