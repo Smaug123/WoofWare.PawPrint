@@ -1945,6 +1945,17 @@ module UnixNamespace =
                 <> PathWalk.pausedMountedRoot destinationParent
             then
                 Error (PathFailure.Errno UnixError.EXDEV)
+            else if
+
+                // Then either path naming no final component, "/", "." or "..", is
+                // EBUSY, still before either final name is looked up: measured
+                // (`renameat-rules.c`, ORDER), `rename("nx", ".")` and
+                // `rename(<300 bytes>, "/")` are EBUSY, not the source's ENOENT
+                // and ENAMETOOLONG.
+                PathWalk.pausedNamesNoFinal sourceParent
+                || PathWalk.pausedNamesNoFinal destinationParent
+            then
+                Error (PathFailure.Errno UnixError.EBUSY)
             else
 
             // Source before destination, and here the order *is* pinned: the
@@ -1956,10 +1967,9 @@ module UnixNamespace =
             | Ok sourceResolution ->
 
             // Linux's source screen runs here: after both parents and the
-            // source's own final lookup, and before the destination's. It beats
-            // the orphan check below — `rename("d/.", "x")` from an orphaned
-            // current directory is EBUSY where every other source there is
-            // ENOENT — and it beats the destination's NAME_MAX, which is what
+            // source's own final lookup, and before the destination's. Its
+            // EBUSY arm has been settled above; its free-name ENOENT beats the
+            // orphan check below and the destination's NAME_MAX, which is what
             // makes `rename("nope", <300-byte name>)` ENOENT.
             match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
             | Some error -> Error (PathFailure.Errno error)

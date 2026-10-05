@@ -397,6 +397,127 @@ public class Derived : LocalBase { }
 public class Animal
 {
     public virtual string Speak() => "...";
+
+    // Not virtual, so a call names it whatever the receiver's class; the class decides `Speak`.
+    public string SpeakVia() => Speak();
+
+    public virtual string Echo() => "";
+}
+
+public class Bark : Exception { }
+
+public class Hiss : Exception { }
+
+public class Dog : Animal
+{
+    public override string Speak() => throw new Bark();
+
+    // Only ever run on a Dog.
+    public override string Echo() => Speak();
+}
+
+public sealed class Puppy : Animal
+{
+    public override string Speak() => throw new Bark();
+}
+
+public interface ICaller
+{
+    string Call(Animal a);
+}
+
+public struct Caller : ICaller
+{
+    public string Call(Animal a) => a.Speak();
+}
+
+public class Cat : Animal
+{
+    public override string Speak() => throw new Hiss();
+}
+
+// A constructor calls a virtual method on the object being constructed.
+public class Greeter
+{
+    public Greeter() { Greet(); }
+    public virtual void Greet() { }
+}
+
+public class LoudGreeter : Greeter
+{
+    public override void Greet() => throw new Bark();
+}
+
+// What a caller passes decides what the callee's virtual calls run.
+public static class ContextCases
+{
+    // Asked about by itself, a parameter holds an object of its declared class or a subclass;
+    // this one is sealed.
+    public static string CallsSealedParameter(Puppy p) => p.Speak();
+
+    public static string PassesDog() => Cases.CallsVirtual(new Dog());
+
+    public static void PassesBoth()
+    {
+        Cases.CallsVirtual(new Dog());
+        Cases.CallsVirtual(new Cat());
+    }
+
+    public static string CallsThroughThis() => new Dog().SpeakVia();
+
+    static Animal Identity(Animal a) => a;
+
+    public static string ReturnsWhatItIsPassed() => Identity(new Dog()).Speak();
+
+    static string Forwards(Animal a) => Cases.CallsVirtual(a);
+
+    public static string PassesDogTwoDeep() => Forwards(new Dog());
+
+    static string Recurses(Animal a, int n)
+    {
+        if (n > 0) { Recurses(new Cat(), n - 1); }
+        return a.Speak();
+    }
+
+    public static string RecursesWithCat() => Recurses(new Dog(), 1);
+
+    public static string PassesNull() => Cases.CallsVirtual(null);
+
+    // The parameter no longer holds what the caller passed.
+    static string Reassigns(Animal a, Animal other)
+    {
+        a = other;
+        return a.Speak();
+    }
+
+    public static string PassesDogToReassigned(Animal other) => Reassigns(new Dog(), other);
+
+    static void Touch(ref Animal a) { }
+
+    // Code given the parameter's address may store anything in it.
+    static string TakesAddress(Animal a)
+    {
+        Touch(ref a);
+        return a.Speak();
+    }
+
+    public static string PassesDogByAddress() => TakesAddress(new Dog());
+
+    // Each class the receiver may be of is what `this` is in the method it dispatches to.
+    public static string EchoesEither(bool b) => (b ? (Animal)new Dog() : new Cat()).Echo();
+
+    static string Via<T>(T caller, Animal a) where T : ICaller => caller.Call(a);
+
+    // The `constrained.` call passes on what it is given.
+    public static string PassesDogViaConstrained() => Via(new Caller(), new Dog());
+
+    public static Greeter ConstructsLoud() => new LoudGreeter();
+
+    public static Greeter ConstructsQuiet() => new Greeter();
+
+    // `Type ==` calls `Equals` only when neither operand is a RuntimeType.
+    public static bool SameType() => typeof(string) == typeof(object);
+
 }
 
 public sealed class Sealed
@@ -749,6 +870,75 @@ public static class SR
                 Unknown = Some false
                 Assumes = Some []
             }
+            { expect "Fixture.ContextCases" "CallsSealedParameter" with
+                Contains = [ "=Fixture.Bark" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "PassesDog" with
+                Contains = [ "=Fixture.Bark" ]
+                Excludes = [ "=Fixture.Hiss" ]
+                Unknown = Some false
+                Sources = Some []
+            }
+            // Each call's summary of the helper is its own.
+            { expect "Fixture.ContextCases" "PassesBoth" with
+                Contains = [ "=Fixture.Bark" ; "=Fixture.Hiss" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "CallsThroughThis" with
+                Contains = [ "=Fixture.Bark" ]
+                Excludes = [ "=Fixture.Hiss" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ReturnsWhatItIsPassed" with
+                Contains = [ "=Fixture.Bark" ]
+                Excludes = [ "=Fixture.Hiss" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "PassesDogTwoDeep" with
+                Contains = [ "=Fixture.Bark" ]
+                Excludes = [ "=Fixture.Hiss" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "RecursesWithCat" with
+                Contains = [ "=Fixture.Bark" ; "=Fixture.Hiss" ]
+                Unknown = Some false
+                Sources = Some []
+            }
+            { expect "Fixture.ContextCases" "PassesNull" with
+                Contains = [ "=System.NullReferenceException" ]
+                Excludes = [ "=Fixture.Bark" ; "=Fixture.Hiss" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "PassesDogToReassigned" with
+                Unknown = Some true
+                Sources = Some [ "Fixture.ContextCases::Reassigns IL VirtualCall Fixture.Animal::Speak" ]
+            }
+            { expect "Fixture.ContextCases" "PassesDogByAddress" with
+                Unknown = Some true
+                Sources = Some [ "Fixture.ContextCases::TakesAddress IL VirtualCall Fixture.Animal::Speak" ]
+            }
+            { expect "Fixture.ContextCases" "EchoesEither" with
+                Contains = [ "=Fixture.Bark" ]
+                Excludes = [ "=Fixture.Hiss" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "PassesDogViaConstrained" with
+                Contains = [ "=Fixture.Bark" ]
+                Excludes = [ "=Fixture.Hiss" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ConstructsLoud" with
+                Contains = [ "=Fixture.Bark" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ConstructsQuiet" with
+                Excludes = [ "=Fixture.Bark" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "SameType" with
+                Unknown = Some false
+            }
         ]
 
     /// An answer as the expectations spell it: `=T` for `Exactly T`, `<:T` for `SubtypeOf T`.
@@ -1044,6 +1234,145 @@ public static class SR
         match sourcesDisagree analysis [ corelib ] methods with
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// How each of `methods`' answer with the classes its callers pass fails to be at least as precise
+    /// as its answer without them: unknown only where that was, and otherwise naming only what that
+    /// named and assuming only what that assumed.
+    let private lessPreciseWithContexts (analysis : EscapeAnalysisState) (methods : MethodKey list) : string list =
+        let blind = EscapeAnalysis.withoutArgumentContexts analysis
+
+        ((analysis, blind, []), methods)
+        ||> List.fold (fun (analysis, blind, failures) key ->
+            let analysis, sighted = EscapeAnalysis.escapes analysis key
+            let blind, unsighted = EscapeAnalysis.escapes blind key
+
+            let failures =
+                if
+                    sighted.Unknown && not unsighted.Unknown
+                    || not unsighted.Unknown
+                       && not (
+                           Set.isSubset sighted.Types unsighted.Types
+                           && Set.isSubset sighted.Assumes unsighted.Assumes
+                       )
+                then
+                    $"%s{EscapeAnalysis.methodName analysis key}: %A{render analysis sighted}, unknown %b{sighted.Unknown}, assuming %A{sighted.Assumes}; without contexts %A{render blind unsighted}, unknown %b{unsighted.Unknown}, assuming %A{unsighted.Assumes}"
+                    :: failures
+                else
+                    failures
+
+            analysis, blind, failures
+        )
+        |> fun (_, _, failures) -> List.rev failures
+
+    [<Test>]
+    let ``what callers pass makes a fixture method's answer only more precise`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "EscapeFixture" OutputKind.DynamicallyLinkedLibrary [] [ source ; shadow ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "EscapeFixture.dll") (new MemoryStream (image))
+
+        let methods =
+            fixture.Methods
+            |> Seq.map (fun (KeyValue (handle, _)) -> MethodKey.make fixture handle)
+            |> List.ofSeq
+
+        match lessPreciseWithContexts (analysisOver [ fixture ] id) methods with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``what callers pass makes a CoreLib method's answer only more precise`` () : unit =
+        let analysis = analysisOver [] id
+        let corelib = hostCoreLib ()
+
+        // Every fortieth method definition, from the eleventh: a sample spread over the whole of
+        // CoreLib, beside the one the test of unknown places takes.
+        let methods =
+            corelib.Methods
+            |> Seq.map (fun (KeyValue (handle, _)) -> MethodKey.make corelib handle)
+            |> Seq.sort
+            |> Seq.chunkBySize 40
+            |> Seq.choose (Array.tryItem 10)
+            |> List.ofSeq
+
+        match lessPreciseWithContexts analysis methods with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    /// Whether `escapes` covers an exception of the class `thrown`: it is unknown, names the class,
+    /// or names one the class derives from as a subtype.
+    let private covers (analysis : EscapeAnalysisState) (escapes : Escapes) (thrown : Type) : bool =
+        let ancestors =
+            Seq.unfold (fun (ty : Type) -> if isNull ty then None else Some (ty.FullName, ty.BaseType)) thrown
+            |> Set.ofSeq
+
+        let shown = render analysis escapes
+
+        escapes.Unknown
+        || shown.Contains ("=" + thrown.FullName)
+        || ancestors |> Set.exists (fun ancestor -> shown.Contains ("<:" + ancestor))
+
+    [<Test>]
+    let ``what a method passing its callee a known class throws on the real runtime is in its answer`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "EscapeFixture" OutputKind.DynamicallyLinkedLibrary [] [ source ; shadow ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "EscapeFixture.dll") (new MemoryStream (image))
+
+        let context =
+            System.Runtime.Loader.AssemblyLoadContext ("EscapeFixture", isCollectible = true)
+
+        try
+            let cases =
+                context.LoadFromStream(new MemoryStream (image)).GetType "Fixture.ContextCases"
+
+            let methods =
+                cases.GetMethods (BindingFlags.Public ||| BindingFlags.Static)
+                |> Array.filter (fun method -> method.GetParameters().Length = 0)
+                |> List.ofArray
+
+            methods.Length |> shouldBeGreaterThan 0
+
+            let thrownBy =
+                methods
+                |> List.choose (fun method ->
+                    try
+                        method.Invoke ((null : obj), Array.empty<obj>) |> ignore<obj>
+                        None
+                    with :? TargetInvocationException as e ->
+                        Some (method.Name, e.InnerException.GetType ())
+                )
+
+            // The fixture's cases throw at least these, so the check is not vacuous.
+            thrownBy |> List.map fst |> shouldContain "PassesDog"
+            thrownBy |> List.map fst |> shouldContain "ConstructsLoud"
+
+            let failures =
+                ((analysisOver [ fixture ] id, []), thrownBy)
+                ||> List.fold (fun (analysis, failures) (name, thrown) ->
+                    let analysis, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed fixture "Fixture.ContextCases" name)
+
+                    if covers analysis escapes thrown then
+                        analysis, failures
+                    else
+                        analysis,
+                        $"Fixture.ContextCases::%s{name} threw %s{thrown.FullName}, but the analysis says %A{render analysis escapes}, unknown %b{escapes.Unknown}"
+                        :: failures
+                )
+                |> snd
+
+            match failures with
+            | [] -> ()
+            | failures -> failures |> String.concat Environment.NewLine |> failwith
+        finally
+            context.Unload ()
 
     [<Test>]
     let ``allowed no assumption, constructing a CoreLib exception is unknown and no answer assumes anything``
@@ -3748,7 +4077,8 @@ public static class Runners
             [
                 "NewObject", both, DispatchClaim.Precise
                 "SealedParameter", Set.singleton overflows, DispatchClaim.Precise
-                "OpenParameter", both, DispatchClaim.Unknown
+                // The caller passes exactly an OpenDivides, whatever classes derive from it.
+                "OpenParameter", both, DispatchClaim.Precise
                 "Joined", both, DispatchClaim.Precise
                 "Interface", both, DispatchClaim.Precise
                 "BoxedStruct", Set.singleton overflows, DispatchClaim.Precise
@@ -3857,8 +4187,8 @@ public static class Runners
                 "ThroughRelay", both, DispatchClaim.Precise
                 "ThroughShared", both, DispatchClaim.Precise
                 "ThroughIdentitySealed", Set.singleton overflows, DispatchClaim.Precise
-                // The callee returns whatever it is given, which may be of any class.
-                "ThroughPassed", both, DispatchClaim.Unknown
+                // The callee returns what it is given, which the caller makes exactly an OpenDivides.
+                "ThroughPassed", both, DispatchClaim.Precise
                 // A return that depends on itself is its declared type.
                 "ThroughRecursion", both, DispatchClaim.SoundOnly
             ]

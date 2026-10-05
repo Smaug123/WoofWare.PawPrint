@@ -1,0 +1,118 @@
+UNAME	Darwin 27.0.0 arm64	euid=501	AT_FDCWD=-2
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=nx	cwd=d	pold=f	pnew=nx	at=ok:gone=w/d/f:moved=w/d/nx<-w/d/f	plain=ok:gone=w/d/f:moved=w/d/nx<-w/d/f
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=g	cwd=d	pold=f	pnew=g	at=ok:gone=:moved=	plain=ok:gone=:moved=
+ROW	caller=501	SAME	ofd=d	old=g	nfd=d	new=f	cwd=d	pold=g	pnew=f	at=ok:gone=:moved=	plain=ok:gone=:moved=
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=sub	cwd=d	pold=f	pnew=sub	at=EISDIR	plain=EISDIR
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=full	cwd=d	pold=f	pnew=full	at=EISDIR	plain=EISDIR
+ROW	caller=501	SAME	ofd=d	old=sub	nfd=d	new=e	cwd=d	pold=sub	pnew=e	at=ok:gone=w/d/sub:moved=w/d/e<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d/e<-w/d/sub
+ROW	caller=501	SAME	ofd=d	old=sub	nfd=d	new=full	cwd=d	pold=sub	pnew=full	at=ENOTEMPTY	plain=ENOTEMPTY
+ROW	caller=501	SAME	ofd=d	old=sub	nfd=d	new=f	cwd=d	pold=sub	pnew=f	at=ENOTDIR	plain=ENOTDIR
+ROW	caller=501	SAME	ofd=d	old=full	nfd=d	new=nx	cwd=d	pold=full	pnew=nx	at=ok:gone=w/d/full,w/d/full/x:moved=w/d/nx<-w/d/full,w/d/nx/x<-w/d/full/x	plain=ok:gone=w/d/full,w/d/full/x:moved=w/d/nx<-w/d/full,w/d/nx/x<-w/d/full/x
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=nx/	cwd=d	pold=f	pnew=nx/	at=ENOENT	plain=ENOENT
+ROW	caller=501	SAME	ofd=d	old=sub	nfd=d	new=nx/	cwd=d	pold=sub	pnew=nx/	at=ok:gone=w/d/sub:moved=w/d/nx<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d/nx<-w/d/sub
+ROW	caller=501	SAME	ofd=d	old=f/	nfd=d	new=nx	cwd=d	pold=f/	pnew=nx	at=ENOTDIR	plain=ENOTDIR
+ROW	caller=501	SAME	ofd=d	old=sub/	nfd=d	new=nx	cwd=d	pold=sub/	pnew=nx	at=ok:gone=w/d/sub:moved=w/d/nx<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d/nx<-w/d/sub
+ROW	caller=501	SAME	ofd=d	old=nx	nfd=d	new=x	cwd=d	pold=nx	pnew=x	at=ENOENT	plain=ENOENT
+ROW	caller=501	SAME	ofd=d	old=nx/	nfd=d	new=x	cwd=d	pold=nx/	pnew=x	at=ENOENT	plain=ENOENT
+ROW	caller=501	SAME	ofd=d	old=nx	nfd=d	new=f/x	cwd=d	pold=nx	pnew=f/x	at=ENOENT	plain=ENOENT
+ROW	caller=501	SAME	ofd=d	old=lf	nfd=d	new=nx	cwd=d	pold=lf	pnew=nx	at=ok:gone=w/d/lf:moved=w/d/nx<-w/d/lf	plain=ok:gone=w/d/lf:moved=w/d/nx<-w/d/lf
+ROW	caller=501	SAME	ofd=d	old=lf/	nfd=d	new=nx	cwd=d	pold=lf/	pnew=nx	at=ENOTDIR	plain=ENOTDIR
+ROW	caller=501	SAME	ofd=d	old=ld	nfd=d	new=nx	cwd=d	pold=ld	pnew=nx	at=ok:gone=w/d/ld:moved=w/d/nx<-w/d/ld	plain=ok:gone=w/d/ld:moved=w/d/nx<-w/d/ld
+ROW	caller=501	SAME	ofd=d	old=ld/	nfd=d	new=nx	cwd=d	pold=ld/	pnew=nx	at=ok:gone=w/d/sub:moved=w/d/nx<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d/nx<-w/d/sub
+ROW	caller=501	SAME	ofd=d	old=dang/	nfd=d	new=nx	cwd=d	pold=dang/	pnew=nx	at=ENOENT	plain=ENOENT
+ROW	caller=501	SAME	ofd=d	old=cyc/	nfd=d	new=nx	cwd=d	pold=cyc/	pnew=nx	at=ELOOP	plain=ELOOP
+ROW	caller=501	SAME	ofd=d	old=lroot/	nfd=d	new=nx	cwd=d	pold=lroot/	pnew=nx	at=EISDIR	plain=EISDIR
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=ld/	cwd=d	pold=f	pnew=ld/	at=EISDIR	plain=EISDIR
+ROW	caller=501	SAME	ofd=d	old=sub	nfd=d	new=ld/	cwd=d	pold=sub	pnew=ld/	at=ok:gone=:moved=	plain=ok:gone=:moved=
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=lf/	cwd=d	pold=f	pnew=lf/	at=ENOTDIR	plain=ENOTDIR
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=dang/	cwd=d	pold=f	pnew=dang/	at=ENOENT	plain=ENOENT
+ROW	caller=501	SAME	ofd=d	old=sub	nfd=d	new=dang/	cwd=d	pold=sub	pnew=dang/	at=ok:gone=w/d/sub:moved=w/d/nx2<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d/nx2<-w/d/sub
+ROW	caller=501	SAME	ofd=d	old=.	nfd=d	new=nx	cwd=d	pold=.	pnew=nx	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=..	nfd=d	new=nx	cwd=d	pold=..	pnew=nx	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=.	cwd=d	pold=f	pnew=.	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=..	cwd=d	pold=f	pnew=..	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=sub/.	nfd=d	new=nx	cwd=d	pold=sub/.	pnew=nx	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=sub/..	nfd=d	new=nx	cwd=d	pold=sub/..	pnew=nx	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=lroot/.	nfd=d	new=nx	cwd=d	pold=lroot/.	pnew=nx	at=EXDEV	plain=EXDEV
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=sub/.	cwd=d	pold=f	pnew=sub/.	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=/	nfd=d	new=x	cwd=d	pold=/	pnew=x	at=EISDIR	plain=EISDIR
+ROW	caller=501	SAME	ofd=d	old=sub	nfd=d	new=sub/x	cwd=d	pold=sub	pnew=sub/x	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=nest	nfd=d	new=nest/in/x	cwd=d	pold=nest	pnew=nest/in/x	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=../d	nfd=d	new=sub/x	cwd=d	pold=../d	pnew=sub/x	at=EINVAL	plain=EINVAL
+ROW	caller=501	SAME	ofd=d	old=../d	nfd=d	new=../d3	cwd=d	pold=../d	pnew=../d3	at=ok:gone=w/d,w/d/cyc,w/d/dang,w/d/e,w/d/f,w/d/full,w/d/full/x,w/d/g,w/d/ld,w/d/lf,w/d/lroot,w/d/nest,w/d/nest/in,w/d/ro,w/d/ro/kdir,w/d/ro/kfull,w/d/ro/kfull/x,w/d/ro/kid,w/d/sub:moved=w/d3<-w/d,w/d3/cyc<-w/d/cyc,w/d3/dang<-w/d/dang,w/d3/e<-w/d/e,w/d3/f<-w/d/f,w/d3/full<-w/d/full,w/d3/full/x<-w/d/full/x,w/d3/g<-w/d/f,w/d3/ld<-w/d/ld,w/d3/lf<-w/d/lf,w/d3/lroot<-w/d/lroot,w/d3/nest<-w/d/nest,w/d3/nest/in<-w/d/nest/in,w/d3/ro<-w/d/ro,w/d3/ro/kdir<-w/d/ro/kdir,w/d3/ro/kfull<-w/d/ro/kfull,w/d3/ro/kfull/x<-w/d/ro/kfull/x,w/d3/ro/kid<-w/d/ro/kid,w/d3/sub<-w/d/sub	plain=ok:gone=w/d,w/d/cyc,w/d/dang,w/d/e,w/d/f,w/d/full,w/d/full/x,w/d/g,w/d/ld,w/d/lf,w/d/lroot,w/d/nest,w/d/nest/in,w/d/ro,w/d/ro/kdir,w/d/ro/kfull,w/d/ro/kfull/x,w/d/ro/kid,w/d/sub:moved=w/d3<-w/d,w/d3/cyc<-w/d/cyc,w/d3/dang<-w/d/dang,w/d3/e<-w/d/e,w/d3/f<-w/d/f,w/d3/full<-w/d/full,w/d3/full/x<-w/d/full/x,w/d3/g<-w/d/f,w/d3/ld<-w/d/ld,w/d3/lf<-w/d/lf,w/d3/lroot<-w/d/lroot,w/d3/nest<-w/d/nest,w/d3/nest/in<-w/d/nest/in,w/d3/ro<-w/d/ro,w/d3/ro/kdir<-w/d/ro/kdir,w/d3/ro/kfull<-w/d/ro/kfull,w/d3/ro/kfull/x<-w/d/ro/kfull/x,w/d3/ro/kid<-w/d/ro/kid,w/d3/sub<-w/d/sub
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=../f3	cwd=d	pold=f	pnew=../f3	at=ok:gone=w/d/f:moved=w/f3<-w/d/f	plain=ok:gone=w/d/f:moved=w/f3<-w/d/f
+ROW	caller=501	SAME	ofd=d	old=../d/f	nfd=d	new=x	cwd=d	pold=../d/f	pnew=x	at=ok:gone=w/d/f:moved=w/d/x<-w/d/f	plain=ok:gone=w/d/f:moved=w/d/x<-w/d/f
+ROW	caller=501	SAME	ofd=d	old=../d2/h	nfd=d	new=x	cwd=d	pold=../d2/h	pnew=x	at=ok:gone=w/d2/h:moved=w/d/x<-w/d2/h	plain=ok:gone=w/d2/h:moved=w/d/x<-w/d2/h
+ROW	caller=501	SAME	ofd=d	old=ro/kid	nfd=d	new=x	cwd=d	pold=ro/kid	pnew=x	at=EACCES	plain=EACCES
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=ro/x	cwd=d	pold=f	pnew=ro/x	at=EACCES	plain=EACCES
+ROW	caller=501	SAME	ofd=d	old=ro/kdir	nfd=d	new=x	cwd=d	pold=ro/kdir	pnew=x	at=EACCES	plain=EACCES
+ROW	caller=501	SAME	ofd=d	old=sub	nfd=d	new=ro/kdir	cwd=d	pold=sub	pnew=ro/kdir	at=ok:gone=w/d/sub:moved=w/d/ro/kdir<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d/ro/kdir<-w/d/sub
+ROW	caller=501	SAME	ofd=d	old=ro/kid	nfd=d	new=ro/kid	cwd=d	pold=ro/kid	pnew=ro/kid	at=EACCES	plain=EACCES
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=ro/kid	cwd=d	pold=f	pnew=ro/kid	at=EACCES	plain=EACCES
+ROW	caller=501	SAME	ofd=d	old=e	nfd=d	new=ro/kfull	cwd=d	pold=e	pnew=ro/kfull	at=ENOTEMPTY	plain=ENOTEMPTY
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=\xff\xff\xff	cwd=d	pold=f	pnew=\xff\xff\xff	at=EILSEQ	plain=EILSEQ
+ROW	caller=501	SAME	ofd=d	old=	nfd=d	new=x	cwd=d	pold=	pnew=x	at=ENOENT	plain=ENOENT
+ROW	caller=501	SAME	ofd=d	old=f	nfd=d	new=	cwd=d	pold=f	pnew=	at=ENOENT	plain=ENOENT
+ROW	caller=501	TWO	ofd=d	old=f	nfd=d2	new=h	cwd=.	pold=d/f	pnew=d2/h	at=ok:gone=w/d/f:moved=w/d2/h<-w/d/f	plain=ok:gone=w/d/f:moved=w/d2/h<-w/d/f
+ROW	caller=501	TWO	ofd=d	old=f	nfd=d2	new=nx	cwd=.	pold=d/f	pnew=d2/nx	at=ok:gone=w/d/f:moved=w/d2/nx<-w/d/f	plain=ok:gone=w/d/f:moved=w/d2/nx<-w/d/f
+ROW	caller=501	TWO	ofd=d	old=f	nfd=d2	new=hd	cwd=.	pold=d/f	pnew=d2/hd	at=EISDIR	plain=EISDIR
+ROW	caller=501	TWO	ofd=d	old=sub	nfd=d2	new=hd	cwd=.	pold=d/sub	pnew=d2/hd	at=ok:gone=w/d/sub:moved=w/d2/hd<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d2/hd<-w/d/sub
+ROW	caller=501	TWO	ofd=d	old=sub	nfd=d2	new=hfull	cwd=.	pold=d/sub	pnew=d2/hfull	at=ENOTEMPTY	plain=ENOTEMPTY
+ROW	caller=501	TWO	ofd=d	old=sub	nfd=d2	new=h	cwd=.	pold=d/sub	pnew=d2/h	at=ENOTDIR	plain=ENOTDIR
+ROW	caller=501	TWO	ofd=d	old=sub	nfd=d2	new=nx	cwd=.	pold=d/sub	pnew=d2/nx	at=ok:gone=w/d/sub:moved=w/d2/nx<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d2/nx<-w/d/sub
+ROW	caller=501	TWO	ofd=d	old=full	nfd=d2	new=nx	cwd=.	pold=d/full	pnew=d2/nx	at=ok:gone=w/d/full,w/d/full/x:moved=w/d2/nx<-w/d/full,w/d2/nx/x<-w/d/full/x	plain=ok:gone=w/d/full,w/d/full/x:moved=w/d2/nx<-w/d/full,w/d2/nx/x<-w/d/full/x
+ROW	caller=501	TWO	ofd=d	old=f	nfd=d2	new=nx/	cwd=.	pold=d/f	pnew=d2/nx/	at=ENOENT	plain=ENOENT
+ROW	caller=501	TWO	ofd=d	old=sub	nfd=d2	new=nx/	cwd=.	pold=d/sub	pnew=d2/nx/	at=ok:gone=w/d/sub:moved=w/d2/nx<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d2/nx<-w/d/sub
+ROW	caller=501	TWO	ofd=d	old=ld/	nfd=d2	new=nx	cwd=.	pold=d/ld/	pnew=d2/nx	at=ok:gone=w/d/sub:moved=w/d2/nx<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d2/nx<-w/d/sub
+ROW	caller=501	TWO	ofd=d	old=lf	nfd=d2	new=nx	cwd=.	pold=d/lf	pnew=d2/nx	at=ok:gone=w/d/lf:moved=w/d2/nx<-w/d/lf	plain=ok:gone=w/d/lf:moved=w/d2/nx<-w/d/lf
+ROW	caller=501	TWO	ofd=d	old=.	nfd=d2	new=nx	cwd=.	pold=d/.	pnew=d2/nx	at=EINVAL	plain=EINVAL
+ROW	caller=501	TWO	ofd=d	old=..	nfd=d2	new=nx	cwd=.	pold=d/..	pnew=d2/nx	at=EINVAL	plain=EINVAL
+ROW	caller=501	TWO	ofd=d	old=f	nfd=d2	new=.	cwd=.	pold=d/f	pnew=d2/.	at=EINVAL	plain=EINVAL
+ROW	caller=501	TWO	ofd=d	old=f	nfd=d2	new=..	cwd=.	pold=d/f	pnew=d2/..	at=EINVAL	plain=EINVAL
+ROW	caller=501	TWO	ofd=d	old=../d	nfd=d2	new=nx	cwd=.	pold=d/../d	pnew=d2/nx	at=ok:gone=w/d,w/d/cyc,w/d/dang,w/d/e,w/d/f,w/d/full,w/d/full/x,w/d/g,w/d/ld,w/d/lf,w/d/lroot,w/d/nest,w/d/nest/in,w/d/ro,w/d/ro/kdir,w/d/ro/kfull,w/d/ro/kfull/x,w/d/ro/kid,w/d/sub:moved=w/d2/nx<-w/d,w/d2/nx/cyc<-w/d/cyc,w/d2/nx/dang<-w/d/dang,w/d2/nx/e<-w/d/e,w/d2/nx/f<-w/d/f,w/d2/nx/full<-w/d/full,w/d2/nx/full/x<-w/d/full/x,w/d2/nx/g<-w/d/f,w/d2/nx/ld<-w/d/ld,w/d2/nx/lf<-w/d/lf,w/d2/nx/lroot<-w/d/lroot,w/d2/nx/nest<-w/d/nest,w/d2/nx/nest/in<-w/d/nest/in,w/d2/nx/ro<-w/d/ro,w/d2/nx/ro/kdir<-w/d/ro/kdir,w/d2/nx/ro/kfull<-w/d/ro/kfull,w/d2/nx/ro/kfull/x<-w/d/ro/kfull/x,w/d2/nx/ro/kid<-w/d/ro/kid,w/d2/nx/sub<-w/d/sub	plain=ok:gone=w/d,w/d/cyc,w/d/dang,w/d/e,w/d/f,w/d/full,w/d/full/x,w/d/g,w/d/ld,w/d/lf,w/d/lroot,w/d/nest,w/d/nest/in,w/d/ro,w/d/ro/kdir,w/d/ro/kfull,w/d/ro/kfull/x,w/d/ro/kid,w/d/sub:moved=w/d2/nx<-w/d,w/d2/nx/cyc<-w/d/cyc,w/d2/nx/dang<-w/d/dang,w/d2/nx/e<-w/d/e,w/d2/nx/f<-w/d/f,w/d2/nx/full<-w/d/full,w/d2/nx/full/x<-w/d/full/x,w/d2/nx/g<-w/d/f,w/d2/nx/ld<-w/d/ld,w/d2/nx/lf<-w/d/lf,w/d2/nx/lroot<-w/d/lroot,w/d2/nx/nest<-w/d/nest,w/d2/nx/nest/in<-w/d/nest/in,w/d2/nx/ro<-w/d/ro,w/d2/nx/ro/kdir<-w/d/ro/kdir,w/d2/nx/ro/kfull<-w/d/ro/kfull,w/d2/nx/ro/kfull/x<-w/d/ro/kfull/x,w/d2/nx/ro/kid<-w/d/ro/kid,w/d2/nx/sub<-w/d/sub
+ROW	caller=501	TWO	ofd=d	old=../d2	nfd=d2	new=x	cwd=.	pold=d/../d2	pnew=d2/x	at=EINVAL	plain=EINVAL
+ROW	caller=501	TWO	ofd=d	old=../d2	nfd=d2	new=../d2/x	cwd=.	pold=d/../d2	pnew=d2/../d2/x	at=EINVAL	plain=EINVAL
+ROW	caller=501	TWO	ofd=d	old=nest	nfd=d2	new=../d/nest/in/x	cwd=.	pold=d/nest	pnew=d2/../d/nest/in/x	at=EINVAL	plain=EINVAL
+ROW	caller=501	TWO	ofd=d	old=ro/kid	nfd=d2	new=h	cwd=.	pold=d/ro/kid	pnew=d2/h	at=EACCES	plain=EACCES
+ROW	caller=501	TWO	ofd=d	old=f	nfd=d2	new=../d/ro/x	cwd=.	pold=d/f	pnew=d2/../d/ro/x	at=EACCES	plain=EACCES
+ROW	caller=501	TWO	ofd=d	old=sub	nfd=d2	new=../d/sub	cwd=.	pold=d/sub	pnew=d2/../d/sub	at=ok:gone=:moved=	plain=ok:gone=:moved=
+ROW	caller=501	TWO	ofd=d	old=f	nfd=d2	new=\xff\xff\xff	cwd=.	pold=d/f	pnew=d2/\xff\xff\xff	at=EILSEQ	plain=EILSEQ
+ROW	caller=501	TWO	ofd=d	old=nx	nfd=d2	new=h	cwd=.	pold=d/nx	pnew=d2/h	at=ENOENT	plain=ENOENT
+ROW	caller=501	MIXED	ofd=d	old=f	nfd=cwd	new=x	cwd=.	pold=d/f	pnew=x	at=ok:gone=w/d/f:moved=w/x<-w/d/f	plain=ok:gone=w/d/f:moved=w/x<-w/d/f
+ROW	caller=501	MIXED	ofd=d	old=sub	nfd=cwd	new=d2/hd	cwd=.	pold=d/sub	pnew=d2/hd	at=ok:gone=w/d/sub:moved=w/d2/hd<-w/d/sub	plain=ok:gone=w/d/sub:moved=w/d2/hd<-w/d/sub
+ROW	caller=501	MIXED	ofd=d	old=f	nfd=cwd	new=d/nx	cwd=.	pold=d/f	pnew=d/nx	at=ok:gone=w/d/f:moved=w/d/nx<-w/d/f	plain=ok:gone=w/d/f:moved=w/d/nx<-w/d/f
+ROW	caller=501	MIXED	ofd=cwd	old=d/f	nfd=d2	new=nx	cwd=.	pold=d/f	pnew=d2/nx	at=ok:gone=w/d/f:moved=w/d2/nx<-w/d/f	plain=ok:gone=w/d/f:moved=w/d2/nx<-w/d/f
+ROW	caller=501	MIXED	ofd=cwd	old=d2	nfd=d	new=sub/x	cwd=.	pold=d2	pnew=d/sub/x	at=ok:gone=w/d2,w/d2/h,w/d2/hd,w/d2/hfull,w/d2/hfull/x:moved=w/d/sub/x<-w/d2,w/d/sub/x/h<-w/d2/h,w/d/sub/x/hd<-w/d2/hd,w/d/sub/x/hfull<-w/d2/hfull,w/d/sub/x/hfull/x<-w/d2/hfull/x	plain=ok:gone=w/d2,w/d2/h,w/d2/hd,w/d2/hfull,w/d2/hfull/x:moved=w/d/sub/x<-w/d2,w/d/sub/x/h<-w/d2/h,w/d/sub/x/hd<-w/d2/hd,w/d/sub/x/hfull<-w/d2/hfull,w/d/sub/x/hfull/x<-w/d2/hfull/x
+ROW	caller=501	MIXED	ofd=d	old=..	nfd=cwd	new=x	cwd=.	pold=d/..	pnew=x	at=EINVAL	plain=EINVAL
+ROW	caller=501	NEST	ofd=d/nest/in	old=../../nest	nfd=d/nest/in	new=x	cwd=.	pold=d/nest/in/../../nest	pnew=d/nest/in/x	at=EINVAL	plain=EINVAL
+ROW	caller=501	NEST	ofd=d	old=nest	nfd=d/nest/in	new=x	cwd=.	pold=d/nest	pnew=d/nest/in/x	at=EINVAL	plain=EINVAL
+ROW	caller=501	NEST	ofd=d/nest/in	old=..	nfd=d	new=y	cwd=.	pold=d/nest/in/..	pnew=d/y	at=EINVAL	plain=EINVAL
+ROW	caller=501	NEST	ofd=d/nest/in	old=../../../d	nfd=d/nest/in	new=../x	cwd=.	pold=d/nest/in/../../../d	pnew=d/nest/in/../x	at=EINVAL	plain=EINVAL
+ROW	caller=501	NEST	ofd=d/nest/in	old=../../../d	nfd=d2	new=x	cwd=.	pold=d/nest/in/../../../d	pnew=d2/x	at=ok:gone=w/d,w/d/cyc,w/d/dang,w/d/e,w/d/f,w/d/full,w/d/full/x,w/d/g,w/d/ld,w/d/lf,w/d/lroot,w/d/nest,w/d/nest/in,w/d/ro,w/d/ro/kdir,w/d/ro/kfull,w/d/ro/kfull/x,w/d/ro/kid,w/d/sub:moved=w/d2/x<-w/d,w/d2/x/cyc<-w/d/cyc,w/d2/x/dang<-w/d/dang,w/d2/x/e<-w/d/e,w/d2/x/f<-w/d/f,w/d2/x/full<-w/d/full,w/d2/x/full/x<-w/d/full/x,w/d2/x/g<-w/d/f,w/d2/x/ld<-w/d/ld,w/d2/x/lf<-w/d/lf,w/d2/x/lroot<-w/d/lroot,w/d2/x/nest<-w/d/nest,w/d2/x/nest/in<-w/d/nest/in,w/d2/x/ro<-w/d/ro,w/d2/x/ro/kdir<-w/d/ro/kdir,w/d2/x/ro/kfull<-w/d/ro/kfull,w/d2/x/ro/kfull/x<-w/d/ro/kfull/x,w/d2/x/ro/kid<-w/d/ro/kid,w/d2/x/sub<-w/d/sub	plain=ok:gone=w/d,w/d/cyc,w/d/dang,w/d/e,w/d/f,w/d/full,w/d/full/x,w/d/g,w/d/ld,w/d/lf,w/d/lroot,w/d/nest,w/d/nest/in,w/d/ro,w/d/ro/kdir,w/d/ro/kfull,w/d/ro/kfull/x,w/d/ro/kid,w/d/sub:moved=w/d2/x<-w/d,w/d2/x/cyc<-w/d/cyc,w/d2/x/dang<-w/d/dang,w/d2/x/e<-w/d/e,w/d2/x/f<-w/d/f,w/d2/x/full<-w/d/full,w/d2/x/full/x<-w/d/full/x,w/d2/x/g<-w/d/f,w/d2/x/ld<-w/d/ld,w/d2/x/lf<-w/d/lf,w/d2/x/lroot<-w/d/lroot,w/d2/x/nest<-w/d/nest,w/d2/x/nest/in<-w/d/nest/in,w/d2/x/ro<-w/d/ro,w/d2/x/ro/kdir<-w/d/ro/kdir,w/d2/x/ro/kfull<-w/d/ro/kfull,w/d2/x/ro/kfull/x<-w/d/ro/kfull/x,w/d2/x/ro/kid<-w/d/ro/kid,w/d2/x/sub<-w/d/sub
+ROW	caller=501	NEST	ofd=d/nest	old=in	nfd=d	new=in2	cwd=.	pold=d/nest/in	pnew=d/in2	at=ok:gone=w/d/nest/in:moved=w/d/in2<-w/d/nest/in	plain=ok:gone=w/d/nest/in:moved=w/d/in2<-w/d/nest/in
+SELF	caller=501	first=rename	old=../f	new=x	at=ok;ok:gone=w/d/f,w/d/sub:moved=w/d/sub2<-w/d/sub,w/d/sub2/x<-w/d/f	plain=ok;ok:gone=w/d/f,w/d/sub:moved=w/d/sub2<-w/d/sub,w/d/sub2/x<-w/d/f
+SELF	caller=501	first=rename	old=.	new=../sub3	at=ok;EINVAL	plain=ok;EINVAL
+SELF	caller=501	first=rename	old=x	new=y	at=ok;ENOENT	plain=ok;ENOENT
+SELF	caller=501	first=rename	old=../e	new=x	at=ok;ok:gone=w/d/e,w/d/sub:moved=w/d/sub2<-w/d/sub,w/d/sub2/x<-w/d/e	plain=ok;ok:gone=w/d/e,w/d/sub:moved=w/d/sub2<-w/d/sub,w/d/sub2/x<-w/d/e
+SELF	caller=501	first=rename	old=../sub2	new=../sub3	at=ok;ok:gone=w/d/sub:moved=w/d/sub3<-w/d/sub	plain=ok;ok:gone=w/d/sub:moved=w/d/sub3<-w/d/sub
+SELF	caller=501	first=rmdir	old=../f	new=x	at=ok;ENOENT	plain=ok;ENOENT
+SELF	caller=501	first=rmdir	old=../f	new=../x	at=ok;ok:gone=w/d/f,w/d/sub:moved=w/d/x<-w/d/f	plain=ok;ok:gone=w/d/f,w/d/sub:moved=w/d/x<-w/d/f
+SELF	caller=501	first=rmdir	old=.	new=../x	at=ok;EINVAL	plain=ok;EINVAL
+SELF	caller=501	first=rmdir	old=../f	new=.	at=ok;EINVAL	plain=ok;EINVAL
+SELF	caller=501	first=rmdir	old=..	new=../x	at=ok;EINVAL	plain=ok;EINVAL
+SELF	caller=501	first=rmdir	old=x	new=../y	at=ok;ENOENT	plain=ok;ENOENT
+SELF	caller=501	first=rmdir	old=../e	new=../e2	at=ok;ok:gone=w/d/e,w/d/sub:moved=w/d/e2<-w/d/e	plain=ok;ok:gone=w/d/e,w/d/sub:moved=w/d/e2<-w/d/e
+ORDER	caller=501	old=good	new:good=ok:gone=w/d/f:moved=w/d/new<-w/d/f	new:existing=ok:gone=:moved=	new:NULL=EFAULT	new:empty=ENOENT	new:badfd=EBADF	new:filefd=ENOTDIR	new:pipefd=ENOTSUP	new:nodir=ENOENT	new:notdir=ENOTDIR	new:dot=EINVAL	new:root=EISDIR	new:trail=ENOENT	new:long=ENAMETOOLONG	new:overlong=ENAMETOOLONG
+ORDER	caller=501	old=existing	new:good=ENOENT	new:existing=ENOENT	new:NULL=ENOENT	new:empty=ENOENT	new:badfd=ENOENT	new:filefd=ENOENT	new:pipefd=ENOENT	new:nodir=ENOENT	new:notdir=ENOENT	new:dot=ENOENT	new:root=ENOENT	new:trail=ENOENT	new:long=ENOENT	new:overlong=ENOENT
+ORDER	caller=501	old=NULL	new:good=EFAULT	new:existing=EFAULT	new:NULL=EFAULT	new:empty=EFAULT	new:badfd=EFAULT	new:filefd=EFAULT	new:pipefd=EFAULT	new:nodir=EFAULT	new:notdir=EFAULT	new:dot=EFAULT	new:root=EFAULT	new:trail=EFAULT	new:long=EFAULT	new:overlong=EFAULT
+ORDER	caller=501	old=empty	new:good=ENOENT	new:existing=ENOENT	new:NULL=ENOENT	new:empty=ENOENT	new:badfd=ENOENT	new:filefd=ENOENT	new:pipefd=ENOENT	new:nodir=ENOENT	new:notdir=ENOENT	new:dot=ENOENT	new:root=ENOENT	new:trail=ENOENT	new:long=ENOENT	new:overlong=ENOENT
+ORDER	caller=501	old=badfd	new:good=EBADF	new:existing=EBADF	new:NULL=EBADF	new:empty=EBADF	new:badfd=EBADF	new:filefd=EBADF	new:pipefd=EBADF	new:nodir=EBADF	new:notdir=EBADF	new:dot=EBADF	new:root=EBADF	new:trail=EBADF	new:long=EBADF	new:overlong=EBADF
+ORDER	caller=501	old=filefd	new:good=ENOTDIR	new:existing=ENOTDIR	new:NULL=ENOTDIR	new:empty=ENOTDIR	new:badfd=ENOTDIR	new:filefd=ENOTDIR	new:pipefd=ENOTDIR	new:nodir=ENOTDIR	new:notdir=ENOTDIR	new:dot=ENOTDIR	new:root=ENOTDIR	new:trail=ENOTDIR	new:long=ENOTDIR	new:overlong=ENOTDIR
+ORDER	caller=501	old=pipefd	new:good=ENOTSUP	new:existing=ENOTSUP	new:NULL=ENOTSUP	new:empty=ENOTSUP	new:badfd=ENOTSUP	new:filefd=ENOTSUP	new:pipefd=ENOTSUP	new:nodir=ENOTSUP	new:notdir=ENOTSUP	new:dot=ENOTSUP	new:root=ENOTSUP	new:trail=ENOTSUP	new:long=ENOTSUP	new:overlong=ENOTSUP
+ORDER	caller=501	old=nodir	new:good=ENOENT	new:existing=ENOENT	new:NULL=ENOENT	new:empty=ENOENT	new:badfd=ENOENT	new:filefd=ENOENT	new:pipefd=ENOENT	new:nodir=ENOENT	new:notdir=ENOENT	new:dot=ENOENT	new:root=ENOENT	new:trail=ENOENT	new:long=ENOENT	new:overlong=ENOENT
+ORDER	caller=501	old=notdir	new:good=ENOTDIR	new:existing=ENOTDIR	new:NULL=ENOTDIR	new:empty=ENOTDIR	new:badfd=ENOTDIR	new:filefd=ENOTDIR	new:pipefd=ENOTDIR	new:nodir=ENOTDIR	new:notdir=ENOTDIR	new:dot=ENOTDIR	new:root=ENOTDIR	new:trail=ENOTDIR	new:long=ENOTDIR	new:overlong=ENOTDIR
+ORDER	caller=501	old=dot	new:good=EINVAL	new:existing=EINVAL	new:NULL=EFAULT	new:empty=ENOENT	new:badfd=EBADF	new:filefd=ENOTDIR	new:pipefd=ENOTSUP	new:nodir=ENOENT	new:notdir=ENOTDIR	new:dot=EINVAL	new:root=EINVAL	new:trail=EINVAL	new:long=ENAMETOOLONG	new:overlong=ENAMETOOLONG
+ORDER	caller=501	old=root	new:good=EISDIR	new:existing=EISDIR	new:NULL=EISDIR	new:empty=EISDIR	new:badfd=EISDIR	new:filefd=EISDIR	new:pipefd=EISDIR	new:nodir=EISDIR	new:notdir=EISDIR	new:dot=EISDIR	new:root=EISDIR	new:trail=EISDIR	new:long=EISDIR	new:overlong=EISDIR
+ORDER	caller=501	old=trail	new:good=ENOTDIR	new:existing=ENOTDIR	new:NULL=ENOTDIR	new:empty=ENOTDIR	new:badfd=ENOTDIR	new:filefd=ENOTDIR	new:pipefd=ENOTDIR	new:nodir=ENOTDIR	new:notdir=ENOTDIR	new:dot=ENOTDIR	new:root=ENOTDIR	new:trail=ENOTDIR	new:long=ENOTDIR	new:overlong=ENOTDIR
+ORDER	caller=501	old=long	new:good=ENAMETOOLONG	new:existing=ENAMETOOLONG	new:NULL=ENAMETOOLONG	new:empty=ENAMETOOLONG	new:badfd=ENAMETOOLONG	new:filefd=ENAMETOOLONG	new:pipefd=ENAMETOOLONG	new:nodir=ENAMETOOLONG	new:notdir=ENAMETOOLONG	new:dot=ENAMETOOLONG	new:root=ENAMETOOLONG	new:trail=ENAMETOOLONG	new:long=ENAMETOOLONG	new:overlong=ENAMETOOLONG
+ORDER	caller=501	old=overlong	new:good=ENAMETOOLONG	new:existing=ENAMETOOLONG	new:NULL=ENAMETOOLONG	new:empty=ENAMETOOLONG	new:badfd=ENAMETOOLONG	new:filefd=ENAMETOOLONG	new:pipefd=ENAMETOOLONG	new:nodir=ENAMETOOLONG	new:notdir=ENAMETOOLONG	new:dot=ENAMETOOLONG	new:root=ENAMETOOLONG	new:trail=ENAMETOOLONG	new:long=ENAMETOOLONG	new:overlong=ENAMETOOLONG
