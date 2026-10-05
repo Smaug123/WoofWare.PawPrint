@@ -30,7 +30,10 @@ type RenameWalkOrder =
     /// Everything about the source's *final component* loses to the
     /// destination's parent — measured across a free name, "/", ".", "..", a
     /// trailing separator and a 300-byte name, all of which answer the
-    /// destination's ENOTDIR.
+    /// destination's ENOTDIR. It loses, too, to a destination that names no
+    /// final component: once both parents are walked, either path ending in
+    /// "/", "." or ".." is EBUSY before either final name is looked up, so
+    /// `rename("nope", ".")` is EBUSY, not ENOENT.
     | ParentsThenFinals
     /// The source finished before the destination is looked at at all — its
     /// pathname included, and including the two refusals Darwin's source-side
@@ -162,7 +165,9 @@ module RenameRules =
     ///  * A source that consumed no final name is EBUSY on Linux, whichever
     ///    navigation reached it — measured against an orphaned destination
     ///    parent, where `rename("d/.", "x")` is EBUSY and every other source
-    ///    there is ENOENT. Darwin spends EISDIR on the bare root alone: "/." ,
+    ///    there is ENOENT. Linux settles that, and a destination that consumed
+    ///    no final name, as soon as both parents are walked, so this arm is
+    ///    reached there only with the question already settled. Darwin spends EISDIR on the bare root alone: "/." ,
     ///    "/.." and "/dev/.." all wait for the verdict, so it is the navigation
     ///    that is early rather than the inode.
     ///
@@ -196,7 +201,9 @@ module RenameRules =
     ///    `rename("/.", x)`, `rename("d/.", x)`, `rename("d/..", x)`,
     ///    `rename(x, "d/.")` and `rename(dir, "/")` are all EBUSY. The source is
     ///    asked before the destination, which no row can see, since they share
-    ///    an errno.
+    ///    an errno. Both are asked before either final name is looked up, so a
+    ///    free or over-long source name loses to a "." destination; a call
+    ///    reaching this verdict has had them answered already.
     ///  * A destination whose parent directory has lost its own last name is
     ///    ENOENT, exactly as `mkdir` and `open(O_CREAT)` answer — and it beats
     ///    the source's trailing-separator demand and the write checks below.

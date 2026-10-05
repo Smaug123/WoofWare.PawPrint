@@ -622,6 +622,18 @@ module PathWalk =
         | Some _ -> VirtualFileSystem.mountedRootOf paused.Directory paused.FileSystem
         | None -> VirtualFileSystem.mountedRootOf paused.NavigatedFrom paused.FileSystem
 
+    /// Whether the path ran out of names before any could be looked up: it ends
+    /// in "/", "." or "..", which `completeResolution` answers with
+    /// `ResolvedTarget.Directory`. A kernel's parent walk reports that kind of
+    /// last component itself, which `rename(2)` asks about before either
+    /// final name is looked up.
+    let pausedNamesNoFinal (paused : PausedResolution) : bool =
+        match box paused with
+        | null ->
+            failwith
+                "PathWalk.pausedNamesNoFinal: this paused resolution is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from PathWalk.resolveParent instead."
+        | _ -> paused.Final.IsNone
+
     /// What `paused.SymlinkProtection` says about following the link `link`
     /// found in `directory`: `None` to follow it.
     let private linkProtectionRefusal

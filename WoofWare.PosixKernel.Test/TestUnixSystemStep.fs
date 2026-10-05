@@ -5333,6 +5333,39 @@ module TestUnixSystemStep =
             |> shouldEqual (Error failure)
 
     [<Test>]
+    let ``a destination that names no final component is EBUSY before the source's final lookup, on Linux only``
+        ()
+        : unit
+        =
+        // Measured by `renameat-rules.c` (ORDER, `docs/plans/2026-08-23-posix-
+        // kernel-extraction/`): Linux refuses a "." or "/" destination once
+        // both parents are walked, ahead of looking the source's final name
+        // up, so a free or over-long source name does not get to answer.
+        // Darwin finishes the source first.
+        let long = String.replicate 300 "a"
+
+        for destination in [ "." ; "/" ] do
+            renamed (arg "nope") (arg destination) (withRenameTree linux)
+            |> shouldEqual (Error UnixError.EBUSY)
+
+            renamed (arg long) (arg destination) (withRenameTree linux)
+            |> shouldEqual (Error UnixError.EBUSY)
+
+            renamed (arg "nope") (arg destination) (withRenameTree darwin)
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            renamed (arg long) (arg destination) (withRenameTree darwin)
+            |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+        // Controls: the same sources against a destination that does name a
+        // final component answer the source's own lookup on both.
+        for system in [ withRenameTree linux ; withRenameTree darwin ] do
+            renamed (arg "nope") (arg "new") system |> shouldEqual (Error UnixError.ENOENT)
+
+            renamed (arg long) (arg "new") system
+            |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+    [<Test>]
     let ``rename displaces the destination and frees it when nothing holds it`` () : unit =
         let system = withRenameTree linux
 
