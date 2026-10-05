@@ -795,6 +795,163 @@ module TestStartingDirectory =
                 | other -> failwith $"%s{context}: the probe has no caller %s{other}"
             )
 
+    // ------------------------------------------------------------ openat
+
+    /// The raw `O_CREAT`, `O_EXCL` and `O_TRUNC` of each flavour.
+    let private openCreate (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 0x40
+        | SimulatedUnixFlavour.Darwin -> 0x200
+
+    let private openExclusive (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 0x80
+        | SimulatedUnixFlavour.Darwin -> 0x800
+
+    let private openTruncate (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 0x200
+        | SimulatedUnixFlavour.Darwin -> 0x400
+
+    let private renderedOpen (result : Result<SyscallAnswer * UnixSystem<int, string>, OpenRefusal>) : string =
+        match result with
+        | Ok (SyscallAnswer.Completed _, _) -> "ok"
+        | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+        | Error refusal -> $"refused: %s{OpenRefusal.describe refusal}"
+
+    let private replayOpenAt (envelope : Envelope) : unit =
+        let flavour = SimulatedUnixPlatform.flavour envelope.Platform
+
+        let rows =
+            atRows envelope
+            |> Map.filter (fun (call, _, _) _ -> call = "openat(O_RDONLY)" || call = "openat(O_CREAT)")
+
+        rows.Count |> shouldEqual (2 * 13 * 9)
+        let skipped = faccessatNotReplayed envelope
+
+        [
+            for KeyValue ((call, kind, path), expected) in rows do
+                if not (skipped.Contains kind) then
+                    match directoryArgument kind envelope with
+                    | None -> yield $"%s{call} %s{kind} %s{path}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+                        let flags = if call = "openat(O_RDONLY)" then 0 else openCreate flavour
+
+                        let actual =
+                            UnixNamespace.openat dirfd (pathArgument path envelope.Platform) flags 0o644 system
+                            |> renderedOpen
+
+                        if actual <> expected then
+                            yield
+                                $"%s{call} %s{kind} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``openat answers every dirfd and path the probe tried as Linux root`` () : unit = replayOpenAt linuxRoot
+
+    [<Test>]
+    let ``openat answers every dirfd and path the probe tried as a Linux user`` () : unit = replayOpenAt linuxUser
+
+    [<Test>]
+    let ``openat answers every dirfd and path the probe tried on Darwin`` () : unit = replayOpenAt darwinUser
+
+    /// `openat-limit.c`'s rows: where EMFILE falls against what the dirfd and
+    /// the pathname answer, with every descriptor below the bound taken (FULL)
+    /// and with one left (ONELEFT). This library refuses rather than answers
+    /// EMFILE (`OpenRefusal.DescriptorLimit`), so a probe's EMFILE must be that
+    /// refusal here.
+    let private replayOpenAtLimit (resource : string) (envelope : Envelope) : unit =
+        let flavour = SimulatedUnixPlatform.flavour envelope.Platform
+        let bound = SimulatedUnixPlatform.descriptorBound envelope.Platform
+
+        let rows =
+            [
+                for table in [ "FULL" ; "ONELEFT" ] do
+                    for row in probeLines resource table do
+                        table :: row
+            ]
+
+        rows.Length |> shouldEqual (2 * 5 * 5 * 2)
+
+        // The probe's descriptors: the directory d, the file f, a pipe's read
+        // end; then every other one below the bound taken.
+        let system = boot envelope
+        let dir, system = opened "d" system
+        let file, system = opened "f" system
+
+        let pipe, system =
+            match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+            | Ok (Pipe2Answer.Created (readFd, _), system) -> readFd, system
+            | other -> failwith $"%s{context}: pipe2 did not make a pipe: %A{other}"
+
+        // Bounded, so that a table that never fills fails the test rather
+        // than hanging it.
+        let rec fill (opened : int) (system : UnixSystem<int, string>) =
+            if opened > bound then
+                failwith $"%s{context}: %d{opened} opens and the table is still not full at the bound %d{bound}"
+
+            match UnixNamespace.openPath 0 (PathArg.ofText "f") 0 system with
+            | Ok (SyscallAnswer.Completed _, system) -> fill (opened + 1) system
+            | Error (OpenRefusal.DescriptorLimit _) -> system
+            | other -> failwith $"%s{context}: filling the table: %A{other}"
+
+        let full = fill 0 system
+
+        let oneLeft =
+            match UnixDescriptor.close (bound - 1) full with
+            | Ok (SyscallAnswer.Completed _, system) -> system
+            | other -> failwith $"%s{context}: closing the last descriptor: %A{other}"
+
+        [
+            for row in rows do
+                let table, dirLabel, pathLabel, flagLabel, expected =
+                    match row with
+                    | [ table ; d ; p ; f ; answer ] -> table, d, p, f, answer
+                    | other -> failwith $"%s{context}: a malformed row %A{other}"
+
+                let system = if table = "FULL" then full else oneLeft
+
+                let dirfd =
+                    match dirLabel with
+                    | "dir" -> dir
+                    | "file" -> file
+                    | "pipe" -> pipe
+                    | "minus1" -> -1
+                    | "closed" -> bound + 5
+                    | other -> failwith $"%s{context}: the probe has no dirfd %s{other}"
+
+                let path =
+                    match pathLabel with
+                    | "f" -> PathArg.ofText "f"
+                    | "nx" -> PathArg.ofText "nx"
+                    | "empty" -> PathArg.ofText ""
+                    | "NULL" -> PathArgumentBytes.Unreadable
+                    | "rooted" -> PathArg.ofText "/c/w/f"
+                    | other -> failwith $"%s{context}: the probe has no pathname %s{other}"
+
+                let flags = if flagLabel = "O_CREAT" then openCreate flavour else 0
+                let result = UnixNamespace.openat dirfd path flags 0o644 system
+
+                let ok =
+                    match expected, result with
+                    | "EMFILE", Error (OpenRefusal.DescriptorLimit _) -> true
+                    | _ -> renderedOpen result = expected
+
+                if not ok then
+                    yield
+                        $"%s{table} %s{dirLabel} %s{pathLabel} %s{flagLabel}: the probe answered %s{expected}, this library %s{renderedOpen result}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``openat's descriptor limit falls where Linux puts it`` () : unit =
+        replayOpenAtLimit "WoofWare.PosixKernel.Test.openatLimit.linux.txt" linuxRoot
+
+    [<Test>]
+    let ``openat's descriptor limit falls where Darwin puts it`` () : unit =
+        replayOpenAtLimit "WoofWare.PosixKernel.Test.openatLimit.darwin.txt" darwinUser
+
     [<Test>]
     let ``only Darwin's /dev/null is left unreplayed`` () : unit =
         envelopes
@@ -825,7 +982,16 @@ module TestStartingDirectory =
     /// check below leaves to those replays: a call with a rule of its own
     /// about the empty path, as Linux's `readlinkat` has, is held to it there.
     let private replayedEndToEnd : Set<string> =
-        set [ "faccessat" ; "symlinkat" ; "fstatat" ; "fstatat(NOFOLLOW)" ; "readlinkat" ]
+        set
+            [
+                "faccessat"
+                "symlinkat"
+                "fstatat"
+                "fstatat(NOFOLLOW)"
+                "readlinkat"
+                "openat(O_RDONLY)"
+                "openat(O_CREAT)"
+            ]
 
     /// The cells where a call not replayed end to end answers before, or
     /// instead of, the starting point the other calls share, as (call,
@@ -1233,3 +1399,82 @@ module TestStartingDirectory =
             |> shouldEqual (UnixNamespace.readlink argument UserBuffer.Mapped 64 heldInCwd)
 
         Check.One (config, Prop.forAll (Arb.fromGen walkCase) property)
+
+    [<Test>]
+    let ``open is openat from AT_FDCWD, and openat from a descriptor on a directory is open from that directory``
+        ()
+        : unit
+        =
+        let openCase =
+            gen {
+                let! case = walkCase
+                let! shape = Gen.elements [ "rdonly" ; "wronly" ; "creat" ; "creat-excl" ; "creat-trunc" ; "directory" ]
+                return case, shape
+            }
+
+        let property
+            (
+                (platform, credentials, cwd, path : UnixPath, _ : SymlinkPolicy, _ : TrailingSeparatorPolicy),
+                shape : string
+            )
+            : unit
+            =
+            let flavour = SimulatedUnixPlatform.flavour platform
+
+            let flags =
+                match shape with
+                | "rdonly" -> 0
+                | "wronly" -> 1
+                | "creat" -> openCreate flavour
+                | "creat-excl" -> openCreate flavour ||| openExclusive flavour
+                | "creat-trunc" -> 1 ||| openCreate flavour ||| openTruncate flavour
+                // O_DIRECTORY: x86-64 Linux's and Darwin's.
+                | "directory" ->
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux -> 0x10000
+                    | SimulatedUnixFlavour.Darwin -> 0x100000
+                | other -> failwith $"%s{context}: no open shape %s{other}"
+
+            let argument = PathArgumentBytes.Bytes (UnixPath.toByteString path)
+            let inCwd = walkSystem platform credentials cwd
+
+            UnixNamespace.openat (atFdCwd flavour) argument flags 0o644 inCwd
+            |> shouldEqual (UnixNamespace.openPath flags argument 0o644 inCwd)
+
+            // Opened as root, as the descriptor properties above do, and
+            // compared with open from the same tree, whose unowned entries are
+            // root's, by the same caller. Both hold the directory's descriptor,
+            // so both hand out the same next one.
+            let fd, held =
+                match
+                    Answered.openPath
+                        readOnly
+                        (UnixPath.parseOrFail context cwd)
+                        0
+                        (walkSystem platform Owners.root cwd)
+                with
+                | SyscallAnswer.Completed fd, system -> int fd, system
+                | other -> failwith $"%s{context}: open(%s{cwd}) did not open: %O{other}"
+
+            let withCaller (cwdInode : InodeNumber) =
+                { held with
+                    Process =
+                        { held.Process with
+                            Credentials = credentials
+                            CurrentDirectoryInode = cwdInode
+                        }
+                }
+
+            let atRoot = withCaller (VirtualFileSystem.root held.Machine.FileSystem)
+            let heldInCwd = withCaller held.Process.CurrentDirectoryInode
+
+            let outcome (result : Result<SyscallAnswer * UnixSystem<int, string>, OpenRefusal>) =
+                match result with
+                | Ok (answer, system) -> Ok (answer, system.Machine.FileSystem, system.Process.FileDescriptors)
+                | Error refusal -> Error refusal
+
+            UnixNamespace.openat fd argument flags 0o644 atRoot
+            |> outcome
+            |> shouldEqual (UnixNamespace.openPath flags argument 0o644 heldInCwd |> outcome)
+
+        Check.One (config, Prop.forAll (Arb.fromGen openCase) property)
