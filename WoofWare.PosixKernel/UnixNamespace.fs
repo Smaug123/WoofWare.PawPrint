@@ -776,17 +776,31 @@ module UnixNamespace =
             failwith
                 $"%s{context}: about to create an inode in inode %O{directory}, which the walk had established was a directory, but it is now absent or not a directory (this is a bug in this library)."
 
-    /// `openPath`, of a path this kernel has already copied in.
+    /// `openat`, of a path this kernel has already copied in, starting from
+    /// `directory` if it is relative.
     let internal openPathParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (flags : OpenFlags)
         (path : UnixPath)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
-        // Measured (`fcntl-dup.c`, LIMIT rows): with no descriptor left below
-        // the limit, a missing file is EMFILE rather than ENOENT, on both: the
-        // descriptor comes before the path is resolved.
+        // Measured (`openat-limit.c`): Linux's empty path is ENOENT even with
+        // no descriptor left, since its copy-in refuses it; Darwin has
+        // allocated the descriptor before it copies anything in (`openPath`).
+        match
+            (SimulatedUnixPlatform.startingPointRules system.Machine.UnixPlatform).EmptyPath, UnixPath.isEmpty path
+        with
+        | EmptyPathRule.NoSuchEntryBeforeDescriptor, true -> Ok (SyscallAnswer.Failed UnixError.ENOENT, system)
+        | EmptyPathRule.NoSuchEntryBeforeDescriptor, false
+        | EmptyPathRule.NoSuchEntryAfterDescriptor, _ ->
+
+        // Measured (`fcntl-dup.c`'s LIMIT rows, and `openat-limit.c` for every
+        // kind of dirfd): with no descriptor left below the limit, a missing
+        // file is EMFILE rather than ENOENT, and so is a dirfd naming nothing
+        // or no directory, on both: the descriptor comes before the walk, and
+        // with it before `dirfd` is looked at.
         match
             FileDescriptorRegistry.room
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
@@ -894,7 +908,7 @@ module UnixNamespace =
             // bit that is demanded. `OpenDirRules` holds them.
             match
                 UnixPathResolution.resolvePathFull
-                    AtDirectory.CurrentDirectory
+                    directory
                     SymlinkPolicy.Follow
                     TrailingSeparatorPolicy.Demand
                     path
@@ -926,9 +940,7 @@ module UnixNamespace =
             else
                 TrailingSeparatorPolicy.Demand
 
-        match
-            UnixPathResolution.resolvePathFull AtDirectory.CurrentDirectory policy trailingSeparatorPolicy path system
-        with
+        match UnixPathResolution.resolvePathFull directory policy trailingSeparatorPolicy path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (OpenRefusal.Path refusal)
         | Ok resolution ->
@@ -1106,41 +1118,8 @@ module UnixNamespace =
         truncated
         |> Result.bind (fun (truncatedExisting, system) -> opened truncatedExisting inode system)
 
-    /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
-    /// descriptor onto what it names.
-    ///
-    /// `flags` is raw, in the simulated flavour's own `<fcntl.h>` numbering,
-    /// which differs between Linux's architectures as well as between
-    /// flavours. A bit the flavour does not define is ignored, as both
-    /// kernels ignore it. A bit it defines is either one this kernel models
-    /// or a refusal naming it (`OpenRefusal.UnmodelledFlags`), never silently
-    /// dropped.
-    ///
-    /// The word is screened before the path is copied in, so its EINVAL comes
-    /// ahead of EFAULT, ENAMETOOLONG, EEXIST and EISDIR: on both flavours for
-    /// `O_CREAT|O_DIRECTORY`, and on Darwin for access mode 3. Then `path` is
-    /// the argument's bytes, copied in: EFAULT if they were unreadable,
-    /// ENAMETOOLONG if they run past `PATH_MAX`.
-    ///
-    /// Named for the path it takes, `open` being an F# keyword and
-    /// `FileDescriptorRegistry.openFile` already meaning "open this inode". It
-    /// opens directories too, for reading.
-    ///
-    /// `mode` is raw and **unvalidated**, and must stay that way:
-    /// callers commonly pass 0666 even for a read-only open of an existing file,
-    /// and a kernel accepts that, so refusing a nonzero mode without `O_CREAT`
-    /// would refuse an ordinary read. It is read only when a file is actually created,
-    /// and then masked rather than rejected: measured, `mode` 0o10777 creates
-    /// 0o0755 on both flavours, so a bit above the permission word is dropped
-    /// exactly as the platform's own mask drops it.
-    ///
-    /// Refused, before anything is read or changed, for a flag word this kernel
-    /// does not model (see `OpenRefusal`), for an `O_TRUNC` open whose effect
-    /// on set-ID bits is unmeasured, and when no descriptor below the bound
-    /// (`SimulatedUnixPlatform.descriptorBound`) is free: under Darwin ahead of
-    /// every errno, and under Linux after the word's and the path's. Every
-    /// other outcome is a descriptor or an errno.
-    let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private openFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (flags : int)
         (path : PathArgumentBytes)
         (mode : int)
@@ -1172,7 +1151,73 @@ module UnixNamespace =
 
         match UnixPathResolution.copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> openPathParsed flags path mode system
+        | Ok path -> openPathParsed directory flags path mode system
+
+    /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
+    /// descriptor onto what it names. It is `openat` from `AT_FDCWD`.
+    ///
+    /// `flags` is raw, in the simulated flavour's own `<fcntl.h>` numbering,
+    /// which differs between Linux's architectures as well as between
+    /// flavours. A bit the flavour does not define is ignored, as both
+    /// kernels ignore it. A bit it defines is either one this kernel models
+    /// or a refusal naming it (`OpenRefusal.UnmodelledFlags`), never silently
+    /// dropped.
+    ///
+    /// The word is screened before the path is copied in, so its EINVAL comes
+    /// ahead of EFAULT, ENAMETOOLONG, EEXIST and EISDIR: on both flavours for
+    /// `O_CREAT|O_DIRECTORY`, and on Darwin for access mode 3. Then `path` is
+    /// the argument's bytes, copied in: EFAULT if they were unreadable,
+    /// ENAMETOOLONG if they run past `PATH_MAX`.
+    ///
+    /// Named for the path it takes, `open` being an F# keyword and
+    /// `FileDescriptorRegistry.openFile` already meaning "open this inode". It
+    /// opens directories too, for reading.
+    ///
+    /// `mode` is raw and **unvalidated**, and must stay that way:
+    /// callers commonly pass 0666 even for a read-only open of an existing file,
+    /// and a kernel accepts that, so refusing a nonzero mode without `O_CREAT`
+    /// would refuse an ordinary read. It is read only when a file is actually created,
+    /// and then masked rather than rejected: measured, `mode` 0o10777 creates
+    /// 0o0755 on both flavours, so a bit above the permission word is dropped
+    /// exactly as the platform's own mask drops it.
+    ///
+    /// Refused, before anything is read or changed, for a flag word this kernel
+    /// does not model (see `OpenRefusal`), for an `O_TRUNC` open whose effect
+    /// on set-ID bits is unmeasured, and when no descriptor below the bound
+    /// (`SimulatedUnixPlatform.descriptorBound`) is free: under Darwin ahead of
+    /// every errno, and under Linux after the word's and the copy-in's (an
+    /// empty path's ENOENT among them) and before the walk's. Every other
+    /// outcome is a descriptor or an errno.
+    let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (flags : int)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
+        =
+        openFrom AtDirectory.CurrentDirectory flags path mode system
+
+    /// `openat(2)`: `openPath` of `path`, starting from `dirfd` if it is
+    /// relative; `openPath` is this from `AT_FDCWD`.
+    ///
+    /// `dirfd` is raw, in this platform's own numbering. Everything `openPath`
+    /// says holds, with one more step: once the path is copied in, and once
+    /// Linux has a descriptor to give, a relative path starts where `dirfd`
+    /// says, as every `*at` call's does (`UnixPathResolution.walkStart`). So
+    /// with no descriptor left below the bound the call is refused ahead of
+    /// a `dirfd` that names nothing or no directory, on both flavours; and on
+    /// Linux an unreadable, over-long or empty path is answered ahead of that
+    /// refusal, while on Darwin the refusal comes first.
+    let openat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (flags : int)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+        openFrom (AtDirectory.decode flavour dirfd) flags path mode system
 
     /// `readlinkat`, of a path this kernel has already copied in, starting
     /// from `directory` if it is relative.
