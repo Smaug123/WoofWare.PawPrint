@@ -55,3 +55,31 @@ module NewSocket =
         | Error refusal ->
             failwith
                 $"NewSocket.create: socket(%d{rawDomain}, %d{rawKind}, %d{rawProtocol}) was refused: %s{SocketRefusal.describe refusal}"
+
+    /// Every shape `create` can ask for: each domain, kind and protocol. A
+    /// socket this kernel makes is described by exactly these three, so the
+    /// ones it makes for some request here are all the sockets it makes.
+    let requests : (SocketDomain * SocketKind * SocketProtocol) list =
+        [
+            for domain in [ SocketDomain.Unix ; SocketDomain.Inet ; SocketDomain.Inet6 ] do
+                for kind in [ SocketKind.Stream ; SocketKind.Datagram ; SocketKind.SeqPacket ] do
+                    for protocol in [ SocketProtocol.Default ; SocketProtocol.Tcp ; SocketProtocol.Udp ] do
+                        domain, kind, protocol
+        ]
+
+    /// `socket(2)` for this shape, or `None` when the kernel answers an errno
+    /// or refuses.
+    let tryCreate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (domain : SocketDomain)
+        (kind : SocketKind)
+        (protocol : SocketProtocol)
+        (system : UnixSystem<'Task, 'Handler>)
+        : (int * UnixSystem<'Task, 'Handler>) option
+        =
+        let rawDomain, rawKind, rawProtocol =
+            arguments system.Machine.UnixPlatform domain kind protocol
+
+        match UnixSocket.socket rawDomain rawKind rawProtocol system with
+        | Ok (Ok created) -> Some created
+        | Ok (Error _)
+        | Error _ -> None

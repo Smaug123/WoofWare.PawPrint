@@ -21,7 +21,23 @@ namespace WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 module LinuxReadiness =
 
+    /// Whether this kernel models the readiness `socket` presents to a
+    /// Linux-flavoured waiter: any socket but a `SOCK_SEQPACKET` one.
+    ///
+    /// An `AF_UNIX` `SOCK_SEQPACKET` socket's `poll(2)` level is measured, but
+    /// what an epoll wait reports for one is not, and the two waiters read one
+    /// level; so `UnixPoll.poll` and `UnixPoll.epollCtl` refuse such a socket
+    /// rather than ask `ofDescription` for it.
+    let modelsSocket (socket : SocketDescription) : bool =
+        match socket.Kind with
+        | SocketKind.Stream
+        | SocketKind.Datagram -> true
+        | SocketKind.SeqPacket -> false
+
     /// The mask the descriptor `targetId` names presents right now.
+    ///
+    /// Defined for a socket only when `modelsSocket` accepts it, and failing
+    /// otherwise.
     let ofDescription<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (targetId : OpenFileDescriptionId)
         (system : UnixSystem<'Task, 'Handler>)

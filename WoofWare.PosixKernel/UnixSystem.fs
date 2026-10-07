@@ -381,8 +381,9 @@ type UnixSystemDefect<'Task> =
     /// On Linux, the leader's thread ID is not the process ID, which it always is.
     | LeaderThreadIdNotProcessId of leader : 'Task * id : OsThreadId * pid : ProcessId
     /// A task's thread ID is one the machine's counter could not have handed out:
-    /// at or above `pid_max` on Linux, or not yet reached on Darwin. A later
-    /// thread could be given the same ID.
+    /// at or above the greatest `pid_max` Linux takes
+    /// (`ThreadIdAllocator.linuxPidMaxCeiling`), or not yet reached on Darwin,
+    /// where a later thread could be given the same ID.
     | OsThreadIdNotMintable of task : 'Task * id : OsThreadId * allocator : ThreadIdAllocator
     /// The machine's thread ID counter is not its flavour's: a Linux counter on a
     /// Darwin machine, or the other way about.
@@ -2291,33 +2292,33 @@ module UnixSystem =
 
     /// The machine's administrator writes Linux's `kernel.pid_max` sysctl
     /// (through `/proc/sys`), which a sysctl allows at any time, the machine
-    /// running or not: thread IDs are below it, and once they reach it they
-    /// start again from 300, skipping those still in use.
+    /// running or not: the thread IDs handed out from then on are below it, and
+    /// once they reach it they start again from 300, skipping those still in use.
+    ///
+    /// Any value from 301 to 4194304 is accepted, including one at or below a live
+    /// task's thread ID: as on Linux, that task keeps its ID, and the next thread
+    /// takes its ID from 300 up.
     ///
     /// Not configuration, which is `UnixBootImage`'s, but the outside world
     /// acting on a running machine, as `UnixSystem.advanceClock` is.
     ///
-    /// Refuses a Darwin machine, which has no such setting; a value Linux does not
-    /// accept, which is anything outside 301 to 4194304; and a value at or below a
-    /// live task's thread ID.
+    /// Throws for a Darwin machine, which has no such setting, and for a value
+    /// outside 301 to 4194304 (`ThreadIdAllocator.linuxPidMaxFloor` to
+    /// `ThreadIdAllocator.linuxPidMaxCeiling`), which Linux's sysctl answers
+    /// with EINVAL.
     let writePidMaxSysctl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (context : string)
         (pidMax : int32)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
+        // Measured on Linux 6.18.5 aarch64 by
+        // `docs/plans/2026-08-23-posix-kernel-extraction/pid-max-below-live.c`:
+        // with process 5000 and its thread 5001 alive, writes of 1000, 5000, 5001,
+        // 5002 and 400 each take; both keep their IDs, `kill` and `tgkill` still
+        // find them, and the threads started after each write get 300, 301, and
+        // on up.
         let threadIds = ThreadIdAllocator.withPidMax context pidMax system.Machine.ThreadIds
-
-        // What Linux does with a live ID at or above a lowered `pid_max` has not
-        // been measured.
-        match
-            system.Tasks
-            |> Map.tryFindKey (fun _ state -> not (ThreadIdAllocator.couldHaveMinted state.OsThreadId threadIds))
-        with
-        | Some task ->
-            failwith
-                $"%s{context}: task %O{task} has thread ID %O{(UnixTaskTable.osThreadIdOf task system.Tasks)}, which is not below pid_max %d{pidMax}."
-        | None ->
 
         { system with
             Machine =
