@@ -366,13 +366,7 @@ module TestCloneFile =
                 |> ok
                 |> snd
 
-            let vfs =
-                VirtualFileSystem.setTimes
-                    (inodeAt vfs "/src")
-                    sourceTimes.Access
-                    sourceTimes.Modification
-                    sourceTimes.StatusChange
-                    vfs
+            let vfs = VirtualFileSystem.setTimes (inodeAt vfs "/src") sourceTimes vfs
 
             let system =
                 systemOnWith (UnixBootImage.withUmask context (mode 0o777)) SimulatedUnixPlatform.macOsArm64 u501 vfs
