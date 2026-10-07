@@ -93,6 +93,7 @@ module TestClockAgainstHost =
             let system =
                 imageOn flavour
                 |> UnixBootImage.withBootTime (UnixTimestamp.ofSeconds 1_000_000L)
+                |> Configured.expectOk BootTimeRefusal.describe
                 |> UnixBootImage.boot
                 |> UnixSystem.advanceClock 1_000_000_123L
 

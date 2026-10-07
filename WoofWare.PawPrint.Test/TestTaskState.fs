@@ -44,6 +44,7 @@ module TestTaskState =
             .MapKernel (fun _ ->
                 EmulatedKernel.initialImage
                 |> UnixBootImage.withProcessorCount 4
+                |> Result.defaultWith (fun refusal -> failwith $"test bug: %s{ProcessorCountRefusal.describe refusal}")
                 |> EmulatedKernel.boot
             )
 

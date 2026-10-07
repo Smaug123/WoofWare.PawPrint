@@ -29,12 +29,17 @@ type Syscall =
     | FLock of fd : int * operation : int
     | FTruncate of fd : int * length : int64
     | Close of fd : int
-    /// `mode` is raw, as `mkdir(2)` takes it: how it combines with the umask
-    /// and with the parent's set-group-ID bit is behaviour this kernel models,
-    /// and models per flavour.
-    | MkDir of path : PathArgumentBytes * mode : int
-    | Unlink of path : PathArgumentBytes
-    | RmDir of path : PathArgumentBytes
+    /// `dirfd` and `mode` are raw, as `mkdirat(2)` takes them: how `mode`
+    /// combines with the umask and with the parent's set-group-ID bit is
+    /// behaviour this kernel models, and models per flavour. `mkdir(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`).
+    | MkDirAt of dirfd : int * path : PathArgumentBytes * mode : int
+    /// `dirfd` and `flags` are raw, as `unlinkat(2)` takes them: each flavour
+    /// numbers `AT_FDCWD` and `AT_REMOVEDIR` its own way, and which other bits
+    /// it rejects is behaviour this kernel models per flavour. `unlink(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no
+    /// flags, and `rmdir(2)` with `AT_REMOVEDIR` (`UnlinkAtRules.atRemoveDir`).
+    | UnlinkAt of dirfd : int * path : PathArgumentBytes * flags : int
     | ChDir of path : PathArgumentBytes
     /// `mode` is raw, as `chmod(2)` takes it: which of its bits the inode gets
     /// is behaviour this kernel models.
@@ -99,8 +104,7 @@ type SyscallRefusal<'Task> =
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
     | MkDir of PathRefusal
-    | Unlink of RemovalRefusal
-    | RmDir of RemovalRefusal
+    | UnlinkAt of UnlinkAtRefusal
     | ChDir of PathRefusal
     | ChMod of ChModRefusal
     | FChMod of FChModRefusal
@@ -186,6 +190,12 @@ type UnixSystemDefect<'Task> =
     /// so accepting it twice would materialise two sockets onto one
     /// connection.
     | DuplicateQueuedConnection of connection : ConnectionId
+    /// More than one socket holds one end of a connection: two established as
+    /// its client, or as its server, or an accepted server end while a
+    /// listener still queues the connection (where its server end is before
+    /// `accept(2)`). `holders` names each, in socket-table order, and a
+    /// listener once however often it queues the connection.
+    | ConnectionEndHeldTwice of connection : ConnectionId * connectionEnd : ConnectionEnd * holders : SocketId list
     /// A socket's phase is one its kind cannot enter: a datagram socket
     /// listening or holding a stream connection, or a non-datagram socket
     /// holding a datagram peer.
@@ -391,8 +401,9 @@ type UnixSystemDefect<'Task> =
     /// On Linux, the leader's thread ID is not the process ID, which it always is.
     | LeaderThreadIdNotProcessId of leader : 'Task * id : OsThreadId * pid : ProcessId
     /// A task's thread ID is one the machine's counter could not have handed out:
-    /// at or above `pid_max` on Linux, or not yet reached on Darwin. A later
-    /// thread could be given the same ID.
+    /// at or above the greatest `pid_max` Linux takes
+    /// (`ThreadIdAllocator.linuxPidMaxCeiling`), or not yet reached on Darwin,
+    /// where a later thread could be given the same ID.
     | OsThreadIdNotMintable of task : 'Task * id : OsThreadId * allocator : ThreadIdAllocator
     /// The machine's thread ID counter is not its flavour's: a Linux counter on a
     /// Darwin machine, or the other way about.
@@ -888,18 +899,14 @@ module UnixSystem =
             UnixDescriptor.close fd system
             |> answered
             |> Result.mapError SyscallRefusal.Close
-        | Syscall.MkDir (path, mode) ->
-            UnixNamespace.mkdir path mode system
+        | Syscall.MkDirAt (dirfd, path, mode) ->
+            UnixNamespace.mkdirat dirfd path mode system
             |> answered
             |> Result.mapError SyscallRefusal.MkDir
-        | Syscall.Unlink path ->
-            UnixNamespace.unlink path system
+        | Syscall.UnlinkAt (dirfd, path, flags) ->
+            UnixNamespace.unlinkat dirfd path flags system
             |> answered
-            |> Result.mapError SyscallRefusal.Unlink
-        | Syscall.RmDir path ->
-            UnixNamespace.rmdir path system
-            |> answered
-            |> Result.mapError SyscallRefusal.RmDir
+            |> Result.mapError SyscallRefusal.UnlinkAt
         | Syscall.ChDir path ->
             UnixPathResolution.chdir path system
             |> answered
@@ -1087,18 +1094,19 @@ module UnixSystem =
                 | OpenFileTarget.Pipe _ -> None
             )
 
-        // Every reference any socket makes to a connection, with whether it
-        // came through an accept queue (which has its own defect case and its
-        // own no-duplicates rule).
+        // Every reference any socket makes to a connection: as the end it is
+        // (`Some`), or through an accept queue (`None`), which has its own
+        // defect case and its own no-duplicates rule.
         let connectionReferences =
             machine.Sockets
             |> Map.toList
             |> List.collect (fun (socketId, socket) ->
                 match socket.Phase with
-                | SocketPhase.Established connection
-                | SocketPhase.EstablishedPendingReport connection -> [ socketId, connection, false ]
+                | SocketPhase.Established (connection, connectionEnd) -> [ socketId, connection, Some connectionEnd ]
+                | SocketPhase.EstablishedPendingReport connection ->
+                    [ socketId, connection, Some ConnectionEnd.Client ]
                 | SocketPhase.Listening listenState ->
-                    listenState.Queue |> List.map (fun connection -> socketId, connection, true)
+                    listenState.Queue |> List.map (fun connection -> socketId, connection, None)
                 | SocketPhase.Idle
                 | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> []
@@ -1107,11 +1115,10 @@ module UnixSystem =
         let danglingConnections =
             connectionReferences
             |> List.filter (fun (_, connection, _) -> not (Map.containsKey connection machine.Connections))
-            |> List.map (fun (socketId, connection, queued) ->
-                if queued then
-                    UnixSystemDefect.DanglingQueuedConnection (socketId, connection)
-                else
-                    UnixSystemDefect.DanglingConnection (socketId, connection)
+            |> List.map (fun (socketId, connection, heldAs) ->
+                match heldAs with
+                | None -> UnixSystemDefect.DanglingQueuedConnection (socketId, connection)
+                | Some _ -> UnixSystemDefect.DanglingConnection (socketId, connection)
             )
 
         let referencedConnections =
@@ -1128,10 +1135,43 @@ module UnixSystem =
 
         let duplicateQueued =
             connectionReferences
-            |> List.choose (fun (_, connection, queued) -> if queued then Some connection else None)
+            |> List.choose (fun (_, connection, heldAs) ->
+                match heldAs with
+                | None -> Some connection
+                | Some _ -> None
+            )
             |> List.countBy id
             |> List.filter (fun (_, count) -> count > 1)
             |> List.map (fun (connection, _) -> UnixSystemDefect.DuplicateQueuedConnection connection)
+
+        // A connection has one client and one server. Until `accept(2)` the
+        // server end is the listener's queue entry, so the server end is held
+        // once in all, queued or accepted. A listener counts once however
+        // often it queues the connection: that is `DuplicateQueuedConnection`.
+        let connectionEndsHeldTwice =
+            connectionReferences
+            |> List.groupBy (fun (_, connection, _) -> connection)
+            |> List.collect (fun (connection, references) ->
+                [ ConnectionEnd.Client ; ConnectionEnd.Server ]
+                |> List.choose (fun connectionEnd ->
+                    let holders =
+                        references
+                        |> List.choose (fun (socketId, _, heldAs) ->
+                            let holdsThisEnd =
+                                match heldAs with
+                                | Some held -> held = connectionEnd
+                                | None -> connectionEnd = ConnectionEnd.Server
+
+                            if holdsThisEnd then Some socketId else None
+                        )
+                        |> List.distinct
+
+                    if List.length holders > 1 then
+                        Some (UnixSystemDefect.ConnectionEndHeldTwice (connection, connectionEnd, holders))
+                    else
+                        None
+                )
+            )
 
         let phaseKindMismatches =
             machine.Sockets
@@ -1593,6 +1633,7 @@ module UnixSystem =
         @ danglingConnections
         @ orphanConnections
         @ duplicateQueued
+        @ connectionEndsHeldTwice
         @ phaseKindMismatches
         @ drainedUnderLinux
         @ connectionFreshness
@@ -2154,7 +2195,7 @@ module UnixSystem =
     /// The prefixes Linux's local routing table holds, which it will `bind(2)`
     /// any address inside. Loopback's `127.0.0.0/8` is the one every Linux has,
     /// and is why `127.9.9.9` binds there and not on Darwin.
-    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
+    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.loopbackNetwork ]
 
     /// Effective user ID a freshly-minted simulated process runs as.
     ///
@@ -2414,33 +2455,33 @@ module UnixSystem =
 
     /// The machine's administrator writes Linux's `kernel.pid_max` sysctl
     /// (through `/proc/sys`), which a sysctl allows at any time, the machine
-    /// running or not: thread IDs are below it, and once they reach it they
-    /// start again from 300, skipping those still in use.
+    /// running or not: the thread IDs handed out from then on are below it, and
+    /// once they reach it they start again from 300, skipping those still in use.
+    ///
+    /// Any value from 301 to 4194304 is accepted, including one at or below a live
+    /// task's thread ID: as on Linux, that task keeps its ID, and the next thread
+    /// takes its ID from 300 up.
     ///
     /// Not configuration, which is `UnixBootImage`'s, but the outside world
     /// acting on a running machine, as `UnixSystem.advanceClock` is.
     ///
-    /// Refuses a Darwin machine, which has no such setting; a value Linux does not
-    /// accept, which is anything outside 301 to 4194304; and a value at or below a
-    /// live task's thread ID.
+    /// Throws for a Darwin machine, which has no such setting, and for a value
+    /// outside 301 to 4194304 (`ThreadIdAllocator.linuxPidMaxFloor` to
+    /// `ThreadIdAllocator.linuxPidMaxCeiling`), which Linux's sysctl answers
+    /// with EINVAL.
     let writePidMaxSysctl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (context : string)
         (pidMax : int32)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
+        // Measured on Linux 6.18.5 aarch64 by
+        // `docs/plans/2026-08-23-posix-kernel-extraction/pid-max-below-live.c`:
+        // with process 5000 and its thread 5001 alive, writes of 1000, 5000, 5001,
+        // 5002 and 400 each take; both keep their IDs, `kill` and `tgkill` still
+        // find them, and the threads started after each write get 300, 301, and
+        // on up.
         let threadIds = ThreadIdAllocator.withPidMax context pidMax system.Machine.ThreadIds
-
-        // What Linux does with a live ID at or above a lowered `pid_max` has not
-        // been measured.
-        match
-            system.Tasks
-            |> Map.tryFindKey (fun _ state -> not (ThreadIdAllocator.couldHaveMinted state.OsThreadId threadIds))
-        with
-        | Some task ->
-            failwith
-                $"%s{context}: task %O{task} has thread ID %O{(UnixTaskTable.osThreadIdOf task system.Tasks)}, which is not below pid_max %d{pidMax}."
-        | None ->
 
         { system with
             Machine =

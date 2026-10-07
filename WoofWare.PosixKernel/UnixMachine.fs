@@ -484,7 +484,7 @@ module UnixMachineState =
             otherId <> socketId
             && (
                 match other.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c -> c = connectionId
                 | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
                 | SocketPhase.Idle
@@ -505,6 +505,9 @@ module UnixMachineState =
     /// flavour before reaching here — epoll, which Darwin does not have, and
     /// `UnixPoll.poll` — and Darwin's kqueue reads its own filters'
     /// readiness (`DarwinReadiness`), not this.
+    ///
+    /// Defined only for a socket `LinuxReadiness.modelsSocket` accepts, and
+    /// failing for a `SOCK_SEQPACKET` one, whose epoll level is unmeasured.
     let socketReadinessLevel (socketId : SocketId) (machine : UnixMachineState) : ReadinessLevel =
         let target = socket socketId machine
 
@@ -528,10 +531,22 @@ module UnixMachineState =
                     Out = true
                 }
             | SocketKind.SeqPacket ->
+                // On Linux `poll(2)` reports OUT|HUP|WRNORM|WRBAND for a
+                // fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c,
+                // and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c
+                // for the WRNORM and WRBAND bits). That row is the whole answer
+                // only while `listen`, `connect` and `accept` keep refusing the
+                // kind (their `UnmeasuredKind` refusals), which is what confines
+                // such a socket to `Idle`. What `epoll_wait` reports would only
+                // be *inferred* from the two waiters sharing one poll handler,
+                // and every other row here is measured through both; answering
+                // here makes epoll delivery answer too. So both waiters refuse
+                // the kind first (`PollRefusal.UnmeasuredSocketKind`,
+                // `EpollCtlRefusal.UnmeasuredSocketKind`).
                 failwith
-                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. The kind is reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD through `UnixPoll.epollCtl` (the registration screen rejects only regular files, so a socket of any kind is admitted) and `UnixPoll.poll` (which needs no registration at all). On Linux `poll(2)` reports OUT|HUP|WRNORM|WRBAND for a fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c, and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c for the WRNORM and WRBAND bits). That row is the whole answer only while `listen`, `connect` and `accept` keep refusing the kind (their `UnmeasuredKind` refusals), which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those operations reopens every other phase for it. It is still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before answering, since answering here makes epoll delivery answer too."
+                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll, so it is not modelled. `UnixPoll.poll` and `UnixPoll.epollCtl` both refuse such a socket (LinuxReadiness.modelsSocket) before asking, so this is a bug in this library, or in a caller that asked about a socket LinuxReadiness.modelsSocket rejects. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before modelling the kind."
         | SocketPhase.EstablishedPendingReport connectionId
-        | SocketPhase.Established connectionId ->
+        | SocketPhase.Established (connectionId, _) ->
             // With the peer alive and no receive path modelled, both ends
             // are exactly write-ready; once the peer is gone, the level is
             // the measured half-closed one.
@@ -621,7 +636,7 @@ module UnixMachineState =
             machine.Sockets
             |> Map.exists (fun _ socket ->
                 match socket.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c ->
                     c = connectionId
                     && (socket.Binding |> Option.exists (fun binding -> binding.Endpoint = held))

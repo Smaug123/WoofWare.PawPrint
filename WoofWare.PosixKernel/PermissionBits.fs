@@ -171,7 +171,7 @@ type SetIdBitsOnTruncation =
 /// mode.
 /// </summary>
 /// <remarks>
-/// This is <c>st_mode & 0o7777</c>.
+/// This is <c>st_mode &amp; 0o7777</c>.
 ///
 /// You would feed this to <c>chmod(2)</c>, for example.
 ///
@@ -342,7 +342,7 @@ module ModeChangeRefusal =
 [<RequireQualifiedAccess>]
 module PermissionBits =
     /// <summary>
-    /// The widest <c>st_mode & 0o7777</c> can be:
+    /// The widest <c>st_mode &amp; 0o7777</c> can be:
     /// three rwx triples, plus setuid, setgid and the sticky bit.
     /// </summary>
     let private widest : int = 0o7777

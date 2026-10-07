@@ -39,19 +39,29 @@ type InternetEndpoint =
 /// to an interface doesn't make <c>192.168.1.11</c> bindable, because that is considered a
 /// route to a <i>peer</i>, not to this machine.)
 /// Darwin instead restricts binding to addresses assigned to the host.
+///
+/// Two prefixes are equal exactly when they name the same set of addresses: the
+/// network address has no bit set past the prefix length.
+///
+/// Build one with <c>Ipv4Prefix.create</c>; read it with <c>Ipv4Prefix.network</c> and
+/// <c>Ipv4Prefix.bits</c>. Its default value is <c>0.0.0.0/0</c>, which is a prefix
+/// <c>create</c> admits, so every value of this type is one.
 /// </remarks>
-type Ipv4Prefix =
-    {
-        /// <summary>
-        /// The network address, host order.
-        /// </summary>
-        /// <example>
-        /// <c>127.0.0.1</c> is <c>0x7F000001</c>.
-        /// </example>
-        Network : uint32
-        /// <summary>How many leading bits the prefix fixes, in <c>[0, 32]</c>.</summary>
-        Bits : int
-    }
+[<Struct>]
+type Ipv4Prefix = private | Ipv4Prefix of network : uint32 * bits : int
+
+/// Why `Ipv4Prefix.create` refuses a network address and length.
+///
+/// Linux refuses the same two for a route (`rtm_to_fib_config` in
+/// `net/ipv4/fib_frontend.c`, `EINVAL`), so no routing table holds either.
+[<RequireQualifiedAccess>]
+type Ipv4PrefixRefusal =
+    /// The length is outside `[0, 32]`: an IPv4 address has 32 bits, so no
+    /// prefix fixes fewer than none or more than all of them. Contradictory.
+    | LengthOutOfRange of bits : int
+    /// The network address has a bit set past its first `bits`, so it is not
+    /// the network of a `bits`-long prefix. Contradictory.
+    | HostBitsSet of network : uint32 * bits : int
 
 [<RequireQualifiedAccess>]
 module InternetEndpoint =
@@ -109,44 +119,75 @@ module InternetEndpoint =
             endpoint.Port
 
 [<RequireQualifiedAccess>]
+module Ipv4PrefixRefusal =
+    let private dottedQuad (address : uint32) : string =
+        sprintf
+            "%d.%d.%d.%d"
+            ((address >>> 24) &&& 0xFFu)
+            ((address >>> 16) &&& 0xFFu)
+            ((address >>> 8) &&& 0xFFu)
+            (address &&& 0xFFu)
+
+    /// What this library knows about why it refused the prefix, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : Ipv4PrefixRefusal) : string =
+        match refusal with
+        | Ipv4PrefixRefusal.LengthOutOfRange bits ->
+            $"a prefix length of %d{bits} is not in [0, 32], the bits an IPv4 address has."
+        | Ipv4PrefixRefusal.HostBitsSet (network, bits) ->
+            $"%s{dottedQuad network}/%d{bits} has a bit set past its first %d{bits}, so it is not a network address of that length; Linux refuses such a route with EINVAL."
+
+[<RequireQualifiedAccess>]
 module Ipv4Prefix =
 
     /// <summary>
-    /// Assemble an IPv4 prefix from its parts.
+    /// The prefix whose first <c>bits</c> bits are those of <c>network</c> (host order).
     /// </summary>
     /// <returns>
-    /// Throws if the <c>bits</c> count is outside <c>[0, 32]</c>.
+    /// A refusal if <c>bits</c> is outside <c>[0, 32]</c>, or if <c>network</c> has a bit set
+    /// past its first <c>bits</c>: <c>127.0.0.1/8</c> is refused, and <c>127.0.0.0/8</c> is the prefix.
     /// </returns>
-    let create (network : uint32) (bits : int) : Ipv4Prefix =
+    let create (network : uint32) (bits : int) : Result<Ipv4Prefix, Ipv4PrefixRefusal> =
         if bits < 0 || bits > 32 then
-            failwith $"Ipv4Prefix.create: a prefix length of %d{bits} is not in [0, 32]."
+            Error (Ipv4PrefixRefusal.LengthOutOfRange bits)
+        // A shift by 32 is masked to a shift by 0 by the CLI, so length 32
+        // (which has no host bits) cannot go through the shift.
+        elif bits < 32 && (network <<< bits) <> 0u then
+            Error (Ipv4PrefixRefusal.HostBitsSet (network, bits))
+        else
+            Ok (Ipv4Prefix (network, bits))
 
-        {
-            Network = network
-            Bits = bits
-        }
+    /// The network address, host order. Has no bit set past the first `bits`.
+    let network (prefix : Ipv4Prefix) : uint32 =
+        match prefix with
+        | Ipv4Prefix (network, _) -> network
 
-    /// Rejects a prefix whose fields were built by hand rather than through
-    /// `create` — the record is public, so `{ Network = x ; Bits = 99 }` is
-    /// representable, and a shift count outside [0, 32] is masked by the CLI
-    /// rather than faulting, which would silently produce an unrelated mask.
-    let assertValid (context : string) (prefix : Ipv4Prefix) : Ipv4Prefix =
-        if prefix.Bits < 0 || prefix.Bits > 32 then
-            failwith $"%s{context}: a prefix length of %d{prefix.Bits} is not in [0, 32]."
+    /// How many leading bits the prefix fixes, in `[0, 32]`.
+    let bits (prefix : Ipv4Prefix) : int =
+        match prefix with
+        | Ipv4Prefix (_, bits) -> bits
 
-        prefix
+    /// <summary>
+    /// <c>127.0.0.0/8</c>, loopback's network (<c>IN_LOOPBACKNET</c>).
+    /// </summary>
+    let loopbackNetwork : Ipv4Prefix = Ipv4Prefix (0x7F000000u, 8)
 
     /// <summary>
     /// True iff the given <c>address</c> has the given <c>prefix</c>.
     /// </summary>
     let contains (address : uint32) (prefix : Ipv4Prefix) : bool =
+        match prefix with
+        | Ipv4Prefix (network, bits) ->
+
+        // A shift by 32 is masked to a shift by 0 by the CLI, so length 0
+        // cannot go through the shift.
         let mask =
-            if prefix.Bits = 0 then
+            if bits = 0 then
                 0u
             else
-                System.UInt32.MaxValue <<< (32 - prefix.Bits)
+                System.UInt32.MaxValue <<< (32 - bits)
 
-        (address &&& mask) = (prefix.Network &&& mask)
+        address &&& mask = network
 
 /// One TCP connection, as the emulated kernel's connection table holds it.
 ///
