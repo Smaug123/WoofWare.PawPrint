@@ -71,6 +71,7 @@
     <Compile Include="SocketFuzz.fs" />
     <Compile Include="TestSocketFuzz.fs" />
     <Compile Include="TestNoPawPrintReference.fs" />
+    <Compile Include="TestSurface.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestPathCopyIn.fs" />
     <Compile Include="TestOpenFlagWord.fs" />
@@ -385,6 +386,17 @@
     <PackageReference Include="FsCheck" Version="3.3.2" />
     <PackageReference Include="FsCheck.NUnit" Version="3.3.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
+    <PackageReference Include="ApiSurface" Version="5.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ApiSurface reaches System.Formats.Asn1 6.0.0 through NuGet.Packaging's dependency on
+         System.Security.Cryptography.Pkcs 6.0.4. The shared framework carries a newer
+         System.Formats.Asn1, which wins at run time, so the package's copy is never deployed. A
+         stock .NET 10 SDK prunes the package from the graph for that reason, but the Nix-packaged
+         SDK lacks the prune data (see AllowMissingPrunePackageData in Directory.Build.props), so
+         NuGet audits it instead. -->
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-447r-wph3-92pm" />
   </ItemGroup>
 
 </Project>

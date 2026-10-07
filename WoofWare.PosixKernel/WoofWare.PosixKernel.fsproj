@@ -14,6 +14,11 @@
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <PackageIcon>light.png</PackageIcon>
         <PackageTags>posix;unix;simulation;deterministic;filesystem;sockets;fsharp;woofware</PackageTags>
+        <!-- An unoptimised build otherwise calls a public copy of each `inline` function it uses,
+             such as `<sumBy>__debug@261` for a `List.sumBy`, so a Debug assembly's public API
+             would differ from a Release one's and no SurfaceBaseline.txt could match both.
+             An optimised build inlines them anyway, so this changes nothing in Release. -->
+        <OtherFlags>$(OtherFlags) --always-inline+</OtherFlags>
     </PropertyGroup>
 
     <ItemGroup>
@@ -90,6 +95,7 @@
         <Compile Include="UnixBootImage.fs" />
         <Compile Include="UnixSignal.fs" />
         <EmbeddedResource Include="version.json" />
+        <EmbeddedResource Include="SurfaceBaseline.txt" />
     </ItemGroup>
 
     <ItemGroup>
