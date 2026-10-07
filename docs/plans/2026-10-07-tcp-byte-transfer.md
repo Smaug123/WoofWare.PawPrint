@@ -461,16 +461,20 @@ changing, so they wait for that to merge.
 `shutdown`, `SO_LINGER`, `TCP_NODELAY` and `getpeername` remain the separate
 stages that the multi-process plan lists.
 
-## 6. Questions for review
+## 6. Decisions
 
-- **Capacities (3.3).** Is "derived from the sysctl that bounds it" right for
-  Linux (4194304 + 131072, about 7% over the measured totals)? The other
-  choice is a measured constant like 3948160, which matches 65536-byte writes
-  exactly and nothing else.
-- **Time-freed space (3.3).** The model never frees send space without a
-  read. Should a timer-driven release be modelled at all? It is deterministic
-  on Linux, but it is a TCP-stack fact (zero-window probes and collapsing),
-  not a sysctl.
-- **Darwin's `SO_RCVBUF` of 408300** on an accepted loopback socket has no
-  explanation yet. It should be explained from XNU before stage 3 states it,
-  as `kevent-write-data.c` explained the send side.
+- **Capacities (3.3): derived from the configuration that bounds them.** Linux's
+  are 4194304 (`tcp_wmem[2]`) plus 131072 (`tcp_rmem[1]`), about 7% over the
+  measured totals. An admin can change a sysctl, so by the
+  `emulated-posix-kernel` skill's test it is machine configuration, not a
+  platform fact. A measured constant such as 3948160 would match one write size
+  and nothing else, while looking more exact than it is.
+- **Time-freed space (3.3): not modelled.** The model frees send space only when
+  the peer reads. This is a stated non-reproduction (see above). No
+  specification promises the timer release, and modelling the TCP stack's
+  zero-window probes and collapsing would be a design job of its own, for no
+  guest on the Kestrel path.
+- **Darwin's `SO_RCVBUF` of 408300.** Stage 3 explains it from XNU's source
+  before relying on it, as `kevent-write-data.c` explained the send side. If it
+  cannot be explained, stage 3 keeps it as a measured constant and says so
+  beside it.
