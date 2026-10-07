@@ -287,6 +287,20 @@ module TestSimulatedMachine =
             |> shouldContainText "was not focused from the machine as it stands"
 
     [<Test>]
+    let ``a machine made of a view accepts that view unchanged`` () : unit =
+        for platform in platforms do
+            let system = world platform
+            let pid = UnixSystem.processId system
+
+            let view =
+                SimulatedMachine.focus pid (SimulatedMachine.ofSystem system) |> Option.get
+
+            let _, view = UnixSystem.umask 0o077 view
+
+            let remade = SimulatedMachine.ofSystem view
+            SimulatedMachine.unfocus view remade |> shouldEqual remade
+
+    [<Test>]
     let ``unfocus refuses a view of a process the machine does not hold`` () : unit =
         for platform in platforms do
             let machine = SimulatedMachine.ofSystem (world platform)

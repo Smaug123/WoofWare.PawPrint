@@ -241,8 +241,9 @@ module SimulatedMachine =
     /// view was written back since, the machine changed some other way, or the
     /// view was focused from another history of the machine), so that writing
     /// the view back would undo a change it never saw. Each is a bug in the
-    /// client. A system no machine focused is accepted only by the machine
-    /// `ofSystem` made of it, unchanged.
+    /// client. A view the machine already holds exactly is accepted wherever
+    /// it came from, since writing it back changes nothing: so `ofSystem` of a
+    /// system accepts that system unchanged.
     ///
     /// A process cannot end on a `SimulatedMachine`: what a syscall that ends
     /// one answers is an `EndedProcess`, which is not a view and so cannot be
@@ -260,18 +261,26 @@ module SimulatedMachine =
 
         let slot = machine.Processes.[processId]
 
-        let originMachine, originProcess, originTasks =
-            match view.Origin with
-            | FocusOrigin.FocusedFrom (originMachine, originProcess, originTasks) ->
-                originMachine, originProcess, originTasks
-            // A system no machine focused is a view only of the machine made
-            // of it, as that machine still holds it.
-            | FocusOrigin.NotFocused -> view.Machine, view.Process, view.Tasks
+        let holds
+            (machineState : UnixMachineState)
+            (proc : UnixProcessState<'Task, 'Handler>)
+            (tasks : Map<'Task, UnixTaskState>)
+            : bool
+            =
+            obj.ReferenceEquals (machineState, machine.Machine)
+            && obj.ReferenceEquals (proc, slot.Process)
+            && obj.ReferenceEquals (tasks, slot.Tasks)
+
+        // A view the machine already holds exactly, wherever it was focused
+        // from, writes nothing back; as the machine `ofSystem` made of a
+        // system holds that system.
+        let unchanged = holds view.Machine view.Process view.Tasks
 
         let current =
-            obj.ReferenceEquals (originMachine, machine.Machine)
-            && obj.ReferenceEquals (originProcess, slot.Process)
-            && obj.ReferenceEquals (originTasks, slot.Tasks)
+            match view.Origin with
+            | FocusOrigin.FocusedFrom (originMachine, originProcess, originTasks) ->
+                unchanged || holds originMachine originProcess originTasks
+            | FocusOrigin.NotFocused -> unchanged
 
         if not current then
             failwith
