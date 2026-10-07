@@ -605,6 +605,7 @@ module TestSocketTable =
                                     {
                                         ClientAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
                                         ServerAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+                                        Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
                                     }
                                 ]
                         NextConnectionId = ConnectionId 1L
@@ -869,6 +870,10 @@ module TestSocketTable =
                 Machine =
                     { baseKernel.Machine with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        // The TCP buffer sysctls are the flavour's, which a connect reads.
+                        TcpSendSpace = UnixMachineState.defaultTcpSendSpace SimulatedUnixFlavour.Darwin
+                        TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace SimulatedUnixFlavour.Darwin
+                        TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax SimulatedUnixFlavour.Darwin
                     }
             }
 
@@ -916,6 +921,10 @@ module TestSocketTable =
                 Machine =
                     { baseKernel.Machine with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        // The TCP buffer sysctls are the flavour's, which a connect reads.
+                        TcpSendSpace = UnixMachineState.defaultTcpSendSpace SimulatedUnixFlavour.Darwin
+                        TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace SimulatedUnixFlavour.Darwin
+                        TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax SimulatedUnixFlavour.Darwin
                     }
             }
 
@@ -1004,6 +1013,10 @@ module TestSocketTable =
                 Machine =
                     { baseKernel.Machine with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        // The TCP buffer sysctls are the flavour's, which a connect reads.
+                        TcpSendSpace = UnixMachineState.defaultTcpSendSpace SimulatedUnixFlavour.Darwin
+                        TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace SimulatedUnixFlavour.Darwin
+                        TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax SimulatedUnixFlavour.Darwin
                     }
             }
 
@@ -1287,6 +1300,10 @@ module TestSocketTable =
                 Machine =
                     { kernel.Machine with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        // The TCP buffer sysctls are the flavour's, which a connect reads.
+                        TcpSendSpace = UnixMachineState.defaultTcpSendSpace SimulatedUnixFlavour.Darwin
+                        TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace SimulatedUnixFlavour.Darwin
+                        TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax SimulatedUnixFlavour.Darwin
                     }
             }
 
@@ -1370,6 +1387,7 @@ module TestSocketTable =
                                     {
                                         ClientAddress = loopback 1us
                                         ServerAddress = loopback 2us
+                                        Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
                                     }
                                 ]
                         NextConnectionId = ConnectionId 1L
@@ -1444,6 +1462,7 @@ module TestSocketTable =
                                     {
                                         ClientAddress = loopback 1us
                                         ServerAddress = loopback 2us
+                                        Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
                                     }
                                 ]
                         NextConnectionId = ConnectionId 1L
@@ -1488,6 +1507,7 @@ module TestSocketTable =
                                 {
                                     ClientAddress = loopback 1us
                                     ServerAddress = loopback 2us
+                                    Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
                                 }
                             ]
                     NextConnectionId = ConnectionId 1L
@@ -1660,6 +1680,10 @@ module TestSocketTable =
                     Machine =
                         { baseKernel.Machine with
                             UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                            // The TCP buffer sysctls are the flavour's, which a connect reads.
+                            TcpSendSpace = UnixMachineState.defaultTcpSendSpace SimulatedUnixFlavour.Darwin
+                            TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace SimulatedUnixFlavour.Darwin
+                            TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax SimulatedUnixFlavour.Darwin
                             SoMaxConn = 3
                         }
                 }
@@ -1876,6 +1900,10 @@ module TestSocketTable =
                 Machine =
                     { kernel.Machine with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        // The TCP buffer sysctls are the flavour's, which a connect reads.
+                        TcpSendSpace = UnixMachineState.defaultTcpSendSpace SimulatedUnixFlavour.Darwin
+                        TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace SimulatedUnixFlavour.Darwin
+                        TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax SimulatedUnixFlavour.Darwin
                         Connections = connections
                         NextConnectionId = ConnectionId 1L
                     }
@@ -1897,6 +1925,7 @@ module TestSocketTable =
                         {
                             ClientAddress = loopback 4000us
                             ServerAddress = loopback 5000us
+                            Transfer = TcpTransfer.create SimulatedUnixFlavour.Darwin 146988 408300
                         }
                     ])
 
@@ -2081,6 +2110,7 @@ module TestSocketTable =
                                         // client's.
                                         ClientAddress = loopback 5000us
                                         ServerAddress = loopback 4444us
+                                        Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
                                     }
                                 ]
                         NextConnectionId = ConnectionId 1L

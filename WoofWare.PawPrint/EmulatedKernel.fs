@@ -1932,6 +1932,16 @@ type KernelConfig =
         /// nothing of it, and on Darwin for one outside the range
         /// `UnixBootImage.withTcpSendSpace` admits.
         TcpSendSpace : int option
+        /// The TCP receive buffer sysctl — Darwin's `net.inet.tcp.recvspace`,
+        /// Linux's `net.ipv4.tcp_rmem` default — or `None` for the flavour's
+        /// measured default (131072 on both). A connection's receive buffer is
+        /// derived from it. See `UnixBootImage.withTcpReceiveSpace`.
+        TcpReceiveSpace : int option
+        /// Linux's `net.ipv4.tcp_wmem` maximum, the size a connection's send
+        /// buffer autotunes to, or `None` for the measured default (4194304).
+        /// Only `None` is admitted on Darwin, which reads nothing of it. See
+        /// `UnixBootImage.withTcpSendSpaceMax`.
+        TcpSendSpaceMax : int option
         /// Linux's `fs.protected_symlinks`, `fs.protected_regular`,
         /// `fs.protected_fifos` and `fs.protected_hardlinks` sysctls, which forbid
         /// following another user's symbolic link, or opening another user's file
@@ -2022,6 +2032,8 @@ type KernelConfig =
             EphemeralPortRange = None
             SoMaxConn = None
             TcpSendSpace = None
+            TcpReceiveSpace = None
+            TcpSendSpaceMax = None
             ProtectedFiles = ProtectedFiles.off
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
@@ -2131,6 +2143,30 @@ module KernelConfig =
             failwith
                 $"KernelConfig.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at least %d{sendPipe}, or None for the default."
 
+    let private withTcpReceiveSpace
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpReceiveSpace value image with
+        | Ok image -> image
+        | Error refusal ->
+            failwith
+                $"KernelConfig.TcpReceiveSpace: %s{TcpReceiveSpaceRefusal.describe refusal} Configure another size, or None for the default."
+
+    let private withTcpSendSpaceMax
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpSendSpaceMax value image with
+        | Ok image -> image
+        | Error (TcpSendSpaceMaxRefusal.NotReadOn _ as refusal) ->
+            failwith $"KernelConfig.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Pass None."
+        | Error (TcpSendSpaceMaxRefusal.NotPositive _ as refusal) ->
+            failwith
+                $"KernelConfig.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Configure a positive size, or None for the default."
+
     let private withProtectedFiles
         (protection : ProtectedFiles)
         (image : UnixBootImage<ThreadId, NativeSignalHandler>)
@@ -2150,7 +2186,7 @@ module KernelConfig =
     /// machine, is written just after boot, before the process runs anything.
     ///
     /// The platform is the constructor's argument rather than a setter's,
-    /// because the fields it fixes (`SoMaxConn`'s, `TcpSendSpace`'s and `Mount`'s
+    /// because the fields it fixes (`SoMaxConn`'s, the TCP buffer sysctls' and `Mount`'s
     /// defaults, the limits the current directory is admitted under) would
     /// otherwise be stale for whichever platform was set last.
     let toKernel (config : KernelConfig) : EmulatedKernel =
@@ -2200,6 +2236,8 @@ module KernelConfig =
         )
         |> withSoMaxConn config.SoMaxConn
         |> withTcpSendSpace config.TcpSendSpace
+        |> withTcpReceiveSpace config.TcpReceiveSpace
+        |> withTcpSendSpaceMax config.TcpSendSpaceMax
         |> withProtectedFiles config.ProtectedFiles
         |> UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes
         |> UnixBootImage.withUmask "KernelConfig.Umask" config.Umask

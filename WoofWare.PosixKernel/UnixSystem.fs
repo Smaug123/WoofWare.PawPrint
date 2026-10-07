@@ -2170,7 +2170,7 @@ module UnixSystem =
     /// which a client moves with `UnixBootImage.withLeaderThreadId`.
     ///
     /// The fields the platform *fixes* are derived from it rather than
-    /// taken as arguments — `SoMaxConn`, `TcpSendSpace`, `Mount`, and the platform
+    /// taken as arguments — `SoMaxConn`, the TCP buffer sysctls, `Mount`, and the platform
     /// itself — because a machine whose flavour and those disagree is one no
     /// real system could be: `EmulatedFileSystemType.isReportableUnder` says
     /// outright that a Darwin kernel never reports tmpfs. Building the record
@@ -2272,6 +2272,8 @@ module UnixSystem =
                             EphemeralPortRange = defaultEphemeralPortRange flavour
                             SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
                             TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
+                            TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace flavour
+                            TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax flavour
                             LocalAddresses = defaultLocalAddresses
                             LocalRoutes = defaultLocalRoutes
                             NanosecondsSinceBoot = 0L
