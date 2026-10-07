@@ -2035,7 +2035,7 @@ module UnixSystem =
     /// The prefixes Linux's local routing table holds, which it will `bind(2)`
     /// any address inside. Loopback's `127.0.0.0/8` is the one every Linux has,
     /// and is why `127.9.9.9` binds there and not on Darwin.
-    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
+    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.loopbackNetwork ]
 
     /// Effective user ID a freshly-minted simulated process runs as.
     ///

@@ -67,6 +67,7 @@
     <Compile Include="TestUnixSystemInitial.fs" />
     <Compile Include="TestBootImage.fs" />
     <Compile Include="TestMachineSetterRefusals.fs" />
+    <Compile Include="TestIpv4Prefix.fs" />
     <Compile Include="TestUnixSystemInvariants.fs" />
     <Compile Include="TestSocketTable.fs" />
     <Compile Include="TestSocketEventDelivery.fs" />
