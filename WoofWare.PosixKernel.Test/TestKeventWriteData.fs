@@ -180,7 +180,12 @@ module TestKeventWriteData =
             Phase = phase
         }
 
-    let private darwinMachine (sendSpace : int option) : UnixMachineState = (darwinWithSendSpace sendSpace).Machine
+    /// The machine of `darwinWithSendSpace`, holding connection 0 over IPv6,
+    /// which the IPv6 rows' sockets, built by hand, are the client end of.
+    let private darwinMachine (sendSpace : int option) : UnixMachineState =
+        (darwinWithSendSpace sendSpace
+         |> ForgedConnection.add (ConnectionId 0L) SocketDomain.Inet6 [])
+            .Machine
 
     // ------------------------------------------------------------------
     // The measured rows

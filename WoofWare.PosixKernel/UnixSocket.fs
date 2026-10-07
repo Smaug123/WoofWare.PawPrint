@@ -1697,10 +1697,11 @@ module UnixSocket =
     /// Reading it changes nothing.
     ///
     /// For `SO_ERROR` the value is the raw ECONNREFUSED of a refusal still
-    /// pending (`SocketPhase.Refused RefusalError.Pending`), and 0 in every
-    /// other phase. Reading a pending refusal takes it: the socket is left
-    /// `Refused RefusalError.Reported`, whether the copy-out then succeeds or
-    /// not. Only a call that fails before reading the option leaves the
+    /// pending (`SocketPhase.Refused RefusalError.Pending`), the raw error a
+    /// reset left pending on a connected socket (`TcpTransfer.pendingError`),
+    /// and 0 otherwise. Reading a pending error takes it: a refused socket is
+    /// left `Refused RefusalError.Reported`, and a connected one with nothing
+    /// pending, whether the copy-out then succeeds or not. Only a call that fails before reading the option leaves the
     /// refusal pending: one answered at the admission, or a Linux one
     /// declaring a negative length.
     let getsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1794,14 +1795,37 @@ module UnixSocket =
                             }
 
                         refusal, system
-                    // A connection reset by its peer would read ECONNRESET once
-                    // (measured on both), but nothing here resets one: no data
-                    // path exists for a peer to close over unread bytes, and a
-                    // listener close that would reset a queued client is refused.
+                    // A connected socket's pending error is its connection's
+                    // (`TcpTransfer.takeError`): a reset's, which the read takes
+                    // before the copy-out as a refusal's is (measured,
+                    // `tcp-transfer.c` section S: ECONNRESET, or on Linux EPIPE
+                    // after a FIN, then 0).
+                    | SocketPhase.EstablishedPendingReport _
+                    | SocketPhase.Established _ ->
+                        match SocketPhase.connectionEnd socket.Phase with
+                        | None ->
+                            failwith
+                                $"UnixSocket.getsockopt: socket %O{socketId} is in %A{socket.Phase}, which holds no connection end (this is a bug in this library)."
+                        | Some (connectionId, connectionEnd) ->
+                            let error, transfer =
+                                TcpTransfer.takeError
+                                    connectionEnd
+                                    (UnixMachineState.connection connectionId system.Machine).Transfer
+
+                            let reported =
+                                match error with
+                                | None -> 0
+                                | Some error ->
+                                    UnixError.toRawErrnoUnder
+                                        (SimulatedUnixPlatform.rawErrnoNumbering platform)
+                                        (TcpError.toUnixError error)
+
+                            reported,
+                            { system with
+                                Machine = UnixMachineState.withTransfer connectionId transfer system.Machine
+                            }
                     | SocketPhase.Idle
                     | SocketPhase.Listening _
-                    | SocketPhase.EstablishedPendingReport _
-                    | SocketPhase.Established _
                     | SocketPhase.Refused RefusalError.Reported
                     | SocketPhase.DatagramPeer _ -> 0, system
 

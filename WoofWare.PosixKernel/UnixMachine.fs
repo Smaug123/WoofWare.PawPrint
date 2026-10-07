@@ -570,26 +570,38 @@ module UnixMachineState =
             failwith
                 $"UnixMachineState.connection: %O{connectionId} names no connection in this kernel's connection table. UnixSystemDefect.DanglingConnection and DanglingQueuedConnection exist to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
 
-    /// Whether the other end of the connection `connectionId`, of which the
-    /// socket `socketId` is one end, is still open: some other socket holds
-    /// the connection established, or a listener holds it in its accept queue.
-    ///
-    /// Derived rather than stored: the connection object outlives its ends
-    /// exactly as long as something references it, so the scan is the truth.
-    let peerOpen (socketId : SocketId) (connectionId : ConnectionId) (machine : UnixMachineState) : bool =
+    /// `connectionId`'s entry in the connection table, with the bytes and end
+    /// states it carries replaced by `transfer`. Loudly partial, as
+    /// `connection` is.
+    let internal withTransfer
+        (connectionId : ConnectionId)
+        (transfer : TcpTransfer)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
+        let existing = connection connectionId machine
+
+        { machine with
+            Connections =
+                Map.add
+                    connectionId
+                    { existing with
+                        Transfer = transfer
+                    }
+                    machine.Connections
+        }
+
+    /// The socket that is the `connectionEnd` end of `connectionId`
+    /// (`SocketPhase.connectionEnd`), if one is: none for a server end still
+    /// in a listener's accept queue, nor for an end whose socket has closed.
+    let socketHoldingEnd
+        (connectionId : ConnectionId)
+        (connectionEnd : ConnectionEnd)
+        (machine : UnixMachineState)
+        : SocketId option
+        =
         machine.Sockets
-        |> Map.exists (fun otherId other ->
-            otherId <> socketId
-            && (
-                match other.Phase with
-                | SocketPhase.Established (c, _)
-                | SocketPhase.EstablishedPendingReport c -> c = connectionId
-                | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
-                | SocketPhase.Idle
-                | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> false
-            )
-        )
+        |> Map.tryFindKey (fun _ socket -> SocketPhase.connectionEnd socket.Phase = Some (connectionId, connectionEnd))
 
     /// The readiness a socket presents right now, before any waiter's interest
     /// mask is applied. Every row is measured on Linux 6.18.5 — `masks.c`
@@ -598,6 +610,10 @@ module UnixMachineState =
     /// (docs/plans/2026-08-23-socket-poll) through `poll(2)` with timeout 0,
     /// which agree on every phase, and `consumed-epoll.c` and `soerror.c`
     /// (docs/probes/so-error) for a refusal an `SO_ERROR` read has taken.
+    ///
+    /// A connected TCP socket's level is read off its connection's bytes and
+    /// end states (`TcpTransfer`), so on Linux alone: it uses Linux's
+    /// writability rule.
     ///
     /// Darwin has no measured rows and needs none: both waiters refuse that
     /// flavour before reaching here — epoll, which Darwin does not have, and
@@ -628,24 +644,49 @@ module UnixMachineState =
             | SocketKind.SeqPacket ->
                 failwith
                     $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. The kind is reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD through `UnixPoll.epollCtl` (the registration screen rejects only regular files, so a socket of any kind is admitted) and `UnixPoll.poll` (which needs no registration at all). On Linux `poll(2)` reports OUT|HUP|WRNORM|WRBAND for a fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c, and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c for the WRNORM and WRBAND bits). That row is the whole answer only while `listen`, `connect` and `accept` keep refusing the kind (their `UnmeasuredKind` refusals), which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those operations reopens every other phase for it. It is still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before answering, since answering here makes epoll delivery answer too."
-        | SocketPhase.EstablishedPendingReport connectionId
-        | SocketPhase.Established (connectionId, _) ->
-            // With the peer alive and no receive path modelled, both ends
-            // are exactly write-ready; once the peer is gone, the level is
-            // the measured half-closed one.
-            if peerOpen socketId connectionId machine then
+        | SocketPhase.EstablishedPendingReport _
+        | SocketPhase.Established _ ->
+            let connectionId, connectionEnd =
+                match SocketPhase.connectionEnd target.Phase with
+                | Some held -> held
+                | None ->
+                    failwith
+                        $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is in %A{target.Phase}, which holds no connection end (this is a bug in this library)."
+
+            let transfer = (connection connectionId machine).Transfer
+            let inbound = TcpTransfer.towards connectionEnd transfer
+            let unread = ByteQueue.length inbound.Receiving > 0
+
+            // `tcp_poll`, every row measured (`tcp-transfer.c`, section S, on
+            // Linux 6.18.5): IN with bytes unread, OUT while the send buffer
+            // is at most two thirds full, RDHUP once the peer's FIN has
+            // arrived (`order3.c` row Q), and a reset adds HUP, and ERR while
+            // its error is pending, and makes the socket writable whatever its
+            // buffer holds, since a write then fails at once.
+            match inbound.Receiver with
+            | TcpEndState.Open
+            | TcpEndState.FinQueued ->
                 { ReadinessLevel.none with
-                    Out = true
+                    In = unread
+                    Out = TcpTransfer.linuxSendable connectionEnd transfer
                 }
-            else
-                // The measured half-closed level (`order3.c` row Q).
+            | TcpEndState.FinReceived ->
+                { ReadinessLevel.none with
+                    In = true
+                    Out = TcpTransfer.linuxSendable connectionEnd transfer
+                    RdHup = true
+                }
+            | TcpEndState.Reset (_, errorPending) ->
                 {
                     In = true
                     Out = true
                     RdHup = true
-                    Hup = false
-                    Err = false
+                    Hup = true
+                    Err = errorPending
                 }
+            | TcpEndState.Closed ->
+                failwith
+                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
 
         | SocketPhase.Refused RefusalError.Pending ->
             {

@@ -350,8 +350,8 @@ type BytesAvailableAnswer =
 type BytesAvailableRefusal =
     /// The destination has no answer at the copy.
     | Buffer of BufferRefusal
-    /// The descriptor `fd` names something other than a pipe, for which what
-    /// `FIONREAD` answers is not modelled.
+    /// The descriptor `fd` names something other than a pipe or a connected
+    /// TCP socket, for which what `FIONREAD` answers is not modelled.
     | UnmodelledTarget of fd : int
 
 [<RequireQualifiedAccess>]
@@ -362,7 +362,7 @@ module BytesAvailableRefusal =
         match refusal with
         | BytesAvailableRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | BytesAvailableRefusal.UnmodelledTarget fd ->
-            $"fd %d{fd} is not an end of a pipe, and FIONREAD is answered here for pipes only. The other kinds answer per kind and per flavour (measured, pipe-syscalls.c): a regular file reports its size less the offset on both; a directory is ENOTTY on Linux and reports a number of its own on Darwin; a socket reports what it has queued; an epoll instance is EINVAL and a kqueue ENOTTY. Model the kind before answering."
+            $"fd %d{fd} is neither an end of a pipe nor a connected TCP socket, and FIONREAD is answered here for those only. The other kinds answer per kind and per flavour (measured, pipe-syscalls.c): a regular file reports its size less the offset on both; a directory is ENOTTY on Linux and reports a number of its own on Darwin; a socket reports what it has queued; an epoll instance is EINVAL and a kqueue ENOTTY. Model the kind before answering."
 
 /// What `tcgetattr(3)` answered, which is also what `isatty(3)` answers: it is
 /// `tcgetattr` with the answer reduced to 1 or 0 and the errno left as it was.
@@ -1374,16 +1374,18 @@ module UnixDescriptor =
             | Error refusal -> Error (FLockRefusal.Interruption refusal)
             | Ok () -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), finished ())
 
-    /// `ioctl(fd, FIONREAD, &count)`: how many bytes a read of the pipe end `fd`
-    /// names could take now, written into the caller's `int` at `destination`.
+    /// `ioctl(fd, FIONREAD, &count)`: how many bytes a read of the pipe end or
+    /// connected TCP socket `fd` names could take now, written into the
+    /// caller's `int` at `destination`.
     ///
-    /// On Linux both ends report the bytes the pipe holds, even once the read
-    /// end has closed; on Darwin the read end reports them and the write end
-    /// reports 0. EBADF for a descriptor that is not open, whatever the
-    /// destination; EFAULT for an unmapped destination, whatever the pipe
-    /// holds. A device answers its driver's errno whatever the destination
+    /// On Linux both ends of a pipe report the bytes the pipe holds, even once
+    /// the read end has closed; on Darwin the read end reports them and the
+    /// write end reports 0. A connected socket reports what waits in its
+    /// receive buffer. EBADF for a descriptor that is not open, whatever the
+    /// destination; EFAULT for an unmapped destination, whatever is held. A
+    /// device answers its driver's errno whatever the destination
     /// (`CharacterDevice.unrecognisedIoctl`). Refused for every other
-    /// descriptor that is not a pipe end.
+    /// descriptor.
     ///
     /// Changes nothing.
     let bytesAvailable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1396,26 +1398,45 @@ module UnixDescriptor =
         // open is EBADF through a bad pointer, and a pipe end is EFAULT through
         // one -- NULL included, and the write end included, though it reports 0
         // on Darwin.
-        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
-        | None -> Ok (BytesAvailableAnswer.Failed UnixError.EBADF)
-        | Some (OpenFileTarget.File _)
-        | Some (OpenFileTarget.Directory _)
-        | Some (OpenFileTarget.Kqueue _)
-        | Some (OpenFileTarget.Epoll _)
-        | Some (OpenFileTarget.Socket _) -> Error (BytesAvailableRefusal.UnmodelledTarget fd)
-        | Some (OpenFileTarget.CharacterDevice (_, device)) ->
-            // The driver's own answer, without the destination: Linux asks the
-            // inode whether it is a regular file before it would write one.
-            Ok (BytesAvailableAnswer.Failed (CharacterDevice.unrecognisedIoctl device))
-        | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
+        let held =
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+            | None -> Ok (Error UnixError.EBADF)
+            | Some (OpenFileTarget.File _)
+            | Some (OpenFileTarget.Directory _)
+            | Some (OpenFileTarget.Kqueue _)
+            | Some (OpenFileTarget.Epoll _) -> Error (BytesAvailableRefusal.UnmodelledTarget fd)
+            | Some (OpenFileTarget.Socket socketId) ->
+                // A connected TCP socket reports the bytes in its receive
+                // buffer, on both flavours, after a FIN or a reset too
+                // (measured, `tcp-transfer.c` section S). Every other phase is
+                // unmodelled.
+                match SocketPhase.connectionEnd (UnixMachineState.socket socketId system.Machine).Phase with
+                | None -> Error (BytesAvailableRefusal.UnmodelledTarget fd)
+                | Some (connectionId, connectionEnd) ->
+                    Ok (
+                        Ok (
+                            TcpTransfer.readable
+                                connectionEnd
+                                (UnixMachineState.connection connectionId system.Machine).Transfer
+                        )
+                    )
+            | Some (OpenFileTarget.CharacterDevice (_, device)) ->
+                // The driver's own answer, without the destination: Linux asks the
+                // inode whether it is a regular file before it would write one.
+                Ok (Error (CharacterDevice.unrecognisedIoctl device))
+            | Some (OpenFileTarget.Pipe (pipeId, pipeEnd)) ->
 
-        let held = PipeBuffer.held (UnixMachineState.pipe pipeId system.Machine).Buffer
+            let held = PipeBuffer.held (UnixMachineState.pipe pipeId system.Machine).Buffer
 
-        let count =
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, pipeEnd with
             | SimulatedUnixFlavour.Linux, _
-            | SimulatedUnixFlavour.Darwin, PipeEnd.Read -> held
-            | SimulatedUnixFlavour.Darwin, PipeEnd.Write -> 0
+            | SimulatedUnixFlavour.Darwin, PipeEnd.Read -> Ok (Ok held)
+            | SimulatedUnixFlavour.Darwin, PipeEnd.Write -> Ok (Ok 0)
+
+        match held with
+        | Error refusal -> Error refusal
+        | Ok (Error error) -> Ok (BytesAvailableAnswer.Failed error)
+        | Ok (Ok count) ->
 
         match destination with
         | UserBuffer.Unmapped _ -> Ok (BytesAvailableAnswer.Failed UnixError.EFAULT)

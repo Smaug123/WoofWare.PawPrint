@@ -192,6 +192,26 @@ type UnixSystemDefect<'Task> =
     /// `accept(2)`). `holders` names each, in socket-table order, and a
     /// listener once however often it queues the connection.
     | ConnectionEndHeldTwice of connection : ConnectionId * connectionEnd : ConnectionEnd * holders : SocketId list
+    /// A connection's bytes and end states break the rules `TcpTransfer`
+    /// keeps (`TcpTransfer.violations`, each stated in `violations`): a buffer
+    /// holding more than its capacity, bytes in flight to an end that was
+    /// reset or closed, a FIN arrived ahead of bytes sent before it, an end
+    /// told of an ending its peer never made, and so on.
+    | TcpTransferBroken of connection : ConnectionId * violations : string list
+    /// A connection's transfer rules are of `rules`, but the machine is
+    /// `flavour`-flavoured.
+    | TcpTransferNotOfFlavour of
+        connection : ConnectionId *
+        rules : SimulatedUnixFlavour *
+        flavour : SimulatedUnixFlavour
+    /// The socket `socket` is the `connectionEnd` end of `connection`, or is
+    /// the listener whose accept queue holds its server end, which the
+    /// connection records as closed.
+    | ConnectionEndClosedUnderSocket of connection : ConnectionId * connectionEnd : ConnectionEnd * socket : SocketId
+    /// The connection records its `connectionEnd` end as open, but no socket
+    /// is that end and, for a server end, no listener queues the connection:
+    /// its socket closed without the connection being told.
+    | ConnectionEndOpenWithoutHolder of connection : ConnectionId * connectionEnd : ConnectionEnd
     /// A socket's phase is one its kind cannot enter: a datagram socket
     /// listening or holding a stream connection, or a non-datagram socket
     /// holding a datagram peer.
@@ -1248,6 +1268,69 @@ module UnixSystem =
                 )
             )
 
+        // Each connection's transfer against its own rules, the machine's
+        // flavour, and the sockets that are its ends: an end is closed exactly
+        // when no socket holds it, a queued server end counting as held.
+        let transferDefects =
+            machine.Connections
+            |> Map.toList
+            |> List.collect (fun (connection, tcp) ->
+                let broken =
+                    match TcpTransfer.violations tcp.Transfer with
+                    | [] -> []
+                    | violations -> [ UnixSystemDefect.TcpTransferBroken (connection, violations) ]
+
+                let rulesFlavour =
+                    match tcp.Transfer.Rules with
+                    | TcpTransferRules.Linux _ -> SimulatedUnixFlavour.Linux
+                    | TcpTransferRules.Darwin -> SimulatedUnixFlavour.Darwin
+
+                let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+                let ofFlavour =
+                    if rulesFlavour = flavour then
+                        []
+                    else
+                        [ UnixSystemDefect.TcpTransferNotOfFlavour (connection, rulesFlavour, flavour) ]
+
+                // An orphan has no holder of either end, which
+                // `OrphanConnection` reports alone.
+                let ends =
+                    if not (Set.contains connection referencedConnections) then
+                        []
+                    else
+
+                    [ ConnectionEnd.Client ; ConnectionEnd.Server ]
+                    |> List.collect (fun connectionEnd ->
+                        let holders =
+                            connectionReferences
+                            |> List.choose (fun (socketId, referenced, heldAs) ->
+                                let holdsThisEnd =
+                                    match heldAs with
+                                    | Some held -> held = connectionEnd
+                                    | None -> connectionEnd = ConnectionEnd.Server
+
+                                if referenced = connection && holdsThisEnd then
+                                    Some socketId
+                                else
+                                    None
+                            )
+                            |> List.distinct
+
+                        match (TcpTransfer.towards connectionEnd tcp.Transfer).Receiver, holders with
+                        | TcpEndState.Closed, [] -> []
+                        | TcpEndState.Closed, holders ->
+                            holders
+                            |> List.map (fun socketId ->
+                                UnixSystemDefect.ConnectionEndClosedUnderSocket (connection, connectionEnd, socketId)
+                            )
+                        | _, [] -> [ UnixSystemDefect.ConnectionEndOpenWithoutHolder (connection, connectionEnd) ]
+                        | _, _ -> []
+                    )
+
+                broken @ ofFlavour @ ends
+            )
+
         let phaseKindMismatches =
             machine.Sockets
             |> Map.toList
@@ -1830,6 +1913,7 @@ module UnixSystem =
         @ orphanConnections
         @ duplicateQueued
         @ connectionEndsHeldTwice
+        @ transferDefects
         @ phaseKindMismatches
         @ drainedUnderLinux
         @ connectionFreshness

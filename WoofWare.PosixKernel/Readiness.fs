@@ -132,6 +132,39 @@ module LinuxReadiness =
             failwith
                 $"LinuxReadiness.ofDescription: %O{targetId} is a kqueue, which only Darwin has, and Linux's readiness is asked only of a Linux-flavoured kernel (this is a bug in the caller's state construction)."
 
+    /// What a Linux waiter's poll of the description `targetId` does besides
+    /// reading its mask (`ofDescription`): a connected TCP socket it finds
+    /// open for sending but not writable is marked out of space
+    /// (`TcpTransfer.polled`), as `tcp_poll` marks it, so that its send buffer
+    /// draining raises a send-space wake. Every other description is left as
+    /// it was.
+    ///
+    /// `poll(2)`, an epoll `ADD` or `MOD`, and `epoll_wait`'s re-poll of a
+    /// pending entry each poll their targets so.
+    let polled<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (targetId : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        match OpenFileTable.tryFind targetId system.Machine.OpenFiles with
+        | Some {
+                   Target = OpenFileTarget.Socket socketId
+               } ->
+            match SocketPhase.connectionEnd (UnixMachineState.socket socketId system.Machine).Phase with
+            | None -> system
+            | Some (connectionId, connectionEnd) ->
+                let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+
+                { system with
+                    Machine =
+                        UnixMachineState.withTransfer
+                            connectionId
+                            (TcpTransfer.polled connectionEnd transfer)
+                            system.Machine
+                }
+        | Some _
+        | None -> system
+
 /// What an `epoll` instance would report if a wait on it were re-polled now,
 /// and what draining one does.
 ///
@@ -210,7 +243,7 @@ module EpollReadyList =
     /// Returns the reported rows -- each the registration's `Data` and the
     /// `events` `epoll_wait` writes for it, in Linux's `<sys/epoll.h>`
     /// numbering (`EpollEvents`) -- and the system with the walked entries
-    /// consumed.
+    /// consumed and their targets polled (`LinuxReadiness.polled`).
     ///
     /// Loudly partial in `epollId`: callers hold a live epoll instance's description in
     /// hand.
@@ -257,6 +290,16 @@ module EpollReadyList =
                     walk ((registration.Data, reported) :: delivered) rest
 
         let delivered, surviving = walk [] (annotatedReady epollState system)
+
+        // Each walked entry's target was polled again, as `ep_send_events`
+        // polls each entry it takes off the list; the entries the stop spared
+        // were not.
+        let walked =
+            epollState.Ready |> List.filter (fun key -> not (List.contains key surviving))
+
+        let system =
+            (system, walked)
+            ||> List.fold (fun system (_, targetId) -> LinuxReadiness.polled targetId system)
 
         delivered, UnixSystemState.mapOpenFiles (OpenFileTable.setEpollReady epollId surviving) system
 
@@ -305,15 +348,16 @@ module DarwinReadiness =
     /// The free space in the send buffer of the TCP socket `socket`, in bytes:
     /// what `EVFILT_WRITE` reports as its event's `data`.
     ///
-    /// This kernel has no send path, so nothing is ever queued and the space
-    /// is the buffer's whole size; and `SO_SNDBUF` is refused, so only the
-    /// socket's creation and its handshake set that size. A connected
-    /// socket's buffer, at either end, is the machine's `TcpSendSpace` rounded
-    /// up on the handshake to whole loopback segments, and capped at
-    /// `kern.ipc.maxsockbuf`: 146988 over IPv4 and 146808 over IPv6 at the
-    /// default 131072. A refused socket's is capped at 2048 until a connect
-    /// completes, which on Darwin none ever will. Measured on Darwin 27.0.0,
-    /// and explained from XNU's source, in `kevent-write-data.c`.
+    /// `SO_SNDBUF` is refused, so only the socket's creation and its handshake
+    /// set the buffer's size. A connected socket's buffer, at either end, is
+    /// the machine's `TcpSendSpace` rounded up on the handshake to whole
+    /// loopback segments, and capped at `kern.ipc.maxsockbuf`: 146988 over
+    /// IPv4 and 146808 over IPv6 at the default 131072
+    /// (`TcpBufferSizing.darwinSendBuffer`). Its free space is that less what
+    /// the connection still holds in it (`TcpTransfer.sendSpace`). A refused
+    /// socket's is capped at 2048 until a connect completes, which on Darwin
+    /// none ever will, and holds nothing. Measured on Darwin 27.0.0, and
+    /// explained from XNU's source, in `kevent-write-data.c`.
     ///
     /// Loudly partial: the machine must be Darwin-flavoured, with a
     /// `TcpSendSpace` that `UnixBootImage.withTcpSendSpace` admits, and the
@@ -340,7 +384,8 @@ module DarwinReadiness =
                 $"DarwinReadiness.sendBufferSpace: the socket is %O{socket.Kind} in %O{socket.Domain}, whose send buffer this kernel does not model (this is a bug in the caller)."
 
         match socket.Phase with
-        | SocketPhase.Established _ -> int64 (TcpBufferSizing.darwinSendBuffer sendSpace socket.Domain)
+        | SocketPhase.Established (connectionId, connectionEnd) ->
+            int64 (TcpTransfer.sendSpace connectionEnd (UnixMachineState.connection connectionId machine).Transfer)
         // Darwin's rule is the lesser of the two, though the cap always wins
         // while `withTcpSendSpace` admits nothing below 49152.
         | SocketPhase.Refused _ -> min (int64 sendSpace) preconnectSendSpace
@@ -371,10 +416,9 @@ module DarwinReadiness =
             failwith
                 $"DarwinReadiness.ofSocket: socket %O{socketId} is %O{socket.Kind} in %O{socket.Domain}, which `kevent` never registers a filter on (this is a bug in this library, or in a caller that assembled the state by hand)."
 
-        // Every row measured on Darwin 27.0.0 arm64 (`kevent-register.c`,
-        // sections P and X, in IPv4 and IPv6 alike), with or without EV_CLEAR.
-        // No receive path is modelled, so no byte is ever waiting to be read:
-        // a connected socket's READ is ready only once nothing more can come.
+        // Every row but a connected socket's measured on Darwin 27.0.0 arm64
+        // (`kevent-register.c`, sections P and X, in IPv4 and IPv6 alike),
+        // with or without EV_CLEAR.
         let pendingError (error : RefusalError) : UnixError option =
             match error with
             | RefusalError.Pending -> Some UnixError.ECONNREFUSED
@@ -390,15 +434,47 @@ module DarwinReadiness =
         // Bound or not: a socket that is not connected can neither be read nor
         // written.
         | SocketPhase.Idle, _ -> None
-        | SocketPhase.Established (connectionId, _), KqueueFilter.Read ->
-            if UnixMachineState.peerOpen socketId connectionId machine then
-                None
-            else
-                // The peer's FIN: EV_EOF, no error, and nothing waiting.
-                Some (KqueueFilterReport.EndOfFile (0L, None))
-        // Writable whether or not the peer has gone, and without EV_EOF.
-        | SocketPhase.Established _, KqueueFilter.Write ->
-            Some (KqueueFilterReport.Ready (sendBufferSpace socket machine))
+        // A connected socket's rows are measured on Darwin 27.0.0
+        // (`tcp-transfer.c`, section S), and agree with `filt_soread` and
+        // `filt_sowrite`. A reset sets `SS_CANTRCVMORE` and `SS_CANTSENDMORE`,
+        // so both filters report EV_EOF with the pending error, whatever is
+        // waiting or free; a FIN sets only the first.
+        | SocketPhase.Established (connectionId, connectionEnd), _ ->
+            let transfer = (UnixMachineState.connection connectionId machine).Transfer
+            let inbound = TcpTransfer.towards connectionEnd transfer
+            let unread = int64 (ByteQueue.length inbound.Receiving)
+
+            let error =
+                TcpTransfer.pendingError connectionEnd transfer
+                |> Option.map TcpError.toUnixError
+
+            match filter, inbound.Receiver with
+            | _, TcpEndState.Closed ->
+                failwith
+                    $"DarwinReadiness.ofSocket: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
+            // Ready with any byte unread (the receive low-water mark is 1),
+            // reporting how many.
+            | KqueueFilter.Read, TcpEndState.Open
+            | KqueueFilter.Read, TcpEndState.FinQueued ->
+                if unread > 0L then
+                    Some (KqueueFilterReport.Ready unread)
+                else
+                    None
+            | KqueueFilter.Read, TcpEndState.FinReceived -> Some (KqueueFilterReport.EndOfFile (unread, None))
+            | KqueueFilter.Read, TcpEndState.Reset _ -> Some (KqueueFilterReport.EndOfFile (unread, error))
+            | KqueueFilter.Write, TcpEndState.Reset _ ->
+                Some (KqueueFilterReport.EndOfFile (sendBufferSpace socket machine, error))
+            // Ready while at least the send low-water mark is free, reporting
+            // how much is, and without EV_EOF after a FIN.
+            | KqueueFilter.Write, TcpEndState.Open
+            | KqueueFilter.Write, TcpEndState.FinQueued
+            | KqueueFilter.Write, TcpEndState.FinReceived ->
+                let space = sendBufferSpace socket machine
+
+                if space >= int64 TcpTransfer.darwinSendLowWater then
+                    Some (KqueueFilterReport.Ready space)
+                else
+                    None
         // Both filters report EV_EOF once a connect is refused, with the error
         // in `fflags` until an `SO_ERROR` read takes it (measured: ECONNREFUSED,
         // then 0). The WRITE filter's data is still the send buffer's free space.
@@ -777,6 +853,16 @@ type SocketWake =
     | RefusalReset
     /// The other end of the socket's connection closed, which delivers its FIN.
     | PeerFin
+    /// Bytes arrived in the socket's receive buffer, whether or not some were
+    /// already waiting.
+    | DataArrived
+    /// The socket's send buffer gained space, by the rules of
+    /// `TcpTransfer`'s send-space wake: on Linux once after a write ran out of
+    /// space, when the buffer has drained to two thirds full; on Darwin
+    /// whenever bytes leave it.
+    | SendSpace
+    /// The socket's connection was reset.
+    | PeerReset
 
 [<RequireQualifiedAccess>]
 module SocketWake =
@@ -791,15 +877,23 @@ module SocketWake =
         // never queued (measured, `order6.c`), and one asking only for
         // `EPOLLPRI` or `EPOLLRDBAND` is queued although a listener never
         // reports either (measured, the WAKE section of `epoll-ctl.c`).
-        | SocketWake.AcceptQueuePush ->
+        //
+        // An arrival of bytes carries the same key, measured (`tcp-transfer.c`,
+        // section E: a registration for IN|OUT was reported 0x5 on each).
+        | SocketWake.AcceptQueuePush
+        | SocketWake.DataArrived ->
             Some (EpollEvents.In ||| EpollEvents.Pri ||| EpollEvents.RdNorm ||| EpollEvents.RdBand)
+        // What `sk_stream_write_space` passes its waiters.
+        | SocketWake.SendSpace -> Some (EpollEvents.Out ||| EpollEvents.WrNorm ||| EpollEvents.WrBand)
         // State changes, which queue every registration regardless of interest:
         // the entry keeps the wake's position through a later interest change,
         // and delivery's re-poll does the filtering (measured, `order8.c`,
-        // `order9.c`).
+        // `order9.c`). A reset's `sk_state_change` wakes unkeyed too, so its
+        // `sk_error_report`'s keyed wake adds no registration to those.
         | SocketWake.ConnectResolved
         | SocketWake.RefusalReset
-        | SocketWake.PeerFin -> None
+        | SocketWake.PeerFin
+        | SocketWake.PeerReset -> None
 
     /// The kqueue filters `wake` activates, in the order it activates them.
     let kqueueFilters (wake : SocketWake) : KqueueFilter list =
@@ -809,9 +903,17 @@ module SocketWake =
         // the peer's FIN its READ alone, though its WRITE is ready too (P5,
         // P6). A completing connect's READ is never ready, so whether it is
         // activated is not observable.
+        //
+        // Bytes arriving activate READ, and send space WRITE, by `sorwakeup`
+        // and `sowwakeup` (`tcp-transfer.c`, section E). A reset goes through
+        // `soisdisconnected`, which a refusal goes through too, so it
+        // activates the filters in the order measured for that.
         match wake with
-        | SocketWake.AcceptQueuePush -> [ KqueueFilter.Read ]
-        | SocketWake.ConnectResolved -> [ KqueueFilter.Write ; KqueueFilter.Read ]
+        | SocketWake.AcceptQueuePush
+        | SocketWake.DataArrived -> [ KqueueFilter.Read ]
+        | SocketWake.SendSpace -> [ KqueueFilter.Write ]
+        | SocketWake.ConnectResolved
+        | SocketWake.PeerReset -> [ KqueueFilter.Write ; KqueueFilter.Read ]
         | SocketWake.PeerFin -> [ KqueueFilter.Read ]
         // Only Linux resets a refused socket, and Linux has no kqueue.
         | SocketWake.RefusalReset -> []
@@ -845,3 +947,30 @@ module SocketWake =
         { system with
             Machine = KqueueQueue.activate socketId (kqueueFilters wake) system.Machine
         }
+
+    /// The wakes `wakes` a transfer on `connectionId` raised, each signalled
+    /// (`signal`) to the socket that is the end it names, if one is: a server
+    /// end still in an accept queue, or an end whose socket has closed, has
+    /// no waiter to wake.
+    ///
+    /// Called with the connection already in the state the transfer left it
+    /// in, as `signal` is.
+    let internal signalTransfer<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (connectionId : ConnectionId)
+        (wakes : TcpWake list)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        (system, wakes)
+        ||> List.fold (fun system wake ->
+            let connectionEnd, socketWake =
+                match wake with
+                | TcpWake.DataArrived receiver -> receiver, SocketWake.DataArrived
+                | TcpWake.SendSpace sender -> sender, SocketWake.SendSpace
+                | TcpWake.PeerFinished receiver -> receiver, SocketWake.PeerFin
+                | TcpWake.PeerReset receiver -> receiver, SocketWake.PeerReset
+
+            match UnixMachineState.socketHoldingEnd connectionId connectionEnd system.Machine with
+            | None -> system
+            | Some socketId -> signal socketId socketWake system
+        )

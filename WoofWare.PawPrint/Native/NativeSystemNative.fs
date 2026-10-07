@@ -4240,6 +4240,8 @@ module NativeSystemNative =
                 match outcome with
                 | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
                 | Error (ReadRefusal.UnmodelledSocketPhase _ as refusal)
+                | Error (ReadRefusal.ConnectionSleep _ as refusal)
+                | Error (ReadRefusal.ConnectionFault _ as refusal)
                 | Error (ReadRefusal.DatagramSleep _ as refusal) ->
                     // The library says what it measured; PawPrint says which managed
                     // caller could have reached it, which is a fact about CoreLib.
@@ -6820,10 +6822,11 @@ module NativeSystemNative =
             // sleeps, and the kernel finishes it on a later re-entry; a signal
             // can end that sleep with EINTR, which the C retries, or with the
             // count already written. A socket with no peer answers its own
-            // errno; one with a peer moves bytes, which the kernel does not
-            // model and `UnixReadWrite.write` refuses rather than guesses. A
-            // write into a pipe with no reader, or into a Linux stream socket
-            // with no peer, answers EPIPE and raises SIGPIPE, which PawPrint's
+            // errno; a connected stream socket moves bytes, though a blocking
+            // write it has no room for is refused, as the kernel does not yet
+            // model a sleep on a connection. A write into a pipe with no
+            // reader, into a Linux stream socket with no peer, or into a
+            // connection that was reset, answers EPIPE and raises SIGPIPE, which PawPrint's
             // startup ignores, as CoreCLR's does, so the guest sees the EPIPE
             // alone unless it has given the signal a disposition of its own.
             let operation = "SystemNative_Write"
@@ -6836,6 +6839,8 @@ module NativeSystemNative =
                 let reachability =
                     match refusal with
                     | WriteRefusal.UnmodelledSocketPhase _
+                    | WriteRefusal.ConnectionSleep _
+                    | WriteRefusal.ConnectionFault _
                     | WriteRefusal.SendBuffer _
                     | WriteRefusal.Inet6Binding _
                     | WriteRefusal.EphemeralPortsExhausted _ ->

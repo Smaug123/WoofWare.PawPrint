@@ -1457,6 +1457,11 @@ module UnixConnection =
                 | _ -> None
             )
 
+        // The server end closes as `close` closes it: a FIN, or a reset if the
+        // client had written to it.
+        let wakes, transfer =
+            TcpTransfer.close ConnectionEnd.Server (UnixMachineState.connection connectionId system.Machine).Transfer
+
         let connections =
             if List.isEmpty clients then
                 Map.remove connectionId system.Machine.Connections
@@ -1472,10 +1477,15 @@ module UnixConnection =
                     }
             }
 
-        // The FIN's edge, raised once the tables reflect the close, as `close`
-        // raises it.
-        (system, clients)
-        ||> List.fold (fun system client -> SocketWake.signal client SocketWake.PeerFin system)
+        if List.isEmpty clients then
+            system
+        else
+            // The edge, raised once the tables reflect the close, as `close`
+            // raises it.
+            { system with
+                Machine = UnixMachineState.withTransfer connectionId transfer system.Machine
+            }
+            |> SocketWake.signalTransfer connectionId wakes
 
     /// Hand the oldest connection on `socketId`'s queue over to the caller: the
     /// half of `accept(2)` that follows the choice of a connection, shared by a

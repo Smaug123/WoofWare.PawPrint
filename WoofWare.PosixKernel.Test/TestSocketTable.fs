@@ -1463,7 +1463,12 @@ module TestSocketTable =
                                     {
                                         ClientAddress = loopback 1us
                                         ServerAddress = loopback 2us
-                                        Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
+                                        // No socket is the client end: it has
+                                        // closed.
+                                        Transfer =
+                                            TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
+                                            |> TcpTransfer.close ConnectionEnd.Client
+                                            |> snd
                                     }
                                 ]
                         NextConnectionId = ConnectionId 1L
@@ -1474,8 +1479,23 @@ module TestSocketTable =
         |> shouldEqual [ UnixSystemDefect.DuplicateQueuedConnection (ConnectionId 0L) ]
 
     /// One connection, held by sockets 0, 1, ... in the phases given: each a
-    /// stream socket with a descriptor, bound at a port of its own.
+    /// stream socket with a descriptor, bound at a port of its own. An end no
+    /// phase holds has closed.
     let private connectionHeldBy (phases : SocketPhase list) : UnixSystem<int, string> =
+        let holds (connectionEnd : ConnectionEnd) : bool =
+            phases
+            |> List.exists (fun phase ->
+                match phase, connectionEnd with
+                | SocketPhase.Listening listenState, ConnectionEnd.Server -> not listenState.Queue.IsEmpty
+                | phase, connectionEnd ->
+                    match SocketPhase.connectionEnd phase with
+                    | Some (_, held) -> held = connectionEnd
+                    | None -> false
+            )
+
+        let closed =
+            [ ConnectionEnd.Client ; ConnectionEnd.Server ] |> List.filter (holds >> not)
+
         let kernel =
             forge
                 [
@@ -1508,7 +1528,9 @@ module TestSocketTable =
                                 {
                                     ClientAddress = loopback 1us
                                     ServerAddress = loopback 2us
-                                    Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
+                                    Transfer =
+                                        (TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine, closed)
+                                        ||> List.fold (fun transfer closer -> TcpTransfer.close closer transfer |> snd)
                                 }
                             ]
                     NextConnectionId = ConnectionId 1L

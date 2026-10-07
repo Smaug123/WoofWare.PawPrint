@@ -251,6 +251,19 @@ module SocketPhase =
         | SocketPhase.Refused _
         | SocketPhase.DatagramPeer _ -> false
 
+    /// The connection a connected stream socket is one end of, and which end:
+    /// `EstablishedPendingReport` is the client end, as only `connect(2)`
+    /// enters it. `None` in every phase without a connection of its own, a
+    /// listener's among them, whose queued connections are not its own ends.
+    let connectionEnd (phase : SocketPhase) : (ConnectionId * ConnectionEnd) option =
+        match phase with
+        | SocketPhase.Established (connection, connectionEnd) -> Some (connection, connectionEnd)
+        | SocketPhase.EstablishedPendingReport connection -> Some (connection, ConnectionEnd.Client)
+        | SocketPhase.Idle
+        | SocketPhase.Listening _
+        | SocketPhase.Refused _
+        | SocketPhase.DatagramPeer _ -> None
+
 /// A socket, as the emulated kernel's socket table holds it.
 ///
 /// Carries no identity of its own: the table is keyed by `SocketId`, so a field
