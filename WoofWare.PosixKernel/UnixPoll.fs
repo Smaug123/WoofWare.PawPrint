@@ -343,7 +343,7 @@ module UnixPoll =
         // Measured on 6.18.5, each adjacent pair separated by an input that
         // provokes exactly one of the two: descriptor, then `maxevents`, then
         // the buffer, then is-it-an-epoll-instance.
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (Error UnixError.EBADF)
         | Some (epoll, description) ->
 
@@ -456,7 +456,7 @@ module UnixPoll =
         | Error () -> failed EpollCtlError.EventUnreadable
         | Ok (events, data) ->
 
-        let registry = system.Process.FileDescriptors
+        let registry = UnixSystemState.fileDescriptors system
 
         match FileDescriptorRegistry.tryFindWithId epfd registry with
         | None -> failed EpollCtlError.BadEpollFd
@@ -557,14 +557,6 @@ module UnixPoll =
         // `/proc/self/fdinfo`, `fdinfo.c`).
         let stored = events ||| EpollEvents.Err ||| EpollEvents.Hup
 
-        let withRegistry (registry : FileDescriptorRegistry) (system : UnixSystem<'Task, 'Handler>) =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
-
         // An ADD or MOD whose target is ready under the new mask makes the
         // registration pending at that moment (measured rows E, I and K), and
         // a MOD of an entry already pending leaves its place alone (row L).
@@ -575,7 +567,7 @@ module UnixPoll =
                 not alreadyPending
                 && LinuxReadiness.ofDescription targetId system &&& stored <> 0u
             then
-                withRegistry (FileDescriptorRegistry.appendEpollReady epollId key system.Process.FileDescriptors) system
+                UnixSystemState.mapOpenFiles (OpenFileTable.appendEpollReady epollId key) system
             else
                 system
 
@@ -628,19 +620,20 @@ module UnixPoll =
                 }
 
             let system =
-                { withRegistry (FileDescriptorRegistry.addEpollRegistration epollId key registration registry) system with
+                { system with
                     Machine =
                         { system.Machine with
                             NextEventRegistrationOrdinal = ordinal + 1L
                         }
                 }
+                |> UnixSystemState.mapOpenFiles (OpenFileTable.addEpollRegistration epollId key registration)
 
             Ok (EpollCtlAnswer.Changed, pendIfReady system)
         elif op = del then
             if registered then
                 Ok (
                     EpollCtlAnswer.Changed,
-                    withRegistry (FileDescriptorRegistry.removeEpollRegistration epollId key registry) system
+                    UnixSystemState.mapOpenFiles (OpenFileTable.removeEpollRegistration epollId key) system
                 )
             else
                 failed EpollCtlError.NotRegistered
@@ -656,7 +649,7 @@ module UnixPoll =
             // No stored mask here carries EPOLLEXCLUSIVE, whose MOD the kernel
             // would answer EINVAL, because an exclusive ADD is refused.
             let system =
-                withRegistry (FileDescriptorRegistry.modifyEpollRegistration epollId key stored data registry) system
+                UnixSystemState.mapOpenFiles (OpenFileTable.modifyEpollRegistration epollId key stored data) system
 
             Ok (EpollCtlAnswer.Changed, pendIfReady system)
         else
@@ -700,7 +693,7 @@ module UnixPoll =
             Ok 0s
         else
 
-        match FileDescriptorRegistry.tryFindWithId entry.Fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId entry.Fd (UnixSystemState.fileDescriptors system) with
         | None ->
             // POLLNVAL is a statement about the entry, not a readiness
             // level: measured, it is reported alone, whatever was asked
@@ -810,7 +803,7 @@ module UnixPoll =
                 if entry.Fd < 0 then
                     ParkedPollEntry.Ignored entry.Fd
                 else
-                    match FileDescriptorRegistry.tryFindId entry.Fd system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFindId entry.Fd (UnixSystemState.fileDescriptors system) with
                     | Some description -> ParkedPollEntry.Watched (entry.Fd, description, entry.Events)
                     | None ->
                         failwith
@@ -839,8 +832,7 @@ module UnixPoll =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
-        let descriptions =
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+        let descriptions = OpenFileTable.descriptions system.Machine.OpenFiles
 
         let entries =
             parked.Entries
@@ -856,7 +848,7 @@ module UnixPoll =
                         failwith
                             $"UnixPoll.finishPoll: task %O{task}'s poll watches open file description %O{description}, which is not in the table, but a park holds its descriptions until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
 
-                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
                     | Some current when current = description ->
                         {
                             PollEntry.Fd = fd
@@ -949,7 +941,7 @@ module UnixPoll =
         // alone, so on a regular file or a directory, and fails (EINVAL) on a
         // socket, a pipe and a kqueue; read and write filters fail on a
         // directory, and a kqueue takes a read filter but not a write one.
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors, group with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system), group with
         | None, _ -> Ok DarwinRegistration.Fails
         | Some (OpenFileTarget.Socket _), None
         | Some (OpenFileTarget.Pipe _), None
@@ -1339,12 +1331,13 @@ module UnixPoll =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (EpollCreateRefusal.DescriptorLimit refusal)
         | Ok () ->
 
-        let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+        let fd, registry =
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
         let registry =
             FileDescriptorRegistry.setFlags
@@ -1354,17 +1347,7 @@ module UnixPoll =
                 }
                 registry
 
-        Ok (
-            Ok (
-                fd,
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
-            )
-        )
+        Ok (Ok (fd, UnixSystemState.withFileDescriptors registry system))
 
     /// Whether the events `delivered` can be copied out to `buffer`: a call
     /// that delivers nothing copies nothing, and so never looks at the buffer.

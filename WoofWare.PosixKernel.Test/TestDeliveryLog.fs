@@ -27,7 +27,7 @@ module TestDeliveryLog =
 
             return
                 {
-                    Endpoint = ExternalEndpoint fd
+                    Endpoint = ExternalEndpoint (UnixSystem.defaultProcessId, fd)
                     Bytes = ImmutableArray.CreateRange bytes
                 }
         }
@@ -52,7 +52,7 @@ module TestDeliveryLog =
             DeliveryLog.empty
             |> DeliveryLog.append
                 {
-                    Endpoint = ExternalEndpoint 1
+                    Endpoint = ExternalEndpoint (UnixSystem.defaultProcessId, 1)
                     Bytes = ImmutableArray.Create<byte> 0x41uy
                 }
 
@@ -127,7 +127,7 @@ module TestDeliveryLog =
                             else
                                 reference.Add
                                     {
-                                        Endpoint = ExternalEndpoint fd
+                                        Endpoint = ExternalEndpoint (UnixSystem.processId after, fd)
                                         Bytes = bytes
                                     }
 

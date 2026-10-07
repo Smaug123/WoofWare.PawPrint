@@ -7053,7 +7053,11 @@ module NativeSystemNative =
 
                 match DeliveryLog.since before (UnixSystem.delivered system) with
                 | [] -> StepEffect.NoEffect
-                | [ delivery ] -> StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
+                | [ delivery ] ->
+                    StepEffect.WroteToFd (
+                        StandardStreams.roleOf (UnixSystem.processId system) delivery.Endpoint,
+                        delivery.Bytes
+                    )
                 | delivered ->
                     failwith
                         $"%s{operation}: fd %d{fd}: one write delivered %d{delivered.Length} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."

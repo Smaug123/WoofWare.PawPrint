@@ -497,12 +497,7 @@ module TestModeChange =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let private opened
         (p : string)
@@ -511,13 +506,18 @@ module TestModeChange =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.openFile (inodeAt system.Machine.FileSystem p) access system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile
+                (inodeAt system.Machine.FileSystem p)
+                access
+                (UnixSystemState.fileDescriptors system)
 
         fd, withDescriptors registry system
 
     let private openedDirectory (p : string) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry =
-            FileDescriptorRegistry.openDirectory (inodeAt system.Machine.FileSystem p) system.Process.FileDescriptors
+            FileDescriptorRegistry.openDirectory
+                (inodeAt system.Machine.FileSystem p)
+                (UnixSystemState.fileDescriptors system)
 
         fd, withDescriptors registry system
 
@@ -622,7 +622,7 @@ module TestModeChange =
                 | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
                 | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
 
-            let fd, registry = create system.Process.FileDescriptors
+            let fd, registry = create (UnixSystemState.fileDescriptors system)
 
             fd, withDescriptors registry system
 
@@ -658,7 +658,7 @@ module TestModeChange =
             let fd, withSocket = NewSocket.create domain kind protocol linux
 
             let socket =
-                match FileDescriptorRegistry.tryFindObject fd withSocket.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors withSocket) with
                 | Some (OpenFileObject.Socket socket) -> socket
                 | other -> failwith $"fd %d{fd} is not a socket: %A{other}"
 

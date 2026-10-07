@@ -155,10 +155,7 @@ module UnixWait =
         // something else, for every task asked about; a task woken and not yet
         // finished is not asked, so is looked up leniently here.
         let pipeOf (description : OpenFileDescriptionId) : PipeId option =
-            match
-                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-                |> Map.tryFind description
-            with
+            match OpenFileTable.descriptions system.Machine.OpenFiles |> Map.tryFind description with
             | Some {
                        Target = OpenFileTarget.Pipe (pipeId, _)
                    } -> Some pipeId

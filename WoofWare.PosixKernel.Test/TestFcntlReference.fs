@@ -631,7 +631,7 @@ module TestFcntlReference =
                 system <- afterSystem
 
                 // The whole table, through the queries a client has.
-                let registry = system.Process.FileDescriptors
+                let registry = UnixSystemState.fileDescriptors system
                 let libraryFds = FileDescriptorRegistry.fds registry
 
                 (where, libraryFds |> Map.keys |> Set.ofSeq)

@@ -94,7 +94,7 @@ module TestSocketSyscallAgainstHost =
                     | Ok (Error error) -> Some (Error (UnixError.toRawErrnoUnder numbering error))
                     | Ok (Ok (fd, after)) ->
                         let socket =
-                            match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+                            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors after) with
                             | Some (OpenFileTarget.Socket socketId) -> UnixMachineState.socket socketId after.Machine
                             | other -> failwith $"descriptor %d{fd} names %A{other}"
 

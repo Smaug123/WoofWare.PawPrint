@@ -811,7 +811,7 @@ module UnixNamespace =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (OpenRefusal.DescriptorLimit refusal)
         | Ok () ->
@@ -842,12 +842,16 @@ module UnixNamespace =
             let fd, registry =
                 match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
                 | Some (InodeContent.Directory _) ->
-                    FileDescriptorRegistry.openDirectory inode system.Process.FileDescriptors
+                    FileDescriptorRegistry.openDirectory inode (UnixSystemState.fileDescriptors system)
                 | Some (InodeContent.CharacterDevice (device, _)) ->
-                    FileDescriptorRegistry.openCharacterDevice inode device flags.Access system.Process.FileDescriptors
+                    FileDescriptorRegistry.openCharacterDevice
+                        inode
+                        device
+                        flags.Access
+                        (UnixSystemState.fileDescriptors system)
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
-                | None -> FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
+                | None -> FileDescriptorRegistry.openFile inode flags.Access (UnixSystemState.fileDescriptors system)
 
             let registry =
                 FileDescriptorRegistry.setFlags
@@ -869,31 +873,25 @@ module UnixNamespace =
             let registry =
                 match FileDescriptorRegistry.tryFindId fd registry with
                 | Some id ->
-                    FileDescriptorRegistry.mapStatus
-                        id
-                        (fun status ->
-                            { status with
-                                Synchronous = flags.Synchronous
-                                DataSynchronous = flags.DataSynchronous
-                                OpenedDirectory = linux && flags.Directory
-                                OpenedNoFollow = linux && flags.NoFollow
-                                Written = not linux && truncatedExisting
-                            }
-                        )
-                        registry
+                    registry
+                    |> FileDescriptorRegistry.mapOpenFiles (
+                        OpenFileTable.mapStatus
+                            id
+                            (fun status ->
+                                { status with
+                                    Synchronous = flags.Synchronous
+                                    DataSynchronous = flags.DataSynchronous
+                                    OpenedDirectory = linux && flags.Directory
+                                    OpenedNoFollow = linux && flags.NoFollow
+                                    Written = not linux && truncatedExisting
+                                }
+                            )
+                    )
                 | None ->
                     failwith
                         $"UnixNamespace.openPath: fd %d{fd} was handed out a moment ago and is not live (this is a bug in this library)."
 
-            Ok (
-                SyscallAnswer.Completed (int64 fd),
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
-            )
+            Ok (SyscallAnswer.Completed (int64 fd), UnixSystemState.withFileDescriptors registry system)
 
         if
             flags.Directory
@@ -1142,7 +1140,7 @@ module UnixNamespace =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, room with
         | SimulatedUnixFlavour.Darwin, Error refusal -> Error (OpenRefusal.DescriptorLimit refusal)
@@ -1250,7 +1248,7 @@ module UnixNamespace =
                 // eventq rows): a pipe, a socket or an epoll instance is
                 // ENOENT, as a file or directory that is not a link is.
                 let named =
-                    match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
                     | None -> Error UnixError.EBADF
                     | Some description ->
 
@@ -1452,7 +1450,7 @@ module UnixNamespace =
         =
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
-        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (ReadDirectoryAnswer.Failed UnixError.EBADF, system)
         | Some description ->
 
@@ -1493,13 +1491,9 @@ module UnixNamespace =
         | None ->
 
         let withPosition (position : DirectoryPosition) (system : UnixSystem<'Task, 'Handler>) =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.setDirectoryPosition fd position system.Process.FileDescriptors
-                    }
-            }
+            UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.setDirectoryPosition fd position (UnixSystemState.fileDescriptors system))
+                system
 
         // A directory `rmdir` has removed yields nothing, from any position:
         // measured one call at a time, on a fresh description, after a partial

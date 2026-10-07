@@ -453,7 +453,7 @@ module UnixSocket =
 
         // The descriptor is looked up first: measured on both flavours, a closed
         // descriptor answers EBADF at every length and through every buffer.
-        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
         | None -> answered (UnixError.EBADF)
         | Some description ->
 
@@ -843,7 +843,7 @@ module UnixSocket =
         let (SocketId raw) = socketId
 
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         let registry =
             if nonBlocking then
@@ -868,11 +868,8 @@ module UnixSocket =
                     Sockets = Map.add socketId socket system.Machine.Sockets
                     NextSocketId = SocketId (raw + 1L)
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     /// `socket(2)`: create a socket in `domain`, of `socketType`, speaking
     /// `protocol`, and a descriptor onto it: the lowest one not in use.
@@ -905,7 +902,7 @@ module UnixSocket =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, room with
         | SimulatedUnixFlavour.Darwin, Error refusal -> Error (SocketRefusal.DescriptorLimit refusal)
@@ -941,19 +938,9 @@ module UnixSocket =
                         { DescriptorFlags.none with
                             CloseOnExec = true
                         }
-                        system.Process.FileDescriptors
+                        (UnixSystemState.fileDescriptors system)
 
-                Ok (
-                    Ok (
-                        fd,
-                        { system with
-                            Process =
-                                { system.Process with
-                                    FileDescriptors = registry
-                                }
-                        }
-                    )
-                )
+                Ok (Ok (fd, UnixSystemState.withFileDescriptors registry system))
             else
                 Ok (Ok (fd, system))
 
@@ -973,7 +960,7 @@ module UnixSocket =
         // The admission has classified the descriptor as an IPv4 socket, or it
         // would not have reached the copy.
         let socketId =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other ->
                 failwith
@@ -1222,7 +1209,7 @@ module UnixSocket =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ListenAnswer * UnixSystem<'Task, 'Handler>, ListenRefusal>
         =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (ListenAnswer.Failed UnixError.EBADF, system)
         | Some target ->
 
@@ -1359,7 +1346,7 @@ module UnixSocket =
         // destination still answers EBADF or ENOTSOCK on both flavours, at every
         // declared length probed. Both leave the caller's length cell alone
         // there, which is why neither reports one.
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (GetSockNameAnswer.Failed (UnixError.EBADF, None))
         | Some target ->
 
@@ -1465,7 +1452,7 @@ module UnixSocket =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SocketId, UnixError>
         =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Error UnixError.EBADF
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)

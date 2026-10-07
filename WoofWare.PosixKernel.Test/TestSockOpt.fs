@@ -80,16 +80,9 @@ module TestSockOpt =
             }
 
         let queueFd, registry =
-            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
-        socketFd,
-        queueFd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        socketFd, queueFd, UnixSystemState.withFileDescriptors registry system
 
     let private reuseFlag (system : UnixSystem<int, string>) : bool =
         (UnixMachineState.socket (SocketId 0L) system.Machine).ReuseAddress

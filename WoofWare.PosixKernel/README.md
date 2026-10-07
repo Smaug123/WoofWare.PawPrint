@@ -12,7 +12,7 @@ This library models what a Unix kernel tells a process about the world.
 It includes:
 
 * the filesystem, including permissions, with every name a string of bytes exactly as the kernel stores it, never decoded as text
-* the file-descriptor table, and pipes
+* file descriptors, the open file descriptions they name, and pipes
 * sockets and connections, `poll`, Linux's epoll, and Darwin's kqueue
 * signals: sending them, their dispositions, delivery to a handler, and a process ended by one
 * the process's tasks (its threads), and the syscalls they block in
@@ -41,12 +41,12 @@ Converting those to and from a client's own encoding is the client's business.
 
 The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three parts:
 
-* the machine (`UnixMachineState`): the filesystem, sockets, connections and pipes, the clock, the entropy pool, and the platform being simulated;
-* the process (`UnixProcessState`): the descriptor table, credentials, umask, current directory, environment and signal state;
+* the machine (`UnixMachineState`): the filesystem, the open file descriptions (with the state of each epoll instance and kqueue), sockets, connections and pipes, the clock, the entropy pool, and the platform being simulated;
+* the process (`UnixProcessState`): the descriptor table, which says only which open file description each descriptor names, and the process's credentials, umask, current directory, environment and signal state;
 * the tasks (`UnixTaskState`): the process's tasks, and what each is blocked in, if anything.
 
 Those records are opaque outside the library.
-A client reads a system through `UnixSystem`'s queries, such as `leader`, `tasks`, `signals`, `fileDescriptors`, `delivered` and `descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described below.
+A client reads a system through `UnixSystem`'s queries, such as `leader`, `tasks`, `signals`, `fileDescriptors`, `openFiles`, `delivered` and `descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described below.
 
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.

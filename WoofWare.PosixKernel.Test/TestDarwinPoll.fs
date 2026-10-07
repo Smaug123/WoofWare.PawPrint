@@ -785,7 +785,7 @@ module TestDarwinPoll =
         let closed = KeventWorld.close accepted parked
         sound closed
 
-        FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
+        OpenFileTable.descriptions closed.Machine.OpenFiles
         |> Map.containsKey acceptedId
         |> shouldEqual false
 

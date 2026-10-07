@@ -78,26 +78,15 @@ module TestPosixFadvise =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.openFile (inodeOf system path) mode system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile (inodeOf system path) mode (UnixSystemState.fileDescriptors system)
 
-        fd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        fd, UnixSystemState.withFileDescriptors registry system
 
     let private withEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+        let fd, registry =
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
-        fd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        fd, UnixSystemState.withFileDescriptors registry system
 
     let private socket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system

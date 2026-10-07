@@ -172,7 +172,7 @@ module UnixPipe =
                 (SimulatedUnixPlatform.descriptorBound platform)
                 0
                 2
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (Pipe2Refusal.DescriptorLimit refusal)
         | Ok () ->
@@ -228,7 +228,7 @@ module UnixPipe =
             }
 
         let (readFd, writeFd), registry =
-            FileDescriptorRegistry.createPipe pipeId nonBlocking system.Process.FileDescriptors
+            FileDescriptorRegistry.createPipe pipeId nonBlocking (UnixSystemState.fileDescriptors system)
 
         let registry =
             registry
@@ -244,9 +244,6 @@ module UnixPipe =
                         NextPipeId = PipeId (rawPipe + 1L)
                         NextPipeInode = nextInode
                     }
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
             }
+            |> UnixSystemState.withFileDescriptors registry
         )

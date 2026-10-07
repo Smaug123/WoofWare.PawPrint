@@ -1281,7 +1281,7 @@ module UnixConnection =
         // `admitSockaddrCopy` reached the copy, so the descriptor is a live IPv4
         // socket; nothing between there and here could have changed that.
         let socketId =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other ->
                 failwith
@@ -1291,7 +1291,7 @@ module UnixConnection =
         // through, not about the socket, so a connect through a `dup` of a
         // non-blocking socket pends too.
         let nonBlocking =
-            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
             | Some description -> description.NonBlocking
             | None ->
                 failwith
@@ -1335,7 +1335,7 @@ module UnixConnection =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal ->
             failwith
@@ -1353,7 +1353,7 @@ module UnixConnection =
             let (SocketId rawAcceptedId) = acceptedId
 
             let fd, registry =
-                FileDescriptorRegistry.createSocket acceptedId system.Process.FileDescriptors
+                FileDescriptorRegistry.createSocket acceptedId (UnixSystemState.fileDescriptors system)
 
             let accepted =
                 {
@@ -1399,11 +1399,8 @@ module UnixConnection =
                                 }
                         NextSocketId = SocketId (rawAcceptedId + 1L)
                     }
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
             }
+            |> UnixSystemState.withFileDescriptors registry
         | SocketPhase.Listening {
                                     Queue = []
                                 } ->
@@ -1505,7 +1502,7 @@ module UnixConnection =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (AcceptRefusal.DescriptorLimit refusal)
         | Ok () ->
@@ -1565,13 +1562,9 @@ module UnixConnection =
                 nonBlocking
                 && SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking system.Machine.UnixPlatform
             then
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors =
-                                FileDescriptorRegistry.setNonBlocking acceptedFd true system.Process.FileDescriptors
-                        }
-                }
+                UnixSystemState.withFileDescriptors
+                    (FileDescriptorRegistry.setNonBlocking acceptedFd true (UnixSystemState.fileDescriptors system))
+                    system
             else
                 system
 
@@ -1645,7 +1638,7 @@ module UnixConnection =
         // before the accept queue is: measured on both flavours, a closed
         // descriptor answers EBADF and a non-socket ENOTSOCK whatever the
         // destination and whatever the listener would have said.
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (AcceptOutcome.Failed UnixError.EBADF, system)
         | Some (descriptionId, description) ->
 
@@ -1661,7 +1654,7 @@ module UnixConnection =
                     (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                     0
                     1
-                    system.Process.FileDescriptors
+                    (UnixSystemState.fileDescriptors system)
 
         match linuxRoom with
         | Error refusal -> Error (AcceptRefusal.DescriptorLimit refusal)
@@ -1762,10 +1755,7 @@ module UnixConnection =
         | SleepTarget.Waiting (listenerId, _) ->
 
         let description =
-            match
-                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-                |> Map.tryFind listenerId
-            with
+            match OpenFileTable.descriptions system.Machine.OpenFiles |> Map.tryFind listenerId with
             | Some description -> description
             | None ->
                 failwith

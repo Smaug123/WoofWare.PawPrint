@@ -239,7 +239,7 @@ module UnixKqueue =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (KqueueRefusal.DescriptorLimit refusal)
         | Ok () ->
@@ -248,7 +248,7 @@ module UnixKqueue =
         // descriptor, O_RDWR, not O_NONBLOCK; and (`fcntl-dup.c`, KIND rows)
         // F_GETFD reports FD_CLOEXEC|FD_CLOFORK.
         let fd, registry =
-            FileDescriptorRegistry.createKqueue system.Process.FileDescriptors
+            FileDescriptorRegistry.createKqueue (UnixSystemState.fileDescriptors system)
             |> fun (fd, registry) ->
                 fd,
                 FileDescriptorRegistry.setFlags
@@ -259,15 +259,7 @@ module UnixKqueue =
                     }
                     registry
 
-        Ok (
-            fd,
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
-        )
+        Ok (fd, UnixSystemState.withFileDescriptors registry system)
 
     let private nanosecondsPerSecond : int64 = 1_000_000_000L
 
@@ -288,7 +280,7 @@ module UnixKqueue =
         (system : UnixSystem<'Task, 'Handler>)
         : KqueueState
         =
-        match Map.tryFind kqueue (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        match Map.tryFind kqueue (OpenFileTable.descriptions system.Machine.OpenFiles) with
         | Some {
                    Target = OpenFileTarget.Kqueue state
                } -> state
@@ -302,12 +294,7 @@ module UnixKqueue =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = FileDescriptorRegistry.setKqueueState kqueue state system.Process.FileDescriptors
-                }
-        }
+        UnixSystemState.mapOpenFiles (OpenFileTable.setKqueueState kqueue state) system
 
     let private filterNumber (filter : KqueueFilter) : int16 =
         match filter with
@@ -436,7 +423,7 @@ module UnixKqueue =
         // EBADF; an open one with any high bit set is EINVAL.
         let fd = int (uint32 (change.Ident &&& 0xFFFF_FFFFUL))
 
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (Some UnixError.EBADF, system)
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId system.Machine
@@ -659,7 +646,7 @@ module UnixKqueue =
 
         // "Not a kqueue" is EBADF, as "not open" is.
         let kqueue =
-            match FileDescriptorRegistry.tryFindWithId kq system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindWithId kq (UnixSystemState.fileDescriptors system) with
             | Some (id,
                     {
                         Target = OpenFileTarget.Kqueue _
