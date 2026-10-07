@@ -2521,14 +2521,14 @@ module UnixSystem =
         let threadIds = ThreadIdAllocator.withPidMax context pidMax system.Machine.ThreadIds
 
         // What Linux does with a live ID at or above a lowered `pid_max` has not
-        // been measured.
+        // been measured. Every live ID on the machine, not only this process's
+        // tasks': a sysctl is the machine's, and on a machine holding other
+        // processes their tasks' IDs are live too.
         match
-            system.Tasks
-            |> Map.tryFindKey (fun _ state -> not (ThreadIdAllocator.couldHaveMinted state.OsThreadId threadIds))
+            ThreadIdAllocator.live threadIds
+            |> Seq.tryFind (fun id -> not (ThreadIdAllocator.couldHaveMinted id threadIds))
         with
-        | Some task ->
-            failwith
-                $"%s{context}: task %O{task} has thread ID %O{(UnixTaskTable.osThreadIdOf task system.Tasks)}, which is not below pid_max %d{pidMax}."
+        | Some id -> failwith $"%s{context}: thread ID %O{id} is live, and not below pid_max %d{pidMax}."
         | None ->
 
         { system with

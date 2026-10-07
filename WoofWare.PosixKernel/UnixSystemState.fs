@@ -1,21 +1,40 @@
 namespace WoofWare.PosixKernel
 
-/// How many changes a `SimulatedMachine` had seen when a process's view of it
-/// was taken. `SimulatedMachine.unfocus` compares it with the machine's own, so
-/// that a view taken before some other change to the machine, whose copy of
-/// the machine is stale, is refused rather than written back over that change.
-[<Struct>]
-type internal MachineGeneration = | MachineGeneration of int64
+/// Where a process's view of a `SimulatedMachine` was taken from: the machine
+/// and the process's own state as they stood, which `SimulatedMachine.unfocus`
+/// requires to be the machine's still, so that a view whose copy of the
+/// machine is stale, or of another history of it, is refused rather than
+/// written back over a change it never saw.
+///
+/// Compared by identity rather than by content, both by `unfocus` and as part
+/// of a `UnixSystem`'s equality: two views are views of the same state when
+/// they were taken from the same values. A system no machine has focused is
+/// `NotFocused`, so equality between such systems is unaffected.
+[<CustomEquality ; NoComparison>]
+type internal FocusOrigin<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    | NotFocused
+    | FocusedFrom of
+        machine : UnixMachineState *
+        proc : UnixProcessState<'Task, 'Handler> *
+        tasks : Map<'Task, UnixTaskState>
 
-[<RequireQualifiedAccess>]
-module internal MachineGeneration =
-    /// The generation of a machine no change has been made to.
-    let first : MachineGeneration = MachineGeneration 0L
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? FocusOrigin<'Task, 'Handler> as other ->
+            match this, other with
+            | NotFocused, NotFocused -> true
+            | FocusedFrom (machine, proc, tasks), FocusedFrom (machine', proc', tasks') ->
+                obj.ReferenceEquals (machine, machine')
+                && obj.ReferenceEquals (proc, proc')
+                && obj.ReferenceEquals (tasks, tasks')
+            | NotFocused, FocusedFrom _
+            | FocusedFrom _, NotFocused -> false
+        | _ -> false
 
-    /// The generation after one more change.
-    let next (generation : MachineGeneration) : MachineGeneration =
-        match generation with
-        | MachineGeneration g -> MachineGeneration (g + 1L)
+    override this.GetHashCode () : int =
+        match this with
+        | NotFocused -> 0
+        | FocusedFrom _ -> 1
 
 /// Everything one simulated POSIX process is, as a syscall sees it: the machine
 /// it runs on, its own per-process state, and its tasks.
@@ -44,10 +63,9 @@ type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
             /// (`UnixTaskLifecycle.exitThread` refuses that), so it is a task for as
             /// long as the process is running. On Linux its thread ID is the process ID.
             Leader : 'Task
-            /// The generation of the `SimulatedMachine` this view was taken
-            /// from; see `MachineGeneration`. A system no machine has held yet
-            /// is at `MachineGeneration.first`.
-            Generation : MachineGeneration
+            /// Where this view was taken from, if a `SimulatedMachine` focused
+            /// it; see `FocusOrigin`.
+            Origin : FocusOrigin<'Task, 'Handler>
         }
 
 /// Reading and writing a `UnixSystem`'s process's descriptor table together

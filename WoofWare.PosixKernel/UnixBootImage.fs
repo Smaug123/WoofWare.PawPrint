@@ -102,7 +102,7 @@ module UnixBootImage =
                 Process = proc
                 Tasks = tasks
                 Leader = ProcessLaunch.leader launch
-                Generation = MachineGeneration.first
+                Origin = FocusOrigin.NotFocused
             }
         )
 

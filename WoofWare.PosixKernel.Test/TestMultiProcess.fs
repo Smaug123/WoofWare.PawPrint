@@ -372,11 +372,34 @@ module TestMultiProcess =
         let error =
             Assert.Throws<exn> (fun () -> SimulatedMachine.unfocus first machine' |> ignore)
 
-        error.Message |> shouldContainText "has since changed"
+        error.Message
+        |> shouldContainText "was not focused from the machine as it stands"
 
         // ...and the written-back process's change is the only one.
         (viewOf pids.[1] machine').Process |> shouldEqual second.Process
         machine'.Processes.[pids.[0]] |> shouldEqual machine.Processes.[pids.[0]]
+
+    [<Test>]
+    let ``pid_max cannot be lowered past another process's live thread ID from one process's view`` () : unit =
+        let pids, machine = machineOf SimulatedUnixPlatform.linuxX64 2
+
+        // The second process's leader is 4243, so a pid_max of 4243 would
+        // leave it an ID the machine could not have handed out.
+        ProcessId.toInt32 pids.[1] |> shouldEqual 4243
+
+        let error =
+            Assert.Throws<exn> (fun () ->
+                inProcess pids.[0] (fun view -> (), UnixSystem.writePidMaxSysctl context 4243 view) machine
+                |> ignore
+            )
+
+        error.Message |> shouldContainText "4243"
+
+        // ...and a pid_max above both is admitted.
+        let (), machine =
+            inProcess pids.[0] (fun view -> (), UnixSystem.writePidMaxSysctl context 4244 view) machine
+
+        assertClean machine
 
     [<Test>]
     let ``a view checks only what it can see truthfully, and the machine checks the rest`` () : unit =

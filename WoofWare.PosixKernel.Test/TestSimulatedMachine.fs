@@ -23,6 +23,13 @@ module TestSimulatedMachine =
 
     let private sorted (defects : 'a list) : 'a list = List.sortBy (sprintf "%A") defects
 
+    /// `view` as a system no machine has focused: equal to the system a view
+    /// of the same state would be, apart from where it was taken from.
+    let private unfocused (view : UnixSystem<int, string>) : UnixSystem<int, string> =
+        { view with
+            Origin = FocusOrigin.NotFocused
+        }
+
     /// One step of a walk through the process's own syscalls: each index is
     /// read modulo whatever it picks from.
     [<RequireQualifiedAccess>]
@@ -142,18 +149,22 @@ module TestSimulatedMachine =
             let machine = SimulatedMachine.ofSystem system
 
             SimulatedMachine.processIds machine |> shouldEqual (Set.singleton pid)
-            SimulatedMachine.focus pid machine |> shouldEqual (Some system)
+
+            SimulatedMachine.focus pid machine
+            |> Option.map unfocused
+            |> shouldEqual (Some system)
+
             SimulatedMachine.checkInvariants machine |> shouldEqual []
 
             let written = SimulatedMachine.unfocus system machine
 
             SimulatedMachine.focus pid written
-            |> shouldEqual (
-                Some
-                    { system with
-                        Generation = MachineGeneration.next system.Generation
-                    }
-            )
+            |> Option.map unfocused
+            |> shouldEqual (Some system)
+
+            // A focused view written back unchanged leaves the machine as it was.
+            let view = SimulatedMachine.focus pid machine |> Option.get
+            SimulatedMachine.unfocus view machine |> shouldEqual machine
 
         Check.One (
             Config.QuickThrowOnFailure.WithMaxTest 200,
@@ -183,16 +194,28 @@ module TestSimulatedMachine =
                 outcome |> shouldEqual (fst expected)
 
                 SimulatedMachine.focus pid after
-                |> shouldEqual (
-                    Some
-                        { snd expected with
-                            Generation = MachineGeneration.next system.Generation
-                        }
-                )
+                |> Option.map unfocused
+                |> shouldEqual (Some (snd expected))
             | other -> failwith $"step: %A{other}"
 
             let other = ProcessId.parseOrFail "test" 7
             SimulatedMachine.step other 0 (Syscall.Dup 1) machine |> shouldEqual None
+
+    [<Test>]
+    let ``a refused step leaves the machine itself, so a view focused before it can still be written back`` () : unit =
+        // Linux refuses clonefile, which is Darwin's.
+        let system = world SimulatedUnixPlatform.linuxX64
+        let pid = UnixSystem.processId system
+        let machine = SimulatedMachine.ofSystem system
+        let pending = SimulatedMachine.focus pid machine |> Option.get
+
+        let call = Syscall.CloneFile (PathArg.ofText "/a", PathArg.ofText "/b", 0)
+
+        match SimulatedMachine.step pid 0 call machine with
+        | Some (Error _, after) ->
+            obj.ReferenceEquals (after, machine) |> shouldEqual true
+            SimulatedMachine.unfocus pending after |> shouldEqual machine
+        | other -> failwith $"expected a refusal, got %A{other}"
 
     [<Test>]
     let ``unfocus refuses a view once another has been written back`` () : unit =
@@ -210,7 +233,58 @@ module TestSimulatedMachine =
             let error =
                 Assert.Throws<exn> (fun () -> SimulatedMachine.unfocus second machine |> ignore)
 
-            error.Message |> shouldContainText "has since changed"
+            error.Message
+            |> shouldContainText "was not focused from the machine as it stands"
+
+    [<Test>]
+    let ``unfocus refuses a second view of one process once the first is written back`` () : unit =
+        // The machine is unchanged by the first write-back (umask touches the
+        // process alone), so only the process's own state tells the views
+        // apart.
+        for platform in platforms do
+            let system = world platform
+            let pid = UnixSystem.processId system
+            let machine = SimulatedMachine.ofSystem system
+
+            let first = SimulatedMachine.focus pid machine |> Option.get
+            let second = SimulatedMachine.focus pid machine |> Option.get
+
+            let _, first = UnixSystem.umask 0o077 first
+            let machine = SimulatedMachine.unfocus first machine
+
+            obj.ReferenceEquals (machine.Machine, second.Machine) |> shouldEqual true
+
+            let error =
+                Assert.Throws<exn> (fun () -> SimulatedMachine.unfocus second machine |> ignore)
+
+            error.Message
+            |> shouldContainText "was not focused from the machine as it stands"
+
+    [<Test>]
+    let ``unfocus refuses a view focused from another history of the machine`` () : unit =
+        // Two histories branched from one machine: in each, one write-back.
+        // A view from one is not a view of the other, whatever the two have
+        // done since.
+        for platform in platforms do
+            let system = world platform
+            let pid = UnixSystem.processId system
+            let root = SimulatedMachine.ofSystem system
+
+            let branch (fd : int) =
+                let view = SimulatedMachine.focus pid root |> Option.get
+                let _, view = KeventWorld.dup fd view
+                SimulatedMachine.unfocus view root
+
+            let left = branch 1
+            let right = branch 2
+
+            let fromLeft = SimulatedMachine.focus pid left |> Option.get
+
+            let error =
+                Assert.Throws<exn> (fun () -> SimulatedMachine.unfocus fromLeft right |> ignore)
+
+            error.Message
+            |> shouldContainText "was not focused from the machine as it stands"
 
     [<Test>]
     let ``unfocus refuses a view of a process the machine does not hold`` () : unit =

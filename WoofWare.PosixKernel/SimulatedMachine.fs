@@ -30,9 +30,6 @@ type SimulatedMachine<'Task, 'Handler when 'Task : comparison and 'Handler : equ
             Machine : UnixMachineState
             /// Every process on the machine, by its process ID.
             Processes : Map<ProcessId, ProcessSlot<'Task, 'Handler>>
-            /// Advanced by every change to the machine, so that `unfocus` can
-            /// refuse a view taken before one.
-            Generation : MachineGeneration
         }
 
 /// A way a `SimulatedMachine` fails to be a machine any kernel could be in.
@@ -100,11 +97,12 @@ module SimulatedMachine =
             Process = slot.Process
             Tasks = slot.Tasks
             Leader = slot.Leader
-            Generation = machine.Generation
+            Origin = FocusOrigin.FocusedFrom (machine.Machine, slot.Process, slot.Tasks)
         }
 
     /// The machine `system` runs on, holding `system`'s process as its only
-    /// one. `system` is itself a view of the result, which `unfocus` accepts.
+    /// one. `system` is itself a view of the result, which `unfocus` accepts
+    /// while it is unchanged.
     ///
     /// Fails loudly if `system` is a view of a machine holding other processes
     /// besides, which a machine without them would not be one any kernel could
@@ -131,7 +129,6 @@ module SimulatedMachine =
                         Tasks = system.Tasks
                         Leader = system.Leader
                     }
-            Generation = system.Generation
         }
 
     /// Start a new process on the machine, as `launch` describes it: the
@@ -210,7 +207,6 @@ module SimulatedMachine =
                                 Leader = ProcessLaunch.leader launch
                             }
                             machine.Processes
-                    Generation = MachineGeneration.next machine.Generation
                 }
             )
 
@@ -240,10 +236,13 @@ module SimulatedMachine =
     /// `machine`'s, and the view's process replaces the process with its ID.
     ///
     /// Fails loudly if `view` is not a view of `machine` as it stands: if no
-    /// process on it has the view's process ID, or if a change has been
-    /// written back since the view was focused (`unfocus` of another view, or
-    /// another change to the machine), whose effects writing this view's copy
-    /// of the machine back would undo. Each is a bug in the client.
+    /// process on it has the view's process ID, or if the machine or the
+    /// view's own process is not the one the view was focused from (another
+    /// view was written back since, the machine changed some other way, or the
+    /// view was focused from another history of the machine), so that writing
+    /// the view back would undo a change it never saw. Each is a bug in the
+    /// client. A system no machine focused is accepted only by the machine
+    /// `ofSystem` made of it, unchanged.
     ///
     /// A process cannot end on a `SimulatedMachine`: what a syscall that ends
     /// one answers is an `EndedProcess`, which is not a view and so cannot be
@@ -259,9 +258,24 @@ module SimulatedMachine =
             failwith
                 $"SimulatedMachine.unfocus: no process on the machine has ID %O{processId}, so the view is not of this machine (this is a bug in the client)."
 
-        if view.Generation <> machine.Generation then
+        let slot = machine.Processes.[processId]
+
+        let originMachine, originProcess, originTasks =
+            match view.Origin with
+            | FocusOrigin.FocusedFrom (originMachine, originProcess, originTasks) ->
+                originMachine, originProcess, originTasks
+            // A system no machine focused is a view only of the machine made
+            // of it, as that machine still holds it.
+            | FocusOrigin.NotFocused -> view.Machine, view.Process, view.Tasks
+
+        let current =
+            obj.ReferenceEquals (originMachine, machine.Machine)
+            && obj.ReferenceEquals (originProcess, slot.Process)
+            && obj.ReferenceEquals (originTasks, slot.Tasks)
+
+        if not current then
             failwith
-                $"SimulatedMachine.unfocus: the view of process %O{processId} was focused at %A{view.Generation}, but the machine has since changed and is at %A{machine.Generation}. Writing the view back would undo that change; focus the process again and repeat its call (this is a bug in the client)."
+                $"SimulatedMachine.unfocus: the view of process %O{processId} was not focused from the machine as it stands: another view has been written back since, or the machine has otherwise changed, or the view was focused from another history of it. Writing the view back would undo a change it never saw; focus the process again and repeat its call (this is a bug in the client)."
 
         {
             Machine = view.Machine
@@ -274,7 +288,6 @@ module SimulatedMachine =
                         Leader = view.Leader
                     }
                     machine.Processes
-            Generation = MachineGeneration.next machine.Generation
         }
 
     /// Run `f` in the view of the machine from the process `processId`, and
@@ -293,8 +306,9 @@ module SimulatedMachine =
         )
 
     /// `UnixSystem.step` of `call`, made by `task` of the process `processId`.
-    /// A refused call changes nothing. `None` if no process on the machine has
-    /// that ID.
+    /// A refused call changes nothing, and answers `machine` itself, so a view
+    /// focused from it can still be written back. `None` if no process on the
+    /// machine has that ID.
     let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (processId : ProcessId)
         (task : 'Task)
@@ -302,14 +316,12 @@ module SimulatedMachine =
         (machine : SimulatedMachine<'Task, 'Handler>)
         : (Result<SyscallOutcome, SyscallRefusal<'Task>> * SimulatedMachine<'Task, 'Handler>) option
         =
-        inView
-            processId
-            (fun view ->
-                match UnixSystem.step task call view with
-                | Ok (outcome, view) -> Ok outcome, view
-                | Error refusal -> Error refusal, view
-            )
-            machine
+        focus processId machine
+        |> Option.map (fun view ->
+            match UnixSystem.step task call view with
+            | Ok (outcome, view) -> Ok outcome, unfocus view machine
+            | Error refusal -> Error refusal, machine
+        )
 
     /// Every way `machine` fails to be a machine any kernel could be in: the
     /// machine's clauses (`UnixSystem.checkMachineInvariants`) read against
