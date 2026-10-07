@@ -229,7 +229,13 @@ module Program =
         | ThreadStatus.Parked -> None
 
     /// Fire a timeout wake for every blocked-with-deadline thread whose
-    /// deadline is `<= state.Kernel.VirtualClockTicks`. Each fire routes
+    /// deadline is `<= now`, a reading of the virtual clock in its ticks.
+    ///
+    /// `now` is an argument rather than read from the state's kernel because
+    /// the clock is the machine's, and a process's view of a machine other
+    /// processes share holds a stale copy of it once another has moved it on.
+    /// Nothing here reads the kernel's POSIX half, so a state whose view is
+    /// stale in that way may be passed with the machine's clock. Each fire routes
     /// through a per-subsystem fire function (WaitHandle dequeues from
     /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
     /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
@@ -248,9 +254,7 @@ module Program =
     /// primitive's queue fires first, matching the FIFO contract enforced
     /// everywhere else in the state machines (release, signalRelease,
     /// pulse/pulseAll, applySpuriousWakeups AlwaysAll).
-    let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
-        let now = state.Kernel.VirtualClockTicks
-
+    let private fireExpiredDeadlines (now : int64) (state : IlMachineState) : IlMachineState =
         // `Map.foldBack` visits keys in descending order, so the resulting list is sorted by
         // thread ID.
         let expired =
@@ -629,7 +633,7 @@ module Program =
         // thread B is busy computing something else — A's deadline still
         // fires when the clock reaches it, even though B keeps the
         // scheduler from ever stalling.
-        let state = fireExpiredDeadlines state
+        let state = fireExpiredDeadlines state.Kernel.VirtualClockTicks state
 
         // Run System.Native's signal handling before the scheduler picks its
         // next thread: its native handler writes whatever the kernel delivers
@@ -702,7 +706,7 @@ module Program =
                             EmulatedKernel.withVirtualClockTicks (max state.Kernel.VirtualClockTicks target)
                         )
 
-                    let state = fireExpiredDeadlines state
+                    let state = fireExpiredDeadlines state.Kernel.VirtualClockTicks state
                     advanceUntilRunnableOrQuiescent (fireSyscallWakes state)
 
         { prepared with

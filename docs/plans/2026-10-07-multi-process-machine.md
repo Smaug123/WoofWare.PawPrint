@@ -215,10 +215,12 @@ program, as a switch carries the clock across inside the machine. So
 `StepCounter` stays where every test reads it, and for one program it is
 what it is today.
 
-`InstructionCostTicks` and `ClockJitter` describe the machine. They stay
-on `EmulatedKernel`, but every program's copy is set from one
-`MachineConfig`. The driver reads the checked-out program's copy, and a
-Debug build asserts the copies agree when it switches.
+`InstructionCostTicks` and `ClockJitter` describe the machine, and govern
+the clock advance and the jitter, which move to the driver. So in 5c they
+move off `EmulatedKernel` with them, onto the `MachineConfig` the driver
+holds, if every reader moves too. If one must stay per program, every
+program's copy is set from the one `MachineConfig`, and the driver asserts
+they agree. 5b leaves them where they are.
 
 ### 1. What stays per program, and what moves to the driver
 
@@ -371,12 +373,15 @@ against `Machine`. The `EndedIn` view descends from the checkout, so its
 `Origin` holds. The driver records `(pid, RunEnd)`, then focuses the next
 live program from the machine that `endProcess` returned.
 
-Today the `EndedProcess` is thrown away where the kernel produces it: at
-`EmulatedKernel.exitGroup` (`EmulatedKernel.fs:1617`) and `abort`, in
-`NativeLibc`'s kill, in the SIGPIPE path of `NativeSystemNative`'s write,
-and in `SignalDispatch`. So `RunOutcome`, `ExecutionResult.SignalTerminated`
-and `SignalPoll.ProcessKilled` will carry it. `RunOutcome.termination`
-reads it.
+Until 5a the `EndedProcess` was thrown away where the kernel produced it:
+at `EmulatedKernel.exitGroup` and `abort`, in `NativeLibc`'s kill, in the
+SIGPIPE path of `NativeSystemNative`'s write, and in `SignalDispatch`. Now
+`exitGroup` and `abort` answer it, and `ExecutionResult.SignalTerminated`,
+`SignalPoll.ProcessKilled` and `NativeSystemNative`'s
+`NonCanceledPosixSignal.Terminated` carry it to where `Program` makes the
+`RunOutcome`. `RunOutcome` keeps its shape: a host has no use for the
+view a process ended in, and about 300 matches on it would otherwise
+change. In 5c the driver takes the end from there.
 
 `Environment.Exit`, an unhandled exception, `FailFast` or a fatal signal
 ends that program alone. The others see only what the kernel shows them,
@@ -430,13 +435,16 @@ it is needed, since it changes which interleavings can be reached.
 
 ### 7. PRs
 
-- **5a.** Carry `EndedProcess` to `RunOutcome`. Mechanical, with no change
-  in behaviour; the existing suites are the oracle.
-- **5b.** Split `KernelConfig` into `MachineConfig` and `ProcessConfig`, add
-  `EmulatedKernel.ofView`, and make `fireExpiredDeadlines` take `now`. No
-  change in behaviour. A property test: for generated `KernelConfig`s,
-  booting through `split` gives the same kernel as `toKernel`. 5a and 5b
-  could be one PR.
+- **5a.** Carry `EndedProcess` to where `Program` makes the `RunOutcome`,
+  and end every run's process on a machine of its own
+  (`SimulatedMachine.ofSystem`, then `endProcess`), failing loudly if it is
+  refused. The machine left is thrown away until 5c.
+- **5b.** Split `KernelConfig` into `MachineConfig` and `ProcessConfig`
+  (`KernelConfig.split`; `MachineConfig.boot` boots the machine with its
+  first process, and `toKernel` is the two), add `EmulatedKernel.ofView`,
+  and make `fireExpiredDeadlines` take `now`. A property test: for
+  generated `KernelConfig`s, booting through `split` gives the kernel that
+  every setter applied to one image gives. 5a and 5b are one PR.
 - **5c.** The driver core, with one program running through it.
   `advanceToDecision`, `stepTick` and their per-program jump and deadlock
   are deleted. The tick wakes through `SimulatedMachine.wakes`, and
