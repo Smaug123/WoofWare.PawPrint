@@ -45,6 +45,7 @@ module TestStateQueries =
         let property (platform : SimulatedUnixPlatform, count : int) : unit =
             imageOn platform
             |> UnixBootImage.withProcessorCount count
+            |> Configured.expectOk ProcessorCountRefusal.describe
             |> UnixBootImage.boot
             |> fun system -> UnixMachineState.processorCount system.Machine
             |> shouldEqual count
@@ -211,6 +212,7 @@ module TestStateQueries =
             let system =
                 imageOn platform
                 |> UnixBootImage.withProcessorCount 3
+                |> Configured.expectOk ProcessorCountRefusal.describe
                 |> UnixBootImage.withEnvironment context [ entry ]
                 |> UnixBootImage.withProcessPath context (Some path)
                 |> UnixBootImage.boot

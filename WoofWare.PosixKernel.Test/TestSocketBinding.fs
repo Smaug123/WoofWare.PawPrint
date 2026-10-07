@@ -41,7 +41,11 @@ module TestSocketBinding =
 
     /// The machine of a system booted with the ephemeral port range `range`.
     let private machineWithPortRange (range : uint16 * uint16) : UnixMachineState =
-        (initialImage |> UnixBootImage.withEphemeralPortRange range |> UnixBootImage.boot).Machine
+        (initialImage
+         |> UnixBootImage.withEphemeralPortRange range
+         |> Configured.expectOk EphemeralPortRangeRefusal.describe
+         |> UnixBootImage.boot)
+            .Machine
 
     let private endpoint (address : uint32) (port : uint16) : InternetEndpoint = InternetEndpoint.ofParts address port
 
@@ -458,11 +462,13 @@ module TestSocketBinding =
 
     [<Test>]
     let ``an empty or zero-based ephemeral range is refused`` () : unit =
-        let shouldFail (low : uint16) (high : uint16) (substring : string) : unit =
-            let exn =
-                Assert.Throws<System.Exception> (fun () -> machineWithPortRange (low, high) |> ignore<UnixMachineState>)
+        let refusal (low : uint16) (high : uint16) : Result<unit, EphemeralPortRangeRefusal> =
+            initialImage
+            |> UnixBootImage.withEphemeralPortRange (low, high)
+            |> Result.map ignore<UnixBootImage<int, string>>
 
-            exn.Message |> shouldContainText substring
+        refusal 0us 100us
+        |> shouldEqual (Error (EphemeralPortRangeRefusal.LowIsZero 100us))
 
-        shouldFail 0us 100us "port 0 is how a process"
-        shouldFail 100us 99us "is empty"
+        refusal 100us 99us
+        |> shouldEqual (Error (EphemeralPortRangeRefusal.Empty (100us, 99us)))

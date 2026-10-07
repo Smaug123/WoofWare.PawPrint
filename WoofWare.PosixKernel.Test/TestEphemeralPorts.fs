@@ -50,7 +50,10 @@ module TestEphemeralPorts =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
 
-        system |> UnixBootImage.withEphemeralPortRange (low, high) |> UnixBootImage.boot
+        system
+        |> UnixBootImage.withEphemeralPortRange (low, high)
+        |> Configured.expectOk EphemeralPortRangeRefusal.describe
+        |> UnixBootImage.boot
 
     let private newStream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system

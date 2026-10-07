@@ -75,7 +75,10 @@ module TestTransferCounts =
 
         match limit with
         | None -> image
-        | Some limit -> image |> UnixBootImage.withUserAddressLimit limit
+        | Some limit ->
+            image
+            |> UnixBootImage.withUserAddressLimit limit
+            |> Configured.expectOk UserAddressLimitRefusal.describe
 
     let internal systemOn (machine : SimulatedUnixPlatform * uint64 option) : UnixSystem<int, string> =
         imageOn machine |> UnixBootImage.boot
@@ -917,6 +920,7 @@ module TestTransferCounts =
             let system =
                 imageOn (platform, None)
                 |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fileSystem))
+                |> Configured.expectOk MountRefusal.describe
                 |> UnixBootImage.boot
 
             let fd, registry =
