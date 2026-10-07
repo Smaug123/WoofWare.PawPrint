@@ -515,6 +515,8 @@ module NativeSystemNative =
                 "Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
             | CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _) ->
                 "Accept the connection or close the client before closing the listener."
+            | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
+                "Model the reset a zero-linger close sends, or close the peer first."
             | CloseRefusal.PolledDescriptor _ ->
                 "Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
             | CloseRefusal.DarwinEndedWriteSignal _ ->

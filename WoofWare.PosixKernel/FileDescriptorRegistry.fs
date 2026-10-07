@@ -279,7 +279,9 @@ type SocketOptions =
         Ipv6Only : bool
         /// `SO_LINGER`. Stored only: what a close does with it -- with a
         /// linger time of zero, a reset instead of an orderly shutdown --
-        /// belongs with `close` and `shutdown`, which do not consult it yet.
+        /// belongs with `close` and `shutdown`, which do not model it yet, and
+        /// so refuse the close of a connected socket whose connection that
+        /// reset would reach (`DescriptionReleaseRefusal.AbortiveClose`).
         Linger : SocketLinger
     }
 

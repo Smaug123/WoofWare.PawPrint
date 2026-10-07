@@ -678,6 +678,55 @@ module TestSocketOptions =
             | Ok (SetSockOptAnswer.Failed UnixError.EFAULT, _) -> ()
             | other -> failwith $"%O{platform} %s{label}, unmapped: expected EFAULT, got %A{other}"
 
+    [<TestCaseSource(nameof platforms)>]
+    let ``a close that would reset a connection is refused, and every other close is orderly``
+        (platform : SimulatedUnixPlatform)
+        =
+        let listener, system = listening platform
+        let client, system = socketOf SocketDomain.Inet SocketKind.Stream system
+        let system = connectTo 5000us client system
+
+        let accepted, system =
+            match UnixConnection.accept 0 listener UserBuffer.Mapped 16u system with
+            | Ok (AcceptOutcome.Accepted (fd, _, _), system) -> fd, system
+            | other -> failwith $"accept answered %A{other}"
+
+        let close (fd : int) (system : UnixSystem<int, string>) =
+            match UnixDescriptor.close fd system with
+            | Ok (SyscallAnswer.Completed _, system) -> Ok system
+            | Ok (SyscallAnswer.Failed error, _) -> failwith $"close answered %O{error}"
+            | Error refusal -> Error refusal
+
+        let refusedClose (fd : int) (system : UnixSystem<int, string>) =
+            match close fd system with
+            | Error (CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _)) -> ()
+            | other -> failwith $"%O{platform} fd %d{fd}: expected a refusal, got %A{other}"
+
+        // Lingering for no time resets the peer, connected or still queued.
+        let zero = setOk Option.Linger client (OptionValue.ofLinger 1 0) system
+        refusedClose client zero
+
+        let queuedClient, queued = socketOf SocketDomain.Inet SocketKind.Stream zero
+        let queued = connectTo 5000us queuedClient queued
+        let queued = setOk Option.Linger queuedClient (OptionValue.ofLinger 1 0) queued
+        refusedClose queuedClient queued
+
+        // Lingering for some time, or not at all, is an orderly close.
+        for onOff, time in [ 1, 1 ; 0, 0 ] do
+            let system = setOk Option.Linger client (OptionValue.ofLinger onOff time) system
+
+            match close client system with
+            | Ok _ -> ()
+            | Error refusal -> failwith $"{{%d{onOff}, %d{time}}}: %s{CloseRefusal.describe refusal}"
+
+        // Once the peer has gone, there is nothing to reset.
+        match close accepted zero with
+        | Ok system ->
+            match close client system with
+            | Ok _ -> ()
+            | Error refusal -> failwith $"after the peer closed: %s{CloseRefusal.describe refusal}"
+        | Error refusal -> failwith $"closing the peer: %s{CloseRefusal.describe refusal}"
+
     // ------------------------------------------------------------------
     // Caller bugs
     // ------------------------------------------------------------------

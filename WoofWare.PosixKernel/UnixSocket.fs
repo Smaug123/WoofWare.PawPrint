@@ -1732,11 +1732,13 @@ module UnixSocket =
     ///   0 and 32767 hundredths, and every other set stores the time cut to
     ///   sixteen bits, whatever `l_onoff` is.
     ///
-    /// No option here changes anything else in this kernel. `TCP_NODELAY` has
-    /// no observable effect, since a loopback transfer is delivered at once
-    /// whatever its size. `SO_LINGER`'s effect on `close` -- a reset rather
-    /// than an orderly shutdown when the time is zero -- belongs with
-    /// `close` and `shutdown`, which do not consult it yet.
+    /// `TCP_NODELAY` has no observable effect, since a loopback transfer is
+    /// delivered at once whatever its size. `SO_LINGER`'s effect on `close` --
+    /// a reset rather than an orderly shutdown when the time is zero -- belongs
+    /// with `close` and `shutdown`, which do not model it yet: such a close of
+    /// a connected socket is refused
+    /// (`DescriptionReleaseRefusal.AbortiveClose`), and every other close is
+    /// the orderly one it would be anyway.
     ///
     /// An option persists until the next `setsockopt` of it, and no later
     /// failure of another call undoes it. A change on a listener with
