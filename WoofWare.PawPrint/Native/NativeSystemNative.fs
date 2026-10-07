@@ -6649,6 +6649,7 @@ module NativeSystemNative =
                         // through it.
                         | PollRefusal.UnmeasuredNegativeTimeout _ -> " This is a hand-rolled P/Invoke."
                         | PollRefusal.UnmodelledSocket _
+                        | PollRefusal.UnmeasuredSocketKind _
                         | PollRefusal.UnmodelledVnodeWait _
                         | PollRefusal.UnmodelledEntryCount _
                         | PollRefusal.EventsBesideDeadline
