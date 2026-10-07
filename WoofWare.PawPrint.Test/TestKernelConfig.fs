@@ -128,6 +128,73 @@ module TestKernelConfig =
         (Assert.Throws<Exception> (TestDelegate darwin)).Message
         |> shouldContainText "KernelConfig.ProtectedFiles: "
 
+    /// The machine's boot setters refuse rather than throw, and each says why
+    /// without knowing what the host called the value; `toKernel` is what
+    /// names the knob, so a host is told which field to change.
+    [<Test>]
+    let ``a machine setting the library refuses fails toKernel naming its knob`` () : unit =
+        let darwin =
+            { KernelConfig.Default with
+                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+            }
+
+        let rows : (string * KernelConfig) list =
+            [
+                "KernelConfig.ProcessorCount: ",
+                { KernelConfig.Default with
+                    ProcessorCount = 0
+                }
+                "KernelConfig.UserAddressLimit: ",
+                { KernelConfig.Default with
+                    UserAddressLimit = Some 1UL
+                }
+                "KernelConfig.UserAddressLimit: ",
+                { darwin with
+                    UserAddressLimit = Some ObservedUserAddressLimit.Arm64FortyEightBit
+                }
+                "KernelConfig.Mount: ",
+                { KernelConfig.Default with
+                    Mount = Some (EmulatedMount.Apfs ApfsMount.defaults)
+                }
+                "KernelConfig.Mount: ",
+                { darwin with
+                    Mount = Some (EmulatedMount.Tmpfs TmpfsMount.defaults)
+                }
+                "KernelConfig.EphemeralPortRange: ",
+                { KernelConfig.Default with
+                    EphemeralPortRange = Some (0us, 10us)
+                }
+                "KernelConfig.EphemeralPortRange: ",
+                { KernelConfig.Default with
+                    EphemeralPortRange = Some (2us, 1us)
+                }
+                "KernelConfig.SoMaxConn: ",
+                { KernelConfig.Default with
+                    SoMaxConn = Some 0
+                }
+                "KernelConfig.TcpSendSpace: ",
+                { KernelConfig.Default with
+                    TcpSendSpace = Some 16384
+                }
+                "KernelConfig.TcpSendSpace: ",
+                { darwin with
+                    TcpSendSpace = Some 1
+                }
+                "KernelConfig.TcpSendSpace: ",
+                { darwin with
+                    TcpSendSpace = Some Int32.MaxValue
+                }
+            ]
+
+        for prefix, config in rows do
+            let apply () =
+                KernelConfig.toKernel config |> ignore<EmulatedKernel>
+
+            let exn = Assert.Throws<Exception> (TestDelegate apply)
+
+            if not (exn.Message.StartsWith (prefix, StringComparison.Ordinal)) then
+                failwith $"expected a failure starting %s{prefix}, got: %s{exn.Message}"
+
     [<Test>]
     let ``the instruction cost is configurable and validated`` () : unit =
         // The rate is guest-observable — a guest can measure it by counting work against

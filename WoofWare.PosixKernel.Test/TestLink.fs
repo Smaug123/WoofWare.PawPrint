@@ -109,10 +109,10 @@ module TestLink =
         let image : UnixBootImage<int, string> =
             UnixSystem.initial platform
             |> UnixBootImage.withProtectedFiles
-                context
                 { ProtectedFiles.off with
                     Hardlinks = protection
                 }
+            |> Configured.expectOk ProtectedFilesRefusal.describe
 
         match UnixBootImage.withFileSystem epoch (InodeOwner.ofProcess credentials) seed image with
         | Ok image ->
@@ -931,7 +931,9 @@ module TestLink =
     [<Test>]
     let ``a link on NFS is refused`` () : unit =
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial linux |> UnixBootImage.withMount (Some EmulatedMount.Nfs)
+            UnixSystem.initial linux
+            |> UnixBootImage.withMount (Some EmulatedMount.Nfs)
+            |> Configured.expectOk MountRefusal.describe
 
         let credentials = UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux
 

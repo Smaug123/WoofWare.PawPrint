@@ -44,8 +44,9 @@ module OsThreadId =
 [<RequireQualifiedAccess>]
 type ThreadIdCounter =
     internal
-    /// `cursor` is where the next search for a free id starts; ids are below
-    /// `pidMax`.
+    /// `cursor` is where the next search for a free id starts; the ids it hands
+    /// out are below `pidMax`, which may since have been lowered beneath ids
+    /// handed out earlier.
     | Linux of cursor : int32 * pidMax : int32
     /// `next` is the id the next thread gets.
     | Darwin of next : uint64
@@ -128,8 +129,8 @@ module ThreadIdAllocator =
 
     /// The Linux allocator `allocator` is, with its `pid_max` set to `pidMax`.
     ///
-    /// Refuses a Darwin allocator, which has no `pid_max`, and a value Linux does
-    /// not accept.
+    /// Throws for a Darwin allocator, which has no `pid_max`, and for a value
+    /// Linux does not accept.
     let internal withPidMax (context : string) (pidMax : int32) (allocator : ThreadIdAllocator) : ThreadIdAllocator =
         match allocator.Counter with
         | ThreadIdCounter.Linux (cursor, _) ->
@@ -142,13 +143,16 @@ module ThreadIdAllocator =
             failwith
                 $"%s{context}: Darwin has no pid_max; its thread IDs come from a 64-bit counter that no setting bounds."
 
-    /// Whether `id` is one `allocator` could have handed out and not yet reached:
-    /// below `pid_max` on Linux, and below the counter on Darwin.
+    /// Whether `id` is one `allocator` could have handed out: on Linux, one below
+    /// the greatest `pid_max` Linux takes, and on Darwin, one below the counter.
     let internal couldHaveMinted (id : OsThreadId) (allocator : ThreadIdAllocator) : bool =
         let id = OsThreadId.toUInt64 id
 
         match allocator.Counter with
-        | ThreadIdCounter.Linux (_, pidMax) -> id >= 1UL && id < uint64 pidMax
+        // Not the `pid_max` now in force: a write may lower it beneath a live id,
+        // which keeps that id (`pid-max-below-live.c`), so the counter may have
+        // handed out anything below the greatest value it could once have had.
+        | ThreadIdCounter.Linux _ -> id >= 1UL && id < uint64 linuxPidMaxCeiling
         | ThreadIdCounter.Darwin next -> id >= 1UL && id < next
 
     /// The ids of every live task on the machine, which `allocate` will not
