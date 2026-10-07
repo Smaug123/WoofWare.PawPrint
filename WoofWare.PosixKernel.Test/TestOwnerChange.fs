@@ -1545,15 +1545,15 @@ module TestOwnerChange =
 
         let memberGroup = Some (gid 2000u)
 
-        UnixSystem.step 1 (Syscall.ChOwn (PathArg.ofPath (path "/p/lf"), None, memberGroup)) system
+        UnixSystem.step 1 (Syscall.FChOwnAt (-100, PathArg.ofPath (path "/p/lf"), None, memberGroup, 0)) system
         |> answered
         |> shouldEqual (chownAnswer "/p/lf" None memberGroup system)
 
-        UnixSystem.step 1 (Syscall.LChOwn (PathArg.ofPath (path "/p/lf"), None, memberGroup)) system
+        UnixSystem.step 1 (Syscall.FChOwnAt (-100, PathArg.ofPath (path "/p/lf"), None, memberGroup, 0x100)) system
         |> answered
         |> shouldEqual (lchownAnswer "/p/lf" None memberGroup system)
 
-        UnixSystem.step 1 (Syscall.ChOwn (PathArg.ofPath (path "/p/theirs"), Some (uid 1002u), None)) system
+        UnixSystem.step 1 (Syscall.FChOwnAt (-100, PathArg.ofPath (path "/p/theirs"), Some (uid 1002u), None, 0)) system
         |> answered
         |> shouldEqual (chownAnswer "/p/theirs" (Some (uid 1002u)) None system)
 
@@ -1569,15 +1569,17 @@ module TestOwnerChange =
 
         for call in
             [
-                Syscall.ChOwn (PathArg.ofPath (path "/t/f"), None, None)
-                Syscall.LChOwn (PathArg.ofPath (path "/t/f"), None, None)
+                // AT_FDCWD on Darwin, and AT_SYMLINK_NOFOLLOW for lchown.
+                Syscall.FChOwnAt (-2, PathArg.ofPath (path "/t/f"), None, None, 0)
+                Syscall.FChOwnAt (-2, PathArg.ofPath (path "/t/f"), None, None, 0x20)
             ] do
             match UnixSystem.step 1 call darwin with
-            | Error (SyscallRefusal.ChOwn refusal) ->
+            | Error (SyscallRefusal.FChOwnAt refusal) ->
                 Error refusal
                 |> shouldEqual (
                     UnixPathResolution.chown (PathArg.ofPath (path "/t/f")) None None darwin
                     |> Result.map ignore
+                    |> Result.mapError FChOwnAtRefusal.ChOwn
                 )
             | other -> failwith $"step %A{call} as Darwin root: %A{other}"
 

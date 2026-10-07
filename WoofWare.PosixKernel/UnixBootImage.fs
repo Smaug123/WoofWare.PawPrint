@@ -199,6 +199,50 @@ module TcpSendSpaceRefusal =
         | TcpSendSpaceRefusal.BelowLoopbackSendPipe (value, sendPipe) ->
             $"%d{value} is below %d{sendPipe}, the send pipe of Darwin's route to 127.0.0.1. A connection's handshake grows a send buffer that small to the send pipe of the route it takes, and this kernel does not model routes."
 
+/// Why `UnixBootImage.withTcpReceiveSpace` refuses a value.
+[<RequireQualifiedAccess>]
+type TcpReceiveSpaceRefusal =
+    /// The value is not positive, and Linux refuses such a
+    /// `net.ipv4.tcp_rmem` default. Contradictory.
+    | NotPositive of value : int
+    /// Darwin would grow a receive buffer of this `net.inet.tcp.recvspace`
+    /// again as data arrives, which this library does not model; `reason` is
+    /// `TcpBufferSizing.darwinReceiveSpaceRefusal`'s account of why.
+    /// Unmodelled.
+    | GrowsAfterHandshake of value : int * reason : string
+
+[<RequireQualifiedAccess>]
+module TcpReceiveSpaceRefusal =
+    /// What this library knows about why it refused the value, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : TcpReceiveSpaceRefusal) : string =
+        match refusal with
+        | TcpReceiveSpaceRefusal.NotPositive value ->
+            $"%d{value} is not positive, and Linux refuses such a net.ipv4.tcp_rmem default."
+        | TcpReceiveSpaceRefusal.GrowsAfterHandshake (_, reason) -> reason
+
+/// Why `UnixBootImage.withTcpSendSpaceMax` refuses a value.
+[<RequireQualifiedAccess>]
+type TcpSendSpaceMaxRefusal =
+    /// A value was configured on a machine of `flavour` (Darwin), where this
+    /// library sizes a send buffer from `TcpSendSpace` alone, so nothing would
+    /// read it. Unmodelled.
+    | NotReadOn of flavour : SimulatedUnixFlavour * value : int
+    /// The value is not positive, and Linux refuses such a `net.ipv4.tcp_wmem`
+    /// maximum. Contradictory.
+    | NotPositive of value : int
+
+[<RequireQualifiedAccess>]
+module TcpSendSpaceMaxRefusal =
+    /// What this library knows about why it refused the value, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : TcpSendSpaceMaxRefusal) : string =
+        match refusal with
+        | TcpSendSpaceMaxRefusal.NotReadOn (flavour, value) ->
+            $"%d{value} was configured on a %O{flavour} machine, but this kernel sizes a %O{flavour} send buffer from TcpSendSpace alone, so nothing would read it."
+        | TcpSendSpaceMaxRefusal.NotPositive value ->
+            $"%d{value} is not positive, and Linux refuses such a net.ipv4.tcp_wmem maximum."
+
 /// The boot-time configuration of a simulated process and the machine it runs
 /// on, applied to the `UnixBootImage` that `UnixSystem.initial` makes, and
 /// `boot`, which ends it.
@@ -938,6 +982,76 @@ module UnixBootImage =
         |> Result.map (fun resolved ->
             { machine with
                 TcpSendSpace = resolved
+            }
+            |> withMachine image
+        )
+
+    /// Set the TCP receive buffer sysctl (`TcpReceiveSpace`). `None` takes the
+    /// measured default of this machine's flavour.
+    ///
+    /// Under Linux a value must be positive. Under Darwin it must be one
+    /// `TcpBufferSizing.darwinReceiveSpaceRefusal` admits: one whose buffer a
+    /// connection's handshake sizes once and for all.
+    let withTcpReceiveSpace<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (value : int option)
+        (image : UnixBootImage<'Task, 'Handler>)
+        : Result<UnixBootImage<'Task, 'Handler>, TcpReceiveSpaceRefusal>
+        =
+        let machine = image.System.Machine
+
+        let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+        let resolved =
+            match value, flavour with
+            | None, _ -> Ok (UnixMachineState.defaultTcpReceiveSpace flavour)
+            | Some value, SimulatedUnixFlavour.Linux ->
+                if value <= 0 then
+                    Error (TcpReceiveSpaceRefusal.NotPositive value)
+                else
+                    Ok value
+            | Some value, SimulatedUnixFlavour.Darwin ->
+                match TcpBufferSizing.darwinReceiveSpaceRefusal value with
+                | Some reason -> Error (TcpReceiveSpaceRefusal.GrowsAfterHandshake (value, reason))
+                | None -> Ok value
+
+        resolved
+        |> Result.map (fun resolved ->
+            { machine with
+                TcpReceiveSpace = resolved
+            }
+            |> withMachine image
+        )
+
+    /// Set the ceiling a TCP send buffer autotunes to (`TcpSendSpaceMax`).
+    /// `None` takes the measured default of this machine's flavour.
+    ///
+    /// Under Linux a value must be positive. Under Darwin nothing reads the
+    /// value, since this kernel sizes a Darwin send buffer from
+    /// `TcpSendSpace` alone, so configuring one is refused rather than
+    /// silently ignored.
+    let withTcpSendSpaceMax<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (value : int option)
+        (image : UnixBootImage<'Task, 'Handler>)
+        : Result<UnixBootImage<'Task, 'Handler>, TcpSendSpaceMaxRefusal>
+        =
+        let machine = image.System.Machine
+
+        let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+        let resolved =
+            match value, flavour with
+            | None, _ -> Ok (UnixMachineState.defaultTcpSendSpaceMax flavour)
+            | Some value, SimulatedUnixFlavour.Darwin -> Error (TcpSendSpaceMaxRefusal.NotReadOn (flavour, value))
+            | Some value, SimulatedUnixFlavour.Linux ->
+                if value <= 0 then
+                    Error (TcpSendSpaceMaxRefusal.NotPositive value)
+                else
+                    Ok value
+
+        resolved
+        |> Result.map (fun resolved ->
+            { machine with
+                TcpSendSpaceMax = resolved
             }
             |> withMachine image
         )
