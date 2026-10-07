@@ -25,8 +25,9 @@ module OsThreadIdPal =
     ///     return result == 0 ? (uint32_t)-1 : result;
     ///
     /// The ID's low 32 bits, except that `(uint32)-1`, the shim's "cannot
-    /// determine a thread ID", stands in for 0. A Linux tid is below `pid_max`,
-    /// so it survives whole; a Darwin ID past 32 bits does not, as on a real Mac.
+    /// determine a thread ID", stands in for 0. A Linux tid is below 2^22, the
+    /// greatest `pid_max` Linux takes, so it survives whole; a Darwin ID past 32
+    /// bits does not, as on a real Mac.
     let tryGetUInt32 (id : OsThreadId) : uint32 =
         match uint32 (OsThreadId.toUInt64 id) with
         | 0u -> System.UInt32.MaxValue

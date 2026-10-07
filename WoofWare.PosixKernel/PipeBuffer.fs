@@ -309,7 +309,7 @@ module PipeBuffer =
     /// For a caller that must know whether a write would take anything before
     /// it has read the bytes to be written, such as one that answers `EAGAIN`
     /// without touching the caller's buffer.
-    let wouldTake (count : int) (buffer : PipeBuffer) : int =
+    let internal wouldTake (count : int) (buffer : PipeBuffer) : int =
         if count < 0 then
             failwith
                 $"PipeBuffer.wouldTake: a count of %d{count} is not a request a kernel ever sees; the caller must answer a negative count before asking."
@@ -362,7 +362,7 @@ module PipeBuffer =
     /// since the buffer grows before any byte is copied: measured, a write
     /// through a bad pointer answers EFAULT and leaves the buffer at the size
     /// that write needed.
-    let withoutTaking (count : int) (buffer : PipeBuffer) : PipeBuffer =
+    let internal withoutTaking (count : int) (buffer : PipeBuffer) : PipeBuffer =
         if count < 0 then
             failwith
                 $"PipeBuffer.withoutTaking: a count of %d{count} is not a request a kernel ever sees; the caller must answer a negative count before asking."
@@ -483,7 +483,7 @@ module PipeBuffer =
     /// transfer. On Linux that limit is `INT_MAX` rounded down to a page, and a
     /// longer count is the caller's to shorten first: the pipe takes a
     /// different amount from a clamped count than from the unclamped one.
-    let write (bytes : ImmutableArray<byte>) (buffer : PipeBuffer) : int * PipeBuffer =
+    let internal write (bytes : ImmutableArray<byte>) (buffer : PipeBuffer) : int * PipeBuffer =
         if bytes.IsDefault then
             failwith
                 "PipeBuffer.write: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
@@ -496,7 +496,7 @@ module PipeBuffer =
     /// For a caller that must say how many bytes it wants before it has them,
     /// such as one whose bytes are in a process's memory and whose write
     /// sleeps for the rest.
-    let writeWith (count : int) (taken : ImmutableArray<byte>) (buffer : PipeBuffer) : PipeBuffer =
+    let internal writeWith (count : int) (taken : ImmutableArray<byte>) (buffer : PipeBuffer) : PipeBuffer =
         if taken.IsDefault then
             failwith
                 "PipeBuffer.writeWith: taken is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
@@ -520,10 +520,11 @@ module PipeBuffer =
     /// On Linux a write of at most `atomicWriteLimit` bytes needs one free slot,
     /// which holds the whole of it.
     ///
-    /// Only a Darwin buffer that has grown to its largest size is resumed: a
-    /// write that had to sleep grew the buffer when it started, and how one that
-    /// slept with a smaller buffer resumes is not measured, so that is refused.
-    let resumeTakes (count : int) (written : int) (buffer : PipeBuffer) : int =
+    /// A Darwin buffer must have grown to its largest size, and this throws for
+    /// one that has not. A write sleeps only once it has grown the buffer as far
+    /// as it goes, and a buffer never shrinks, so a write that slept never
+    /// resumes into a smaller one; how one would is not measured.
+    let internal resumeTakes (count : int) (written : int) (buffer : PipeBuffer) : int =
         if written < 0 || written > count then
             failwith
                 $"PipeBuffer.resumeTakes: %d{written} of %d{count} bytes written is not where a write could have got to (this is a bug in the caller of PipeBuffer.resumeTakes)."
@@ -542,7 +543,7 @@ module PipeBuffer =
         | PipeBuffer.Darwin darwin ->
             if darwin.Size <> DarwinPipeBufferSize.B65536 then
                 failwith
-                    $"PipeBuffer.resumeTakes: a Darwin buffer of %d{DarwinPipeBufferSize.bytes darwin.Size} bytes, below its largest size. A write sleeps only once the buffer has grown as far as it goes, and how one resumes into a smaller buffer is not measured."
+                    $"PipeBuffer.resumeTakes: a Darwin buffer of %d{DarwinPipeBufferSize.bytes darwin.Size} bytes, below its largest size. A write sleeps only once the buffer has grown as far as it goes, and a buffer never shrinks, so no write that slept resumes into this one; how one would is not measured (this is a bug in the caller, which asked about a write that never slept)."
 
             // Measured (supplied-pipe-refill.c), a writer blocked on a full pipe
             // writes again after every read, taking all the room the read
@@ -564,7 +565,13 @@ module PipeBuffer =
     ///
     /// For a caller that must say how many bytes it wants before it has them,
     /// such as one whose bytes are in a process's memory.
-    let resumeWith (count : int) (written : int) (next : ImmutableArray<byte>) (buffer : PipeBuffer) : PipeBuffer =
+    let internal resumeWith
+        (count : int)
+        (written : int)
+        (next : ImmutableArray<byte>)
+        (buffer : PipeBuffer)
+        : PipeBuffer
+        =
         if next.IsDefault then
             failwith
                 "PipeBuffer.resumeWith: next is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
@@ -607,7 +614,7 @@ module PipeBuffer =
     /// them in, and slept because the rest did not fit, resuming: how many of
     /// `bytes`, from `offset` on, the buffer takes now (see `resumeTakes`), and
     /// the buffer after taking them.
-    let resume (bytes : ImmutableArray<byte>) (offset : int) (buffer : PipeBuffer) : int * PipeBuffer =
+    let internal resume (bytes : ImmutableArray<byte>) (offset : int) (buffer : PipeBuffer) : int * PipeBuffer =
         if bytes.IsDefault then
             failwith
                 "PipeBuffer.resume: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."

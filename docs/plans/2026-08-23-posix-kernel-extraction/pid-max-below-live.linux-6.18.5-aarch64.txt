@@ -1,0 +1,72 @@
+Linux 6.18.5 aarch64
+start	pid_max	4194304
+start	pid	9
+start	advanced_to	4999
+child	pid	5000
+child	held_tid	5001
+before	pid_max	4194304
+before	getpid	5000
+before	main_gettid	5000
+before	held_gettid	5001
+before	kill_self_0	ok
+before	tgkill_held_0	ok
+before	new_thread	0	5002
+before	new_thread	1	5003
+write_1000	write	ok
+write_1000	pid_max	1000
+write_1000	getpid	5000
+write_1000	main_gettid	5000
+write_1000	held_gettid	5001
+write_1000	kill_self_0	ok
+write_1000	tgkill_held_0	ok
+write_1000	new_thread	0	300
+write_1000	new_thread	1	301
+write_5000	write	ok
+write_5000	pid_max	5000
+write_5000	getpid	5000
+write_5000	main_gettid	5000
+write_5000	held_gettid	5001
+write_5000	kill_self_0	ok
+write_5000	tgkill_held_0	ok
+write_5000	new_thread	0	302
+write_5000	new_thread	1	303
+write_5001	write	ok
+write_5001	pid_max	5001
+write_5001	getpid	5000
+write_5001	main_gettid	5000
+write_5001	held_gettid	5001
+write_5001	kill_self_0	ok
+write_5001	tgkill_held_0	ok
+write_5001	new_thread	0	304
+write_5001	new_thread	1	305
+write_5002	write	ok
+write_5002	pid_max	5002
+write_5002	getpid	5000
+write_5002	main_gettid	5000
+write_5002	held_gettid	5001
+write_5002	kill_self_0	ok
+write_5002	tgkill_held_0	ok
+write_5002	new_thread	0	306
+write_5002	new_thread	1	307
+write_400	write	ok
+write_400	pid_max	400
+write_400	getpid	5000
+write_400	main_gettid	5000
+write_400	held_gettid	5001
+write_400	kill_self_0	ok
+write_400	tgkill_held_0	ok
+write_400	new_thread	0	308
+write_400	new_thread	1	309
+restore	write	ok
+restore	pid_max	4194304
+restore	getpid	5000
+restore	main_gettid	5000
+restore	held_gettid	5001
+restore	kill_self_0	ok
+restore	tgkill_held_0	ok
+restore	new_thread	0	310
+restore	new_thread	1	311
+parent	forked	5000
+parent	waitpid	5000	ok
+parent	exit_status	7
+parent	pid_max	4194304
