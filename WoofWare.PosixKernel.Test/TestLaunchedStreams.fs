@@ -101,15 +101,18 @@ module TestLaunchedStreams =
         ImmutableArray.Create<byte> (Array.init count (fun i -> byte ((seed * 31 + i) % 251)))
 
     /// What the earlier model did with the bytes the client received.
-    let private streamOf (endpoint : ExternalEndpoint) : Stream =
+    let private streamOf (pid : ProcessId) (endpoint : ExternalEndpoint) : Stream =
         match endpoint with
-        | ExternalEndpoint 1 -> Stream.Output
-        | ExternalEndpoint 2 -> Stream.Error
-        | other -> failwith $"a delivery reached %O{other}, which pipedStandardStreams does not drain"
+        | ExternalEndpoint (launchedInto, 1) when launchedInto = pid -> Stream.Output
+        | ExternalEndpoint (launchedInto, 2) when launchedInto = pid -> Stream.Error
+        | other ->
+            failwith $"a delivery reached %O{other}, which pipedStandardStreams does not drain for process %O{pid}"
 
     let private deliveredLog (system : UnixSystem<int, string>) : (Stream * byte list) list =
         DeliveryLog.toList system.Machine.Delivered
-        |> List.map (fun delivery -> streamOf delivery.Endpoint, List.ofSeq delivery.Bytes)
+        |> List.map (fun delivery ->
+            streamOf (UnixSystem.processId system) delivery.Endpoint, List.ofSeq delivery.Bytes
+        )
 
     /// One write as a client issues it: admitted, and then given the bytes the
     /// admission asked for. A pipe the process made can lose its reader, and a
@@ -318,7 +321,7 @@ module TestLaunchedStreams =
             let answer, after = UnixDescriptor.setNonBlocking fd value system
             Some (Answer.NonBlocking answer, after)
         | Op.Poll fd ->
-            match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
             | None -> Some (Answer.Level 0u, system)
             | Some id -> Some (Answer.Level (LinuxReadiness.ofDescription id system), system)
         | Op.Pipe2 ->
@@ -417,7 +420,7 @@ module TestLaunchedStreams =
             | other -> failwith $"%A{other}"
 
         let queueId =
-            match FileDescriptorRegistry.tryFindId epoll system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindId epoll (UnixSystemState.fileDescriptors system) with
             | Some id -> id
             | None -> failwith "the epoll instance is not open"
 
@@ -488,7 +491,7 @@ module TestLaunchedStreams =
         | other -> failwith $"%A{other}"
 
     let private pipeOf (fd : int) (system : UnixSystem<int, string>) : PipeId =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Pipe (pipeId, _)) -> pipeId
         | other -> failwith $"fd %d{fd} is %A{other}, not a pipe end"
 

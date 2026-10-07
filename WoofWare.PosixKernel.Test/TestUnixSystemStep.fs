@@ -77,7 +77,7 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not seed the file: %O{error}"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite (UnixSystemState.fileDescriptors system)
 
         fd,
         { system with
@@ -85,11 +85,8 @@ module TestUnixSystemStep =
                 { system.Machine with
                     FileSystem = filesystem
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     /// A second descriptor onto the seeded file, opened with the access mode
     /// asked for. Separate from `withOpenFile` because the access mode is what
@@ -102,20 +99,14 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile system
 
         let inode =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.File (inode, _)) -> inode
             | other -> failwith $"expected a file descriptor, got %O{other}"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile inode accessMode system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile inode accessMode (UnixSystemState.fileDescriptors system)
 
-        fd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        fd, UnixSystemState.withFileDescriptors registry system
 
     let private answered (result : Result<SyscallAnswer * UnixSystem<int, string>, 'a>) : SyscallAnswer =
         match result with
@@ -161,7 +152,7 @@ module TestUnixSystemStep =
         | Ok (ReadAnswer.Completed bytes, after) ->
             List.ofSeq bytes |> shouldEqual [ 1uy ; 2uy ; 3uy ; 4uy ; 5uy ]
 
-            match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors after) with
             | Some (OpenFileTarget.File (_, offset)) -> offset |> shouldEqual 5L
             | other -> failwith $"expected a file descriptor, got %O{other}"
 
@@ -251,7 +242,7 @@ module TestUnixSystemStep =
 
             match ReadOutcomes.read fd wild 5UL system with
             | Ok (ReadAnswer.Failed UnixError.EFAULT, after) ->
-                match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors after) with
                 | Some (OpenFileTarget.File (_, offset)) -> offset |> shouldEqual 0L
                 | other -> failwith $"expected a file descriptor, got %O{other}"
             | other -> failwith $"unexpected: %O{other}"
@@ -297,7 +288,7 @@ module TestUnixSystemStep =
     /// A descriptor onto one unbound, unconnected INET stream socket.
     let private withSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketZero system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketZero (UnixSystemState.fileDescriptors system)
 
         fd,
         { system with
@@ -305,11 +296,8 @@ module TestUnixSystemStep =
                 { system.Machine with
                     Sockets = Map.ofList [ socketZero, socketDescription ]
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     let private notConnected
         (system : UnixSystem<int, string>)
@@ -424,7 +412,7 @@ module TestUnixSystemStep =
 
         for phase in phases do
             let fd, registry =
-                FileDescriptorRegistry.createSocket socketZero linux.Process.FileDescriptors
+                FileDescriptorRegistry.createSocket socketZero (UnixSystemState.fileDescriptors linux)
 
             let system =
                 { linux with
@@ -439,11 +427,8 @@ module TestUnixSystemStep =
                                         }
                                     ]
                         }
-                    Process =
-                        { linux.Process with
-                            FileDescriptors = registry
-                        }
                 }
+                |> UnixSystemState.withFileDescriptors registry
 
             ReadOutcomes.read fd UserBuffer.Mapped 0UL system
             |> shouldEqual (Ok (ReadAnswer.Completed ImmutableArray.Empty, system))
@@ -569,7 +554,7 @@ module TestUnixSystemStep =
         | Ok (WriteAnswer.Completed written, after) ->
             written |> shouldEqual 2L
 
-            match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors after) with
             | Some (OpenFileTarget.File (inode, offset)) ->
                 offset |> shouldEqual 2L
 
@@ -592,7 +577,7 @@ module TestUnixSystemStep =
             |> shouldEqual
                 [
                     {
-                        Endpoint = ExternalEndpoint 1
+                        Endpoint = ExternalEndpoint (UnixSystem.processId after, 1)
                         Bytes = bytes
                     }
                 ]
@@ -666,7 +651,7 @@ module TestUnixSystemStep =
             }
 
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketId linux.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors linux)
 
         let system =
             { linux with
@@ -674,11 +659,8 @@ module TestUnixSystemStep =
                     { linux.Machine with
                         Sockets = Map.ofList [ socketId, socket ]
                     }
-                Process =
-                    { linux.Process with
-                        FileDescriptors = registry
-                    }
             }
+            |> UnixSystemState.withFileDescriptors registry
 
         let expected =
             Error (WriteRefusal.UnmodelledSocketPhase (socketId, SocketDomain.Inet, SocketKind.Stream, established))
@@ -775,7 +757,7 @@ module TestUnixSystemStep =
 
         let withSocket (flavour : UnixSystem<int, string>) : int * UnixSystem<int, string> =
             let fd, registry =
-                FileDescriptorRegistry.createSocket socketId flavour.Process.FileDescriptors
+                FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors flavour)
 
             fd,
             { flavour with
@@ -783,11 +765,8 @@ module TestUnixSystemStep =
                     { flavour.Machine with
                         Sockets = Map.ofList [ socketId, socket ]
                     }
-                Process =
-                    { flavour.Process with
-                        FileDescriptors = registry
-                    }
             }
+            |> UnixSystemState.withFileDescriptors registry
 
         let wild = UserBuffer.Unmapped System.UInt64.MaxValue
         let linuxFd, linuxSystem = withSocket linux
@@ -843,7 +822,7 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not seed the directory: %O{error}"
 
         let fd, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors system)
 
         fd,
         { system with
@@ -851,23 +830,15 @@ module TestUnixSystemStep =
                 { system.Machine with
                     FileSystem = filesystem
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     /// A descriptor onto an epoll instance.
     let private withEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+        let fd, registry =
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
-        fd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        fd, UnixSystemState.withFileDescriptors registry system
 
     [<Test>]
     let ``pread reads from the offset it is given, not from the description's`` () : unit =
@@ -1186,7 +1157,7 @@ module TestUnixSystemStep =
             | Ok (WriteAnswer.Completed written, after) ->
                 written |> shouldEqual 2L
 
-                match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors after) with
                 | Some (OpenFileTarget.File (inode, offset)) ->
                     // Exactly where `read` left it, rather than at 5.
                     offset |> shouldEqual 2L
@@ -1206,7 +1177,7 @@ module TestUnixSystemStep =
         | Ok (WriteAnswer.Completed written, after) ->
             written |> shouldEqual 1L
 
-            match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors after) with
             | Some (OpenFileTarget.File (inode, offset)) ->
                 offset |> shouldEqual 0L
 
@@ -1551,7 +1522,7 @@ module TestUnixSystemStep =
         // from a field nobody wrote.
         status.DeviceId |> shouldEqual 0x1000001L
 
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.File (inode, _)) -> status.Inode |> shouldEqual inode
         | other -> failwith $"expected a file descriptor, got %O{other}"
 
@@ -1823,15 +1794,9 @@ module TestUnixSystemStep =
         let _, target, _, system = withTree linux
 
         let fd, registry =
-            FileDescriptorRegistry.openFile target FileAccessMode.ReadOnly system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile target FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors system)
 
-        let withDescriptor =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let withDescriptor = UnixSystemState.withFileDescriptors registry system
 
         UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath (statPath "/d/inner/t")) system
         |> shouldEqual (
@@ -2121,15 +2086,9 @@ module TestUnixSystemStep =
         let _, target, _, system = withTree linux
 
         let fd, registry =
-            FileDescriptorRegistry.openFile target FileAccessMode.ReadOnly system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile target FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors system)
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         let after = Answered.unlink (statPath "/d/inner/t") system |> completed
 
@@ -2176,7 +2135,7 @@ module TestUnixSystemStep =
             let fd, system = withOpenDirectory flavour
 
             let inode =
-                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
                 | Some (OpenFileTarget.File (inode, _)) -> inode
                 | other -> failwith $"expected a directory descriptor, got %O{other}"
 
@@ -2330,7 +2289,7 @@ module TestUnixSystemStep =
             // not what it closed.
             answer |> shouldEqual 0L
 
-            FileDescriptorRegistry.tryFind fd after.Process.FileDescriptors
+            FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors after)
             |> shouldEqual None
         | other -> failwith $"unexpected: %O{other}"
 
@@ -2354,7 +2313,7 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
 
         let inode =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.File (inode, _)) -> inode
             | other -> failwith $"expected a file descriptor, got %O{other}"
 
@@ -2412,7 +2371,7 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not unlink the file: %O{error}"
 
         let inode =
-            match FileDescriptorRegistry.tryFindTarget fd unnamed.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors unnamed) with
             | Some (OpenFileTarget.File (inode, _)) -> inode
             | other -> failwith $"expected a file descriptor, got %O{other}"
 
@@ -2432,7 +2391,7 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
 
         let inode =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.File (inode, _)) -> inode
             | other -> failwith $"expected a file descriptor, got %O{other}"
 
@@ -2449,23 +2408,19 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not unlink the file: %O{error}"
 
         let released =
-            match FileDescriptorRegistry.dropDescriptor fd Set.empty system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dropDescriptor fd Set.empty (UnixSystemState.fileDescriptors system) with
             | Ok (registry, _) -> registry
             | Error error -> failwith $"could not close the descriptor: %O{error}"
 
         let orphaned =
-            {
-                Machine =
-                    { system.Machine with
-                        FileSystem = unnamed
-                    }
-                Process =
-                    { system.Process with
-                        FileDescriptors = released
-                    }
-                Tasks = system.Tasks
-                Leader = system.Leader
-            }
+            UnixSystemState.withFileDescriptors
+                released
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = unnamed
+                        }
+                }
 
         ObjectLifetime.pinnedInodes orphaned |> Set.contains inode |> shouldEqual false
 
@@ -2543,8 +2498,8 @@ module TestUnixSystemStep =
         duplicated |> shouldNotEqual fd
 
         // The same open file description, which is what makes the offset shared.
-        FileDescriptorRegistry.tryFindTarget duplicated after.Process.FileDescriptors
-        |> shouldEqual (FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors)
+        FileDescriptorRegistry.tryFindTarget duplicated (UnixSystemState.fileDescriptors after)
+        |> shouldEqual (FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors after))
 
     [<Test>]
     let ``lseek on a closed descriptor is EBADF whatever the whence`` () : unit =
@@ -2708,43 +2663,30 @@ module TestUnixSystemStep =
         let first, system = withOpenFile system
 
         let inode =
-            match FileDescriptorRegistry.tryFindTarget first system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget first (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.File (inode, _)) -> inode
             | other -> failwith $"expected a file, got %O{other}"
 
         let second, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite (UnixSystemState.fileDescriptors system)
 
-        first,
-        second,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        first, second, UnixSystemState.withFileDescriptors registry system
 
     /// A third description on the file `fd` already names, so that a test can
     /// have a lock taken by something neither of the two contenders.
     let private withAnotherDescription (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.File (inode, _)) ->
             let another, registry =
-                FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+                FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite (UnixSystemState.fileDescriptors system)
 
-            another,
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+            another, UnixSystemState.withFileDescriptors registry system
         | other -> failwith $"expected a file, got %O{other}"
 
     /// The open file description a descriptor names, which is what a wake
     /// condition is keyed on.
     let private descriptionOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
-        match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
         | Some id -> id
         | None -> failwith $"fd %d{fd} is not open"
 
@@ -2927,7 +2869,7 @@ module TestUnixSystemStep =
         // `None` rather than merely "not what it was": an implementation that
         // established the exclusive lock and *then* reported the contention
         // would also have changed it.
-        FileDescriptorRegistry.tryFind first parkedIn.Process.FileDescriptors
+        FileDescriptorRegistry.tryFind first (UnixSystemState.fileDescriptors parkedIn)
         |> Option.map (fun description -> description.Flock)
         |> shouldEqual (Some None)
 
@@ -2966,17 +2908,11 @@ module TestUnixSystemStep =
         // A second descriptor onto `second`'s description, so that closing
         // `second` destroys nothing.
         let alias, registry =
-            match FileDescriptorRegistry.dup second system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dup second (UnixSystemState.fileDescriptors system) with
             | Ok pair -> pair
             | Error error -> failwith $"expected the dup to succeed, got %O{error}"
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         let held = UnixDescriptor.flock holderTask first 2 system |> granted
         let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
@@ -3022,14 +2958,8 @@ module TestUnixSystemStep =
         let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
 
         let closed =
-            match FileDescriptorRegistry.dropDescriptor second Set.empty parkedIn.Process.FileDescriptors with
-            | Ok (registry, Some _) ->
-                { parkedIn with
-                    Process =
-                        { parkedIn.Process with
-                            FileDescriptors = registry
-                        }
-                }
+            match FileDescriptorRegistry.dropDescriptor second Set.empty (UnixSystemState.fileDescriptors parkedIn) with
+            | Ok (registry, Some _) -> UnixSystemState.withFileDescriptors registry parkedIn
             | other -> failwith $"expected the forged close to destroy the description, got %A{other}"
 
         let exn = Assert.Throws<exn> (fun () -> holds waiterTask condition closed |> ignore)
@@ -3060,7 +2990,7 @@ module TestUnixSystemStep =
 
         match UnixSystem.step holderTask (Syscall.FLock (first, 2)) both with
         | Ok (SyscallOutcome.WouldBlock _, after) ->
-            FileDescriptorRegistry.tryFind first after.Process.FileDescriptors
+            FileDescriptorRegistry.tryFind first (UnixSystemState.fileDescriptors after)
             |> Option.map (fun description -> description.Flock)
             |> shouldEqual (Some None)
         | other -> failwith $"expected a park through step, got %A{other}"
@@ -3102,7 +3032,7 @@ module TestUnixSystemStep =
 
         let finished = UnixDescriptor.flockAcquire waiterTask released |> granted
 
-        FileDescriptorRegistry.tryFind second finished.Process.FileDescriptors
+        FileDescriptorRegistry.tryFind second (UnixSystemState.fileDescriptors finished)
         |> Option.map (fun description -> description.Flock)
         |> shouldEqual (Some (Some FlockMode.Exclusive))
 
@@ -3155,17 +3085,11 @@ module TestUnixSystemStep =
         let first, second, system = withTwoDescriptions darwin
 
         let alias, registry =
-            match FileDescriptorRegistry.dup second system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dup second (UnixSystemState.fileDescriptors system) with
             | Ok pair -> pair
             | Error error -> failwith $"expected the dup to succeed, got %O{error}"
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         let held = UnixDescriptor.flock holderTask first 2 system |> granted
         let _, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
@@ -3415,7 +3339,7 @@ module TestUnixSystemStep =
                     holds waiterTask condition released |> shouldEqual true
                     UnixDescriptor.flockAcquire waiterTask released |> granted
 
-            FileDescriptorRegistry.descriptions ended.Process.FileDescriptors
+            OpenFileTable.descriptions ended.Machine.OpenFiles
             |> Map.containsKey requester
             |> shouldEqual dupKept
 
@@ -3461,17 +3385,11 @@ module TestUnixSystemStep =
         let first, second, system = withTwoDescriptions linux
 
         let alias, registry =
-            match FileDescriptorRegistry.dup second system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dup second (UnixSystemState.fileDescriptors system) with
             | Ok pair -> pair
             | Error error -> failwith $"expected the dup to succeed, got %O{error}"
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         let held = UnixDescriptor.flock holderTask first 2 system |> granted
         let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
@@ -3525,10 +3443,10 @@ module TestUnixSystemStep =
 
         match UnixDescriptor.close fd parked with
         | Ok (SyscallAnswer.Completed 0L, closed) ->
-            FileDescriptorRegistry.tryFindId fd closed.Process.FileDescriptors
+            FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors closed)
             |> shouldEqual None
 
-            FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
+            OpenFileTable.descriptions closed.Machine.OpenFiles
             |> Map.containsKey description
             |> shouldEqual true
 
@@ -3542,24 +3460,18 @@ module TestUnixSystemStep =
         let fd, system = withEventQueue linux
 
         let alias, registry =
-            match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dup fd (UnixSystemState.fileDescriptors system) with
             | Ok pair -> pair
             | Error error -> failwith $"expected the dup to succeed, got %O{error}"
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         let parked = parkedInEpollWait fd system
 
         match UnixDescriptor.close fd parked with
         | Ok (SyscallAnswer.Completed 0L, closed) ->
             // The description really did survive, which is what the waiter needs.
-            FileDescriptorRegistry.tryFindId alias closed.Process.FileDescriptors
+            FileDescriptorRegistry.tryFindId alias (UnixSystemState.fileDescriptors closed)
             |> shouldEqual (Some (descriptionOf fd parked))
         | other -> failwith $"expected the close to succeed, got %A{other}"
 
@@ -3572,19 +3484,11 @@ module TestUnixSystemStep =
         let fd, system = withEventQueue darwin
 
         let alias, registry =
-            match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dup fd (UnixSystemState.fileDescriptors system) with
             | Ok pair -> pair
             | Error error -> failwith $"expected the dup to succeed, got %O{error}"
 
-        let system =
-            withTask
-                7
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
+        let system = withTask 7 (UnixSystemState.withFileDescriptors registry system)
 
         let parked =
             match UnixKqueue.kevent 7 fd 0 [] 8 UserBuffer.Mapped KeventTimeout.Null system with
@@ -3623,8 +3527,9 @@ module TestUnixSystemStep =
         let queueFd, system = withEventQueue system
         let queueId = descriptionOf queueFd system
 
-        let registry =
-            FileDescriptorRegistry.addEpollRegistration
+        queueFd,
+        UnixSystemState.mapOpenFiles
+            (OpenFileTable.addEpollRegistration
                 queueId
                 (stdin, stdinId)
                 {
@@ -3632,15 +3537,8 @@ module TestUnixSystemStep =
                     Data = 0xBEEFUL
                     RegisteredAt = 0L
                 }
-                system.Process.FileDescriptors
-
-        queueFd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = FileDescriptorRegistry.appendEpollReady queueId (stdin, stdinId) registry
-                }
-        }
+             >> OpenFileTable.appendEpollReady queueId (stdin, stdinId))
+            system
 
     [<Test>]
     let ``an epoll instance with nothing pending would deliver nothing`` () : unit =
@@ -3695,14 +3593,8 @@ module TestUnixSystemStep =
         let queueId = descriptionOf fd system
 
         let closed =
-            match FileDescriptorRegistry.dropDescriptor fd Set.empty system.Process.FileDescriptors with
-            | Ok (registry, _) ->
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
+            match FileDescriptorRegistry.dropDescriptor fd Set.empty (UnixSystemState.fileDescriptors system) with
+            | Ok (registry, _) -> UnixSystemState.withFileDescriptors registry system
             | Error error -> failwith $"expected the close to succeed, got %O{error}"
 
         let exn =
@@ -3899,7 +3791,7 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
 
         let inode =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.File (inode, _)) -> inode
             | other -> failwith $"expected a file, got %O{other}"
 
@@ -4418,7 +4310,7 @@ module TestUnixSystemStep =
 
             let after = snd withBoth
 
-            FileDescriptorRegistry.tryFindFlags fd after.Process.FileDescriptors
+            FileDescriptorRegistry.tryFindFlags fd (UnixSystemState.fileDescriptors after)
             |> shouldEqual (
                 Some
                     { DescriptorFlags.none with
@@ -4427,25 +4319,24 @@ module TestUnixSystemStep =
             )
 
             let takenBack =
-                { after with
-                    Process =
-                        { after.Process with
-                            FileDescriptors =
-                                after.Process.FileDescriptors
-                                |> FileDescriptorRegistry.setFlags fd DescriptorFlags.none
-                                |> FileDescriptorRegistry.mapStatus
-                                    (FileDescriptorRegistry.tryFindId fd after.Process.FileDescriptors |> Option.get)
-                                    (fun status ->
-                                        status.Synchronous |> shouldEqual true
-                                        status.DataSynchronous |> shouldEqual true
+                UnixSystemState.withFileDescriptors
+                    ((UnixSystemState.fileDescriptors after)
+                     |> FileDescriptorRegistry.setFlags fd DescriptorFlags.none
+                     |> FileDescriptorRegistry.mapOpenFiles (
+                         OpenFileTable.mapStatus
+                             (FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors after)
+                              |> Option.get)
+                             (fun status ->
+                                 status.Synchronous |> shouldEqual true
+                                 status.DataSynchronous |> shouldEqual true
 
-                                        { status with
-                                            Synchronous = false
-                                            DataSynchronous = false
-                                        }
-                                    )
-                        }
-                }
+                                 { status with
+                                     Synchronous = false
+                                     DataSynchronous = false
+                                 }
+                             )
+                     ))
+                    after
 
             takenBack |> shouldEqual (snd plain)
 
@@ -5513,15 +5404,9 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not resolve /f: %O{error}"
 
         let fd, descriptors =
-            FileDescriptorRegistry.openFile held FileAccessMode.ReadOnly system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile held FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors system)
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = descriptors
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors descriptors system
 
         let moved =
             // A symbolic link rather than `dir`: displacing a regular file with

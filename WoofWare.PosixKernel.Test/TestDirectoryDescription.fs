@@ -553,15 +553,9 @@ module TestDirectoryDescription =
                 NewSocket.create SocketDomain.Unix SocketKind.Stream SocketProtocol.Default system
 
             let epoll, registry =
-                FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+                FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
-            let system =
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
+            let system = UnixSystemState.withFileDescriptors registry system
 
             let expect (fd : int) (linux : UnixError) (darwin : UnixError) =
                 let expected =
@@ -686,24 +680,20 @@ module TestDirectoryDescription =
         : UnixSystem<int, string>
         =
         let id =
-            match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
             | Some (id, _) -> id
             | None -> failwith $"fd %d{fd} is not live"
 
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors =
-                        FileDescriptorRegistry.Unchecked.mapDescription
-                            id
-                            (fun d ->
-                                { d with
-                                    Target = target
-                                }
-                            )
-                            system.Process.FileDescriptors
-                }
-        }
+        UnixSystemState.withFileDescriptors
+            (FileDescriptorRegistry.Unchecked.mapDescription
+                id
+                (fun d ->
+                    { d with
+                        Target = target
+                    }
+                )
+                (UnixSystemState.fileDescriptors system))
+            system
 
     [<Test>]
     let ``a description's kind must match the inode it names`` () : unit =

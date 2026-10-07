@@ -56,7 +56,7 @@ module TestConnect =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         let (SocketId raw) = socketId
         let (SocketId next) = system.Machine.NextSocketId
@@ -68,11 +68,8 @@ module TestConnect =
                     Sockets = Map.add socketId socket system.Machine.Sockets
                     NextSocketId = SocketId (max next (raw + 1L))
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     let private streamSocket (binding : SocketBinding option) (phase : SocketPhase) : SocketDescription =
         {
@@ -154,17 +151,14 @@ module TestConnect =
         let system = systemOn platform
 
         let fileFd, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile
+                (InodeNumber 1L)
+                FileAccessMode.ReadOnly
+                (UnixSystemState.fileDescriptors system)
 
         let queueFd, registry = FileDescriptorRegistry.createEpoll registry
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         for fd in [ 0 ; fileFd ; queueFd ] do
             admitOrFail fd UserBuffer.Mapped 16u system
@@ -378,12 +372,9 @@ module TestConnect =
         let fd, system = clientAndListener platform 5000us
 
         let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = FileDescriptorRegistry.setNonBlocking fd true system.Process.FileDescriptors
-                    }
-            }
+            UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.setNonBlocking fd true (UnixSystemState.fileDescriptors system))
+                system
 
         let outcome, system = connectTo fd 16u (loopback 5000us) system
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)

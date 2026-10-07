@@ -97,7 +97,7 @@ module KqueuePoll =
         (system : UnixSystem<'Task, 'Handler>)
         : (KqueueFilterReport * bool) option
         =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         // A socket's filter clears `EV_OOBAND` when it attaches (XNU's
         // `filt_sockattach`), so its report never carries the flag: no socket
         // here holds out-of-band data.
@@ -176,7 +176,7 @@ module KqueuePoll =
         (system : UnixSystem<'Task, 'Handler>)
         : bool
         =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket _) -> true
         | Some _
         | None -> false

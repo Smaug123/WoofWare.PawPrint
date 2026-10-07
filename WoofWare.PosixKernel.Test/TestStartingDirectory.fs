@@ -2252,7 +2252,8 @@ module TestStartingDirectory =
 
             let outcome (result : Result<SyscallAnswer * UnixSystem<int, string>, OpenRefusal>) =
                 match result with
-                | Ok (answer, system) -> Ok (answer, system.Machine.FileSystem, system.Process.FileDescriptors)
+                | Ok (answer, system) ->
+                    Ok (answer, system.Machine.FileSystem, (UnixSystemState.fileDescriptors system))
                 | Error refusal -> Error refusal
 
             UnixNamespace.openat fd argument flags 0o644 atRoot

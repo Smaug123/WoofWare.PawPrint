@@ -5,7 +5,8 @@ namespace WoofWare.PosixKernel
 /// </summary>
 /// <remarks>
 /// Contains, for example: what it inherited at exec, where it is, who
-/// it is running as, and every kernel object its descriptors name.
+/// it is running as, and which open file description each of its descriptors
+/// names.
 ///
 /// Distinct from <c>UnixMachineState</c>, which describes the process-independent
 /// state of the kernel.
@@ -16,11 +17,14 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
     internal
         {
             /// In-memory model of the simulated process's Unix file descriptor
-            /// table. Seeded at startup from the launch table `UnixSystem.initial`
-            /// takes, as a real process inherits the descriptors its launcher set
-            /// up before `exec`. Every descriptor operation this library models
-            /// routes through this table; the host's real fds are never used.
-            FileDescriptors : FileDescriptorRegistry
+            /// table: which open file description each descriptor names. The
+            /// descriptions themselves are the machine's
+            /// (`UnixMachineState.OpenFiles`). Seeded at startup from the launch
+            /// table `UnixSystem.initial` takes, as a real process inherits the
+            /// descriptors its launcher set up before `exec`. Every descriptor
+            /// operation this library models routes through this table; the
+            /// host's real fds are never used.
+            FileDescriptors : DescriptorTable
             /// The environment the process was started with: the `envp` that
             /// `execve(2)` received, one entry per element, in order.
             ///
@@ -171,87 +175,22 @@ module UnixProcessState =
         =
         proc.Signals
 
-    /// Every live open file description naming `socketId`.
-    let descriptionsNamingSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (socketId : SocketId)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : Set<OpenFileDescriptionId>
-        =
-        FileDescriptorRegistry.descriptions proc.FileDescriptors
-        |> Map.toSeq
-        |> Seq.choose (fun (descriptionId, description) ->
-            match description.Target with
-            | OpenFileTarget.Socket target when target = socketId -> Some descriptionId
-            | _ -> None
-        )
-        |> Set.ofSeq
-
-    /// Every live open file description naming `pipeEnd` of `pipeId`.
-    let descriptionsNamingPipeEnd<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (pipeId : PipeId)
-        (pipeEnd : PipeEnd)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : Set<OpenFileDescriptionId>
-        =
-        FileDescriptorRegistry.descriptions proc.FileDescriptors
-        |> Map.toSeq
-        |> Seq.choose (fun (descriptionId, description) ->
-            if description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd) then
-                Some descriptionId
-            else
-                None
-        )
-        |> Set.ofSeq
-
-    /// Whether `pipeEnd` of the pipe `pipeId`, which is `pipe`, is still open:
-    /// whether some open file description names it, or the client holds it
-    /// (`PipeState.heldByClient`).
+    /// Every inode the process holds a reference to *directly*, independently
+    /// of any name the filesystem binds to it: its current directory. A process
+    /// that has `chdir`ed somewhere keeps that directory alive whether or not
+    /// its name outlives the call.
     ///
-    /// Derived rather than stored, so it cannot disagree with the table: the
-    /// end closes when the last description onto it goes, which is when its
-    /// last descriptor closes, or when a call that held it returns after that,
-    /// unless the client holds it; and `dup` keeps it open.
-    let pipeEndOpen<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (pipeId : PipeId)
-        (pipe : PipeState)
-        (pipeEnd : PipeEnd)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : bool
-        =
-        PipeState.heldByClient pipeEnd pipe
-        || FileDescriptorRegistry.descriptions proc.FileDescriptors
-           |> Map.exists (fun _ description -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
-
-    /// Every inode this kernel holds a reference to *directly*, independently of
-    /// any name the filesystem binds to it.
+    /// The process's descriptors hold inodes only through the open file
+    /// descriptions they name, which are the machine's, so those are
+    /// `UnixMachineState.heldInodes`.
     ///
-    /// A real kernel keeps an inode alive while any reference survives; this
-    /// enumerates the references this record holds of its own. Every live open file
-    /// description onto a file is one, and so is the current directory — a
-    /// process that has `chdir`ed somewhere keeps that directory alive whether
-    /// or not its name outlives the call.
-    ///
-    /// Everything that can *create* a reference must appear here: an omission
-    /// makes a live inode look free, and freeing it leaves a descriptor pointing
-    /// at nothing. It is not what callers want, though — see
-    /// `ObjectLifetime.pinnedInodes`, which adds the references the *filesystem*
-    /// holds on behalf of these.
+    /// Everything the process can *create* a reference with must appear here:
+    /// an omission makes a live inode look free, and freeing it leaves the
+    /// process standing in nothing. It is not what callers want, though — see
+    /// `ObjectLifetime.pinnedInodes`, which adds the machine's references and
+    /// those the *filesystem* holds on behalf of both.
     let heldInodes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (proc : UnixProcessState<'Task, 'Handler>)
         : Set<InodeNumber>
         =
-        proc.FileDescriptors
-        |> FileDescriptorRegistry.descriptions
-        |> Map.toSeq
-        |> Seq.choose (fun (_, description) ->
-            match description.Target with
-            | OpenFileTarget.File (inode, _)
-            | OpenFileTarget.Directory (inode, _)
-            | OpenFileTarget.CharacterDevice (inode, _) -> Some inode
-            | OpenFileTarget.Socket _
-            | OpenFileTarget.Kqueue _
-            | OpenFileTarget.Epoll _
-            | OpenFileTarget.Pipe _ -> None
-        )
-        |> Set.ofSeq
-        |> Set.add proc.CurrentDirectoryInode
+        Set.singleton proc.CurrentDirectoryInode

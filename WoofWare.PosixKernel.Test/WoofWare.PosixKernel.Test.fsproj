@@ -60,6 +60,7 @@
     <Compile Include="TestProcessTermination.fs" />
     <Compile Include="TestProcessTerminationAgainstHost.fs" />
     <Compile Include="TestUnixProcessState.fs" />
+    <Compile Include="TestUnixMachineState.fs" />
     <Compile Include="TestClock.fs" />
     <Compile Include="TestStateQueries.fs" />
     <Compile Include="TestClockAgainstHost.fs" />

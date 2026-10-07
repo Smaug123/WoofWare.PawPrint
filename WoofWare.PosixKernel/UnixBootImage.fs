@@ -288,8 +288,33 @@ module UnixBootImage =
                 }
             | ThreadIdAllocator.Darwin _ -> system.Tasks, system.Machine
 
+        // The pipes the process was launched with name it as the process they
+        // were launched into, so they follow it to its new ID. Nothing has been
+        // delivered yet under the old one: only a write delivers, and no
+        // syscall takes an image.
+        if DeliveryLog.count machine.Delivered <> 0 then
+            failwith
+                $"%s{context}: the boot image has already delivered bytes, which only a write can do (this is a bug in this library)."
+
+        let pipes =
+            machine.Pipes
+            |> Map.map (fun _ pipe ->
+                match pipe.Origin with
+                | PipeOrigin.Launched (ExternalEndpoint (launchedInto, fd), client) when
+                    launchedInto = system.Process.ProcessId
+                    ->
+                    { pipe with
+                        Origin = PipeOrigin.Launched (ExternalEndpoint (pid, fd), client)
+                    }
+                | PipeOrigin.Launched _
+                | PipeOrigin.Made _ -> pipe
+            )
+
         { system with
-            Machine = machine
+            Machine =
+                { machine with
+                    Pipes = pipes
+                }
             Process =
                 { system.Process with
                     ProcessId = pid

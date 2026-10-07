@@ -41,15 +41,10 @@ module TestKqueue =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let private idOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
-        match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
         | Some id -> id
         | None -> failwith $"fd %d{fd} names no description"
 
@@ -59,7 +54,7 @@ module TestKqueue =
         | Error refusal -> failwith $"expected a kqueue, got %s{KqueueRefusal.describe refusal}"
 
     let private dup (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.dup fd (UnixSystemState.fileDescriptors system) with
         | Ok (copy, registry) -> copy, withRegistry registry system
         | Error error -> failwith $"dup: %O{error}"
 
@@ -152,14 +147,14 @@ module TestKqueue =
             let expected =
                 Seq.initInfinite id
                 |> Seq.find (fun fd ->
-                    FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors
+                    FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
                     |> Option.isNone
                 )
 
             let fd, created = createKqueue system
             fd |> shouldEqual expected
 
-            match FileDescriptorRegistry.tryFindWithId fd created.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors created) with
             | Some (id, description) ->
                 description
                 |> shouldEqual
@@ -178,13 +173,18 @@ module TestKqueue =
                     }
 
                 // A fresh description, not one any other descriptor shares.
-                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                OpenFileTable.descriptions system.Machine.OpenFiles
                 |> Map.containsKey id
                 |> shouldEqual false
             | None -> failwith "the kqueue's descriptor names nothing"
 
-            // Nothing but the descriptor table changed.
+            // Nothing but the descriptor table and the open file descriptions
+            // changed.
             { created with
+                Machine =
+                    { created.Machine with
+                        OpenFiles = system.Machine.OpenFiles
+                    }
                 Process = system.Process
             }
             |> shouldEqual system
@@ -329,22 +329,26 @@ module TestKqueue =
                 }
 
             let fd, registry =
-                FileDescriptorRegistry.createSocket system.Machine.NextSocketId system.Process.FileDescriptors
+                FileDescriptorRegistry.createSocket system.Machine.NextSocketId (UnixSystemState.fileDescriptors system)
 
             let (SocketId raw) = system.Machine.NextSocketId
 
             fd,
-            { withRegistry registry system with
+            { system with
                 Machine =
                     { system.Machine with
                         Sockets = Map.add system.Machine.NextSocketId socket system.Machine.Sockets
                         NextSocketId = SocketId (raw + 1L)
                     }
             }
+            |> withRegistry registry
 
         let fileFd, system =
             let fd, registry =
-                FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
+                FileDescriptorRegistry.openFile
+                    (InodeNumber 1L)
+                    FileAccessMode.ReadOnly
+                    (UnixSystemState.fileDescriptors system)
 
             fd, withRegistry registry system
 
@@ -459,7 +463,9 @@ module TestKqueue =
                         Ok UnixError.ENOENT
                     else
                         match
-                            FileDescriptorRegistry.tryFindTarget (int change.Ident) system.Process.FileDescriptors
+                            FileDescriptorRegistry.tryFindTarget
+                                (int change.Ident)
+                                (UnixSystemState.fileDescriptors system)
                         with
                         | None -> Ok UnixError.EBADF
                         | Some target -> Error (KeventRefusal.UnmodelledTarget (change, target))
@@ -744,10 +750,10 @@ module TestKqueue =
 
             // The number is free again, but the sleeping call holds the kqueue, which
             // outlives its last descriptor drained.
-            FileDescriptorRegistry.tryFindId k closed.Process.FileDescriptors
+            FileDescriptorRegistry.tryFindId k (UnixSystemState.fileDescriptors closed)
             |> shouldEqual None
 
-            FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
+            OpenFileTable.descriptions closed.Machine.OpenFiles
             |> Map.tryFind kqueue
             |> Option.map _.Target
             |> shouldEqual (
@@ -770,7 +776,7 @@ module TestKqueue =
             let outcome, finished = finishes 1 closed
             outcome |> shouldEqual (KeventOutcome.Failed UnixError.EBADF)
 
-            FileDescriptorRegistry.descriptions finished.Process.FileDescriptors
+            OpenFileTable.descriptions finished.Machine.OpenFiles
             |> Map.containsKey kqueue
             |> shouldEqual false
 
@@ -815,7 +821,7 @@ module TestKqueue =
 
             let drains = List.contains through sleepers
 
-            match FileDescriptorRegistry.tryFindTarget surviving closed.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget surviving (UnixSystemState.fileDescriptors closed) with
             | Some (OpenFileTarget.Kqueue state) -> state.Drained |> shouldEqual drains
             | other -> failwith $"expected the surviving kqueue, got %A{other}"
 
@@ -879,7 +885,7 @@ module TestKqueue =
             let closed = parked |> close k |> close d
             UnixSystem.checkInvariants closed |> shouldEqual []
 
-            FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
+            OpenFileTable.descriptions closed.Machine.OpenFiles
             |> Map.tryFind kqueue
             |> Option.map _.Target
             |> shouldEqual (
@@ -906,14 +912,14 @@ module TestKqueue =
                     outcome |> shouldEqual (KeventOutcome.Failed UnixError.EBADF)
                     UnixSystem.checkInvariants system |> shouldEqual []
 
-                    FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                    OpenFileTable.descriptions system.Machine.OpenFiles
                     |> Map.containsKey kqueue
                     |> shouldEqual (task < List.length tasks)
 
                     system
                 )
 
-            FileDescriptorRegistry.descriptions finished.Process.FileDescriptors
+            OpenFileTable.descriptions finished.Machine.OpenFiles
             |> Map.containsKey kqueue
             |> shouldEqual false
 
@@ -1058,13 +1064,15 @@ module TestKqueue =
                 UnixSystemDefect.ParkedKeventOnNonKqueue (
                     1,
                     idOf 0 system,
-                    (FileDescriptorRegistry.tryFindTarget 0 system.Process.FileDescriptors).Value
+                    (FileDescriptorRegistry.tryFindTarget 0 (UnixSystemState.fileDescriptors system)).Value
                 )
             ]
 
     [<Test>]
     let ``checkInvariants rejects an object the flavour's kernel does not have`` () : unit =
-        let fd, registry = FileDescriptorRegistry.createKqueue linux.Process.FileDescriptors
+        let fd, registry =
+            FileDescriptorRegistry.createKqueue (UnixSystemState.fileDescriptors linux)
+
         let withKqueue = withRegistry registry linux
 
         UnixSystem.checkInvariants withKqueue
@@ -1082,7 +1090,9 @@ module TestKqueue =
                 )
             ]
 
-        let fd, registry = FileDescriptorRegistry.createEpoll darwin.Process.FileDescriptors
+        let fd, registry =
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors darwin)
+
         let withEpoll = withRegistry registry darwin
 
         match UnixSystem.checkInvariants withEpoll with

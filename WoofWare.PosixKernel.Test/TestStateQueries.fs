@@ -112,7 +112,7 @@ module TestStateQueries =
                                 expected
                             else
                                 {
-                                    Endpoint = ExternalEndpoint fd
+                                    Endpoint = ExternalEndpoint (UnixSystem.processId after, fd)
                                     Bytes = bytes
                                 }
                                 :: expected
@@ -235,7 +235,7 @@ module TestStateQueries =
             // The launch table's standard streams, and a descriptor not open.
             for fd in [ 0 ; 1 ; 2 ; 3 ] do
                 UnixSystem.descriptorTarget fd system
-                |> shouldEqual (FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors)
+                |> shouldEqual (FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system))
 
             UnixSystem.descriptorTarget 3 system |> shouldEqual None
 

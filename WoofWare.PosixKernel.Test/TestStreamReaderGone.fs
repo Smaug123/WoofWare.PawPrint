@@ -155,7 +155,8 @@ module TestStreamReaderGone =
 
                 DeliveryLog.toList system.Machine.Delivered
                 |> List.map (fun delivery ->
-                    let (ExternalEndpoint fd) = delivery.Endpoint
+                    let (ExternalEndpoint (launchedInto, fd)) = delivery.Endpoint
+                    launchedInto |> shouldEqual (UnixSystem.processId system)
                     fd, List.ofSeq delivery.Bytes
                 )
                 |> shouldEqual (List.rev delivered)
@@ -232,7 +233,7 @@ module TestStreamReaderGone =
             let system = systemOn platform (Set.singleton 1) SignalDisposition.Ignore
 
             let pipe =
-                match FileDescriptorRegistry.tryFindTarget 1 system.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindTarget 1 (UnixSystemState.fileDescriptors system) with
                 | Some (OpenFileTarget.Pipe (pipeId, PipeEnd.Write)) -> pipeId
                 | other -> failwith $"fd 1 is %A{other}"
 
@@ -240,7 +241,8 @@ module TestStreamReaderGone =
             | SimulatedUnixFlavour.Darwin -> ()
             | SimulatedUnixFlavour.Linux ->
                 let id =
-                    FileDescriptorRegistry.tryFindId 1 system.Process.FileDescriptors |> Option.get
+                    FileDescriptorRegistry.tryFindId 1 (UnixSystemState.fileDescriptors system)
+                    |> Option.get
 
                 // OUT|WRNORM, the empty pipe having room, and ERR: measured
                 // (pipe-epipe-sweep.c), 0xc through `poll(POLLOUT)`.

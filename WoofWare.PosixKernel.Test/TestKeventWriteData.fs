@@ -162,7 +162,7 @@ module TestKeventWriteData =
     let private refusedWriteData (system : UnixSystem<int, string>) : int64 list =
         let refused, system = KeventWorld.client 5001us system
 
-        match FileDescriptorRegistry.tryFindTarget refused system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget refused (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
             match (UnixMachineState.socket socketId system.Machine).Phase with
             | SocketPhase.Refused _ -> ()

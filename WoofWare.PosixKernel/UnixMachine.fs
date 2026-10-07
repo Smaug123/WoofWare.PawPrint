@@ -4,22 +4,28 @@ open System.Collections.Immutable
 
 /// The kernel-image facts a POSIX simulator owns: the platform it is
 /// impersonating, its filesystem, its clock and entropy, its network
-/// configuration, its socket and pipe tables, what clients draining its pipes
-/// have received, and the two numbers a process reads back about the machine it
-/// is running on.
+/// configuration, its open file descriptions and its socket and pipe tables,
+/// what clients draining its pipes have received, and the two numbers a process
+/// reads back about the machine it is running on.
 ///
 /// Everything here is state any client of a POSIX simulator would have.
 type UnixMachineState =
     internal
         {
-            /// Every socket the simulated process owns, by identity.
+            /// Every open file description on the machine, whichever process's
+            /// descriptors name it, with the state an epoll instance or a kqueue
+            /// keeps in its description. A process's descriptor table
+            /// (`UnixProcessState.FileDescriptors`) holds only which of these
+            /// each descriptor names.
+            OpenFiles : OpenFileTable
+            /// Every socket on the machine, by identity.
             ///
-            /// Separate from `FileDescriptors` because a socket's lifetime is not
-            /// a descriptor's: an `OpenFileTarget.Socket` holds only the
+            /// Separate from `OpenFiles` because a socket's lifetime is not
+            /// a description's: an `OpenFileTarget.Socket` holds only the
             /// `SocketId`, and this is what it names. Every entry has exactly one
             /// description naming it, enforced in two halves: at least one by
             /// `UnixSystem.checkInvariants` (`UnreferencedSocket`), at most one by
-            /// `FileDescriptorRegistry.checkInvariants` (`DuplicateSocketId`). A
+            /// `OpenFileTable.checkInvariants` (`DuplicateSocketId`). A
             /// connection awaiting `accept(2)` is a `TcpConnection` in
             /// `Connections`, not a socket, precisely so this rule can stay
             /// strict.
@@ -87,10 +93,10 @@ type UnixMachineState =
             /// address inside and Darwin ignores. See
             /// `UnixSystem.defaultLocalRoutes`.
             LocalRoutes : Ipv4Prefix list
-            /// Every pipe with an end open, by identity: an end the simulated
-            /// process holds, or one the client holds (`PipeState.heldByClient`).
+            /// Every pipe with an end open, by identity: an end an open file
+            /// description names, or one the client holds (`PipeState.heldByClient`).
             ///
-            /// Separate from the descriptor table for the reason `Sockets` is: an
+            /// Separate from `OpenFiles` for the reason `Sockets` is: an
             /// `OpenFileTarget.Pipe` holds only the `PipeId`, and both ends' descriptions
             /// name the one pipe. A pipe is in the table exactly while one of its
             /// ends is open (`UnixSystem.checkInvariants` states both halves), and
@@ -101,10 +107,11 @@ type UnixMachineState =
             /// `NextSocketId` gives.
             NextPipeId : PipeId
             /// Every write that reached a client draining a pipe, oldest first: the
-            /// bytes the outside world has received from the process.
+            /// bytes the outside world has received from the machine's processes.
             ///
             /// A client reads what its own ends received by filtering on
-            /// `Delivery.Endpoint`. One log rather than one per endpoint, so that
+            /// `Delivery.Endpoint`, which names the process the pipe was launched
+            /// into as well as the descriptor. One log rather than one per endpoint, so that
             /// the order of writes across endpoints is kept: a process writing to
             /// its output, then its error stream, then its output again is read
             /// back in that order. It grows without bound: a process that writes
@@ -357,6 +364,71 @@ module UnixMachineState =
         | None ->
             failwith
                 $"UnixMachineState.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and UnixSystemDefect.DanglingSocket exists to make that unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand, rather than anything the simulated process did."
+
+    /// Every live open file description on the machine naming `socketId`.
+    let descriptionsNamingSocket (socketId : SocketId) (machine : UnixMachineState) : Set<OpenFileDescriptionId> =
+        OpenFileTable.toSeq machine.OpenFiles
+        |> Seq.choose (fun (descriptionId, description) ->
+            match description.Target with
+            | OpenFileTarget.Socket target when target = socketId -> Some descriptionId
+            | _ -> None
+        )
+        |> Set.ofSeq
+
+    /// Every live open file description on the machine naming `pipeEnd` of
+    /// `pipeId`.
+    let descriptionsNamingPipeEnd
+        (pipeId : PipeId)
+        (pipeEnd : PipeEnd)
+        (machine : UnixMachineState)
+        : Set<OpenFileDescriptionId>
+        =
+        OpenFileTable.toSeq machine.OpenFiles
+        |> Seq.choose (fun (descriptionId, description) ->
+            if description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd) then
+                Some descriptionId
+            else
+                None
+        )
+        |> Set.ofSeq
+
+    /// Whether `pipeEnd` of the pipe `pipeId`, which is `pipe`, is still open:
+    /// whether some open file description on the machine names it, or the
+    /// client holds it (`PipeState.heldByClient`).
+    ///
+    /// Derived rather than stored, so it cannot disagree with the table: the
+    /// end closes when the last description onto it goes, which is when its
+    /// last descriptor closes, or when a call that held it returns after that,
+    /// unless the client holds it; and `dup` keeps it open.
+    let pipeEndOpen (pipeId : PipeId) (pipe : PipeState) (pipeEnd : PipeEnd) (machine : UnixMachineState) : bool =
+        PipeState.heldByClient pipeEnd pipe
+        || OpenFileTable.toSeq machine.OpenFiles
+           |> Seq.exists (fun (_, description) -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
+
+    /// Every inode the machine's open file descriptions hold a reference to
+    /// *directly*, independently of any name the filesystem binds to it: each
+    /// one onto a file, a directory or a device's node.
+    ///
+    /// A real kernel keeps an inode alive while any reference survives. Every
+    /// kind of description that can *create* a reference must appear here: an
+    /// omission makes a live inode look free, and freeing it leaves a
+    /// descriptor pointing at nothing. It is not what callers want, though —
+    /// see `ObjectLifetime.pinnedInodes`, which adds each process's own
+    /// references (`UnixProcessState.heldInodes`) and those the *filesystem*
+    /// holds on behalf of both.
+    let heldInodes (machine : UnixMachineState) : Set<InodeNumber> =
+        OpenFileTable.toSeq machine.OpenFiles
+        |> Seq.choose (fun (_, description) ->
+            match description.Target with
+            | OpenFileTarget.File (inode, _)
+            | OpenFileTarget.Directory (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _) -> Some inode
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _
+            | OpenFileTarget.Pipe _ -> None
+        )
+        |> Set.ofSeq
 
     /// The pipe `pipeId` names.
     ///
