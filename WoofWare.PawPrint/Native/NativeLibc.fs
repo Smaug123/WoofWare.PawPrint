@@ -252,8 +252,8 @@ module NativeLibc =
         | KillOutcome.ProcessEnded ended ->
             // The process never returns from this call.
             match ended.Termination with
-            | ProcessTermination.Signaled (signal, coreDumped) ->
-                ExecutionResult.SignalTerminated (state, signal, coreDumped)
+            | ProcessTermination.Signaled _ ->
+                ExecutionResult.SignalTerminated (state, ended)
                 |> NativeHandlerResult.ofExecutionResult
             | ProcessTermination.Exited _ ->
                 failwith
@@ -325,8 +325,8 @@ module NativeLibc =
         | KillOutcome.ProcessEnded ended ->
             // The process never returns from this call.
             match ended.Termination with
-            | ProcessTermination.Signaled (signal, coreDumped) ->
-                ExecutionResult.SignalTerminated (state, signal, coreDumped)
+            | ProcessTermination.Signaled _ ->
+                ExecutionResult.SignalTerminated (state, ended)
                 |> NativeHandlerResult.ofExecutionResult
             | ProcessTermination.Exited _ ->
                 failwith

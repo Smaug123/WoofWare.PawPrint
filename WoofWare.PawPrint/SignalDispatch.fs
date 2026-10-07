@@ -10,8 +10,9 @@ type SignalPoll =
     | Continues of IlMachineState
     /// A signal killed the process: one System.Native re-raised at its
     /// default, or the SIGABRT of an abort a native handler called. The state
-    /// is the machine as it stood then.
-    | ProcessKilled of IlMachineState * signal : Signal * coreDumped : bool
+    /// is the machine as it stood then, and `ended` the kernel's answer to the
+    /// signal, whose `Termination` is `ProcessTermination.Signaled`.
+    | ProcessKilled of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
 
 /// System.Native's signal handling, between two guest instructions: its native
 /// handler, which the kernel runs on the leader when a caught signal is
@@ -178,11 +179,7 @@ module SignalDispatch =
                     EmulatedKernel.withUnix (UnixSignal.sigreturn kernel.Leader frame.Id kernel.System) kernel
                 )
 
-            match EmulatedKernel.abort state.Kernel.Leader state.Kernel with
-            | ProcessTermination.Signaled (killedBy, coreDumped) ->
-                SignalPoll.ProcessKilled (state, killedBy, coreDumped)
-            | ProcessTermination.Exited _ as other ->
-                failwith $"SignalDispatch.poll: the PAL's abort for %O{signal} ended the process by %O{other}"
+            SignalPoll.ProcessKilled (state, EmulatedKernel.abort state.Kernel.Leader state.Kernel)
 
     /// System.Native's native handler for `frame`'s signal, run on the leader:
     /// write the signal's number into the shim's pipe, having first run the
@@ -470,8 +467,7 @@ module SignalDispatch =
 
             state.MapKernel (EmulatedKernel.withLastSystemError dispatcher (UnixError.toRawErrnoUnder numbering error))
             |> SignalPoll.Continues
-        | NonCanceledPosixSignal.Terminated (state, signal, coreDumped) ->
-            SignalPoll.ProcessKilled (state, signal, coreDumped)
+        | NonCanceledPosixSignal.Terminated (state, ended) -> SignalPoll.ProcessKilled (state, ended)
 
     /// The dispatcher's blocking `read(pipeFd, &signalCode, 1)`, if it is
     /// Parked there: made afresh if its task is not yet asleep in it, and

@@ -170,7 +170,7 @@ module AssemblyLoadEvent =
             | ExecutionResult.Terminated (state, _)
             | ExecutionResult.ProcessExit (state, _)
             | ExecutionResult.Aborted (state, _, _)
-            | ExecutionResult.SignalTerminated (state, _, _)
+            | ExecutionResult.SignalTerminated (state, _)
             | ExecutionResult.UnhandledException (state, _, _) -> state
 
         let loadedBefore =
