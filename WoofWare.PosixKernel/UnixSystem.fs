@@ -78,8 +78,13 @@ type Syscall =
         newdirfd : int *
         newpath : PathArgumentBytes *
         flags : int
-    /// `futimens(2)` with two explicit times; see `UnixPathResolution.futimens`.
-    | FUTimens of fd : int * access : UnixTimestamp * modification : UnixTimestamp
+    /// `dirfd` and `flags` are raw, as `utimensat(2)` takes them: each flavour
+    /// numbers `AT_FDCWD` and the flags its own way, and `times` holds the
+    /// fields the caller stored, which each flavour reads its own way (see
+    /// `TimestampChangeRules.decode`). A null `path` means something of its
+    /// own on Linux. `futimens(2)` is, on Linux, this with `fd` as `dirfd`, a
+    /// null `path` and no flags.
+    | UTimensAt of dirfd : int * path : NullablePathArgument * times : TimesArgument * flags : int
     /// `copy_file_range(2)` at both descriptions' own offsets. `length` is the
     /// `size_t` asked for and `flags` is raw, since any flag is refused.
     | CopyFileRange of inFd : int * outFd : int * length : uint64 * flags : int
@@ -118,7 +123,7 @@ type SyscallRefusal<'Task> =
     | Symlink of SymlinkRefusal
     | Link of LinkRefusal
     | Close of CloseRefusal<'Task>
-    | FUTimens of FUTimensRefusal
+    | UTimensAt of UTimensAtRefusal
     | CopyFileRange of CopyFileRangeRefusal
     | FileClone of FileCloneRefusal
     | CloneFile of CloneFileRefusal
@@ -923,10 +928,10 @@ module UnixSystem =
             UnixNamespace.linkat olddirfd oldpath newdirfd newpath flags system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Link
-        | Syscall.FUTimens (fd, access, modification) ->
-            UnixPathResolution.futimens fd access modification system
+        | Syscall.UTimensAt (dirfd, path, times, flags) ->
+            UnixPathResolution.utimensat dirfd path times flags system
             |> answered
-            |> Result.mapError SyscallRefusal.FUTimens
+            |> Result.mapError SyscallRefusal.UTimensAt
         | Syscall.CopyFileRange (inFd, outFd, length, flags) ->
             UnixReadWrite.copyFileRange inFd outFd length flags system
             |> answered

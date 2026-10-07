@@ -1679,9 +1679,19 @@ module NativeSystemNative =
             returning -1 (withErrnoOnly ctx error state)
         | Ok (FileStatusAnswer.Reported status) ->
 
+        // The shim's futimens, which glibc makes utimensat(fd, NULL, times, 0).
+        let fieldsOf (time : UnixTimestamp) : TimespecFields =
+            {
+                Seconds = UnixTimestamp.seconds time
+                Nanoseconds = int64 (UnixTimestamp.nanoseconds time)
+            }
+
+        let times =
+            TimesArgument.Fields (fieldsOf status.AccessTime, fieldsOf status.ModificationTime)
+
         let timesFailed, state =
-            match UnixPathResolution.futimens destination status.AccessTime status.ModificationTime (system state) with
-            | Error refusal -> failwith $"%s{operation}: futimens: %s{FUTimensRefusal.describe refusal}"
+            match UnixPathResolution.utimensat destination NullablePathArgument.Null times 0 (system state) with
+            | Error refusal -> failwith $"%s{operation}: futimens: %s{UTimensAtRefusal.describe refusal}"
             | Ok (SyscallAnswer.Failed error, system) -> Some error, withErrno ctx error system state
             | Ok (SyscallAnswer.Completed _, system) -> None, withAnswered system state
 

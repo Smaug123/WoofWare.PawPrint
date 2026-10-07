@@ -2169,23 +2169,15 @@ module VirtualFileSystem =
                     vfs.Inodes
         }
 
-    /// Set the `atime` and `mtime` of the inode at `inode` to `access` and
-    /// `modification`, and move its `ctime` to `now`. Its birth time stays
-    /// where it was.
+    /// Give the inode at `inode` exactly the timestamps `times`, birth time
+    /// included. The caller decides which of them a change moves.
     ///
     /// Partial in the inode, which must be one this filesystem contains.
-    let setTimes
-        (inode : InodeNumber)
-        (access : UnixTimestamp)
-        (modification : UnixTimestamp)
-        (now : UnixTimestamp)
-        (vfs : VirtualFileSystem)
-        : VirtualFileSystem
-        =
+    let setTimes (inode : InodeNumber) (times : InodeTimes) (vfs : VirtualFileSystem) : VirtualFileSystem =
         match Map.tryFind inode vfs.Inodes with
         | None ->
             failwith
-                $"VirtualFileSystem.setTimes: inode %O{inode} is not in this filesystem. The caller resolved a descriptor to it, and a descriptor outliving its inode means an unlink removed a still-open file (this is a bug in the caller)."
+                $"VirtualFileSystem.setTimes: inode %O{inode} is not in this filesystem. The caller resolved a path or a descriptor to it, and a descriptor outliving its inode means an unlink removed a still-open file (this is a bug in the caller)."
         | Some entry ->
 
         { vfs with
@@ -2193,12 +2185,7 @@ module VirtualFileSystem =
                 Map.add
                     inode
                     { entry with
-                        Times =
-                            { entry.Times with
-                                Access = access
-                                Modification = modification
-                                StatusChange = now
-                            }
+                        Times = times
                     }
                     vfs.Inodes
         }
