@@ -41,16 +41,20 @@ type Syscall =
     /// flags, and `rmdir(2)` with `AT_REMOVEDIR` (`UnlinkAtRules.atRemoveDir`).
     | UnlinkAt of dirfd : int * path : PathArgumentBytes * flags : int
     | ChDir of path : PathArgumentBytes
-    /// `mode` is raw, as `chmod(2)` takes it: which of its bits the inode gets
-    /// is behaviour this kernel models.
-    | ChMod of path : PathArgumentBytes * mode : int
+    /// `dirfd`, `mode` and `flags` are raw, as `fchmodat(2)` takes them: each
+    /// flavour numbers `AT_FDCWD` and the flags its own way, and which bits of
+    /// `mode` the inode gets is behaviour this kernel models. `chmod(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no
+    /// flags.
+    | FChModAt of dirfd : int * path : PathArgumentBytes * mode : int * flags : int
     /// `mode` is raw, as `fchmod(2)` takes it.
     | FChMod of fd : int * mode : int
-    /// `None` is `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is.
-    | ChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
-    /// As `ChOwn`, without following a symbolic link in the final position.
-    | LChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
-    /// As `ChOwn`, of the inode `fd` names.
+    /// `dirfd` and `flags` are raw, as `fchownat(2)` takes them. `None` is
+    /// `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is. `chown(2)` is this
+    /// with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no flags, and
+    /// `lchown(2)` with `AT_SYMLINK_NOFOLLOW` (0x100 on Linux, 0x20 on Darwin).
+    | FChOwnAt of dirfd : int * path : PathArgumentBytes * user : UserId option * group : GroupId option * flags : int
+    /// As `FChOwnAt`'s `chown(2)`, of the inode `fd` names.
     | FChOwn of fd : int * user : UserId option * group : GroupId option
     /// `mask` is raw, as `umask(2)` takes it: which of its bits the process
     /// keeps is behaviour this kernel models, and models per flavour. Answers
@@ -106,10 +110,9 @@ type SyscallRefusal<'Task> =
     | MkDir of PathRefusal
     | UnlinkAt of UnlinkAtRefusal
     | ChDir of PathRefusal
-    | ChMod of ChModRefusal
+    | FChModAt of FChModAtRefusal
     | FChMod of FChModRefusal
-    /// `chown(2)` and `lchown(2)` alike.
-    | ChOwn of ChOwnRefusal
+    | FChOwnAt of FChOwnAtRefusal
     | FChOwn of FChOwnRefusal
     | Access of AccessRefusal
     | Symlink of SymlinkRefusal
@@ -888,22 +891,18 @@ module UnixSystem =
             UnixPathResolution.chdir path system
             |> answered
             |> Result.mapError SyscallRefusal.ChDir
-        | Syscall.ChMod (path, mode) ->
-            UnixPathResolution.chmod path mode system
+        | Syscall.FChModAt (dirfd, path, mode, flags) ->
+            UnixPathResolution.fchmodat dirfd path mode flags system
             |> answered
-            |> Result.mapError SyscallRefusal.ChMod
+            |> Result.mapError SyscallRefusal.FChModAt
         | Syscall.FChMod (fd, mode) ->
             UnixPathResolution.fchmod fd mode system
             |> answered
             |> Result.mapError SyscallRefusal.FChMod
-        | Syscall.ChOwn (path, user, group) ->
-            UnixPathResolution.chown path user group system
+        | Syscall.FChOwnAt (dirfd, path, user, group, flags) ->
+            UnixPathResolution.fchownat dirfd path user group flags system
             |> answered
-            |> Result.mapError SyscallRefusal.ChOwn
-        | Syscall.LChOwn (path, user, group) ->
-            UnixPathResolution.lchown path user group system
-            |> answered
-            |> Result.mapError SyscallRefusal.ChOwn
+            |> Result.mapError SyscallRefusal.FChOwnAt
         | Syscall.FChOwn (fd, user, group) ->
             UnixPathResolution.fchown fd user group system
             |> answered

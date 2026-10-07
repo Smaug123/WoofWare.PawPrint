@@ -3317,7 +3317,8 @@ module NativeSystemNative =
                 )
                 state
         // `int32_t SystemNative_ChMod(const char* path, int32_t mode)`
-        // (pal_io.c): an EINTR-retrying `chmod(2)` and nothing else. The mode is
+        // (pal_io.c): an EINTR-retrying `chmod(2)` and nothing else, which is
+        // `fchmodat` from the flavour's `AT_FDCWD` with no flags. The mode is
         // raw, cast to `mode_t`: 16 bits on Darwin and 32 on Linux, which makes
         // no difference, since both kernels read only the low twelve. CoreLib
         // reaches it from `File.SetUnixFileMode`, `FileSystemInfo.UnixFileMode`'s
@@ -3329,13 +3330,26 @@ module NativeSystemNative =
             // Read before the path, harmlessly, as `SystemNative_MkDir`'s is.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
 
+            let atFdCwd =
+                AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
+
             pathSyscall
                 ctx
                 operation
                 (fun path system ->
-                    UnixPathResolution.chmod path mode system
+                    UnixPathResolution.fchmodat atFdCwd path mode 0 system
                     |> Result.mapError (fun refusal ->
-                        $"ChModRefusal: %s{ChModRefusal.describe refusal} Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
+                        let advice =
+                            match refusal with
+                            | FChModAtRefusal.ChMod (ChModRefusal.UnmeasuredModeChange _) ->
+                                "Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
+                            | FChModAtRefusal.ChMod (ChModRefusal.Path _) -> ""
+                            | FChModAtRefusal.ChMod (ChModRefusal.SymlinkMode _)
+                            | FChModAtRefusal.UnmodelledFlags _
+                            | FChModAtRefusal.Descriptor _ ->
+                                "chmod(2) takes no flags and follows a final symbolic link, so this is a bug in the kernel library."
+
+                        $"FChModAtRefusal: %s{FChModAtRefusal.describe refusal} %s{advice}"
                     )
                 )
                 state
