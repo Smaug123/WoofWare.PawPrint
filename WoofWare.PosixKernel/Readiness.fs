@@ -414,7 +414,7 @@ module DarwinReadiness =
         // Bound or not: a socket that is not connected can neither be read nor
         // written.
         | SocketPhase.Idle, _ -> None
-        | SocketPhase.Established connectionId, KqueueFilter.Read ->
+        | SocketPhase.Established (connectionId, _), KqueueFilter.Read ->
             if UnixMachineState.peerOpen socketId connectionId machine then
                 None
             else

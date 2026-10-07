@@ -344,7 +344,7 @@ module TestUnixSystemStep =
         // (`TestUnconnectedSocketTransfer` holds those rows to the measured
         // ones): ENOTCONN for an INET stream socket on both flavours.
         for platform in [ linux ; darwin ] do
-            let established = SocketPhase.Established (ConnectionId 0L)
+            let established = SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
             let fd, system = withSocketIn established platform
 
             ReadOutcomes.read fd UserBuffer.Mapped 5UL system
@@ -417,7 +417,7 @@ module TestUnixSystemStep =
                         ListenState.Queue = []
                         ListenState.Drained = false
                     }
-                SocketPhase.Established (ConnectionId 0L)
+                SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L)
                 SocketPhase.Refused RefusalError.Pending
             ]
@@ -653,7 +653,7 @@ module TestUnixSystemStep =
         // not extract bytes for a write that cannot happen, and `write` because
         // a caller that skipped the admission must not get a guess either.
         let socketId = SocketId 0L
-        let established = SocketPhase.Established (ConnectionId 0L)
+        let established = SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
 
         let socket : SocketDescription =
             {
@@ -729,7 +729,7 @@ module TestUnixSystemStep =
         let refusing =
             [
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L)
-                SocketPhase.Established (ConnectionId 0L)
+                SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
                 SocketPhase.DatagramPeer (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 9us)
@@ -1040,7 +1040,7 @@ module TestUnixSystemStep =
         // phase, and is refused in some, but its seekability does not — every
         // socket is unseekable whatever it is connected to, so `pread` never
         // reaches the read operation to ask.
-        let established = SocketPhase.Established (ConnectionId 0L)
+        let established = SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
         let fd, system = withSocketIn established linux
 
         ReadOutcomes.read fd UserBuffer.Mapped 5UL system
