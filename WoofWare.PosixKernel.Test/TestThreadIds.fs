@@ -215,6 +215,68 @@ module TestThreadIds =
         UnixSystem.checkInvariants system |> shouldEqual []
 
     [<Test>]
+    let ``Linux: pid_max may be written at or below a live thread's ID, which keeps it`` () : unit =
+        // `pid-max-below-live.c` on Linux 6.18.5 aarch64: process 5000, with a
+        // thread 5001 alive throughout, and two threads started and joined after
+        // each write. Every write takes; the process and the live thread keep
+        // their ids, and `kill(pid, 0)` still finds the process.
+        let system =
+            linuxImage
+            |> Launched.processId (pid 5000)
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+        // "child held_tid 5001"
+        let held, system = spawnOrFail 1 system
+        held |> shouldEqual 5001UL
+
+        // "before new_thread 5002 5003"
+        let joined, system =
+            (system, [ 2 ; 3 ])
+            ||> List.mapFold (fun system child -> spawnAndExit child system)
+
+        joined |> shouldEqual [ 5002UL ; 5003UL ]
+
+        let rows =
+            [
+                1000, [ 300UL ; 301UL ]
+                5000, [ 302UL ; 303UL ]
+                5001, [ 304UL ; 305UL ]
+                5002, [ 306UL ; 307UL ]
+                400, [ 308UL ; 309UL ]
+                UnixSystem.defaultPidMax, [ 310UL ; 311UL ]
+            ]
+
+        ((system, 4), rows)
+        ||> List.fold (fun (system, child) (pidMax, expected) ->
+            let written = UnixSystem.writePidMaxSysctl "test" pidMax system
+
+            // The write changes the counter's bound and nothing else.
+            { written with
+                Machine =
+                    { written.Machine with
+                        ThreadIds = system.Machine.ThreadIds
+                    }
+            }
+            |> shouldEqual system
+
+            (pidMax, idOf 0 written, idOf 1 written) |> shouldEqual (pidMax, 5000UL, 5001UL)
+            UnixSystem.checkInvariants written |> shouldEqual []
+
+            match UnixSignal.kill 5000 0 written with
+            | Ok (Ok (KillOutcome.ProcessContinues after)) -> after |> shouldEqual written
+            | other -> failwith $"kill(5000, 0) at pid_max %d{pidMax}: %A{other}"
+
+            let joined, after =
+                (written, [ child ; child + 1 ])
+                ||> List.mapFold (fun system child -> spawnAndExit child system)
+
+            (pidMax, joined) |> shouldEqual (pidMax, expected)
+            UnixSystem.checkInvariants after |> shouldEqual []
+            after, child + 2
+        )
+        |> ignore<UnixSystem<int, string> * int>
+
+    [<Test>]
     let ``Linux: pid_max takes exactly 301 to 4194304, and 4194304 is the default`` () : unit =
         // `pid-allocation.c`'s bounds sweep, on Linux 6.18.5 aarch64 and x86-64.
         UnixSystem.defaultPidMax |> shouldEqual 4194304
@@ -276,17 +338,14 @@ module TestThreadIds =
         // has created a thread cannot be given: they take a `UnixBootImage`,
         // and nothing a thread can be created in is one.
 
-        // A Linux pid is a thread ID, so it is below pid_max.
-        // The machine boots with the largest pid_max Linux has, and its
-        // administrator can lower it below no live thread's ID.
+        // A Linux pid is a thread ID, so it is below the pid_max the machine
+        // boots with, which is the largest Linux has.
         refuses
             (fun () ->
                 Launched.processId (pid 4194304) linuxImage
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             )
             "not below pid_max"
-
-        refuses (fun () -> UnixSystem.writePidMaxSysctl "ctx" 4242 linux) "not below pid_max"
 
         Launched.processId (pid 4194303) linuxImage
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
@@ -419,6 +478,8 @@ module TestThreadIds =
         /// `exit_group` from the `task`th live task (modulo how many), which ends the
         /// process; the run goes on from the state before, as if it had not been made.
         | ExitGroup of task : int
+        /// The administrator writes Linux's `pid_max`, whatever the live ids are.
+        | WritePidMax of pidMax : int32
 
     /// How a machine was set up: Linux's pid and pid_max, or Darwin's first id.
     [<RequireQualifiedAccess>]
@@ -458,6 +519,11 @@ module TestThreadIds =
             mutable Exhausted : int
             mutable Exits : int
             mutable Groups : int
+            /// `pid_max` writes at or below a live id.
+            mutable LoweredBeneathLive : int
+            /// Linux machines that boot with a process ID at or above the pid_max
+            /// then written.
+            mutable BootedAbove : int
         }
 
     let private setupGen (flavour : SimulatedUnixFlavour) : Gen<Setup> =
@@ -467,8 +533,15 @@ module TestThreadIds =
                 let! pidMax = Gen.choose (301, 340)
                 // Mostly near the top, so that the counter wraps in a short run;
                 // sometimes anywhere below it, including under 300.
+                // Sometimes at or above it: the administrator may lower pid_max
+                // beneath a live id.
                 let! pidValue =
-                    Gen.frequency [ 3, Gen.choose (pidMax - 30, pidMax - 1) ; 1, Gen.choose (1, pidMax - 1) ]
+                    Gen.frequency
+                        [
+                            3, Gen.choose (pidMax - 30, pidMax - 1)
+                            1, Gen.choose (1, pidMax - 1)
+                            1, Gen.choose (pidMax, pidMax + 40)
+                        ]
 
                 return Setup.Linux (pidValue, pidMax)
             }
@@ -481,18 +554,33 @@ module TestThreadIds =
                 ]
             |> Gen.map Setup.Darwin
 
-    let private opGen : Gen<Op> =
-        Gen.frequency
+    let private opGen (flavour : SimulatedUnixFlavour) : Gen<Op> =
+        let common =
             [
                 6, Gen.choose (0, 60) |> Gen.map Op.Spawn
                 4, Gen.choose (0, 60) |> Gen.map Op.Exit
                 1, Gen.choose (0, 60) |> Gen.map Op.ExitGroup
             ]
 
+        match flavour with
+        | SimulatedUnixFlavour.Linux ->
+            // Mostly within the setup's range, so that a write often lands at or
+            // below a live id; sometimes above it, so that ids above the first
+            // pid_max are handed out and a later write can fall beneath them.
+            let pidMax =
+                Gen.frequency [ 3, Gen.choose (301, 340) ; 1, Gen.choose (341, 420) ]
+                |> Gen.map Op.WritePidMax
+
+            Gen.frequency ((1, pidMax) :: common)
+        | SimulatedUnixFlavour.Darwin -> Gen.frequency common
+
     let private runModel (coverage : Coverage) (setup : Setup) (ops : Op list) : unit =
         let system, model =
             match setup with
             | Setup.Linux (pidValue, pidMax) ->
+                if pidValue >= pidMax then
+                    coverage.BootedAbove <- coverage.BootedAbove + 1
+
                 linuxImage
                 |> Launched.processId (pid pidValue)
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
@@ -602,6 +690,29 @@ module TestThreadIds =
 
                 coverage.Groups <- coverage.Groups + 1
                 system, model, nextName, minted, last
+            | Op.WritePidMax pidMax ->
+                let model =
+                    match model with
+                    | Model.Linux (cursor, _) -> Model.Linux (cursor, pidMax)
+                    | Model.Darwin _ -> failwith "the generator writes pid_max only on Linux"
+
+                if liveIds system |> Set.exists (fun id -> id >= uint64 pidMax) then
+                    coverage.LoweredBeneathLive <- coverage.LoweredBeneathLive + 1
+
+                let after = UnixSystem.writePidMaxSysctl "test" pidMax system
+
+                // The write changes the counter's bound and nothing else: every
+                // live task keeps its id.
+                { after with
+                    Machine =
+                        { after.Machine with
+                            ThreadIds = system.Machine.ThreadIds
+                        }
+                }
+                |> shouldEqual system
+
+                check after
+                after, model, nextName, minted, last
 
         check system
 
@@ -625,12 +736,14 @@ module TestThreadIds =
                 Exhausted = 0
                 Exits = 0
                 Groups = 0
+                LoweredBeneathLive = 0
+                BootedAbove = 0
             }
 
         let ops =
             gen {
                 let! length = Gen.choose (0, 400)
-                return! Gen.listOfLength length opGen
+                return! Gen.listOfLength length (opGen flavour)
             }
 
         let property =
@@ -648,7 +761,11 @@ module TestThreadIds =
             coverage.Wraps |> shouldBeGreaterThan 50
             coverage.SkippedLive |> shouldBeGreaterThan 50
             coverage.Exhausted |> shouldBeGreaterThan 20
+            coverage.LoweredBeneathLive |> shouldBeGreaterThan 100
+            coverage.BootedAbove |> shouldBeGreaterThan 10
         | SimulatedUnixFlavour.Darwin ->
             coverage.Wraps |> shouldEqual 0
             coverage.SkippedLive |> shouldEqual 0
             coverage.Exhausted |> shouldEqual 0
+            coverage.LoweredBeneathLive |> shouldEqual 0
+            coverage.BootedAbove |> shouldEqual 0

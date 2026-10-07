@@ -333,6 +333,25 @@ module TestOsThreadId =
         (idOf first state, idOf second state) |> shouldEqual (999UL, 300UL)
 
     [<Test>]
+    let ``a configured pid_max may be at or below the process ID`` () =
+        // Linux accepts a pid_max beneath a live id, which keeps its id
+        // (`pid-max-below-live.c`), so the process keeps its ID and its threads
+        // take theirs from 300.
+        let state =
+            machineOn
+                { KernelConfig.Default with
+                    PidMax = Some 1000
+                }
+
+        idOf (ThreadId 0) state |> shouldEqual 4242UL
+
+        let state, first =
+            ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1) state
+
+        idOf first state |> shouldEqual 300UL
+        EmulatedKernel.checkInvariants state.Kernel |> shouldEqual []
+
+    [<Test>]
     let ``a parked thread does consume an id, unlike a rotation slot`` () =
         // The contrast with TestCpuPlacement's
         // `an interleaved parked thread does not shift guest placements`: the

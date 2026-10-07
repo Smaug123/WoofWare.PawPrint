@@ -443,7 +443,8 @@ module TestProtectedFiles =
         =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform
-            |> UnixBootImage.withProtectedFiles context protection
+            |> UnixBootImage.withProtectedFiles protection
+            |> Configured.expectOk ProtectedFilesRefusal.describe
             |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
@@ -738,16 +739,203 @@ module TestProtectedFiles =
                     // The kernel's answer here is EACCES or ELOOP by its cache.
                     [ "EACCES" ; "ELOOP" ] |> shouldContain row.["stat"]
 
-                    let thrown =
-                        try
-                            statText SymlinkPolicy.Follow start system |> Some
-                        with e when e.Message.Contains "fs.protected_symlinks" ->
-                            None
-
-                    (n, thrown) |> shouldEqual (n, None)
+                    match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofPath (path start)) system with
+                    | Error (StatRefusal.Path (PathRefusal.ProtectedSymlinkCacheDependent (_, _, refusedAt, limit))) ->
+                        (n, refusedAt, limit) |> shouldEqual (n, traversal, linuxLimit)
+                    | other -> failwith $"chain %d{n}: expected the cache-dependent refusal, got %A{other}"
                 else
                     (n, follower, row.["caches"], statText SymlinkPolicy.Follow start system)
                     |> shouldEqual (n, follower, row.["caches"], row.["stat"])
+
+    /// What a path-taking call made of a walk: an answer (`None` for success),
+    /// a refusal of the walk itself, or anything else, rendered.
+    [<RequireQualifiedAccess>]
+    type private WalkOutcome =
+        | Answered of UnixError option
+        | Refused of PathRefusal
+        | Unexpected of string
+
+    let private ofSyscallAnswer (answer : SyscallAnswer) : WalkOutcome =
+        match answer with
+        | SyscallAnswer.Completed _ -> WalkOutcome.Answered None
+        | SyscallAnswer.Failed error -> WalkOutcome.Answered (Some error)
+
+    let private ofStep (result : Result<SyscallOutcome * UnixSystem<int, string>, SyscallRefusal<int>>) : WalkOutcome =
+        match result with
+        | Ok (SyscallOutcome.Answered answer, _) -> ofSyscallAnswer answer
+        | Ok (outcome, _) -> WalkOutcome.Unexpected $"%A{outcome}"
+        | Error (SyscallRefusal.ChDir refusal)
+        | Error (SyscallRefusal.ChMod (ChModRefusal.Path refusal))
+        | Error (SyscallRefusal.ChOwn (ChOwnRefusal.Path refusal))
+        | Error (SyscallRefusal.Access (AccessRefusal.Path refusal))
+        | Error (SyscallRefusal.Link (LinkRefusal.Path refusal)) -> WalkOutcome.Refused refusal
+        | Error refusal -> WalkOutcome.Unexpected $"%A{refusal}"
+
+    let private ofStatus (result : Result<FileStatusAnswer, StatRefusal>) : WalkOutcome =
+        match result with
+        | Ok (FileStatusAnswer.Reported _) -> WalkOutcome.Answered None
+        | Ok (FileStatusAnswer.Failed error) -> WalkOutcome.Answered (Some error)
+        | Error (StatRefusal.Path refusal) -> WalkOutcome.Refused refusal
+        | Error refusal -> WalkOutcome.Unexpected $"%A{refusal}"
+
+    let private ofReadLink (result : Result<ReadLinkAnswer, ReadLinkRefusal>) : WalkOutcome =
+        match result with
+        | Ok (ReadLinkAnswer.Reported _) -> WalkOutcome.Answered None
+        | Ok (ReadLinkAnswer.Failed error) -> WalkOutcome.Answered (Some error)
+        | Error (ReadLinkRefusal.Path refusal) -> WalkOutcome.Refused refusal
+        | Error refusal -> WalkOutcome.Unexpected $"%A{refusal}"
+
+    let private ofOpen (result : Result<SyscallAnswer * UnixSystem<int, string>, OpenRefusal>) : WalkOutcome =
+        match result with
+        | Ok (answer, _) -> ofSyscallAnswer answer
+        | Error (OpenRefusal.Path refusal) -> WalkOutcome.Refused refusal
+        | Error refusal -> WalkOutcome.Unexpected $"%A{refusal}"
+
+    [<Test>]
+    let ``every call whose walk follows a final link refuses the cache-dependent window, through the syscalls`` () =
+        // Built through the syscalls, as root: `/t` is root's 01777 directory
+        // holding `/t/p`, a link owned by 1000, which root may not follow there
+        // (root is not exempt). `/a/c1` -> `/a/c2` -> ... -> `/a/c45` -> `/t/p`
+        // are root's links in an ordinary directory, so a walk from `/a/c(46 - n)`
+        // traverses n links before `/t/p`, which is its traversal n + 1.
+        let longest = 45
+        let flavour = SimulatedUnixFlavour.Linux
+        let atFdCwd = AtDirectory.atFdCwd flavour
+        let linuxAtSymlinkFollow = 0x400
+        let linuxAtEAccess = 0x200
+
+        let step (call : Syscall) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+            match UnixSystem.step 0 call system with
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed _), after) -> after
+            | other -> failwith $"setting up, %A{call}: %A{other}"
+
+        let system : UnixSystem<int, string> =
+            let booted : UnixSystem<int, string> =
+                UnixSystem.initial linux
+                |> UnixBootImage.withProtectedFiles
+                    { ProtectedFiles.off with
+                        Symlinks = SymlinkProtection.InWorldWritableStickyDirectories
+                    }
+                |> Configured.expectOk ProtectedFilesRefusal.describe
+                |> Launched.bootWith
+                    (Launched.credentials (Credentials.ofIds UserId.root (gid 0u) []))
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0)
+
+            let setUp =
+                booted
+                |> step (Syscall.MkDirAt (atFdCwd, bytes "/t", 0o777))
+                |> step (Syscall.ChMod (bytes "/t", 0o1777))
+                |> step (Syscall.SymlinkAt (bytes "/t", atFdCwd, bytes "/t/p"))
+                |> step (Syscall.LChOwn (bytes "/t/p", Some (uid 1000u), None))
+                |> step (Syscall.MkDirAt (atFdCwd, bytes "/a", 0o755))
+
+            (setUp, [ 1..longest ])
+            ||> List.fold (fun system i ->
+                let target = if i = longest then "/t/p" else $"c%d{i + 1}"
+                step (Syscall.SymlinkAt (bytes target, atFdCwd, bytes $"/a/c%d{i}")) system
+            )
+
+        let stickyDirectory = inodeAt system.Machine.FileSystem "/t"
+        let protectedLink = inodeAt system.Machine.FileSystem "/t/p"
+
+        let calls : (string * (string -> WalkOutcome)) list =
+            [
+                "stat", (fun p -> UnixPathResolution.stat SymlinkPolicy.Follow (bytes p) system |> ofStatus)
+                // A trailing separator follows the final link even for lstat.
+                "lstat of p/",
+                (fun p ->
+                    UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (bytes (p + "/")) system
+                    |> ofStatus
+                )
+                "fstatat",
+                (fun p ->
+                    match UnixPathResolution.fstatat atFdCwd (bytes p) 0 system with
+                    | Ok (FileStatusAnswer.Reported _) -> WalkOutcome.Answered None
+                    | Ok (FileStatusAnswer.Failed error) -> WalkOutcome.Answered (Some error)
+                    | Error (FStatAtRefusal.Stat (StatRefusal.Path refusal)) -> WalkOutcome.Refused refusal
+                    | Error refusal -> WalkOutcome.Unexpected $"%A{refusal}"
+                )
+                "statfs",
+                (fun p ->
+                    match UnixPathResolution.statfs (bytes p) system with
+                    | Ok (FileSystemStatisticsAnswer.Reported _) -> WalkOutcome.Answered None
+                    | Ok (FileSystemStatisticsAnswer.Failed error) -> WalkOutcome.Answered (Some error)
+                    | Error refusal -> WalkOutcome.Refused refusal
+                )
+                "open", (fun p -> UnixNamespace.openPath 0 (bytes p) 0 system |> ofOpen)
+                "openat", (fun p -> UnixNamespace.openat atFdCwd (bytes p) 0 0 system |> ofOpen)
+                "chdir", (fun p -> UnixSystem.step 0 (Syscall.ChDir (bytes p)) system |> ofStep)
+                "chmod", (fun p -> UnixSystem.step 0 (Syscall.ChMod (bytes p, 0o755)) system |> ofStep)
+                "chown", (fun p -> UnixSystem.step 0 (Syscall.ChOwn (bytes p, None, None)) system |> ofStep)
+                "access", (fun p -> UnixSystem.step 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, 0)) system |> ofStep)
+                "faccessat(AT_EACCESS)",
+                (fun p ->
+                    UnixSystem.step 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, linuxAtEAccess)) system
+                    |> ofStep
+                )
+                // `readlink` reads a final link rather than following it,
+                // except through a trailing separator.
+                "readlink of p/",
+                (fun p ->
+                    UnixNamespace.readlink (bytes (p + "/")) UserBuffer.Mapped 64 system
+                    |> ofReadLink
+                )
+                "readlinkat of p/",
+                (fun p ->
+                    UnixNamespace.readlinkat atFdCwd (bytes (p + "/")) UserBuffer.Mapped 64 system
+                    |> ofReadLink
+                )
+                "linkat(AT_SYMLINK_FOLLOW)",
+                (fun p ->
+                    UnixSystem.step
+                        0
+                        (Syscall.LinkAt (atFdCwd, bytes p, atFdCwd, bytes "/a/new", linuxAtSymlinkFollow))
+                        system
+                    |> ofStep
+                )
+            ]
+
+        let mismatches =
+            [
+                for n in 0..longest do
+                    let start = if n = 0 then "/t/p" else $"/a/c%d{longest + 1 - n}"
+                    let traversal = n + 1
+
+                    // Measured (`protected-sysctls.c`, ORDER): EACCES within the
+                    // first 20 traversals whatever the cache, EACCES or ELOOP by
+                    // the cache from the 21st to the 40th, and ELOOP once the
+                    // 41st exhausts the budget.
+                    let expected =
+                        if traversal <= 20 then
+                            WalkOutcome.Answered (Some UnixError.EACCES)
+                        elif traversal <= linuxLimit then
+                            WalkOutcome.Refused (
+                                PathRefusal.ProtectedSymlinkCacheDependent (
+                                    stickyDirectory,
+                                    protectedLink,
+                                    traversal,
+                                    linuxLimit
+                                )
+                            )
+                        else
+                            WalkOutcome.Answered (Some UnixError.ELOOP)
+
+                    for callName, call in calls do
+                        let actual =
+                            try
+                                call start
+                            with e ->
+                                WalkOutcome.Unexpected $"threw: %s{e.Message}"
+
+                        if actual <> expected then
+                            yield
+                                $"%s{callName} of %s{start} (traversal %d{traversal}): expected %A{expected}, got %A{actual}"
+            ]
+
+        linuxLimit |> shouldEqual 40
+        mismatches |> shouldEqual []
 
     // ------------------------------------------------------------- protected_regular, replayed
 
@@ -993,7 +1181,8 @@ module TestProtectedFiles =
 
         system.Machine.ProtectedFiles |> shouldEqual ProtectedFiles.off
 
-        UnixBootImage.withProtectedFiles "test" ProtectedFiles.off image
+        UnixBootImage.withProtectedFiles ProtectedFiles.off image
+        |> Configured.expectOk ProtectedFilesRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> shouldEqual system
 
@@ -1010,16 +1199,11 @@ module TestProtectedFiles =
                             }
 
                         if protection <> ProtectedFiles.off then
-                            let thrown =
-                                try
-                                    UnixBootImage.withProtectedFiles "test" protection image |> ignore
-                                    None
-                                with e ->
-                                    Some e.Message
-
-                            match thrown with
-                            | Some message -> message |> shouldContainText "test:"
-                            | None -> failwith $"%A{protection} was admitted on Darwin"
+                            UnixBootImage.withProtectedFiles protection image
+                            |> Result.map ignore<UnixBootImage<int, string>>
+                            |> shouldEqual (
+                                Error (ProtectedFilesRefusal.NoSuchSysctls (protection, SimulatedUnixFlavour.Darwin))
+                            )
 
                             let forged =
                                 { system with
@@ -1054,7 +1238,8 @@ module TestProtectedFiles =
                             }
 
                         let set =
-                            UnixBootImage.withProtectedFiles "test" protection image
+                            UnixBootImage.withProtectedFiles protection image
+                            |> Configured.expectOk ProtectedFilesRefusal.describe
                             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                         set.Machine.ProtectedFiles |> shouldEqual protection

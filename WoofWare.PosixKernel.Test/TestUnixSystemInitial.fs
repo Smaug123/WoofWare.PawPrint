@@ -76,7 +76,10 @@ module TestUnixSystemInitial =
 
         let flavour = SimulatedUnixPlatform.flavour platform
 
-        let configured = image |> UnixBootImage.withSoMaxConn (Some 7)
+        let configured =
+            image
+            |> UnixBootImage.withSoMaxConn (Some 7)
+            |> Configured.expectOk SoMaxConnRefusal.describe
 
         (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) configured).Machine.SoMaxConn
         |> shouldEqual 7
@@ -84,6 +87,7 @@ module TestUnixSystemInitial =
         // Back to the default, from an image that no longer carries it.
         (configured
          |> UnixBootImage.withSoMaxConn None
+         |> Configured.expectOk SoMaxConnRefusal.describe
          |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine.SoMaxConn
         |> shouldEqual (UnixMachineState.defaultSoMaxConn flavour)

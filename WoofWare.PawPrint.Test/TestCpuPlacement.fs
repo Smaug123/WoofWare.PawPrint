@@ -36,7 +36,10 @@ module TestCpuPlacement =
 
     let private kernelWith (count : int) : EmulatedKernel =
         EmulatedKernel.initialImage
-        |> KernelImage.mapMachine (UnixBootImage.withProcessorCount count)
+        |> KernelImage.mapMachine (fun image ->
+            UnixBootImage.withProcessorCount count image
+            |> Result.defaultWith (fun refusal -> failwith $"test bug: %s{ProcessorCountRefusal.describe refusal}")
+        )
         |> EmulatedKernel.boot
 
     let private cpuIndex (CpuId.CpuId i : CpuId) : int = i
@@ -113,7 +116,12 @@ module TestCpuPlacement =
 
             let kernel =
                 EmulatedKernel.initialImage
-                |> KernelImage.mapMachine (UnixBootImage.withProcessorCount 1)
+                |> KernelImage.mapMachine (fun image ->
+                    UnixBootImage.withProcessorCount 1 image
+                    |> Result.defaultWith (fun refusal ->
+                        failwith $"test bug: %s{ProcessorCountRefusal.describe refusal}"
+                    )
+                )
                 |> EmulatedKernel.withEnvironment "test" [ $"DOTNET_PROCESSOR_COUNT=%d{configured}" ]
                 |> EmulatedKernel.boot
 

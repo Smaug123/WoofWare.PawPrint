@@ -561,7 +561,7 @@ module UnixConnection =
 
                 let clientPhase =
                     if not nonBlocking then
-                        SocketPhase.Established connectionId
+                        SocketPhase.Established (connectionId, ConnectionEnd.Client)
                     else
                         match flavour with
                         | SimulatedUnixFlavour.Linux ->
@@ -572,7 +572,7 @@ module UnixConnection =
                         | SimulatedUnixFlavour.Darwin ->
                             // Darwin's retry answers EISCONN directly
                             // (measured), so nothing is deferred.
-                            SocketPhase.Established connectionId
+                            SocketPhase.Established (connectionId, ConnectionEnd.Client)
 
                 let system =
                     { system with
@@ -764,7 +764,7 @@ module UnixConnection =
                 | SocketPhase.EstablishedPendingReport connectionId ->
                     // The one completion-reporting SUCCESS (measured). The
                     // destination is ignored, as the state transition is.
-                    completed (withPhase (SocketPhase.Established connectionId) system)
+                    completed (withPhase (SocketPhase.Established (connectionId, ConnectionEnd.Client)) system)
                 | SocketPhase.Refused error ->
                     // Deliver the latched refusal once, then reset: the next
                     // connect is a fresh attempt, and the source address the
@@ -1377,7 +1377,7 @@ module UnixConnection =
                     // `UnixSocket.setsockopt` refuses to change it while
                     // connections are queued.
                     ReuseAddress = listener.ReuseAddress
-                    Phase = SocketPhase.Established connectionId
+                    Phase = SocketPhase.Established (connectionId, ConnectionEnd.Server)
                 }
 
             fd,
@@ -1451,7 +1451,7 @@ module UnixConnection =
             |> Map.toList
             |> List.choose (fun (survivorId, survivor) ->
                 match survivor.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c when c = connectionId -> Some survivorId
                 | _ -> None
             )
