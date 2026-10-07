@@ -2220,8 +2220,11 @@ module TestUnixSystemStep =
                 // AT_FDCWD on Linux.
                 Syscall.MkDirAt (-100, PathArg.ofPath (statPath "/new"), 0o700),
                 Answered.mkdir (PathArg.ofPath (statPath "/new")) 0o700 system
-                Syscall.Unlink (PathArg.ofPath (statPath "/d/inner/t")), Answered.unlink (statPath "/d/inner/t") system
-                Syscall.RmDir (PathArg.ofPath (statPath "/d")), Answered.rmdir (statPath "/d") system
+                // AT_FDCWD on Linux, with no flags and with Linux's
+                // AT_REMOVEDIR.
+                Syscall.UnlinkAt (-100, PathArg.ofPath (statPath "/d/inner/t"), 0),
+                Answered.unlink (statPath "/d/inner/t") system
+                Syscall.UnlinkAt (-100, PathArg.ofPath (statPath "/d"), 0x200), Answered.rmdir (statPath "/d") system
                 // A *successful* chdir, so the comparison covers the state it
                 // moves rather than only an errno: this one changes both the
                 // current directory inode and the cached path, and a dispatcher
@@ -2265,6 +2268,52 @@ module TestUnixSystemStep =
             UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText "/new") after
             |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
         | other -> failwith $"mkdirat(/d/inner, new) did not create: %A{other}"
+
+    [<Test>]
+    let ``unlinkat through step starts from its dirfd, and AT_REMOVEDIR makes it rmdir`` () : unit =
+        // The cwd is the root, which holds no "t" and no "inner": a dispatcher
+        // that dropped the dirfd would answer ENOENT, and one that dropped the
+        // flags would answer `unlink`'s EISDIR for the directory.
+        let _, _, _, system = withTree linux
+
+        let opened (path : string) (system : UnixSystem<int, string>) =
+            match UnixNamespace.openPath 0 (PathArg.ofText path) 0 system with
+            | Ok (SyscallAnswer.Completed fd, system) -> int fd, system
+            | other -> failwith $"open(%s{path}) did not open: %A{other}"
+
+        let innerFd, system = opened "/d/inner" system
+        let dFd, system = opened "/d" system
+
+        let step (call : Syscall) (system : UnixSystem<int, string>) =
+            UnixSystem.step holderTask call system |> stepAnswered
+
+        let viaStep = step (Syscall.UnlinkAt (innerFd, PathArg.ofText "t", 0)) system
+
+        viaStep
+        |> shouldEqual (
+            UnixNamespace.unlinkat innerFd (PathArg.ofText "t") 0 system
+            |> Result.mapError SyscallRefusal.UnlinkAt
+        )
+
+        let system =
+            match viaStep with
+            | Ok (SyscallAnswer.Completed _, after) -> after
+            | other -> failwith $"unlinkat(/d/inner, t) did not remove: %A{other}"
+
+        // Linux's AT_REMOVEDIR.
+        let viaStep = step (Syscall.UnlinkAt (dFd, PathArg.ofText "inner", 0x200)) system
+
+        viaStep
+        |> shouldEqual (
+            UnixNamespace.unlinkat dFd (PathArg.ofText "inner") 0x200 system
+            |> Result.mapError SyscallRefusal.UnlinkAt
+        )
+
+        match viaStep with
+        | Ok (SyscallAnswer.Completed _, after) ->
+            UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText "/d/inner") after
+            |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
+        | other -> failwith $"unlinkat(/d, inner, AT_REMOVEDIR) did not remove: %A{other}"
 
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =
