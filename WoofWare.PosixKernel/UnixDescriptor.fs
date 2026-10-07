@@ -1311,9 +1311,7 @@ module UnixDescriptor =
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is not parked, so there is no acquisition to finish. A blocked `flock` records the park; only a task it answered `WouldBlock` finishes here (this is a bug in the client)."
 
-        let descriptions = OpenFileTable.descriptions system.Machine.OpenFiles
-
-        match Map.tryFind requester descriptions with
+        match OpenFileTable.tryFind requester system.Machine.OpenFiles with
         | None ->
             failwith
                 $"UnixDescriptor.flockAcquire: open file description %O{requester} is not in the table, but task %O{task} is parked on an flock of it, and a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."

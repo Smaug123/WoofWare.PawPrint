@@ -280,7 +280,7 @@ module UnixKqueue =
         (system : UnixSystem<'Task, 'Handler>)
         : KqueueState
         =
-        match Map.tryFind kqueue (OpenFileTable.descriptions system.Machine.OpenFiles) with
+        match OpenFileTable.tryFind kqueue system.Machine.OpenFiles with
         | Some {
                    Target = OpenFileTarget.Kqueue state
                } -> state

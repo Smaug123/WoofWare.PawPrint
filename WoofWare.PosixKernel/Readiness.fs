@@ -27,7 +27,7 @@ module LinuxReadiness =
         (system : UnixSystem<'Task, 'Handler>)
         : uint32
         =
-        match Map.tryFind targetId (OpenFileTable.descriptions system.Machine.OpenFiles) with
+        match OpenFileTable.tryFind targetId system.Machine.OpenFiles with
         | None ->
             failwith
                 $"LinuxReadiness.ofDescription: %O{targetId} names no live open file description. Both waiters resolve their descriptor first, and FileDescriptorRegistry.dropDescriptor sweeps destroyed descriptions out of every interest table, so this is a bug in this library."
@@ -181,7 +181,7 @@ module EpollReadyList =
         (system : UnixSystem<'Task, 'Handler>)
         : bool
         =
-        match Map.tryFind epollId (OpenFileTable.descriptions system.Machine.OpenFiles) with
+        match OpenFileTable.tryFind epollId system.Machine.OpenFiles with
         | None ->
             failwith
                 $"EpollReadyList.hasDeliverableEvent: %O{epollId} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
@@ -224,7 +224,7 @@ module EpollReadyList =
             failwith
                 $"EpollReadyList.drain: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is a bug in the caller of EpollReadyList.drain."
 
-        match Map.tryFind epollId (OpenFileTable.descriptions system.Machine.OpenFiles) with
+        match OpenFileTable.tryFind epollId system.Machine.OpenFiles with
         | None ->
             failwith
                 $"EpollReadyList.drain: %O{epollId} names no live open file description (this is a bug in the caller of EpollReadyList.drain)."
@@ -514,7 +514,7 @@ module KqueueQueue =
         (system : UnixSystem<'Task, 'Handler>)
         : KqueueState
         =
-        match Map.tryFind kqueue (OpenFileTable.descriptions system.Machine.OpenFiles) with
+        match OpenFileTable.tryFind kqueue system.Machine.OpenFiles with
         | Some {
                    Target = OpenFileTarget.Kqueue state
                } -> state
@@ -623,8 +623,8 @@ module KqueueQueue =
         : UnixSystem<'Task, 'Handler>
         =
         let kqueues =
-            OpenFileTable.descriptions system.Machine.OpenFiles
-            |> Map.toList
+            OpenFileTable.toSeq system.Machine.OpenFiles
+            |> Seq.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
                 | OpenFileTarget.Kqueue state -> Some (id, state)
@@ -701,7 +701,7 @@ module KqueueQueue =
         (system : UnixSystem<'Task, 'Handler>)
         : bool
         =
-        match Map.tryFind kqueue (OpenFileTable.descriptions system.Machine.OpenFiles) with
+        match OpenFileTable.tryFind kqueue system.Machine.OpenFiles with
         | None ->
             failwith
                 $"KqueueQueue.hasDeliverableEvent: %O{kqueue} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."

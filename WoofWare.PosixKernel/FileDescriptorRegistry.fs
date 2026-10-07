@@ -1066,12 +1066,29 @@ module OpenFileTable =
         }
 
     /// Every live open file description on the machine.
+    ///
+    /// Builds the map afresh, in time and space linear in the number of live
+    /// descriptions; a caller that wants one description wants `tryFind`.
     let descriptions (table : OpenFileTable) : Map<OpenFileDescriptionId, OpenFileDescription> =
         table.Entries |> Map.map (fun _ entry -> entry.Description)
 
     /// The description `id` names, if it is live.
     let tryFind (id : OpenFileDescriptionId) (table : OpenFileTable) : OpenFileDescription option =
         Map.tryFind id table.Entries |> Option.map (fun entry -> entry.Description)
+
+    /// Every live description and its identity, in identity order, for a walk
+    /// that would otherwise build `descriptions` only to read it once.
+    let internal toSeq (table : OpenFileTable) : (OpenFileDescriptionId * OpenFileDescription) seq =
+        table.Entries |> Map.toSeq |> Seq.map (fun (id, entry) -> id, entry.Description)
+
+    /// The live description `id` names. Loudly partial: `operation`, named in
+    /// the message, holds an identity it resolved moments ago.
+    let internal get (operation : string) (id : OpenFileDescriptionId) (table : OpenFileTable) : OpenFileDescription =
+        match tryFind id table with
+        | Some description -> description
+        | None ->
+            failwith
+                $"%s{operation}: open file description %O{id} is not present in the table (this is a bug in the caller, which resolved it moments ago)."
 
     /// How many descriptors name the description `id`, in every descriptor
     /// table on the machine, if it is live. Zero for a description only a call
@@ -2284,8 +2301,8 @@ module FileDescriptorRegistry =
             // description alive: Darwin keys a registration by the descriptor
             // number (measured, `kevent-register.c` section G).
             let openFiles =
-                (registry.OpenFiles, OpenFileTable.descriptions registry.OpenFiles)
-                ||> Map.fold (fun openFiles kqueue description ->
+                (registry.OpenFiles, OpenFileTable.toSeq registry.OpenFiles)
+                ||> Seq.fold (fun openFiles (kqueue, description) ->
                     match description.Target with
                     | OpenFileTarget.Kqueue state when
                         state.Registrations |> Map.exists (fun (registeredFd, _) _ -> registeredFd = fd)

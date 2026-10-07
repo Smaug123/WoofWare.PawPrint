@@ -367,8 +367,7 @@ module UnixMachineState =
 
     /// Every live open file description on the machine naming `socketId`.
     let descriptionsNamingSocket (socketId : SocketId) (machine : UnixMachineState) : Set<OpenFileDescriptionId> =
-        OpenFileTable.descriptions machine.OpenFiles
-        |> Map.toSeq
+        OpenFileTable.toSeq machine.OpenFiles
         |> Seq.choose (fun (descriptionId, description) ->
             match description.Target with
             | OpenFileTarget.Socket target when target = socketId -> Some descriptionId
@@ -384,8 +383,7 @@ module UnixMachineState =
         (machine : UnixMachineState)
         : Set<OpenFileDescriptionId>
         =
-        OpenFileTable.descriptions machine.OpenFiles
-        |> Map.toSeq
+        OpenFileTable.toSeq machine.OpenFiles
         |> Seq.choose (fun (descriptionId, description) ->
             if description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd) then
                 Some descriptionId
@@ -404,8 +402,8 @@ module UnixMachineState =
     /// unless the client holds it; and `dup` keeps it open.
     let pipeEndOpen (pipeId : PipeId) (pipe : PipeState) (pipeEnd : PipeEnd) (machine : UnixMachineState) : bool =
         PipeState.heldByClient pipeEnd pipe
-        || OpenFileTable.descriptions machine.OpenFiles
-           |> Map.exists (fun _ description -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
+        || OpenFileTable.toSeq machine.OpenFiles
+           |> Seq.exists (fun (_, description) -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
 
     /// Every inode the machine's open file descriptions hold a reference to
     /// *directly*, independently of any name the filesystem binds to it: each
@@ -419,8 +417,7 @@ module UnixMachineState =
     /// references (`UnixProcessState.heldInodes`) and those the *filesystem*
     /// holds on behalf of both.
     let heldInodes (machine : UnixMachineState) : Set<InodeNumber> =
-        OpenFileTable.descriptions machine.OpenFiles
-        |> Map.toSeq
+        OpenFileTable.toSeq machine.OpenFiles
         |> Seq.choose (fun (_, description) ->
             match description.Target with
             | OpenFileTarget.File (inode, _)

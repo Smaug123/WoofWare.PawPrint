@@ -626,10 +626,7 @@ module UnixReadWrite =
             | SimulatedUnixFlavour.Darwin -> true
             | SimulatedUnixFlavour.Linux -> false
 
-        if
-            darwin
-            && Map.containsKey id (OpenFileTable.descriptions system.Machine.OpenFiles)
-        then
+        if darwin && (OpenFileTable.tryFind id system.Machine.OpenFiles).IsSome then
             UnixSystemState.mapOpenFiles
                 (OpenFileTable.mapStatus
                     id
@@ -1533,7 +1530,7 @@ module UnixReadWrite =
         (system : UnixSystem<'Task, 'Handler>)
         : PipeId
         =
-        match OpenFileTable.descriptions system.Machine.OpenFiles |> Map.tryFind description with
+        match OpenFileTable.tryFind description system.Machine.OpenFiles with
         | None ->
             failwith
                 $"UnixReadWrite.%s{syscall}: task %O{task} sleeps on open file description %O{description}, which is not in the table, but a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
@@ -1561,7 +1558,8 @@ module UnixReadWrite =
         =
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux -> false
-        | SimulatedUnixFlavour.Darwin -> (OpenFileTable.descriptions system.Machine.OpenFiles).[description].NonBlocking
+        | SimulatedUnixFlavour.Darwin ->
+            (OpenFileTable.get "UnixReadWrite" description system.Machine.OpenFiles).NonBlocking
 
     let private finishReadHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
@@ -1940,7 +1938,7 @@ module UnixReadWrite =
         : WriteOutcome<'Answer, 'Task, 'Handler>
         =
         let reads =
-            match OpenFileTable.descriptions system.Machine.OpenFiles |> Map.tryFind writer with
+            match OpenFileTable.tryFind writer system.Machine.OpenFiles with
             | Some {
                        Target = OpenFileTarget.Pipe (pipeId, PipeEnd.Write)
                    } -> (UnixMachineState.pipe pipeId system.Machine).Reads
@@ -2658,7 +2656,7 @@ module UnixReadWrite =
             // (section N1, N2): one whose description became non-blocking
             // while it slept fills the room and returns its count too.
             let nonBlocking =
-                (OpenFileTable.descriptions system.Machine.OpenFiles).[writer].NonBlocking
+                (OpenFileTable.get "UnixReadWrite" writer system.Machine.OpenFiles).NonBlocking
 
             afterPartWritten task pipeId writer fd parked nonBlocking id system
 

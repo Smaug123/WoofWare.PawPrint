@@ -832,8 +832,6 @@ module UnixPoll =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
-        let descriptions = OpenFileTable.descriptions system.Machine.OpenFiles
-
         let entries =
             parked.Entries
             |> List.map (fun entry ->
@@ -844,7 +842,7 @@ module UnixPoll =
                         Events = 0s
                     }
                 | ParkedPollEntry.Watched (fd, description, events) ->
-                    if not (Map.containsKey description descriptions) then
+                    if (OpenFileTable.tryFind description system.Machine.OpenFiles).IsNone then
                         failwith
                             $"UnixPoll.finishPoll: task %O{task}'s poll watches open file description %O{description}, which is not in the table, but a park holds its descriptions until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
 

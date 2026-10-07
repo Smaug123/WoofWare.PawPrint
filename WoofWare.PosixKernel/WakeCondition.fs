@@ -165,7 +165,7 @@ module WakeCondition =
         (system : UnixSystem<'Task, 'Handler>)
         : PipeId * PipeState
         =
-        match OpenFileTable.descriptions system.Machine.OpenFiles |> Map.tryFind description with
+        match OpenFileTable.tryFind description system.Machine.OpenFiles with
         | None ->
             failwith
                 $"WakeCondition.satisfied: open file description %O{description} is not in the table, but a task waits on it (%A{primitive}), and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
@@ -230,7 +230,7 @@ module WakeCondition =
         | WakePrimitive.KqueueEventDeliverable kqueue -> KqueueQueue.hasDeliverableEvent kqueue system
         | WakePrimitive.KqueuePollReportable -> KqueuePoll.reportable task system
         | WakePrimitive.KqueueDrained kqueue ->
-            match OpenFileTable.descriptions system.Machine.OpenFiles |> Map.tryFind kqueue with
+            match OpenFileTable.tryFind kqueue system.Machine.OpenFiles with
             | None ->
                 failwith
                     $"WakeCondition.satisfied: open file description %O{kqueue} is not in the table, but a task waits in kevent on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
@@ -246,18 +246,13 @@ module WakeCondition =
                     failwith
                         $"WakeCondition.satisfied: a task waits in kevent on open file description %O{kqueue}, which names %A{description.Target} rather than a kqueue (this is a bug in the caller that recorded the park)."
         | WakePrimitive.DescriptorReady (description, conditions) ->
-            if
-                not (
-                    OpenFileTable.descriptions system.Machine.OpenFiles
-                    |> Map.containsKey description
-                )
-            then
+            if (OpenFileTable.tryFind description system.Machine.OpenFiles).IsNone then
                 failwith
                     $"WakeCondition.satisfied: open file description %O{description} is not in the table, but a task waits for it to become ready, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
 
             LinuxReadiness.ofDescription description system &&& conditions <> 0u
         | WakePrimitive.AcceptQueueNonEmpty listener ->
-            match OpenFileTable.descriptions system.Machine.OpenFiles |> Map.tryFind listener with
+            match OpenFileTable.tryFind listener system.Machine.OpenFiles with
             | None ->
                 failwith
                     $"WakeCondition.satisfied: open file description %O{listener} is not in the table, but a task is parked in an accept on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
@@ -297,7 +292,7 @@ module WakeCondition =
             | SimulatedUnixFlavour.Linux -> false
             | SimulatedUnixFlavour.Darwin ->
                 pipe.Reads > reads
-                && (OpenFileTable.descriptions system.Machine.OpenFiles).[writer].NonBlocking
+                && (OpenFileTable.get "WakeCondition" writer system.Machine.OpenFiles).NonBlocking
         | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
         | WakePrimitive.SignalDeliverable -> SyscallInterruption.wakes task system
         // `satisfied` answers a call a close has ended before it asks any

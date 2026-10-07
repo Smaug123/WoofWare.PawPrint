@@ -1755,7 +1755,7 @@ module UnixConnection =
         | SleepTarget.Waiting (listenerId, _) ->
 
         let description =
-            match OpenFileTable.descriptions system.Machine.OpenFiles |> Map.tryFind listenerId with
+            match OpenFileTable.tryFind listenerId system.Machine.OpenFiles with
             | Some description -> description
             | None ->
                 failwith
