@@ -2806,20 +2806,15 @@ module FileDescriptorRegistry =
                 )
         )
 
-    /// Every way in which `registry` fails to be a descriptor table a kernel
-    /// could produce, with the open file descriptions it names. Empty for any
-    /// registry built out of `ofLaunchedPipes`, `dup` and `close`; the property
-    /// tests assert exactly that.
-    ///
-    /// Includes `OpenFileTable.checkInvariants` of the machine's descriptions
-    /// against this process's descriptor table alone, which holds every
-    /// descriptor on a machine running this one process.
-    ///
-    /// Whether a description is still referenced, and whether its holds are
-    /// those the parks name, are not among them: the parks are the tasks',
-    /// which a registry does not hold, so those are `UnixSystem.checkInvariants`'s
-    /// `UnreferencedDescription` and `HoldCountMismatch`.
-    let checkInvariants (registry : FileDescriptorRegistry) : FileDescriptorRegistryDefect list =
+    // The rules relating `registry`'s descriptor numbers to the descriptions:
+    // no descriptor names a missing description (the first list), and every
+    // registration of a kqueue `ownsKqueue` admits is made through an open
+    // descriptor onto a socket (the second).
+    let private tableDefects
+        (ownsKqueue : KqueueState -> bool)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistryDefect list * FileDescriptorRegistryDefect list
+        =
         let descriptions = OpenFileTable.descriptions registry.OpenFiles
 
         let dangling =
@@ -2839,6 +2834,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
                 | OpenFileTarget.Pipe _ -> []
+                | OpenFileTarget.Kqueue state when not (ownsKqueue state) -> []
                 | OpenFileTarget.Kqueue state ->
                     state.Registrations
                     |> Map.toList
@@ -2871,9 +2867,47 @@ module FileDescriptorRegistry =
                     )
             )
 
+        dangling, kqueueRegistrations
+
+    /// Every way in which `registry` fails to be a descriptor table a kernel
+    /// could produce, with the open file descriptions it names. Empty for any
+    /// registry built out of `ofLaunchedPipes`, `dup` and `close`; the property
+    /// tests assert exactly that.
+    ///
+    /// Includes `OpenFileTable.checkInvariants` of the machine's descriptions
+    /// against this process's descriptor table alone, which holds every
+    /// descriptor on a machine running this one process.
+    ///
+    /// Whether a description is still referenced, and whether its holds are
+    /// those the parks name, are not among them: the parks are the tasks',
+    /// which a registry does not hold, so those are `UnixSystem.checkInvariants`'s
+    /// `UnreferencedDescription` and `HoldCountMismatch`.
+    let checkInvariants (registry : FileDescriptorRegistry) : FileDescriptorRegistryDefect list =
+        let dangling, kqueueRegistrations = tableDefects (fun _ -> true) registry
+
         dangling
         @ OpenFileTable.checkInvariants [ registry.Descriptors ] registry.OpenFiles
         @ kqueueRegistrations
+
+    /// Every way in which `registry`'s descriptor table, the table of the
+    /// process `owner`, fails to be one a kernel could produce over the
+    /// machine's open file descriptions: a descriptor naming no description,
+    /// and a registration of a kqueue `owner` owns made through a descriptor of
+    /// its table that is closed or names no socket.
+    ///
+    /// For a machine holding several processes, where `checkInvariants` would
+    /// count only this table's descriptors against each description: the
+    /// counts, and the rest of `OpenFileTable.checkInvariants`, are the
+    /// machine's, read against every process's table.
+    let checkDescriptorTableInvariants
+        (owner : ProcessId)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistryDefect list
+        =
+        let dangling, kqueueRegistrations =
+            tableDefects (fun state -> state.Owner = owner) registry
+
+        dangling @ kqueueRegistrations
 
     /// Fail loudly if `registry` is not sound, naming `context`.
     let assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =

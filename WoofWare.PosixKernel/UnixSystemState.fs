@@ -1,7 +1,28 @@
 namespace WoofWare.PosixKernel
 
+/// How many changes a `SimulatedMachine` had seen when a process's view of it
+/// was taken. `SimulatedMachine.unfocus` compares it with the machine's own, so
+/// that a view taken before some other change to the machine, whose copy of
+/// the machine is stale, is refused rather than written back over that change.
+[<Struct>]
+type internal MachineGeneration = | MachineGeneration of int64
+
+[<RequireQualifiedAccess>]
+module internal MachineGeneration =
+    /// The generation of a machine no change has been made to.
+    let first : MachineGeneration = MachineGeneration 0L
+
+    /// The generation after one more change.
+    let next (generation : MachineGeneration) : MachineGeneration =
+        match generation with
+        | MachineGeneration g -> MachineGeneration (g + 1L)
+
 /// Everything one simulated POSIX process is, as a syscall sees it: the machine
 /// it runs on, its own per-process state, and its tasks.
+///
+/// On a `SimulatedMachine` holding several processes, this is one process's
+/// view of it (`SimulatedMachine.focus`): it holds no other process, so no
+/// syscall can reach one.
 ///
 /// Generic in what names a task and what a signal handler is, for the same
 /// reason `SignalState` is: those are the client's identities and this library
@@ -23,6 +44,10 @@ type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
             /// (`UnixTaskLifecycle.exitThread` refuses that), so it is a task for as
             /// long as the process is running. On Linux its thread ID is the process ID.
             Leader : 'Task
+            /// The generation of the `SimulatedMachine` this view was taken
+            /// from; see `MachineGeneration`. A system no machine has held yet
+            /// is at `MachineGeneration.first`.
+            Generation : MachineGeneration
         }
 
 /// Reading and writing a `UnixSystem`'s process's descriptor table together

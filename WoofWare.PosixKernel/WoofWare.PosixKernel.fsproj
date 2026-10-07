@@ -89,6 +89,7 @@
         <Compile Include="UnixSystem.fs" />
         <Compile Include="UnixBootImage.fs" />
         <Compile Include="UnixSignal.fs" />
+        <Compile Include="SimulatedMachine.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 

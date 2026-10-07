@@ -172,6 +172,7 @@
     <Compile Include="TestKeventMeasured.fs" />
     <Compile Include="TestKeventRegistration.fs" />
     <Compile Include="TestKqueueOwner.fs" />
+    <Compile Include="TestSimulatedMachine.fs" />
     <Compile Include="TestKeventWriteData.fs" />
     <Compile Include="TestDarwinPoll.fs" />
     <Compile Include="TestPipeBuffer.fs" />

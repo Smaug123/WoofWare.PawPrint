@@ -2409,6 +2409,7 @@ module UnixSystem =
                         }
                     Tasks = UnixTaskTable.add leader leaderCpu leaderThreadId Map.empty
                     Leader = leader
+                    Generation = MachineGeneration.first
                 }
         }
 
