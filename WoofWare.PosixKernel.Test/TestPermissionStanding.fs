@@ -1179,32 +1179,38 @@ module TestPermissionStanding =
         let directory = inodeAt tree "/tmp/base/own-sticky"
         let standing = Standing.toward root (owner 7u 7u)
 
-        UnixSystem.step 1 (Syscall.Unlink (PathArg.ofPath (path "/tmp/base/own-sticky/theirs"))) system
+        // Darwin's AT_FDCWD, with no flags for unlink and AT_REMOVEDIR for
+        // rmdir.
+        UnixSystem.step 1 (Syscall.UnlinkAt (-2, PathArg.ofPath (path "/tmp/base/own-sticky/theirs"), 0)) system
         |> Result.map fst
         |> shouldEqual (
             Error (
-                SyscallRefusal.Unlink (
-                    RemovalRefusal.Sticky (
-                        StickyRefusal.DarwinPrivilegedCaller (
-                            directory,
-                            inodeAt tree "/tmp/base/own-sticky/theirs",
-                            standing
+                SyscallRefusal.UnlinkAt (
+                    UnlinkAtRefusal.Removal (
+                        RemovalRefusal.Sticky (
+                            StickyRefusal.DarwinPrivilegedCaller (
+                                directory,
+                                inodeAt tree "/tmp/base/own-sticky/theirs",
+                                standing
+                            )
                         )
                     )
                 )
             )
         )
 
-        UnixSystem.step 1 (Syscall.RmDir (PathArg.ofPath (path "/tmp/base/own-sticky/theirdir"))) system
+        UnixSystem.step 1 (Syscall.UnlinkAt (-2, PathArg.ofPath (path "/tmp/base/own-sticky/theirdir"), 0x80)) system
         |> Result.map fst
         |> shouldEqual (
             Error (
-                SyscallRefusal.RmDir (
-                    RemovalRefusal.Sticky (
-                        StickyRefusal.DarwinPrivilegedCaller (
-                            directory,
-                            inodeAt tree "/tmp/base/own-sticky/theirdir",
-                            standing
+                SyscallRefusal.UnlinkAt (
+                    UnlinkAtRefusal.Removal (
+                        RemovalRefusal.Sticky (
+                            StickyRefusal.DarwinPrivilegedCaller (
+                                directory,
+                                inodeAt tree "/tmp/base/own-sticky/theirdir",
+                                standing
+                            )
                         )
                     )
                 )

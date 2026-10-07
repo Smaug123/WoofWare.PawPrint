@@ -483,7 +483,7 @@ module TestPathCopyIn =
                 changing
                     $"mkdir 0o%o{mode}"
                     (fun path -> UnixNamespace.mkdir path mode)
-                    (fun path -> UnixNamespace.mkdirParsed path mode)
+                    (fun path -> UnixNamespace.mkdirParsed AtDirectory.CurrentDirectory path mode)
             )
 
         let flagsGen =
@@ -518,8 +518,8 @@ module TestPathCopyIn =
 
     [<Test>]
     let ``removing calls copy their path in and then answer as before`` () : unit =
-        holds (changing "unlink" UnixNamespace.unlink UnixNamespace.unlinkParsed)
-        holds (changing "rmdir" UnixNamespace.rmdir UnixNamespace.rmdirParsed)
+        holds (changing "unlink" UnixNamespace.unlink (UnixNamespace.unlinkParsed AtDirectory.CurrentDirectory))
+        holds (changing "rmdir" UnixNamespace.rmdir (UnixNamespace.rmdirParsed AtDirectory.CurrentDirectory))
 
     [<Test>]
     let ``attribute-changing calls copy their path in and then answer as before`` () : unit =
@@ -589,9 +589,11 @@ module TestPathCopyIn =
         // copy in is that errno, for every case that takes a path.
         let calls (path : PathArgumentBytes) : Syscall list =
             [
-                Syscall.MkDir (path, 0o777)
-                Syscall.Unlink path
-                Syscall.RmDir path
+                // AT_FDCWD on Linux, as for `FAccessAt` below.
+                Syscall.MkDirAt (-100, path, 0o777)
+                // AT_FDCWD on Linux, and Linux's AT_REMOVEDIR.
+                Syscall.UnlinkAt (-100, path, 0)
+                Syscall.UnlinkAt (-100, path, 0x200)
                 Syscall.ChDir path
                 Syscall.ChMod (path, 0o644)
                 Syscall.ChOwn (path, None, None)

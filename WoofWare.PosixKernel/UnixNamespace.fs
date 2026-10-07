@@ -1544,8 +1544,10 @@ module UnixNamespace =
 
         Ok (ReadDirectoryAnswer.Entry record, withPosition (DirectoryPosition.Cursor next) system)
 
-    /// `mkdir`, of a path this kernel has already copied in.
+    /// `mkdirat`, of a path this kernel has already copied in, starting from
+    /// `directory` if it is relative.
     let internal mkdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (path : UnixPath)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1559,12 +1561,7 @@ module UnixNamespace =
         // only thing that can reach past it, and only on Darwin — see
         // `MkDirRules.TrailingSeparator`.
         match
-            UnixPathResolution.resolvePathFull
-                AtDirectory.CurrentDirectory
-                SymlinkPolicy.NoFollowFinal
-                rules.TrailingSeparator
-                path
-                system
+            UnixPathResolution.resolvePathFull directory SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
         with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error refusal
@@ -1607,7 +1604,19 @@ module UnixNamespace =
             }
         )
 
-    /// `mkdir(2)`: bind a new directory at `path`.
+    let private mkdirFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
+        =
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path -> mkdirParsed directory path mode system
+
+    /// `mkdir(2)`: bind a new directory at `path`. It is `mkdirat` from
+    /// `AT_FDCWD`.
     ///
     /// `mode` is raw, exactly as the caller passed it, so what the created
     /// directory's permissions actually are depends on the umask and, on one
@@ -1625,12 +1634,30 @@ module UnixNamespace =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
         =
-        match UnixPathResolution.copyIn path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> mkdirParsed path mode system
+        mkdirFrom AtDirectory.CurrentDirectory path mode system
 
-    /// `unlink`, of a path this kernel has already copied in.
+    /// `mkdirat(2)`: `mkdir` of `path`, starting from `dirfd` if it is
+    /// relative; `mkdir` is this from `AT_FDCWD`.
+    ///
+    /// `dirfd` is raw, in this platform's own numbering. Everything `mkdir`
+    /// says holds, with one more step: once the path is copied in, a relative
+    /// path starts where `dirfd` says, as every `*at` call's does
+    /// (`UnixPathResolution.walkStart`). Nothing about `mode` is screened, so
+    /// it never decides an answer ahead of the path or `dirfd`.
+    let mkdirat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+        mkdirFrom (AtDirectory.decode flavour dirfd) path mode system
+
+    /// `unlinkat` without `AT_REMOVEDIR`, of a path this kernel has already
+    /// copied in, starting from `directory` if it is relative.
     let internal unlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RemovalRefusal>
@@ -1642,12 +1669,7 @@ module UnixNamespace =
         // only thing that can reach past a final symlink, and only on Darwin;
         // see `UnlinkRules.TrailingSeparator`.
         match
-            UnixPathResolution.resolvePathFull
-                AtDirectory.CurrentDirectory
-                SymlinkPolicy.NoFollowFinal
-                rules.TrailingSeparator
-                path
-                system
+            UnixPathResolution.resolvePathFull directory SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
         with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
@@ -1715,7 +1737,7 @@ module UnixNamespace =
         )
 
     /// `unlink(2)`: remove the name `path`, and the inode it named if nothing
-    /// else holds it.
+    /// else holds it. It is `unlinkat` from `AT_FDCWD` with no flags.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller, where this kernel will not
@@ -1731,10 +1753,12 @@ module UnixNamespace =
         =
         match UnixPathResolution.copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> unlinkParsed path system
+        | Ok path -> unlinkParsed AtDirectory.CurrentDirectory path system
 
-    /// `rmdir`, of a path this kernel has already copied in.
+    /// `unlinkat` with `AT_REMOVEDIR`, of a path this kernel has already
+    /// copied in, starting from `directory` if it is relative.
     let internal rmdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RemovalRefusal>
@@ -1746,12 +1770,7 @@ module UnixNamespace =
         // `rmdir("ld/")` removes the *link's target* there and is ENOTDIR on
         // Linux. See `RmDirRules.TrailingSeparator`.
         match
-            UnixPathResolution.resolvePathFull
-                AtDirectory.CurrentDirectory
-                SymlinkPolicy.NoFollowFinal
-                rules.TrailingSeparator
-                path
-                system
+            UnixPathResolution.resolvePathFull directory SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
         with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
@@ -1816,7 +1835,8 @@ module UnixNamespace =
                 }
         )
 
-    /// `rmdir(2)`: remove the empty directory `path` names.
+    /// `rmdir(2)`: remove the empty directory `path` names. It is `unlinkat`
+    /// from `AT_FDCWD` with `AT_REMOVEDIR`.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller, where this kernel will not
@@ -1832,7 +1852,47 @@ module UnixNamespace =
         =
         match UnixPathResolution.copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> rmdirParsed path system
+        | Ok path -> rmdirParsed AtDirectory.CurrentDirectory path system
+
+    /// `unlinkat(2)`: `unlink` of `path`, or with `AT_REMOVEDIR` `rmdir` of
+    /// it, starting from `dirfd` if it is relative; `unlink` and `rmdir` are
+    /// this from `AT_FDCWD`.
+    ///
+    /// `dirfd` and `flags` are raw, in this platform's own numbering. The flag
+    /// word is screened first, ahead of the path and `dirfd`
+    /// (`UnlinkAtRules.screen`). Then everything `unlink` or `rmdir` says
+    /// holds, with one more step: once the path is copied in, a relative path
+    /// starts where `dirfd` says, as every `*at` call's does
+    /// (`UnixPathResolution.walkStart`), and nothing else about the call
+    /// changes.
+    ///
+    /// Refuses a flag word carrying flags the flavour accepts and this library
+    /// does not model, and whatever `unlink` or `rmdir` refuses; see
+    /// `UnlinkAtRefusal`. A refusal changes nothing.
+    let unlinkat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, UnlinkAtRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match UnlinkAtRules.screen flavour flags with
+        | UnlinkAtScreen.Failed error -> Ok (SyscallAnswer.Failed error, system)
+        | UnlinkAtScreen.Unmodelled flags -> Error (UnlinkAtRefusal.UnmodelledFlags flags)
+        | UnlinkAtScreen.Screened kind ->
+
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path ->
+
+        let directory = AtDirectory.decode flavour dirfd
+
+        match kind with
+        | RemovalKind.Unlink -> unlinkParsed directory path system
+        | RemovalKind.RmDir -> rmdirParsed directory path system
+        |> Result.mapError UnlinkAtRefusal.Removal
 
     let private renameStopped
         (system : UnixSystem<'Task, 'Handler>)

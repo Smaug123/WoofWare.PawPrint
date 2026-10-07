@@ -533,13 +533,16 @@ module TestEpollCtl =
                         }),
                 0x0041u
                 "IPv4 TCP, established, peer alive",
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection),
+                withSocket
+                    SocketDomain.Inet
+                    SocketKind.Stream
+                    (SocketPhase.Established (connection, ConnectionEnd.Client)),
                 0x0104u
                 "IPv4 TCP, established pending report, peer alive",
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.EstablishedPendingReport connection),
                 0x0104u
                 "IPv4 TCP, established, peer closed",
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established orphan),
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (orphan, ConnectionEnd.Client)),
                 0x2145u
                 "IPv4 TCP, refused, pending delivery",
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending),
@@ -562,7 +565,11 @@ module TestEpollCtl =
         // The peer of the "peer alive" rows: a second end on the same
         // connection. Not itself a row, because it duplicates one.
         let _, system =
-            withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection) system
+            withSocket
+                SocketDomain.Inet
+                SocketKind.Stream
+                (SocketPhase.Established (connection, ConnectionEnd.Server))
+                system
 
         List.rev rows, system
 
@@ -739,6 +746,62 @@ module TestEpollCtl =
 
         ctl queueFd modify socketFd EpollEvents.In registered
         |> shouldEqual (Error EpollCtlRefusal.LevelTriggered)
+
+    /// Linux registers an `AF_UNIX` `SOCK_SEQPACKET` socket, but what an epoll
+    /// wait reports for one is not measured. The ADD is refused where it would
+    /// commit, and a call that would fail is answered with its failure.
+    [<Test>]
+    let ``an ADD of a Unix-domain seqpacket socket is refused at the commit, and answered where it would fail``
+        ()
+        : unit
+        =
+        let queueFd, system = withEpoll linux
+
+        let socketFd, system =
+            NewSocket.create SocketDomain.Unix SocketKind.SeqPacket SocketProtocol.Default system
+
+        let expected =
+            Error (EpollCtlRefusal.UnmeasuredSocketKind (socketFd, SocketDomain.Unix, SocketKind.SeqPacket))
+
+        for events in
+            [
+                edge
+                EpollEvents.In ||| edge
+                EpollEvents.Out ||| edge
+                EpollEvents.In ||| EpollEvents.Out ||| EpollEvents.RdHup ||| edge
+            ] do
+            ctl queueFd add socketFd events system |> shouldEqual expected
+
+        ctl queueFd add socketFd (EpollEvents.In ||| EpollEvents.Exclusive ||| EpollEvents.Pri ||| edge) system
+        |> shouldEqual (Ok (EpollCtlAnswer.Failed EpollCtlError.ExclusiveNotPermitted, system))
+
+        ctl queueFd modify socketFd (EpollEvents.In ||| edge) system
+        |> shouldEqual (Ok (EpollCtlAnswer.Failed EpollCtlError.NotRegistered, system))
+
+        ctl queueFd del socketFd 0u system
+        |> shouldEqual (Ok (EpollCtlAnswer.Failed EpollCtlError.NotRegistered, system))
+
+    /// Every socket `socket(2)` makes on Linux is answered or refused by an
+    /// edge-triggered ADD: never an exception, which is what a legal call must
+    /// not provoke.
+    [<Test>]
+    let ``every socket the kernel makes is answered or refused by an ADD`` () : unit =
+        for domain, kind, protocol in NewSocket.requests do
+            let queueFd, system = withEpoll linux
+
+            match NewSocket.tryCreate domain kind protocol system with
+            | None -> ()
+            | Some (socketFd, system) ->
+                for events in
+                    [
+                        edge
+                        EpollEvents.In ||| edge
+                        EpollEvents.Out ||| edge
+                        EpollEvents.In ||| EpollEvents.Out ||| EpollEvents.RdHup ||| edge
+                    ] do
+                    match ctl queueFd add socketFd events system with
+                    | Ok _
+                    | Error _ -> ()
 
     /// Linux registers one epoll instance in another; this library refuses to,
     /// at the point in the ladder where Linux runs its loop check, which is

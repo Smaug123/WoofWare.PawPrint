@@ -72,8 +72,11 @@ let system : UnixSystem<int, unit> =
     |> UnixBootImage.withCredentials "example" (Credentials.ofIds UserId.root (GroupId.parseOrFail "example" 0u) [])
     |> UnixBootImage.boot
 
+// mkdir(2) is mkdirat(2) from AT_FDCWD, in the flavour's own numbering.
+let atFdCwd : int = AtDirectory.atFdCwd SimulatedUnixFlavour.Linux
+
 let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
-    match UnixSystem.step 0 (Syscall.MkDir (path "/tmp", 0o755)) system with
+    match UnixSystem.step 0 (Syscall.MkDirAt (atFdCwd, path "/tmp", 0o755)) system with
     | Error refusal -> failwith $"this kernel will not say what happens: %O{refusal}"
     | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed result), system) ->
         printfn "mkdir returned %d" result
@@ -98,7 +101,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | --- | --- |
 | `UnixDescriptor` | `dup`, `dup2`, `dup3`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `lseek`, `flock`, `ftruncate`, `posix_fadvise`, `close`, `ioctl` (`FICLONE` and `FIONREAD`), `tcgetattr`, `geteuid`, `getegid`, `getgroups` |
 | `UnixPathResolution` | `stat`, `fstat`, `fstatat`, `chmod`, `fchmod`, `chown`, `lchown`, `fchown`, `futimens`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
-| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `unlink`, `rmdir`, `rename`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
+| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `unlink`, `rmdir`, `unlinkat`, `rename`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
 | `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
 | `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt` |
