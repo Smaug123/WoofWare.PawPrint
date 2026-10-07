@@ -2815,9 +2815,10 @@ module FileDescriptorRegistry =
     /// against this process's descriptor table alone, which holds every
     /// descriptor on a machine running this one process.
     ///
-    /// Whether a description is still referenced is not among them: what holds
-    /// one outside the table is not recorded here, so that is
-    /// `UnixSystem.checkInvariants`'s `UnreferencedDescription`.
+    /// Whether a description is still referenced, and whether its holds are
+    /// those the parks name, are not among them: the parks are the tasks',
+    /// which a registry does not hold, so those are `UnixSystem.checkInvariants`'s
+    /// `UnreferencedDescription` and `HoldCountMismatch`.
     let checkInvariants (registry : FileDescriptorRegistry) : FileDescriptorRegistryDefect list =
         let descriptions = OpenFileTable.descriptions registry.OpenFiles
 
