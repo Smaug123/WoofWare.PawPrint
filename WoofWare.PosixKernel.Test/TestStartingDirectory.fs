@@ -952,6 +952,287 @@ module TestStartingDirectory =
     let ``openat's descriptor limit falls where Darwin puts it`` () : unit =
         replayOpenAtLimit "WoofWare.PosixKernel.Test.openatLimit.darwin.txt" darwinUser
 
+    // ------------------------------------------------------------ mkdirat
+
+    let private renderedMkdirAt (result : Result<SyscallAnswer * UnixSystem<int, string>, PathRefusal>) : string =
+        match result with
+        | Ok (SyscallAnswer.Completed _, _) -> "ok"
+        | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+        | Error refusal -> $"refused: %s{PathRefusal.describe refusal}"
+
+    let private replayMkdirAt (envelope : Envelope) : unit =
+        let rows = atRows envelope |> Map.filter (fun (call, _, _) _ -> call = "mkdirat")
+        rows.Count |> shouldEqual (13 * 9)
+        let skipped = faccessatNotReplayed envelope
+
+        [
+            for KeyValue ((_, kind, path), expected) in rows do
+                if not (skipped.Contains kind) then
+                    match directoryArgument kind envelope with
+                    | None -> yield $"%s{kind} %s{path}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+                        // The probe's mode.
+                        let actual =
+                            UnixNamespace.mkdirat dirfd (pathArgument path envelope.Platform) 0o755 system
+                            |> renderedMkdirAt
+
+                        if actual <> expected then
+                            yield $"%s{kind} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``mkdirat answers every dirfd and path the probe tried as Linux root`` () : unit = replayMkdirAt linuxRoot
+
+    [<Test>]
+    let ``mkdirat answers every dirfd and path the probe tried as a Linux user`` () : unit = replayMkdirAt linuxUser
+
+    [<Test>]
+    let ``mkdirat answers every dirfd and path the probe tried on Darwin`` () : unit = replayMkdirAt darwinUser
+
+    /// `mkdirat-rules.c`'s cell, with the current directory at `cwd`: `/c/w`
+    /// holding `d/`, which holds a file `f`, a directory `sub/`, the links
+    /// `dang -> nx2`, `cyc -> cyc`, `lf -> f` and `ld -> sub`, an unwritable
+    /// `ro/` holding `e/`, and a set-group-ID `sg/`, all the caller's, made
+    /// under umask 022. As root, `sg`'s group is 4321, which is not the
+    /// caller's. On Darwin every entry has the group of the probe's scratch
+    /// directory, wheel, which its caller is not in.
+    let private mkdirAtCell (envelope : Envelope) (cwd : string) : UnixSystem<int, string> =
+        let owner =
+            match SimulatedUnixPlatform.flavour envelope.Platform with
+            | SimulatedUnixFlavour.Linux -> InodeOwner.ofProcess envelope.Credentials
+            | SimulatedUnixFlavour.Darwin ->
+                {
+                    User = envelope.Credentials.EffectiveUser
+                    Group = GroupId.parseOrFail context 0u
+                }
+
+        let setGroupIdOwner =
+            if envelope = linuxRoot then
+                Some
+                    { owner with
+                        Group = GroupId.parseOrFail context 4321u
+                    }
+            else
+                None
+
+        let file = SeedEntry.File (ImmutableArray<byte>.Empty, perms 0o644, None)
+
+        let link (target : string) =
+            SeedEntry.Symlink (SymlinkTarget.parseOrFail context target, None)
+
+        let dir (bits : int) (owner : InodeOwner option) (entries : (string * SeedEntry) list) =
+            SeedEntry.Directory (entries |> List.map (fun (n, e) -> name n, e) |> Map.ofList, perms bits, owner)
+
+        let seed =
+            Map.ofList
+                [
+                    name "c",
+                    dir
+                        0o777
+                        None
+                        [
+                            "w",
+                            dir
+                                0o755
+                                None
+                                [
+                                    "d",
+                                    dir
+                                        0o755
+                                        None
+                                        [
+                                            "f", file
+                                            "sub", dir 0o755 None []
+                                            "dang", link "nx2"
+                                            "cyc", link "cyc"
+                                            "lf", link "f"
+                                            "ld", link "sub"
+                                            "ro", dir 0o555 None [ "e", dir 0o755 None [] ]
+                                            "sg", dir 0o2775 setGroupIdOwner []
+                                        ]
+                                ]
+                        ]
+                ]
+
+        let image : UnixBootImage<int, string> =
+            UnixSystem.initial envelope.Platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials context envelope.Credentials
+
+        match
+            UnixBootImage.withFileSystemAndCurrentDirectory
+                epoch
+                owner
+                seed
+                (AbsoluteUnixPath.parseOrFail context cwd)
+                image
+        with
+        | Ok image -> UnixBootImage.boot image
+        | Error fault -> failwith $"%s{context}: could not build mkdirat-rules.c's cell: %A{fault}"
+
+    /// Bytes as `mkdirat-rules.c` prints a name: printable ASCII as itself,
+    /// any other byte as `\xNN`.
+    let private escapedBytes (bytes : byte seq) : string =
+        bytes
+        |> Seq.map (fun b ->
+            if b < 0x20uy || b >= 0x7fuy then
+                $"\\x%02x{b}"
+            else
+                string (char b)
+        )
+        |> String.concat ""
+
+    /// What `mkdirat-rules.c` prints for a call made in `before`: the errno,
+    /// or "ok" with the new directory's permission bits, whose group it took
+    /// (its directory's, the caller's, or "both" where they are one), and
+    /// where under the cell `/c` it was made.
+    let private renderedCreation
+        (before : UnixSystem<int, string>)
+        (result : Result<SyscallAnswer * UnixSystem<int, string>, PathRefusal>)
+        : string
+        =
+        match result with
+        | Error refusal -> $"refused: %s{PathRefusal.describe refusal}"
+        | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+        | Ok (SyscallAnswer.Completed _, after) ->
+
+        let vfs = after.Machine.FileSystem
+        let existed = VirtualFileSystem.inodes before.Machine.FileSystem
+
+        let created =
+            VirtualFileSystem.inodes vfs
+            |> Map.toList
+            |> List.filter (fun (inode, _) -> not (existed.ContainsKey inode))
+
+        match created with
+        | [ inode, made ] ->
+            let parent =
+                match made.Content with
+                | InodeContent.Directory content ->
+                    match VirtualFileSystem.tryGet content.Parent vfs with
+                    | Some parent -> parent
+                    | None ->
+                        failwith $"%s{context}: the new directory's parent %O{content.Parent} is not in the filesystem"
+                | other -> failwith $"%s{context}: mkdir made something other than a directory: %A{other}"
+
+            let egid = after.Process.Credentials.EffectiveGroup
+
+            let group =
+                if made.Owner.Group = parent.Owner.Group then
+                    if made.Owner.Group = egid then "both" else "parent"
+                elif made.Owner.Group = egid then
+                    "egid"
+                else
+                    "other"
+
+            let where =
+                match VirtualFileSystem.pathOfDirectory inode vfs with
+                | Some path ->
+                    // Relative to the cell, "/c/".
+                    AbsoluteUnixPath.toByteString path |> UnixByteString.toBytes |> Seq.skip 3
+                | None -> failwith $"%s{context}: the new directory %O{inode} has no path"
+
+            let mode = PermissionBits.toInt (Inode.permissions made)
+            $"ok:mode=%04o{mode}:gid=%s{group}:new=%s{escapedBytes where}"
+        | other -> failwith $"%s{context}: mkdir answered success and made %d{other.Length} inodes"
+
+    /// `mkdirat-rules.c`'s PATH, MODE and ORDER rows for one caller, end to
+    /// end. Each `at` cell is `mkdirat` from a descriptor on `d` with the
+    /// current directory at `w`, and each `plain` cell `mkdir` with the current
+    /// directory at `d`; the probe measured them equal in every row, so the
+    /// starting directory is the only thing a descriptor changes.
+    let private replayMkdirAtRules (resource : string) (envelope : Envelope) : unit =
+        let caller = $"caller=%d{UserId.toUInt32 envelope.Credentials.EffectiveUser}"
+
+        let rowsOf (table : string) =
+            probeLines resource table |> List.filter (fun row -> List.head row = caller)
+
+        let pairs = rowsOf "PATH" @ rowsOf "MODE"
+        let order = rowsOf "ORDER"
+        pairs.Length |> shouldEqual (26 + 12)
+        order.Length |> shouldEqual 9
+
+        let field (prefix : string) (cell : string) : string =
+            if cell.StartsWith prefix then
+                cell.Substring prefix.Length
+            else
+                failwith $"%s{context}: expected a %s{prefix} field, got %s{cell}"
+
+        let pathOf (label : string) : PathArgumentBytes =
+            match label with
+            | "NULL" -> PathArgumentBytes.Unreadable
+            | "empty" -> PathArg.ofText ""
+            | "xff3" -> PathArg.ofBytes [ 0xffuy ; 0xffuy ; 0xffuy ]
+            | "ro/xff3" -> PathArg.ofBytes [ byte 'r' ; byte 'o' ; byte '/' ; 0xffuy ; 0xffuy ; 0xffuy ]
+            | text -> PathArg.ofText text
+
+        let modeOf (cell : string) : int =
+            match field "mode=" cell with
+            | "ffff" -> 0xffff
+            | octal -> Convert.ToInt32 (octal, 8)
+
+        [
+            for row in pairs do
+                match row with
+                | [ _ ; label ; mode ; at ; plain ] ->
+                    let at = field "at=" at
+                    let plain = field "plain=" plain
+                    let path = pathOf label
+                    let mode = modeOf mode
+
+                    if at <> plain then
+                        yield $"%s{label} %d{mode}: the probe's mkdirat answered %s{at} and its mkdir %s{plain}"
+
+                    let fd, system = opened "d" (mkdirAtCell envelope "/c/w")
+
+                    let actual = UnixNamespace.mkdirat fd path mode system |> renderedCreation system
+
+                    if actual <> at then
+                        yield $"mkdirat %s{label} 0o%o{mode}: the probe answered %s{at}, this library %s{actual}"
+
+                    let system = mkdirAtCell envelope "/c/w/d"
+                    let actual = UnixNamespace.mkdir path mode system |> renderedCreation system
+
+                    if actual <> plain then
+                        yield $"mkdir %s{label} 0o%o{mode}: the probe answered %s{plain}, this library %s{actual}"
+                | other -> failwith $"%s{context}: a malformed row %A{other}"
+
+            for row in order do
+                match row with
+                | [ _ ; dirfd ; path ; mode ; at ] ->
+                    let system = mkdirAtCell envelope "/c/w"
+
+                    let fd, system =
+                        match field "dirfd=" dirfd with
+                        | "dir" -> opened "d" system
+                        | "file" -> opened "d/f" system
+                        | "minus1" -> -1, system
+                        | other -> failwith $"%s{context}: the probe has no dirfd %s{other}"
+
+                    let expected = field "at=" at
+
+                    let actual =
+                        UnixNamespace.mkdirat fd (pathOf (field "path=" path)) (modeOf mode) system
+                        |> renderedCreation system
+
+                    if actual <> expected then
+                        yield $"ORDER %s{dirfd} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+                | other -> failwith $"%s{context}: a malformed row %A{other}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``mkdirat decides as mkdir from its directory, as Linux root measured`` () : unit =
+        replayMkdirAtRules "WoofWare.PosixKernel.Test.mkdiratRules.linux.txt" linuxRoot
+
+    [<Test>]
+    let ``mkdirat decides as mkdir from its directory, as a Linux user measured`` () : unit =
+        replayMkdirAtRules "WoofWare.PosixKernel.Test.mkdiratRules.linux.txt" linuxUser
+
+    [<Test>]
+    let ``mkdirat decides as mkdir from its directory, as Darwin measured`` () : unit =
+        replayMkdirAtRules "WoofWare.PosixKernel.Test.mkdiratRules.darwin.txt" darwinUser
+
     [<Test>]
     let ``only Darwin's /dev/null is left unreplayed`` () : unit =
         envelopes
@@ -991,6 +1272,7 @@ module TestStartingDirectory =
                 "readlinkat"
                 "openat(O_RDONLY)"
                 "openat(O_CREAT)"
+                "mkdirat"
             ]
 
     /// The cells where a call not replayed end to end answers before, or
@@ -1478,3 +1760,63 @@ module TestStartingDirectory =
             |> shouldEqual (UnixNamespace.openPath flags argument 0o644 heldInCwd |> outcome)
 
         Check.One (config, Prop.forAll (Arb.fromGen openCase) property)
+
+    [<Test>]
+    let ``mkdir is mkdirat from AT_FDCWD, and mkdirat from a descriptor on a directory is mkdir from that directory``
+        ()
+        : unit
+        =
+        let mkdirCase =
+            gen {
+                let! case = walkCase
+                let! mode = Gen.elements [ 0o777 ; 0o755 ; 0o700 ; 0 ; 0o1777 ; 0o2777 ; 0o7777 ; 0xffff ]
+                return case, mode
+            }
+
+        let property
+            ((platform, credentials, cwd, path : UnixPath, _ : SymlinkPolicy, _ : TrailingSeparatorPolicy), mode : int)
+            : unit
+            =
+            let flavour = SimulatedUnixPlatform.flavour platform
+            let argument = PathArgumentBytes.Bytes (UnixPath.toByteString path)
+            let inCwd = walkSystem platform credentials cwd
+
+            UnixNamespace.mkdirat (atFdCwd flavour) argument mode inCwd
+            |> shouldEqual (UnixNamespace.mkdir argument mode inCwd)
+
+            // Opened as root, as the descriptor properties above do, and
+            // compared with mkdir from the same tree, whose unowned entries are
+            // root's, by the same caller.
+            let fd, held =
+                match
+                    Answered.openPath
+                        readOnly
+                        (UnixPath.parseOrFail context cwd)
+                        0
+                        (walkSystem platform Owners.root cwd)
+                with
+                | SyscallAnswer.Completed fd, system -> int fd, system
+                | other -> failwith $"%s{context}: open(%s{cwd}) did not open: %O{other}"
+
+            let withCaller (cwdInode : InodeNumber) =
+                { held with
+                    Process =
+                        { held.Process with
+                            Credentials = credentials
+                            CurrentDirectoryInode = cwdInode
+                        }
+                }
+
+            let atRoot = withCaller (VirtualFileSystem.root held.Machine.FileSystem)
+            let heldInCwd = withCaller held.Process.CurrentDirectoryInode
+
+            let outcome (result : Result<SyscallAnswer * UnixSystem<int, string>, PathRefusal>) =
+                match result with
+                | Ok (answer, system) -> Ok (answer, system.Machine.FileSystem)
+                | Error refusal -> Error refusal
+
+            UnixNamespace.mkdirat fd argument mode atRoot
+            |> outcome
+            |> shouldEqual (UnixNamespace.mkdir argument mode heldInCwd |> outcome)
+
+        Check.One (config, Prop.forAll (Arb.fromGen mkdirCase) property)
