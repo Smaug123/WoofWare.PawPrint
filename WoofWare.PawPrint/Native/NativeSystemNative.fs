@@ -5468,12 +5468,19 @@ module NativeSystemNative =
                 answer outcome (state.MapKernel (EmulatedKernel.withUnix unix))
 
         // `int32_t SystemNative_GetSockName(intptr_t socket, uint8_t* socketAddress,
-        // int32_t* socketAddressLen)` (pal_networking.c:1871).
-        | Some "SystemNative_GetSockName",
+        // int32_t* socketAddressLen)` (pal_networking.c:1871), and
+        // `SystemNative_GetPeerName` (pal_networking.c:1851), whose C is the same
+        // but for the syscall it makes.
+        | Some ("SystemNative_GetSockName" | "SystemNative_GetPeerName" as operation),
           [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ; ConcretePointer _ ],
           MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
-            let operation = "SystemNative_GetSockName"
             let fd = fdArgument operation instruction.Arguments.[0]
+
+            let syscall =
+                match operation with
+                | "SystemNative_GetSockName" -> UnixSocket.getsockname
+                | "SystemNative_GetPeerName" -> UnixSocket.getpeername
+                | other -> failwith $"%s{other}: matched the socket-name arm, which handles two entry points only"
 
             let addressArgument =
                 bufferPointerArgument operation "socketAddress" instruction.Arguments.[1]
@@ -5501,8 +5508,8 @@ module NativeSystemNative =
             let declaredLength =
                 BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
 
-            // The shim's own screen (`pal_networking.c:1873`), which answers a
-            // negative length before it calls `getsockname(2)`. The kernel never
+            // The shim's own screen (`pal_networking.c:1853` and `:1873`), which
+            // answers a negative length before it makes the syscall. The kernel never
             // sees one from here: Linux would answer EINVAL, and Darwin read the
             // word as a length of more than two gigabytes.
             if declaredLength < 0 then
@@ -5520,11 +5527,7 @@ module NativeSystemNative =
                 |> complete (UnixErrorPal.toPal error)
 
             match
-                UnixSocket.getsockname
-                    fd
-                    (BufferPointer.toUserBuffer addressArgument)
-                    (uint32 declaredLength)
-                    state.Kernel.System
+                syscall fd (BufferPointer.toUserBuffer addressArgument) (uint32 declaredLength) state.Kernel.System
             with
             | Error (GetSockNameRefusal.Buffer refusal) ->
                 failwith (BufferPointer.refusalMessage addressArgument refusal)
@@ -5544,7 +5547,7 @@ module NativeSystemNative =
                 failwith $"%s{operation}: fd %d{fd}: %s{GetSockNameRefusal.describe refusal} %s{reachedBy}"
             | Ok (GetSockNameAnswer.Failed (error, _lengthOverwritten)) ->
                 // `lengthOverwritten` is dropped, and that is what the shim does
-                // rather than an omission: it passes `getsockname(2)` a local
+                // rather than an omission: it passes the syscall a local
                 // `socklen_t` and copies it back to the caller only when the call
                 // succeeded, so Linux's store of the untruncated length lands on
                 // the shim's stack and dies there. A client speaking raw POSIX

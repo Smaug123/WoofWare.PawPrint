@@ -143,6 +143,8 @@
     <Compile Include="TestSockOptAgainstHost.fs" />
     <Compile Include="TestSocketErrorOption.fs" />
     <Compile Include="TestSocketErrorAgainstHost.fs" />
+    <Compile Include="TestPeerName.fs" />
+    <Compile Include="TestPeerNameAgainstHost.fs" />
     <Compile Include="TestUnconnectedSocketTransfer.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestEphemeralPorts.fs" />

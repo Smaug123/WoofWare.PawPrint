@@ -1425,6 +1425,27 @@ module TestImpureCases =
             AssertTerminalState = None
         }
 
+    /// `SocketPeerName.cs` under `platform`: `getpeername(2)` through the
+    /// managed `RemoteEndPoint` and by hand, which exits 0 for Linux's ENOTCONN
+    /// on a refused socket and 100 for Darwin's EINVAL
+    /// (`docs/probes/getpeername/getpeername.c`).
+    let private socketPeerNameCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketPeerName.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1589,6 +1610,8 @@ module TestImpureCases =
             socketConnectPortZeroCase SimulatedUnixPlatform.macOsArm64
             socketConnectDestinationsCase SimulatedUnixPlatform.linuxX64
             socketConnectDestinationsCase SimulatedUnixPlatform.macOsArm64
+            socketPeerNameCase SimulatedUnixPlatform.linuxX64
+            socketPeerNameCase SimulatedUnixPlatform.macOsArm64
             {
                 // A managed bind of a multicast and of the broadcast address under
                 // Darwin: EAFNOSUPPORT on a stream socket, EADDRNOTAVAIL for the

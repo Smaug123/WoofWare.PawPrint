@@ -162,13 +162,15 @@ module ListenRefusal =
         | ListenRefusal.EphemeralPortsExhausted (low, high) ->
             $"this socket has no address, so `listen(2)` binds it, and every port in the ephemeral range %d{low}-%d{high} is taken. Widen the range, or measure what a real kernel says here."
 
-/// What `getsockname(2)` reports about a socket's own address.
+/// What `getsockname(2)` reports about a socket's own address, or
+/// `getpeername(2)` about its peer's: the two share every rule past the choice
+/// of address.
 [<RequireQualifiedAccess>]
 type GetSockNameAnswer =
     /// The call succeeded: the kernel wrote `copiedOut` to the start of the
     /// caller's buffer and `reportedLength` to its length cell.
     ///
-    /// `copiedOut` is the socket's address as this platform's
+    /// `copiedOut` is the address as this platform's
     /// `struct sockaddr_in`, cut to the length the caller declared, and so
     /// possibly empty; `reportedLength` is that structure's *untruncated* size,
     /// which the declared length does not bound -- see the entry point.
@@ -182,14 +184,15 @@ type GetSockNameAnswer =
     /// where the divergence and its measurement are written down.
     | Failed of error : UnixError * lengthOverwritten : int option
 
-/// Why this kernel will not answer a `getsockname`.
+/// Why this kernel will not answer a `getsockname` or a `getpeername`.
 [<RequireQualifiedAccess>]
 type GetSockNameRefusal =
     /// The destination has no answer at the step the call reached.
     | Buffer of BufferRefusal
-    /// A socket in an address family whose local address this kernel does not
-    /// model. Not an errno: a real kernel in this family answers, and every
-    /// value this one could report would be invented.
+    /// A socket in an address family whose addresses this kernel does not
+    /// model: any such socket for `getsockname`, and a connected one for
+    /// `getpeername`. Not an errno: a real kernel in this family answers, and
+    /// every value this one could report would be invented.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
 
 [<RequireQualifiedAccess>]
@@ -201,7 +204,7 @@ module GetSockNameRefusal =
         match refusal with
         | GetSockNameRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | GetSockNameRefusal.UnmodelledDomain (socket, domain) ->
-            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a local address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
+            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a socket address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
 
 /// Why this kernel will not answer a `setsockopt(2)` or a `getsockopt(2)`.
 [<RequireQualifiedAccess>]
@@ -1330,6 +1333,59 @@ module UnixSocket =
 
         Ok (ListenAnswer.Listening bound.Endpoint, system)
 
+    /// The tail `getsockname(2)` and `getpeername(2)` share, once the call has
+    /// an IPv4 address to report: the declared length's screen, then the copy
+    /// out. Measured to agree between the two calls on both flavours
+    /// (`socket-address-length.c`, every row it asks both).
+    let private reportInternetAddress<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (endpoint : InternetEndpoint)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<GetSockNameAnswer, GetSockNameRefusal>
+        =
+        // Measured (`socket-address-length.c`): Linux's `move_addr_to_user`
+        // reads the cell as an `int` and answers EINVAL for a negative one,
+        // whatever the destination, and stores nothing in the cell.
+        if
+            SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
+            && int declaredLength < 0
+        then
+            Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
+        else
+
+        let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
+
+        // A call that may write nothing never consults the destination at all,
+        // so a declared length of zero succeeds through an address naming no
+        // storage -- measured on both flavours, and on both it still reports the
+        // full 16. There is no up-front address screen to fail either: that is
+        // why an `Addressless` destination is refused at the transfer below and
+        // not here.
+        let reported () : Result<GetSockNameAnswer, GetSockNameRefusal> =
+            Ok (
+                GetSockNameAnswer.Reported (
+                    SimulatedUnixPlatform.copyOutInternetSockaddr system.Machine.UnixPlatform endpoint declaredLength,
+                    reportedLength
+                )
+            )
+
+        if declaredLength = 0u then
+            reported ()
+        else
+
+        match destination with
+        | UserBuffer.Opaque -> Error (GetSockNameRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Unmapped _ ->
+            let overwritten =
+                match SimulatedUnixPlatform.getSockNameFaultLength system.Machine.UnixPlatform with
+                | GetSockNameFaultLength.Untouched -> None
+                | GetSockNameFaultLength.AlreadyReported -> Some reportedLength
+
+            Ok (GetSockNameAnswer.Failed (UnixError.EFAULT, overwritten))
+        | UserBuffer.Mapped -> reported ()
+
     /// `getsockname(2)`: report the local address the socket `fd` names.
     ///
     /// Answers the bytes the kernel copies out, laid out for the platform, and
@@ -1379,18 +1435,6 @@ module UnixSocket =
         | SocketDomain.Unix -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
         | SocketDomain.Inet ->
 
-        // Measured (`socket-address-length.c`): Linux's `move_addr_to_user`
-        // reads the cell as an `int` and answers EINVAL for a negative one,
-        // whatever the destination, and stores nothing in the cell.
-        if
-            SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
-            && int declaredLength < 0
-        then
-            Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
-        else
-
-        let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
-
         // An unbound socket reports its family and nothing else: the wildcard
         // address and port zero. Measured on both flavours -- a fresh AF_INET
         // socket reads back sixteen bytes whose only content is the family, and
@@ -1400,35 +1444,85 @@ module UnixSocket =
             | Some binding -> binding.Endpoint
             | None -> InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us
 
-        // A call that may write nothing never consults the destination at all,
-        // so a declared length of zero succeeds through an address naming no
-        // storage -- measured on both flavours, and on both it still reports the
-        // full 16. There is no up-front address screen to fail either: that is
-        // why an `Addressless` destination is refused at the transfer below and
-        // not here.
-        let reported () : Result<GetSockNameAnswer, GetSockNameRefusal> =
-            Ok (
-                GetSockNameAnswer.Reported (
-                    SimulatedUnixPlatform.copyOutInternetSockaddr system.Machine.UnixPlatform endpoint declaredLength,
-                    reportedLength
-                )
-            )
+        reportInternetAddress endpoint destination declaredLength system
 
-        if declaredLength = 0u then
-            reported ()
-        else
+    /// `getpeername(2)`: report the address of the peer the socket `fd` is
+    /// connected to.
+    ///
+    /// A connected stream socket reports the other end of its connection, and
+    /// keeps reporting it after that end closes; a connected datagram socket
+    /// reports its default peer. The answer and its length rules are exactly
+    /// `getsockname`'s, including that `declaredLength` does not bound what is
+    /// reported.
+    ///
+    /// A socket with no peer answers `ENOTCONN` -- one never connected, a
+    /// listener, and a datagram socket connected to port 0, which Linux allows
+    /// -- in every address family, and before the declared length is judged.
+    /// A refused connect leaves no peer either: `ENOTCONN` on Linux, and
+    /// `EINVAL` on Darwin, which answers that for any socket that can neither
+    /// send nor receive.
+    ///
+    /// A connect this kernel answered `EINPROGRESS` has already completed, so
+    /// the peer is reported at once. Darwin answers `ENOTCONN` there until the
+    /// loopback handshake lands, which a deterministic kernel need not wait for.
+    ///
+    /// Changes nothing and returns no system: a `getpeername` reads.
+    let getpeername<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<GetSockNameAnswer, GetSockNameRefusal>
+        =
+        // EBADF and ENOTSOCK come first, the destination untouched, exactly as
+        // for `getsockname`: measured in `socket-address-length.c`, O1 and O2.
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | None -> Ok (GetSockNameAnswer.Failed (UnixError.EBADF, None))
+        | Some target ->
 
-        match destination with
-        | UserBuffer.Opaque -> Error (GetSockNameRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
-        | UserBuffer.Addressless -> Error (GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
-        | UserBuffer.Unmapped _ ->
-            let overwritten =
-                match SimulatedUnixPlatform.getSockNameFaultLength system.Machine.UnixPlatform with
-                | GetSockNameFaultLength.Untouched -> None
-                | GetSockNameFaultLength.AlreadyReported -> Some reportedLength
+        match target with
+        | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
+        | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Pipe _
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
+        | OpenFileTarget.Socket socketId ->
 
-            Ok (GetSockNameAnswer.Failed (UnixError.EFAULT, overwritten))
-        | UserBuffer.Mapped -> reported ()
+        let socket = UnixMachineState.socket socketId system.Machine
+        let notConnected = Ok (GetSockNameAnswer.Failed (UnixError.ENOTCONN, None))
+
+        let reportPeer (peer : InternetEndpoint) : Result<GetSockNameAnswer, GetSockNameRefusal> =
+            match socket.Domain with
+            | SocketDomain.Inet6
+            | SocketDomain.Unix -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
+            | SocketDomain.Inet -> reportInternetAddress peer destination declaredLength system
+
+        // Measured in `docs/probes/getpeername/getpeername.c` on both flavours.
+        match socket.Phase with
+        | SocketPhase.Idle
+        | SocketPhase.Listening _ -> notConnected
+        | SocketPhase.Refused _ ->
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> notConnected
+            | SimulatedUnixFlavour.Darwin -> Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
+        // Linux's `inet_getname` reports no peer whose port is 0, and Darwin
+        // never connects a datagram socket to one.
+        | SocketPhase.DatagramPeer peer when peer.Port = 0us -> notConnected
+        | SocketPhase.DatagramPeer peer -> reportPeer peer
+        | SocketPhase.Established connectionId
+        | SocketPhase.EstablishedPendingReport connectionId ->
+            let connection = UnixMachineState.connection connectionId system.Machine
+
+            // The socket's own address says which end it is: a connecting socket
+            // is bound at the connection's client address, an accepted one at
+            // its server address. Where the two coincide, either is the peer.
+            match socket.Binding with
+            | Some binding when binding.Endpoint = connection.ClientAddress -> reportPeer connection.ServerAddress
+            | Some binding when binding.Endpoint = connection.ServerAddress -> reportPeer connection.ClientAddress
+            | binding ->
+                failwith
+                    $"UnixSocket.getpeername: socket %O{socketId} holds connection %O{connectionId} between %s{InternetEndpoint.toString connection.ClientAddress} and %s{InternetEndpoint.toString connection.ServerAddress}, but is bound at %A{binding}, which is neither end (this is a bug in this library, or in a caller that assembled the state by hand)."
 
     /// `sizeof(int)`: what both kernels copy in for `SO_REUSEADDR` whatever
     /// length the caller declares, and the most they copy out of either option.
