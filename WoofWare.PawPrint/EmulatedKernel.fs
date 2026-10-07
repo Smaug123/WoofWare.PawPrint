@@ -1963,6 +1963,16 @@ type KernelConfig =
         /// free space. Only `None` is admitted on Linux, which reads nothing
         /// of it. See `UnixBootImage.withTcpSendSpace`.
         TcpSendSpace : int option
+        /// The TCP receive buffer sysctl — Darwin's `net.inet.tcp.recvspace`,
+        /// Linux's `net.ipv4.tcp_rmem` default — or `None` for the flavour's
+        /// measured default (131072 on both). A connection's receive buffer is
+        /// derived from it. See `UnixBootImage.withTcpReceiveSpace`.
+        TcpReceiveSpace : int option
+        /// Linux's `net.ipv4.tcp_wmem` maximum, the size a connection's send
+        /// buffer autotunes to, or `None` for the measured default (4194304).
+        /// Only `None` is admitted on Darwin, which reads nothing of it. See
+        /// `UnixBootImage.withTcpSendSpaceMax`.
+        TcpSendSpaceMax : int option
         /// Linux's `fs.protected_symlinks`, `fs.protected_regular`,
         /// `fs.protected_fifos` and `fs.protected_hardlinks` sysctls, which forbid
         /// following another user's symbolic link, or opening another user's file
@@ -2050,6 +2060,8 @@ type KernelConfig =
             EphemeralPortRange = None
             SoMaxConn = None
             TcpSendSpace = None
+            TcpReceiveSpace = None
+            TcpSendSpaceMax = None
             ProtectedFiles = ProtectedFiles.off
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
@@ -2091,7 +2103,7 @@ module KernelConfig =
     /// machine, is written just after boot, before the process runs anything.
     ///
     /// The platform is the constructor's argument rather than a setter's,
-    /// because the fields it fixes (`SoMaxConn`'s, `TcpSendSpace`'s and `Mount`'s
+    /// because the fields it fixes (`SoMaxConn`'s, the TCP buffer sysctls' and `Mount`'s
     /// defaults, the limits the current directory is admitted under) would
     /// otherwise be stale for whichever platform was set last.
     let toKernel (config : KernelConfig) : EmulatedKernel =
@@ -2189,6 +2201,8 @@ module KernelConfig =
         )
         |> machine (UnixBootImage.withSoMaxConn config.SoMaxConn)
         |> machine (UnixBootImage.withTcpSendSpace config.TcpSendSpace)
+        |> machine (UnixBootImage.withTcpReceiveSpace config.TcpReceiveSpace)
+        |> machine (UnixBootImage.withTcpSendSpaceMax config.TcpSendSpaceMax)
         |> machine (UnixBootImage.withProtectedFiles "KernelConfig.ProtectedFiles" config.ProtectedFiles)
         |> machine (UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> launch umaskOrFail
