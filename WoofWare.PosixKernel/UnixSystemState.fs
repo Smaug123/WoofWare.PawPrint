@@ -72,13 +72,27 @@ type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
 /// with the machine's open file descriptions it names.
 [<RequireQualifiedAccess>]
 module internal UnixSystemState =
+    /// Whether the process's descriptor table is every descriptor on the
+    /// machine: whether no other process is on it.
+    let census<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : DescriptorCensus
+        =
+        let others =
+            Set.remove system.Process.ProcessId (ProcessIdTable.live system.Machine.ProcessIds)
+
+        if Set.isEmpty others then
+            DescriptorCensus.Complete
+        else
+            DescriptorCensus.OneProcessOf system.Process.ProcessId
+
     /// The process's descriptor table, read against the machine's open file
     /// descriptions.
     let fileDescriptors<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : FileDescriptorRegistry
         =
-        FileDescriptorRegistry.ofTables system.Process.FileDescriptors system.Machine.OpenFiles
+        FileDescriptorRegistry.ofTables (census system) system.Process.FileDescriptors system.Machine.OpenFiles
 
     /// `system` with `registry`'s descriptor table as the process's, and its open
     /// file descriptions as the machine's.

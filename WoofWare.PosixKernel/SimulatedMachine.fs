@@ -366,7 +366,10 @@ module SimulatedMachine =
         let tableDefects =
             slots
             |> List.collect (fun (processId, slot) ->
-                FileDescriptorRegistry.ofTables slot.Process.FileDescriptors machine.Machine.OpenFiles
+                FileDescriptorRegistry.ofTables
+                    (DescriptorCensus.OneProcessOf processId)
+                    slot.Process.FileDescriptors
+                    machine.Machine.OpenFiles
                 |> FileDescriptorRegistry.checkDescriptorTableInvariants slot.Process.ProcessId
                 |> List.map (fun defect -> SimulatedMachineDefect.DescriptorTable (processId, defect))
             )
