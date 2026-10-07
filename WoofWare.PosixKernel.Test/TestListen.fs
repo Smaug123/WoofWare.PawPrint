@@ -363,7 +363,8 @@ module TestListen =
         let phases =
             [
                 SocketPhase.EstablishedPendingReport (ConnectionId 7L)
-                SocketPhase.Established (ConnectionId 7L)
+                SocketPhase.Established (ConnectionId 7L, ConnectionEnd.Client)
+                SocketPhase.Established (ConnectionId 7L, ConnectionEnd.Server)
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
                 SocketPhase.DatagramPeer (loopback 9000us)

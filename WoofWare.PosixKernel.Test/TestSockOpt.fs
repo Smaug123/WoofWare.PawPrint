@@ -429,7 +429,8 @@ module TestSockOpt =
                         Drained = false
                     },
                 false
-                SocketPhase.Established (ConnectionId 0L), false
+                SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client), false
+                SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Server), false
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L), false
                 SocketPhase.DatagramPeer (loopback 5000us), false
                 SocketPhase.Refused RefusalError.Pending, true
