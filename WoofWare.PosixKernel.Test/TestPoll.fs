@@ -118,7 +118,7 @@ module TestPoll =
             }
 
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         fd,
         { system with
@@ -127,11 +127,8 @@ module TestPoll =
                     Sockets = Map.add socketId socket system.Machine.Sockets
                     NextSocketId = SocketId (raw + 1L)
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     /// An idle IPv4 stream socket.
     let private idleSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
@@ -143,15 +140,9 @@ module TestPoll =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) accessMode system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile (InodeNumber 1L) accessMode (UnixSystemState.fileDescriptors system)
 
-        fd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        fd, UnixSystemState.withFileDescriptors registry system
 
     let private peer : InternetEndpoint =
         {
@@ -516,15 +507,9 @@ module TestPoll =
     [<Test>]
     let ``an entry naming an epoll instance is refused`` () : unit =
         let queueFd, registry =
-            FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors linux)
 
-        let system =
-            { linux with
-                Process =
-                    { linux.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry linux
 
         pollNow [ entry queueFd everything ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmodelledTarget queueFd))
@@ -541,17 +526,11 @@ module TestPoll =
     [<Test>]
     let ``the refusal names the first unmeasured entry in list order`` () : unit =
         let firstEpoll, registry =
-            FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors linux)
 
         let secondEpoll, registry = FileDescriptorRegistry.createEpoll registry
 
-        let system =
-            { linux with
-                Process =
-                    { linux.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry linux
 
         pollNow [ entry firstEpoll everything ; entry secondEpoll everything ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmodelledTarget firstEpoll))

@@ -502,7 +502,9 @@ module TestPipeAgainstHost =
                                 if bothOpen then
                                     let pipeId =
                                         match
-                                            FileDescriptorRegistry.tryFindTarget modelFd system.Process.FileDescriptors
+                                            FileDescriptorRegistry.tryFindTarget
+                                                modelFd
+                                                (UnixSystemState.fileDescriptors system)
                                         with
                                         | Some (OpenFileTarget.Pipe (pipeId, _)) -> pipeId
                                         | other -> failwith $"%s{where}: fd %d{modelFd} is %A{other}"
@@ -526,7 +528,7 @@ module TestPipeAgainstHost =
                                             $"%s{where}: %O{pipeEnd} end: model ready %b{modelReady}, host %b{hostReady}"
                             | SimulatedUnixFlavour.Linux ->
                                 let id =
-                                    FileDescriptorRegistry.tryFindId modelFd system.Process.FileDescriptors
+                                    FileDescriptorRegistry.tryFindId modelFd (UnixSystemState.fileDescriptors system)
                                     |> Option.get
 
                                 let model = int16 (LinuxReadiness.ofDescription id system) &&& (0x1c7s ||| 0x18s)

@@ -43,20 +43,14 @@ module TestUnixTaskLifecycle =
             | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
             | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
 
-        let fd, registry = create system.Process.FileDescriptors
+        let fd, registry = create (UnixSystemState.fileDescriptors system)
 
         let id =
             match FileDescriptorRegistry.tryFindWithId fd registry with
             | Some (id, _) -> id
             | None -> failwith $"fd %d{fd} names no description"
 
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        },
-        id
+        UnixSystemState.withFileDescriptors registry system, id
 
     let private flockOn (queue : OpenFileDescriptionId) : ParkedSyscall =
         ParkedSyscall.Flock

@@ -25,6 +25,49 @@ type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
             Leader : 'Task
         }
 
+/// Reading and writing a `UnixSystem`'s process's descriptor table together
+/// with the machine's open file descriptions it names.
+[<RequireQualifiedAccess>]
+module internal UnixSystemState =
+    /// The process's descriptor table, read against the machine's open file
+    /// descriptions.
+    let fileDescriptors<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileDescriptorRegistry
+        =
+        FileDescriptorRegistry.ofTables system.Process.FileDescriptors system.Machine.OpenFiles
+
+    /// `system` with `registry`'s descriptor table as the process's, and its open
+    /// file descriptions as the machine's.
+    let withFileDescriptors<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (registry : FileDescriptorRegistry)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        { system with
+            Machine =
+                { system.Machine with
+                    OpenFiles = FileDescriptorRegistry.openFiles registry
+                }
+            Process =
+                { system.Process with
+                    FileDescriptors = FileDescriptorRegistry.descriptorTable registry
+                }
+        }
+
+    /// `system` with its machine's open file descriptions rewritten by `f`.
+    let mapOpenFiles<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (f : OpenFileTable -> OpenFileTable)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        { system with
+            Machine =
+                { system.Machine with
+                    OpenFiles = f system.Machine.OpenFiles
+                }
+        }
+
 /// A simulated process and the machine it runs on before either has run: what
 /// `UnixSystem.initial` makes, which the setters in `UnixBootImage` configure
 /// and `UnixBootImage.boot` turns into the `UnixSystem` that syscalls take.

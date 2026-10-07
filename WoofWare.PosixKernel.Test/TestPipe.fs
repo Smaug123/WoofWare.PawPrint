@@ -70,7 +70,7 @@ module TestPipe =
 
     /// The pipe descriptor `fd` names an end of.
     let private pipeOf (fd : int) (system : UnixSystem<int, string>) : PipeId =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Pipe (pipeId, _)) -> pipeId
         | other -> failwith $"fd %d{fd} is %A{other}, not a pipe end"
 
@@ -92,7 +92,7 @@ module TestPipe =
         | [] -> ()
         | defects -> failwith $"%s{context}: %A{defects}"
 
-        FileDescriptorRegistry.assertInvariants context system.Process.FileDescriptors
+        FileDescriptorRegistry.assertInvariants context (UnixSystemState.fileDescriptors system)
         |> ignore
 
     let private payload (start : int) (count : int) : ImmutableArray<byte> =
@@ -449,7 +449,8 @@ module TestPipe =
                         // checked here and not kept: the sequence carries on
                         // from the system it was made in.
                         let writer =
-                            FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                            FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
+                            |> Option.get
 
                         let parked =
                             {
@@ -544,7 +545,8 @@ module TestPipe =
                             {
                                 Reader =
                                     SleepTarget.Waiting (
-                                        FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get,
+                                        FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
+                                        |> Option.get,
                                         fd
                                     )
                                 Buffer = buffer
@@ -631,7 +633,8 @@ module TestPipe =
                     | Some (pipeEnd, _) ->
 
                     let id =
-                        FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                        FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
+                        |> Option.get
 
                     let expected =
                         match pipeEnd with
@@ -1260,7 +1263,8 @@ module TestPipe =
 
         let level fd system =
             let id =
-                FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
+                |> Option.get
 
             LinuxReadiness.ofDescription id system
 

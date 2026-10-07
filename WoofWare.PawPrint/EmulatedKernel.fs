@@ -736,7 +736,7 @@ type EmulatedKernel =
     /// write, in the order it wrote them: the kernel's deliveries to the pipes
     /// PawPrint drains, labelled by stream.
     member this.OutputLog : ImmutableArray<OutputLogEntry> =
-        StandardStreams.outputLog (UnixSystem.delivered this.System)
+        StandardStreams.outputLog (UnixSystem.processId this.System) (UnixSystem.delivered this.System)
 
     /// Every task the kernel knows about, by the thread that is it.
     ///

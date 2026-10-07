@@ -38,7 +38,7 @@ module TestBlockingAccept =
         InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
 
     let private idOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | Some (id, _) -> id
         | None -> failwith $"fd %d{fd} names no description"
 
@@ -82,7 +82,7 @@ module TestBlockingAccept =
         | other -> failwith $"connecting to port %d{port}: %A{other}"
 
     let private queueOf (fd : int) (system : UnixSystem<int, string>) : ConnectionId list =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
             match (UnixMachineState.socket socketId system.Machine).Phase with
             | SocketPhase.Listening listenState -> listenState.Queue
@@ -616,7 +616,7 @@ module TestBlockingAccept =
         awake [ 1 ] system |> shouldEqual []
         UnixSystem.checkInvariants system |> shouldEqual []
 
-        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+        OpenFileTable.descriptions system.Machine.OpenFiles
         |> Map.containsKey listener
         |> shouldEqual true
 
@@ -624,11 +624,11 @@ module TestBlockingAccept =
         awake [ 1 ] system |> shouldEqual [ 1 ]
         let accepted, system = finishWithConnection 1 system
 
-        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+        OpenFileTable.descriptions system.Machine.OpenFiles
         |> Map.containsKey listener
         |> shouldEqual false
 
-        FileDescriptorRegistry.tryFind accepted system.Process.FileDescriptors
+        FileDescriptorRegistry.tryFind accepted (UnixSystemState.fileDescriptors system)
         |> Option.isSome
         |> shouldEqual true
 
@@ -655,7 +655,7 @@ module TestBlockingAccept =
         let system = connectTo 5000us system
         let _, system = finishWithConnection 1 system
 
-        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+        OpenFileTable.descriptions system.Machine.OpenFiles
         |> Map.containsKey listener
         |> shouldEqual true
 
@@ -757,7 +757,7 @@ module TestBlockingAccept =
             UnixSystem.checkInvariants system |> shouldEqual []
             awake parked system |> shouldEqual parked
 
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            OpenFileTable.descriptions system.Machine.OpenFiles
             |> Map.containsKey listener
             |> shouldEqual keepDup
 
@@ -804,7 +804,7 @@ module TestBlockingAccept =
         let other, system = dupOf fd system
 
         let socket =
-            match FileDescriptorRegistry.tryFindTarget other system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget other (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | target -> failwith $"fd %d{other} names %A{target}, not a socket"
 
@@ -1006,7 +1006,7 @@ module TestBlockingAccept =
                     Linux = linux
                     Restart = restart
                     Fds =
-                        FileDescriptorRegistry.fds system.Process.FileDescriptors
+                        FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors system)
                         |> Map.map (fun _ id -> id = listenerId)
                     Parks = Map.empty
                     NextOrdinal = 0
@@ -1497,7 +1497,7 @@ module TestBlockingAccept =
     /// `system` with the listener `fd` names marked drained, as only a Darwin
     /// close marks one.
     let private drainedByHand (fd : int) (system : UnixSystem<int, string>) : SocketId * UnixSystem<int, string> =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId system.Machine
 
@@ -1602,7 +1602,7 @@ module TestBlockingAccept =
             let fd, system = world platform
 
             let socketId =
-                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
                 | Some (OpenFileTarget.Socket socketId) -> socketId
                 | other -> failwith $"expected a socket, got %A{other}"
 

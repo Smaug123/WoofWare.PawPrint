@@ -86,7 +86,7 @@ module TestSocketWait =
             }
 
         let fd, registry =
-            FileDescriptorRegistry.createSocket (SocketId 0L) system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket (SocketId 0L) (UnixSystemState.fileDescriptors system)
 
         fd,
         { system with
@@ -95,11 +95,8 @@ module TestSocketWait =
                     Sockets = Map.add (SocketId 0L) socket system.Machine.Sockets
                     NextSocketId = SocketId 1L
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     /// How a wait with nothing to deliver ended up.
     [<RequireQualifiedAccess>]
@@ -179,15 +176,12 @@ module TestSocketWait =
             let system = systemOn platform
 
             let fileFd, registry =
-                FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
+                FileDescriptorRegistry.openFile
+                    (InodeNumber 1L)
+                    FileAccessMode.ReadOnly
+                    (UnixSystemState.fileDescriptors system)
 
-            let system =
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
+            let system = UnixSystemState.withFileDescriptors registry system
 
             let socketFd, system = withSocket system
 

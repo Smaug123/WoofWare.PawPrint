@@ -783,7 +783,7 @@ module TestKeventMeasured =
                         FileDescriptorRegistry.openFile
                             (InodeNumber 1L)
                             FileAccessMode.ReadWrite
-                            system.Process.FileDescriptors
+                            (UnixSystemState.fileDescriptors system)
 
                     fd, KeventWorld.withRegistry registry system
                 )
@@ -791,7 +791,7 @@ module TestKeventMeasured =
             let directory =
                 s.Fresh (fun system ->
                     let fd, registry =
-                        FileDescriptorRegistry.openDirectory (InodeNumber 1L) system.Process.FileDescriptors
+                        FileDescriptorRegistry.openDirectory (InodeNumber 1L) (UnixSystemState.fileDescriptors system)
 
                     fd, KeventWorld.withRegistry registry system
                 )

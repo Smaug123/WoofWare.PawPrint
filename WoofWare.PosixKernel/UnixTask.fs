@@ -579,7 +579,7 @@ module UnixTaskTable =
     /// Record that `name` is no longer parked: its syscall has finished.
     ///
     /// The table alone: a description only this park held is left in the
-    /// descriptor table, where `UnixSystem.checkInvariants` reports it as a
+    /// open file table, where `UnixSystem.checkInvariants` reports it as a
     /// leak. The syscalls' own finishing calls end a park and release what it
     /// held.
     let internal unpark<'Task when 'Task : comparison>

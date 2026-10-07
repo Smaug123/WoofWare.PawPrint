@@ -51,7 +51,7 @@ module TestSuppliedPipe =
 
     /// What `poll` reports for descriptor 0 on Linux.
     let private linuxLevel (system : UnixSystem<int, string>) : uint32 =
-        match FileDescriptorRegistry.tryFindId 0 system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindId 0 (UnixSystemState.fileDescriptors system) with
         | Some id -> LinuxReadiness.ofDescription id system
         | None -> failwith "descriptor 0 is not open"
 

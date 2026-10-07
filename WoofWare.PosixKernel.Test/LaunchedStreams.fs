@@ -19,10 +19,11 @@ module LaunchedStreams =
     /// Descriptors 0, 1 and 2, each onto a pipe of its own, numbered as
     /// `UnixSystem.initial` numbers them.
     let registry : FileDescriptorRegistry =
-        [ 0 ; 1 ; 2 ]
-        |> List.map (fun fd -> fd, (PipeId (int64 fd), endOf fd))
-        |> Map.ofList
-        |> FileDescriptorRegistry.ofLaunchedPipes
+        FileDescriptorRegistry.ofLaunchedPipes
+            ([ 0 ; 1 ; 2 ]
+             |> List.map (fun fd -> fd, (PipeId (int64 fd), endOf fd))
+             |> Map.ofList)
+            OpenFileTable.empty
 
     /// The description `registry` gives descriptor `fd`. The access mode is
     /// derived from the pipe end here rather than passed in, so that a test

@@ -568,7 +568,7 @@ module UnixDescriptor =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, DescriptorLimitRefusal>
         =
-        let registry = system.Process.FileDescriptors
+        let registry = UnixSystemState.fileDescriptors system
 
         // Measured (`fcntl-dup.c`, LIMIT rows): EBADF ahead of the allocation.
         match FileDescriptorRegistry.tryFindId fd registry with
@@ -583,15 +583,7 @@ module UnixDescriptor =
 
         match FileDescriptorRegistry.dup fd registry with
         | Ok (newFd, registry) ->
-            Ok (
-                SyscallAnswer.Completed (int64 newFd),
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
-            )
+            Ok (SyscallAnswer.Completed (int64 newFd), UnixSystemState.withFileDescriptors registry system)
         | Error FileDescriptorDupError.BadFd ->
             failwith
                 $"UnixDescriptor.dup: fd %d{fd} was open a moment ago and is not now (this is a bug in this library)."
@@ -636,7 +628,8 @@ module UnixDescriptor =
         // `lseek(f, 1, 99)` from INT64_MAX = EINVAL on both (whence first).
         let whenceValid = whence >= seekSet && whence <= seekMax
 
-        let target = FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors
+        let target =
+            FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system)
 
         let descriptorFault : DescriptorFault option =
             match target with
@@ -875,18 +868,13 @@ module UnixDescriptor =
                     else
                         DirectoryPosition.Unenumerable position
 
-                FileDescriptorRegistry.setDirectoryPosition fd directoryPosition system.Process.FileDescriptors
-            | _ -> FileDescriptorRegistry.setOffset fd position system.Process.FileDescriptors
+                FileDescriptorRegistry.setDirectoryPosition
+                    fd
+                    directoryPosition
+                    (UnixSystemState.fileDescriptors system)
+            | _ -> FileDescriptorRegistry.setOffset fd position (UnixSystemState.fileDescriptors system)
 
-        Ok (
-            SyscallAnswer.Completed position,
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
-        )
+        Ok (SyscallAnswer.Completed position, UnixSystemState.withFileDescriptors registry system)
 
     /// Commit a truncation of the regular file `inode` to `length`, together with
     /// the `mtime`, `ctime` and set-ID bits it moves.
@@ -939,7 +927,7 @@ module UnixDescriptor =
             Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
         else
 
-        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some description ->
 
@@ -974,7 +962,7 @@ module UnixDescriptor =
         else
 
         let id =
-            match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
             | Some id -> id
             | None ->
                 failwith
@@ -989,20 +977,15 @@ module UnixDescriptor =
             | SimulatedUnixFlavour.Linux -> SyscallAnswer.Completed 0L, system
             | SimulatedUnixFlavour.Darwin ->
                 SyscallAnswer.Completed 0L,
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors =
-                                FileDescriptorRegistry.mapStatus
-                                    id
-                                    (fun status ->
-                                        { status with
-                                            Written = true
-                                        }
-                                    )
-                                    system.Process.FileDescriptors
-                        }
-                }
+                UnixSystemState.mapOpenFiles
+                    (OpenFileTable.mapStatus
+                        id
+                        (fun status ->
+                            { status with
+                                Written = true
+                            }
+                        ))
+                    system
         )
 
     /// `posix_fadvise(2)`: tell the kernel how a region of `fd` will be read.
@@ -1042,7 +1025,7 @@ module UnixDescriptor =
             Error PosixFadviseRefusal.NotProvided
         else
 
-        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (FileAdviceAnswer.Failed UnixError.EBADF)
         | Some description ->
 
@@ -1079,20 +1062,20 @@ module UnixDescriptor =
     let private recordGrant
         (flavour : SimulatedUnixFlavour)
         (id : OpenFileDescriptionId)
-        (registry : FileDescriptorRegistry)
-        : FileDescriptorRegistry
+        (openFiles : OpenFileTable)
+        : OpenFileTable
         =
         match flavour with
-        | SimulatedUnixFlavour.Linux -> registry
+        | SimulatedUnixFlavour.Linux -> openFiles
         | SimulatedUnixFlavour.Darwin ->
-            FileDescriptorRegistry.mapStatus
+            OpenFileTable.mapStatus
                 id
                 (fun status ->
                     { status with
                         Flocked = true
                     }
                 )
-                registry
+                openFiles
 
     /// `flock(2)`, made by `task`: take, convert or release an advisory lock on
     /// `fd`'s open file description.
@@ -1139,7 +1122,8 @@ module UnixDescriptor =
         let nonBlocking = operation &&& lockNonBlocking <> 0
         let mode = operation &&& ~~~lockNonBlocking
 
-        let descriptor = FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors
+        let descriptor =
+            FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system)
 
         // Where the descriptor is looked up relative to the operation screens
         // parts the flavours, and both are measured
@@ -1209,20 +1193,15 @@ module UnixDescriptor =
         // table is committed *before* the outcome is inspected, and every branch
         // below reports from `advanced`.
         let registry, error =
-            FileDescriptorRegistry.flock fd request system.Process.FileDescriptors
+            FileDescriptorRegistry.flock fd request (UnixSystemState.fileDescriptors system)
 
         let registry =
             match error, request, FileDescriptorRegistry.tryFindId fd registry with
-            | None, FlockRequest.Acquire _, Some id -> recordGrant flavour id registry
+            | None, FlockRequest.Acquire _, Some id ->
+                FileDescriptorRegistry.mapOpenFiles (recordGrant flavour id) registry
             | _ -> registry
 
-        let advanced =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let advanced = UnixSystemState.withFileDescriptors registry system
 
         match error with
         | Some FlockError.BadFd -> Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EBADF), advanced)
@@ -1249,7 +1228,7 @@ module UnixDescriptor =
             // number would miss a waiter that had closed the one it asked
             // through.
             let requester =
-                match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
                 | Some id -> id
                 | None ->
                     failwith
@@ -1332,10 +1311,7 @@ module UnixDescriptor =
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is not parked, so there is no acquisition to finish. A blocked `flock` records the park; only a task it answered `WouldBlock` finishes here (this is a bug in the client)."
 
-        let descriptions =
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-
-        match Map.tryFind requester descriptions with
+        match OpenFileTable.tryFind requester system.Machine.OpenFiles with
         | None ->
             failwith
                 $"UnixDescriptor.flockAcquire: open file description %O{requester} is not in the table, but task %O{task} is parked on an flock of it, and a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
@@ -1346,21 +1322,15 @@ module UnixDescriptor =
         | SimulatedUnixFlavour.Darwin, None
         | SimulatedUnixFlavour.Linux, _ ->
 
-        let registry, error =
-            FileDescriptorRegistry.flockOn requester (FlockRequest.Acquire mode) system.Process.FileDescriptors
+        let openFiles, error =
+            OpenFileTable.flockOn requester (FlockRequest.Acquire mode) system.Machine.OpenFiles
 
-        let registry =
+        let openFiles =
             match error with
-            | None -> recordGrant (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) requester registry
-            | Some _ -> registry
+            | None -> recordGrant (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform) requester openFiles
+            | Some _ -> openFiles
 
-        let advanced =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let advanced = UnixSystemState.mapOpenFiles (fun _ -> openFiles) system
 
         // The call returns: its park goes, and with it the call's reference to
         // the description, which goes too if no descriptor names it any more
@@ -1429,7 +1399,7 @@ module UnixDescriptor =
         // open is EBADF through a bad pointer, and a pipe end is EFAULT through
         // one -- NULL included, and the write end included, though it reports 0
         // on Darwin.
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (BytesAvailableAnswer.Failed UnixError.EBADF)
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
@@ -1487,7 +1457,7 @@ module UnixDescriptor =
         | SimulatedUnixFlavour.Darwin -> Error (FileCloneRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
 
-        let registry = system.Process.FileDescriptors
+        let registry = UnixSystemState.fileDescriptors system
 
         match FileDescriptorRegistry.tryFind destination registry, FileDescriptorRegistry.tryFind source registry with
         | None, _
@@ -1570,7 +1540,7 @@ module UnixDescriptor =
         // and a device answers what its driver does
         // (`CharacterDevice.unrecognisedIoctl`).
         let error =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | None -> UnixError.EBADF
             | Some (OpenFileTarget.File _)
             | Some (OpenFileTarget.Directory _)
@@ -1634,7 +1604,7 @@ module UnixDescriptor =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CloseRefusal<'Task>>
         =
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (closingId, closing) ->
 
@@ -1941,7 +1911,7 @@ module UnixDescriptor =
         // write that had moved bytes returns having written, which marks the
         // description it was made through, as any such write does; a dup that
         // keeps the description shows it.
-        let fileDescriptors =
+        let openFiles =
             let endedHavingWritten =
                 endedCalls
                 |> List.exists (fun (_, ended) ->
@@ -1957,24 +1927,26 @@ module UnixDescriptor =
                 )
 
             if endedHavingWritten then
-                FileDescriptorRegistry.mapStatus
+                OpenFileTable.mapStatus
                     closingId
                     (fun status ->
                         { status with
                             Written = true
                         }
                     )
-                    system.Process.FileDescriptors
+                    machine.OpenFiles
             else
-                system.Process.FileDescriptors
+                machine.OpenFiles
 
         let system =
             { system with
-                Machine = machine
+                Machine =
+                    { machine with
+                        OpenFiles = openFiles
+                    }
                 Process =
                     { system.Process with
                         Signals = signals
-                        FileDescriptors = fileDescriptors
                     }
                 Tasks = tasks
             }
@@ -1984,7 +1956,7 @@ module UnixDescriptor =
                 FileDescriptorRegistry.dropDescriptor
                     fd
                     (ObjectLifetime.heldByCalls system.Tasks)
-                    system.Process.FileDescriptors
+                    (UnixSystemState.fileDescriptors system)
             with
             | Ok dropped -> dropped
             | Error FileDescriptorCloseError.BadFd ->
@@ -2027,7 +1999,7 @@ module UnixDescriptor =
                     )
 
                 if enteredHere then
-                    FileDescriptorRegistry.drainKqueue closingId registry
+                    FileDescriptorRegistry.mapOpenFiles (OpenFileTable.drainKqueue closingId) registry
                 else
                     registry
             | OpenFileTarget.Epoll _
@@ -2039,12 +2011,9 @@ module UnixDescriptor =
 
         let closed =
             { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
                 Tasks = tasks
             }
+            |> UnixSystemState.withFileDescriptors registry
 
         match destroyed with
         | None -> Ok (SyscallAnswer.Completed 0L, closed)
@@ -2130,18 +2099,13 @@ module UnixDescriptor =
             ||| bit status.Written OpenFlagNumbering.DarwinWritten
             ||| bit status.Flocked OpenFlagNumbering.DarwinFlocked
 
-    /// Store `update` on `system`'s descriptor table.
+    /// Store `registry` as `system`'s descriptor table and open file descriptions.
     let private withRegistry<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (registry : FileDescriptorRegistry)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     /// `fcntl(fd, command, argument)`, for the commands that manage
     /// descriptors and status flags: `F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`,
@@ -2188,7 +2152,7 @@ module UnixDescriptor =
         =
         let platform = system.Machine.UnixPlatform
         let flavour = SimulatedUnixPlatform.flavour platform
-        let registry = system.Process.FileDescriptors
+        let registry = UnixSystemState.fileDescriptors system
 
         // Measured on both (`fcntl-dup.c`, LIMIT rows): the descriptor is looked
         // up before the command is read, so an unknown command on a closed
@@ -2234,15 +2198,17 @@ module UnixDescriptor =
             | SimulatedUnixFlavour.Darwin ->
 
             let registry =
-                FileDescriptorRegistry.mapStatus
-                    id
-                    (fun status ->
-                        { status with
-                            Synchronous = argument &&& OpenFlagNumbering.DarwinSynchronous <> 0
-                            DataSynchronous = argument &&& OpenFlagNumbering.DarwinDataSynchronous <> 0
-                        }
-                    )
-                    registry
+                registry
+                |> FileDescriptorRegistry.mapOpenFiles (
+                    OpenFileTable.mapStatus
+                        id
+                        (fun status ->
+                            { status with
+                                Synchronous = argument &&& OpenFlagNumbering.DarwinSynchronous <> 0
+                                DataSynchronous = argument &&& OpenFlagNumbering.DarwinDataSynchronous <> 0
+                            }
+                        )
+                )
 
             // Measured: Darwin stores the flags and then asks the file to take
             // O_NONBLOCK, which a kqueue answers ENOTTY, every time.
@@ -2322,7 +2288,7 @@ module UnixDescriptor =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, Dup2Refusal<'Task>>
         =
-        let registry = system.Process.FileDescriptors
+        let registry = UnixSystemState.fileDescriptors system
         let bound = SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform
 
         // Measured (`fcntl-dup.c`, DUP2 rows): a negative target, and a source
@@ -2363,7 +2329,9 @@ module UnixDescriptor =
         closed
         |> Result.map (fun system ->
             SyscallAnswer.Completed (int64 newFd),
-            withRegistry (FileDescriptorRegistry.installAt oldFd newFd flags system.Process.FileDescriptors) system
+            withRegistry
+                (FileDescriptorRegistry.installAt oldFd newFd flags (UnixSystemState.fileDescriptors system))
+                system
         )
 
     /// `dup2(2)`: make `newFd` name the open file description `oldFd` names,
