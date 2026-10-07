@@ -77,11 +77,19 @@ module TestUnixSystemInitial =
 
         let flavour = SimulatedUnixPlatform.flavour platform
 
-        let configured = image |> UnixBootImage.withSoMaxConn (Some 7)
+        let configured =
+            image
+            |> UnixBootImage.withSoMaxConn (Some 7)
+            |> Configured.expectOk SoMaxConnRefusal.describe
+
         (UnixBootImage.boot configured).Machine.SoMaxConn |> shouldEqual 7
 
         // Back to the default, from an image that no longer carries it.
-        (configured |> UnixBootImage.withSoMaxConn None |> UnixBootImage.boot).Machine.SoMaxConn
+        (configured
+         |> UnixBootImage.withSoMaxConn None
+         |> Configured.expectOk SoMaxConnRefusal.describe
+         |> UnixBootImage.boot)
+            .Machine.SoMaxConn
         |> shouldEqual (UnixMachineState.defaultSoMaxConn flavour)
 
     /// The platform is fixed at construction and nothing validates it later,
@@ -271,15 +279,15 @@ module TestUnixSystemInitial =
                 1, PipeEnd.Write, ClientEnd.Draining
                 2, PipeEnd.Write, ClientEnd.Draining
             ] do
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Pipe (pipeId, actualEnd)) ->
                 actualEnd |> shouldEqual pipeEnd
 
                 (UnixMachineState.pipe pipeId system.Machine).Origin
-                |> shouldEqual (PipeOrigin.Launched (ExternalEndpoint fd, client))
+                |> shouldEqual (PipeOrigin.Launched (ExternalEndpoint (UnixSystem.processId system, fd), client))
             | other -> failwith $"fd %d{fd} is %A{other}, not the %O{pipeEnd} end of a launched pipe"
 
-        FileDescriptorRegistry.tryFind 3 system.Process.FileDescriptors
+        FileDescriptorRegistry.tryFind 3 (UnixSystemState.fileDescriptors system)
         |> shouldEqual None
 
         system.Machine.Pipes |> Map.count |> shouldEqual 3
@@ -315,14 +323,14 @@ module TestUnixSystemInitial =
             let system : UnixSystem<int, string> =
                 UnixSystem.initial platform launch 0 (CpuId 0) |> UnixBootImage.boot
 
-            let registry = system.Process.FileDescriptors
+            let registry = UnixSystemState.fileDescriptors system
 
             FileDescriptorRegistry.fds registry
             |> Map.keys
             |> Set.ofSeq
             |> shouldEqual (launch |> Map.keys |> Set.ofSeq)
 
-            FileDescriptorRegistry.descriptions registry
+            OpenFileTable.descriptions (FileDescriptorRegistry.openFiles registry)
             |> Map.count
             |> shouldEqual launch.Count
 
@@ -356,10 +364,10 @@ module TestUnixSystemInitial =
                     | PipeOrigin.Launched (endpoint, ClientEnd.Draining), LaunchDescriptor.Drained
                     | PipeOrigin.Launched (endpoint, ClientEnd.ReadEndClosed), LaunchDescriptor.Gone
                     | PipeOrigin.Launched (endpoint, ClientEnd.WriteEndClosed), LaunchDescriptor.Supplied _ ->
-                        endpoint |> shouldEqual (ExternalEndpoint fd)
+                        endpoint |> shouldEqual (ExternalEndpoint (UnixSystem.processId system, fd))
                         expectedUnwritten |> shouldEqual 0
                     | PipeOrigin.Launched (endpoint, ClientEnd.Supplying unwritten), LaunchDescriptor.Supplied bytes ->
-                        endpoint |> shouldEqual (ExternalEndpoint fd)
+                        endpoint |> shouldEqual (ExternalEndpoint (UnixSystem.processId system, fd))
                         unwritten.Length |> shouldEqual expectedUnwritten
 
                         unwritten.ToImmutableArray ()

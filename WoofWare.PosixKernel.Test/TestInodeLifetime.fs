@@ -89,16 +89,11 @@ module TestInodeLifetime =
         let fd, registry =
             match VirtualFileSystem.tryGetContent inode kernel.Machine.FileSystem with
             | Some (InodeContent.Directory _) ->
-                FileDescriptorRegistry.openDirectory inode kernel.Process.FileDescriptors
-            | _ -> FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly kernel.Process.FileDescriptors
+                FileDescriptorRegistry.openDirectory inode (UnixSystemState.fileDescriptors kernel)
+            | _ ->
+                FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly (UnixSystemState.fileDescriptors kernel)
 
-        fd,
-        { kernel with
-            Process =
-                { kernel.Process with
-                    FileDescriptors = registry
-                }
-        }
+        fd, UnixSystemState.withFileDescriptors registry kernel
 
     /// Remove `name` from the directory `path` names, answering the inode that
     /// name bound and the kernel with the name gone — the state `unlink` leaves
@@ -139,25 +134,30 @@ module TestInodeLifetime =
     // -------------------------------------------------------------- heldInodes
 
     [<Test>]
-    let ``heldInodes names every open file and the current directory`` () : unit =
+    let ``the process holds its current directory and the machine every open file`` () : unit =
         let kernel = kernel ()
         let a = inodeOf kernel "/outer/inner/a"
         let b = inodeOf kernel "/outer/inner/b"
 
         // Before anything is opened, the current directory is the only
-        // reference. A `heldInodes` that enumerated only the descriptor table
-        // would answer the empty set here — and then reap the directory the
-        // process is standing in, the moment `rmdir` can orphan one.
+        // reference. A `heldInodes` that enumerated only the open file
+        // descriptions would answer the empty set here — and then reap the
+        // directory the process is standing in, the moment `rmdir` can orphan
+        // one.
         UnixProcessState.heldInodes kernel.Process
         |> shouldEqual (Set.singleton kernel.Process.CurrentDirectoryInode)
+
+        UnixMachineState.heldInodes kernel.Machine |> shouldEqual Set.empty
 
         let _, withA = opened a kernel
 
         UnixProcessState.heldInodes withA.Process
-        |> shouldEqual (Set.ofList [ kernel.Process.CurrentDirectoryInode ; a ])
+        |> shouldEqual (Set.singleton kernel.Process.CurrentDirectoryInode)
+
+        UnixMachineState.heldInodes withA.Machine |> shouldEqual (Set.singleton a)
 
         // ...and not merely "some file is open": `b` is not held.
-        UnixProcessState.heldInodes withA.Process |> Set.contains b |> shouldEqual false
+        ObjectLifetime.pinnedInodes withA |> Set.contains b |> shouldEqual false
 
     [<Test>]
     let ``a standard stream or a socket holds no inode`` () : unit =
@@ -166,9 +166,9 @@ module TestInodeLifetime =
         // whatever `InodeNumber` it invented for them.
         let kernel = kernel ()
 
-        UnixProcessState.heldInodes kernel.Process |> Set.count |> shouldEqual 1
+        UnixMachineState.heldInodes kernel.Machine |> shouldEqual Set.empty
 
-        FileDescriptorRegistry.descriptions kernel.Process.FileDescriptors
+        OpenFileTable.descriptions kernel.Machine.OpenFiles
         |> Map.isEmpty
         |> shouldEqual false
 
@@ -307,15 +307,8 @@ module TestInodeLifetime =
         let fd, held = opened a kernel
 
         let duplicate, held =
-            match FileDescriptorRegistry.dup fd held.Process.FileDescriptors with
-            | Ok (duplicate, registry) ->
-                duplicate,
-                { held with
-                    Process =
-                        { held.Process with
-                            FileDescriptors = registry
-                        }
-                }
+            match FileDescriptorRegistry.dup fd (UnixSystemState.fileDescriptors held) with
+            | Ok (duplicate, registry) -> duplicate, UnixSystemState.withFileDescriptors registry held
             | Error error -> failwith $"could not dup fd %d{fd}: %O{error}"
 
         let _, unbound = unbound "/outer/inner" "a" held
@@ -364,7 +357,7 @@ module TestInodeLifetime =
         // The descriptor holds `inner` directly...
         contains inner kernel |> shouldEqual true
 
-        UnixProcessState.heldInodes kernel.Process
+        UnixMachineState.heldInodes kernel.Machine
         |> Set.contains inner
         |> shouldEqual true
 
@@ -376,6 +369,10 @@ module TestInodeLifetime =
         let kernel = ObjectLifetime.forgetIfUnheld outer kernel
 
         contains outer kernel |> shouldEqual true
+
+        UnixMachineState.heldInodes kernel.Machine
+        |> Set.contains outer
+        |> shouldEqual false
 
         UnixProcessState.heldInodes kernel.Process
         |> Set.contains outer
@@ -530,7 +527,7 @@ module TestInodeLifetime =
             }
 
         let description =
-            FileDescriptorRegistry.descriptions broken.Process.FileDescriptors
+            OpenFileTable.descriptions broken.Machine.OpenFiles
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with

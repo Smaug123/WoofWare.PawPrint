@@ -21,24 +21,11 @@ module TestUnixProcessState =
 
     let private context : string = "TestUnixProcessState"
 
-    /// A registration watching `EPOLLIN` alone, edge-triggered, as the kernel
-    /// stores it: with `EPOLLERR` and `EPOLLHUP` added.
-    let private readInterest : EpollRegistration =
-        {
-            Events =
-                EpollEvents.In
-                ||| EpollEvents.EdgeTriggered
-                ||| EpollEvents.Err
-                ||| EpollEvents.Hup
-            Data = 0UL
-            RegisteredAt = 0L
-        }
-
     /// A process holding nothing but its current directory: the least a client
     /// has to supply for any of these operations to mean something.
     let private empty : UnixProcessState<int, string> =
         {
-            FileDescriptors = LaunchedStreams.registry
+            FileDescriptors = FileDescriptorRegistry.descriptorTable LaunchedStreams.registry
             Environment = []
             CurrentDirectoryInode = rootInode
             ProcessPath = None
@@ -180,99 +167,7 @@ module TestUnixProcessState =
         )
 
     [<Test>]
-    let ``every reference this record holds keeps its inode alive`` () : unit =
-        // One of each kind that can hold one, and one of each that cannot, so a
-        // rule that answered "every description" or "no description" fails.
-        let fileInode = InodeNumber 7L
-        let directoryInode = InodeNumber 9L
-
-        let _fd, withFile =
-            FileDescriptorRegistry.openFile fileInode FileAccessMode.ReadOnly LaunchedStreams.registry
-
-        let _directoryFd, withDirectory =
-            FileDescriptorRegistry.openDirectory directoryInode withFile
-
-        let _sock, withSocket =
-            FileDescriptorRegistry.createSocket (SocketId 1L) withDirectory
-
-        let _epollFd, registry = FileDescriptorRegistry.createEpoll withSocket
-
-        let proc =
-            { empty with
-                FileDescriptors = registry
-            }
-
-        UnixProcessState.heldInodes proc
-        |> shouldEqual (Set.ofList [ rootInode ; fileInode ; directoryInode ])
-
-    [<Test>]
-    let ``a socket is named by exactly the descriptions that name it`` () : unit =
-        let watched = SocketId 1L
-        let other = SocketId 2L
-
-        let watchedFd, registry =
-            FileDescriptorRegistry.createSocket watched LaunchedStreams.registry
-
-        let _otherFd, registry = FileDescriptorRegistry.createSocket other registry
-        let queueFd, registry = FileDescriptorRegistry.createEpoll registry
-
-        let proc =
-            { empty with
-                FileDescriptors = registry
-            }
-
-        UnixProcessState.descriptionsNamingSocket watched proc
-        |> Set.count
-        |> shouldEqual 1
-
-        UnixProcessState.descriptionsNamingSocket (SocketId 3L) proc
-        |> shouldEqual Set.empty
-
-    [<Test>]
-    let ``a state-change wake queues every registration of the socket`` () : unit =
-        let watched = SocketId 1L
-
-        let watchedFd, registry =
-            FileDescriptorRegistry.createSocket watched LaunchedStreams.registry
-
-        let queueFd, registry = FileDescriptorRegistry.createEpoll registry
-
-        let idOf (fd : int) : OpenFileDescriptionId =
-            match FileDescriptorRegistry.tryFindId fd registry with
-            | Some id -> id
-            | None -> failwith $"fd %d{fd} is not live"
-
-        let registry =
-            FileDescriptorRegistry.addEpollRegistration (idOf queueFd) (watchedFd, idOf watchedFd) readInterest registry
-
-        let ready (proc : UnixProcessState<int, string>) : (int * OpenFileDescriptionId) list =
-            FileDescriptorRegistry.descriptions proc.FileDescriptors
-            |> Map.toSeq
-            |> Seq.collect (fun (_, description) ->
-                match description.Target with
-                | OpenFileTarget.Epoll queueState -> queueState.Ready
-                | _ -> []
-            )
-            |> List.ofSeq
-
-        let proc =
-            { empty with
-                FileDescriptors = registry
-            }
-
-        ready proc |> shouldEqual []
-
-        let signalled (wake : SocketWake) (socketId : SocketId) : UnixProcessState<int, string> =
-            { proc with
-                FileDescriptors =
-                    FileDescriptorRegistry.signalEpollInstances
-                        (UnixProcessState.descriptionsNamingSocket socketId proc)
-                        (SocketWake.epollKey wake)
-                        proc.FileDescriptors
-            }
-
-        for wake in [ SocketWake.ConnectResolved ; SocketWake.RefusalReset ; SocketWake.PeerFin ] do
-            ready (signalled wake watched) |> List.length |> shouldEqual 1
-
-            // A socket nothing watches wakes nothing.
-            ready (signalled wake (SocketId 2L)) |> shouldEqual []
+    let ``the only inode the process itself holds is its current directory`` () : unit =
+        // The descriptors' inodes are held by the descriptions they name, which
+        // are the machine's (`UnixMachineState.heldInodes`).
+        UnixProcessState.heldInodes empty |> shouldEqual (Set.singleton rootInode)

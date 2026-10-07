@@ -20,15 +20,10 @@ module TestUnixWait =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let private idOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | Some (id, _) -> id
         | None -> failwith $"fd %d{fd} names no description"
 
@@ -43,7 +38,7 @@ module TestUnixWait =
             |> UnixBootImage.boot
 
         let lockerFd, registry =
-            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
         let blockedFd, registry = FileDescriptorRegistry.createEpoll registry
 
@@ -96,7 +91,7 @@ module TestUnixWait =
                 }
 
     let private releaseLock (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        match FileDescriptorRegistry.flock lockerFd FlockRequest.Release system.Process.FileDescriptors with
+        match FileDescriptorRegistry.flock lockerFd FlockRequest.Release (UnixSystemState.fileDescriptors system) with
         | registry, None -> withRegistry registry system
         | _, Some error -> failwith $"expected the release to succeed, got %O{error}"
 
@@ -132,7 +127,8 @@ module TestUnixWait =
                 Machine = UnixMachineState.advanceClock nanoseconds system.Machine
             }
         | Op.CreateEpoll ->
-            let _, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+            let _, registry =
+                FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
             withRegistry registry system
         | Op.Register task ->

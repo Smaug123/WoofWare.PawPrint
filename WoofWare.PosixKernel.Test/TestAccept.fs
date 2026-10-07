@@ -60,7 +60,7 @@ module TestAccept =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         let (SocketId raw) = socketId
         let (SocketId next) = system.Machine.NextSocketId
@@ -72,11 +72,8 @@ module TestAccept =
                     Sockets = Map.add socketId socket system.Machine.Sockets
                     NextSocketId = SocketId (max next (raw + 1L))
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     /// A stream socket in the IPv4 domain, in `phase`.
     let private streamSocket (phase : SocketPhase) : SocketDescription =
@@ -193,7 +190,7 @@ module TestAccept =
         queueOf (SocketId 0L) system |> shouldEqual [ List.item 1 connections ]
 
         let acceptedId =
-            match FileDescriptorRegistry.tryFindTarget acceptedFd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget acceptedFd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other -> failwith $"expected a socket target, got %A{other}"
 
@@ -243,7 +240,7 @@ module TestAccept =
         | AcceptOutcome.Accepted (acceptedFd, _, _), system ->
 
         let acceptedId =
-            match FileDescriptorRegistry.tryFindTarget acceptedFd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget acceptedFd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other -> failwith $"expected a socket target, got %A{other}"
 
@@ -334,17 +331,14 @@ module TestAccept =
         // A standard stream, a regular file and an epoll instance: the three
         // things a descriptor can name that are not sockets.
         let fileFd, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile
+                (InodeNumber 1L)
+                FileAccessMode.ReadOnly
+                (UnixSystemState.fileDescriptors system)
 
         let queueFd, registry = FileDescriptorRegistry.createEpoll registry
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         for fd in [ 0 ; fileFd ; queueFd ] do
             acceptOrFail fd UserBuffer.Mapped 16u system
@@ -365,13 +359,9 @@ module TestAccept =
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
             let system =
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors =
-                                FileDescriptorRegistry.setNonBlocking fd nonBlocking system.Process.FileDescriptors
-                        }
-                }
+                UnixSystemState.withFileDescriptors
+                    (FileDescriptorRegistry.setNonBlocking fd nonBlocking (UnixSystemState.fileDescriptors system))
+                    system
 
             acceptOrFail fd UserBuffer.Mapped 16u system
             |> fst
@@ -404,12 +394,9 @@ module TestAccept =
         let fd, _, system = listenerWith platform 0
 
         let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = FileDescriptorRegistry.setNonBlocking fd true system.Process.FileDescriptors
-                    }
-            }
+            UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.setNonBlocking fd true (UnixSystemState.fileDescriptors system))
+                system
 
         acceptOrFail fd UserBuffer.Mapped 16u system
         |> fst
@@ -424,20 +411,14 @@ module TestAccept =
         let fd, _, system = listenerWith platform 0
 
         let registry =
-            FileDescriptorRegistry.setNonBlocking fd true system.Process.FileDescriptors
+            FileDescriptorRegistry.setNonBlocking fd true (UnixSystemState.fileDescriptors system)
 
         let duplicate, registry =
             match FileDescriptorRegistry.dup fd registry with
             | Ok result -> result
             | Error error -> failwith $"could not dup: %A{error}"
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         acceptOrFail duplicate UserBuffer.Mapped 16u system
         |> fst
@@ -500,7 +481,8 @@ module TestAccept =
                     [
                         WakeCondition.Primitive (
                             WakePrimitive.AcceptQueueNonEmpty (
-                                FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                                FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
+                                |> Option.get
                             )
                         )
                     ]
@@ -567,7 +549,7 @@ module TestAccept =
     // ------------------------------------------------------------------
 
     let private acceptedDescription (acceptedFd : int) (system : UnixSystem<int, string>) : OpenFileDescription =
-        match FileDescriptorRegistry.tryFind acceptedFd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind acceptedFd (UnixSystemState.fileDescriptors system) with
         | Some description -> description
         | None -> failwith $"the accepted descriptor %d{acceptedFd} is not live"
 
@@ -598,12 +580,9 @@ module TestAccept =
         let fd, _, system = listenerWith platform 1
 
         let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = FileDescriptorRegistry.setNonBlocking fd true system.Process.FileDescriptors
-                    }
-            }
+            UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.setNonBlocking fd true (UnixSystemState.fileDescriptors system))
+                system
 
         match acceptOrFail fd UserBuffer.Mapped 16u system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
@@ -645,20 +624,14 @@ module TestAccept =
         let fd, _, system = listenerWith platform 1
 
         let registry =
-            FileDescriptorRegistry.setNonBlocking fd true system.Process.FileDescriptors
+            FileDescriptorRegistry.setNonBlocking fd true (UnixSystemState.fileDescriptors system)
 
         let duplicate, registry =
             match FileDescriptorRegistry.dup fd registry with
             | Ok result -> result
             | Error error -> failwith $"could not dup: %A{error}"
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         match acceptOrFail duplicate UserBuffer.Mapped 16u system with
         | AcceptOutcome.Failed error, _ -> failwith $"expected an accept, got %O{error}"
@@ -679,12 +652,9 @@ module TestAccept =
         let fd, _, system = listenerWith SimulatedUnixPlatform.macOsArm64 1
 
         let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = FileDescriptorRegistry.setNonBlocking fd true system.Process.FileDescriptors
-                    }
-            }
+            UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.setNonBlocking fd true (UnixSystemState.fileDescriptors system))
+                system
 
         let acceptedFd, _, system = UnixConnection.acceptConnection (SocketId 0L) system
 

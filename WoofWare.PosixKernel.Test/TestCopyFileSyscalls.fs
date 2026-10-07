@@ -137,12 +137,7 @@ module TestCopyFileSyscalls =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let private opened
         (fileName : string)
@@ -151,17 +146,17 @@ module TestCopyFileSyscalls =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.openFile (inodeAt system fileName) access system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile (inodeAt system fileName) access (UnixSystemState.fileDescriptors system)
 
         fd, withRegistry registry system
 
     let private offsetOf (fd : int) (system : UnixSystem<int, string>) : int64 =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.File (_, offset)) -> offset
         | other -> failwith $"fd %d{fd} names %A{other}"
 
     let private seekTo (fd : int) (offset : int64) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        withRegistry (FileDescriptorRegistry.setOffset fd offset system.Process.FileDescriptors) system
+        withRegistry (FileDescriptorRegistry.setOffset fd offset (UnixSystemState.fileDescriptors system)) system
 
     let private answerText (answer : SyscallAnswer) : string =
         match answer with
@@ -202,7 +197,7 @@ module TestCopyFileSyscalls =
             let fd, registry =
                 FileDescriptorRegistry.openDirectory
                     (VirtualFileSystem.root system.Machine.FileSystem)
-                    system.Process.FileDescriptors
+                    (UnixSystemState.fileDescriptors system)
 
             fd, withRegistry registry system
         | "pipe-r"
@@ -355,7 +350,11 @@ module TestCopyFileSyscalls =
         UnixDescriptor.fileClone outFd inFd darwin
         |> shouldEqual (Error (FileCloneRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
-        let nfs = kindsSystemWith (UnixBootImage.withMount (Some EmulatedMount.Nfs))
+        let nfs =
+            kindsSystemWith (
+                UnixBootImage.withMount (Some EmulatedMount.Nfs)
+                >> Configured.expectOk MountRefusal.describe
+            )
 
         let inFd, nfs = opened "ksrc" FileAccessMode.ReadOnly nfs
         let outFd, nfs = opened "kdst" FileAccessMode.WriteOnly nfs
@@ -859,7 +858,7 @@ module TestCopyFileRangeLarge =
                 | Error error -> failwith $"could not seed the destination: %O{error}"
 
             let fd, registry =
-                FileDescriptorRegistry.openFile inode FileAccessMode.WriteOnly system.Process.FileDescriptors
+                FileDescriptorRegistry.openFile inode FileAccessMode.WriteOnly (UnixSystemState.fileDescriptors system)
 
             fd,
             { system with
@@ -867,11 +866,8 @@ module TestCopyFileRangeLarge =
                     { system.Machine with
                         FileSystem = filesystem
                     }
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
             }
+            |> UnixSystemState.withFileDescriptors registry
 
         match UnixReadWrite.copyFileRange source destination (uint64 length) 0 system with
         | Ok (SyscallAnswer.Completed moved, after) ->

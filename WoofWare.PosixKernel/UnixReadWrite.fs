@@ -626,24 +626,16 @@ module UnixReadWrite =
             | SimulatedUnixFlavour.Darwin -> true
             | SimulatedUnixFlavour.Linux -> false
 
-        if
-            darwin
-            && Map.containsKey id (FileDescriptorRegistry.descriptions system.Process.FileDescriptors)
-        then
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.mapStatus
-                                id
-                                (fun status ->
-                                    { status with
-                                        Written = true
-                                    }
-                                )
-                                system.Process.FileDescriptors
-                    }
-            }
+        if darwin && (OpenFileTable.tryFind id system.Machine.OpenFiles).IsSome then
+            UnixSystemState.mapOpenFiles
+                (OpenFileTable.mapStatus
+                    id
+                    (fun status ->
+                        { status with
+                            Written = true
+                        }
+                    ))
+                system
         else
             system
 
@@ -784,7 +776,7 @@ module UnixReadWrite =
         let pipe = UnixMachineState.pipe pipeId system.Machine
 
         let readerOpen =
-            UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process
+            UnixMachineState.pipeEndOpen pipeId pipe PipeEnd.Read system.Machine
 
         // A write of no bytes, and a write with no reader: measured
         // (pipe-sigpipe.c, pipe-syscalls.c and pipe-epipe-sweep.c), Linux
@@ -1070,33 +1062,22 @@ module UnixReadWrite =
         // `EPOLLIN | EPOLLRDNORM`; and its close wakes the registration
         // whatever it waits for, reporting `EPOLLHUP` even to an
         // `EPOLLOUT`-only one, so the close's wake is unkeyed.
-        let registry =
+        let signalReaders (openFiles : OpenFileTable) : OpenFileTable =
             let readers =
-                UnixProcessState.descriptionsNamingPipeEnd pipeId PipeEnd.Read system.Process
+                UnixMachineState.descriptionsNamingPipeEnd pipeId PipeEnd.Read system.Machine
 
-            let registry = system.Process.FileDescriptors
-
-            let registry =
+            let openFiles =
                 if progress.WroteIntoEmpty then
-                    FileDescriptorRegistry.signalEpollInstances
-                        readers
-                        (Some (EpollEvents.In ||| EpollEvents.RdNorm))
-                        registry
+                    OpenFileTable.signalEpollInstances readers (Some (EpollEvents.In ||| EpollEvents.RdNorm)) openFiles
                 else
-                    registry
+                    openFiles
 
             if progress.Closed then
-                FileDescriptorRegistry.signalEpollInstances readers None registry
+                OpenFileTable.signalEpollInstances readers None openFiles
             else
-                registry
+                openFiles
 
-        bytes,
-        { withPipe pipeId pipe system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        bytes, UnixSystemState.mapOpenFiles signalReaders (withPipe pipeId pipe system)
 
     /// The object's own read operation on a regular file, which `read` and
     /// `pread` reach identically: the transfer window, the shortcut that touches
@@ -1309,7 +1290,7 @@ module UnixReadWrite =
         // `read(wronlyFd, (void*)-1, 4)` is EBADF rather than EFAULT, and even
         // `read(wronlyFd, buf, 0)` is EBADF rather than a no-op.
         let target : Result<ReadTarget, UnixError> =
-            match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
             | None -> Error UnixError.EBADF
             | Some (descriptionId, description) ->
 
@@ -1476,7 +1457,7 @@ module UnixReadWrite =
                 // (stdio-nonblock.c), a read of a stdin supplied nothing is 0,
                 // `O_NONBLOCK` or not. A pipe whose launcher is still writing
                 // is never empty, so never here.
-                if not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write system.Process) then
+                if not (UnixMachineState.pipeEndOpen pipeId pipe PipeEnd.Write system.Machine) then
                     answered (ReadAnswer.Completed ImmutableArray.Empty) system
                 elif nonBlocking then
                     answered (ReadAnswer.Failed UnixError.EAGAIN) system
@@ -1532,16 +1513,12 @@ module UnixReadWrite =
         // second short read.
         answered
             (ReadAnswer.Completed bytes)
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.setOffset
-                                fd
-                                (offset + int64 bytes.Length)
-                                system.Process.FileDescriptors
-                    }
-            }
+            (UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.setOffset
+                    fd
+                    (offset + int64 bytes.Length)
+                    (UnixSystemState.fileDescriptors system))
+                system)
 
     /// The pipe the open file description `description`, which a task parked in
     /// `syscall` holds, names `pipeEnd` of.
@@ -1553,10 +1530,7 @@ module UnixReadWrite =
         (system : UnixSystem<'Task, 'Handler>)
         : PipeId
         =
-        match
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-            |> Map.tryFind description
-        with
+        match OpenFileTable.tryFind description system.Machine.OpenFiles with
         | None ->
             failwith
                 $"UnixReadWrite.%s{syscall}: task %O{task} sleeps on open file description %O{description}, which is not in the table, but a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
@@ -1585,7 +1559,7 @@ module UnixReadWrite =
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Linux -> false
         | SimulatedUnixFlavour.Darwin ->
-            (FileDescriptorRegistry.descriptions system.Process.FileDescriptors).[description].NonBlocking
+            (OpenFileTable.get "UnixReadWrite" description system.Machine.OpenFiles).NonBlocking
 
     let private finishReadHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
@@ -1632,7 +1606,7 @@ module UnixReadWrite =
 
         if
             held > 0
-            || not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write system.Process)
+            || not (UnixMachineState.pipeEndOpen pipeId pipe PipeEnd.Write system.Machine)
         then
             // Measured on Linux 6.18.5 (pipe-blocking.c section H1): a reader
             // with a byte to read and a signal pending answered the byte,
@@ -1789,7 +1763,7 @@ module UnixReadWrite =
                 Error UnixError.EINVAL
             else
 
-            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
             | None -> Error UnixError.EBADF
             | Some description ->
 
@@ -1912,7 +1886,7 @@ module UnixReadWrite =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteTarget, UnixError>
         =
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | None -> Error UnixError.EBADF
         | Some (descriptionId, description) ->
 
@@ -1964,10 +1938,7 @@ module UnixReadWrite =
         : WriteOutcome<'Answer, 'Task, 'Handler>
         =
         let reads =
-            match
-                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-                |> Map.tryFind writer
-            with
+            match OpenFileTable.tryFind writer system.Machine.OpenFiles with
             | Some {
                        Target = OpenFileTarget.Pipe (pipeId, PipeEnd.Write)
                    } -> (UnixMachineState.pipe pipeId system.Machine).Reads
@@ -2219,24 +2190,21 @@ module UnixReadWrite =
                     // drain exactly when the write had filled the pipe (65535
                     // and 65536 bytes did; 61440 did not). The reader's wake
                     // carries `EPOLLOUT | EPOLLWRNORM` (`pipe_read`).
-                    let registry =
+                    let openFiles =
                         if filled then
-                            FileDescriptorRegistry.signalEpollInstances
-                                (UnixProcessState.descriptionsNamingPipeEnd pipeId PipeEnd.Write system.Process)
+                            OpenFileTable.signalEpollInstances
+                                (UnixMachineState.descriptionsNamingPipeEnd pipeId PipeEnd.Write system.Machine)
                                 (Some (EpollEvents.Out ||| EpollEvents.WrNorm))
-                                system.Process.FileDescriptors
+                                system.Machine.OpenFiles
                         else
-                            system.Process.FileDescriptors
+                            system.Machine.OpenFiles
 
                     returns
                         (WriteAnswer.Completed (int64 taken))
                         ({ system with
-                            Process =
-                                { system.Process with
-                                    FileDescriptors = registry
-                                }
                             Machine =
                                 { system.Machine with
+                                    OpenFiles = openFiles
                                     Pipes =
                                         Map.add
                                             pipeId
@@ -2320,20 +2288,17 @@ module UnixReadWrite =
         // been refused there.
         returns
             (WriteAnswer.Completed (int64 bytes.Length))
-            { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
-                Process =
-                    { system.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.setOffset
-                                fd
-                                (offset + int64 bytes.Length)
-                                system.Process.FileDescriptors
-                    }
-            }
+            (UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.setOffset
+                    fd
+                    (offset + int64 bytes.Length)
+                    (UnixSystemState.fileDescriptors system))
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                })
 
     /// `write(2)`, given the bytes the caller extracted after `admitWrite` said
     /// to.
@@ -2368,7 +2333,7 @@ module UnixReadWrite =
         =
         let outcome = writeUnmarked task fd bytes system
 
-        match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
         | None -> outcome
         | Some id -> outcome |> Result.map (markedAfterWrite id (returnsHavingMoved 0))
 
@@ -2510,7 +2475,7 @@ module UnixReadWrite =
         let answered (answer : WriteAnswer) (system : UnixSystem<'Task, 'Handler>) =
             Ok (WriteOutcome.Returns (WriteResumption.Answered answer, system))
 
-        if not (UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process) then
+        if not (UnixMachineState.pipeEndOpen pipeId pipe PipeEnd.Read system.Machine) then
             // Measured (pipe-blocking.c section E): the reader leaving answered
             // EPIPE if the write had put nothing in, on both, and on Linux the
             // count it had put in otherwise, where Darwin answered EPIPE; SIGPIPE
@@ -2691,7 +2656,7 @@ module UnixReadWrite =
             // (section N1, N2): one whose description became non-blocking
             // while it slept fills the room and returns its count too.
             let nonBlocking =
-                (FileDescriptorRegistry.descriptions system.Process.FileDescriptors).[writer].NonBlocking
+                (OpenFileTable.get "UnixReadWrite" writer system.Machine.OpenFiles).NonBlocking
 
             afterPartWritten task pipeId writer fd parked nonBlocking id system
 
@@ -2805,7 +2770,7 @@ module UnixReadWrite =
             Error UnixError.EINVAL
         else
 
-        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
         | None -> Error UnixError.EBADF
         | Some description ->
 
@@ -3073,7 +3038,7 @@ module UnixReadWrite =
         // marks the description it was made through.
         match
             pwriteUnmarked task fd bytes offset system,
-            FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors
+            FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
         with
         | Ok (WriteAnswer.Completed written, system), Some id when written > 0L ->
             Ok (WriteAnswer.Completed written, markWritten id system)
@@ -3132,7 +3097,7 @@ module UnixReadWrite =
         | SimulatedUnixFlavour.Darwin -> Error (CopyFileRangeRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
 
-        let registry = system.Process.FileDescriptors
+        let registry = UnixSystemState.fileDescriptors system
 
         match FileDescriptorRegistry.tryFind inFd registry, FileDescriptorRegistry.tryFind outFd registry with
         | None, _
@@ -3242,10 +3207,7 @@ module UnixReadWrite =
                         { system.Machine with
                             FileSystem = filesystem
                         }
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
                 }
+                |> UnixSystemState.withFileDescriptors registry
             )
         | _ -> failed UnixError.EINVAL

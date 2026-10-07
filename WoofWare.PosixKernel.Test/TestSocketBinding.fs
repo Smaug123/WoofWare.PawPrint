@@ -41,7 +41,11 @@ module TestSocketBinding =
 
     /// The machine of a system booted with the ephemeral port range `range`.
     let private machineWithPortRange (range : uint16 * uint16) : UnixMachineState =
-        (initialImage |> UnixBootImage.withEphemeralPortRange range |> UnixBootImage.boot).Machine
+        (initialImage
+         |> UnixBootImage.withEphemeralPortRange range
+         |> Configured.expectOk EphemeralPortRangeRefusal.describe
+         |> UnixBootImage.boot)
+            .Machine
 
     let private endpoint (address : uint32) (port : uint16) : InternetEndpoint = InternetEndpoint.ofParts address port
 
@@ -256,12 +260,17 @@ module TestSocketBinding =
         let multicast = 0xE0000001u // 224.0.0.1
         let broadcast = System.UInt32.MaxValue // 255.255.255.255
 
+        let prefix (network : uint32) (bits : int) : Ipv4Prefix =
+            match Ipv4Prefix.create network bits with
+            | Ok prefix -> prefix
+            | Error refusal -> failwith $"test bug: %s{Ipv4PrefixRefusal.describe refusal}"
+
         let hostile : (string * uint32 list * Ipv4Prefix list) list =
             [
                 "as configured by default", [ loopback ], []
                 "listed among this machine's addresses", [ loopback ; multicast ; broadcast ], []
-                "covered by a local route", [ loopback ], [ Ipv4Prefix.create 0xE0000000u 4 ; Ipv4Prefix.create 0u 0 ]
-                "both", [ loopback ; multicast ; broadcast ], [ Ipv4Prefix.create 0u 0 ]
+                "covered by a local route", [ loopback ], [ prefix 0xE0000000u 4 ; prefix 0u 0 ]
+                "both", [ loopback ; multicast ; broadcast ], [ prefix 0u 0 ]
             ]
 
         for name, addresses, routes in hostile do
@@ -458,11 +467,13 @@ module TestSocketBinding =
 
     [<Test>]
     let ``an empty or zero-based ephemeral range is refused`` () : unit =
-        let shouldFail (low : uint16) (high : uint16) (substring : string) : unit =
-            let exn =
-                Assert.Throws<System.Exception> (fun () -> machineWithPortRange (low, high) |> ignore<UnixMachineState>)
+        let refusal (low : uint16) (high : uint16) : Result<unit, EphemeralPortRangeRefusal> =
+            initialImage
+            |> UnixBootImage.withEphemeralPortRange (low, high)
+            |> Result.map ignore<UnixBootImage<int, string>>
 
-            exn.Message |> shouldContainText substring
+        refusal 0us 100us
+        |> shouldEqual (Error (EphemeralPortRangeRefusal.LowIsZero 100us))
 
-        shouldFail 0us 100us "port 0 is how a process"
-        shouldFail 100us 99us "is empty"
+        refusal 100us 99us
+        |> shouldEqual (Error (EphemeralPortRangeRefusal.Empty (100us, 99us)))

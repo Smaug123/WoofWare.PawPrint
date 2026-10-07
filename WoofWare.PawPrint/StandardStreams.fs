@@ -113,32 +113,39 @@ module StandardStreams =
         |> Map.add 1 (output config.Output)
         |> Map.add 2 (output config.Error)
 
-    /// The standard stream whose pipe the client's `endpoint` is the far end of.
+    /// The standard stream whose pipe the client's `endpoint` is the far end of,
+    /// for the guest whose process ID is `guest`.
     ///
-    /// Total over the endpoints `launch` makes, and a failure for any other:
-    /// PawPrint launches no other descriptor, so an endpoint it did not make
-    /// means the kernel was built some other way.
-    let roleOf (endpoint : ExternalEndpoint) : FileDescriptorRole =
+    /// Total over the endpoints `launch` makes for that guest, and a failure for
+    /// any other: PawPrint launches no other descriptor, so an endpoint it did
+    /// not make means the kernel was built some other way.
+    let roleOf (guest : ProcessId) (endpoint : ExternalEndpoint) : FileDescriptorRole =
         match endpoint with
-        | ExternalEndpoint 0 -> FileDescriptorRole.StandardInput
-        | ExternalEndpoint 1 -> FileDescriptorRole.StandardOutput
-        | ExternalEndpoint 2 -> FileDescriptorRole.StandardError
-        | ExternalEndpoint fd ->
+        | ExternalEndpoint (launchedInto, fd) when launchedInto <> guest ->
+            failwith
+                $"StandardStreams.roleOf: %O{endpoint} was launched into process %O{launchedInto}, not into the guest, process %O{guest}, so its descriptor %d{fd} is not one of the guest's standard streams (this is an interpreter bug)."
+        | ExternalEndpoint (_, 0) -> FileDescriptorRole.StandardInput
+        | ExternalEndpoint (_, 1) -> FileDescriptorRole.StandardOutput
+        | ExternalEndpoint (_, 2) -> FileDescriptorRole.StandardError
+        | ExternalEndpoint (_, fd) ->
             failwith
                 $"StandardStreams.roleOf: %O{endpoint} is not one PawPrint launches; it launches descriptors 0, 1 and 2 only, so a delivery to launch descriptor %d{fd} means the kernel was not built from StandardStreams.launch (this is an interpreter bug)."
 
-    /// `delivered`, each delivery labelled with the standard stream it reached:
+    /// The deliveries in `delivered` to the pipes launched into the guest whose
+    /// process ID is `guest`, each labelled with the standard stream it reached:
     /// what the guest wrote to its output streams, one entry per write, in the
     /// order it wrote them.
-    let outputLog (delivered : DeliveryLog) : ImmutableArray<OutputLogEntry> =
-        let builder =
-            ImmutableArray.CreateBuilder<OutputLogEntry> (DeliveryLog.count delivered)
+    let outputLog (guest : ProcessId) (delivered : DeliveryLog) : ImmutableArray<OutputLogEntry> =
+        let builder = ImmutableArray.CreateBuilder<OutputLogEntry> ()
 
         for delivery in DeliveryLog.toList delivered do
-            builder.Add
-                {
-                    Role = roleOf delivery.Endpoint
-                    Bytes = delivery.Bytes
-                }
+            match delivery.Endpoint with
+            | ExternalEndpoint (launchedInto, _) when launchedInto <> guest -> ()
+            | ExternalEndpoint _ ->
+                builder.Add
+                    {
+                        Role = roleOf guest delivery.Endpoint
+                        Bytes = delivery.Bytes
+                    }
 
-        builder.MoveToImmutable ()
+        builder.ToImmutable ()

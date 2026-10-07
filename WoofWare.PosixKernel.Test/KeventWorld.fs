@@ -30,15 +30,10 @@ module KeventWorld =
         InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
 
     let withRegistry (registry : FileDescriptorRegistry) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let idOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
-        match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
         | Some id -> id
         | None -> failwith $"fd %d{fd} names no description"
 
@@ -174,7 +169,7 @@ module KeventWorld =
 
     /// The registrations and the queue of the kqueue `kq` names.
     let stateOf (kq : int) (system : UnixSystem<int, string>) : KqueueState =
-        match FileDescriptorRegistry.tryFindTarget kq system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget kq (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Kqueue state) -> state
         | other -> failwith $"fd %d{kq} names %A{other}, not a kqueue"
 

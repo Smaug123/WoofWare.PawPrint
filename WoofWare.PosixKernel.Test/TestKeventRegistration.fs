@@ -50,7 +50,7 @@ module TestKeventRegistration =
 
     /// The socket a descriptor names in `system`, if it names one.
     let private socketOf (fd : int) (system : UnixSystem<int, string>) : SocketId option =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) -> Some socketId
         | _ -> None
 
@@ -401,7 +401,7 @@ module TestKeventRegistration =
 
     /// The open socket descriptors other than the listener, in order.
     let private sockets (listener : int) (system : UnixSystem<int, string>) : int list =
-        FileDescriptorRegistry.fds system.Process.FileDescriptors
+        FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors system)
         |> Map.toList
         |> List.map fst
         |> List.filter (fun fd -> fd <> listener && (socketOf fd system).IsSome)
@@ -503,7 +503,7 @@ module TestKeventRegistration =
                         let socketId = Option.get (socketOf fd system)
 
                         let last =
-                            FileDescriptorRegistry.fds system.Process.FileDescriptors
+                            FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors system)
                             |> Map.filter (fun other _ -> other <> fd && socketOf other system = Some socketId)
                             |> Map.isEmpty
 
@@ -597,7 +597,7 @@ module TestKeventRegistration =
 
             UnixSystem.checkInvariants system |> shouldEqual []
 
-            FileDescriptorRegistry.checkInvariants system.Process.FileDescriptors
+            FileDescriptorRegistry.checkInvariants (UnixSystemState.fileDescriptors system)
             |> shouldEqual []
 
             system, model
@@ -710,12 +710,15 @@ module TestKeventRegistration =
 
         let file, system =
             let fd, registry =
-                FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
+                FileDescriptorRegistry.openFile
+                    (InodeNumber 1L)
+                    FileAccessMode.ReadOnly
+                    (UnixSystemState.fileDescriptors system)
 
             fd, KeventWorld.withRegistry registry system
 
         let targetOf (fd : int) =
-            (FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors).Value
+            (FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system)).Value
 
         for filter in [ KeventFilter.Read ; KeventFilter.Write ] do
             let add (fd : int) =
@@ -1006,7 +1009,7 @@ module TestKeventRegistration =
         let closed = parkIn 1 kq KeventTimeout.Null system |> KeventWorld.close kq
         UnixSystem.checkInvariants closed |> shouldEqual []
 
-        match Map.tryFind kqueueId (FileDescriptorRegistry.descriptions closed.Process.FileDescriptors) with
+        match Map.tryFind kqueueId (OpenFileTable.descriptions closed.Machine.OpenFiles) with
         | Some {
                    Target = OpenFileTarget.Kqueue state
                } ->
@@ -1028,7 +1031,7 @@ module TestKeventRegistration =
             | Ok (KeventOutcome.Failed UnixError.EBADF, finished) -> finished
             | other -> failwith $"expected EBADF, got %A{other}"
 
-        FileDescriptorRegistry.descriptions finished.Process.FileDescriptors
+        OpenFileTable.descriptions finished.Machine.OpenFiles
         |> Map.containsKey kqueueId
         |> shouldEqual false
 
@@ -1048,9 +1051,7 @@ module TestKeventRegistration =
         let kqueueId = KeventWorld.idOf kq system
 
         let forged (state : KqueueState) =
-            KeventWorld.withRegistry
-                (FileDescriptorRegistry.setKqueueState kqueueId state system.Process.FileDescriptors)
-                system
+            UnixSystemState.mapOpenFiles (OpenFileTable.setKqueueState kqueueId state) system
             |> UnixSystem.checkInvariants
 
         let registration : KqueueRegistration =
@@ -1081,15 +1082,14 @@ module TestKeventRegistration =
             }
 
         let forged (state : KqueueState) =
-            KeventWorld.withRegistry
-                (FileDescriptorRegistry.setKqueueState kqueueId state system.Process.FileDescriptors)
-                system
+            UnixSystemState.mapOpenFiles (OpenFileTable.setKqueueState kqueueId state) system
             |> UnixSystem.checkInvariants
 
         forged honest |> shouldEqual []
 
         let defects (state : KqueueState) =
-            FileDescriptorRegistry.setKqueueState kqueueId state system.Process.FileDescriptors
+            UnixSystemState.fileDescriptors system
+            |> FileDescriptorRegistry.mapOpenFiles (OpenFileTable.setKqueueState kqueueId state)
             |> FileDescriptorRegistry.checkInvariants
 
         defects honest |> shouldEqual []
@@ -1113,7 +1113,7 @@ module TestKeventRegistration =
                     kqueueId,
                     0,
                     KqueueFilter.Read,
-                    (FileDescriptorRegistry.tryFindTarget 0 system.Process.FileDescriptors).Value
+                    (FileDescriptorRegistry.tryFindTarget 0 (UnixSystemState.fileDescriptors system)).Value
                 )
             ]
 

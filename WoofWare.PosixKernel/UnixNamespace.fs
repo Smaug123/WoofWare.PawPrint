@@ -260,8 +260,8 @@ type RenameSourceProgress =
     /// which resolves the source to completion before touching the destination.
     | Resolved of resolution : Resolution
 
-/// A `rename(2)` that has run as far as the point where the kernel copies its
-/// destination pathname in, and stopped there.
+/// A `rename(2)` or `renameat(2)` that has run as far as the point where the
+/// kernel copies its destination pathname in, and stopped there.
 ///
 /// It stops rather than taking both pathnames up front because *reading* a
 /// pathname out of a process's address space can fail — and on both flavours
@@ -278,11 +278,14 @@ type PausedRename<'Task, 'Handler when 'Task : comparison and 'Handler : equalit
             System : UnixSystem<'Task, 'Handler>
             Rules : RenameRules
             SourceProgress : RenameSourceProgress
+            /// Where a relative destination pathname starts, which is looked up
+            /// only once that pathname has been copied in.
+            Destination : AtDirectory
         }
 
-/// What `UnixNamespace.renameSourcePhase` found: either the call is over without
-/// the destination having been read at all, or the kernel has reached the point
-/// where it copies that pathname in.
+/// What `UnixNamespace.renameatSourcePhase` or `renameSourcePhase` found:
+/// either the call is over without the destination having been read at all,
+/// or the kernel has reached the point where it copies that pathname in.
 [<RequireQualifiedAccess>]
 [<NoEquality ; NoComparison>]
 type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
@@ -292,7 +295,7 @@ type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
     /// `UnixNamespace.renameWithDestination`.
     | NeedsDestination of paused : PausedRename<'Task, 'Handler>
 
-/// Why this kernel will not answer a `rename(2)`.
+/// Why this kernel will not answer a `rename(2)` or `renameat(2)`.
 [<RequireQualifiedAccess>]
 type RenameRefusal =
     /// A sticky directory whose rule Darwin has not been measured to apply to
@@ -811,7 +814,7 @@ module UnixNamespace =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (OpenRefusal.DescriptorLimit refusal)
         | Ok () ->
@@ -842,12 +845,16 @@ module UnixNamespace =
             let fd, registry =
                 match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
                 | Some (InodeContent.Directory _) ->
-                    FileDescriptorRegistry.openDirectory inode system.Process.FileDescriptors
+                    FileDescriptorRegistry.openDirectory inode (UnixSystemState.fileDescriptors system)
                 | Some (InodeContent.CharacterDevice (device, _)) ->
-                    FileDescriptorRegistry.openCharacterDevice inode device flags.Access system.Process.FileDescriptors
+                    FileDescriptorRegistry.openCharacterDevice
+                        inode
+                        device
+                        flags.Access
+                        (UnixSystemState.fileDescriptors system)
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
-                | None -> FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
+                | None -> FileDescriptorRegistry.openFile inode flags.Access (UnixSystemState.fileDescriptors system)
 
             let registry =
                 FileDescriptorRegistry.setFlags
@@ -869,31 +876,25 @@ module UnixNamespace =
             let registry =
                 match FileDescriptorRegistry.tryFindId fd registry with
                 | Some id ->
-                    FileDescriptorRegistry.mapStatus
-                        id
-                        (fun status ->
-                            { status with
-                                Synchronous = flags.Synchronous
-                                DataSynchronous = flags.DataSynchronous
-                                OpenedDirectory = linux && flags.Directory
-                                OpenedNoFollow = linux && flags.NoFollow
-                                Written = not linux && truncatedExisting
-                            }
-                        )
-                        registry
+                    registry
+                    |> FileDescriptorRegistry.mapOpenFiles (
+                        OpenFileTable.mapStatus
+                            id
+                            (fun status ->
+                                { status with
+                                    Synchronous = flags.Synchronous
+                                    DataSynchronous = flags.DataSynchronous
+                                    OpenedDirectory = linux && flags.Directory
+                                    OpenedNoFollow = linux && flags.NoFollow
+                                    Written = not linux && truncatedExisting
+                                }
+                            )
+                    )
                 | None ->
                     failwith
                         $"UnixNamespace.openPath: fd %d{fd} was handed out a moment ago and is not live (this is a bug in this library)."
 
-            Ok (
-                SyscallAnswer.Completed (int64 fd),
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
-            )
+            Ok (SyscallAnswer.Completed (int64 fd), UnixSystemState.withFileDescriptors registry system)
 
         if
             flags.Directory
@@ -1142,7 +1143,7 @@ module UnixNamespace =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, room with
         | SimulatedUnixFlavour.Darwin, Error refusal -> Error (OpenRefusal.DescriptorLimit refusal)
@@ -1250,7 +1251,7 @@ module UnixNamespace =
                 // eventq rows): a pipe, a socket or an epoll instance is
                 // ENOENT, as a file or directory that is not a link is.
                 let named =
-                    match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
                     | None -> Error UnixError.EBADF
                     | Some description ->
 
@@ -1452,7 +1453,7 @@ module UnixNamespace =
         =
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
-        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (ReadDirectoryAnswer.Failed UnixError.EBADF, system)
         | Some description ->
 
@@ -1493,13 +1494,9 @@ module UnixNamespace =
         | None ->
 
         let withPosition (position : DirectoryPosition) (system : UnixSystem<'Task, 'Handler>) =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.setDirectoryPosition fd position system.Process.FileDescriptors
-                    }
-            }
+            UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.setDirectoryPosition fd position (UnixSystemState.fileDescriptors system))
+                system
 
         // A directory `rmdir` has removed yields nothing, from any position:
         // measured one call at a time, on a fresh description, after a partial
@@ -1907,14 +1904,9 @@ module UnixNamespace =
         =
         RenameProgress.Answered (SyscallAnswer.Failed error, system)
 
-    /// Everything `rename(2)` does before it copies its *destination* pathname
-    /// in: on Linux the source's pathname and parent walk, on Darwin the whole
-    /// source including `RenameRules.sourceScreen`.
-    ///
-    /// Stops there rather than taking both pathnames because reading one can
-    /// fail, and a call that ends in this phase never reads the destination at
-    /// all. See `PausedRename`.
-    let renameSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private renameSourceFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (sourceDirectory : AtDirectory)
+        (destinationDirectory : AtDirectory)
         (source : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<RenameProgress<'Task, 'Handler>, RenameRefusal>
@@ -1927,6 +1919,7 @@ module UnixNamespace =
                     System = system
                     Rules = rules
                     SourceProgress = progress
+                    Destination = destinationDirectory
                 }
             |> Ok
 
@@ -1940,11 +1933,17 @@ module UnixNamespace =
         // name it was given, never what that name points at. The trailing
         // separator is the only thing that reaches past a final symlink, and
         // only on Darwin; see `RenameRules.TrailingSeparator`.
+        //
+        // Each side's starting directory is looked up as that side's walk
+        // begins, after its own copy-in (`walkStart`), so a bad `newdirfd`
+        // is answered only once the source has gone as far as this phase
+        // takes it: measured by `at-dirfd.c` (ORDER2) and `renameat-rules.c`
+        // (ORDER).
         match rules.WalkOrder with
         | RenameWalkOrder.ParentsThenFinals ->
             match
                 UnixPathResolution.resolvePathParent
-                    AtDirectory.CurrentDirectory
+                    sourceDirectory
                     SymlinkPolicy.NoFollowFinal
                     rules.TrailingSeparator
                     sourcePath
@@ -1957,7 +1956,7 @@ module UnixNamespace =
 
         match
             UnixPathResolution.resolvePathFull
-                AtDirectory.CurrentDirectory
+                sourceDirectory
                 SymlinkPolicy.NoFollowFinal
                 rules.TrailingSeparator
                 sourcePath
@@ -1974,8 +1973,41 @@ module UnixNamespace =
         | Some error -> stopped error
         | None -> paused (RenameSourceProgress.Resolved sourceResolution)
 
-    /// The rest of `rename(2)`, given the destination pathname the kernel has
-    /// just reached the point of copying in.
+    /// Everything `renameat(2)` does before it copies its *destination*
+    /// pathname in: on Linux the source's pathname and parent walk, on Darwin
+    /// the whole source including `RenameRules.sourceScreen`. A relative
+    /// source starts where `olddirfd` says, as every `*at` call's path does
+    /// (`UnixPathResolution.walkStart`); `newdirfd` is looked up only once the
+    /// destination has been copied in, by `renameWithDestination`.
+    ///
+    /// `olddirfd` and `newdirfd` are raw, in this platform's own numbering.
+    /// Stops where it does rather than taking both pathnames because reading
+    /// one can fail, and a call that ends in this phase never reads the
+    /// destination at all. See `PausedRename`.
+    let renameatSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (olddirfd : int)
+        (oldpath : PathArgumentBytes)
+        (newdirfd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<RenameProgress<'Task, 'Handler>, RenameRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        renameSourceFrom (AtDirectory.decode flavour olddirfd) (AtDirectory.decode flavour newdirfd) oldpath system
+
+    /// The first half of `rename(2)`, as `renameatSourcePhase` is of
+    /// `renameat`: `rename` is `renameat` from the current directory on both
+    /// sides.
+    let renameSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (source : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<RenameProgress<'Task, 'Handler>, RenameRefusal>
+        =
+        renameSourceFrom AtDirectory.CurrentDirectory AtDirectory.CurrentDirectory source system
+
+    /// The rest of `rename(2)` or `renameat(2)`, given the destination
+    /// pathname the kernel has just reached the point of copying in. A
+    /// relative destination starts where the paused call's `newdirfd` says.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller, where this kernel will not
@@ -1990,7 +2022,7 @@ module UnixNamespace =
         match box paused with
         | null ->
             failwith
-                "UnixNamespace.renameWithDestination: this paused rename is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixNamespace.renameSourcePhase instead."
+                "UnixNamespace.renameWithDestination: this paused rename is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixNamespace.renameatSourcePhase or renameSourcePhase instead."
         | _ ->
 
         let system = paused.System
@@ -2006,7 +2038,7 @@ module UnixNamespace =
                 // Darwin: the source is already finished, so the destination is
                 // resolved to completion and the verdict judges the pair.
                 UnixPathResolution.resolvePathFull
-                    AtDirectory.CurrentDirectory
+                    paused.Destination
                     SymlinkPolicy.NoFollowFinal
                     rules.TrailingSeparator
                     destinationPath
@@ -2017,7 +2049,7 @@ module UnixNamespace =
             // Linux: the destination's parent, then both final lookups.
             match
                 UnixPathResolution.resolvePathParent
-                    AtDirectory.CurrentDirectory
+                    paused.Destination
                     SymlinkPolicy.NoFollowFinal
                     rules.TrailingSeparator
                     destinationPath
@@ -2199,9 +2231,33 @@ module UnixNamespace =
             | Some displaced -> ObjectLifetime.forgetIfUnheld displaced moved
         )
 
-    /// `rename(2)` in one call, for a caller holding both pathnames already —
-    /// every caller but the one reading them out of a process's memory, where
-    /// reading the destination too early is itself observable.
+    /// `renameat(2)`: move the name `oldpath`, relative to `olddirfd`, to
+    /// `newpath`, relative to `newdirfd`, in one call, for a caller holding
+    /// both pathnames already — every caller but the one reading them out of
+    /// a process's memory, where reading the destination too early is itself
+    /// observable; that caller should call `renameatSourcePhase` and
+    /// `renameWithDestination` instead.
+    ///
+    /// `olddirfd` and `newdirfd` are raw, in this platform's own numbering.
+    /// Each side's starting directory is looked up where that side's walk
+    /// begins, and nothing else about the call changes: `rename` is this from
+    /// `AT_FDCWD` on both sides. Refuses what `RenameRefusal` lists.
+    let renameat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (olddirfd : int)
+        (oldpath : PathArgumentBytes)
+        (newdirfd : int)
+        (newpath : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RenameRefusal>
+        =
+        match renameatSourcePhase olddirfd oldpath newdirfd system with
+        | Error refusal -> Error refusal
+        | Ok (RenameProgress.Answered (answer, system)) -> Ok (answer, system)
+        | Ok (RenameProgress.NeedsDestination paused) -> renameWithDestination newpath paused
+
+    /// `rename(2)` in one call: `renameat` from `AT_FDCWD` on both sides. A
+    /// caller reading the pathnames out of a process's memory should call
+    /// `renameSourcePhase` and `renameWithDestination` instead.
     let rename<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (source : PathArgumentBytes)
         (destination : PathArgumentBytes)

@@ -75,43 +75,40 @@ module TestUnixSystemInvariants =
             SocketPhase.DatagramPeer (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us)
 
         let forged =
-            { unlaunched with
-                Machine =
-                    { unlaunched.Machine with
-                        Sockets =
-                            Map.ofList
-                                [
-                                    SocketId 0L,
-                                    {
-                                        Domain = SocketDomain.Inet
-                                        Kind = kind
-                                        Protocol = SocketProtocol.Tcp
-                                        Binding = None
-                                        ReuseAddress = false
-                                        Phase = phase
-                                    }
-                                ]
-                        NextSocketId = SocketId 1L
-                    }
-                Process =
-                    { unlaunched.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.Unchecked.ofParts
-                                (Map.ofList [ 3, OpenFileDescriptionId 0L ])
-                                (Map.ofList
+            (UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.Unchecked.ofParts
+                    (Map.ofList [ 3, OpenFileDescriptionId 0L ])
+                    (Map.ofList
+                        [
+                            OpenFileDescriptionId 0L,
+                            {
+                                Target = OpenFileTarget.Socket (SocketId 0L)
+                                AccessMode = FileAccessMode.ReadWrite
+                                NonBlocking = false
+                                Flock = None
+                                Status = OpenFileStatus.none
+                            }
+                        ])
+                    (OpenFileDescriptionId 1L))
+                { unlaunched with
+                    Machine =
+                        { unlaunched.Machine with
+                            Sockets =
+                                Map.ofList
                                     [
-                                        OpenFileDescriptionId 0L,
+                                        SocketId 0L,
                                         {
-                                            Target = OpenFileTarget.Socket (SocketId 0L)
-                                            AccessMode = FileAccessMode.ReadWrite
-                                            NonBlocking = false
-                                            Flock = None
-                                            Status = OpenFileStatus.none
+                                            Domain = SocketDomain.Inet
+                                            Kind = kind
+                                            Protocol = SocketProtocol.Tcp
+                                            Binding = None
+                                            ReuseAddress = false
+                                            Phase = phase
                                         }
-                                    ])
-                                (OpenFileDescriptionId 1L)
-                    }
-            }
+                                    ]
+                            NextSocketId = SocketId 1L
+                        }
+                })
 
         UnixSystem.checkInvariants forged
         |> shouldEqual [ UnixSystemDefect.SocketPhaseKindMismatch (SocketId 0L, kind, phase) ]
@@ -129,55 +126,53 @@ module TestUnixSystemInvariants =
         let connection = ConnectionId 2L
 
         let forged =
-            { unlaunched with
-                Machine =
-                    { unlaunched.Machine with
-                        Sockets =
-                            Map.ofList
-                                [
-                                    SocketId 0L,
-                                    {
-                                        Domain = SocketDomain.Inet
-                                        Kind = SocketKind.Stream
-                                        Protocol = SocketProtocol.Tcp
-                                        Binding = None
-                                        ReuseAddress = false
-                                        Phase = SocketPhase.Established (connection, ConnectionEnd.Client)
-                                    }
-                                ]
-                        NextSocketId = SocketId 1L
-                        Connections =
-                            Map.ofList
-                                [
-                                    connection,
-                                    {
-                                        ClientAddress =
-                                            InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 40000us
-                                        ServerAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us
-                                        Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet unlaunched.Machine
-                                    }
-                                ]
-                        NextConnectionId = connection
-                    }
-                Process =
-                    { unlaunched.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.Unchecked.ofParts
-                                (Map.ofList [ 3, OpenFileDescriptionId 0L ])
-                                (Map.ofList
+            (UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.Unchecked.ofParts
+                    (Map.ofList [ 3, OpenFileDescriptionId 0L ])
+                    (Map.ofList
+                        [
+                            OpenFileDescriptionId 0L,
+                            {
+                                Target = OpenFileTarget.Socket (SocketId 0L)
+                                AccessMode = FileAccessMode.ReadWrite
+                                NonBlocking = false
+                                Flock = None
+                                Status = OpenFileStatus.none
+                            }
+                        ])
+                    (OpenFileDescriptionId 1L))
+                { unlaunched with
+                    Machine =
+                        { unlaunched.Machine with
+                            Sockets =
+                                Map.ofList
                                     [
-                                        OpenFileDescriptionId 0L,
+                                        SocketId 0L,
                                         {
-                                            Target = OpenFileTarget.Socket (SocketId 0L)
-                                            AccessMode = FileAccessMode.ReadWrite
-                                            NonBlocking = false
-                                            Flock = None
-                                            Status = OpenFileStatus.none
+                                            Domain = SocketDomain.Inet
+                                            Kind = SocketKind.Stream
+                                            Protocol = SocketProtocol.Tcp
+                                            Binding = None
+                                            ReuseAddress = false
+                                            Phase = SocketPhase.Established (connection, ConnectionEnd.Client)
                                         }
-                                    ])
-                                (OpenFileDescriptionId 1L)
-                    }
-            }
+                                    ]
+                            NextSocketId = SocketId 1L
+                            Connections =
+                                Map.ofList
+                                    [
+                                        connection,
+                                        {
+                                            ClientAddress =
+                                                InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 40000us
+                                            ServerAddress =
+                                                InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us
+                                            Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet unlaunched.Machine
+                                        }
+                                    ]
+                            NextConnectionId = connection
+                        }
+                })
 
         UnixSystem.checkInvariants forged
         |> shouldEqual [ UnixSystemDefect.NextConnectionIdNotFresh (connection, connection) ]
@@ -211,30 +206,27 @@ module TestUnixSystemInvariants =
             }
 
         let forged =
-            { unlaunched with
-                Machine =
-                    { unlaunched.Machine with
-                        NextEventRegistrationOrdinal = ordinal
-                    }
-                Process =
-                    { unlaunched.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.Unchecked.ofParts
-                                (Map.ofList [ 4, queueId ])
-                                (Map.ofList
-                                    [
-                                        queueId,
-                                        {
-                                            Target = OpenFileTarget.Epoll queueState
-                                            AccessMode = FileAccessMode.ReadWrite
-                                            NonBlocking = false
-                                            Flock = None
-                                            Status = OpenFileStatus.none
-                                        }
-                                    ])
-                                (OpenFileDescriptionId 1L)
-                    }
-            }
+            (UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.Unchecked.ofParts
+                    (Map.ofList [ 4, queueId ])
+                    (Map.ofList
+                        [
+                            queueId,
+                            {
+                                Target = OpenFileTarget.Epoll queueState
+                                AccessMode = FileAccessMode.ReadWrite
+                                NonBlocking = false
+                                Flock = None
+                                Status = OpenFileStatus.none
+                            }
+                        ])
+                    (OpenFileDescriptionId 1L))
+                { unlaunched with
+                    Machine =
+                        { unlaunched.Machine with
+                            NextEventRegistrationOrdinal = ordinal
+                        }
+                })
 
         UnixSystem.checkInvariants forged
         |> shouldEqual
@@ -338,20 +330,17 @@ module TestUnixSystemInvariants =
     /// it, gone from the descriptor table but for the description itself.
     let private stdinUnnamed (system : UnixSystem<int, string>) : OpenFileDescriptionId * UnixSystem<int, string> =
         let stdin =
-            FileDescriptorRegistry.tryFindId 0 system.Process.FileDescriptors |> Option.get
+            FileDescriptorRegistry.tryFindId 0 (UnixSystemState.fileDescriptors system)
+            |> Option.get
 
         let registry =
-            match FileDescriptorRegistry.dropDescriptor 0 (Set.singleton stdin) system.Process.FileDescriptors with
+            match
+                FileDescriptorRegistry.dropDescriptor 0 (Set.singleton stdin) (UnixSystemState.fileDescriptors system)
+            with
             | Ok (registry, None) -> registry
             | other -> failwith $"expected the description to survive, got %A{other}"
 
-        stdin,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        stdin, UnixSystemState.withFileDescriptors registry system
 
     [<Test>]
     let ``a description nothing references is a defect, and one a parked call holds is not`` () : unit =
@@ -412,7 +401,7 @@ module TestUnixSystemInvariants =
     let ``a task parked in an epoll_wait on a description that is not an epoll instance is a defect`` () : unit =
         // stdout, which every system holds and which is not an epoll instance.
         let stdoutDescription, target =
-            match FileDescriptorRegistry.tryFindWithId 1 system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindWithId 1 (UnixSystemState.fileDescriptors system) with
             | Some (id, description) -> id, description.Target
             | None -> failwith "the fixture has no stdout"
 
@@ -434,7 +423,7 @@ module TestUnixSystemInvariants =
     /// `system` with tasks 1 and 2 parked on stdout's description, in that order.
     let private twoParked : UnixSystem<int, string> =
         let stdoutDescription =
-            match FileDescriptorRegistry.tryFindWithId 1 system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindWithId 1 (UnixSystemState.fileDescriptors system) with
             | Some (id, _) -> id
             | None -> failwith "the fixture has no stdout"
 
@@ -498,7 +487,7 @@ module TestUnixSystemInvariants =
     [<Test>]
     let ``a task parked on a live epoll instance or file is sound`` () : unit =
         let queueFd, registry =
-            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
         let queueId =
             match FileDescriptorRegistry.tryFindWithId queueFd registry with
@@ -510,13 +499,7 @@ module TestUnixSystemInvariants =
             | Some (id, _) -> id
             | None -> failwith "the fixture has no stdout"
 
-        let queueSystem =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let queueSystem = UnixSystemState.withFileDescriptors registry system
 
         queueSystem
         |> withTask (
@@ -567,7 +550,7 @@ module TestUnixSystemInvariants =
         let (SocketId raw) = socketId
 
         let _, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         socketId,
         { system with
@@ -576,11 +559,8 @@ module TestUnixSystemInvariants =
                     Sockets = Map.add socketId socket system.Machine.Sockets
                     NextSocketId = SocketId (raw + 1L)
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     let private boundAt (port : uint16) : SocketBinding option =
         Some

@@ -618,7 +618,15 @@ module UnixSystem =
         (system : UnixSystem<'Task, 'Handler>)
         : FileDescriptorRegistry
         =
-        system.Process.FileDescriptors
+        UnixSystemState.fileDescriptors system
+
+    /// The machine's open file descriptions, which `OpenFileTable`'s queries
+    /// read: every one any descriptor names, and any a call in flight holds.
+    let openFiles<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : OpenFileTable
+        =
+        system.Machine.OpenFiles
 
     /// The machine's filesystem, which `VirtualFileSystem`'s queries read.
     let fileSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -744,7 +752,7 @@ module UnixSystem =
         (system : UnixSystem<'Task, 'Handler>)
         : OpenFileTarget option
         =
-        FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors
+        FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system)
 
     /// The process ID, as `getpid(2)` reports it.
     ///
@@ -946,17 +954,18 @@ module UnixSystem =
             |> Result.mapError SyscallRefusal.SetGroups
 
     /// Every way this system's tables disagree with each other: the socket table
-    /// and the pipe table against the descriptor table, each pipe and the pipe
-    /// device against the platform, the connection table against the sockets
-    /// that reference it, the descriptor table against the filesystem, the
-    /// current directory against both, each task's park against the descriptor
-    /// table and each description against the descriptors and parks that
-    /// reference it, the signal state against the task table, and the machine's
-    /// filesystem type and buffer check and the process's supplementary groups
-    /// and file-mode creation mask against its platform.
+    /// and the pipe table against the open file descriptions, each pipe and the
+    /// pipe device against the platform, the connection table against the
+    /// sockets that reference it, the open file descriptions against the
+    /// filesystem, the current directory against both, each task's park against
+    /// the descriptor table and each description against the descriptors and
+    /// parks that reference it, the signal state against the task table, and
+    /// the machine's filesystem type and buffer check and the process's
+    /// supplementary groups and file-mode creation mask against its platform.
     ///
     /// Each table's own rules are elsewhere and are not repeated here:
-    /// `FileDescriptorRegistry.checkInvariants` for the descriptor table, and
+    /// `FileDescriptorRegistry.checkInvariants` for the descriptor table and the
+    /// open file descriptions it names, and
     /// `VirtualFileSystem.checkInvariants` for the filesystem. The latter takes
     /// a `pinned` argument, which is what `pinnedInodes` computes, so a caller
     /// wanting the whole picture pairs this with
@@ -969,7 +978,7 @@ module UnixSystem =
         : UnixSystemDefect<'Task> list
         =
         let named =
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            OpenFileTable.descriptions system.Machine.OpenFiles
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
@@ -1009,7 +1018,7 @@ module UnixSystem =
         let foreignObjects =
             let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            OpenFileTable.descriptions system.Machine.OpenFiles
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target, flavour with
@@ -1028,8 +1037,8 @@ module UnixSystem =
             )
 
         let danglingInodes =
-            system.Process.FileDescriptors
-            |> FileDescriptorRegistry.descriptions
+            system.Machine.OpenFiles
+            |> OpenFileTable.descriptions
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
@@ -1194,8 +1203,8 @@ module UnixSystem =
             )
 
         let registrationOrdinals =
-            system.Process.FileDescriptors
-            |> FileDescriptorRegistry.descriptions
+            system.Machine.OpenFiles
+            |> OpenFileTable.descriptions
             |> Map.toList
             |> List.collect (fun (queueId, description) ->
                 match description.Target with
@@ -1238,7 +1247,7 @@ module UnixSystem =
         let statusOfFlavour =
             let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            OpenFileTable.descriptions system.Machine.OpenFiles
             |> Map.toList
             |> List.collect (fun (id, description) ->
                 let status = description.Status
@@ -1264,7 +1273,7 @@ module UnixSystem =
         let beyondBound =
             let bound = SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform
 
-            FileDescriptorRegistry.fds system.Process.FileDescriptors
+            FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors system)
             |> Map.toList
             |> List.filter (fun (fd, _) -> fd >= bound)
             |> List.map (fun (fd, _) -> UnixSystemDefect.DescriptorAtOrAboveBound (fd, bound))
@@ -1273,7 +1282,7 @@ module UnixSystem =
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Darwin -> []
             | SimulatedUnixFlavour.Linux ->
-                let registry = system.Process.FileDescriptors
+                let registry = UnixSystemState.fileDescriptors system
 
                 let closeOnFork =
                     FileDescriptorRegistry.fds registry
@@ -1286,7 +1295,7 @@ module UnixSystem =
                     |> List.map (fun (fd, _) -> UnixSystemDefect.CloseOnForkUnderLinux fd)
 
                 let unpaired =
-                    FileDescriptorRegistry.descriptions registry
+                    OpenFileTable.descriptions (FileDescriptorRegistry.openFiles registry)
                     |> Map.toList
                     |> List.filter (fun (_, description) ->
                         description.Status.Synchronous <> description.Status.DataSynchronous
@@ -1296,8 +1305,7 @@ module UnixSystem =
                 closeOnFork @ unpaired
 
         let parks =
-            let descriptions =
-                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            let descriptions = OpenFileTable.descriptions system.Machine.OpenFiles
 
             let darwin =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
@@ -1309,7 +1317,7 @@ module UnixSystem =
             // descriptor still names what it sleeps on. Under Linux the close
             // leaves it asleep, and the number is not consulted.
             let enteredThrough (task : 'Task) (fd : int) (description : OpenFileDescriptionId) =
-                match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
                 | Some current when current = description -> []
                 | _ when not darwin -> []
                 | current ->
@@ -1361,7 +1369,9 @@ module UnixSystem =
                         | Some description ->
                             match description.Target with
                             | OpenFileTarget.Kqueue state ->
-                                match FileDescriptorRegistry.tryFindId wait.Fd system.Process.FileDescriptors with
+                                match
+                                    FileDescriptorRegistry.tryFindId wait.Fd (UnixSystemState.fileDescriptors system)
+                                with
                                 | Some current when current = wait.Kqueue -> []
                                 | _ when state.Drained -> []
                                 | current ->
@@ -1405,7 +1415,9 @@ module UnixSystem =
                                     | OpenFileTarget.Pipe _ -> []
 
                                 let rebound =
-                                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                                    match
+                                        FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
+                                    with
                                     | Some current when current = watched -> []
                                     | current ->
                                         [ UnixSystemDefect.ParkedPollDescriptorRebound (task, fd, watched, current) ]
@@ -1416,7 +1428,7 @@ module UnixSystem =
                     let entries = List.length poll.Entries
 
                     let socketOf (fd : int) : SocketId option =
-                        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
                         | Some (OpenFileTarget.Socket socketId) -> Some socketId
                         | Some _
                         | None -> None
@@ -1426,7 +1438,9 @@ module UnixSystem =
                         |> Map.toList
                         |> List.collect (fun ((fd, filter as key), registration) ->
                             let target =
-                                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                                match
+                                    FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system)
+                                with
                                 | Some (OpenFileTarget.Socket socketId) as target ->
                                     match Map.tryFind socketId system.Machine.Sockets with
                                     | Some socket when DarwinReadiness.modelsSocket socket ->
@@ -1548,20 +1562,19 @@ module UnixSystem =
             )
 
         // Every description is referenced: by a descriptor, or by a call in
-        // flight that holds it.
+        // flight that holds it. The count of descriptors is the description's
+        // own, which `OpenFileTable.checkInvariants` holds to the descriptor
+        // tables.
         let unreferencedDescriptions =
-            let named =
-                FileDescriptorRegistry.fds system.Process.FileDescriptors
-                |> Map.toSeq
-                |> Seq.map snd
-                |> Set.ofSeq
-
             let held = ObjectLifetime.heldByCalls system.Tasks
 
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            OpenFileTable.descriptions system.Machine.OpenFiles
             |> Map.toList
             |> List.map fst
-            |> List.filter (fun id -> not (Set.contains id named) && not (Set.contains id held))
+            |> List.filter (fun id ->
+                OpenFileTable.descriptorCount id system.Machine.OpenFiles = Some 0
+                && not (Set.contains id held)
+            )
             |> List.map UnixSystemDefect.UnreferencedDescription
 
         let parkOrdinals =
@@ -1799,7 +1812,7 @@ module UnixSystem =
             let flavour = SimulatedUnixPlatform.flavour platform
 
             let named =
-                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                OpenFileTable.descriptions system.Machine.OpenFiles
                 |> Map.toList
                 |> List.choose (fun (id, description) ->
                     match description.Target with
@@ -2035,7 +2048,7 @@ module UnixSystem =
     /// The prefixes Linux's local routing table holds, which it will `bind(2)`
     /// any address inside. Loopback's `127.0.0.0/8` is the one every Linux has,
     /// and is why `127.9.9.9` binds there and not on Darwin.
-    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
+    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.loopbackNetwork ]
 
     /// Effective user ID a freshly-minted simulated process runs as.
     ///
@@ -2225,15 +2238,23 @@ module UnixSystem =
                         $"UnixSystem.initial: the launch table names descriptor %d{fd}, at or above the bound %d{SimulatedUnixPlatform.descriptorBound platform} this kernel assumes the process's RLIMIT_NOFILE reaches; it hands out no descriptor there."
 
                 let pipeId = PipeId (int64 index)
-                let pipe, pipeEnd = PipeState.launch platform fd descriptor
+                let pipe, pipeEnd = PipeState.launch platform defaultProcessId fd descriptor
                 fd, pipeId, pipeEnd, pipe
             )
+
+        let launchedDescriptors =
+            FileDescriptorRegistry.ofLaunchedPipes
+                (launched
+                 |> List.map (fun (fd, pipeId, pipeEnd, _) -> fd, (pipeId, pipeEnd))
+                 |> Map.ofList)
+                OpenFileTable.empty
 
         {
             System =
                 {
                     Machine =
                         {
+                            OpenFiles = FileDescriptorRegistry.openFiles launchedDescriptors
                             Sockets = Map.empty
                             Pipes = launched |> List.map (fun (_, pipeId, _, pipe) -> pipeId, pipe) |> Map.ofList
                             NextPipeId = PipeId (int64 (List.length launched))
@@ -2269,11 +2290,7 @@ module UnixSystem =
                         }
                     Process =
                         {
-                            FileDescriptors =
-                                launched
-                                |> List.map (fun (fd, pipeId, pipeEnd, _) -> fd, (pipeId, pipeEnd))
-                                |> Map.ofList
-                                |> FileDescriptorRegistry.ofLaunchedPipes
+                            FileDescriptors = FileDescriptorRegistry.descriptorTable launchedDescriptors
                             Environment = []
                             // The default current directory is the root, which every filesystem
                             // has and no operation can remove, so the pair starts consistent

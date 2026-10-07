@@ -462,7 +462,7 @@ module UnixPathResolution =
             | AtDirectory.CurrentDirectory -> Ok system.Process.CurrentDirectoryInode
             | AtDirectory.Descriptor fd ->
 
-            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
             | None -> Error UnixError.EBADF
             | Some description ->
 
@@ -505,7 +505,7 @@ module UnixPathResolution =
             | AtDirectory.CurrentDirectory -> Ok (PathStart.StartingObject system.Process.CurrentDirectoryInode)
             | AtDirectory.Descriptor fd ->
 
-            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
             | None -> Error (PathFailure.Errno UnixError.EBADF)
             | Some description ->
 
@@ -804,7 +804,7 @@ module UnixPathResolution =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<FileStatusAnswer, FStatRefusal>
         =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (FileStatusAnswer.Failed UnixError.EBADF)
         | Some (OpenFileTarget.Kqueue _)
         | Some (OpenFileTarget.Epoll _) -> Error FStatRefusal.EventQueue
@@ -828,7 +828,7 @@ module UnixPathResolution =
                 | SimulatedUnixFlavour.Linux, _ -> 0L
                 | SimulatedUnixFlavour.Darwin, PipeEnd.Read -> int64 (PipeBuffer.held pipe.Buffer)
                 | SimulatedUnixFlavour.Darwin, PipeEnd.Write ->
-                    if UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process then
+                    if UnixMachineState.pipeEndOpen pipeId pipe PipeEnd.Read system.Machine then
                         int64 (PipeBuffer.held pipe.Buffer)
                     else
                         0L
@@ -1068,7 +1068,7 @@ module UnixPathResolution =
         // ends' ctime and nothing else.
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
-        match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.File inode) ->
             changeModeOf inode mode system
@@ -1315,7 +1315,7 @@ module UnixPathResolution =
         // for a pipe end, every one of those sockets, and a kqueue.
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
-        match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.File inode) ->
             changeOwnerOf inode user group system
@@ -1414,7 +1414,7 @@ module UnixPathResolution =
         | SimulatedUnixFlavour.Darwin -> Error (FUTimensRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
 
-        match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Some (OpenFileObject.AnonymousInode as object)
         | Some (OpenFileObject.Kqueue _ as object)
@@ -1515,7 +1515,7 @@ module UnixPathResolution =
             system.Machine.UnixPlatform
             system.Machine.Mount
 
-        match FileDescriptorRegistry.tryFindObject fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors system) with
         | None -> FileSystemStatisticsAnswer.Failed UnixError.EBADF
         | Some (OpenFileObject.File inode) -> statisticsOfInode inode system
         | Some target -> FileSystemStatistics.ofObject system.Machine.UnixPlatform system.Machine.Mount target

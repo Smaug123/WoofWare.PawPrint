@@ -49,15 +49,11 @@ module TestEpollCtl =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let private withEpoll (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+        let fd, registry =
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
         fd, withRegistry registry system
 
@@ -86,38 +82,42 @@ module TestEpollCtl =
             }
 
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         fd,
-        { withRegistry registry system with
+        { system with
             Machine =
                 { system.Machine with
                     Sockets = Map.add socketId socket system.Machine.Sockets
                     NextSocketId = SocketId (raw + 1L)
                 }
         }
+        |> withRegistry registry
 
     let private idleSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         withSocket SocketDomain.Inet SocketKind.Stream SocketPhase.Idle system
 
     let private withFile (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadWrite system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile
+                (InodeNumber 1L)
+                FileAccessMode.ReadWrite
+                (UnixSystemState.fileDescriptors system)
 
         fd, withRegistry registry system
 
     let private dupOf (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
-        match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.dup fd (UnixSystemState.fileDescriptors system) with
         | Ok (copy, registry) -> copy, withRegistry registry system
         | Error error -> failwith $"dup of fd %d{fd} failed: %O{error}"
 
     let private idOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
-        match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
         | Some id -> id
         | None -> failwith $"fd %d{fd} is not live"
 
     let private epollOf (queueFd : int) (system : UnixSystem<int, string>) : EpollState =
-        match FileDescriptorRegistry.tryFindTarget queueFd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget queueFd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Epoll queueState) -> queueState
         | other -> failwith $"expected an epoll instance, got %A{other}"
 
@@ -292,7 +292,7 @@ module TestEpollCtl =
         | "same-as-epfd" -> epfd, system
         // The probe's `dup` of an epfd that is not open failed, leaving -1.
         | "dup-of-epfd" ->
-            match FileDescriptorRegistry.tryFindId epfd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindId epfd (UnixSystemState.fileDescriptors system) with
             | Some _ -> dupOf epfd system
             | None -> -1, system
         | other -> failwith $"ladder row names an unknown kind %s{other}"

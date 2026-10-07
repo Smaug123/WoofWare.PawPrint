@@ -1325,7 +1325,14 @@ module NativeSystemNative =
         let source =
             pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
 
-        match UnixNamespace.renameSourcePhase source state.Kernel.System with
+        // `rename(2)` is `renameat(2)` from `AT_FDCWD` on both sides, in the
+        // flavour's numbering: Linux's own `rename` syscall runs exactly that.
+        let system = state.Kernel.System
+
+        let atFdCwd =
+            AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour (UnixSystem.platform system))
+
+        match UnixNamespace.renameatSourcePhase atFdCwd source atFdCwd system with
         | Error refusal -> answer (Error refusal)
         | Ok (RenameProgress.Answered (syscallAnswer, system)) -> answer (Ok (syscallAnswer, system))
         | Ok (RenameProgress.NeedsDestination paused) ->
@@ -7069,7 +7076,11 @@ module NativeSystemNative =
 
                 match DeliveryLog.since before (UnixSystem.delivered system) with
                 | [] -> StepEffect.NoEffect
-                | [ delivery ] -> StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
+                | [ delivery ] ->
+                    StepEffect.WroteToFd (
+                        StandardStreams.roleOf (UnixSystem.processId system) delivery.Endpoint,
+                        delivery.Bytes
+                    )
                 | delivered ->
                     failwith
                         $"%s{operation}: fd %d{fd}: one write delivered %d{delivered.Length} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."

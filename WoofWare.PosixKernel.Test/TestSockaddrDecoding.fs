@@ -305,12 +305,12 @@ module TestSockaddrDecoding =
                 | Ok (SockaddrCopyAdmission.Answered error) -> Ok (ConnectOutcome.Failed error, system)
                 | Ok (SockaddrCopyAdmission.Transfer length) ->
                     let socketId =
-                        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
                         | Some (OpenFileTarget.Socket socketId) -> socketId
                         | other -> failwith $"the admission reached the copy on %O{other}"
 
                     let nonBlocking =
-                        (FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors).Value.NonBlocking
+                        (FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system)).Value.NonBlocking
 
                     UnixConnection.connectDecoded
                         socketId
@@ -329,7 +329,7 @@ module TestSockaddrDecoding =
             let fd, system = setUp case.Platform case.Socket false
 
             let socketId =
-                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
                 | Some (OpenFileTarget.Socket socketId) -> socketId
                 | other -> failwith $"setUp made %O{other}"
 
