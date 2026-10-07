@@ -67,6 +67,17 @@ public static class Natives
     // a null object raises before that.
     public static Type TypeOf(object o) => o.GetType();
 
+    // A type's module, which CoreLib reads through an FCall the contract table describes, or makes
+    // on first use through a QCall it describes; and the type's metadata token, another such FCall.
+    public static System.Reflection.Module ModuleOf() => typeof(Natives).Module;
+    public static int TokenOf() => typeof(Natives).MetadataToken;
+
+    // Whether a type is a generic parameter, an FCall the contract table describes; asked of one
+    // that is not, its parameter attributes throw before reading metadata through two more.
+    public static bool IsParameter() => typeof(Natives).IsGenericParameter;
+    public static System.Reflection.GenericParameterAttributes ParameterAttributes() =>
+        typeof(Natives).GenericParameterAttributes;
+
     // A P/Invoke into libSystem.Native, the framework's own shim.
     public static long Timestamp() => System.Diagnostics.Stopwatch.GetTimestamp();
 
@@ -803,6 +814,19 @@ public static class SR
             }
             { expect "Fixture.Natives" "TypeOf" with
                 Contains = [ "=System.OutOfMemoryException" ; "=System.NullReferenceException" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "ModuleOf" with
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "TokenOf" with
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "IsParameter" with
+                Unknown = Some false
+            }
+            { expect "Fixture.Natives" "ParameterAttributes" with
+                Contains = [ "=System.InvalidOperationException" ]
                 Unknown = Some false
             }
             { expect "Fixture.Natives" "Collections" with
