@@ -96,7 +96,7 @@ has never heard of .NET, so **it states POSIX values and no client's encoding of
 them**: a raw `<errno.h>` number, epoll's own readiness conditions, a signo, the
 set of sockets it will create. A conversion between one of those and a .NET
 encoding goes on PawPrint's side, in `WoofWare.PawPrint/Native/`, as a
-`*Pal.fs` adapter beside the sixteen that live there (count them with
+`*Pal.fs` adapter beside the seventeen that live there (count them with
 `ls WoofWare.PawPrint/Native/*Pal.fs`):
 
 - errors and signals: `UnixErrorPal` (`Interop.Error`'s numbering),
@@ -105,8 +105,10 @@ encoding goes on PawPrint's side, in `WoofWare.PawPrint/Native/`, as a
 - sockets and readiness: `SocketEventsPal` (the `SocketEvents` bits),
   `SocketArgumentsPal` (the `AF_*`/`SOCK_*`/`PT_*` numbering and the shim's
   argument screens), `SocketShimPal` (compile-time constants the shim
-  reports, such as its socket-address sizes), `PollEventsPal` (the
-  `PollEvents` bits);
+  reports, such as its socket-address sizes), `SocketOptionPal` (the
+  managed `SocketOptionLevel`/`SocketOptionName` pairs, what the shim does
+  with each, and its `LingerOption`), `PollEventsPal` (the `PollEvents`
+  bits);
 - files: `OpenFlagsPal`, `PipeFlagsPal`, `FileAdvicePal` (the shim's
   `OpenFlags`, `PipeFlags` and `FileAdvice` numberings and their screens),
   `FileStatusPal` (`st_flags` as the shim reports it), `FileSystemTypePal`

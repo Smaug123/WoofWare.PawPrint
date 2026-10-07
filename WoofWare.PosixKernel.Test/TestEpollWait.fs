@@ -82,6 +82,7 @@ module TestEpollWait =
                             LockedPort = true
                         }
                 ReuseAddress = false
+                Options = SocketOptions.initial
                 Phase =
                     SocketPhase.Listening
                         {

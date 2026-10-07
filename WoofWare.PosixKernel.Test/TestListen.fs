@@ -49,6 +49,7 @@ module TestListen =
                     SocketProtocol.Udp
             Binding = binding
             ReuseAddress = reuse
+            Options = SocketOptions.initial
             Phase = phase
         }
 

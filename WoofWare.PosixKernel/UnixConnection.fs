@@ -1374,10 +1374,12 @@ module UnixConnection =
                     // Both kernels copy the listener's socket options onto
                     // the new socket when the connection completes
                     // (inet_csk_clone_lock; sonewconn), not at accept.
-                    // Reading the listener now gives the same value because
-                    // `UnixSocket.setsockopt` refuses to change it while
-                    // connections are queued.
+                    // Reading the listener now gives the same values because
+                    // `UnixSocket.setsockopt` refuses to change any of them
+                    // while connections are queued. Measured for every option
+                    // here (`docs/probes/sockopt-options/`, P and Q).
                     ReuseAddress = listener.ReuseAddress
+                    Options = listener.Options
                     Phase = SocketPhase.Established (connectionId, ConnectionEnd.Server)
                 }
 

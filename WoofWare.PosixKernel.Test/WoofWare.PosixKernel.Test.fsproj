@@ -15,6 +15,7 @@
     <Compile Include="ReadOutcomes.fs" />
     <Compile Include="NewSocket.fs" />
     <Compile Include="CopyIn.fs" />
+    <Compile Include="OptionValue.fs" />
     <Compile Include="TestDarwinReleaseAgainstHost.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
     <Compile Include="HostFileSystemType.fs" />
@@ -152,6 +153,7 @@
     <Compile Include="TestBind.fs" />
     <Compile Include="TestSockOpt.fs" />
     <Compile Include="TestSockOptAgainstHost.fs" />
+    <Compile Include="TestSocketOptions.fs" />
     <Compile Include="TestSocketErrorOption.fs" />
     <Compile Include="TestSocketErrorAgainstHost.fs" />
     <Compile Include="TestUnconnectedSocketTransfer.fs" />

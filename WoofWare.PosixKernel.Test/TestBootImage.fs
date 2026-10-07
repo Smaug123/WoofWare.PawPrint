@@ -67,6 +67,7 @@ module TestBootImage =
                     "withEnvironment"
                     "withEphemeralPortRange"
                     "withFileSystemAndCurrentDirectory"
+                    "withIpv6OnlyByDefault"
                     "withLeaderThreadId"
                     "withLocalAddresses"
                     "withMount"
