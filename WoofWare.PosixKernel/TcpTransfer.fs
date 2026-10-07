@@ -680,7 +680,10 @@ module internal TcpTransfer =
                 $"TcpTransfer.%s{context}: the %A{closer} end has sent its FIN or reset already, which only its close does (this library models no shutdown), but it is open (this is a bug in this library)."
         | TcpEndState.Open ->
 
-        let unread = ByteQueue.length own.Receiving > 0 || ByteQueue.length own.Sending > 0
+        // Bytes still on their way to the closer count as unread too, but
+        // they wait only while its receive buffer is full, so that test
+        // covers them.
+        let unread = ByteQueue.length own.Receiving > 0
 
         if abortive || unread then
             // The peer keeps what is in its receive buffer, and loses what the
