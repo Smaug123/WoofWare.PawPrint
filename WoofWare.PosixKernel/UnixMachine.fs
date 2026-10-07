@@ -793,7 +793,12 @@ module UnixMachineState =
     /// An endpoint is held while a socket references its connection from
     /// that end: an established socket bound at the endpoint, or a listener
     /// whose accept queue still holds the connection, which owns the server
-    /// end until `accept(2)` mints a socket for it.
+    /// end until `accept(2)` mints a socket for it. A connection a reset has
+    /// reached (`resetReleasedTuple`) occupies no port of an end whose socket
+    /// has gone: measured on both (`reset-closer.c` in
+    /// docs/plans/2026-10-07-tcp-byte-transfer), the endpoint of a socket
+    /// that closed over unread bytes is free to a fresh bind, where after a
+    /// FIN it is not.
     let private orphanedConnectionOccupies (endpoint : InternetEndpoint) (machine : UnixMachineState) : bool =
         let heldFrom (connectionId : ConnectionId) (held : InternetEndpoint) (isServerEnd : bool) : bool =
             machine.Sockets
@@ -811,12 +816,13 @@ module UnixMachineState =
 
         machine.Connections
         |> Map.exists (fun connectionId connection ->
-            [ connection.ClientAddress, false ; connection.ServerAddress, true ]
-            |> List.exists (fun (held, isServerEnd) ->
-                held.Port = endpoint.Port
-                && addressesOverlap held endpoint
-                && not (heldFrom connectionId held isServerEnd)
-            )
+            not (resetReleasedTuple connection)
+            && [ connection.ClientAddress, false ; connection.ServerAddress, true ]
+               |> List.exists (fun (held, isServerEnd) ->
+                   held.Port = endpoint.Port
+                   && addressesOverlap held endpoint
+                   && not (heldFrom connectionId held isServerEnd)
+               )
         )
 
     /// Whether a TCP connection occupies the four-tuple between `source` and

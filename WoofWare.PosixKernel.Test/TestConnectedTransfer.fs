@@ -944,6 +944,31 @@ module TestConnectedTransfer =
                 assertClean system
             | other -> failwith $"%O{platform}: %A{other}"
 
+    /// The port of a socket that closed over unread bytes, which sent a
+    /// reset, is free to the next implicit bind, though its connection lives
+    /// on in the survivor (measured, `reset-closer.c`).
+    [<Test>]
+    let ``a socket that closed with a reset leaves its port to the next implicit bind`` () : unit =
+        for platform in Machines.platforms do
+            let system =
+                systemOn (UnixBootImage.withEphemeralPortRange (40000us, 40000us)) platform
+
+            let listener, system = KeventWorld.listenerAt port system
+            let client, system = KeventWorld.stream false system
+            let _, system = KeventWorld.connect client port system
+            let accepted, system = KeventWorld.accept listener system
+            let system = sentAll accepted 10 system |> KeventWorld.close client
+            let fresh, system = KeventWorld.stream false system
+
+            match CopyIn.bind fresh UserBuffer.Mapped 16u (CopyIn.inet platform (KeventWorld.loopback 0us)) system with
+            | Ok (BindAnswer.Bound _, system) ->
+                (UnixMachineState.socket (socketOf fresh system) system.Machine).Binding
+                |> Option.map (fun binding -> binding.Endpoint.Port)
+                |> shouldEqual (Some 40000us)
+
+                assertClean system
+            | other -> failwith $"%O{platform}: %A{other}"
+
     /// A Linux socket whose connect has not reported its completion, reset
     /// before it does: what Linux's retry then does to the socket is
     /// unmeasured, so it is refused.
