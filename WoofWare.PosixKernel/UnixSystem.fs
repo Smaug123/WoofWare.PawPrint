@@ -183,6 +183,12 @@ type UnixSystemDefect<'Task> =
     /// so accepting it twice would materialise two sockets onto one
     /// connection.
     | DuplicateQueuedConnection of connection : ConnectionId
+    /// More than one socket holds one end of a connection: two established as
+    /// its client, or as its server, or an accepted server end while a
+    /// listener still queues the connection (where its server end is before
+    /// `accept(2)`). `holders` names each, in socket-table order, and a
+    /// listener once however often it queues the connection.
+    | ConnectionEndHeldTwice of connection : ConnectionId * connectionEnd : ConnectionEnd * holders : SocketId list
     /// A socket's phase is one its kind cannot enter: a datagram socket
     /// listening or holding a stream connection, or a non-datagram socket
     /// holding a datagram peer.
@@ -1068,18 +1074,19 @@ module UnixSystem =
                     UnixSystemDefect.CurrentDirectoryIsNotADirectory system.Process.CurrentDirectoryInode
                 ]
 
-        // Every reference any socket makes to a connection, with whether it
-        // came through an accept queue (which has its own defect case and its
-        // own no-duplicates rule).
+        // Every reference any socket makes to a connection: as the end it is
+        // (`Some`), or through an accept queue (`None`), which has its own
+        // defect case and its own no-duplicates rule.
         let connectionReferences =
             system.Machine.Sockets
             |> Map.toList
             |> List.collect (fun (socketId, socket) ->
                 match socket.Phase with
-                | SocketPhase.Established connection
-                | SocketPhase.EstablishedPendingReport connection -> [ socketId, connection, false ]
+                | SocketPhase.Established (connection, connectionEnd) -> [ socketId, connection, Some connectionEnd ]
+                | SocketPhase.EstablishedPendingReport connection ->
+                    [ socketId, connection, Some ConnectionEnd.Client ]
                 | SocketPhase.Listening listenState ->
-                    listenState.Queue |> List.map (fun connection -> socketId, connection, true)
+                    listenState.Queue |> List.map (fun connection -> socketId, connection, None)
                 | SocketPhase.Idle
                 | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> []
@@ -1088,11 +1095,10 @@ module UnixSystem =
         let danglingConnections =
             connectionReferences
             |> List.filter (fun (_, connection, _) -> not (Map.containsKey connection system.Machine.Connections))
-            |> List.map (fun (socketId, connection, queued) ->
-                if queued then
-                    UnixSystemDefect.DanglingQueuedConnection (socketId, connection)
-                else
-                    UnixSystemDefect.DanglingConnection (socketId, connection)
+            |> List.map (fun (socketId, connection, heldAs) ->
+                match heldAs with
+                | None -> UnixSystemDefect.DanglingQueuedConnection (socketId, connection)
+                | Some _ -> UnixSystemDefect.DanglingConnection (socketId, connection)
             )
 
         let referencedConnections =
@@ -1109,10 +1115,43 @@ module UnixSystem =
 
         let duplicateQueued =
             connectionReferences
-            |> List.choose (fun (_, connection, queued) -> if queued then Some connection else None)
+            |> List.choose (fun (_, connection, heldAs) ->
+                match heldAs with
+                | None -> Some connection
+                | Some _ -> None
+            )
             |> List.countBy id
             |> List.filter (fun (_, count) -> count > 1)
             |> List.map (fun (connection, _) -> UnixSystemDefect.DuplicateQueuedConnection connection)
+
+        // A connection has one client and one server. Until `accept(2)` the
+        // server end is the listener's queue entry, so the server end is held
+        // once in all, queued or accepted. A listener counts once however
+        // often it queues the connection: that is `DuplicateQueuedConnection`.
+        let connectionEndsHeldTwice =
+            connectionReferences
+            |> List.groupBy (fun (_, connection, _) -> connection)
+            |> List.collect (fun (connection, references) ->
+                [ ConnectionEnd.Client ; ConnectionEnd.Server ]
+                |> List.choose (fun connectionEnd ->
+                    let holders =
+                        references
+                        |> List.choose (fun (socketId, _, heldAs) ->
+                            let holdsThisEnd =
+                                match heldAs with
+                                | Some held -> held = connectionEnd
+                                | None -> connectionEnd = ConnectionEnd.Server
+
+                            if holdsThisEnd then Some socketId else None
+                        )
+                        |> List.distinct
+
+                    if List.length holders > 1 then
+                        Some (UnixSystemDefect.ConnectionEndHeldTwice (connection, connectionEnd, holders))
+                    else
+                        None
+                )
+            )
 
         let phaseKindMismatches =
             system.Machine.Sockets
@@ -1893,6 +1932,7 @@ module UnixSystem =
         @ danglingConnections
         @ orphanConnections
         @ duplicateQueued
+        @ connectionEndsHeldTwice
         @ phaseKindMismatches
         @ drainedUnderLinux
         @ connectionFreshness

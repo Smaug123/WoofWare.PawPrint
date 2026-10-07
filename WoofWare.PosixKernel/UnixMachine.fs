@@ -407,7 +407,7 @@ module UnixMachineState =
             otherId <> socketId
             && (
                 match other.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c -> c = connectionId
                 | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
                 | SocketPhase.Idle
@@ -469,7 +469,7 @@ module UnixMachineState =
                 failwith
                     $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll, so it is not modelled. `UnixPoll.poll` and `UnixPoll.epollCtl` both refuse such a socket (LinuxReadiness.modelsSocket) before asking, so this is a bug in this library, or in a caller that asked about a socket LinuxReadiness.modelsSocket rejects. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before modelling the kind."
         | SocketPhase.EstablishedPendingReport connectionId
-        | SocketPhase.Established connectionId ->
+        | SocketPhase.Established (connectionId, _) ->
             // With the peer alive and no receive path modelled, both ends
             // are exactly write-ready; once the peer is gone, the level is
             // the measured half-closed one.
@@ -559,7 +559,7 @@ module UnixMachineState =
             machine.Sockets
             |> Map.exists (fun _ socket ->
                 match socket.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c ->
                     c = connectionId
                     && (socket.Binding |> Option.exists (fun binding -> binding.Endpoint = held))
