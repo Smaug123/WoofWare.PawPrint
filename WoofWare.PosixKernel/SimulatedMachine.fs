@@ -370,7 +370,8 @@ module SimulatedMachine =
     /// What a real kernel does at exit, where another process can see it.
     /// The process's tasks are gone already (`EndedProcess.Machine`), and with
     /// them the holds their calls in flight had; any description only those
-    /// calls held is released now. Then every descriptor of the process is
+    /// calls held, or that the call which ended the process let go of as it
+    /// returned, is released now. Then every descriptor of the process is
     /// closed, the highest first (measured on Linux 6.18.5 and Darwin 27.0.0,
     /// `exit-close-order.c`: the FINs of three connections reached their
     /// peers in descending order of the exiting process's descriptors, not in
@@ -379,8 +380,9 @@ module SimulatedMachine =
     /// a lock is let go of, a pipe end closes, an epoll instance, a kqueue or a
     /// listener goes, and every registration made through the descriptor with
     /// it. A listener's release signals nothing, so it is made after every
-    /// other: a connection the process's own socket left unaccepted in it has
-    /// gone first, as it goes with the process. The process ID, thread IDs and
+    /// other, whether a descriptor or a call held it last: a connection the
+    /// process's own socket left unaccepted in it has gone first, as it goes
+    /// with the process. The process ID, thread IDs and
     /// current directory are let go of with the tasks.
     ///
     /// Refuses (`ProcessEndRefusal`) where a close would be refused: a listener
@@ -398,18 +400,6 @@ module SimulatedMachine =
         let view = ended.EndedIn
         assertCurrent "SimulatedMachine.endProcess" view machine
         let processId = view.Process.ProcessId
-
-        // Released before the descriptors are closed, as the calls return when
-        // their tasks die, before the process's files are closed; the order
-        // between the two has not been measured.
-        let heldByCalls =
-            view.Tasks
-            |> Map.toList
-            |> List.collect (fun (_, state) ->
-                match state.Parked with
-                | Some park -> ParkedSyscall.descriptions park.Syscall
-                | None -> []
-            )
 
         // The process with no task left. Releasing a description reads and
         // writes the machine alone, and dropping a descriptor the process's
@@ -439,18 +429,64 @@ module SimulatedMachine =
             | OpenFileTarget.Epoll _
             | OpenFileTarget.Kqueue _ -> false
 
-        let closeAll
-            (dead : UnixSystem<'Task, 'Handler>)
-            : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>
+        // A listener's release signals nothing, so it waits for every other
+        // release; any other goes at once.
+        let release
+            (state : Result<UnixSystem<'Task, 'Handler> * OpenFileDescription list, DescriptionReleaseRefusal>)
+            (destroyed : OpenFileDescription)
+            : Result<UnixSystem<'Task, 'Handler> * OpenFileDescription list, DescriptionReleaseRefusal>
             =
-            let descending =
-                FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors dead)
-                |> Map.keys
-                |> Seq.sortDescending
-                |> Seq.toList
+            match state with
+            | Error refusal -> Error refusal
+            | Ok (dead, listeners) ->
+                if isListener destroyed dead.Machine then
+                    Ok (dead, destroyed :: listeners)
+                else
+                    ObjectLifetime.releaseDestroyed destroyed dead
+                    |> Result.map (fun dead -> dead, listeners)
 
-            let closed =
-                ((Ok (dead, [])
+        // First what nothing references any more: what the process's calls in
+        // flight held, whose holds went with its tasks, and what the call that
+        // ended the process let go of as it returned. These go as the calls
+        // return when their tasks die, before the process's files are closed;
+        // the order between the two has not been measured. On a machine no
+        // process's end has left so, no description is unreferenced.
+        let unreferenced =
+            OpenFileTable.descriptions dead.Machine.OpenFiles
+            |> Map.keys
+            |> Seq.filter (fun id ->
+                OpenFileTable.descriptorCount id dead.Machine.OpenFiles = Some 0
+                && OpenFileTable.holdCount id dead.Machine.OpenFiles = Some 0
+            )
+            |> Seq.toList
+
+        let released =
+            ((Ok (dead, []) : Result<UnixSystem<'Task, 'Handler> * OpenFileDescription list, DescriptionReleaseRefusal>),
+             unreferenced)
+            ||> List.fold (fun state id ->
+                match state with
+                | Error refusal -> Error refusal
+                | Ok (dead, listeners) ->
+                    match OpenFileTable.destroyIfUnreferenced id dead.Machine.OpenFiles with
+                    | _, None ->
+                        failwith
+                            $"SimulatedMachine.endProcess: open file description %O{id} was unreferenced a moment ago, and destroying it destroyed nothing (this is a bug in this library)."
+                    | openFiles, Some destroyed ->
+                        release (Ok (UnixSystemState.mapOpenFiles (fun _ -> openFiles) dead, listeners)) destroyed
+            )
+
+        // Then every descriptor, highest first.
+        let closed =
+            match released with
+            | Error refusal -> Error refusal
+            | Ok (dead, listeners) ->
+                let descending =
+                    FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors dead)
+                    |> Map.keys
+                    |> Seq.sortDescending
+                    |> Seq.toList
+
+                ((Ok (dead, listeners)
                  : Result<UnixSystem<'Task, 'Handler> * OpenFileDescription list, DescriptionReleaseRefusal>),
                  descending)
                 ||> List.fold (fun state fd ->
@@ -469,12 +505,11 @@ module SimulatedMachine =
 
                         match destroyed with
                         | None -> Ok (dead, listeners)
-                        | Some destroyed when isListener destroyed dead.Machine -> Ok (dead, destroyed :: listeners)
-                        | Some destroyed ->
-                            ObjectLifetime.releaseDestroyed destroyed dead
-                            |> Result.map (fun dead -> dead, listeners)
+                        | Some destroyed -> release (Ok (dead, listeners)) destroyed
                 )
 
+        // Then the listeners, in the order they were let go of.
+        let finished =
             match closed with
             | Error refusal -> Error refusal
             | Ok (dead, listeners) ->
@@ -485,7 +520,7 @@ module SimulatedMachine =
                     | Ok dead -> ObjectLifetime.releaseDestroyed listener dead
                 )
 
-        match ObjectLifetime.releaseUnreferenced heldByCalls dead |> Result.bind closeAll with
+        match finished with
         | Error refusal -> Error (ProcessEndRefusal.Release refusal)
         | Ok dead ->
             Ok (

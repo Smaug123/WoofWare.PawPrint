@@ -826,6 +826,19 @@ module TestMultiProcessFuzz =
 
                     let world = settle coverage pid task made world
 
+                    // A finish whose process's end was refused leaves the task
+                    // parked, woken still, for a later pass.
+                    let world =
+                        match Map.tryFind pid world.Machine.Processes with
+                        | Some slot when
+                            (UnixTaskTable.parkedFor task slot.Tasks).IsSome
+                            && not (Set.contains (pid, task) world.Asleep)
+                            ->
+                            { world with
+                                Woken = world.Woken @ [ pid, task ]
+                            }
+                        | _ -> world
+
                     if world.Machine.Processes.ContainsKey pid then
                         othersUnmoved pid before world.Machine
 

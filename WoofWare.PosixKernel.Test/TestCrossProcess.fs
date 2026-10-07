@@ -1,5 +1,6 @@
 namespace WoofWare.PosixKernel.Test
 
+open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
@@ -1119,3 +1120,83 @@ module TestCrossProcess =
 
             VirtualFileSystem.tryGet inode (UnixSystem.fileSystem (Machines.viewOf a machine))
             |> shouldEqual None
+
+    [<Test>]
+    let ``a process's end releases what the call that ended it let go of`` () : unit =
+        // Under Linux a sleeping write holds its pipe end past the close of its
+        // descriptor. The reader's close then lets the write finish into
+        // SIGPIPE, which ends the process; the finish has let go of the write
+        // end already, so no park records it.
+        let pids, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 2
+        let a = pids.[0]
+
+        let write (task : int) (fd : int) (count : int) (view : UnixSystem<int, string>) =
+            WriteOutcomes.admitThenWrite
+                task
+                fd
+                UserBuffer.Mapped
+                (ImmutableArray.Create<byte> (Array.zeroCreate<byte> count))
+                view
+
+        let (reader, writer), machine =
+            Machines.inProcess
+                a
+                (fun view ->
+                    match UnixPipe.pipe2 0 UserBuffer.Mapped view with
+                    | Ok (Pipe2Answer.Created (reader, writer), view) -> (reader, writer), view
+                    | other -> failwith $"pipe2: %A{other}"
+                )
+                machine
+
+        let pipe =
+            match UnixSystem.descriptorTarget reader (Machines.viewOf a machine) with
+            | Some (OpenFileTarget.Pipe (pipe, _)) -> pipe
+            | other -> failwith $"the read end names %A{other}"
+
+        let machine =
+            Machines.doIn
+                a
+                (fun view ->
+                    let view =
+                        match write 0 writer 65536 view with
+                        | Ok (WriteOutcome.Returns (WriteAnswer.Completed 65536L, view)) -> view
+                        | other -> failwith $"filling the pipe: %A{other}"
+
+                    match write 1 writer 1 view with
+                    | Ok (WriteOutcome.WouldBlock (_, view)) -> view
+                    | other -> failwith $"the write: expected to sleep, got %A{other}"
+                )
+                machine
+
+        let machine =
+            machine
+            |> Machines.doIn a (KeventWorld.close writer)
+            |> Machines.doIn a (KeventWorld.close reader)
+
+        Machines.assertClean machine
+
+        let ended =
+            match UnixReadWrite.admitFinishWrite 1 (Machines.viewOf a machine) with
+            | Ok (WriteOutcome.ProcessEnded ended) -> ended
+            | other -> failwith $"finishing the write: expected the process to end, got %A{other}"
+
+        match SimulatedMachine.endProcess ended machine with
+        | Ok (_, machine) ->
+            Machines.assertClean machine
+            machine.Machine.Pipes |> Map.containsKey pipe |> shouldEqual false
+        | Error refusal -> failwith $"endProcess: %s{ProcessEndRefusal.describe refusal}"
+
+    [<Test>]
+    let ``a process's end lets a listener only its sleeping accept held go after its own client`` () : unit =
+        let pids, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 2
+        let a = pids.[0]
+
+        let listener, machine = Machines.inProcess a (KeventWorld.listenerAt 8080us) machine
+
+        let machine = sleepInAccept a 1 listener machine
+        let machine = Machines.doIn a (KeventWorld.close listener) machine
+        let _, machine = Machines.inProcess a (KeventWorld.client 8080us) machine
+        Machines.assertClean machine
+
+        let machine = exitedOk a machine
+        Machines.assertClean machine
