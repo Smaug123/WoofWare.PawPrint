@@ -1,5 +1,204 @@
 namespace WoofWare.PosixKernel
 
+/// Why `UnixBootImage.withUserAddressLimit` refuses a limit.
+[<RequireQualifiedAccess>]
+type UserAddressLimitRefusal =
+    /// The machine's flavour screens no buffer before performing an
+    /// operation (Darwin), so it has no `TASK_SIZE_MAX` for a limit to set.
+    /// Contradictory: no machine of the flavour has the setting.
+    | NoUpFrontScreen of flavour : SimulatedUnixFlavour
+    /// No machine of `architecture` has been observed with `limit` as its
+    /// `TASK_SIZE_MAX` (see `ObservedUserAddressLimit`). `observedOn` is the
+    /// architecture whose machines have been, if any. Unmeasured: a machine
+    /// may have such a limit, but this library has not seen one.
+    | NotObservedOn of
+        limit : uint64 *
+        architecture : SimulatedUnixArchitecture *
+        observedOn : SimulatedUnixArchitecture option
+
+[<RequireQualifiedAccess>]
+module UserAddressLimitRefusal =
+    /// What this library knows about why it refused the limit, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : UserAddressLimitRefusal) : string =
+        match refusal with
+        | UserAddressLimitRefusal.NoUpFrontScreen flavour ->
+            $"a %O{flavour} kernel screens no buffer before performing an operation, so it has no user address limit to set."
+        | UserAddressLimitRefusal.NotObservedOn (limit, architecture, Some observedOn) ->
+            $"0x%x{limit} is the TASK_SIZE_MAX of an %O{observedOn} machine, but this platform is %O{architecture}."
+        | UserAddressLimitRefusal.NotObservedOn (limit, architecture, None) ->
+            $"no %O{architecture} machine has been observed with a TASK_SIZE_MAX of 0x%x{limit}; ObservedUserAddressLimit lists those that have."
+
+/// Why `UnixBootImage.withProcessorCount` refuses a count.
+[<RequireQualifiedAccess>]
+type ProcessorCountRefusal =
+    /// The count is below 1. Contradictory: a machine running the process
+    /// has at least the processor it runs on, and programs divide by the
+    /// count.
+    | NotPositive of count : int
+
+[<RequireQualifiedAccess>]
+module ProcessorCountRefusal =
+    /// What this library knows about why it refused the count, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : ProcessorCountRefusal) : string =
+        match refusal with
+        | ProcessorCountRefusal.NotPositive count ->
+            $"%d{count} logical processors is not a machine: a process runs on at least one, and programs divide by the count."
+
+/// Why `UnixBootImage.withEphemeralPortRange` refuses a range.
+[<RequireQualifiedAccess>]
+type EphemeralPortRangeRefusal =
+    /// The range starts at port 0, which is how a process *asks* for an
+    /// ephemeral port, so it cannot also be one handed out. Contradictory.
+    | LowIsZero of high : uint16
+    /// The low end is above the high end, so the range holds no port and no
+    /// bind of port 0 could be answered. Contradictory.
+    | Empty of low : uint16 * high : uint16
+
+[<RequireQualifiedAccess>]
+module EphemeralPortRangeRefusal =
+    /// What this library knows about why it refused the range, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : EphemeralPortRangeRefusal) : string =
+        match refusal with
+        | EphemeralPortRangeRefusal.LowIsZero high ->
+            $"the range 0-%d{high} starts at port 0, which is how a process asks for an ephemeral port, so it cannot also be one that gets handed out. Start the range at 1 or above."
+        | EphemeralPortRangeRefusal.Empty (low, high) ->
+            $"the range %d{low}-%d{high} is empty, so no bind of port 0 could ever be answered."
+
+/// Why `UnixBootImage.withBootTime` refuses an instant.
+[<RequireQualifiedAccess>]
+type BootTimeRefusal =
+    /// The instant is before the Unix epoch. Unmodelled: this library models
+    /// no realtime clock reading before it.
+    | BeforeEpoch of bootTime : UnixTimestamp
+    /// The instant is after `maxSeconds` (`UnixMachineState.maxBootTimeSeconds`)
+    /// seconds since the epoch, from which the realtime clock could pass the
+    /// largest `time_t` within the longest uptime this library represents.
+    /// Unmodelled.
+    | PastMaxBootTime of bootTime : UnixTimestamp * maxSeconds : int64
+    /// On Darwin, the instant has a nonzero sub-microsecond part. Darwin
+    /// keeps the time it booted as a `struct timeval` (`sysctl
+    /// kern.boottime`), so no Darwin machine booted at it. Contradictory.
+    | FinerThanMicrosecond of bootTime : UnixTimestamp
+
+[<RequireQualifiedAccess>]
+module BootTimeRefusal =
+    /// What this library knows about why it refused the instant, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : BootTimeRefusal) : string =
+        match refusal with
+        | BootTimeRefusal.BeforeEpoch bootTime ->
+            $"%O{bootTime} is before the Unix epoch, and this kernel does not model a realtime clock reading before it."
+        | BootTimeRefusal.PastMaxBootTime (bootTime, maxSeconds) ->
+            $"%O{bootTime} is after %d{maxSeconds} seconds since the Unix epoch, from which the realtime clock could pass the largest time_t within the longest uptime this kernel represents."
+        | BootTimeRefusal.FinerThanMicrosecond bootTime ->
+            $"%O{bootTime} is finer than a microsecond, and Darwin keeps its boot instant as a struct timeval (sysctl kern.boottime), so no Darwin machine booted at it."
+
+/// Why `UnixBootImage.withMount` refuses a mount.
+[<RequireQualifiedAccess>]
+type MountRefusal =
+    /// A kernel of `flavour` cannot report `fileSystemType`
+    /// (`EmulatedFileSystemType.isReportableUnder`), so a process asking
+    /// `fstatfs(2)` would learn a fact no such system could tell it: APFS on
+    /// Linux is contradictory, since no mainline Linux filesystem reports its
+    /// type; tmpfs on Darwin is unmeasured, since a Darwin machine can mount
+    /// one but none has been measured.
+    | NotReportableUnder of fileSystemType : EmulatedFileSystemType * flavour : SimulatedUnixFlavour
+
+[<RequireQualifiedAccess>]
+module MountRefusal =
+    /// What this library knows about why it refused the mount, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : MountRefusal) : string =
+        match refusal with
+        | MountRefusal.NotReportableUnder (fileSystemType, flavour) ->
+            $"a %O{flavour} kernel cannot report %O{fileSystemType}, so a process asking fstatfs would learn a fact no such system could tell it."
+
+/// Why `UnixBootImage.withProtectedFiles` refuses a setting.
+[<RequireQualifiedAccess>]
+type ProtectedFilesRefusal =
+    /// `protection` sets an `fs.protected_*` sysctl, and a kernel of
+    /// `flavour` (Darwin) has none: measured on Darwin 27.0, it applies none
+    /// of their rules. Contradictory.
+    | NoSuchSysctls of protection : ProtectedFiles * flavour : SimulatedUnixFlavour
+
+[<RequireQualifiedAccess>]
+module ProtectedFilesRefusal =
+    /// What this library knows about why it refused the setting, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : ProtectedFilesRefusal) : string =
+        match refusal with
+        | ProtectedFilesRefusal.NoSuchSysctls (protection, flavour) ->
+            $"%A{protection} sets an fs.protected_* sysctl, which a %O{flavour} kernel does not have; it applies none of their rules (measured on Darwin 27.0, protected-sysctls.c). Leave every one of them Off."
+
+/// Why `UnixBootImage.withPipeDevice` refuses a device.
+[<RequireQualifiedAccess>]
+type PipeDeviceRefusal =
+    /// The machine is Darwin's, whose pipes all report `st_dev` 0 (measured
+    /// on 27.0.0), and the device is not 0. Contradictory.
+    | DarwinReportsZero of device : int64
+    /// The device is negative, which no `dev_t` is. Contradictory.
+    | Negative of device : int64
+
+[<RequireQualifiedAccess>]
+module PipeDeviceRefusal =
+    /// What this library knows about why it refused the device, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : PipeDeviceRefusal) : string =
+        match refusal with
+        | PipeDeviceRefusal.DarwinReportsZero device ->
+            $"%d{device} is not a device a Darwin pipe reports; every pipe on Darwin reports st_dev 0 (measured on 27.0.0)."
+        | PipeDeviceRefusal.Negative device -> $"%d{device} is negative, which no dev_t is."
+
+/// Why `UnixBootImage.withSoMaxConn` refuses a value.
+[<RequireQualifiedAccess>]
+type SoMaxConnRefusal =
+    /// The value is below 1. Unmeasured: no kernel was measured with a
+    /// non-positive `somaxconn`, so the accept-queue capacity it would imply
+    /// is a guess.
+    | NotPositive of value : int
+
+[<RequireQualifiedAccess>]
+module SoMaxConnRefusal =
+    /// What this library knows about why it refused the value, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : SoMaxConnRefusal) : string =
+        match refusal with
+        | SoMaxConnRefusal.NotPositive value ->
+            $"%d{value} is not positive, and no kernel was measured with a non-positive somaxconn, so the accept-queue capacity it would imply is a guess."
+
+/// Why `UnixBootImage.withTcpSendSpace` refuses a value.
+[<RequireQualifiedAccess>]
+type TcpSendSpaceRefusal =
+    /// A value was configured on a machine of `flavour` (Linux), where this
+    /// library models no TCP send buffer, so nothing would read it.
+    /// Unmodelled.
+    | NotReadOn of flavour : SimulatedUnixFlavour * value : int
+    /// The value is above `max` (`UnixMachineState.darwinSocketBufferMax`,
+    /// `kern.ipc.maxsockbuf`), and Darwin refuses such a
+    /// `net.inet.tcp.sendspace` with ERANGE. Contradictory.
+    | AboveSocketBufferMax of value : int * max : int
+    /// The value is below `sendPipe` (`UnixMachineState.darwinLoopbackSendPipe`),
+    /// the send pipe of Darwin's route to 127.0.0.1. A connection's handshake
+    /// grows a send buffer that small to the send pipe of the route it takes,
+    /// and this library does not model routes. Unmodelled.
+    | BelowLoopbackSendPipe of value : int * sendPipe : int
+
+[<RequireQualifiedAccess>]
+module TcpSendSpaceRefusal =
+    /// What this library knows about why it refused the value, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (refusal : TcpSendSpaceRefusal) : string =
+        match refusal with
+        | TcpSendSpaceRefusal.NotReadOn (flavour, value) ->
+            $"%d{value} was configured on a %O{flavour} machine, but this kernel models no %O{flavour} TCP send buffer, so nothing would read it."
+        | TcpSendSpaceRefusal.AboveSocketBufferMax (value, max) ->
+            $"%d{value} exceeds kern.ipc.maxsockbuf (%d{max}), and Darwin refuses such a net.inet.tcp.sendspace with ERANGE."
+        | TcpSendSpaceRefusal.BelowLoopbackSendPipe (value, sendPipe) ->
+            $"%d{value} is below %d{sendPipe}, the send pipe of Darwin's route to 127.0.0.1. A connection's handshake grows a send buffer that small to the send pipe of the route it takes, and this kernel does not model routes."
+
 /// The boot-time configuration of a simulated process and the machine it runs
 /// on, applied to the `UnixBootImage` that `UnixSystem.initial` makes, and
 /// `boot`, which ends it.
@@ -9,6 +208,11 @@ namespace WoofWare.PosixKernel
 /// the machine from the moment it booted. What changes while the machine runs
 /// is a syscall's effect, or an operation of the outside world on the running
 /// system, such as `UnixSystem.advanceClock`.
+///
+/// A machine setter that refuses a value returns `Result`, as a syscall does:
+/// its `Error` is a refusal type of its own whose cases state the facts, and
+/// whose `describe` says them. Only the caller knows what it called the value,
+/// so naming that is the caller's.
 [<RequireQualifiedAccess>]
 module UnixBootImage =
 
@@ -421,37 +625,32 @@ module UnixBootImage =
     /// Set the greatest range end a user buffer may reach: the machine's
     /// `TASK_SIZE_MAX`.
     ///
-    /// Refused on a platform that screens no buffer up front, which has no such
-    /// limit to set, and for a limit no machine of the platform's architecture
-    /// has been observed to have (see `ObservedUserAddressLimit`).
+    /// Refuses a limit on a platform that screens no buffer up front, which
+    /// has no such limit to set, and a limit no machine of the platform's
+    /// architecture has been observed to have (see `ObservedUserAddressLimit`).
     let withUserAddressLimit<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (limit : uint64)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, UserAddressLimitRefusal>
         =
         let machine = image.System.Machine
 
         let platform = machine.UnixPlatform
 
         if not (SimulatedUnixPlatform.screensUserBufferUpFront platform) then
-            failwith
-                $"UnixBootImage.withUserAddressLimit: a %O{SimulatedUnixPlatform.flavour platform} kernel screens no buffer before performing an operation, so it has no user address limit to set; got 0x%x{limit}."
+            Error (UserAddressLimitRefusal.NoUpFrontScreen (SimulatedUnixPlatform.flavour platform))
+        else
 
         let architecture = SimulatedUnixPlatform.architecture platform
 
         match ObservedUserAddressLimit.architectureOf limit with
-        | Some observed when observed = architecture -> ()
-        | Some observed ->
-            failwith
-                $"UnixBootImage.withUserAddressLimit: 0x%x{limit} is the TASK_SIZE_MAX of an %O{observed} machine, but this platform is %O{architecture}."
-        | None ->
-            failwith
-                $"UnixBootImage.withUserAddressLimit: no %O{architecture} machine has been observed with a TASK_SIZE_MAX of 0x%x{limit}; ObservedUserAddressLimit lists those that have."
-
-        { machine with
-            UserBufferCheck = UserBufferCheck.BeforeOperation limit
-        }
-        |> withMachine image
+        | Some observed when observed = architecture ->
+            { machine with
+                UserBufferCheck = UserBufferCheck.BeforeOperation limit
+            }
+            |> withMachine image
+            |> Ok
+        | observedOn -> Error (UserAddressLimitRefusal.NotObservedOn (limit, architecture, observedOn))
 
     /// Seed the machine's entropy pool, which every random-bytes syscall draws
     /// from, with `seed` in place of `UnixSystem.defaultEntropySeed`. Every
@@ -467,47 +666,51 @@ module UnixBootImage =
         }
         |> withMachine image
 
-    /// Set the logical-processor count the simulated process reports. Rejects
-    /// non-positive values at the boundary rather than letting them reach a
-    /// program that will divide by them.
+    /// Set the logical-processor count the simulated process reports.
+    ///
+    /// Refuses a count below 1 at the boundary, rather than letting it reach a
+    /// program that will divide by it.
     let withProcessorCount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (count : int)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, ProcessorCountRefusal>
         =
         let machine = image.System.Machine
 
         if count < 1 then
-            failwith $"ProcessorCount must be at least 1; got %d{count}"
+            Error (ProcessorCountRefusal.NotPositive count)
+        else
 
         { machine with
             ProcessorCount = count
         }
         |> withMachine image
+        |> Ok
 
-    /// Sets the ephemeral range, and rewinds the cursor into it: a cursor left
-    /// outside the range would hand out its first port from wherever the previous
-    /// range had reached.
+    /// Sets the ephemeral range, inclusive at both ends, and rewinds the
+    /// cursor into it: a cursor left outside the range would hand out its first
+    /// port from wherever the previous range had reached.
+    ///
+    /// Refuses a range that starts at port 0, and an empty one.
     let withEphemeralPortRange<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         ((low, high) : uint16 * uint16)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, EphemeralPortRangeRefusal>
         =
         let machine = image.System.Machine
 
         if low = 0us then
-            failwith
-                "UnixMachineState.EphemeralPortRange: port 0 is how a process *asks* for an ephemeral port, so it cannot also be one that gets handed out. Start the range at 1 or above."
-
-        if low > high then
-            failwith
-                $"UnixMachineState.EphemeralPortRange: the range %d{low}-%d{high} is empty, so no bind of port 0 could ever be answered."
+            Error (EphemeralPortRangeRefusal.LowIsZero high)
+        elif low > high then
+            Error (EphemeralPortRangeRefusal.Empty (low, high))
+        else
 
         { machine with
             EphemeralPortRange = low, high
             NextEphemeralPort = low
         }
         |> withMachine image
+        |> Ok
 
     /// Set what the realtime clock read when this machine booted.
     ///
@@ -519,31 +722,30 @@ module UnixBootImage =
     let withBootTime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (bootTime : UnixTimestamp)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, BootTimeRefusal>
         =
         let machine = image.System.Machine
 
         let seconds = UnixTimestamp.seconds bootTime
 
+        let finerThanDarwinKeeps =
+            match SimulatedUnixPlatform.flavour machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> false
+            | SimulatedUnixFlavour.Darwin -> UnixTimestamp.nanoseconds bootTime % 1000 <> 0
+
         if seconds < 0L then
-            failwith
-                $"UnixMachineState.BootTime: %O{bootTime} is before the Unix epoch, and this kernel does not model a realtime clock reading before it."
-
-        if seconds > UnixMachineState.maxBootTimeSeconds then
-            failwith
-                $"UnixMachineState.BootTime: %O{bootTime} is after %d{UnixMachineState.maxBootTimeSeconds} seconds since the Unix epoch, from which the realtime clock could pass the largest time_t within the longest uptime this kernel represents."
-
-        match SimulatedUnixPlatform.flavour machine.UnixPlatform with
-        | SimulatedUnixFlavour.Linux -> ()
-        | SimulatedUnixFlavour.Darwin ->
-            if UnixTimestamp.nanoseconds bootTime % 1000 <> 0 then
-                failwith
-                    $"UnixMachineState.BootTime: %O{bootTime} is finer than a microsecond, and Darwin keeps its boot instant as a struct timeval (sysctl kern.boottime), so no Darwin machine booted at it."
+            Error (BootTimeRefusal.BeforeEpoch bootTime)
+        elif seconds > UnixMachineState.maxBootTimeSeconds then
+            Error (BootTimeRefusal.PastMaxBootTime (bootTime, UnixMachineState.maxBootTimeSeconds))
+        elif finerThanDarwinKeeps then
+            Error (BootTimeRefusal.FinerThanMicrosecond bootTime)
+        else
 
         { machine with
             BootTime = bootTime
         }
         |> withMachine image
+        |> Ok
 
     let withLocalAddresses<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (addresses : uint32 list)
@@ -569,14 +771,15 @@ module UnixBootImage =
         |> withMachine image
 
     /// Set the mount the machine's filesystem claims to be. `None` takes the
-    /// flavour's own default; a mount of a type this machine's flavour could
-    /// not mount is refused, because `fstatfs(2)` answers a *file* from the
-    /// mount and every other descriptor from the flavour, so the pair must
-    /// describe one machine.
+    /// flavour's own default.
+    ///
+    /// Refuses a mount of a type this machine's flavour could not report,
+    /// because `fstatfs(2)` answers a *file* from the mount and every other
+    /// descriptor from the flavour, so the pair must describe one machine.
     let withMount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (mount : EmulatedMount option)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, MountRefusal>
         =
         let machine = image.System.Machine
 
@@ -584,42 +787,45 @@ module UnixBootImage =
 
         let resolved =
             match mount with
-            | None -> EmulatedMount.defaultFor flavour
+            | None -> Ok (EmulatedMount.defaultFor flavour)
             | Some requested ->
                 let fsType = EmulatedMount.fileSystemType requested
 
-                if not (EmulatedFileSystemType.isReportableUnder flavour fsType) then
-                    failwith
-                        $"UnixMachineState.Mount: a %O{flavour} kernel cannot report %O{fsType}, so a process asking `fstatfs` would learn a fact no such system could tell it. Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
+                if EmulatedFileSystemType.isReportableUnder flavour fsType then
+                    Ok requested
+                else
+                    Error (MountRefusal.NotReportableUnder (fsType, flavour))
 
-                requested
+        resolved
+        |> Result.map (fun resolved ->
+            { machine with
+                Mount = resolved
+            }
+            |> withMachine image
+        )
 
-        { machine with
-            Mount = resolved
-        }
-        |> withMachine image
-
-    /// Set the `fs.protected_*` sysctls. Refused on Darwin for anything but
-    /// `ProtectedFiles.off`, since Darwin has no such settings; `context` names
-    /// the caller's knob in the refusal.
+    /// Set the `fs.protected_*` sysctls.
+    ///
+    /// Refuses anything but `ProtectedFiles.off` on Darwin, which has no such
+    /// settings.
     let withProtectedFiles<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
         (protection : ProtectedFiles)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, ProtectedFilesRefusal>
         =
         let machine = image.System.Machine
 
         let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
         if not (UnixMachineState.isProtectedFilesOf flavour protection) then
-            failwith
-                $"%s{context}: %A{protection} sets an fs.protected_* sysctl, which a %O{flavour} kernel does not have; it applies none of their rules (measured on Darwin 27.0, protected-sysctls.c). Leave every one of them Off."
+            Error (ProtectedFilesRefusal.NoSuchSysctls (protection, flavour))
+        else
 
         { machine with
             ProtectedFiles = protection
         }
         |> withMachine image
+        |> Ok
 
     /// Set the `st_dev` every pipe reports. `None` takes the flavour's default
     /// (`UnixMachineState.defaultPipeDevice`).
@@ -629,7 +835,7 @@ module UnixBootImage =
     let withPipeDevice<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (device : int64 option)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, PipeDeviceRefusal>
         =
         let machine = image.System.Machine
 
@@ -637,61 +843,64 @@ module UnixBootImage =
 
         let resolved =
             match device, flavour with
-            | None, _ -> UnixMachineState.defaultPipeDevice flavour
+            | None, _ -> Ok (UnixMachineState.defaultPipeDevice flavour)
             | Some device, SimulatedUnixFlavour.Darwin when device <> 0L ->
-                failwith
-                    $"UnixMachineState.PipeDevice: %d{device} is not a device a Darwin pipe reports; every pipe on Darwin reports st_dev 0 (measured on 27.0.0). Pass None, or 0."
-            | Some device, _ when device < 0L ->
-                failwith $"UnixMachineState.PipeDevice: %d{device} is negative, which no dev_t is."
-            | Some device, _ -> device
+                Error (PipeDeviceRefusal.DarwinReportsZero device)
+            | Some device, _ when device < 0L -> Error (PipeDeviceRefusal.Negative device)
+            | Some device, _ -> Ok device
 
-        { machine with
-            PipeDevice = resolved
-        }
-        |> withMachine image
+        resolved
+        |> Result.map (fun resolved ->
+            { machine with
+                PipeDevice = resolved
+            }
+            |> withMachine image
+        )
 
     /// Set the `somaxconn` sysctl.
     ///
     /// `None` takes the measured default of this machine's flavour. The clamp
     /// this feeds (`connectSocket`'s capacity rule) was measured with the
     /// sysctl set to 3 on Linux and at the default 128 on Darwin, so a
-    /// configured value is on measured ground, but it must be positive: no
-    /// machine was measured with a non-positive somaxconn.
+    /// configured value is on measured ground.
+    ///
+    /// Refuses a value below 1: no machine was measured with a non-positive
+    /// somaxconn.
     let withSoMaxConn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (value : int option)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, SoMaxConnRefusal>
         =
         let machine = image.System.Machine
 
         let resolved =
             match value with
-            | None -> UnixMachineState.defaultSoMaxConn (SimulatedUnixPlatform.flavour machine.UnixPlatform)
-            | Some value ->
-                if value < 1 then
-                    failwith
-                        $"UnixMachineState.SoMaxConn: %d{value} is not positive, and no kernel was measured with a non-positive somaxconn — the accept-queue capacity it would imply is a guess. Configure a positive value, or None for the flavour's default."
+            | None -> Ok (UnixMachineState.defaultSoMaxConn (SimulatedUnixPlatform.flavour machine.UnixPlatform))
+            | Some value when value < 1 -> Error (SoMaxConnRefusal.NotPositive value)
+            | Some value -> Ok value
 
-                value
-
-        { machine with
-            SoMaxConn = resolved
-        }
-        |> withMachine image
+        resolved
+        |> Result.map (fun resolved ->
+            { machine with
+                SoMaxConn = resolved
+            }
+            |> withMachine image
+        )
 
     /// Set the TCP send buffer sysctl (`TcpSendSpace`). `None` takes the
     /// measured default of this machine's flavour.
     ///
     /// Under Darwin a value must lie between `UnixMachineState.darwinLoopbackSendPipe` and
-    /// `UnixMachineState.darwinSocketBufferMax`, inclusive: Darwin itself refuses a sendspace
-    /// above the maximum, and below the send pipe the size a connection's
-    /// buffer grows to depends on which route it took, which this kernel does
-    /// not model. Under Linux nothing reads the value, so configuring one is
-    /// refused rather than silently ignored.
+    /// `UnixMachineState.darwinSocketBufferMax`, inclusive, and this refuses one
+    /// outside them: Darwin itself refuses a sendspace above the maximum, and
+    /// below the send pipe the size a connection's buffer grows to depends on
+    /// which route it took, which this kernel does not model. Under Linux
+    /// nothing reads the value, so this refuses any configured one rather than
+    /// silently ignoring it.
     let withTcpSendSpace<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (value : int option)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, TcpSendSpaceRefusal>
         =
         let machine = image.System.Machine
 
@@ -699,25 +908,23 @@ module UnixBootImage =
 
         let resolved =
             match value, flavour with
-            | None, _ -> UnixMachineState.defaultTcpSendSpace flavour
-            | Some value, SimulatedUnixFlavour.Linux ->
-                failwith
-                    $"UnixMachineState.TcpSendSpace: %d{value} was configured on a Linux machine, but this kernel models no Linux TCP send buffer, so nothing would read it. Pass None."
+            | None, _ -> Ok (UnixMachineState.defaultTcpSendSpace flavour)
+            | Some value, SimulatedUnixFlavour.Linux -> Error (TcpSendSpaceRefusal.NotReadOn (flavour, value))
             | Some value, SimulatedUnixFlavour.Darwin ->
                 if value > UnixMachineState.darwinSocketBufferMax then
-                    failwith
-                        $"UnixMachineState.TcpSendSpace: %d{value} exceeds kern.ipc.maxsockbuf (%d{UnixMachineState.darwinSocketBufferMax}), and Darwin refuses such a net.inet.tcp.sendspace with ERANGE. Configure at most %d{UnixMachineState.darwinSocketBufferMax}, or None for the default."
+                    Error (TcpSendSpaceRefusal.AboveSocketBufferMax (value, UnixMachineState.darwinSocketBufferMax))
+                elif value < UnixMachineState.darwinLoopbackSendPipe then
+                    Error (TcpSendSpaceRefusal.BelowLoopbackSendPipe (value, UnixMachineState.darwinLoopbackSendPipe))
+                else
+                    Ok value
 
-                if value < UnixMachineState.darwinLoopbackSendPipe then
-                    failwith
-                        $"UnixMachineState.TcpSendSpace: %d{value} is below %d{UnixMachineState.darwinLoopbackSendPipe}, the send pipe of Darwin's route to 127.0.0.1. A connection's handshake grows a send buffer that small to the send pipe of the route it takes, and this kernel does not model routes. Configure at least %d{UnixMachineState.darwinLoopbackSendPipe}, or None for the default."
-
-                value
-
-        { machine with
-            TcpSendSpace = resolved
-        }
-        |> withMachine image
+        resolved
+        |> Result.map (fun resolved ->
+            { machine with
+                TcpSendSpace = resolved
+            }
+            |> withMachine image
+        )
 
     /// Set the path to the executable that started the simulated process, or
     /// `None` to report that it has none. `None` is preserved rather than

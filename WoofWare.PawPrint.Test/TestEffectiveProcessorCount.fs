@@ -30,6 +30,7 @@ module TestEffectiveProcessorCount =
 
         EmulatedKernel.initialImage
         |> UnixBootImage.withProcessorCount detected
+        |> Result.defaultWith (fun refusal -> failwith $"test bug: %s{ProcessorCountRefusal.describe refusal}")
         |> EmulatedKernel.withEnvironment "test" entries
         |> EmulatedKernel.boot
 

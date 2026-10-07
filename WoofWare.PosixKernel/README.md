@@ -53,6 +53,7 @@ The library never looks inside either; it only compares them.
 
 `UnixSystem.initial` builds the *boot image* of a process that has not done anything yet: a `UnixBootImage`, which no syscall takes.
 Configure it with the setters in the `UnixBootImage` module, such as `withCredentials`, `withFileSystemAndCurrentDirectory`, `withBootTime` and `withEnvironment`, then `UnixBootImage.boot` it to get the `UnixSystem` its first syscall takes.
+A machine setter that can refuse a value, such as `withBootTime` or `withMount`, returns a `Result` whose `Error` says why (see "Answers and refusals" below).
 Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
 What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixSystem.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
 
@@ -131,6 +132,13 @@ A syscall's result has two levels.
 * `Error` is a refusal: this library will not say what the kernel does, usually because nobody has measured it on the platform being simulated, or because it is not modelled. A refusal says why, and carries no system. A client decides what a refusal means for it; retrying will not help.
 
 A call that a real kernel would not let happen at all, such as a task making a syscall while it is blocked in another, is a bug in the client, and throws.
+
+A setter of the machine's boot configuration refuses the same way.
+Each one that can refuse a value returns `Result<UnixBootImage<_, _>, _>`, with a refusal type of its own (`BootTimeRefusal`, `MountRefusal`, `TcpSendSpaceRefusal` and so on) whose cases state the facts: a value this library has not measured or does not model, or one no machine of the flavour could have.
+Each refusal type has a `describe`.
+The library does not know what the client called the value, so it names no knob; the client does that, as `withFileSystemAndCurrentDirectory`'s `CurrentDirectoryFault` already leaves it to.
+A value no `parse` could have produced, such as one built with `Unchecked.defaultof`, is still a bug in the client, and throws.
+The process's setters that can reject a value (`withCredentials`, `withUmask`, `withProcessId` and `withLeaderThreadId`) still throw, prefixed with the `context` their caller passes.
 
 ### Blocking
 

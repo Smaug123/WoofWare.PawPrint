@@ -84,6 +84,7 @@ module TestLinkCount =
 
         system
         |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+        |> Configured.expectOk MountRefusal.describe
         |> UnixBootImage.boot
 
     let private applyToModel
