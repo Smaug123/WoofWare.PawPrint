@@ -725,99 +725,129 @@ module TestCrossProcess =
         |> shouldContainText "was not focused from the machine as it stands"
 
     [<Test>]
-    let ``a process's end sends each peer its FIN, in descending descriptor order`` () : unit =
-        // Replays `exit-close-order.c` section O: the ending process holds the
-        // three connections at descriptors 12, 10 and 11 in the order it made
-        // them, and the other watches their peers in one wait, registered in
-        // yet another order.
+    let ``a process's end sends each peer its FIN in the order each flavour releases them`` () : unit =
+        // Replays `exit-close-order.c` sections O and D: the ending process
+        // holds three connections, made in the order 1, 2, 3, at the
+        // descriptors `layout` gives each, and the other watches their peers in
+        // one wait, registered in yet another order. Section D's first
+        // connection is at a second descriptor as well, a dup.
+        let sections =
+            [
+                [ 12 ; 10 ; 11 ], None, [ 1UL ; 3UL ; 2UL ], [ 1UL ; 3UL ; 2UL ]
+                [ 10 ; 11 ; 12 ], Some 22, [ 1UL ; 3UL ; 2UL ], [ 3UL ; 2UL ; 1UL ]
+            ]
+
         for platform in Machines.platforms do
-            let pids, machine = Machines.ofCount platform 2
-            let a, b = pids.[0], pids.[1]
+            for layout, alias, linux, darwin in sections do
+                let pids, machine = Machines.ofCount platform 2
+                let a, b = pids.[0], pids.[1]
 
-            let listener, machine = Machines.inProcess b (KeventWorld.listenerAt 8080us) machine
+                let listener, machine = Machines.inProcess b (KeventWorld.listenerAt 8080us) machine
 
-            let connect (target : int) (machine : SimulatedMachine<int, string>) =
-                let client, machine = Machines.inProcess a (KeventWorld.client 8080us) machine
-                let machine = Machines.doIn a (dup2 client target) machine
-                let accepted, machine = Machines.inProcess b (KeventWorld.accept listener) machine
-                accepted, machine
+                let connect (target : int) (machine : SimulatedMachine<int, string>) =
+                    let client, machine = Machines.inProcess a (KeventWorld.client 8080us) machine
+                    let machine = Machines.doIn a (dup2 client target) machine
+                    let accepted, machine = Machines.inProcess b (KeventWorld.accept listener) machine
+                    accepted, machine
 
-            let s1, machine = connect 12 machine
-            let s2, machine = connect 10 machine
-            let s3, machine = connect 11 machine
-            let registered = [ s3, 3UL ; s1, 1UL ; s2, 2UL ]
+                let s1, machine = connect layout.[0] machine
+                let s2, machine = connect layout.[1] machine
+                let s3, machine = connect layout.[2] machine
 
-            let report, machine =
-                match SimulatedUnixPlatform.flavour platform with
-                | SimulatedUnixFlavour.Linux ->
-                    let epoll, machine =
-                        Machines.inProcess
-                            b
+                let machine =
+                    match alias with
+                    | None -> machine
+                    | Some alias ->
+                        Machines.doIn
+                            a
                             (fun view ->
-                                let epoll, view =
-                                    match UnixPoll.epollCreate1 0 view with
-                                    | Ok (Ok created) -> created
-                                    | other -> failwith $"epoll_create1: %A{other}"
+                                match UnixDescriptor.dup2 layout.[0] alias view with
+                                | Ok (SyscallAnswer.Completed _, view) -> view
+                                | other -> failwith $"dup2: %A{other}"
+                            )
+                            machine
 
-                                let view =
+                let registered = [ s3, 3UL ; s1, 1UL ; s2, 2UL ]
+
+                let report, machine =
+                    match SimulatedUnixPlatform.flavour platform with
+                    | SimulatedUnixFlavour.Linux ->
+                        let epoll, machine =
+                            Machines.inProcess
+                                b
+                                (fun view ->
+                                    let epoll, view =
+                                        match UnixPoll.epollCreate1 0 view with
+                                        | Ok (Ok created) -> created
+                                        | other -> failwith $"epoll_create1: %A{other}"
+
+                                    let view =
+                                        (view, registered)
+                                        ||> List.fold (fun view (fd, data) ->
+                                            match
+                                                UnixPoll.epollCtl
+                                                    epoll
+                                                    1
+                                                    fd
+                                                    (EpollEventArgument.Readable (
+                                                        EpollEvents.In
+                                                        ||| EpollEvents.RdHup
+                                                        ||| EpollEvents.EdgeTriggered,
+                                                        data
+                                                    ))
+                                                    view
+                                            with
+                                            | Ok (EpollCtlAnswer.Changed, view) -> view
+                                            | other -> failwith $"epoll_ctl: %A{other}"
+                                        )
+
+                                    epoll, view
+                                )
+                                machine
+
+                        let report (machine : SimulatedMachine<int, string>) =
+                            Machines.inProcess
+                                b
+                                (fun view ->
+                                    match UnixPoll.epollWait 4 epoll 8 UserBuffer.Mapped 0 view with
+                                    | Ok (EpollWaitOutcome.Answered events, view) -> List.map fst events, view
+                                    | other -> failwith $"epoll_wait: %A{other}"
+                                )
+                                machine
+
+                        report, machine
+                    | SimulatedUnixFlavour.Darwin ->
+                        let kq, machine =
+                            Machines.inProcess
+                                b
+                                (fun view ->
+                                    let kq, view = KeventWorld.kqueue view
+
+                                    kq,
                                     (view, registered)
                                     ||> List.fold (fun view (fd, data) ->
-                                        match
-                                            UnixPoll.epollCtl
-                                                epoll
-                                                1
-                                                fd
-                                                (EpollEventArgument.Readable (
-                                                    EpollEvents.In ||| EpollEvents.RdHup ||| EpollEvents.EdgeTriggered,
-                                                    data
-                                                ))
-                                                view
-                                        with
-                                        | Ok (EpollCtlAnswer.Changed, view) -> view
-                                        | other -> failwith $"epoll_ctl: %A{other}"
+                                        KeventWorld.register kq fd KeventFilter.Read addClear data view
                                     )
-
-                                epoll, view
-                            )
-                            machine
-
-                    let report (machine : SimulatedMachine<int, string>) =
-                        Machines.inProcess
-                            b
-                            (fun view ->
-                                match UnixPoll.epollWait 4 epoll 8 UserBuffer.Mapped 0 view with
-                                | Ok (EpollWaitOutcome.Answered events, view) -> List.map fst events, view
-                                | other -> failwith $"epoll_wait: %A{other}"
-                            )
-                            machine
-
-                    report, machine
-                | SimulatedUnixFlavour.Darwin ->
-                    let kq, machine =
-                        Machines.inProcess
-                            b
-                            (fun view ->
-                                let kq, view = KeventWorld.kqueue view
-
-                                kq,
-                                (view, registered)
-                                ||> List.fold (fun view (fd, data) ->
-                                    KeventWorld.register kq fd KeventFilter.Read addClear data view
                                 )
-                            )
-                            machine
+                                machine
 
-                    let report (machine : SimulatedMachine<int, string>) =
-                        let events, machine = reported b kq 8 machine
-                        events |> List.map (fun event -> event.UserData), machine
+                        let report (machine : SimulatedMachine<int, string>) =
+                            let events, machine = reported b kq 8 machine
+                            events |> List.map (fun event -> event.UserData), machine
 
-                    report, machine
+                        report, machine
 
-            report machine |> fst |> shouldEqual []
+                report machine |> fst |> shouldEqual []
 
-            let machine = exitedOk a machine
-            Machines.assertClean machine
-            report machine |> fst |> shouldEqual [ 1UL ; 3UL ; 2UL ]
+                let machine = exitedOk a machine
+                Machines.assertClean machine
+
+                let expected =
+                    match SimulatedUnixPlatform.flavour platform with
+                    | SimulatedUnixFlavour.Linux -> linux
+                    | SimulatedUnixFlavour.Darwin -> darwin
+
+                report machine |> fst |> shouldEqual expected
 
     [<Test>]
     let ``a process's end closes its pipes, kqueues and epoll instances, and lets its locks go`` () : unit =

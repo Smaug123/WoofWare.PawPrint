@@ -16,6 +16,13 @@
 //   reverse creation        s3 s2 s1
 //   registration order      s3 s1 s2
 //
+// Section D tells the order the descriptors are closed in from the order the
+// connections are released in: c1 is at 10 and also at 22 (a dup), c2 at 11
+// and c3 at 12. Releasing each connection as its descriptors are dropped,
+// highest first, gives s3 s2 s1; dropping them lowest first and running each
+// final release last-in-first-out gives s1 s3 s2; lowest first and in order,
+// s2 s3 s1.
+//
 // Section L adds a fourth connection the child makes and the parent never
 // accepts, so it sits in the parent's accept queue, and a listener of the
 // child's own (descriptor 4) with a connection from the child's own socket
@@ -72,7 +79,7 @@ static void move_to(int from, int to) {
 
 // One trial: the order the FINs of the child's exit reached the parent's
 // three accepted sockets, as indices 1..3 into `order`.
-static void trial(int with_queue, int order[3], int *queued_readable, int *queued_accept) {
+static void trial(int with_queue, int aliased, int order[3], int *queued_readable, int *queued_accept) {
     struct sockaddr_in addr;
     int l = listener_on_loopback(&addr);
     int go[2];
@@ -86,9 +93,16 @@ static void trial(int with_queue, int order[3], int *queued_readable, int *queue
         int c1 = connect_to(&addr);
         int c2 = connect_to(&addr);
         int c3 = connect_to(&addr);
-        move_to(c1, 12);
-        move_to(c2, 10);
-        move_to(c3, 11);
+        if (aliased) {
+            move_to(c1, 10);
+            move_to(c2, 11);
+            move_to(c3, 12);
+            if (dup2(10, 22) < 0) die("dup2 alias");
+        } else {
+            move_to(c1, 12);
+            move_to(c2, 10);
+            move_to(c3, 11);
+        }
         if (with_queue) {
             // A connection the parent never accepts.
             move_to(connect_to(&addr), 13);
@@ -203,11 +217,13 @@ static void trial(int with_queue, int order[3], int *queued_readable, int *queue
 }
 
 int main(void) {
-    for (int with_queue = 0; with_queue <= 1; with_queue++) {
-        printf("section %s\n", with_queue ? "L" : "O");
+    for (int section = 0; section <= 2; section++) {
+        int with_queue = section == 1;
+        int aliased = section == 2;
+        printf("section %s\n", aliased ? "D" : with_queue ? "L" : "O");
         for (int t = 0; t < 20; t++) {
             int order[3], readable, accepted;
-            trial(with_queue, order, &readable, &accepted);
+            trial(with_queue, aliased, order, &readable, &accepted);
             printf("  trial %2d: s%d s%d s%d", t, order[0], order[1], order[2]);
             if (with_queue) {
                 printf("  listener readable %d, accept %d", readable, accepted);

@@ -372,11 +372,13 @@ module SimulatedMachine =
     /// them the holds their calls in flight had; any description only those
     /// calls held, or that the call which ended the process let go of as it
     /// returned, is released now. Then every descriptor of the process is
-    /// closed, the highest first (measured on Linux 6.18.5 and Darwin 27.0.0,
-    /// `exit-close-order.c`: the FINs of three connections reached their
-    /// peers in descending order of the exiting process's descriptors, not in
-    /// the order it made them), with everything a `close(2)` of the last
-    /// descriptor onto each description does: a connected peer gets its FIN,
+    /// closed, in the order each flavour measurably closes them
+    /// (`exit-close-order.c`, Linux 6.18.5 and Darwin 27.0.0, which a peer
+    /// watching several connections sees as the order of their FINs): Linux
+    /// drops the descriptors lowest first and then releases what that let go
+    /// of, the last first; Darwin drops them highest first, releasing each as
+    /// it goes. Each release does everything a `close(2)` of the last
+    /// descriptor onto the description does: a connected peer gets its FIN,
     /// a lock is let go of, a pipe end closes, an epoll instance, a kqueue or a
     /// listener goes, and every registration made through the descriptor with
     /// it. A listener's release signals nothing, so it is made after every
@@ -475,38 +477,55 @@ module SimulatedMachine =
                         release (Ok (UnixSystemState.mapOpenFiles (fun _ -> openFiles) dead, listeners)) destroyed
             )
 
-        // Then every descriptor, highest first.
+        // Then every descriptor. Measured on Linux 6.18.5 and Darwin 27.0.0
+        // (`exit-close-order.c`, sections O and D): Linux drops them lowest
+        // first and releases each description the drop let go of only after
+        // every drop, the last let go of first, as its deferred final `fput`s
+        // run; Darwin drops them highest first, releasing each as it goes.
+        let drop
+            (fd : int)
+            (dead : UnixSystem<'Task, 'Handler>)
+            : UnixSystem<'Task, 'Handler> * OpenFileDescription option
+            =
+            match FileDescriptorRegistry.dropDescriptor processId fd (UnixSystemState.fileDescriptors dead) with
+            | Error FileDescriptorCloseError.BadFd ->
+                failwith
+                    $"SimulatedMachine.endProcess: process %O{processId}'s table held descriptor %d{fd} a moment ago, and closing it answered EBADF (this is a bug in this library)."
+            | Ok (registry, destroyed) -> UnixSystemState.withFileDescriptors registry dead, destroyed
+
         let closed =
             match released with
             | Error refusal -> Error refusal
             | Ok (dead, listeners) ->
-                let descending =
+                let ascending =
                     FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors dead)
                     |> Map.keys
-                    |> Seq.sortDescending
+                    |> Seq.sort
                     |> Seq.toList
 
-                ((Ok (dead, listeners)
-                 : Result<UnixSystem<'Task, 'Handler> * OpenFileDescription list, DescriptionReleaseRefusal>),
-                 descending)
-                ||> List.fold (fun state fd ->
-                    match state with
-                    | Error refusal -> Error refusal
-                    | Ok (dead, listeners) ->
+                match SimulatedUnixPlatform.flavour dead.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux ->
+                    // Newest first.
+                    let dead, destroyed =
+                        ((dead, []), ascending)
+                        ||> List.fold (fun (dead, destroyed) fd ->
+                            match drop fd dead with
+                            | dead, None -> dead, destroyed
+                            | dead, Some description -> dead, description :: destroyed
+                        )
 
-                    match
-                        FileDescriptorRegistry.dropDescriptor processId fd (UnixSystemState.fileDescriptors dead)
-                    with
-                    | Error FileDescriptorCloseError.BadFd ->
-                        failwith
-                            $"SimulatedMachine.endProcess: process %O{processId}'s table held descriptor %d{fd} a moment ago, and closing it answered EBADF (this is a bug in this library)."
-                    | Ok (registry, destroyed) ->
-                        let dead = UnixSystemState.withFileDescriptors registry dead
+                    (Ok (dead, listeners), destroyed) ||> List.fold release
+                | SimulatedUnixFlavour.Darwin ->
+                    (Ok (dead, listeners), List.rev ascending)
+                    ||> List.fold (fun state fd ->
+                        match state with
+                        | Error refusal -> Error refusal
+                        | Ok (dead, listeners) ->
 
-                        match destroyed with
-                        | None -> Ok (dead, listeners)
-                        | Some destroyed -> release (Ok (dead, listeners)) destroyed
-                )
+                        match drop fd dead with
+                        | dead, None -> Ok (dead, listeners)
+                        | dead, Some destroyed -> release (Ok (dead, listeners)) destroyed
+                    )
 
         // Then the listeners, in the order they were let go of.
         let finished =

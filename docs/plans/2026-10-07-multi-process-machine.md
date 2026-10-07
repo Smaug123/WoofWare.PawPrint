@@ -133,9 +133,10 @@ Each stage is a PR, green alone.
      from its park to the machine, for the same reason, and lives exactly as
      long as the park.
    - A exits, and B sees the FIN: `SimulatedMachine.endProcess` releases what
-     A's sleeping calls held, then closes every descriptor of A's, highest
-     first (measured on both flavours by `exit-close-order.c`), and removes
-     A. A listener holding another process's open client is refused, as
+     A's calls held, then closes every descriptor of A's in each flavour's
+     measured order (`exit-close-order.c`: Linux drops them lowest first and
+     releases the last let go of first, Darwin closes them highest first),
+     and removes A. A listener holding another process's open client is refused, as
      `close` refuses it: the reset is not measured. The single-process
      `EndedProcess.Machine` still leaves the descriptors open.
    - A file unlinked by A survives while B has it open, and goes as B closes

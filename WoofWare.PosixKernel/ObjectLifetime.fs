@@ -157,6 +157,15 @@ module ObjectLifetime =
             // last name went away earlier, which is what keeps `read` on an
             // unlinked descriptor working right up until the descriptor goes.
             Ok (forgetIfUnheld inode system)
+        | OpenFileTarget.Pipe (pipeId, _) when
+            not (Map.containsKey pipeId system.Machine.Pipes)
+            && Set.isEmpty (UnixMachineState.descriptionsNamingPipeEnd pipeId PipeEnd.Read system.Machine)
+            && Set.isEmpty (UnixMachineState.descriptionsNamingPipeEnd pipeId PipeEnd.Write system.Machine)
+            ->
+            // Both ends' descriptions were destroyed before either was
+            // released, as a process's end on Linux destroys them, and the
+            // other's release freed the pipe.
+            Ok system
         | OpenFileTarget.Pipe (pipeId, _) ->
             // The pipe goes when neither end is open any more: it is the last
             // description onto either end that frees it, not the last onto both.
