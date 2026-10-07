@@ -82,6 +82,25 @@ module ProcessCreationRefusal =
         | ProcessCreationRefusal.DarwinPidMaxReached pidMax ->
             $"the machine's process ID counter has reached Darwin's PID_MAX %d{pidMax}; what Darwin does next (xnu's source wraps to 100) has not been measured."
 
+/// Why `SimulatedMachine.endProcess` will not end a process: what closing
+/// its descriptors would do has not been measured.
+[<RequireQualifiedAccess>]
+type ProcessEndRefusal =
+    /// Closing the process's descriptors releases an open file description
+    /// this library will not release (`DescriptionReleaseRefusal`): so far,
+    /// the last reference to a listener holding a connection another
+    /// process's open socket made, which a real kernel resets.
+    | Release of DescriptionReleaseRefusal
+
+[<RequireQualifiedAccess>]
+module ProcessEndRefusal =
+    /// What this library knows about why it will not end the process, for a
+    /// client composing a diagnostic that names its own knob.
+    let describe (refusal : ProcessEndRefusal) : string =
+        match refusal with
+        | ProcessEndRefusal.Release refusal ->
+            $"the process's end closes its descriptors, and %s{DescriptionReleaseRefusal.describe refusal}"
+
 /// Moving between a `SimulatedMachine` and the views of it its processes'
 /// syscalls are made in.
 [<RequireQualifiedAccess>]
@@ -232,32 +251,19 @@ module SimulatedMachine =
         =
         Map.tryFind processId machine.Processes |> Option.map (viewOf machine)
 
-    /// Write `view` back into `machine`: the view's machine replaces
-    /// `machine`'s, and the view's process replaces the process with its ID.
-    ///
-    /// Fails loudly if `view` is not a view of `machine` as it stands: if no
-    /// process on it has the view's process ID, or if the machine or the
-    /// view's own process is not the one the view was focused from (another
-    /// view was written back since, the machine changed some other way, or the
-    /// view was focused from another history of the machine), so that writing
-    /// the view back would undo a change it never saw. Each is a bug in the
-    /// client. A view the machine already holds exactly is accepted wherever
-    /// it came from, since writing it back changes nothing: so `ofSystem` of a
-    /// system accepts that system unchanged.
-    ///
-    /// A process cannot end on a `SimulatedMachine`: what a syscall that ends
-    /// one answers is an `EndedProcess`, which is not a view and so cannot be
-    /// written back.
-    let unfocus<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// Fail loudly, naming `operation`, unless `view` is a view of `machine`
+    /// as it stands; see `unfocus`.
+    let private assertCurrent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (operation : string)
         (view : UnixSystem<'Task, 'Handler>)
         (machine : SimulatedMachine<'Task, 'Handler>)
-        : SimulatedMachine<'Task, 'Handler>
+        : unit
         =
         let processId = view.Process.ProcessId
 
         if not (Map.containsKey processId machine.Processes) then
             failwith
-                $"SimulatedMachine.unfocus: no process on the machine has ID %O{processId}, so the view is not of this machine (this is a bug in the client)."
+                $"%s{operation}: no process on the machine has ID %O{processId}, so the view is not of this machine (this is a bug in the client)."
 
         let slot = machine.Processes.[processId]
 
@@ -284,7 +290,31 @@ module SimulatedMachine =
 
         if not current then
             failwith
-                $"SimulatedMachine.unfocus: the view of process %O{processId} was not focused from the machine as it stands: another view has been written back since, or the machine has otherwise changed, or the view was focused from another history of it. Writing the view back would undo a change it never saw; focus the process again and repeat its call (this is a bug in the client)."
+                $"%s{operation}: the view of process %O{processId} was not focused from the machine as it stands: another view has been written back since, or the machine has otherwise changed, or the view was focused from another history of it. Writing the view back would undo a change it never saw; focus the process again and repeat its call (this is a bug in the client)."
+
+    /// Write `view` back into `machine`: the view's machine replaces
+    /// `machine`'s, and the view's process replaces the process with its ID.
+    ///
+    /// Fails loudly if `view` is not a view of `machine` as it stands: if no
+    /// process on it has the view's process ID, or if the machine or the
+    /// view's own process is not the one the view was focused from (another
+    /// view was written back since, the machine changed some other way, or the
+    /// view was focused from another history of the machine), so that writing
+    /// the view back would undo a change it never saw. Each is a bug in the
+    /// client. A view the machine already holds exactly is accepted wherever
+    /// it came from, since writing it back changes nothing: so `ofSystem` of a
+    /// system accepts that system unchanged.
+    ///
+    /// What a syscall that ends the process answers is an `EndedProcess`,
+    /// which is not a view and so cannot be written back: `endProcess` ends
+    /// the process on the machine instead.
+    let unfocus<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (view : UnixSystem<'Task, 'Handler>)
+        (machine : SimulatedMachine<'Task, 'Handler>)
+        : SimulatedMachine<'Task, 'Handler>
+        =
+        assertCurrent "SimulatedMachine.unfocus" view machine
+        let processId = view.Process.ProcessId
 
         {
             Machine = view.Machine
@@ -331,6 +361,140 @@ module SimulatedMachine =
             | Ok (outcome, view) -> Ok outcome, unfocus view machine
             | Error refusal -> Error refusal, machine
         )
+
+    /// End the process `ended` is on `machine`, as the call that ended it left
+    /// it (`UnixTaskLifecycle.exitGroup`, the last thread's exit, or a signal
+    /// whose default ends the process): how it ended, and the machine without
+    /// it.
+    ///
+    /// What a real kernel does at exit, where another process can see it.
+    /// The process's tasks are gone already (`EndedProcess.Machine`), and with
+    /// them the holds their calls in flight had; any description only those
+    /// calls held is released now. Then every descriptor of the process is
+    /// closed, the highest first (measured on Linux 6.18.5 and Darwin 27.0.0,
+    /// `exit-close-order.c`: the FINs of three connections reached their
+    /// peers in descending order of the exiting process's descriptors, not in
+    /// the order it made them), with everything a `close(2)` of the last
+    /// descriptor onto each description does: a connected peer gets its FIN,
+    /// a lock is let go of, a pipe end closes, an epoll instance, a kqueue or a
+    /// listener goes, and every registration made through the descriptor with
+    /// it. A listener's release signals nothing, so it is made after every
+    /// other: a connection the process's own socket left unaccepted in it has
+    /// gone first, as it goes with the process. The process ID, thread IDs and
+    /// current directory are let go of with the tasks.
+    ///
+    /// Refuses (`ProcessEndRefusal`) where a close would be refused: a listener
+    /// holding a connection from another process's socket that is still open,
+    /// which a real kernel resets, is not released. The machine is then as it
+    /// was.
+    ///
+    /// Fails loudly, as `unfocus` does, if the view the process ended in
+    /// (`EndedProcess.EndedIn`) is not a view of `machine` as it stands.
+    let endProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (ended : EndedProcess<'Task, 'Handler>)
+        (machine : SimulatedMachine<'Task, 'Handler>)
+        : Result<ProcessTermination * SimulatedMachine<'Task, 'Handler>, ProcessEndRefusal>
+        =
+        let view = ended.EndedIn
+        assertCurrent "SimulatedMachine.endProcess" view machine
+        let processId = view.Process.ProcessId
+
+        // Released before the descriptors are closed, as the calls return when
+        // their tasks die, before the process's files are closed; the order
+        // between the two has not been measured.
+        let heldByCalls =
+            view.Tasks
+            |> Map.toList
+            |> List.collect (fun (_, state) ->
+                match state.Parked with
+                | Some park -> ParkedSyscall.descriptions park.Syscall
+                | None -> []
+            )
+
+        // The process with no task left. Releasing a description reads and
+        // writes the machine alone, and dropping a descriptor the process's
+        // table.
+        let dead =
+            { view with
+                Machine = ended.Machine
+                Process = ended.FinalProcess
+                Tasks = Map.empty
+                Origin = FocusOrigin.NotFocused
+            }
+
+        let isListener (description : OpenFileDescription) (machine : UnixMachineState) : bool =
+            match description.Target with
+            | OpenFileTarget.Socket socketId ->
+                match (UnixMachineState.socket socketId machine).Phase with
+                | SocketPhase.Listening _ -> true
+                | SocketPhase.Idle
+                | SocketPhase.Established _
+                | SocketPhase.EstablishedPendingReport _
+                | SocketPhase.Refused _
+                | SocketPhase.DatagramPeer _ -> false
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.Epoll _
+            | OpenFileTarget.Kqueue _ -> false
+
+        let closeAll
+            (dead : UnixSystem<'Task, 'Handler>)
+            : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>
+            =
+            let descending =
+                FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors dead)
+                |> Map.keys
+                |> Seq.sortDescending
+                |> Seq.toList
+
+            let closed =
+                ((Ok (dead, [])
+                 : Result<UnixSystem<'Task, 'Handler> * OpenFileDescription list, DescriptionReleaseRefusal>),
+                 descending)
+                ||> List.fold (fun state fd ->
+                    match state with
+                    | Error refusal -> Error refusal
+                    | Ok (dead, listeners) ->
+
+                    match
+                        FileDescriptorRegistry.dropDescriptor processId fd (UnixSystemState.fileDescriptors dead)
+                    with
+                    | Error FileDescriptorCloseError.BadFd ->
+                        failwith
+                            $"SimulatedMachine.endProcess: process %O{processId}'s table held descriptor %d{fd} a moment ago, and closing it answered EBADF (this is a bug in this library)."
+                    | Ok (registry, destroyed) ->
+                        let dead = UnixSystemState.withFileDescriptors registry dead
+
+                        match destroyed with
+                        | None -> Ok (dead, listeners)
+                        | Some destroyed when isListener destroyed dead.Machine -> Ok (dead, destroyed :: listeners)
+                        | Some destroyed ->
+                            ObjectLifetime.releaseDestroyed destroyed dead
+                            |> Result.map (fun dead -> dead, listeners)
+                )
+
+            match closed with
+            | Error refusal -> Error refusal
+            | Ok (dead, listeners) ->
+                (Ok dead, List.rev listeners)
+                ||> List.fold (fun state listener ->
+                    match state with
+                    | Error refusal -> Error refusal
+                    | Ok dead -> ObjectLifetime.releaseDestroyed listener dead
+                )
+
+        match ObjectLifetime.releaseUnreferenced heldByCalls dead |> Result.bind closeAll with
+        | Error refusal -> Error (ProcessEndRefusal.Release refusal)
+        | Ok dead ->
+            Ok (
+                ended.Termination,
+                {
+                    Machine = dead.Machine
+                    Processes = Map.remove processId machine.Processes
+                }
+            )
 
     /// The tasks `asleep` names that the machine wakes now, each with its
     /// process and the primitives of its wake condition which hold, in the

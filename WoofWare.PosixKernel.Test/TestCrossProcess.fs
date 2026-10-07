@@ -664,3 +664,345 @@ module TestCrossProcess =
         let error = Assert.Throws<exn> (fun () -> woken [ ghost, 1 ] machine |> ignore)
 
         error.Message |> shouldContainText "77"
+
+    // ------------------------------------------------------- a process's end
+
+    /// `pid`'s task 0 calls `exit_group(status)`, and the machine ends the
+    /// process.
+    let private exitIn
+        (pid : ProcessId)
+        (status : int32)
+        (machine : SimulatedMachine<int, string>)
+        : Result<ProcessTermination * SimulatedMachine<int, string>, ProcessEndRefusal>
+        =
+        let ended = UnixTaskLifecycle.exitGroup 0 status (Machines.viewOf pid machine)
+        SimulatedMachine.endProcess ended machine
+
+    let private exitedOk (pid : ProcessId) (machine : SimulatedMachine<int, string>) : SimulatedMachine<int, string> =
+        match exitIn pid 0 machine with
+        | Ok (ProcessTermination.Exited _, machine) -> machine
+        | Ok (other, _) -> failwith $"endProcess: the process ended by %O{other}, not by its exit"
+        | Error refusal -> failwith $"endProcess: %s{ProcessEndRefusal.describe refusal}"
+
+    let private dup2 (oldFd : int) (newFd : int) (view : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixDescriptor.dup2 oldFd newFd view with
+        | Ok (SyscallAnswer.Completed fd, view) when int fd = newFd -> KeventWorld.close oldFd view
+        | other -> failwith $"dup2 %d{oldFd} %d{newFd}: %A{other}"
+
+    [<Test>]
+    let ``an ended process is gone from the machine, its views with it`` () : unit =
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a, b = pids.[0], pids.[1]
+            let stale = Machines.viewOf a machine
+            let machine = exitedOk a machine
+
+            SimulatedMachine.processIds machine |> shouldEqual (Set.singleton b)
+            SimulatedMachine.focus a machine |> shouldEqual None
+            Machines.assertClean machine
+
+            let error =
+                Assert.Throws<exn> (fun () -> SimulatedMachine.unfocus stale machine |> ignore)
+
+            error.Message |> shouldContainText "no process on the machine has ID"
+
+    [<Test>]
+    let ``a process's end is refused from a view the machine has moved on from`` () : unit =
+        let pids, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 2
+        let a, b = pids.[0], pids.[1]
+        let stale = Machines.viewOf a machine
+
+        let machine =
+            Machines.doIn b (fun view -> KeventWorld.stream true view |> snd) machine
+
+        let ended = UnixTaskLifecycle.exitGroup 0 0 stale
+
+        let error =
+            Assert.Throws<exn> (fun () -> SimulatedMachine.endProcess ended machine |> ignore)
+
+        error.Message
+        |> shouldContainText "was not focused from the machine as it stands"
+
+    [<Test>]
+    let ``a process's end sends each peer its FIN, in descending descriptor order`` () : unit =
+        // Replays `exit-close-order.c` section O: the ending process holds the
+        // three connections at descriptors 12, 10 and 11 in the order it made
+        // them, and the other watches their peers in one wait, registered in
+        // yet another order.
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a, b = pids.[0], pids.[1]
+
+            let listener, machine = Machines.inProcess b (KeventWorld.listenerAt 8080us) machine
+
+            let connect (target : int) (machine : SimulatedMachine<int, string>) =
+                let client, machine = Machines.inProcess a (KeventWorld.client 8080us) machine
+                let machine = Machines.doIn a (dup2 client target) machine
+                let accepted, machine = Machines.inProcess b (KeventWorld.accept listener) machine
+                accepted, machine
+
+            let s1, machine = connect 12 machine
+            let s2, machine = connect 10 machine
+            let s3, machine = connect 11 machine
+            let registered = [ s3, 3UL ; s1, 1UL ; s2, 2UL ]
+
+            let report, machine =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux ->
+                    let epoll, machine =
+                        Machines.inProcess
+                            b
+                            (fun view ->
+                                let epoll, view =
+                                    match UnixPoll.epollCreate1 0 view with
+                                    | Ok (Ok created) -> created
+                                    | other -> failwith $"epoll_create1: %A{other}"
+
+                                let view =
+                                    (view, registered)
+                                    ||> List.fold (fun view (fd, data) ->
+                                        match
+                                            UnixPoll.epollCtl
+                                                epoll
+                                                1
+                                                fd
+                                                (EpollEventArgument.Readable (
+                                                    EpollEvents.In ||| EpollEvents.RdHup ||| EpollEvents.EdgeTriggered,
+                                                    data
+                                                ))
+                                                view
+                                        with
+                                        | Ok (EpollCtlAnswer.Changed, view) -> view
+                                        | other -> failwith $"epoll_ctl: %A{other}"
+                                    )
+
+                                epoll, view
+                            )
+                            machine
+
+                    let report (machine : SimulatedMachine<int, string>) =
+                        Machines.inProcess
+                            b
+                            (fun view ->
+                                match UnixPoll.epollWait 4 epoll 8 UserBuffer.Mapped 0 view with
+                                | Ok (EpollWaitOutcome.Answered events, view) -> List.map fst events, view
+                                | other -> failwith $"epoll_wait: %A{other}"
+                            )
+                            machine
+
+                    report, machine
+                | SimulatedUnixFlavour.Darwin ->
+                    let kq, machine =
+                        Machines.inProcess
+                            b
+                            (fun view ->
+                                let kq, view = KeventWorld.kqueue view
+
+                                kq,
+                                (view, registered)
+                                ||> List.fold (fun view (fd, data) ->
+                                    KeventWorld.register kq fd KeventFilter.Read addClear data view
+                                )
+                            )
+                            machine
+
+                    let report (machine : SimulatedMachine<int, string>) =
+                        let events, machine = reported b kq 8 machine
+                        events |> List.map (fun event -> event.UserData), machine
+
+                    report, machine
+
+            report machine |> fst |> shouldEqual []
+
+            let machine = exitedOk a machine
+            Machines.assertClean machine
+            report machine |> fst |> shouldEqual [ 1UL ; 3UL ; 2UL ]
+
+    [<Test>]
+    let ``a process's end closes its pipes, kqueues and epoll instances, and lets its locks go`` () : unit =
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a, b = pids.[0], pids.[1]
+            let lockEx = 2
+
+            let openLocked (view : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+                match
+                    OpenFlagWords.openPath
+                        {
+                            Access = FileAccessMode.ReadWrite
+                            Create = true
+                            Exclusive = false
+                            Truncate = false
+                            NoFollow = false
+                            CloseOnExec = false
+                            Synchronous = false
+                            DataSynchronous = false
+                            Directory = false
+                        }
+                        (PathArg.ofText "/locked")
+                        0o644
+                        view
+                with
+                | Ok (SyscallAnswer.Completed fd, view) -> int fd, view
+                | other -> failwith $"open: %A{other}"
+
+            let held, machine = Machines.inProcess a openLocked machine
+
+            let machine =
+                Machines.doIn
+                    a
+                    (fun view ->
+                        match UnixDescriptor.flock 1 held lockEx view with
+                        | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), view) -> view
+                        | other -> failwith $"flock: %A{other}"
+                    )
+                    machine
+
+            // A pipe, and the flavour's event queue.
+            let machine =
+                Machines.doIn
+                    a
+                    (fun view ->
+                        let view =
+                            match UnixPipe.pipe2 0 UserBuffer.Mapped view with
+                            | Ok (_, view) -> view
+                            | Error refusal -> failwith $"pipe2: %A{refusal}"
+
+                        match SimulatedUnixPlatform.flavour platform with
+                        | SimulatedUnixFlavour.Linux ->
+                            match UnixPoll.epollCreate1 0 view with
+                            | Ok (Ok (_, view)) -> view
+                            | other -> failwith $"epoll_create1: %A{other}"
+                        | SimulatedUnixFlavour.Darwin -> KeventWorld.kqueue view |> snd
+                    )
+                    machine
+
+            let waiting, machine = Machines.inProcess b openLocked machine
+
+            let machine =
+                Machines.doIn
+                    b
+                    (fun view ->
+                        match UnixDescriptor.flock 1 waiting lockEx view with
+                        | Ok (SyscallOutcome.WouldBlock _, view) -> view
+                        | other -> failwith $"flock: expected to sleep, got %A{other}"
+                    )
+                    machine
+
+            let named (view : UnixSystem<int, string>) : Set<OpenFileDescriptionId> =
+                FileDescriptorRegistry.fds (UnixSystem.fileDescriptors view)
+                |> Map.values
+                |> Set.ofSeq
+
+            let survivors = named (Machines.viewOf b machine)
+            let machine = exitedOk a machine
+            Machines.assertClean machine
+
+            // Only the survivor's descriptions are left, and its lock is free.
+            OpenFileTable.descriptions (UnixSystem.openFiles (Machines.viewOf b machine))
+            |> Map.keys
+            |> Set.ofSeq
+            |> shouldEqual survivors
+
+            woken [ b, 1 ] machine |> List.map fst |> shouldEqual [ b, 1 ]
+
+    [<Test>]
+    let ``a process's end refuses to reset another process's connection unaccepted in its listener`` () : unit =
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a, b = pids.[0], pids.[1]
+            let listener, machine = Machines.inProcess a (KeventWorld.listenerAt 8080us) machine
+            let client, machine = Machines.inProcess b (KeventWorld.client 8080us) machine
+
+            match exitIn a 0 machine with
+            | Error (ProcessEndRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) -> ()
+            | other -> failwith $"expected the reset to be refused, got %A{other}"
+
+            // Once the client has gone, the end goes ahead.
+            let machine = Machines.doIn b (KeventWorld.close client) machine
+            let machine = exitedOk a machine
+            ignore listener
+            Machines.assertClean machine
+
+    [<Test>]
+    let ``a process's end lets its listener go after its own unaccepted client, whatever their descriptors`` () : unit =
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a = pids.[0]
+
+            // The listener at a higher descriptor than its own client, so that
+            // the end closes the listener's first.
+            let machine =
+                Machines.doIn
+                    a
+                    (fun view ->
+                        let listener, view = KeventWorld.listenerAt 8080us view
+                        let _, view = KeventWorld.client 8080us view
+                        dup2 listener 9 view
+                    )
+                    machine
+
+            let machine = exitedOk a machine
+            Machines.assertClean machine
+
+    [<Test>]
+    let ``a process's end releases what only its sleeping calls held, and its directory`` () : unit =
+        let pids, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 2
+        let a, b = pids.[0], pids.[1]
+
+        // Under Linux a sleeping accept holds its listener past the close of
+        // its last descriptor.
+        let listener, machine = Machines.inProcess a (KeventWorld.listenerAt 8080us) machine
+
+        let machine = sleepInAccept a 1 listener machine
+        let machine = Machines.doIn a (KeventWorld.close listener) machine
+
+        // ...and a stands in a directory b has removed.
+        let machine =
+            Machines.doIn a (fun view -> Answered.mkdir (PathArg.ofText "/d") 0o755 view |> snd) machine
+
+        let machine =
+            Machines.doIn a (fun view -> Answered.chdir (PathArg.ofText "/d") view |> snd) machine
+
+        let standing = (Machines.viewOf a machine).Process.CurrentDirectoryInode
+
+        let machine =
+            Machines.doIn b (fun view -> Answered.rmdir (UnixPath.parseOrFail "test" "/d") view |> snd) machine
+
+        Machines.assertClean machine
+
+        let machine = exitedOk a machine
+        Machines.assertClean machine
+
+        let view = Machines.viewOf b machine
+        VirtualFileSystem.tryGet standing view.Machine.FileSystem |> shouldEqual None
+
+        // The listener's port is free again.
+        let _, machine = Machines.inProcess b (KeventWorld.listenerAt 8080us) machine
+        Machines.assertClean machine
+
+    [<Test>]
+    let ``the last process's end leaves a machine of none, every descriptor closed`` () : unit =
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 1
+
+            let machine =
+                Machines.doIn
+                    pids.[0]
+                    (fun view ->
+                        let listener, view = KeventWorld.listenerAt 8080us view
+                        let client, view = KeventWorld.client 8080us view
+                        let _, view = KeventWorld.accept listener view
+                        ignore client
+                        view
+                    )
+                    machine
+
+            match exitIn pids.[0] 3 machine with
+            | Ok (_, machine) ->
+                SimulatedMachine.processIds machine |> shouldEqual Set.empty
+                SimulatedMachine.checkInvariants machine |> shouldEqual []
+                OpenFileTable.descriptions machine.Machine.OpenFiles |> shouldEqual Map.empty
+                machine.Machine.Sockets |> shouldEqual Map.empty
+                machine.Machine.Connections |> shouldEqual Map.empty
+            | Error refusal -> failwith $"endProcess: %s{ProcessEndRefusal.describe refusal}"

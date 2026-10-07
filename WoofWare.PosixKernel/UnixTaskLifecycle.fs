@@ -16,11 +16,18 @@ type EndedProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equalit
         ///
         /// Its descriptors are not closed, so every description they name is
         /// still counted as named, and a description no descriptor named,
-        /// which only a call held, is still in the table.
+        /// which only a call held, is still in the table. On a
+        /// `SimulatedMachine`, `SimulatedMachine.endProcess` closes them, as a
+        /// real kernel does at exit, where another process can see it.
         Machine : UnixMachineState
         /// The process's own state as it stood when it ended. It holds nothing for
         /// any task: no signal mask, and no signal pending on one task alone.
         FinalProcess : UnixProcessState<'Task, 'Handler>
+        /// The process as the call that ended it found it, tasks and all: what
+        /// `SimulatedMachine.endProcess` checks against the machine it ends the
+        /// process on, as `SimulatedMachine.unfocus` checks a view, and reads
+        /// the calls the process's tasks had in flight from.
+        EndedIn : UnixSystem<'Task, 'Handler>
     }
 
 /// What a syscall that can end the whole process did.
@@ -107,6 +114,7 @@ module UnixTaskLifecycle =
                 { system.Process with
                     Signals = signals
                 }
+            EndedIn = system
         }
 
     /// The thread-exit syscall: `task` ends. This is `SYS_exit` on Linux, which is
