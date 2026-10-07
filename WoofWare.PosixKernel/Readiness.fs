@@ -309,17 +309,6 @@ module DarwinReadiness =
     // completed connect clears it.
     let private preconnectSendSpace : int64 = 2048L
 
-    // A TCP segment's payload over Darwin's loopback, in bytes: the interface's
-    // MTU of 16384, less the IP and TCP headers and the 12-byte timestamp
-    // option both ends use. Measured as `TCP_MAXSEG` (`kevent-write-data.c`).
-    let private loopbackSegment (domain : SocketDomain) : int64 =
-        match domain with
-        | SocketDomain.Inet -> 16384L - 40L - 12L
-        | SocketDomain.Inet6 -> 16384L - 60L - 12L
-        | SocketDomain.Unix ->
-            failwith
-                "DarwinReadiness.loopbackSegment: a Unix-domain socket has no TCP segments (this is a bug in this library: modelsSocket admits no Unix-domain socket)."
-
     /// The free space in the send buffer of the TCP socket `socket`, in bytes:
     /// what `EVFILT_WRITE` reports as its event's `data`.
     ///
@@ -358,13 +347,7 @@ module DarwinReadiness =
                 $"DarwinReadiness.sendBufferSpace: the socket is %O{socket.Kind} in %O{socket.Domain}, whose send buffer this kernel does not model (this is a bug in the caller)."
 
         match socket.Phase with
-        | SocketPhase.Established _ ->
-            // The handshake rounds the buffer up to whole segments. The route to
-            // 127.0.0.1 would first raise it to its send pipe, but
-            // `withTcpSendSpace` admits nothing below that.
-            let segment = loopbackSegment socket.Domain
-            let rounded = (int64 sendSpace + segment - 1L) / segment * segment
-            min rounded (int64 UnixMachineState.darwinSocketBufferMax)
+        | SocketPhase.Established _ -> int64 (TcpBufferSizing.darwinSendBuffer sendSpace socket.Domain)
         // Darwin's rule is the lesser of the two, though the cap always wins
         // while `withTcpSendSpace` admits nothing below 49152.
         | SocketPhase.Refused _ -> min (int64 sendSpace) preconnectSendSpace

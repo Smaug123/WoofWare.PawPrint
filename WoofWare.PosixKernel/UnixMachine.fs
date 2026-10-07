@@ -78,8 +78,22 @@ type UnixMachineState =
             /// `net.inet.tcp.sendspace` sysctl, and Linux's `net.ipv4.tcp_wmem`
             /// default. Host configuration with a per-flavour default; see
             /// `UnixBootImage.withTcpSendSpace`. Only the Darwin flavour reads
-            /// it, through `DarwinReadiness.sendBufferSpace`.
+            /// it, through `TcpBufferSizing`.
             TcpSendSpace : int
+            /// The receive buffer a new TCP socket starts with, in bytes:
+            /// Darwin's `net.inet.tcp.recvspace` sysctl, and Linux's
+            /// `net.ipv4.tcp_rmem` default (its second value). Host
+            /// configuration with a per-flavour default; see
+            /// `UnixBootImage.withTcpReceiveSpace`. Both flavours read it,
+            /// through `TcpBufferSizing`.
+            TcpReceiveSpace : int
+            /// The most a TCP socket's send buffer grows to, in bytes: Linux's
+            /// `net.ipv4.tcp_wmem` maximum (its third value), which a
+            /// connection's send buffer autotunes up to, and Darwin's
+            /// `net.inet.tcp.autosndbufmax`. Host configuration with a
+            /// per-flavour default; see `UnixBootImage.withTcpSendSpaceMax`.
+            /// Only the Linux flavour reads it, through `TcpBufferSizing`.
+            TcpSendSpaceMax : int
             /// The IPv4 addresses this machine holds. Host configuration; see
             /// `UnixSystem.defaultLocalAddresses`.
             LocalAddresses : uint32 list
@@ -663,6 +677,34 @@ module UnixMachineState =
         match flavour with
         | SimulatedUnixFlavour.Linux -> 16384
         | SimulatedUnixFlavour.Darwin -> 131072
+
+    /// The TCP receive buffer sysctl's default on each flavour, measured on
+    /// the probe machines (2026-10-07): `net.inet.tcp.recvspace` reads 131072
+    /// on Darwin 27.0.0, and `net.ipv4.tcp_rmem` reads `4096 131072 9042912`
+    /// on the Linux 6.18.5 container, whose middle value a fresh TCP socket's
+    /// `SO_RCVBUF` reports.
+    let defaultTcpReceiveSpace (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 131072
+        | SimulatedUnixFlavour.Darwin -> 131072
+
+    /// The ceiling a TCP send buffer autotunes to, by default on each flavour,
+    /// measured on the probe machines (2026-10-07): `net.ipv4.tcp_wmem` reads
+    /// `4096 16384 4194304` on the Linux 6.18.5 container, and a connection's
+    /// `SO_SNDBUF` grows to its last value as a writer fills it;
+    /// `net.inet.tcp.autosndbufmax` reads 4194304 on Darwin 27.0.0.
+    let defaultTcpSendSpaceMax (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 4194304
+        | SimulatedUnixFlavour.Darwin -> 4194304
+
+    /// The receive pipe of a Darwin machine's route to 127.0.0.1, in bytes:
+    /// three times the loopback interface's MTU of 16384, as the send pipe
+    /// is. A connection's handshake grows a receive buffer smaller than this
+    /// to it (measured, `tcp-transfer.c` section C: a listener's `SO_RCVBUF` of
+    /// 4096 or of 16384 both end as the same buffer on the accepted socket),
+    /// and routes to the machine's other addresses have none.
+    let darwinLoopbackReceivePipe : int = 49152
 
     /// The send pipe of a Darwin machine's route to 127.0.0.1, in bytes: three
     /// times the loopback interface's MTU of 16384. A connection's handshake

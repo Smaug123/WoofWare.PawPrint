@@ -694,6 +694,76 @@ module UnixBootImage =
         }
         |> withMachine image
 
+    /// Set the TCP receive buffer sysctl (`TcpReceiveSpace`). `None` takes the
+    /// measured default of this machine's flavour.
+    ///
+    /// Under Linux a value must be positive. Under Darwin it must be one
+    /// `TcpBufferSizing.darwinReceiveSpaceRefusal` admits: one whose buffer a
+    /// connection's handshake sizes once and for all.
+    let withTcpReceiveSpace<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (value : int option)
+        (image : UnixBootImage<'Task, 'Handler>)
+        : UnixBootImage<'Task, 'Handler>
+        =
+        let machine = image.System.Machine
+
+        let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+        let resolved =
+            match value, flavour with
+            | None, _ -> UnixMachineState.defaultTcpReceiveSpace flavour
+            | Some value, SimulatedUnixFlavour.Linux ->
+                if value <= 0 then
+                    failwith
+                        $"UnixMachineState.TcpReceiveSpace: %d{value} is not positive, and Linux refuses such a net.ipv4.tcp_rmem default. Configure a positive size, or None for the default."
+
+                value
+            | Some value, SimulatedUnixFlavour.Darwin ->
+                match TcpBufferSizing.darwinReceiveSpaceRefusal value with
+                | Some reason ->
+                    failwith
+                        $"UnixMachineState.TcpReceiveSpace: %s{reason} Configure another net.inet.tcp.recvspace, or None for the default."
+                | None -> value
+
+        { machine with
+            TcpReceiveSpace = resolved
+        }
+        |> withMachine image
+
+    /// Set the ceiling a TCP send buffer autotunes to (`TcpSendSpaceMax`).
+    /// `None` takes the measured default of this machine's flavour.
+    ///
+    /// Under Linux a value must be positive. Under Darwin nothing reads the
+    /// value, since this kernel sizes a Darwin send buffer from
+    /// `TcpSendSpace` alone, so configuring one is refused rather than
+    /// silently ignored.
+    let withTcpSendSpaceMax<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (value : int option)
+        (image : UnixBootImage<'Task, 'Handler>)
+        : UnixBootImage<'Task, 'Handler>
+        =
+        let machine = image.System.Machine
+
+        let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+        let resolved =
+            match value, flavour with
+            | None, _ -> UnixMachineState.defaultTcpSendSpaceMax flavour
+            | Some value, SimulatedUnixFlavour.Darwin ->
+                failwith
+                    $"UnixMachineState.TcpSendSpaceMax: %d{value} was configured on a Darwin machine, but this kernel sizes a Darwin send buffer from TcpSendSpace alone, so nothing would read it. Pass None."
+            | Some value, SimulatedUnixFlavour.Linux ->
+                if value <= 0 then
+                    failwith
+                        $"UnixMachineState.TcpSendSpaceMax: %d{value} is not positive, and Linux refuses such a net.ipv4.tcp_wmem maximum. Configure a positive size, or None for the default."
+
+                value
+
+        { machine with
+            TcpSendSpaceMax = resolved
+        }
+        |> withMachine image
+
     /// Set the path to the executable that started the simulated process, or
     /// `None` to report that it has none. `None` is preserved rather than
     /// defaulted; see `UnixProcessState.ProcessPath`.

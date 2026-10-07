@@ -154,6 +154,7 @@ module TestUnixSystemInvariants =
                                         ClientAddress =
                                             InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 40000us
                                         ServerAddress = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us
+                                        Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet unlaunched.Machine
                                     }
                                 ]
                         NextConnectionId = connection

@@ -112,6 +112,7 @@ module TestAccept =
                         {
                             ClientAddress = loopback (40000us + uint16 index)
                             ServerAddress = serverAddress
+                            Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet system.Machine
                         }
 
                     ids @ [ id ], Map.add id connection connections, ConnectionId (next + 1L)
