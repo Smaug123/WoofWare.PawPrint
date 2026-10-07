@@ -1,39 +1,36 @@
 namespace WoofWare.PosixKernel
 
-/// <summary>
-/// The file-type field of a <c>mknod(2)</c> mode word, <c>mode &amp; S_IFMT</c>, which both
-/// flavours number alike.
-/// </summary>
-/// <remarks>
-/// Only those four bits are read for the type, and only the low twelve for the permissions: measured,
-/// bits above the sixteen of <c>mode_t</c> change nothing on either flavour (<c>mknodat-rules.c</c>, WIDE).
-/// </remarks>
+/// The file-type field of a `mknod(2)` mode word, `mode & S_IFMT`, which both
+/// flavours number alike. Only those four bits are read for the type, and
+/// only the low twelve for the permissions; every other bit is ignored.
 [<RequireQualifiedAccess>]
 type NodeTypeField =
     /// 0: no type named. Linux makes a regular file of it.
     | Unset
-    /// <c>S_IFIFO</c>, 0o010000.
+    /// `S_IFIFO`, 0o010000.
     | Fifo
-    /// <c>S_IFCHR</c>, 0o020000.
+    /// `S_IFCHR`, 0o020000.
     | CharacterDevice
-    /// <c>S_IFDIR</c>, 0o040000.
+    /// `S_IFDIR`, 0o040000.
     | Directory
-    /// <c>S_IFBLK</c>, 0o060000.
+    /// `S_IFBLK`, 0o060000.
     | BlockDevice
-    /// <c>S_IFREG</c>, 0o100000.
+    /// `S_IFREG`, 0o100000.
     | Regular
-    /// <c>S_IFLNK</c>, 0o120000.
+    /// `S_IFLNK`, 0o120000.
     | SymbolicLink
-    /// <c>S_IFSOCK</c>, 0o140000.
+    /// `S_IFSOCK`, 0o140000.
     | Socket
     /// Any other value of the field, as it stands in the mode word: 0o030000, 0o050000, 0o070000,
-    /// 0o110000, 0o130000, 0o150000, 0o160000 (Darwin's <c>S_IFWHT</c>) or 0o170000.
+    /// 0o110000, 0o130000, 0o150000, 0o160000 (Darwin's `S_IFWHT`) or 0o170000.
     | Unnamed of bits : int
 
 [<RequireQualifiedAccess>]
 module NodeTypeField =
     /// The type field of a raw `mknod(2)` mode word.
     let ofMode (mode : int) : NodeTypeField =
+        // Measured by `mknodat-rules.c` (WIDE) on Linux 6.18.5 and Darwin
+        // 27.0: bits above the sixteen of `mode_t` change nothing on either.
         match mode &&& 0o170000 with
         | 0 -> NodeTypeField.Unset
         | 0o010000 -> NodeTypeField.Fifo
@@ -62,20 +59,19 @@ type MkNodRules =
     /// without privilege.
     | PrivilegeBeforePath
 
-/// <summary>
-/// What Linux's <c>mknod(2)</c> goes on to make once the type field has passed its screen.
-/// </summary>
+/// What Linux's `mknod(2)` goes on to make once the type field has passed
+/// its screen.
 [<RequireQualifiedAccess>]
 type MkNodNode =
-    /// <c>S_IFREG</c>, or a type field of 0.
+    /// `S_IFREG`, or a type field of 0.
     | RegularFile
-    /// <c>S_IFIFO</c>.
+    /// `S_IFIFO`.
     | Fifo
-    /// <c>S_IFSOCK</c>.
+    /// `S_IFSOCK`.
     | Socket
-    /// <c>S_IFCHR</c>, standing for the raw device number <c>dev</c>.
+    /// `S_IFCHR`, standing for the raw device number `dev`.
     | CharacterDevice of dev : uint32
-    /// <c>S_IFBLK</c>, standing for the raw device number <c>dev</c>.
+    /// `S_IFBLK`, standing for the raw device number `dev`.
     | BlockDevice of dev : uint32
 
 /// Why this kernel will not answer a `mknod(2)` or `mknodat(2)`.
