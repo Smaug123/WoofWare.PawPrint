@@ -410,6 +410,8 @@
     <Compile Include="TestCalliSuspensionOutcome.fs" />
     <Compile Include="TestStepEffectStreaming.fs" />
     <Compile Include="TestMultiProgram.fs" />
+    <Compile Include="TestProgramChoice.fs" />
+    <Compile Include="TestSeveralPrograms.fs" />
     <Compile Include="TestFinallyChain.fs" />
   </ItemGroup>
   <ItemGroup>

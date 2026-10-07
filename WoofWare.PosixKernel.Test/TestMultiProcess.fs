@@ -380,6 +380,33 @@ module TestMultiProcess =
         machine'.Processes.[pids.[0]] |> shouldEqual machine.Processes.[pids.[0]]
 
     [<Test>]
+    let ``a view's process is held by the machine, by identity, until its own process's change is written back``
+        ()
+        : unit
+        =
+        let pids, machine = machineOf SimulatedUnixPlatform.linuxX64 2
+        let first = viewOf pids.[0] machine
+        let second = viewOf pids.[1] machine
+
+        SimulatedMachine.holdsProcessOf first machine |> shouldEqual true
+
+        // Another process's change goes stale only the machine in `first`.
+        let _, second = KeventWorld.dup 1 second
+        let machine = SimulatedMachine.unfocus second machine
+        SimulatedMachine.holdsProcessOf first machine |> shouldEqual true
+
+        // A change of `first`'s own process, written back from another view of it, is one
+        // `first` never saw.
+        let _, machine = inProcess pids.[0] (KeventWorld.dup 1) machine
+        SimulatedMachine.holdsProcessOf first machine |> shouldEqual false
+
+        // A process the machine does not hold.
+        let otherPids, other = machineOf SimulatedUnixPlatform.linuxX64 3
+
+        SimulatedMachine.holdsProcessOf (viewOf otherPids.[2] other) machine
+        |> shouldEqual false
+
+    [<Test>]
     let ``pid_max cannot be lowered past another process's live thread ID from one process's view`` () : unit =
         let pids, machine = machineOf SimulatedUnixPlatform.linuxX64 2
 

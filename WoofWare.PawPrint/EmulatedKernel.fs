@@ -2090,6 +2090,82 @@ type KernelConfig =
             LeaderThreadId = None
         }
 
+/// How the driver of several programs on one machine chooses which of them runs at each
+/// tick, among those with a thread that can run. Part of a run's replay contract: one
+/// program's threads are chosen among by that program's own scheduler, and this chooses
+/// between the programs.
+[<RequireQualifiedAccess>]
+type ProgramChoice =
+    /// The next such program in launch order after the one chosen last, wrapping round.
+    | RoundRobin
+    /// One such program, chosen uniformly by a pure hash of `seed` and the tick, so that the
+    /// same seed chooses the same program at the same tick with no generator state to carry.
+    | Seeded of seed : uint64
+
+[<RequireQualifiedAccess>]
+module ProgramChoice =
+    /// A value in `[0.0, 1.0)` that is a pure function of `(seed, tick)`. The seed is mixed
+    /// before the tick is folded in, so that two seeds do not draw one sequence at shifted
+    /// ticks.
+    let private draw (seed : uint64) (tick : int64) : float =
+        let finalise (h : uint64) : uint64 =
+            let h = h ^^^ (h >>> 33)
+            let h = h * 0xff51afd7ed558ccdUL
+            let h = h ^^^ (h >>> 33)
+            let h = h * 0xc4ceb9fe1a85ec53UL
+            h ^^^ (h >>> 33)
+
+        let h = finalise (seed + 0x9E3779B97F4A7C15UL)
+        let h = finalise (h ^^^ uint64 tick)
+        // Top 53 bits as a float in [0, 1).
+        float (h >>> 11) / float (1UL <<< 53)
+
+    /// The program `choice` runs at `tick`, of `candidates`, the programs with a thread that
+    /// can run, in launch order: a sublist of `launched`, every program in launch order.
+    /// `last` is the program chosen at the tick before.
+    ///
+    /// Fails loudly if `candidates` is empty, or names a program not in `launched`, or if
+    /// `last` is not in `launched`.
+    let choose
+        (choice : ProgramChoice)
+        (tick : int64)
+        (launched : ProcessId list)
+        (last : ProcessId)
+        (candidates : ProcessId list)
+        : ProcessId
+        =
+        if List.isEmpty candidates then
+            failwith "ProgramChoice.choose: no program has a thread that can run (this is a bug in PawPrint)."
+
+        if not (List.contains last launched) then
+            failwith
+                $"ProgramChoice.choose: the program chosen last, %O{last}, was never launched (this is a bug in PawPrint)."
+
+        match candidates |> List.tryFind (fun pid -> not (List.contains pid launched)) with
+        | Some stranger ->
+            failwith $"ProgramChoice.choose: the candidate %O{stranger} was never launched (this is a bug in PawPrint)."
+        | None -> ()
+
+        match candidates with
+        | [ only ] -> only
+        | _ ->
+
+        match choice with
+        | ProgramChoice.RoundRobin ->
+            // The candidates after `last` in launch order, then those up to and including it.
+            let after =
+                launched
+                |> List.skipWhile (fun pid -> pid <> last)
+                |> List.tail
+                |> List.filter (fun pid -> List.contains pid candidates)
+
+            match after with
+            | next :: _ -> next
+            | [] -> List.head candidates
+        | ProgramChoice.Seeded seed ->
+            let index = int (draw seed tick * float candidates.Length)
+            candidates.[min index (candidates.Length - 1)]
+
 /// What a simulated machine is, apart from any one process on it: the part of
 /// a `KernelConfig` that every process on the machine shares. Each field means
 /// what the `KernelConfig` field of its name means, except where it says
@@ -2139,6 +2215,9 @@ type MachineConfig =
         /// On Darwin, the thread ID the first process's leader reports: see
         /// `KernelConfig.LeaderThreadId`.
         LeaderThreadId : uint64 option
+        /// How the driver chooses which of the machine's programs runs at each tick. A
+        /// machine of one program never chooses.
+        ProgramChoice : ProgramChoice
     }
 
 /// How one process on a simulated machine starts: the part of a `KernelConfig`
@@ -2257,6 +2336,26 @@ module ProcessConfig =
         |> credentialsOrFail
         |> umaskOrFail
 
+    /// The kernel of the process `config` describes, whose view of the machine
+    /// is `view`: the userspace a CoreCLR process has set up by `Main`
+    /// (`EmulatedKernel.ofView`), with `config`'s C library and spin-wait count.
+    /// `view` must be the view the process's syscalls are made in, and the
+    /// machine in it is changed. Refusals name the knob `knobs.X`, where `knobs`
+    /// names the configuration record that holds it.
+    let kernelOfView
+        (knobs : string)
+        (config : ProcessConfig)
+        (view : UnixSystem<ThreadId, NativeSignalHandler>)
+        : EmulatedKernel
+        =
+        view
+        |> EmulatedKernel.ofView $"%s{knobs}.InheritedSignalIgnores" config.InheritedSignalIgnores
+        |> fun kernel ->
+            match config.CLibrary with
+            | None -> kernel
+            | Some library -> EmulatedKernel.withCLibrary $"%s{knobs}.CLibrary" library kernel
+        |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
+
 [<RequireQualifiedAccess>]
 module MachineConfig =
     /// How the clock of the machine `config` describes moves: its
@@ -2340,20 +2439,21 @@ module MachineConfig =
         |> processIdOrFail
         |> leaderThreadIdOrFail
 
-    /// The kernel of the first process on the machine `machine` describes,
-    /// launched as `firstProcess` describes it: the machine booted with that
-    /// process, every setter's validation applied on the way. Refusals name
-    /// the knob `machineKnobs.X` or `processKnobs.X`, where each names the
-    /// configuration record that holds the knob.
+    /// The machine `machine` describes, booted with its first process launched
+    /// as `firstProcess` describes it, every setter's validation applied on the
+    /// way: the first process's POSIX system, before any of the process's
+    /// userspace is set up (`ProcessConfig.kernelOfView`). Refusals name the knob
+    /// `machineKnobs.X` or `processKnobs.X`, where each names the configuration
+    /// record that holds the knob.
     ///
     /// `pid_max`, which a sysctl may change on a running machine, is written
     /// just after boot, before the process runs anything.
-    let boot
+    let bootSystem
         (machineKnobs : string)
         (processKnobs : string)
         (machine : MachineConfig)
         (firstProcess : ProcessConfig)
-        : EmulatedKernel
+        : UnixSystem<ThreadId, NativeSignalHandler>
         =
         let image = toImage machineKnobs machine
         let launch = ProcessConfig.toLaunch processKnobs machine.UnixPlatform firstProcess
@@ -2368,12 +2468,21 @@ module MachineConfig =
             match machine.PidMax with
             | None -> system
             | Some pidMax -> UnixSystem.writePidMaxSysctl $"%s{machineKnobs}.PidMax" pidMax system
-        |> EmulatedKernel.ofView $"%s{processKnobs}.InheritedSignalIgnores" firstProcess.InheritedSignalIgnores
-        |> fun kernel ->
-            match firstProcess.CLibrary with
-            | None -> kernel
-            | Some library -> EmulatedKernel.withCLibrary $"%s{processKnobs}.CLibrary" library kernel
-        |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration firstProcess.OptimalMaxSpinWaitsPerSpinIteration
+
+    /// The kernel of the first process on the machine `machine` describes,
+    /// launched as `firstProcess` describes it: `bootSystem`, then
+    /// `ProcessConfig.kernelOfView`. Refusals name the knob `machineKnobs.X` or
+    /// `processKnobs.X`, where each names the configuration record that holds
+    /// the knob.
+    let boot
+        (machineKnobs : string)
+        (processKnobs : string)
+        (machine : MachineConfig)
+        (firstProcess : ProcessConfig)
+        : EmulatedKernel
+        =
+        bootSystem machineKnobs processKnobs machine firstProcess
+        |> ProcessConfig.kernelOfView processKnobs firstProcess
 
 [<RequireQualifiedAccess>]
 module KernelConfig =
@@ -2450,6 +2559,7 @@ module KernelConfig =
                 PidMax = config.PidMax
                 ProcessId = config.ProcessId
                 LeaderThreadId = config.LeaderThreadId
+                ProgramChoice = ProgramChoice.RoundRobin
             }
 
         machine, proc

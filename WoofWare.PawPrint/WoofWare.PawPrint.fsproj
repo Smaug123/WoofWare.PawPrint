@@ -243,6 +243,7 @@
     <Compile Include="AppContextSeed.fs" />
     <Compile Include="CommandLineArgsInit.fs" />
     <Compile Include="RunningProgram.fs" />
+    <Compile Include="ProgramStartup.fs" />
     <Compile Include="MultiProgram.fs" />
     <Compile Include="Program.fs" />
     <EmbeddedResource Include="version.json" />

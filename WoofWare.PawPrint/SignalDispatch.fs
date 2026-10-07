@@ -268,6 +268,12 @@ module SignalDispatch =
             | Ok outcome -> refuse $"the kernel answers %s{describe outcome}"
         | Ok outcome -> refuse $"the kernel answers %s{describe outcome} without taking the byte"
 
+    /// Whether the leader may take a signal on its return to user mode: one is pending, and
+    /// the leader is not asleep in a syscall. Read from the process's own state alone.
+    let private leaderMayTake (state : IlMachineState) : bool =
+        not (List.isEmpty (SignalState.pending state.Kernel.Signals))
+        && (UnixTaskTable.parkedFor state.Kernel.Leader state.Kernel.Tasks).IsNone
+
     /// The leader's return to user mode: whatever the kernel delivers to it now,
     /// each through its disposition. A handler frame's handler runs, innermost
     /// first, and each returns through `sigreturn`, after which the leader
@@ -295,9 +301,7 @@ module SignalDispatch =
         // Nothing pending is nothing to deliver, and this runs between every
         // two instructions, so it answers without assembling the kernel's view.
         // No frame outlives a poll, so none is waiting for a sigreturn either.
-        if List.isEmpty (SignalState.pending state.Kernel.Signals) then
-            SignalPoll.Continues state
-        elif (UnixTaskTable.parkedFor leader state.Kernel.Tasks).IsSome then
+        if not (leaderMayTake state) then
             SignalPoll.Continues state
         else
 
@@ -469,6 +473,26 @@ module SignalDispatch =
             |> SignalPoll.Continues
         | NonCanceledPosixSignal.Terminated (state, ended) -> SignalPoll.ProcessKilled (state, ended)
 
+    /// System.Native's dispatcher and its signal pipe, if the dispatcher is idle, `Parked` in
+    /// its loop's read of the pipe, so that a poll may finish that read or make it afresh. A
+    /// dispatcher that is not idle is running the callback for an earlier signal, and reads the
+    /// next one only once that returns, exactly as the single-threaded `SignalHandlerLoop`
+    /// does. Read from the process's own state alone.
+    let private idleDispatcher (state : IlMachineState) : (ThreadId * SignalPipe) option =
+        match
+            PosixSignalShim.signalThread state.Kernel.PosixSignalShim,
+            PosixSignalShim.signalPipe state.Kernel.PosixSignalShim
+        with
+        | None, _
+        | _, None -> None
+        | Some dispatcher, Some pipe ->
+            match Map.tryFind dispatcher state.ThreadState with
+            | Some ts when ts.Status = ThreadStatus.Parked -> Some (dispatcher, pipe)
+            | Some _ -> None
+            | None ->
+                failwith
+                    $"SignalDispatch.poll: dispatcher thread %O{dispatcher} recorded in PosixSignalShim but no ThreadState entry exists — the initialisation path should always allocate both."
+
     /// The dispatcher's blocking `read(pipeFd, &signalCode, 1)`, if it is
     /// Parked there: made afresh if its task is not yet asleep in it, and
     /// finished once the kernel wakes it if it is. Then what the loop does with
@@ -486,27 +510,9 @@ module SignalDispatch =
         (state : IlMachineState)
         : SignalPoll
         =
-        match
-            PosixSignalShim.signalThread state.Kernel.PosixSignalShim,
-            PosixSignalShim.signalPipe state.Kernel.PosixSignalShim
-        with
-        | None, _
-        | _, None -> SignalPoll.Continues state
-        | Some dispatcher, Some pipe ->
-
-        let dispatcherStatus =
-            match Map.tryFind dispatcher state.ThreadState with
-            | Some ts -> ts.Status
-            | None ->
-                failwith
-                    $"SignalDispatch.poll: dispatcher thread %O{dispatcher} recorded in PosixSignalShim but no ThreadState entry exists — the initialisation path should always allocate both."
-
-        // Runnable: the dispatcher is running the callback for an earlier
-        // signal, and reads the next one only once that returns, exactly as
-        // the single-threaded `SignalHandlerLoop` does.
-        if dispatcherStatus <> ThreadStatus.Parked then
-            SignalPoll.Continues state
-        else
+        match idleDispatcher state with
+        | None -> SignalPoll.Continues state
+        | Some (dispatcher, pipe) ->
 
         let refuse (what : string) : 'a =
             failwith
@@ -601,6 +607,26 @@ module SignalDispatch =
         match deliverToLeader state with
         | SignalPoll.Continues state -> wakeDispatcher baseClassTypes state
         | killed -> killed
+
+    /// Whether `poll` may do anything to `state`: a signal the leader may take on its return to
+    /// user mode, or a dispatcher idle in its loop that has not yet made its read of the signal
+    /// pipe. Read from the process's own state alone, never through its view of the machine,
+    /// so the driver can ask it of a program whose view of the machine is stale and hand the
+    /// machine over only to a program whose poll may act.
+    ///
+    /// A dispatcher asleep in its read is not counted, though a write to the pipe would wake
+    /// it: the process's own shim made the pipe, and nothing passes a descriptor to another
+    /// process, so only the process's own steps and polls write it, and the poll that follows
+    /// each of those runs while the process is still the one checked out.
+    let mayAct (state : IlMachineState) : bool =
+        leaderMayTake state
+        || match idleDispatcher state with
+           | None -> false
+           | Some (dispatcher, _) ->
+               match UnixTaskTable.parkedFor dispatcher state.Kernel.Tasks with
+               | Some (ParkedSyscall.PipeRead _) -> false
+               | Some _
+               | None -> true
 
     /// Called from `RunningProgram.stepDecided` when `ExecutionResult.Terminated`
     /// fires for the dispatcher's bottom frame (the callback `ret`urned past

@@ -251,6 +251,23 @@ module SimulatedMachine =
         =
         Map.tryFind processId machine.Processes |> Option.map (viewOf machine)
 
+    /// Whether `machine` holds `view`'s process and its tasks exactly as `view`
+    /// has them, by identity, whatever machine `view` itself holds. A client
+    /// that keeps the view of a process making no calls while another
+    /// process's view is written back asks this to know that only the machine
+    /// in the view has gone stale, so that focusing the process again loses
+    /// nothing. False if no process on the machine has the view's process ID.
+    let holdsProcessOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (view : UnixSystem<'Task, 'Handler>)
+        (machine : SimulatedMachine<'Task, 'Handler>)
+        : bool
+        =
+        match Map.tryFind view.Process.ProcessId machine.Processes with
+        | None -> false
+        | Some slot ->
+            obj.ReferenceEquals (slot.Process, view.Process)
+            && obj.ReferenceEquals (slot.Tasks, view.Tasks)
+
     /// Fail loudly, naming `operation`, unless `view` is a view of `machine`
     /// as it stands; see `unfocus`.
     let private assertCurrent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
