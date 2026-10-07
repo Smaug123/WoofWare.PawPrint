@@ -665,6 +665,47 @@ module TestConnectedTransfer =
 
             assertClean system
 
+    /// `write` given the bytes without an admission first answers as the
+    /// admission and its write do, `SIGPIPE` included: three writes of 100
+    /// bytes each way, from each state a close can leave the writer in.
+    [<Test>]
+    let ``a write that skips its admission answers a connection as one that makes it`` () : unit =
+        let summary (outcome : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>) =
+            match outcome with
+            | Ok (WriteOutcome.Returns (answer, system)) -> (answer, None), system
+            | Ok (WriteOutcome.ReturnsRaising (answer, entry, system)) -> (answer, Some entry.Signal), system
+            | other -> failwith $"%A{other}"
+
+        for platform in Machines.platforms do
+            // The peer closed over unread bytes; closed cleanly; or neither.
+            for build in [ "reset" ; "fin" ; "open" ] do
+                let c, s, system = pair true (systemOn id platform)
+
+                let system =
+                    match build with
+                    | "reset" -> sentAll c 10 system |> KeventWorld.close s
+                    | "fin" -> KeventWorld.close s system
+                    | _ -> system
+
+                let thrice
+                    (write : UnixSystem<int, string> -> Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>)
+                    =
+                    ((system, []), [ 1..3 ])
+                    ||> List.fold (fun (system, seen) _ ->
+                        let answer, system = summary (write system)
+                        system, seen @ [ answer ]
+                    )
+                    |> snd
+
+                let admitted = thrice (send c 100)
+
+                let direct =
+                    thrice (fun system ->
+                        UnixReadWrite.write system.Leader c (ImmutableArray.Create (payload, 0, 100)) system
+                    )
+
+                (build, direct) |> shouldEqual (build, admitted)
+
     /// Linux's accept that reads a negative address length answers EINVAL
     /// having taken the connection, whose server end then closes as a close
     /// does: over bytes the client had sent it, a reset.
