@@ -142,10 +142,24 @@ module TestUserBufferCheck =
 
     // ------------------------------------------------- the platforms' answers
 
+    let private configuredOn
+        (platform : SimulatedUnixPlatform)
+        (limit : uint64)
+        : Result<EmulatedKernel, UserAddressLimitRefusal>
+        =
+        let image = EmulatedKernel.image platform StandardStreamsConfig.piped
+
+        UnixBootImage.withUserAddressLimit limit image.Machine
+        |> Result.map (fun machine ->
+            EmulatedKernel.boot
+                { image with
+                    Machine = machine
+                }
+        )
+
     let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
-        EmulatedKernel.image platform StandardStreamsConfig.piped
-        |> KernelImage.mapMachine (UnixBootImage.withUserAddressLimit limit)
-        |> EmulatedKernel.boot
+        configuredOn platform limit
+        |> Result.defaultWith (fun refusal -> failwith $"test bug: %s{UserAddressLimitRefusal.describe refusal}")
 
     /// macOS performs no up-front check at all: measured, every address at
     /// every size reads 0 from a descriptor with nothing to transfer. So a
@@ -158,8 +172,9 @@ module TestUserBufferCheck =
         |> shouldEqual UserBufferCheck.AtCopyTime
 
         for limit in [ 1UL ; ObservedUserAddressLimit.Arm64FortyEightBit ; UInt64.MaxValue ] do
-            Assert.Throws<exn> (fun () -> kernelOn SimulatedUnixPlatform.macOsArm64 limit |> ignore<EmulatedKernel>)
-            |> fun e -> e.Message |> shouldContainText "screens no buffer"
+            configuredOn SimulatedUnixPlatform.macOsArm64 limit
+            |> Result.map ignore<EmulatedKernel>
+            |> shouldEqual (Error (UserAddressLimitRefusal.NoUpFrontScreen SimulatedUnixFlavour.Darwin))
 
     /// The limit is the *machine's*, not the flavour's: the same Linux platform
     /// screens at whichever address space its host was configured with, among
@@ -188,14 +203,27 @@ module TestUserBufferCheck =
 
         // A machine with no user address space is not a machine, and one
         // architecture's limit is not another's.
-        for platform, limit in
+        for platform, limit, observedOn in
             [
-                SimulatedUnixPlatform.linuxX64, 0UL
-                SimulatedUnixPlatform.linuxX64, ObservedUserAddressLimit.Arm64FortyEightBit
-                SimulatedUnixPlatform.linuxArm64, ObservedUserAddressLimit.X64FourLevelPaging
+                SimulatedUnixPlatform.linuxX64, 0UL, None
+                SimulatedUnixPlatform.linuxX64,
+                ObservedUserAddressLimit.Arm64FortyEightBit,
+                Some SimulatedUnixArchitecture.Arm64
+                SimulatedUnixPlatform.linuxArm64,
+                ObservedUserAddressLimit.X64FourLevelPaging,
+                Some SimulatedUnixArchitecture.X64
             ] do
-            Assert.Throws<exn> (fun () -> kernelOn platform limit |> ignore<EmulatedKernel>)
-            |> ignore<exn>
+            configuredOn platform limit
+            |> Result.map ignore<EmulatedKernel>
+            |> shouldEqual (
+                Error (
+                    UserAddressLimitRefusal.NotObservedOn (
+                        limit,
+                        SimulatedUnixPlatform.architecture platform,
+                        observedOn
+                    )
+                )
+            )
 
     /// A host configuration that says nothing about the limit gets its
     /// platform's own, so changing only the platform never pairs one

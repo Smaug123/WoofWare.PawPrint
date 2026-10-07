@@ -407,26 +407,20 @@ module TestMultiProcess =
         |> shouldEqual false
 
     [<Test>]
-    let ``pid_max cannot be lowered past another process's live thread ID from one process's view`` () : unit =
+    let ``pid_max may be lowered past another process's live thread ID from one process's view`` () : unit =
         let pids, machine = machineOf SimulatedUnixPlatform.linuxX64 2
 
-        // The second process's leader is 4243, so a pid_max of 4243 would
-        // leave it an ID the machine could not have handed out.
+        // The second process's leader is 4243. Linux keeps a live ID that a
+        // lowered pid_max no longer admits (`pid-max-below-live.c`), so a write
+        // at or below it from the first process's view takes, and leaves the
+        // machine as consistent as it found it.
         ProcessId.toInt32 pids.[1] |> shouldEqual 4243
 
-        let error =
-            Assert.Throws<exn> (fun () ->
-                inProcess pids.[0] (fun view -> (), UnixSystem.writePidMaxSysctl context 4243 view) machine
-                |> ignore
-            )
+        let (), lowered =
+            inProcess pids.[0] (fun view -> (), UnixSystem.writePidMaxSysctl context 4243 view) machine
 
-        error.Message |> shouldContainText "4243"
-
-        // ...and a pid_max above both is admitted.
-        let (), machine =
-            inProcess pids.[0] (fun view -> (), UnixSystem.writePidMaxSysctl context 4244 view) machine
-
-        assertClean machine
+        assertClean lowered
+        lowered.Processes.[pids.[1]] |> shouldEqual machine.Processes.[pids.[1]]
 
     [<Test>]
     let ``a view checks only what it can see truthfully, and the machine checks the rest`` () : unit =

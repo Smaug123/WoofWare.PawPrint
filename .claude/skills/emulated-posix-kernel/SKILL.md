@@ -171,6 +171,19 @@ a constant becomes a lie the moment the state it depends on lands. This is why
 the platforms agree on none — while `SystemNative_GetFileSystemType` answers,
 having one field measured on both.
 
+Inside `WoofWare.PosixKernel`, "refuse" means a typed `Error`, never a throw,
+and that holds for boot configuration too: a setter in `UnixBootImage` or
+`ProcessLaunch` that rejects a well-formed value (`withBootTime`, `withMount`,
+`withTcpSendSpace`, `withProcessId`, `withCredentials`, …) returns a `Result`
+whose `Error` is a refusal type of that setter's own, with a `describe`, whose
+cases state facts and name no knob. Each case's docstring says whether the
+value is unmeasured, unmodelled or contradictory. `KernelConfig.toKernel`
+matches every case and fails with the `KernelConfig` field the value came from
+(`"KernelConfig.Mount: "` and so on), as
+`EmulatedKernel.withFileSystemAndCurrentDirectory` does for
+`FileSystemSeedFault`. Only a forged value (`Unchecked.defaultof`) still throws, and
+a setter keeps a `context` parameter only to name the knob in that throw.
+
 Before concluding a modelled constant has **no guest observer**, enumerate the
 interpreter's own limits that are *arithmetic in that constant*: a byte-offset
 bound, a block-count cap, `Int32.MaxValue / stride`. Each is a boundary a guest

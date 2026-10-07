@@ -67,6 +67,7 @@ module TestFileSystemType =
     let private machineMounting (flavour : SimulatedUnixFlavour) (mount : EmulatedMount option) : UnixMachineState =
         (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
          |> UnixBootImage.withMount mount
+         |> Configured.expectOk MountRefusal.describe
          |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
             .Machine
 
@@ -252,7 +253,9 @@ module TestFileSystemType =
 
     let private systemWith (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : UnixSystem<int, string> =
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial platform |> UnixBootImage.withMount (Some mount)
+            UnixSystem.initial platform
+            |> UnixBootImage.withMount (Some mount)
+            |> Configured.expectOk MountRefusal.describe
 
         match
             UnixBootImage.withFileSystem
@@ -404,13 +407,10 @@ module TestFileSystemType =
         // Both directions, because a guard that only ever refused one of them
         // would leave the other pair silently constructible.
         for flavour, fsType in everyIncoherentPair do
-            let thrown =
-                Assert.Throws (fun () ->
-                    machineMounting flavour (Some (EmulatedMount.defaultOf fsType))
-                    |> ignore<UnixMachineState>
-                )
-
-            thrown.Message |> shouldContainText (string<EmulatedFileSystemType> fsType)
+            UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
+            |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+            |> Result.map ignore<UnixBootImage<int, string>>
+            |> shouldEqual (Error (MountRefusal.NotReportableUnder (fsType, flavour)))
 
     [<Test>]
     let ``a mount the flavour does have is accepted`` () : unit =

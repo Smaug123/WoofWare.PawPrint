@@ -467,7 +467,10 @@ module TestConnect =
             withSocket
                 (SocketId 0L)
                 holder
-                (systemOnWith (UnixBootImage.withEphemeralPortRange (40000us, 40000us)) platform)
+                (systemOnWith
+                    (UnixBootImage.withEphemeralPortRange (40000us, 40000us)
+                     >> Configured.expectOk EphemeralPortRangeRefusal.describe)
+                    platform)
 
         let fd, system =
             withSocket (SocketId 1L) (streamSocket None SocketPhase.Idle) system

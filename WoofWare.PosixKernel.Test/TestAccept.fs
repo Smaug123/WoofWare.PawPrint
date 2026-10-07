@@ -194,7 +194,10 @@ module TestAccept =
             | other -> failwith $"expected a socket target, got %A{other}"
 
         let accepted = UnixMachineState.socket acceptedId system.Machine
-        accepted.Phase |> shouldEqual (SocketPhase.Established (List.head connections))
+
+        accepted.Phase
+        |> shouldEqual (SocketPhase.Established (List.head connections, ConnectionEnd.Server))
+
         accepted.Kind |> shouldEqual SocketKind.Stream
 
         // Bound at the *server* address, which is what the accepted socket's own
@@ -372,7 +375,8 @@ module TestAccept =
             [
                 SocketPhase.Idle
                 SocketPhase.EstablishedPendingReport (ConnectionId 7L)
-                SocketPhase.Established (ConnectionId 7L)
+                SocketPhase.Established (ConnectionId 7L, ConnectionEnd.Client)
+                SocketPhase.Established (ConnectionId 7L, ConnectionEnd.Server)
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
             ]

@@ -8,13 +8,6 @@ open WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 module internal Launched =
 
-    /// The value a setter returned, for a value the test means it to admit.
-    let expectOk<'Value, 'Refusal> (describe : 'Refusal -> string) (result : Result<'Value, 'Refusal>) : 'Value =
-        match result with
-        | Ok value -> value
-        | Error refusal ->
-            failwith $"test bug: the kernel refused a value the test means it to admit: %s{describe refusal}"
-
     /// A process on `platform` launched with `streams`, its leader `leader`
     /// on `cpu`.
     let launch<'Task when 'Task : comparison>
@@ -25,7 +18,7 @@ module internal Launched =
         : ProcessLaunch<'Task>
         =
         ProcessLaunch.create platform streams leader cpu
-        |> expectOk LaunchTableRefusal.describe
+        |> Configured.expectOk LaunchTableRefusal.describe
 
     /// `image` booted with a first process launched with `streams`, its leader
     /// `leader` on `cpu`, as `configure` configures the launch.
@@ -39,7 +32,7 @@ module internal Launched =
         =
         let launch = launch (UnixBootImage.platform image) streams leader cpu |> configure
 
-        UnixBootImage.boot launch image |> expectOk LaunchRefusal.describe
+        UnixBootImage.boot launch image |> Configured.expectOk LaunchRefusal.describe
 
     /// `bootWith` with the launch as `ProcessLaunch.create` makes it.
     let boot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -58,7 +51,7 @@ module internal Launched =
         : ProcessLaunch<'Task>
         =
         ProcessLaunch.withCredentials credentials launch
-        |> expectOk CredentialsRefusal.describe
+        |> Configured.expectOk CredentialsRefusal.describe
 
     /// `ProcessLaunch.withUmask`, which the test means to admit it.
     let umask<'Task when 'Task : comparison>
@@ -66,7 +59,8 @@ module internal Launched =
         (launch : ProcessLaunch<'Task>)
         : ProcessLaunch<'Task>
         =
-        ProcessLaunch.withUmask umask launch |> expectOk UmaskRefusal.describe
+        ProcessLaunch.withUmask umask launch
+        |> Configured.expectOk UmaskRefusal.describe
 
     /// `UnixBootImage.withProcessId`, which the test means to admit it.
     let processId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -74,7 +68,8 @@ module internal Launched =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        UnixBootImage.withProcessId pid image |> expectOk ProcessIdRefusal.describe
+        UnixBootImage.withProcessId pid image
+        |> Configured.expectOk ProcessIdRefusal.describe
 
     /// `UnixBootImage.withLeaderThreadId`, which the test means to admit it.
     let leaderThreadId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -83,7 +78,7 @@ module internal Launched =
         : UnixBootImage<'Task, 'Handler>
         =
         UnixBootImage.withLeaderThreadId id image
-        |> expectOk LeaderThreadIdRefusal.describe
+        |> Configured.expectOk LeaderThreadIdRefusal.describe
 
     /// `UnixBootImage.withFileSystem`, which the test means to admit the seed.
     let fileSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -94,7 +89,7 @@ module internal Launched =
         : UnixBootImage<'Task, 'Handler>
         =
         UnixBootImage.withFileSystem createdAt defaultOwner seed image
-        |> expectOk (sprintf "%A")
+        |> Configured.expectOk (sprintf "%A")
 
     /// `system` with the machine's record of the directories processes stand
     /// in saying where its process stands: for a test that has moved the

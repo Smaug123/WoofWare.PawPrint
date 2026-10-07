@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
+    <Compile Include="Configured.fs" />
     <Compile Include="Launched.fs" />
     <Compile Include="WriteAdmissions.fs" />
     <Compile Include="ReadOutcomes.fs" />
@@ -71,12 +72,15 @@
         <Compile Include="TestUnixSystemStep.fs" />
     <Compile Include="TestUnixSystemInitial.fs" />
     <Compile Include="TestBootImage.fs" />
+    <Compile Include="TestMachineSetterRefusals.fs" />
+    <Compile Include="TestIpv4Prefix.fs" />
     <Compile Include="TestUnixSystemInvariants.fs" />
     <Compile Include="TestSocketTable.fs" />
     <Compile Include="TestSocketEventDelivery.fs" />
     <Compile Include="SocketFuzz.fs" />
     <Compile Include="TestSocketFuzz.fs" />
     <Compile Include="TestNoPawPrintReference.fs" />
+    <Compile Include="TestXmlDocumentation.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestPathCopyIn.fs" />
     <Compile Include="TestOpenFlagWord.fs" />
@@ -150,6 +154,7 @@
     <Compile Include="TestSocketErrorOption.fs" />
     <Compile Include="TestSocketErrorAgainstHost.fs" />
     <Compile Include="TestUnconnectedSocketTransfer.fs" />
+    <Compile Include="TestConnectedTransferAgainstHost.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestEphemeralPorts.fs" />
     <Compile Include="TestListen.fs" />
@@ -268,6 +273,12 @@
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\readlinkat-empty-path.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.readlinkatEmptyPath.darwin.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\openat-limit.linux-6.18.5-aarch64-root.txt" LogicalName="WoofWare.PosixKernel.Test.openatLimit.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\openat-limit.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.openatLimit.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\mkdirat-rules.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.mkdiratRules.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\mkdirat-rules.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.mkdiratRules.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\unlinkat-rules.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.unlinkatRules.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\unlinkat-rules.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.unlinkatRules.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\renameat-rules.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.renameatRules.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\renameat-rules.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.renameatRules.darwin.txt" />
     <!-- Whether `readlink(2)` consults a symbolic link's own mode, measured per
          flavour by docs/plans/2026-08-23-posix-kernel-extraction/readlink-mode.c.
          `TestReadLinkMode` replays them. -->
@@ -334,6 +345,17 @@
          holds the rules and the kernel to every row. -->
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\socket-unconnected-transfer.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.socketUnconnectedTransfer.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\socket-unconnected-transfer.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.socketUnconnectedTransfer.darwin.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- What read, recv, write and send answered, and what poll reported, on a
+         connected loopback TCP socket in each state a connection passes
+         through, measured per flavour by
+         docs/plans/2026-10-07-tcp-byte-transfer/tcp-transfer.c, whose output is
+         embedded from beside it. `TestConnectedTransferAgainstHost` holds this
+         host to its flavour's rows. -->
+    <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\tcp-transfer.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.tcpTransfer.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\tcp-transfer.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.tcpTransfer.darwin.txt" />
   </ItemGroup>
 
   <ItemGroup>
