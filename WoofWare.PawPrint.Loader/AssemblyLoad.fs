@@ -53,10 +53,18 @@ type BaseChainFailure =
         | BaseChainFailure.BaseTypeAbsent miss -> $"base type is not declared where the metadata says: %O{miss}"
 
 type IAssemblyLoad =
+    /// <param name="loadedAssemblies">
+    /// The assemblies loaded so far. On success the result carries this context again, extended
+    /// with whatever the binding had to load; carry that one forward in place of this.
+    /// </param>
     /// <param name="referencedIn">
     /// The <em>definition</em> identity of the assembly whose AssemblyReference table
     /// <c>handle</c> indexes. AssemblyReferenceHandles are only meaningful relative to the
     /// assembly that declares them.
+    /// </param>
+    /// <param name="handle">
+    /// The AssemblyReference to bind: a row of <paramref name="referencedIn"/>'s AssemblyReference
+    /// table.
     /// </param>
     abstract TryLoadAssembly :
         loadedAssemblies : LoadedAssemblies ->
