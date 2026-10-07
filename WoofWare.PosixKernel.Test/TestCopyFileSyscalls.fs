@@ -350,7 +350,11 @@ module TestCopyFileSyscalls =
         UnixDescriptor.fileClone outFd inFd darwin
         |> shouldEqual (Error (FileCloneRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
-        let nfs = kindsSystemWith (UnixBootImage.withMount (Some EmulatedMount.Nfs))
+        let nfs =
+            kindsSystemWith (
+                UnixBootImage.withMount (Some EmulatedMount.Nfs)
+                >> Configured.expectOk MountRefusal.describe
+            )
 
         let inFd, nfs = opened "ksrc" FileAccessMode.ReadOnly nfs
         let outFd, nfs = opened "kdst" FileAccessMode.WriteOnly nfs

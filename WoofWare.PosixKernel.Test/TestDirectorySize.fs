@@ -336,6 +336,7 @@ module TestDirectorySize =
         let system =
             system
             |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+            |> Configured.expectOk MountRefusal.describe
             |> UnixBootImage.boot
 
         let system =

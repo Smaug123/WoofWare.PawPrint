@@ -1731,6 +1731,619 @@ module TestStartingDirectory =
     let ``unlinkat screens a word of several bits as Darwin measured`` () : unit =
         replayUnlinkAtWords "WoofWare.PosixKernel.Test.unlinkatRules.darwin.txt" darwinUser
 
+    // ------------------------------------------------------------ renameat
+
+    let private renderedRenameAt (result : Result<SyscallAnswer * UnixSystem<int, string>, RenameRefusal>) : string =
+        match result with
+        | Ok (SyscallAnswer.Completed _, _) -> "ok"
+        | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+        | Error refusal -> $"refused: %s{RenameRefusal.describe refusal}"
+
+    /// `at-dirfd.c`'s `renameat` rows on one side: `renameat(dirfd, path,
+    /// AT_FDCWD, "renamed")` for the old side, `renameat(AT_FDCWD, "f2", dirfd,
+    /// path)` for the new.
+    let private replayRenameAt (side : string) (envelope : Envelope) : unit =
+        let call = $"renameat[%s{side}]"
+        let rows = atRows envelope |> Map.filter (fun (c, _, _) _ -> c = call)
+        let skipped = faccessatNotReplayed envelope
+        let atFdCwd = atFdCwd (SimulatedUnixPlatform.flavour envelope.Platform)
+
+        rows.Count |> shouldEqual (13 * 9)
+
+        [
+            for KeyValue ((_, kind, path), expected) in rows do
+                if not (skipped.Contains kind) then
+                    match directoryArgument kind envelope with
+                    | None -> yield $"%s{call} %s{kind} %s{path}: no such dirfd could be made"
+                    | Some (dirfd, system) ->
+                        let p = pathArgument path envelope.Platform
+
+                        let actual =
+                            match side with
+                            | "old" -> UnixNamespace.renameat dirfd p atFdCwd (PathArg.ofText "renamed") system
+                            | _ -> UnixNamespace.renameat atFdCwd (PathArg.ofText "f2") dirfd p system
+                            |> renderedRenameAt
+
+                        if actual <> expected then
+                            yield
+                                $"%s{call} %s{kind} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``renameat's old side answers every dirfd and path the probe tried, under every envelope`` () : unit =
+        for envelope in envelopes do
+            replayRenameAt "old" envelope
+
+    [<Test>]
+    let ``renameat's new side answers every dirfd and path the probe tried, under every envelope`` () : unit =
+        for envelope in envelopes do
+            replayRenameAt "new" envelope
+
+    /// `at-dirfd.c`'s ORDER2 rows for `renameat`: a bad argument on each side
+    /// at once, from the probe's cell. Linux reads the new side's pathname and
+    /// `dirfd` before the old side's final name, so an absent old name loses
+    /// to the new side's EFAULT and EBADF; Darwin finishes the old side first.
+    let private replayRenameAtOrder2 (envelope : Envelope) : unit =
+        let atFdCwd = atFdCwd (SimulatedUnixPlatform.flavour envelope.Platform)
+
+        let rows =
+            probeLines envelope.Resource "ORDER2"
+            |> List.filter (fun row -> List.head row = "renameat")
+
+        rows.Length |> shouldEqual 5
+
+        let side (state : string) (isOld : bool) : int * PathArgumentBytes =
+            match state with
+            | "good" -> atFdCwd, PathArg.ofText (if isOld then "f" else "new")
+            | "badfd" -> -1, PathArg.ofText (if isOld then "f" else "new")
+            // A new side that exists.
+            | "absent" -> atFdCwd, PathArg.ofText (if isOld then "nx" else "f2")
+            | "NULL" -> atFdCwd, PathArgumentBytes.Unreadable
+            | "nodir" -> atFdCwd, PathArg.ofText (if isOld then "nxdir/f" else "nxdir/new")
+            | other -> failwith $"%s{context}: the probe has no ORDER2 state %s{other}"
+
+        [
+            for row in rows do
+                let oldState = row.[1].Substring "old=".Length
+                let olddirfd, oldpath = side oldState true
+
+                for cell in row.[2..] do
+                    let at = cell.IndexOf '='
+                    let newState = cell.Substring ("new:".Length, at - "new:".Length)
+                    let expected = cell.Substring (at + 1)
+                    let newdirfd, newpath = side newState false
+
+                    let actual =
+                        UnixNamespace.renameat olddirfd oldpath newdirfd newpath (boot envelope)
+                        |> renderedRenameAt
+
+                    if actual <> expected then
+                        yield
+                            $"old=%s{oldState} new=%s{newState}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``renameat orders a bad argument on each side as the probe measured, under every envelope`` () : unit =
+        for envelope in envelopes do
+            replayRenameAtOrder2 envelope
+
+    /// `renameat-rules.c`'s cell, with the current directory at `cwd`: `/c/w`
+    /// holding `d/` and `d2/`. `d` holds a file `f` and `g`, a second name for
+    /// it; empty directories `sub/` and `e/`; `full/` holding `x`; `nest/in/`;
+    /// the links `dang -> nx2`, `cyc -> cyc`, `lf -> f`, `ld -> sub` and
+    /// `lroot -> /`; and an unwritable `ro/` holding a file `kid`, an empty
+    /// `kdir/` and `kfull/` holding `x`. `d2` holds a file `h`, an empty `hd/`
+    /// and `hfull/` holding `x`. All the caller's, made under umask 022. On
+    /// Linux, where the probe started as root, `d` also holds root's sticky
+    /// `st/` (01777), holding uid 2000's file `of` and empty directory `od/`,
+    /// and the caller's file `mine`.
+    let private renameAtCell (envelope : Envelope) (cwd : string) : UnixSystem<int, string> =
+        let flavour = SimulatedUnixPlatform.flavour envelope.Platform
+        let caller = InodeOwner.ofProcess envelope.Credentials
+        let file = SeedEntry.File (ImmutableArray<byte>.Empty, perms 0o644, None)
+
+        let ownedFile (owner : InodeOwner) =
+            SeedEntry.File (ImmutableArray<byte>.Empty, perms 0o644, Some owner)
+
+        let link (target : string) =
+            SeedEntry.Symlink (SymlinkTarget.parseOrFail context target, None)
+
+        let dir (bits : int) (owner : InodeOwner option) (entries : (string * SeedEntry) list) =
+            SeedEntry.Directory (entries |> List.map (fun (n, e) -> name n, e) |> Map.ofList, perms bits, owner)
+
+        let sticky =
+            match flavour with
+            | SimulatedUnixFlavour.Linux ->
+                let rootOwner = InodeOwner.ofProcess Owners.root
+
+                let other =
+                    {
+                        User = UserId.parseOrFail context 2000u
+                        Group = GroupId.parseOrFail context 2000u
+                    }
+
+                [
+                    "st",
+                    dir
+                        0o1777
+                        (Some rootOwner)
+                        [ "of", ownedFile other ; "od", dir 0o755 (Some other) [] ; "mine", file ]
+                ]
+            | SimulatedUnixFlavour.Darwin -> []
+
+        let seed =
+            Map.ofList
+                [
+                    name "c",
+                    dir
+                        0o777
+                        None
+                        [
+                            "w",
+                            dir
+                                0o755
+                                None
+                                [
+                                    "d",
+                                    dir
+                                        0o755
+                                        None
+                                        ([
+                                            "f", file
+                                            "sub", dir 0o755 None []
+                                            "e", dir 0o755 None []
+                                            "full", dir 0o755 None [ "x", file ]
+                                            "nest", dir 0o755 None [ "in", dir 0o755 None [] ]
+                                            "dang", link "nx2"
+                                            "cyc", link "cyc"
+                                            "lf", link "f"
+                                            "ld", link "sub"
+                                            "lroot", link "/"
+                                            "ro",
+                                            dir
+                                                0o555
+                                                None
+                                                [
+                                                    "kid", file
+                                                    "kdir", dir 0o755 None []
+                                                    "kfull", dir 0o755 None [ "x", file ]
+                                                ]
+                                         ]
+                                         @ sticky)
+                                    "d2",
+                                    dir
+                                        0o755
+                                        None
+                                        [ "h", file ; "hd", dir 0o755 None [] ; "hfull", dir 0o755 None [ "x", file ] ]
+                                ]
+                        ]
+                ]
+
+        let image : UnixBootImage<int, string> =
+            UnixSystem.initial envelope.Platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> UnixBootImage.withCredentials context envelope.Credentials
+
+        let system =
+            match
+                UnixBootImage.withFileSystemAndCurrentDirectory
+                    epoch
+                    caller
+                    seed
+                    (AbsoluteUnixPath.parseOrFail context cwd)
+                    image
+            with
+            | Ok image -> UnixBootImage.boot image
+            | Error fault -> failwith $"%s{context}: could not build renameat-rules.c's cell: %A{fault}"
+
+        // The probe made `g` with link(2), after `f`.
+        UnixNamespace.link (PathArg.ofText "/c/w/d/f") (PathArg.ofText "/c/w/d/g") system
+        |> function
+            | Ok answer -> completed "link(d/f, d/g)" answer
+            | Error refusal -> failwith $"%s{context}: link was refused: %s{LinkRefusal.describe refusal}"
+
+    /// Bytes as `renameat-rules.c` prints a path: printable ASCII but the
+    /// backslash as itself, any other byte as `\xNN`.
+    let private escapedRenameBytes (bytes : byte seq) : string =
+        bytes
+        |> Seq.map (fun b ->
+            if b < 0x20uy || b >= 0x7fuy || b = byte '\\' then
+                $"\\x%02x{b}"
+            else
+                string (char b)
+        )
+        |> String.concat ""
+
+    /// The bytes a path `renameat-rules.c` printed stands for.
+    let private unescapedRenameBytes (text : string) : byte list =
+        let rec go (i : int) : byte list =
+            if i >= text.Length then
+                []
+            elif text.[i] = '\\' then
+                Convert.ToByte (text.Substring (i + 2, 2), 16) :: go (i + 4)
+            else
+                byte text.[i] :: go (i + 1)
+
+        go 0
+
+    /// Every path under the cell `/c`, relative to it, with the inode it
+    /// names, never following a link, in byte order: each path is held one
+    /// byte to a character, so that ordinal order is byte order.
+    let private cellInodes (system : UnixSystem<int, string>) : (string * InodeNumber) list =
+        let vfs = system.Machine.FileSystem
+
+        let rec under (prefix : string) (inode : InodeNumber) : (string * InodeNumber) seq =
+            match VirtualFileSystem.tryGetDirectory inode vfs with
+            | None -> Seq.empty
+            | Some content ->
+                content.Entries
+                |> Map.toSeq
+                |> Seq.collect (fun (entry, child) ->
+                    let bytes = DirectoryEntryName.toByteString entry |> UnixByteString.toBytes
+                    let path = prefix + String (bytes |> Seq.map char |> Array.ofSeq)
+                    Seq.append (Seq.singleton (path, child)) (under (path + "/") child)
+                )
+
+        let cell =
+            match
+                PathWalk.resolveExisting
+                    (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
+                    Owners.root
+                    SymlinkProtection.Off
+                    (VirtualFileSystem.root vfs)
+                    SymlinkPolicy.NoFollowFinal
+                    (UnixPath.parseOrFail context "/c")
+                    vfs
+            with
+            | Ok inode -> inode
+            | Error failure -> failwith $"%s{context}: /c does not resolve: %A{failure}"
+
+        under "" cell
+        |> List.ofSeq
+        |> List.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal (a, b))
+
+    /// What `renameat-rules.c` prints for a call made in `before`: the errno,
+    /// or "ok" with the paths that went and every path whose inode is not the
+    /// one it had, with the first path that had that inode.
+    let private renderedRename
+        (before : UnixSystem<int, string>)
+        (result : Result<SyscallAnswer * UnixSystem<int, string>, RenameRefusal>)
+        : string
+        =
+        match result with
+        | Error refusal -> $"refused: %s{RenameRefusal.describe refusal}"
+        | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+        | Ok (SyscallAnswer.Completed _, after) ->
+
+        let escaped (path : string) =
+            path |> Seq.map byte |> escapedRenameBytes
+
+        let was = cellInodes before
+        let now = cellInodes after
+        let wasMap = Map.ofList was
+        let nowMap = Map.ofList now
+
+        let gone =
+            was
+            |> List.filter (fun (path, _) -> not (nowMap.ContainsKey path))
+            |> List.map (fst >> escaped)
+
+        let moved =
+            now
+            |> List.choose (fun (path, inode) ->
+                match Map.tryFind path wasMap with
+                | Some previous when previous = inode -> None
+                | _ ->
+                    let origin =
+                        was
+                        |> List.tryFind (fun (_, previous) -> previous = inode)
+                        |> Option.map (fst >> escaped)
+                        |> Option.defaultValue "?"
+
+                    Some $"%s{escaped path}<-%s{origin}"
+            )
+
+        $"""ok:gone=%s{String.Join (",", gone)}:moved=%s{String.Join (",", moved)}"""
+
+    /// `renameat-rules.c`'s rows the model does not replay under `envelope`,
+    /// as (section, old, new), and why. Darwin's `lroot/.` reaches `/` through
+    /// a link, and on the probe's machine `/` is the read-only system volume
+    /// while the cell is on the data volume, so the rename is EXDEV there; this
+    /// library holds one filesystem, where the root is any other directory
+    /// `rename` meets (EINVAL, as `TestRenameRules` measured on an APFS image).
+    let private renameAtNotReplayed (envelope : Envelope) : Set<string * string * string> =
+        match SimulatedUnixPlatform.flavour envelope.Platform with
+        | SimulatedUnixFlavour.Linux -> Set.empty
+        | SimulatedUnixFlavour.Darwin -> set [ "SAME", "lroot/.", "nx" ]
+
+    /// `renameat-rules.c`'s ROW and SELF rows for one caller, end to end. Each
+    /// `at` cell is `renameat` with the current directory at `w`, from a
+    /// descriptor on the directory each side names; each `plain` cell
+    /// `rename` with the current directory where the row says. The probe
+    /// measured them equal in every row, so where a walk starts is the only
+    /// thing a descriptor changes, on either side.
+    let private replayRenameAtRules (resource : string) (envelope : Envelope) : unit =
+        let flavour = SimulatedUnixPlatform.flavour envelope.Platform
+        let caller = $"caller=%d{UserId.toUInt32 envelope.Credentials.EffectiveUser}"
+
+        let rowsOf (table : string) =
+            probeLines resource table |> List.filter (fun row -> List.head row = caller)
+
+        let rows = rowsOf "ROW"
+        let self = rowsOf "SELF"
+        let skipped = renameAtNotReplayed envelope
+
+        let stickyRows =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> 6
+            | SimulatedUnixFlavour.Darwin -> 0
+
+        rows.Length |> shouldEqual (54 + stickyRows + 25 + 6 + 6)
+        self.Length |> shouldEqual 12
+
+        let field (prefix : string) (cell : string) : string =
+            if cell.StartsWith prefix then
+                cell.Substring prefix.Length
+            else
+                failwith $"%s{context}: expected a %s{prefix} field, got %s{cell}"
+
+        let pathOf (printed : string) : PathArgumentBytes =
+            PathArg.ofBytes (unescapedRenameBytes printed)
+
+        let descriptor (dir : string) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+            match dir with
+            | "cwd" -> atFdCwd flavour, system
+            | dir -> opened dir system
+
+        let firstAnswer (result : Result<SyscallAnswer * UnixSystem<int, string>, 'Refusal>) =
+            match result with
+            | Ok (SyscallAnswer.Completed _, after) -> "ok", after
+            | Ok (SyscallAnswer.Failed error, after) -> $"%A{error}", after
+            | Error refusal -> failwith $"%s{context}: the first call was refused: %A{refusal}"
+
+        [
+            for row in rows do
+                match row with
+                | [ _ ; section ; ofd ; old ; nfd ; newPath ; cwd ; pold ; pnew ; at ; plain ] ->
+                    let ofd = field "ofd=" ofd
+                    let old = field "old=" old
+                    let nfd = field "nfd=" nfd
+                    let newPath = field "new=" newPath
+                    let cwd = field "cwd=" cwd
+                    let at = field "at=" at
+                    let plain = field "plain=" plain
+
+                    if at <> plain then
+                        yield
+                            $"%s{section} %s{old} %s{newPath}: the probe's renameat answered %s{at} and its rename %s{plain}"
+
+                    if not (skipped.Contains (section, old, newPath)) then
+                        let system = renameAtCell envelope "/c/w"
+                        let olddirfd, system = descriptor ofd system
+                        let newdirfd, system = descriptor nfd system
+
+                        let actual =
+                            UnixNamespace.renameat olddirfd (pathOf old) newdirfd (pathOf newPath) system
+                            |> renderedRename system
+
+                        if actual <> at then
+                            yield
+                                $"renameat %s{section} %s{ofd}:%s{old} %s{nfd}:%s{newPath}: the probe answered %s{at}, this library %s{actual}"
+
+                        let system = renameAtCell envelope (if cwd = "." then "/c/w" else "/c/w/" + cwd)
+
+                        let actual =
+                            UnixNamespace.rename (pathOf (field "pold=" pold)) (pathOf (field "pnew=" pnew)) system
+                            |> renderedRename system
+
+                        if actual <> plain then
+                            yield
+                                $"rename %s{section} %s{pold} %s{pnew}: the probe answered %s{plain}, this library %s{actual}"
+                | other -> failwith $"%s{context}: a malformed row %A{other}"
+
+            for row in self do
+                match row with
+                | [ _ ; first ; old ; newPath ; at ; plain ] ->
+                    let first = field "first=" first
+                    let old = pathOf (field "old=" old)
+                    let newPath = pathOf (field "new=" newPath)
+                    let at = field "at=" at
+                    let plain = field "plain=" plain
+
+                    if at <> plain then
+                        yield $"SELF %s{first}: the probe's renameat answered %s{at} and its rename %s{plain}"
+
+                    // Through a descriptor on d/sub, with the current directory at w.
+                    let fd, before = opened "d/sub" (renameAtCell envelope "/c/w")
+
+                    let firstDone, system =
+                        match first with
+                        | "rename" ->
+                            UnixNamespace.renameat fd (PathArg.ofText "../sub") fd (PathArg.ofText "../sub2") before
+                            |> firstAnswer
+                        | _ ->
+                            UnixNamespace.unlinkat fd (PathArg.ofText "../sub") (atRemoveDir flavour) before
+                            |> firstAnswer
+
+                    let actual =
+                        firstDone
+                        + ";"
+                        + (UnixNamespace.renameat fd old fd newPath system |> renderedRename before)
+
+                    if actual <> at then
+                        yield
+                            $"SELF renameat %s{first} %A{old} %A{newPath}: the probe answered %s{at}, this library %s{actual}"
+
+                    // From the current directory d/sub.
+                    let before = renameAtCell envelope "/c/w/d/sub"
+
+                    let firstDone, system =
+                        match first with
+                        | "rename" ->
+                            UnixNamespace.rename (PathArg.ofText "../sub") (PathArg.ofText "../sub2") before
+                            |> firstAnswer
+                        | _ -> UnixNamespace.rmdir (PathArg.ofText "../sub") before |> firstAnswer
+
+                    let actual =
+                        firstDone
+                        + ";"
+                        + (UnixNamespace.rename old newPath system |> renderedRename before)
+
+                    if actual <> plain then
+                        yield
+                            $"SELF rename %s{first} %A{old} %A{newPath}: the probe answered %s{plain}, this library %s{actual}"
+                | other -> failwith $"%s{context}: a malformed row %A{other}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``renameat decides as rename with each path written from the cwd, as Linux root measured`` () : unit =
+        replayRenameAtRules "WoofWare.PosixKernel.Test.renameatRules.linux.txt" linuxRoot
+
+    [<Test>]
+    let ``renameat decides as rename with each path written from the cwd, as a Linux user measured`` () : unit =
+        replayRenameAtRules "WoofWare.PosixKernel.Test.renameatRules.linux.txt" linuxUser
+
+    [<Test>]
+    let ``renameat decides as rename with each path written from the cwd, as Darwin measured`` () : unit =
+        replayRenameAtRules "WoofWare.PosixKernel.Test.renameatRules.darwin.txt" darwinUser
+
+    [<Test>]
+    let ``only Darwin's rename of the root through a link is left out of renameat-rules.c's rows`` () : unit =
+        envelopes
+        |> List.map (fun envelope -> envelope.Label, renameAtNotReplayed envelope |> Set.toList)
+        |> shouldEqual
+            [
+                "Linux root", []
+                "Linux uid 1000", []
+                "Darwin uid 501", [ "SAME", "lroot/.", "nx" ]
+            ]
+
+    /// `renameat-rules.c`'s ORDER rows for one caller: fourteen kinds of old
+    /// side crossed with fourteen kinds of new side, from the current
+    /// directory d, which say where each side's copy-in, `dirfd` and walk fall
+    /// against the other's.
+    let private replayRenameAtOrder (resource : string) (envelope : Envelope) : unit =
+        let flavour = SimulatedUnixPlatform.flavour envelope.Platform
+        let caller = $"caller=%d{UserId.toUInt32 envelope.Credentials.EffectiveUser}"
+
+        let rows =
+            probeLines resource "ORDER" |> List.filter (fun row -> List.head row = caller)
+
+        rows.Length |> shouldEqual 14
+
+        let side
+            (kind : string)
+            (isOld : bool)
+            (system : UnixSystem<int, string>)
+            : int * PathArgumentBytes * UnixSystem<int, string>
+            =
+            let named (oldName : string) (newName : string) = if isOld then oldName else newName
+
+            match kind with
+            | "good" -> atFdCwd flavour, PathArg.ofText (named "f" "new"), system
+            | "existing" -> atFdCwd flavour, PathArg.ofText (named "nx" "g"), system
+            | "NULL" -> atFdCwd flavour, PathArgumentBytes.Unreadable, system
+            | "empty" -> atFdCwd flavour, PathArg.ofText "", system
+            | "badfd" -> -1, PathArg.ofText (named "f" "new"), system
+            | "filefd" ->
+                let fd, system = opened "f" system
+                fd, PathArg.ofText (named "f" "new"), system
+            | "pipefd" ->
+                match UnixPipe.pipe2 0 UserBuffer.Mapped system with
+                | Ok (Pipe2Answer.Created (readFd, _), system) -> readFd, PathArg.ofText (named "f" "new"), system
+                | other -> failwith $"%s{context}: pipe2 did not make a pipe: %A{other}"
+            | "nodir" -> atFdCwd flavour, PathArg.ofText (named "nxdir/f" "nxdir/new"), system
+            | "notdir" -> atFdCwd flavour, PathArg.ofText (named "f/x" "f/new"), system
+            | "dot" -> atFdCwd flavour, PathArg.ofText ".", system
+            | "root" -> atFdCwd flavour, PathArg.ofText "/", system
+            | "trail" -> atFdCwd flavour, PathArg.ofText (named "f/" "new/"), system
+            | "long" -> atFdCwd flavour, PathArg.ofText (String ('a', 300)), system
+            | "overlong" ->
+                atFdCwd flavour,
+                PathArg.ofText (slashed (PathLimits.pathMaxBytes (SimulatedUnixPlatform.pathLimits envelope.Platform))),
+                system
+            | other -> failwith $"%s{context}: the probe has no ORDER kind %s{other}"
+
+        [
+            for row in rows do
+                let oldKind = row.[1].Substring "old=".Length
+
+                for cell in row.[2..] do
+                    let at = cell.IndexOf '='
+                    let newKind = cell.Substring ("new:".Length, at - "new:".Length)
+                    let expected = cell.Substring (at + 1)
+                    let system = renameAtCell envelope "/c/w/d"
+                    let olddirfd, oldpath, system = side oldKind true system
+                    let newdirfd, newpath, system = side newKind false system
+
+                    let actual =
+                        UnixNamespace.renameat olddirfd oldpath newdirfd newpath system
+                        |> renderedRename system
+
+                    if actual <> expected then
+                        yield
+                            $"old=%s{oldKind} new=%s{newKind}: the probe answered %s{expected}, this library %s{actual}"
+        ]
+        |> shouldEqual []
+
+    [<Test>]
+    let ``renameat orders its two sides as Linux root measured`` () : unit =
+        replayRenameAtOrder "WoofWare.PosixKernel.Test.renameatRules.linux.txt" linuxRoot
+
+    [<Test>]
+    let ``renameat orders its two sides as a Linux user measured`` () : unit =
+        replayRenameAtOrder "WoofWare.PosixKernel.Test.renameatRules.linux.txt" linuxUser
+
+    [<Test>]
+    let ``renameat orders its two sides as Darwin measured`` () : unit =
+        replayRenameAtOrder "WoofWare.PosixKernel.Test.renameatRules.darwin.txt" darwinUser
+
+    [<Test>]
+    let ``renameat across the device filesystem is EXDEV from a descriptor on either side, as Linux measured``
+        ()
+        : unit
+        =
+        let rows = probeLines "WoofWare.PosixKernel.Test.renameatRules.linux.txt" "DEV"
+        rows.Length |> shouldEqual (2 * 5)
+
+        [
+            for row in rows do
+                match row with
+                | [ callerField ; ofd ; old ; nfd ; newPath ; at ] ->
+                    let envelope =
+                        match callerField with
+                        | "caller=0" -> linuxRoot
+                        | "caller=1000" -> linuxUser
+                        | other -> failwith $"%s{context}: the probe has no caller %s{other}"
+
+                    let field (prefix : string) (cell : string) = cell.Substring prefix.Length
+                    let system = renameAtCell envelope "/c/w/d"
+                    let dev, system = opened "/dev" system
+
+                    let dirfd (cell : string) =
+                        match field "ofd=" cell with
+                        | "dev" -> dev
+                        | _ -> atFdCwd SimulatedUnixFlavour.Linux
+
+                    let expected = field "at=" at
+
+                    let actual =
+                        UnixNamespace.renameat
+                            (dirfd ofd)
+                            (PathArg.ofText (field "old=" old))
+                            (dirfd ("ofd=" + field "nfd=" nfd))
+                            (PathArg.ofText (field "new=" newPath))
+                            system
+                        |> renderedRename system
+
+                    if actual <> expected then
+                        yield $"%A{row}: the probe answered %s{expected}, this library %s{actual}"
+                | other -> failwith $"%s{context}: a malformed row %A{other}"
+        ]
+        |> shouldEqual []
+
     [<Test>]
     let ``only Darwin's /dev/null is left unreplayed`` () : unit =
         envelopes
@@ -1773,6 +2386,8 @@ module TestStartingDirectory =
                 "mkdirat"
                 "unlinkat"
                 "unlinkat(REMOVEDIR)"
+                "renameat[old]"
+                "renameat[new]"
             ]
 
     /// The cells where a call not replayed end to end answers before, or
@@ -2395,3 +3010,91 @@ module TestStartingDirectory =
             |> shouldEqual (plain heldInCwd |> outcome)
 
         Check.One (config, Prop.forAll (Arb.fromGen removalCase) property)
+
+    /// `path` written from `directory` rather than from where a walk of it
+    /// starts: unchanged when it is rooted, or empty, which no prefix keeps.
+    let private writtenFrom (directory : string) (path : UnixPath) : UnixPath =
+        if UnixPath.isRooted path || UnixPath.isEmpty path then
+            path
+        else
+            match UnixPath.tryToString path with
+            | Some text -> UnixPath.parseOrFail context (directory.TrimEnd '/' + "/" + text)
+            | None -> failwith $"%s{context}: a generated path is not text: %s{UnixPath.toEscaped path}"
+
+    [<Test>]
+    let ``rename is renameat from AT_FDCWD, and renameat from descriptors on directories is rename with each path written from them``
+        ()
+        : unit
+        =
+        let renameCase =
+            gen {
+                let! case = walkCase
+                let! newPath = walkPaths
+                let! newDirectory = Gen.elements walkDirectories
+                return case, newPath, newDirectory
+            }
+
+        let property
+            (
+                (platform, credentials, cwd, path : UnixPath, _ : SymlinkPolicy, _ : TrailingSeparatorPolicy),
+                newPath : UnixPath,
+                newDirectory : string
+            )
+            : unit
+            =
+            let flavour = SimulatedUnixPlatform.flavour platform
+
+            let argument (path : UnixPath) =
+                PathArgumentBytes.Bytes (UnixPath.toByteString path)
+
+            let inCwd = walkSystem platform credentials cwd
+
+            UnixNamespace.renameat (atFdCwd flavour) (argument path) (atFdCwd flavour) (argument newPath) inCwd
+            |> shouldEqual (UnixNamespace.rename (argument path) (argument newPath) inCwd)
+
+            // Opened as root, as the descriptor properties above do: one
+            // descriptor on the current directory, and one on `newDirectory`.
+            let asRoot = walkSystem platform Owners.root cwd
+
+            let openedAsRoot (directory : string) (system : UnixSystem<int, string>) =
+                match Answered.openPath readOnly (UnixPath.parseOrFail context directory) 0 system with
+                | SyscallAnswer.Completed fd, system -> int fd, system
+                | other -> failwith $"%s{context}: open(%s{directory}) did not open: %O{other}"
+
+            let oldFd, held = openedAsRoot cwd asRoot
+            let newFd, held = openedAsRoot newDirectory held
+
+            let withCaller (cwdInode : InodeNumber) =
+                { held with
+                    Process =
+                        { held.Process with
+                            Credentials = credentials
+                            CurrentDirectoryInode = cwdInode
+                        }
+                }
+
+            let atRoot = withCaller (VirtualFileSystem.root held.Machine.FileSystem)
+            let heldInCwd = withCaller held.Process.CurrentDirectoryInode
+
+            let outcome (result : Result<SyscallAnswer * UnixSystem<int, string>, RenameRefusal>) =
+                match result with
+                | Ok (answer, system) -> Ok (answer, system.Machine.FileSystem)
+                | Error refusal -> Error refusal
+
+            // The same descriptor on both sides is rename from its directory
+            // as the current one.
+            UnixNamespace.renameat oldFd (argument path) oldFd (argument newPath) atRoot
+            |> outcome
+            |> shouldEqual (UnixNamespace.rename (argument path) (argument newPath) heldInCwd |> outcome)
+
+            // Two descriptors are rename with each path written from its own
+            // descriptor's directory, in the very same system.
+            UnixNamespace.renameat oldFd (argument path) newFd (argument newPath) atRoot
+            |> shouldEqual (
+                UnixNamespace.rename
+                    (argument (writtenFrom cwd path))
+                    (argument (writtenFrom newDirectory newPath))
+                    atRoot
+            )
+
+        Check.One (config, Prop.forAll (Arb.fromGen renameCase) property)

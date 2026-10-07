@@ -432,7 +432,12 @@ module TestCloneFile =
         |> shouldEqual (Error (CloneFileRefusal.UnmodelledFlavour SimulatedUnixFlavour.Linux))
 
         let nfs =
-            systemOnWith (UnixBootImage.withMount (Some EmulatedMount.Nfs)) SimulatedUnixPlatform.macOsArm64 u501 tree
+            systemOnWith
+                (UnixBootImage.withMount (Some EmulatedMount.Nfs)
+                 >> Configured.expectOk MountRefusal.describe)
+                SimulatedUnixPlatform.macOsArm64
+                u501
+                tree
 
         clone "f" "new" 0x4 nfs
         |> Result.map fst
