@@ -1066,3 +1066,56 @@ module TestCrossProcess =
         // whichever process, so the other does not wake.
         woken [ b, 1 ] machine |> shouldEqual []
         woken [ a, 1 ] machine |> shouldEqual []
+
+    [<Test>]
+    let ``a file one process has open outlives its unlink by another, until it is closed`` () : unit =
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a, b = pids.[0], pids.[1]
+
+            let opened, machine =
+                Machines.inProcess
+                    b
+                    (fun view ->
+                        match
+                            OpenFlagWords.openPath
+                                {
+                                    Access = FileAccessMode.ReadWrite
+                                    Create = true
+                                    Exclusive = false
+                                    Truncate = false
+                                    NoFollow = false
+                                    CloseOnExec = false
+                                    Synchronous = false
+                                    DataSynchronous = false
+                                    Directory = false
+                                }
+                                (PathArg.ofText "/shared")
+                                0o644
+                                view
+                        with
+                        | Ok (SyscallAnswer.Completed fd, view) -> int fd, view
+                        | other -> failwith $"open: %A{other}"
+                    )
+                    machine
+
+            let inode =
+                match UnixSystem.descriptorTarget opened (Machines.viewOf b machine) with
+                | Some (OpenFileTarget.File (inode, _)) -> inode
+                | other -> failwith $"the descriptor names %A{other}"
+
+            let answer, machine =
+                Machines.inProcess a (Answered.unlink (UnixPath.parseOrFail "test" "/shared")) machine
+
+            answer |> shouldEqual (SyscallAnswer.Completed 0L)
+            Machines.assertClean machine
+
+            VirtualFileSystem.tryGet inode (UnixSystem.fileSystem (Machines.viewOf a machine))
+            |> Option.isSome
+            |> shouldEqual true
+
+            let machine = Machines.doIn b (KeventWorld.close opened) machine
+            Machines.assertClean machine
+
+            VirtualFileSystem.tryGet inode (UnixSystem.fileSystem (Machines.viewOf a machine))
+            |> shouldEqual None

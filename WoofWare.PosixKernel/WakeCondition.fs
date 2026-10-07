@@ -59,7 +59,7 @@ type WakePrimitive =
     /// (`KqueuePoll.reportable`).
     ///
     /// Names no kernel object, as `SignalDeliverable` names none: the kqueue
-    /// is the waiter's own, kept in its park (`ParkedKqueuePoll`). Holds only
+    /// is the waiter's own, named by its park (`ParkedKqueuePoll.Queue`). Holds only
     /// once a scan would add something to some entry's `revents`: a filter
     /// activated whose report would add nothing does not wake the waiter here,
     /// where a real kernel wakes it to find nothing and sleep again, having

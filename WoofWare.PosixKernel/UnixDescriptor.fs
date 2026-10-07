@@ -1591,8 +1591,9 @@ module UnixDescriptor =
     /// sleeping call holds is the task table's.
     ///
     /// Every kqueue registration made through `fd` goes with it, in each kqueue
-    /// the process owns (`KqueueState.Owner`) and in the kqueue of every Darwin
-    /// `poll` asleep (`ParkedKqueuePoll`), whose entry then reports nothing.
+    /// the process owns (`KqueueState.Owner`) and in the kqueue of every
+    /// sleeping Darwin `poll` of the process's own (`PollQueue`), whose entry
+    /// then reports nothing.
     ///
     /// EBADF is its only errno; see `CloseRefusal` for the inputs it declines
     /// to answer at all.
