@@ -20,8 +20,7 @@ open WoofWare.PosixKernel
 ///   ran in;
 /// - every other call's rows that the starting point alone decides: wherever
 ///   the copy-in or `UnixPathResolution.walkStart` fails, the probe answered
-///   exactly that, for all nineteen calls, but for the measured exception
-///   of Darwin's unprivileged `mknodat`;
+///   exactly that;
 /// - properties over generated paths: a walk from `AT_FDCWD` is the walk from
 ///   the current directory's inode that every plain call made before `*at`
 ///   existed, a walk from a descriptor on a directory is the walk from that
@@ -2543,6 +2542,45 @@ module TestStartingDirectory =
                 (unmodelledTimestampFlags envelope)
                 envelope
 
+    // ------------------------------------------------------------ mknodat
+
+    /// `S_IFREG | 0644`, the mode the probe's `mknodat` passed.
+    let private regularFileMode : int = 0o100644
+
+    let private renderedMknodAt (result : Result<SyscallAnswer * UnixSystem<int, string>, MkNodRefusal>) : string =
+        match result with
+        | Ok (SyscallAnswer.Completed _, _) -> "ok"
+        | Ok (SyscallAnswer.Failed error, _) -> $"%A{error}"
+        | Error refusal -> $"refused: %s{MkNodRefusal.describe refusal}"
+
+    [<Test>]
+    let ``mknodat answers every dirfd and path the probe tried, under every envelope`` () : unit =
+        for envelope in envelopes do
+            let rows = atRows envelope |> Map.filter (fun (c, _, _) _ -> c = "mknodat(S_IFREG)")
+            rows.Count |> shouldEqual (13 * 9)
+            let skipped = faccessatNotReplayed envelope
+
+            [
+                for KeyValue ((_, kind, path), expected) in rows do
+                    if not (skipped.Contains kind) then
+                        match directoryArgument kind envelope with
+                        | None -> yield $"%s{envelope.Label} %s{kind} %s{path}: no such dirfd could be made"
+                        | Some (dirfd, system) ->
+                            let actual =
+                                UnixNamespace.mknodat
+                                    dirfd
+                                    (pathArgument path envelope.Platform)
+                                    regularFileMode
+                                    0u
+                                    system
+                                |> renderedMknodAt
+
+                            if actual <> expected then
+                                yield
+                                    $"%s{envelope.Label} %s{kind} %s{path}: the probe answered %s{expected}, this library %s{actual}"
+            ]
+            |> shouldEqual []
+
     [<Test>]
     let ``only Darwin's /dev/null is left unreplayed`` () : unit =
         envelopes
@@ -2590,23 +2628,8 @@ module TestStartingDirectory =
                 "fchmodat"
                 "fchownat"
                 "utimensat"
+                "mknodat(S_IFREG)"
             ]
-
-    /// The cells where a call not replayed end to end answers before, or
-    /// instead of, the starting point the other calls share, as (call,
-    /// pathname) for every `dirfd`: Darwin's `mknodat` refuses an
-    /// unprivileged caller before it copies the path in. (That EPERM shows
-    /// for every pathname but the absolute one, where the start fails nothing
-    /// and EPERM is not an answer only a start can give.)
-    let private ownRules (envelope : Envelope) : Set<string * string> =
-        match SimulatedUnixPlatform.flavour envelope.Platform with
-        | SimulatedUnixFlavour.Linux -> Set.empty
-        | SimulatedUnixFlavour.Darwin ->
-            set
-                [
-                    for path in [ "f" ; "nx" ; "empty" ; "NULL" ; "PROT_NONE" ; "overlong" ; "dot" ; "dotdot" ] do
-                        "mknodat(S_IFREG)", path
-                ]
 
     /// Every cell of every call whose answer the start alone decides and
     /// which the probe answered otherwise, as (call, pathname).
@@ -2658,7 +2681,7 @@ module TestStartingDirectory =
             |> Set.ofSeq
 
         calls.Count |> shouldEqual 19
-        startMismatches envelope |> shouldEqual (ownRules envelope)
+        startMismatches envelope |> shouldEqual Set.empty
 
     [<Test>]
     let ``every call's start answers as the probe measured as Linux root`` () : unit = replayStart linuxRoot
@@ -3137,6 +3160,73 @@ module TestStartingDirectory =
             |> shouldEqual (UnixNamespace.mkdir argument mode heldInCwd |> outcome)
 
         Check.One (config, Prop.forAll (Arb.fromGen mkdirCase) property)
+
+    [<Test>]
+    let ``mknod is mknodat from AT_FDCWD, and mknodat from a descriptor on a directory is mknod from that directory``
+        ()
+        : unit
+        =
+        let mknodCase =
+            gen {
+                let! case = walkCase
+                // Every value of the type field, each with permission bits.
+                let! kind = Gen.choose (0, 15)
+                let! bits = Gen.elements [ 0o644 ; 0 ; 0o777 ; 0o7777 ; 0o2755 ]
+                let! dev = Gen.elements [ 0u ; 0x103u ]
+                return case, (kind <<< 12) ||| bits, dev
+            }
+
+        let property
+            (
+                (platform, credentials, cwd, path : UnixPath, _ : SymlinkPolicy, _ : TrailingSeparatorPolicy),
+                mode : int,
+                dev : uint32
+            )
+            : unit
+            =
+            let flavour = SimulatedUnixPlatform.flavour platform
+            let argument = PathArgumentBytes.Bytes (UnixPath.toByteString path)
+            let inCwd = walkSystem platform credentials cwd
+
+            UnixNamespace.mknodat (atFdCwd flavour) argument mode dev inCwd
+            |> shouldEqual (UnixNamespace.mknod argument mode dev inCwd)
+
+            // Opened as root, as the descriptor properties above do, and
+            // compared with mknod from the same tree, whose unowned entries are
+            // root's, by the same caller.
+            let fd, held =
+                match
+                    Answered.openPath
+                        readOnly
+                        (UnixPath.parseOrFail context cwd)
+                        0
+                        (walkSystem platform Owners.root cwd)
+                with
+                | SyscallAnswer.Completed fd, system -> int fd, system
+                | other -> failwith $"%s{context}: open(%s{cwd}) did not open: %O{other}"
+
+            let withCaller (cwdInode : InodeNumber) =
+                { held with
+                    Process =
+                        { held.Process with
+                            Credentials = credentials
+                            CurrentDirectoryInode = cwdInode
+                        }
+                }
+
+            let atRoot = withCaller (VirtualFileSystem.root held.Machine.FileSystem)
+            let heldInCwd = withCaller held.Process.CurrentDirectoryInode
+
+            let outcome (result : Result<SyscallAnswer * UnixSystem<int, string>, MkNodRefusal>) =
+                match result with
+                | Ok (answer, system) -> Ok (answer, system.Machine.FileSystem)
+                | Error refusal -> Error refusal
+
+            UnixNamespace.mknodat fd argument mode dev atRoot
+            |> outcome
+            |> shouldEqual (UnixNamespace.mknod argument mode dev heldInCwd |> outcome)
+
+        Check.One (config, Prop.forAll (Arb.fromGen mknodCase) property)
 
     [<Test>]
     let ``unlink and rmdir are unlinkat from AT_FDCWD, and unlinkat from a descriptor on a directory is unlink or rmdir from that directory``
