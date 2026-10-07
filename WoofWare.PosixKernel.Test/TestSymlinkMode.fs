@@ -96,9 +96,8 @@ module TestSymlinkMode =
     /// `other` owns with `linkBits`, beside a file `f` everyone may read.
     let private systemWithLink (platform : SimulatedUnixPlatform) (linkBits : int) : UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context caller
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.bootWith (Launched.credentials caller) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let vfs = VirtualFileSystem.empty epoch (InodeOwner.ofProcess caller)
         let root = VirtualFileSystem.root vfs
@@ -134,6 +133,7 @@ module TestSymlinkMode =
                     CurrentDirectoryInode = root
                 }
         }
+        |> Launched.restand
 
     let private lstatMode (system : UnixSystem<int, string>) : int =
         match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofText "/l") system with
@@ -169,19 +169,23 @@ module TestSymlinkMode =
                     name "l", SeedEntry.Symlink (SymlinkTarget.parseOrFail context "f", None)
                 ]
 
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withUmask context (bits umask)
+        let image : UnixBootImage<int, string> = UnixSystem.initial platform
 
         match
-            UnixBootImage.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystem
                 epoch
                 (InodeOwner.ofProcess (UnixSystem.defaultCredentials (SimulatedUnixPlatform.flavour platform)))
                 seed
-                (AbsoluteUnixPath.parseOrFail context "/")
                 image
         with
-        | Ok image -> UnixBootImage.boot image
+        | Ok image ->
+            (Launched.bootWith
+                (Launched.umask (bits umask)
+                 >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/"))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0))
+                image
         | Error fault -> failwith $"%s{context}: could not seed: %A{fault}"
 
     [<Test>]

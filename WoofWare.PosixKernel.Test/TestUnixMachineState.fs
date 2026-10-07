@@ -26,8 +26,8 @@ module TestUnixMachineState =
     /// A freshly booted machine whose open file descriptions are `registry`'s.
     let private machineWith (registry : FileDescriptorRegistry) : UnixMachineState =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         (UnixSystemState.withFileDescriptors registry system).Machine
 
@@ -49,8 +49,17 @@ module TestUnixMachineState =
 
         let _epollFd, registry = FileDescriptorRegistry.createEpoll withSocket
 
-        UnixMachineState.heldInodes (machineWith registry)
-        |> shouldEqual (Set.ofList [ fileInode ; directoryInode ])
+        let machine = machineWith registry
+
+        // ...besides the process's current directory, which the machine holds
+        // too.
+        UnixMachineState.heldInodes machine
+        |> shouldEqual (
+            Set.ofList [ fileInode ; directoryInode ]
+            |> Set.union (machine.CurrentDirectories |> Map.keys |> Set.ofSeq)
+        )
+
+        machine.CurrentDirectories.Count |> shouldEqual 1
 
     [<Test>]
     let ``a socket is named by exactly the descriptions that name it`` () : unit =

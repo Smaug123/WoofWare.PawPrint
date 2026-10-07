@@ -1,350 +1,236 @@
 namespace WoofWare.PosixKernel
 
-/// The boot-time configuration of a simulated process and the machine it runs
-/// on, applied to the `UnixBootImage` that `UnixSystem.initial` makes, and
-/// `boot`, which ends it.
+/// Why `UnixBootImage.withProcessId` refuses a process ID.
+[<RequireQualifiedAccess>]
+type ProcessIdRefusal =
+    /// On Linux, the ID is not below the machine's `pid_max`, so a Linux kernel
+    /// could not have handed it out. Contradictory.
+    | NotBelowPidMax of pid : ProcessId * pidMax : int32
+    /// On Darwin, the ID is not below `PID_MAX` (`ProcessIdTable.darwinPidMax`,
+    /// read from xnu's source and not measured), so a Darwin kernel could not
+    /// have handed it out. Contradictory.
+    | NotBelowDarwinPidMax of pid : ProcessId * pidMax : int32
+
+[<RequireQualifiedAccess>]
+module ProcessIdRefusal =
+    /// What this library knows about why it refused the process ID, for a
+    /// client composing a diagnostic that names its own knob.
+    let describe (refusal : ProcessIdRefusal) : string =
+        match refusal with
+        | ProcessIdRefusal.NotBelowPidMax (pid, pidMax) ->
+            $"process ID %O{pid} is not below pid_max %d{pidMax}, so a Linux kernel could not have handed it out."
+        | ProcessIdRefusal.NotBelowDarwinPidMax (pid, pidMax) ->
+            $"process ID %O{pid} is not below Darwin's PID_MAX %d{pidMax}, so a Darwin kernel could not have handed it out."
+
+/// Why `UnixBootImage.withLeaderThreadId` refuses a thread ID.
+[<RequireQualifiedAccess>]
+type LeaderThreadIdRefusal =
+    /// The machine is Linux's, where the leader's thread ID is the process ID,
+    /// so it cannot be set apart from it. Contradictory.
+    | IsTheProcessIdOnLinux
+    /// The ID is 0, which nothing says a Darwin kernel reports, or the largest
+    /// 64-bit ID, which leaves the counter no ID for a second thread.
+    /// Unmeasured.
+    | OutsideCounter of id : uint64
+
+[<RequireQualifiedAccess>]
+module LeaderThreadIdRefusal =
+    /// What this library knows about why it refused the thread ID, for a
+    /// client composing a diagnostic that names its own knob.
+    let describe (refusal : LeaderThreadIdRefusal) : string =
+        match refusal with
+        | LeaderThreadIdRefusal.IsTheProcessIdOnLinux ->
+            "on Linux the leader's thread ID is the process ID, so it cannot be set apart from it; set the process ID instead."
+        | LeaderThreadIdRefusal.OutsideCounter id ->
+            $"%d{id} is not a thread ID this library will start a Darwin counter at; it must be between 1 and %d{System.UInt64.MaxValue - 1UL}."
+
+/// The boot-time configuration of a simulated machine, applied to the
+/// `UnixBootImage` that `UnixSystem.initial` makes, and `boot`, which ends it
+/// by launching the machine's first process.
 ///
 /// Every setter here takes and returns an image, and no syscall takes one, so
 /// a setting cannot be applied to a system that has already run: it describes
 /// the machine from the moment it booted. What changes while the machine runs
 /// is a syscall's effect, or an operation of the outside world on the running
-/// system, such as `UnixSystem.advanceClock`.
+/// system, such as `UnixSystem.advanceClock`. How a process starts is not
+/// here but in its `ProcessLaunch`, which `boot` takes, apart from the IDs of
+/// the first process, which are where the machine's counters start.
 [<RequireQualifiedAccess>]
 module UnixBootImage =
-
-    let private ofSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
-        =
-        {
-            System = system
-        }
-
-    /// Fails loudly unless the boot image's system `system` has one task, its
-    /// leader: a setter that restarts the thread ID allocator gives it the
-    /// leader's ID as its one live ID, which is right only then.
-    let private assertLeaderOnly<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (system : UnixSystem<'Task, 'Handler>)
-        : unit
-        =
-        if system.Tasks.Count <> 1 then
-            failwith
-                $"%s{context}: the boot image has %d{system.Tasks.Count} tasks, where it starts with its leader alone and no syscall takes an image (this is a bug in this library)."
 
     let private withMachine<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (image : UnixBootImage<'Task, 'Handler>)
         (machine : UnixMachineState)
         : UnixBootImage<'Task, 'Handler>
         =
-        ofSystem
-            { image.System with
-                Machine = machine
-            }
+        { image with
+            Machine = machine
+        }
 
-    let private withProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// The platform the machine was made for, which every launch onto it must
+    /// be described for (`ProcessLaunch.create`).
+    let platform<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (image : UnixBootImage<'Task, 'Handler>)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : SimulatedUnixPlatform
         =
-        ofSystem
-            { image.System with
-                Process = proc
-            }
+        image.Machine.UnixPlatform
 
-    /// The system this image describes, ready for its first syscall. After
-    /// this, nothing in this module applies to it.
-    let boot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (image : UnixBootImage<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        image.System
-
-    /// Set the ID `getpid(2)` reports for the simulated process. On Linux this is
-    /// also the leader's thread ID, and the thread IDs the process's threads get
-    /// follow on from it.
+    /// The machine this image describes, booted, with `launch` as its first
+    /// process, ready for that process's first syscall. After this, nothing in
+    /// this module applies to it.
     ///
-    /// `context` prefixes the rejection a configuration earns; see
-    /// `withCredentials`.
+    /// The process has the ID `withProcessId` set, `UnixSystem.defaultProcessId`
+    /// unless it was set, and its leader the thread ID the machine's counter
+    /// starts at. Refuses a launch described for another platform, and one
+    /// whose directory the machine's filesystem does not let it start in.
+    let boot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (launch : ProcessLaunch<'Task>)
+        (image : UnixBootImage<'Task, 'Handler>)
+        : Result<UnixSystem<'Task, 'Handler>, LaunchRefusal>
+        =
+        let leaderThreadId =
+            match ThreadIdAllocator.live image.Machine.ThreadIds |> Set.toList with
+            | [ id ] -> id
+            | ids ->
+                failwith
+                    $"UnixBootImage.boot: the boot image's thread ID allocator records %A{ids} as live, where it holds the first process's leader's alone (this is a bug in this library)."
+
+        ProcessLaunch.launchOnto launch image.ProcessId leaderThreadId image.Machine
+        |> Result.map (fun (machine, proc, tasks) ->
+            {
+                Machine = machine
+                Process = proc
+                Tasks = tasks
+                Leader = ProcessLaunch.leader launch
+                Generation = MachineGeneration.first
+            }
+        )
+
+    /// Set the ID `getpid(2)` reports for the machine's first process. On
+    /// Linux this is also its leader's thread ID, and the thread IDs the
+    /// machine hands out next follow on from it. On Darwin the process IDs the
+    /// machine hands out next follow on from it.
     ///
     /// Refuses, on Linux, a process ID that is not below the machine's
-    /// `pid_max`.
+    /// `pid_max`, and on Darwin one that is not below `PID_MAX`
+    /// (`ProcessIdTable.darwinPidMax`).
     let withProcessId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
         (pid : ProcessId)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, ProcessIdRefusal>
         =
-        let system = image.System
+        let pid = ProcessId.assertValid "UnixBootImage.withProcessId" pid
+        let machine = image.Machine
 
-        let pid = ProcessId.assertValid context pid
-        assertLeaderOnly context system
-        let leader = UnixTaskTable.get system.Leader system.Tasks
+        match machine.ThreadIds.Counter with
+        | ThreadIdCounter.Linux (_, pidMax) ->
+            if ProcessId.toInt32 pid >= pidMax then
+                Error (ProcessIdRefusal.NotBelowPidMax (pid, pidMax))
+            else
+                let _, threadIds =
+                    ThreadIdAllocator.startLinux "UnixBootImage.withProcessId" pidMax pid
 
-        let tasks, machine =
-            match system.Machine.ThreadIds.Counter with
-            | ThreadIdCounter.Linux (_, pidMax) ->
-                let leaderThreadId, threadIds = ThreadIdAllocator.startLinux context pidMax pid
-
-                Map.add
-                    system.Leader
-                    { leader with
-                        OsThreadId = leaderThreadId
+                Ok
+                    {
+                        Machine =
+                            { machine with
+                                ThreadIds = threadIds
+                            }
+                        ProcessId = pid
                     }
-                    system.Tasks,
-                { system.Machine with
-                    ThreadIds = threadIds
-                }
-            | ThreadIdCounter.Darwin _ -> system.Tasks, system.Machine
-
-        // The pipes the process was launched with name it as the process they
-        // were launched into, so they follow it to its new ID. Nothing has been
-        // delivered yet under the old one: only a write delivers, and no
-        // syscall takes an image.
-        if DeliveryLog.count machine.Delivered <> 0 then
-            failwith
-                $"%s{context}: the boot image has already delivered bytes, which only a write can do (this is a bug in this library)."
-
-        let pipes =
-            machine.Pipes
-            |> Map.map (fun _ pipe ->
-                match pipe.Origin with
-                | PipeOrigin.Launched (ExternalEndpoint (launchedInto, fd), client) when
-                    launchedInto = system.Process.ProcessId
-                    ->
-                    { pipe with
-                        Origin = PipeOrigin.Launched (ExternalEndpoint (pid, fd), client)
+        | ThreadIdCounter.Darwin _ ->
+            if ProcessId.toInt32 pid >= ProcessIdTable.darwinPidMax then
+                Error (ProcessIdRefusal.NotBelowDarwinPidMax (pid, ProcessIdTable.darwinPidMax))
+            else
+                Ok
+                    {
+                        Machine =
+                            { machine with
+                                ProcessIds = ProcessIdTable.darwinAfter pid
+                            }
+                        ProcessId = pid
                     }
-                | PipeOrigin.Launched _
-                | PipeOrigin.Made _ -> pipe
-            )
 
-        { system with
-            Machine =
-                { machine with
-                    Pipes = pipes
-                }
-            Process =
-                { system.Process with
-                    ProcessId = pid
-                }
-            Tasks = tasks
-        }
-        |> ofSystem
-
-    /// Set the leader's thread ID on Darwin, where it is unrelated to the process
-    /// ID; the IDs the process's threads get follow on from it.
+    /// Set the first process's leader's thread ID on Darwin, where it is
+    /// unrelated to the process ID; the IDs the machine's later threads get
+    /// follow on from it.
     ///
     /// Refuses a Linux machine, where the leader's thread ID is the process ID
-    /// (set that with `withProcessId`), and 0.
+    /// (set that with `withProcessId`), and 0 and the largest 64-bit ID.
     let withLeaderThreadId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
         (id : uint64)
         (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
+        : Result<UnixBootImage<'Task, 'Handler>, LeaderThreadIdRefusal>
         =
-        let system = image.System
+        let machine = image.Machine
 
-        match system.Machine.ThreadIds.Counter with
-        | ThreadIdCounter.Linux _ ->
-            failwith
-                $"%s{context}: on Linux the leader's thread ID is the process ID, so it cannot be set apart from it; set the process ID instead."
+        match machine.ThreadIds.Counter with
+        | ThreadIdCounter.Linux _ -> Error LeaderThreadIdRefusal.IsTheProcessIdOnLinux
         | ThreadIdCounter.Darwin _ ->
+            // Neither end has been observed. 0 is not refused because a kernel
+            // was seen not to report it, but because nothing says one would,
+            // and the largest leaves no ID for a second thread.
+            if id = 0UL || id = System.UInt64.MaxValue then
+                Error (LeaderThreadIdRefusal.OutsideCounter id)
+            else
+                let _, threadIds =
+                    ThreadIdAllocator.startDarwin "UnixBootImage.withLeaderThreadId" id
 
-        assertLeaderOnly context system
-        let leader = UnixTaskTable.get system.Leader system.Tasks
-        let leaderThreadId, threadIds = ThreadIdAllocator.startDarwin context id
-
-        { system with
-            Machine =
-                { system.Machine with
+                { machine with
                     ThreadIds = threadIds
                 }
-            Tasks =
-                Map.add
-                    system.Leader
-                    { leader with
-                        OsThreadId = leaderThreadId
-                    }
-                    system.Tasks
-        }
-        |> ofSystem
+                |> withMachine image
+                |> Ok
 
-    /// Set who the simulated process is.
+    /// Realise `seed` as this machine's filesystem, created at `createdAt`.
     ///
-    /// `context` prefixes the rejection a configuration earns, and is the
-    /// client's to choose, so a host that has to fix one is told the name its
-    /// own configuration gives it.
-    ///
-    /// Refuses more supplementary groups than the platform's
-    /// `SimulatedUnixPlatform.supplementaryGroupLimit`, which no process on it
-    /// could hold. On Darwin it also refuses credentials whose real, effective
-    /// and saved IDs are not all the same: which of them a Darwin kernel
-    /// consults has not been measured, so this library does not model such a
-    /// process there.
-    let withCredentials<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (credentials : Credentials)
-        (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
-        =
-        let system = image.System
-
-        let platform = system.Machine.UnixPlatform
-        let count = List.length credentials.SupplementaryGroups
-        let limit = SimulatedUnixPlatform.supplementaryGroupLimit platform
-
-        if count > limit then
-            failwith
-                $"%s{context}: %d{count} supplementary groups is more than the %d{limit} a process can hold on %O{SimulatedUnixPlatform.flavour platform} (setgroups(2) answers EINVAL above NGROUPS_MAX)."
-
-        match SimulatedUnixPlatform.flavour platform with
-        | SimulatedUnixFlavour.Linux -> ()
-        | SimulatedUnixFlavour.Darwin ->
-            // Measuring it needs a process that can change its user ID, which is
-            // root, and none has been available on Darwin.
-            let usersAgree =
-                credentials.RealUser = credentials.EffectiveUser
-                && credentials.SavedUser = credentials.EffectiveUser
-
-            let groupsAgree =
-                credentials.RealGroup = credentials.EffectiveGroup
-                && credentials.SavedGroup = credentials.EffectiveGroup
-
-            if not (usersAgree && groupsAgree) then
-                failwith
-                    $"%s{context}: the credentials %O{credentials} have real, effective and saved IDs that differ, which this library does not model on Darwin: which of them a Darwin kernel consults has not been measured. Give all three the same user ID and the same group ID."
-
-        { system with
-            Process =
-                { system.Process with
-                    Credentials = credentials
-                }
-        }
-        |> ofSystem
-
-    /// Set the file-mode creation mask the simulated process starts with: the
-    /// one its parent left it, which it can read and replace with `umask`.
-    ///
-    /// `context` prefixes the rejection a configuration earns; see
-    /// `withCredentials` for why the client supplies it.
-    ///
-    /// Refuses a mask with a bit the platform's `umask(2)` never stores
-    /// (`SimulatedUnixPlatform.umaskStoredBits`): on Linux, any of 0o7000. No
-    /// parent could have left such a mask, so it names a process that cannot
-    /// exist.
-    let withUmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (umask : PermissionBits)
-        (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
-        =
-        let system = image.System
-
-        let umask = PermissionBits.assertValid context umask
-        let platform = system.Machine.UnixPlatform
-        let stored = SimulatedUnixPlatform.umaskStoredBits platform
-
-        if PermissionBits.toInt umask &&& ~~~(PermissionBits.toInt stored) <> 0 then
-            failwith
-                $"%s{context}: the mask 0o%04o{PermissionBits.toInt umask} holds a bit %O{SimulatedUnixPlatform.flavour platform}'s umask(2) never stores (it keeps only 0o%04o{PermissionBits.toInt stored}), so no process there could have it."
-
-        { system with
-            Process =
-                { system.Process with
-                    Umask = umask
-                }
-        }
-        |> ofSystem
-
-    /// Realise `seed` as this image's filesystem and start the simulated
-    /// process in `directory`, together.
-    ///
-    /// One operation rather than two because neither answer is well-formed
-    /// without the other: a current directory is an inode of *this* filesystem,
-    /// and a filesystem replaces every inode number the previous one handed
-    /// out.
-    ///
-    /// Takes the moment explicitly rather than reading
-    /// the machine's realtime clock, so that the result does not depend
-    /// on whether the caller happened to set the clock before or after the
-    /// filesystem — an ordering dependence between two `with` functions is
-    /// exactly the kind of thing that works until someone reorders the calls.
-    ///
-    /// The system's own platform decides whether the *path the caller wrote*
-    /// is one a process on that flavour could name at all, through its
-    /// `NAME_MAX`: 255 CJK characters is a legal directory name on Darwin and
-    /// too long on Linux. It is a check on that path and not on the graph —
-    /// the seed itself is realised without consulting any limit, so a
-    /// filesystem may perfectly well contain a directory whose name the
-    /// current directory could not spell.
-    ///
-    /// The walk is privileged and symlink-following, deliberately: this is a
-    /// host saying where its process was launched, not a process looking anything
-    /// up, and a process is launched into a directory its parent had already
-    /// reached. It is also the only moment the name is resolved, because after
-    /// it the process holds the *directory* rather than the name.
-    ///
-    /// So this records the inode alone. The path `getcwd` owes is derived from
-    /// it, which is what makes that path the physical one with every symlink
-    /// resolved away — measured on both kernels, `chdir("outer/lnk")` with
-    /// `lnk -> inner` is followed by `getcwd() == ".../outer/inner"`.
+    /// Takes the moment explicitly rather than reading the machine's realtime
+    /// clock, so that the result does not depend on whether the caller
+    /// happened to set the clock before or after the filesystem.
     ///
     /// `defaultOwner` owns the root and every seed entry that states no owner
-    /// of its own; see `VirtualFileSystem.ofFileSystemSeed`. It is an argument
-    /// rather than read off the process, so that the result does not depend on
-    /// whether the caller set the credentials before or after the filesystem.
-    let withFileSystemAndCurrentDirectory<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// of its own; see `VirtualFileSystem.ofFileSystemSeed`.
+    ///
+    /// Every name in the seed is checked against the machine's platform: its
+    /// `NAME_MAX`, then its rule for which names it binds, the order a binding
+    /// checks them in. A name a kernel could never have created is not one its
+    /// filesystem can hold. Also refuses a seed whose `dev` at the root is
+    /// anything but an empty directory, since the device filesystem is mounted
+    /// there.
+    let withFileSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (createdAt : UnixTimestamp)
         (defaultOwner : InodeOwner)
         (seed : Map<DirectoryEntryName, SeedEntry>)
-        (directory : AbsoluteUnixPath)
         (image : UnixBootImage<'Task, 'Handler>)
-        : Result<UnixBootImage<'Task, 'Handler>, CurrentDirectoryFault>
+        : Result<UnixBootImage<'Task, 'Handler>, FileSystemSeedFault>
         =
-        let system = image.System
-
-        // The directory is admitted under the platform the process will run
-        // on, which is the system's own: `NAME_MAX` counts bytes on Linux and
-        // UTF-16 code units on Darwin, so a name one flavour admits is one the
-        // other refuses.
-        let platform = system.Machine.UnixPlatform
-
-        // Asserted here as well as by any caller that names its own knob: this
-        // is a package boundary, so the precondition cannot be left to the one
-        // client that happens to check it today.
-        let directory =
-            AbsoluteUnixPath.assertValid "UnixBootImage.withFileSystemAndCurrentDirectory" directory
+        let machine = image.Machine
+        let platform = machine.UnixPlatform
 
         // A new filesystem hands out its own inode numbers, so a handle onto
         // the old graph would afterwards dangle or silently name whatever the
-        // new one gave the same number. An image holds none: its only
-        // descriptors are the launch table's pipes, and the current directory,
-        // which this replaces, is not a handle the new graph must honour.
+        // new one gave the same number. An image holds none: no process has
+        // been launched onto it.
 
         let limits = SimulatedUnixPlatform.pathLimits platform
         let bindable = SimulatedUnixPlatform.bindableEntryNames platform
         let flavour = SimulatedUnixPlatform.flavour platform
 
-        // Every name in the seed, under this flavour's NAME_MAX and then its
-        // rule for which names it binds -- the order a binding checks them in --
-        // before the graph is built: a name a kernel could never have created
-        // is not one its filesystem can hold. The first offender in `Map`
-        // order, which is the order the seed is realised in.
-        let rec firstImpossibleName (entries : Map<DirectoryEntryName, SeedEntry>) : CurrentDirectoryFault option =
+        // The first offender in `Map` order, which is the order the seed is
+        // realised in.
+        let rec firstImpossibleName (entries : Map<DirectoryEntryName, SeedEntry>) : FileSystemSeedFault option =
             entries
             |> Map.toSeq
             |> Seq.tryPick (fun (name, entry) ->
                 // A forged name is refused with the seed's context, as
                 // `ofFileSystemSeed` would refuse it, rather than reaching the
                 // measurement as a null.
-                let name =
-                    DirectoryEntryName.assertValid "UnixBootImage.withFileSystemAndCurrentDirectory seed" name
+                let name = DirectoryEntryName.assertValid "UnixBootImage.withFileSystem seed" name
 
                 if not (PathLimits.nameWithinLimit limits name) then
-                    Some (CurrentDirectoryFault.SeedNameTooLong (name, flavour))
+                    Some (FileSystemSeedFault.SeedNameTooLong (name, flavour))
                 elif not (BindableEntryNames.admits bindable name) then
-                    Some (CurrentDirectoryFault.SeedNameNotBindable (name, flavour))
+                    Some (FileSystemSeedFault.SeedNameNotBindable (name, flavour))
                 else
                     match entry with
                     | SeedEntry.Directory (children, _, _) -> firstImpossibleName children
@@ -362,75 +248,16 @@ module UnixBootImage =
                 defaultOwner
                 (SimulatedUnixPlatform.symlinkCreationPermissions platform SeedEntry.symlinkCreatorsUmask)
                 seed
-            |> UnixSystem.mountDeviceFileSystem system.Machine.DeviceMount createdAt
+            |> UnixSystem.mountDeviceFileSystem machine.DeviceMount createdAt
         with
         | Error (MountFault.CoveredEntryNotAnEmptyDirectory name) ->
-            Error (CurrentDirectoryFault.SeedCoversDeviceFileSystem name)
+            Error (FileSystemSeedFault.SeedCoversDeviceFileSystem name)
         | Ok filesystem ->
-
-        let root = VirtualFileSystem.root filesystem
-
-        let located =
-            match
-                PathWalk.resolveExisting
-                    limits
-                    // Root, so that no directory's search bit refuses the walk:
-                    // it is privilege that exempts a caller, whoever owns what.
-                    (Credentials.ofIds
-                        UserId.root
-                        (GroupId.parseOrFail "UnixBootImage.withFileSystemAndCurrentDirectory" 0u)
-                        [])
-                    // The host names where the process starts; no process follows
-                    // a link to get there, so no sysctl screens one.
-                    SymlinkProtection.Off
-                    root
-                    SymlinkPolicy.Follow
-                    (UnixPath.ofAbsolute directory)
-                    filesystem
-            with
-            | Ok inode ->
-                match VirtualFileSystem.tryGetContent inode filesystem with
-                | Some (InodeContent.Directory _) ->
-                    // The walk started at the root, so a directory it
-                    // reached has a path back by construction, and
-                    // `toVirtualFileSystem` asserts its own invariants besides.
-                    // Checked anyway: the alternative to crashing here is a
-                    // process whose `getcwd` reports ENOENT from its first
-                    // instruction.
-                    match VirtualFileSystem.pathOfDirectory inode filesystem with
-                    | Some _ -> Ok inode
-                    | None ->
-                        failwith
-                            $"UnixBootImage.withFileSystemAndCurrentDirectory: \"%s{AbsoluteUnixPath.toEscaped directory}\" resolved to inode %O{inode}, but no path from the root reaches it. This is a bug in this library."
-                | Some (InodeContent.RegularFile _)
-                | Some (InodeContent.CharacterDevice _) -> Error CurrentDirectoryFault.NotADirectory
-                | Some (InodeContent.Symlink _) ->
-                    // `SymlinkPolicy.Follow` never finishes on one; `chdir` says
-                    // the same of the same walk.
-                    failwith
-                        $"UnixBootImage.withFileSystemAndCurrentDirectory: the walk resolved \"%s{AbsoluteUnixPath.toEscaped directory}\" to inode %O{inode}, which is a symbolic link -- but it ran under SymlinkPolicy.Follow, which never finishes on one (this is a bug in this library)."
-                | None ->
-                    failwith
-                        $"UnixBootImage.withFileSystemAndCurrentDirectory: resolving \"%s{AbsoluteUnixPath.toEscaped directory}\" gave inode %O{inode}, which the filesystem does not contain. This is a bug in this library; run VirtualFileSystem.checkInvariants."
-            | Error (PathFailure.Errno UnixError.ENAMETOOLONG) ->
-                Error (CurrentDirectoryFault.TooLong (SimulatedUnixPlatform.flavour platform))
-            | Error (PathFailure.Errno error) -> Error (CurrentDirectoryFault.DoesNotResolve error)
-            | Error (PathFailure.Refused refusal) -> Error (CurrentDirectoryFault.Path refusal)
-
-        located
-        |> Result.map (fun inode ->
-            { system with
-                Machine =
-                    { system.Machine with
-                        FileSystem = filesystem
-                    }
-                Process =
-                    { system.Process with
-                        CurrentDirectoryInode = inode
-                    }
+            { machine with
+                FileSystem = filesystem
             }
-        )
-        |> Result.map ofSystem
+            |> withMachine image
+            |> Ok
 
     /// Set the greatest range end a user buffer may reach: the machine's
     /// `TASK_SIZE_MAX`.
@@ -443,7 +270,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         let platform = machine.UnixPlatform
 
@@ -476,7 +303,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        { image.System.Machine with
+        { image.Machine with
             EntropyPool = EntropyPool.ofSeed seed
         }
         |> withMachine image
@@ -489,7 +316,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         if count < 1 then
             failwith $"ProcessorCount must be at least 1; got %d{count}"
@@ -507,7 +334,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         if low = 0us then
             failwith
@@ -535,7 +362,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         let seconds = UnixTimestamp.seconds bootTime
 
@@ -565,7 +392,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         // The prefix record is public, so a host can build one whose length is
         // outside [0, 32]; the CLI masks such a shift rather than faulting, which
@@ -592,7 +419,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
@@ -622,7 +449,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
@@ -645,7 +472,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
@@ -676,7 +503,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         let resolved =
             match value with
@@ -707,7 +534,7 @@ module UnixBootImage =
         (image : UnixBootImage<'Task, 'Handler>)
         : UnixBootImage<'Task, 'Handler>
         =
-        let machine = image.System.Machine
+        let machine = image.Machine
 
         let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
@@ -732,56 +559,3 @@ module UnixBootImage =
             TcpSendSpace = resolved
         }
         |> withMachine image
-
-    /// Set the path to the executable that started the simulated process, or
-    /// `None` to report that it has none. `None` is preserved rather than
-    /// defaulted; see `UnixProcessState.ProcessPath`.
-    ///
-    /// `context` prefixes the rejection a forged path earns, and is the client's
-    /// to choose: the host that has to fix one knows it by whatever name the
-    /// client's own configuration gives it, not by this field's.
-    let withProcessPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (path : AbsoluteUnixPath option)
-        (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
-        =
-        let proc = image.System.Process
-
-        { proc with
-            ProcessPath = path |> Option.map (AbsoluteUnixPath.assertValid context)
-        }
-        |> withProcess image
-
-    /// Set whether the process writes a core dump when a signal whose default
-    /// action dumps core kills it. See `UnixProcessState.CoreDumps`.
-    let withCoreDumps<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (coreDumps : CoreDumps)
-        (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
-        =
-        let proc = image.System.Process
-
-        { proc with
-            CoreDumps = coreDumps
-        }
-        |> withProcess image
-
-    /// Set the environment the simulated process was started with, replacing
-    /// whatever it held. The entries are kept in the order given, duplicates and
-    /// all; see `UnixProcessState.Environment`.
-    ///
-    /// `context` prefixes the rejection a forged entry earns; see
-    /// `withProcessPath` for why the client supplies it.
-    let withEnvironment<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (context : string)
-        (env : UnixByteString list)
-        (image : UnixBootImage<'Task, 'Handler>)
-        : UnixBootImage<'Task, 'Handler>
-        =
-        let proc = image.System.Process
-
-        { proc with
-            Environment = env |> List.map (UnixByteString.assertValid context)
-        }
-        |> withProcess image

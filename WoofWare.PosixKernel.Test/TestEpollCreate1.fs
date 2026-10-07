@@ -20,12 +20,12 @@ open WoofWare.PosixKernel
 module TestEpollCreate1 =
 
     let private linux : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private darwin : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial SimulatedUnixPlatform.macOsArm64
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private cloExec : int = 0x80000
 
@@ -140,8 +140,8 @@ module TestEpollCreate1 =
             | SimulatedUnixFlavour.Linux -> ()
 
             let modelled =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial<int, string> platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             for flags, _ in measured do
                 let fd = hostEpollCreate1 flags

@@ -53,7 +53,7 @@ module TestProcessPath =
     [<Test>]
     let ``toKernel rejects a forged path, naming the knob a host would fix`` () : unit =
         // `AbsoluteUnixPath`'s case is private, so the only invalid value a host
-        // can produce is a defaulted one. `UnixBootImage.withProcessPath` is
+        // can produce is a defaulted one. `ProcessLaunch.withProcessPath` is
         // where that stops — its own test is in `WoofWare.PosixKernel.Test` — and
         // what PawPrint owns is the *name* it hands that setter. Asserted through
         // `toKernel` because that is the path a host takes, and because the name
@@ -62,7 +62,7 @@ module TestProcessPath =
         //
         // It must also fail here rather than as a null reference inside the first
         // `SystemNative_GetProcessPath` — the same boundary
-        // `withFileSystemAndCurrentDirectory` draws for the current directory.
+        // `EmulatedKernel.withFileSystemAndCurrentDirectory` draws for the current directory.
         let exn =
             Assert.Throws<Exception> (fun () ->
                 KernelConfig.toKernel
@@ -79,7 +79,7 @@ module TestProcessPath =
         // The validation must not fire on the absent case: `None` carries no
         // path to validate.
         EmulatedKernel.initialImage
-        |> UnixBootImage.withProcessPath "test" None
+        |> KernelImage.mapProcess (ProcessLaunch.withProcessPath "test" None)
         |> EmulatedKernel.boot
         |> fun k -> k.ProcessPath
         |> shouldEqual None

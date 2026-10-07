@@ -34,14 +34,17 @@ module TestSocketBinding =
     /// is flavour-dependent, so the flavour here is arbitrary; every row that
     /// *is* flavour-dependent names its platform.
     let private initialImage : UnixBootImage<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
 
     let private initialSystem : UnixSystem<int, string> =
-        UnixBootImage.boot initialImage
+        Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) initialImage
 
     /// The machine of a system booted with the ephemeral port range `range`.
     let private machineWithPortRange (range : uint16 * uint16) : UnixMachineState =
-        (initialImage |> UnixBootImage.withEphemeralPortRange range |> UnixBootImage.boot).Machine
+        (initialImage
+         |> UnixBootImage.withEphemeralPortRange range
+         |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
+            .Machine
 
     let private endpoint (address : uint32) (port : uint16) : InternetEndpoint = InternetEndpoint.ofParts address port
 
@@ -268,9 +271,9 @@ module TestSocketBinding =
                 for kind in [ SocketKind.Stream ; SocketKind.Datagram ] do
                     for address in [ multicast ; broadcast ] do
                         let system =
-                            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                            UnixSystem.initial<int, string> platform
                             |> UnixBootImage.withLocalAddresses addresses routes
-                            |> UnixBootImage.boot
+                            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                         let protocol =
                             if kind = SocketKind.Stream then

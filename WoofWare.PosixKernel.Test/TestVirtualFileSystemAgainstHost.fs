@@ -884,8 +884,8 @@ module TestVirtualFileSystemAgainstHost =
 
     let private modelReadLink (vfs : VirtualFileSystem) (relative : string) (capacity : int) : Result<int, int> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial (hostPlatform ())
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let system =
             { system with
@@ -898,6 +898,7 @@ module TestVirtualFileSystemAgainstHost =
                         CurrentDirectoryInode = VirtualFileSystem.root vfs
                     }
             }
+            |> Launched.restand
 
         match
             UnixNamespace.readlink
@@ -2800,14 +2801,17 @@ module TestVirtualFileSystemAgainstHost =
             | CallerPrivilege.Unprivileged -> 1000u
 
         let system : UnixSystem<int, string> =
-            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials
-                "renameModelSystem"
-                (Credentials.ofIds
-                    (UserId.parseOrFail "renameModelSystem" userId)
-                    (GroupId.parseOrFail "renameModelSystem" userId)
-                    [])
-            |> UnixBootImage.boot
+            UnixSystem.initial (hostPlatform ())
+            |> (Launched.bootWith
+                    (Launched.credentials (
+                        Credentials.ofIds
+                            (UserId.parseOrFail "renameModelSystem" userId)
+                            (GroupId.parseOrFail "renameModelSystem" userId)
+                            []
+                    ))
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0))
 
         { system with
             Machine =
@@ -2819,6 +2823,7 @@ module TestVirtualFileSystemAgainstHost =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
+        |> Launched.restand
 
     let private compareRenameRefusal (source : string) (destination : string) : RenameRefusal * RenameRefusal =
         let unique = Guid.NewGuid().ToString "N"
@@ -3118,14 +3123,17 @@ module TestVirtualFileSystemAgainstHost =
             | CallerPrivilege.Unprivileged -> 1000u
 
         let system : UnixSystem<int, string> =
-            UnixSystem.initial (hostPlatform ()) UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials
-                "chdir model"
-                (Credentials.ofIds
-                    (UserId.parseOrFail "chdir model" userId)
-                    (GroupId.parseOrFail "chdir model" userId)
-                    [])
-            |> UnixBootImage.boot
+            UnixSystem.initial (hostPlatform ())
+            |> (Launched.bootWith
+                    (Launched.credentials (
+                        Credentials.ofIds
+                            (UserId.parseOrFail "chdir model" userId)
+                            (GroupId.parseOrFail "chdir model" userId)
+                            []
+                    ))
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0))
 
         let system =
             { system with
@@ -3138,6 +3146,7 @@ module TestVirtualFileSystemAgainstHost =
                         CurrentDirectoryInode = VirtualFileSystem.root vfs
                     }
             }
+            |> Launched.restand
 
         match Answered.chdir (PathArg.ofPath (UnixPath.parseOrFail "test" relative)) system with
         | SyscallAnswer.Completed 0L, moved ->

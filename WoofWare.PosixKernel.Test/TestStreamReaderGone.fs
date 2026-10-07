@@ -56,8 +56,8 @@ module TestStreamReaderGone =
         (disposition : SignalDisposition<string>)
         : UnixSystem<int, string>
         =
-        UnixSystem.initial platform (launch gone) 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot (launch gone) 0 (CpuId 0)
         |> Tasks.spawn 1
         |> withSigPipe disposition
 
@@ -293,9 +293,9 @@ module TestStreamReaderGone =
         for platform in platforms do
             for disposition in dispositions do
                 let system =
-                    UnixSystem.initial platform (launch (Set.singleton 1)) 0 (CpuId 0)
-                    |> UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" 1)
-                    |> UnixBootImage.boot
+                    UnixSystem.initial platform
+                    |> Launched.processId (ProcessId.parseOrFail "test" 1)
+                    |> Launched.boot (launch (Set.singleton 1)) 0 (CpuId 0)
                     |> withSigPipe disposition
 
                 match WriteOutcomes.admitThenWrite system.Leader 1 UserBuffer.Mapped (payload 0 5) system with

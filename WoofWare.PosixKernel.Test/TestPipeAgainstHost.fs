@@ -208,9 +208,12 @@ module TestPipeAgainstHost =
                 let gid = GroupId.parseOrFail "TestPipeAgainstHost" (hostGetEGid ())
 
                 let system : UnixSystem<int, string> =
-                    UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                    |> UnixBootImage.withCredentials "TestPipeAgainstHost" (Credentials.ofIds uid gid [])
-                    |> UnixBootImage.boot
+                    UnixSystem.initial platform
+                    |> (Launched.bootWith
+                            (Launched.credentials (Credentials.ofIds uid gid []))
+                            UnixSystem.pipedStandardStreams
+                            0
+                            (CpuId 0))
 
                 // The test host process ignores SIGPIPE, so a write with no
                 // reader answers EPIPE there rather than ending it.
@@ -632,8 +635,8 @@ module TestPipeAgainstHost =
                     UnixPipe.pipe2
                         flags
                         UserBuffer.Mapped
-                        (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                         |> UnixBootImage.boot)
+                        (UnixSystem.initial platform
+                         |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
 
                 match model, host with
                 | Ok (Pipe2Answer.Created _, _), Ok () -> ()

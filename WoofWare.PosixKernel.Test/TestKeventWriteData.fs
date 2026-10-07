@@ -346,12 +346,12 @@ module TestKeventWriteData =
     let ``each flavour starts with its measured send space`` () : unit =
         KeventWorld.darwin.Machine.TcpSendSpace |> shouldEqual 131072
 
-        let linux =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
+        let linux = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
 
-        (UnixBootImage.boot linux).Machine.TcpSendSpace |> shouldEqual 16384
+        (Launched.boot Map.empty 0 (CpuId 0) linux).Machine.TcpSendSpace
+        |> shouldEqual 16384
 
-        (UnixBootImage.withTcpSendSpace None linux |> UnixBootImage.boot).Machine.TcpSendSpace
+        (UnixBootImage.withTcpSendSpace None linux |> Launched.boot Map.empty 0 (CpuId 0)).Machine.TcpSendSpace
         |> shouldEqual 16384
 
         (darwinMachine None).TcpSendSpace |> shouldEqual 131072
@@ -385,8 +385,7 @@ module TestKeventWriteData =
 
     [<Test>]
     let ``a Linux send space is refused, since nothing reads it`` () : unit =
-        let linux =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
+        let linux = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
 
         let e =
             Assert.Throws<Exception> (fun () -> UnixBootImage.withTcpSendSpace (Some 16384) linux |> ignore)
@@ -399,8 +398,8 @@ module TestKeventWriteData =
             socketIn SocketDomain.Inet (SocketPhase.Established (ConnectionId 0L))
 
         let linux =
-            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
-             |> UnixBootImage.boot)
+            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+             |> (Launched.boot Map.empty 0 (CpuId 0)))
                 .Machine
 
         let refusals =

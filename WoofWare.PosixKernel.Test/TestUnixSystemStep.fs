@@ -42,13 +42,12 @@ module TestUnixSystemStep =
     /// The boot image of a simulated process on the flavour asked for, on a
     /// machine with no addresses.
     let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.withLocalAddresses [] []
+        UnixSystem.initial platform |> UnixBootImage.withLocalAddresses [] []
 
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        imageOn platform |> UnixBootImage.boot
+        imageOn platform |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
 
     let private linuxRoot : Credentials =
         Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) []
@@ -1594,8 +1593,7 @@ module TestUnixSystemStep =
         // user to make the file, and takes root back to change who it is.
         let fd, system =
             imageOn SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withCredentials "test" linuxRoot
-            |> UnixBootImage.boot
+            |> Launched.bootWith (Launched.credentials linuxRoot) UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> Become.temporarily Owners.linuxDefaultCaller
             |> withOpenFile
 
@@ -1626,8 +1624,7 @@ module TestUnixSystemStep =
 
         let system =
             imageOn SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withCredentials "test" credentials
-            |> UnixBootImage.boot
+            |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         UnixDescriptor.effectiveUserId system |> shouldEqual credentials.EffectiveUser
 
@@ -1855,6 +1852,7 @@ module TestUnixSystemStep =
                         CurrentDirectoryInode = directory
                     }
             }
+            |> Launched.restand
 
         UnixPathResolution.resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow (statPath "t") (at inner)
         |> shouldEqual (Ok target)
@@ -1905,8 +1903,7 @@ module TestUnixSystemStep =
         // as unsearchable to its owner as the other was to its own.
         let _, _, _, asRoot =
             imageOn SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withCredentials "test" linuxRoot
-            |> UnixBootImage.boot
+            |> Launched.bootWith (Launched.credentials linuxRoot) UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> withTreeUnder (PermissionBits.parseOrFail context 0o600)
 
         match
@@ -2379,8 +2376,8 @@ module TestUnixSystemStep =
         // Away from the default, so that a primitive answering a constant fails.
         let configured =
             imageOn SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" 3)
-            |> UnixBootImage.boot
+            |> Launched.processId (ProcessId.parseOrFail "test" 3)
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         UnixSystem.processId configured |> ProcessId.toInt32 |> shouldEqual 3
 
@@ -2394,13 +2391,12 @@ module TestUnixSystemStep =
     [<Test>]
     let ``withProcessId refuses the forged default process ID`` () : unit =
         let apply () =
-            UnixBootImage.withProcessId "ctx" Unchecked.defaultof<ProcessId> (imageOn SimulatedUnixPlatform.linuxX64)
+            Launched.processId Unchecked.defaultof<ProcessId> (imageOn SimulatedUnixPlatform.linuxX64)
             |> ignore<UnixBootImage<int, string>>
 
         let exn = Assert.Throws<System.Exception> (TestDelegate apply)
 
-        exn.Message.StartsWith ("ctx: ", System.StringComparison.Ordinal)
-        |> shouldEqual true
+        exn.Message |> shouldContainText "UnixBootImage.withProcessId"
 
     [<Test>]
     let ``dup of a closed descriptor is EBADF and changes nothing`` () : unit =
@@ -3759,6 +3755,7 @@ module TestUnixSystemStep =
                     CurrentDirectoryInode = inner
                 }
         }
+        |> Launched.restand
 
     /// The same, with `/d/inner` then removed: a current directory a real
     /// process keeps working relative to but which has no path any more.
@@ -5402,6 +5399,7 @@ module TestUnixSystemStep =
                     CurrentDirectoryInode = sub
                 }
         }
+        |> Launched.restand
 
     [<Test>]
     let ``renaming an ancestor of the current directory moves the cwd with it`` () : unit =
@@ -5449,6 +5447,7 @@ module TestUnixSystemStep =
                         CurrentDirectoryInode = inode
                     }
             }
+            |> Launched.restand
 
         match Answered.rmdir (statPath "/gone") inCwd with
         | SyscallAnswer.Completed 0L, removed -> removed
@@ -5776,8 +5775,7 @@ module TestUnixSystemStep =
         // uid 0 walks straight in.
         let asRoot =
             imageOn SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withCredentials "test" linuxRoot
-            |> UnixBootImage.boot
+            |> Launched.bootWith (Launched.credentials linuxRoot) UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> withChDirTree
 
         changedTo "ronly" asRoot |> shouldEqual (Ok (Some "/ronly"))

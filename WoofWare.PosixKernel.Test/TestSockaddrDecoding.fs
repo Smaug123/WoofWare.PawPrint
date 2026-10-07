@@ -110,9 +110,9 @@ module TestSockaddrDecoding =
         : int * UnixSystem<int, string>
         =
         let system =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial platform
             |> UnixBootImage.withLocalAddresses UnixSystem.defaultLocalAddresses []
-            |> UnixBootImage.boot
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let listen (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
             match UnixSocket.listen fd 8 system with

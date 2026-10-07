@@ -46,6 +46,7 @@
         <Compile Include="DeviceFileSystem.fs" />
         <Compile Include="UserBuffer.fs" />
         <Compile Include="OsThreadId.fs" />
+        <Compile Include="ProcessIdTable.fs" />
         <Compile Include="UnixTask.fs" />
         <Compile Include="Sockaddr.fs" />
         <Compile Include="CreatingOpenRules.fs" />
@@ -87,6 +88,7 @@
         <Compile Include="UnixNamespace.fs" />
         <Compile Include="UnixCredentials.fs" />
         <Compile Include="UnixSystem.fs" />
+        <Compile Include="ProcessLaunch.fs" />
         <Compile Include="UnixBootImage.fs" />
         <Compile Include="UnixSignal.fs" />
         <Compile Include="SimulatedMachine.fs" />

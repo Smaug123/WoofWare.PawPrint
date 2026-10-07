@@ -168,8 +168,8 @@ module TestEntropyAgainstHost =
             | SimulatedUnixFlavour.Darwin -> Assert.Ignore "getrandom(2) is a Linux system call"
 
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let flagsToTry : uint32 list = [ 0u .. 16u ] @ [ 0x8000_0000u ; UInt32.MaxValue ]
 
@@ -259,8 +259,8 @@ module TestEntropyAgainstHost =
         | _ -> Assert.Ignore "getentropy(2) is a Darwin system call"
 
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial SimulatedUnixPlatform.macOsArm64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let lengths : uint64 list =
             [

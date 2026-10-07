@@ -329,14 +329,13 @@ module TestDirectorySize =
         (fsType : EmulatedFileSystemType)
         : int * UnixSystem<int, string>
         =
-        let system : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let system : UnixBootImage<int, string> = UnixSystem.initial platform
 
 
         let system =
             system
             |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
-            |> UnixBootImage.boot
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let system =
             system

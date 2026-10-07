@@ -131,15 +131,14 @@ module TestBindingCount =
             SimulatedUnixPlatform.macOsArm64, EmulatedFileSystemType.Nfs
         ]
         |> List.map (fun (platform, fsType) ->
-            let system : UnixBootImage<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            let system : UnixBootImage<int, string> = UnixSystem.initial platform
 
 
             platform,
             fsType,
             system
             |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
-            |> UnixBootImage.boot
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         )
 
     /// What `stat` reports for every inode of `vfs` agrees with the rule

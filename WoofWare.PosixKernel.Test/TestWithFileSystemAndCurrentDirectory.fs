@@ -5,16 +5,18 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixBootImage.withFileSystemAndCurrentDirectory`: which directory a process
-/// ends up standing in, and which outcomes are answered to the caller rather
-/// than crashed on.
+/// `UnixBootImage.withFileSystem` and the directory a process is launched in
+/// (`ProcessLaunch.withCurrentDirectory`): which directory a process ends up
+/// standing in, and which outcomes are answered to the caller rather than
+/// crashed on.
 ///
-/// The answered/crashed split is the point of `CurrentDirectoryFault`: a host
-/// that named a directory its own seed does not contain has made a mistake it
-/// can fix, and gets told which; a walk that answers an inode the filesystem
-/// does not hold has found a bug in this library, which no caller could act
-/// on. So each fault case must be *reachable* through the public API — a case
-/// nothing can produce is one a caller must handle and never will.
+/// The answered/crashed split is the point of `FileSystemSeedFault` and
+/// `CurrentDirectoryFault`: a host that named a directory its own seed does
+/// not contain has made a mistake it can fix, and gets told which; a walk that
+/// answers an inode the filesystem does not hold has found a bug in this
+/// library, which no caller could act on. So each fault case must be
+/// *reachable* through the public API — a case nothing can produce is one a
+/// caller must handle and never will.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestWithFileSystemAndCurrentDirectory =
@@ -66,27 +68,48 @@ module TestWithFileSystemAndCurrentDirectory =
         | Ok inode -> inode
         | Error error -> failwith $"could not resolve %s{path} in the test seed: %O{error}"
 
+    /// Why a process could not be started where a row asked: the seed was
+    /// refused, or the launch was.
+    [<RequireQualifiedAccess>]
+    type private StartFault =
+        | Seed of FileSystemSeedFault
+        | Directory of CurrentDirectoryFault
+
+    let private launchAt (platform : SimulatedUnixPlatform) (dir : string) : ProcessLaunch<int> =
+        Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> ProcessLaunch.withCurrentDirectory (absolute dir)
+
+    let private bootAt
+        (dir : string)
+        (image : UnixBootImage<int, string>)
+        : Result<UnixSystem<int, string>, StartFault>
+        =
+        match UnixBootImage.boot (launchAt (UnixBootImage.platform image) dir) image with
+        | Ok system -> Ok system
+        | Error (LaunchRefusal.CurrentDirectory (_, fault)) -> Error (StartFault.Directory fault)
+        | Error refusal -> failwith $"unexpected launch refusal: %s{LaunchRefusal.describe refusal}"
+
     let private startAt
         (platform : SimulatedUnixPlatform)
         (entries : Map<DirectoryEntryName, SeedEntry>)
         (dir : string)
-        : Result<UnixSystem<int, string>, CurrentDirectoryFault>
+        : Result<UnixSystem<int, string>, StartFault>
         =
-        UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute dir)
-        |> Result.map UnixBootImage.boot
+        UnixSystem.initial<int, string> platform
+        |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault entries
+        |> Result.mapError StartFault.Seed
+        |> Result.bind (bootAt dir)
 
-    /// An image seeded with `seed`, standing at `dir`.
-    let private seededAt (dir : string) : UnixBootImage<int, string> =
-        match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault seed (absolute dir)
-        with
-        | Ok image -> image
-        | Error fault -> failwith $"the fixture's own seed did not boot at %s{dir}: %O{fault}."
+    /// An image seeded with `seed`.
+    let private seeded : UnixBootImage<int, string> =
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        |> Launched.fileSystem createdAt Owners.linuxDefault seed
 
     /// A system booted on `seed`, standing at `dir`.
-    let private booted (dir : string) : UnixSystem<int, string> = UnixBootImage.boot (seededAt dir)
+    let private booted (dir : string) : UnixSystem<int, string> =
+        match bootAt dir seeded with
+        | Ok system -> system
+        | Error fault -> failwith $"the fixture's own seed did not boot at %s{dir}: %A{fault}."
 
     [<Test>]
     let ``a directory the seed contains is accepted`` () : unit =
@@ -129,7 +152,7 @@ module TestWithFileSystemAndCurrentDirectory =
         UnixSystem.checkInvariants system |> shouldBeEmpty
 
     [<Test>]
-    let ``replacing the filesystem re-resolves the current directory`` () : unit =
+    let ``the current directory is resolved against the filesystem the machine boots with`` () : unit =
         // Inode numbers are meaningless across graphs, so carrying the old one
         // over would leave the process standing in whatever happened to land on
         // that number in the new seed -- or in nothing at all.
@@ -145,15 +168,13 @@ module TestWithFileSystemAndCurrentDirectory =
 
         let replaced =
             match
-                seededAt "/outer/inner"
-                |> UnixBootImage.withFileSystemAndCurrentDirectory
-                    createdAt
-                    Owners.linuxDefault
-                    deeper
-                    (absolute "/outer/inner")
+                seeded
+                |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault deeper
+                |> Result.mapError StartFault.Seed
+                |> Result.bind (bootAt "/outer/inner")
             with
-            | Ok replaced -> UnixBootImage.boot replaced
-            | Error fault -> failwith $"the deeper seed did not boot: %O{fault}."
+            | Ok replaced -> replaced
+            | Error fault -> failwith $"the deeper seed did not boot: %A{fault}."
 
         replaced.Process.CurrentDirectoryInode
         |> shouldEqual (inodeOf replaced "/outer/inner")
@@ -186,10 +207,9 @@ module TestWithFileSystemAndCurrentDirectory =
                 SimulatedUnixPlatform.linuxX64, SimulatedUnixFlavour.Linux
                 SimulatedUnixPlatform.macOsArm64, SimulatedUnixFlavour.Darwin
             ] do
-            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault nested (absolute "/outer")
-            |> Result.map UnixBootImage.boot
-            |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name overlong, flavour)))
+            startAt platform nested "/outer"
+            |> Result.map ignore
+            |> shouldEqual (Error (StartFault.Seed (FileSystemSeedFault.SeedNameTooLong (name overlong, flavour))))
 
         // 255 CJK characters: 765 bytes, past Linux's limit, and 255 code
         // units, within Darwin's -- the same name `startAt` admits as a
@@ -197,15 +217,15 @@ module TestWithFileSystemAndCurrentDirectory =
         let wide = String.replicate 255 "中"
         let wideSeed = Map.ofList [ name wide, SeedEntry.file noBytes ]
 
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault wideSeed (absolute "/")
-        |> Result.map UnixBootImage.boot
-        |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault wideSeed
+        |> Result.map ignore
+        |> shouldEqual (Error (FileSystemSeedFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
 
         match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault wideSeed (absolute "/")
-            |> Result.map UnixBootImage.boot
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault wideSeed
+            |> Result.map ignore
         with
         | Ok _ -> ()
         | Error fault -> failwith $"Darwin admits a 255-code-unit name, but the seed answered %O{fault}."
@@ -215,9 +235,9 @@ module TestWithFileSystemAndCurrentDirectory =
 
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             match
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault atLimit (absolute "/")
-                |> Result.map UnixBootImage.boot
+                UnixSystem.initial<int, string> platform
+                |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault atLimit
+                |> Result.map ignore
             with
             | Ok _ -> ()
             | Error fault -> failwith $"a 255-byte name is within NAME_MAX, but the seed answered %O{fault}."
@@ -251,22 +271,16 @@ module TestWithFileSystemAndCurrentDirectory =
         let asLink = Map.ofList [ undecodable, SeedEntry.Symlink (target "outer", None) ]
 
         for entries in [ atRoot ; nested ; asLink ] do
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute "/")
-            |> Result.map UnixBootImage.boot
-            |> shouldEqual (
-                Error (CurrentDirectoryFault.SeedNameNotBindable (undecodable, SimulatedUnixFlavour.Darwin))
-            )
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault entries
+            |> Result.map ignore
+            |> shouldEqual (Error (FileSystemSeedFault.SeedNameNotBindable (undecodable, SimulatedUnixFlavour.Darwin)))
 
             // Linux binds any NUL-free bytes, so the same seed is a filesystem it could hold.
             match
-                UnixSystem.initial<int, string>
-                    SimulatedUnixPlatform.linuxX64
-                    UnixSystem.pipedStandardStreams
-                    0
-                    (CpuId 0)
-                |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute "/")
-                |> Result.map UnixBootImage.boot
+                UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+                |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault entries
+                |> Result.map ignore
             with
             | Ok _ -> ()
             | Error fault -> failwith $"Linux binds any bytes, but the seed answered %O{fault}."
@@ -280,9 +294,9 @@ module TestWithFileSystemAndCurrentDirectory =
             Map.ofList [ name (string (char 0xFFFF)), SeedEntry.file noBytes ]
 
         match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault nonCharacter (absolute "/")
-            |> Result.map UnixBootImage.boot
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault nonCharacter
+            |> Result.map ignore
         with
         | Ok _ -> ()
         | Error fault -> failwith $"the model's Darwin binds U+FFFF, but the seed answered %O{fault}."
@@ -292,14 +306,10 @@ module TestWithFileSystemAndCurrentDirectory =
         // walk would reach it before the encoding.
         let both = nameOfBytes (List.replicate 766 0xFFuy)
 
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.withFileSystemAndCurrentDirectory
-            createdAt
-            Owners.linuxDefault
-            (Map.ofList [ both, SeedEntry.file noBytes ])
-            (absolute "/")
-        |> Result.map UnixBootImage.boot
-        |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (both, SimulatedUnixFlavour.Darwin)))
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+        |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault (Map.ofList [ both, SeedEntry.file noBytes ])
+        |> Result.map ignore
+        |> shouldEqual (Error (FileSystemSeedFault.SeedNameTooLong (both, SimulatedUnixFlavour.Darwin)))
 
     /// A forged seed name is refused with the seed's context before it is
     /// measured, as it was before the length rule stood in front of the graph.
@@ -310,29 +320,26 @@ module TestWithFileSystemAndCurrentDirectory =
 
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixSystem.initial<int, string>
-                    SimulatedUnixPlatform.linuxX64
-                    UnixSystem.pipedStandardStreams
-                    0
-                    (CpuId 0)
-                |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault forged (absolute "/")
-                |> Result.map UnixBootImage.boot
-                |> ignore<Result<UnixSystem<int, string>, CurrentDirectoryFault>>
+                UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+                |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault forged
+                |> ignore<Result<UnixBootImage<int, string>, FileSystemSeedFault>>
             )
 
-        exn.Message |> shouldContainText "withFileSystemAndCurrentDirectory"
+        exn.Message |> shouldContainText "UnixBootImage.withFileSystem"
 
     [<Test>]
     let ``a directory the seed does not contain answers DoesNotResolve`` () : unit =
         startAt SimulatedUnixPlatform.linuxX64 seed "/outer/nope"
-        |> shouldEqual (Error (CurrentDirectoryFault.DoesNotResolve UnixError.ENOENT))
+        |> Result.map ignore
+        |> shouldEqual (Error (StartFault.Directory (CurrentDirectoryFault.DoesNotResolve UnixError.ENOENT)))
 
     [<Test>]
     let ``a path that names a file answers NotADirectory`` () : unit =
         // Distinguished from `DoesNotResolve`: a host pointing at a real file
         // has made a different mistake, and the two remedies differ.
         startAt SimulatedUnixPlatform.linuxX64 seed "/outer/file"
-        |> shouldEqual (Error CurrentDirectoryFault.NotADirectory)
+        |> Result.map ignore
+        |> shouldEqual (Error (StartFault.Directory CurrentDirectoryFault.NotADirectory))
 
     [<Test>]
     let ``a component past NAME_MAX is refused with the seed, on the flavour that says so`` () : unit =
@@ -347,7 +354,10 @@ module TestWithFileSystemAndCurrentDirectory =
         let path = "/" + wide
 
         startAt SimulatedUnixPlatform.linuxX64 entries path
-        |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
+        |> Result.map ignore
+        |> shouldEqual (
+            Error (StartFault.Seed (FileSystemSeedFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
+        )
 
         match startAt SimulatedUnixPlatform.macOsArm64 entries path with
         | Ok system ->
@@ -364,19 +374,16 @@ module TestWithFileSystemAndCurrentDirectory =
         let entries = Map.ofList [ name wide, SeedEntry.directory FileSystemSeed.empty ]
         let path = "/" + wide
 
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute path)
-        |> Result.map UnixBootImage.boot
-        |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
+        startAt SimulatedUnixPlatform.linuxX64 entries path
+        |> Result.map ignore
+        |> shouldEqual (
+            Error (StartFault.Seed (FileSystemSeedFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
+        )
 
         // And the accepting direction, which a guard that simply refused
         // every wide name would pass the row above without.
-        match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault entries (absolute path)
-            |> Result.map UnixBootImage.boot
-        with
-        | Error fault -> failwith $"Darwin's NAME_MAX admits this name, but it answered %O{fault}."
+        match startAt SimulatedUnixPlatform.macOsArm64 entries path with
+        | Error fault -> failwith $"Darwin's NAME_MAX admits this name, but it answered %A{fault}."
         | Ok system ->
 
         UnixPathResolution.currentDirectoryPath system
@@ -426,19 +433,32 @@ module TestWithFileSystemAndCurrentDirectory =
             |> List.choose (fun result ->
                 match result with
                 | Ok _ -> None
-                | Error fault ->
+                | Error (StartFault.Seed fault) ->
                     Some (
-                        Reflection.FSharpValue.GetUnionFields (fault, typeof<CurrentDirectoryFault>)
-                        |> fst
+                        "Seed."
+                        + (Reflection.FSharpValue.GetUnionFields (fault, typeof<FileSystemSeedFault>)
+                           |> fst)
+                            .Name
+                    )
+                | Error (StartFault.Directory fault) ->
+                    Some (
+                        "Directory."
+                        + (Reflection.FSharpValue.GetUnionFields (fault, typeof<CurrentDirectoryFault>)
+                           |> fst)
+                            .Name
                     )
             )
-            |> List.map (fun case -> case.Name)
             |> Set.ofList
 
-        let declared =
-            Reflection.FSharpType.GetUnionCases typeof<CurrentDirectoryFault>
-            |> Array.map (fun case -> case.Name)
+        let declared (prefix : string) (union : System.Type) =
+            Reflection.FSharpType.GetUnionCases union
+            |> Array.map (fun case -> prefix + case.Name)
             |> Set.ofArray
+
+        let declared =
+            Set.union
+                (declared "Seed." typeof<FileSystemSeedFault>)
+                (declared "Directory." typeof<CurrentDirectoryFault>)
 
         Set.difference declared reached |> shouldEqual Set.empty
 
@@ -459,26 +479,25 @@ module TestWithFileSystemAndCurrentDirectory =
             Map.ofList [ name "l", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test" deep, None) ]
 
         startAt SimulatedUnixPlatform.macOsArm64 entries "/l"
-        |> shouldEqual (Error (CurrentDirectoryFault.TooLong SimulatedUnixFlavour.Darwin))
+        |> Result.map ignore
+        |> shouldEqual (Error (StartFault.Directory (CurrentDirectoryFault.TooLong SimulatedUnixFlavour.Darwin)))
 
         // Linux does not re-check a splice at all, so the same seed gets all the
         // way to the target and finds nothing there. This is what says the row
         // above measures the re-check rather than the length of anything.
         startAt SimulatedUnixPlatform.linuxX64 entries "/l"
-        |> shouldEqual (Error (CurrentDirectoryFault.DoesNotResolve UnixError.ENOENT))
+        |> Result.map ignore
+        |> shouldEqual (Error (StartFault.Directory (CurrentDirectoryFault.DoesNotResolve UnixError.ENOENT)))
 
     [<Test>]
-    let ``an image holding its standard streams can have its filesystem replaced`` () : unit =
-        // An image's only descriptors are its launch table's pipes, which are
-        // not on the filesystem, so a second seeding leaves nothing naming the
-        // graph it replaces.
-        match
-            seededAt "/"
-            |> UnixBootImage.withFileSystemAndCurrentDirectory
-                createdAt
-                Owners.linuxDefault
-                (Map.ofList [ name "other", SeedEntry.directory FileSystemSeed.empty ])
-                (absolute "/")
-        with
-        | Ok replaced -> UnixBootImage.boot replaced |> UnixSystem.checkInvariants |> shouldBeEmpty
-        | Error fault -> failwith $"the replacement seed did not boot: %O{fault}."
+    let ``an image can have its filesystem replaced`` () : unit =
+        // An image has no process yet, so nothing names the graph a second
+        // seeding replaces.
+        seeded
+        |> Launched.fileSystem
+            createdAt
+            Owners.linuxDefault
+            (Map.ofList [ name "other", SeedEntry.directory FileSystemSeed.empty ])
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> UnixSystem.checkInvariants
+        |> shouldBeEmpty

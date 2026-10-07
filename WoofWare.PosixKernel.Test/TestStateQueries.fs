@@ -25,11 +25,10 @@ module TestStateQueries =
             SimulatedUnixPlatform.macOsArm64
         ]
 
-    let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+    let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> = UnixSystem.initial platform
 
     let private initialOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        imageOn platform |> UnixBootImage.boot
+        imageOn platform |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
 
     [<Test>]
     let ``platform is the one the machine was started on`` () : unit =
@@ -45,7 +44,7 @@ module TestStateQueries =
         let property (platform : SimulatedUnixPlatform, count : int) : unit =
             imageOn platform
             |> UnixBootImage.withProcessorCount count
-            |> UnixBootImage.boot
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> fun system -> UnixMachineState.processorCount system.Machine
             |> shouldEqual count
 
@@ -148,8 +147,11 @@ module TestStateQueries =
 
         let property (entries : UnixByteString list) : unit =
             imageOn SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withEnvironment context entries
-            |> UnixBootImage.boot
+            |> (Launched.bootWith
+                    (ProcessLaunch.withEnvironment context entries)
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0))
             |> fun system -> UnixProcessState.environment system.Process
             |> shouldEqual entries
 
@@ -162,8 +164,11 @@ module TestStateQueries =
 
         for path in [ None ; Some (AbsoluteUnixPath.parseOrFail context "/bin/app") ] do
             imageOn SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withProcessPath context path
-            |> UnixBootImage.boot
+            |> (Launched.bootWith
+                    (ProcessLaunch.withProcessPath context path)
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0))
             |> fun system -> UnixProcessState.processPath system.Process
             |> shouldEqual path
 
@@ -211,9 +216,12 @@ module TestStateQueries =
             let system =
                 imageOn platform
                 |> UnixBootImage.withProcessorCount 3
-                |> UnixBootImage.withEnvironment context [ entry ]
-                |> UnixBootImage.withProcessPath context (Some path)
-                |> UnixBootImage.boot
+                |> (Launched.bootWith
+                        (ProcessLaunch.withEnvironment context [ entry ]
+                         >> ProcessLaunch.withProcessPath context (Some path))
+                        UnixSystem.pipedStandardStreams
+                        0
+                        (CpuId 0))
                 |> UnixSystem.advanceClock 1_234L
 
             UnixSystem.leader system |> shouldEqual system.Leader

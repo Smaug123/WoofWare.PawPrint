@@ -33,8 +33,8 @@ module TestNativeLibc =
         (inheritedIgnores : Set<Signal>)
         : UnixSystem<int, NativeSignalHandler>
         =
-        UnixSystem.initial (platformOf numbering) UnixSystem.pipedStandardStreams leader (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial (platformOf numbering)
+        |> Launched.boot UnixSystem.pipedStandardStreams leader (CpuId 0)
         |> StartupSignalDispositions.install "test" numbering inheritedIgnores
 
     let private initial (numbering : SignalNumbering) : UnixSystem<int, NativeSignalHandler> =

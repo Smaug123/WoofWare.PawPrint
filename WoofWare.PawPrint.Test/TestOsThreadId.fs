@@ -225,13 +225,15 @@ module TestOsThreadId =
 
                 let! length = Gen.choose (0, 40)
 
-                let! pid =
-                    Gen.oneof
-                        [
-                            Gen.choose (1, 100)
-                            Gen.choose (1, UnixSystem.defaultPidMax - 1 - length)
-                            Gen.constant (UnixSystem.defaultPidMax - 1 - length)
-                        ]
+                // A process ID the platform's kernel could hand out: below
+                // pid_max on Linux, with room for the threads above it, and
+                // below PID_MAX on Darwin.
+                let highest =
+                    match SimulatedUnixPlatform.flavour platform with
+                    | SimulatedUnixFlavour.Linux -> UnixSystem.defaultPidMax - 1 - length
+                    | SimulatedUnixFlavour.Darwin -> ProcessIdTable.darwinPidMax - 1
+
+                let! pid = Gen.oneof [ Gen.choose (1, 100) ; Gen.choose (1, highest) ; Gen.constant highest ]
 
                 let! ops =
                     Gen.frequency

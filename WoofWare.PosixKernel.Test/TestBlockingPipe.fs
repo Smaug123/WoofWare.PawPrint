@@ -681,8 +681,8 @@ module TestBlockingPipe =
             let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
 
             let bare =
-                (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                 |> UnixBootImage.boot,
+                (UnixSystem.initial platform
+                 |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)),
                  [ 0 ; 1 ; 2 ])
                 ||> List.fold (fun system fd ->
                     match UnixDescriptor.close fd system with
@@ -1282,8 +1282,8 @@ module TestBlockingPipe =
         : UnixSystem<int, string>
         =
         let system =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> Tasks.spawn sleeper
 
         let system =

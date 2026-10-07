@@ -339,20 +339,14 @@ module TestFcntlReference =
                     SeedEntry.File (ImmutableArray<byte>.Empty, PermissionBits.parseOrFail context 0o666, None)
                 ]
 
-        let image =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context Owners.root
+        let image = UnixSystem.initial platform
 
         match
-            UnixBootImage.withFileSystemAndCurrentDirectory
-                (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
-                Owners.linuxDefault
-                seed
-                AbsoluteUnixPath.root
-                image
+            UnixBootImage.withFileSystem (UnixTimestamp.ofMillisecondsSinceEpoch 0L) Owners.linuxDefault seed image
         with
         | Ok image ->
-            let system = UnixBootImage.boot image
+            let system =
+                (Launched.bootWith (Launched.credentials Owners.root) UnixSystem.pipedStandardStreams 0 (CpuId 0)) image
 
             // SIGPIPE ignored, so that a write with no reader answers EPIPE.
             { system with

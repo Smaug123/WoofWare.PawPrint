@@ -46,12 +46,13 @@ module TestClockAgainstHost =
         [ -4096 .. 4096 ] @ [ System.Int32.MinValue ; System.Int32.MaxValue ]
 
     let private imageOn (flavour : SimulatedUnixFlavour) : UnixBootImage<int, string> =
-        UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
 
     [<Test>]
     let ``an id is EINVAL here exactly when the host says so, unless it is refused`` () : unit =
         HostPlatform.onUnixHost (fun flavour ->
-            let system = UnixBootImage.boot (imageOn flavour)
+            let system =
+                (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)) (imageOn flavour)
 
             let disagreements =
                 sweptIds
@@ -93,7 +94,7 @@ module TestClockAgainstHost =
             let system =
                 imageOn flavour
                 |> UnixBootImage.withBootTime (UnixTimestamp.ofSeconds 1_000_000L)
-                |> UnixBootImage.boot
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> UnixSystem.advanceClock 1_000_000_123L
 
             // Linux's CLOCK_REALTIME_COARSE carries sub-microsecond digits only

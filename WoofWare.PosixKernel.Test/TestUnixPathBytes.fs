@@ -21,14 +21,16 @@ module TestUnixPathBytes =
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     let private linuxImage : UnixBootImage<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
 
     let private darwinImage : UnixBootImage<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.macOsArm64
 
-    let private linux : UnixSystem<int, string> = UnixBootImage.boot linuxImage
+    let private linux : UnixSystem<int, string> =
+        Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) linuxImage
 
-    let private darwin : UnixSystem<int, string> = UnixBootImage.boot darwinImage
+    let private darwin : UnixSystem<int, string> =
+        Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) darwinImage
 
     let private byteString (bytes : byte seq) : UnixByteString =
         match UnixByteString.ofBytes (ImmutableArray.CreateRange bytes) with
@@ -180,14 +182,14 @@ module TestUnixPathBytes =
     /// to exist.
     let private seeded (seed : (DirectoryEntryName * SeedEntry) list) (image : UnixBootImage<int, string>) =
         match
-            UnixBootImage.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystem
                 epoch
-                (InodeOwner.ofProcess (UnixBootImage.boot image).Process.Credentials)
+                (InodeOwner.ofProcess
+                    (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Process.Credentials)
                 (Map.ofList seed)
-                AbsoluteUnixPath.root
                 image
         with
-        | Ok image -> UnixBootImage.boot image
+        | Ok image -> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image
         | Error fault -> failwith $"seeding failed: %A{fault}"
 
     let private text : string -> byte list = BindingProbes.text

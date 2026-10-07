@@ -139,17 +139,19 @@ module TestCloneFile =
     let private later : int64 = 5_000_000_000L
 
     let private systemOnWith
-        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
+        (configure : ProcessLaunch<int> -> ProcessLaunch<int>)
         (platform : SimulatedUnixPlatform)
         (credentials : Credentials)
         (vfs : VirtualFileSystem)
         : UnixSystem<int, string>
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context credentials
-            |> configure
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.bootWith
+                (Launched.credentials credentials >> configure)
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0)
 
         { system with
             Machine =
@@ -161,6 +163,7 @@ module TestCloneFile =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
+        |> Launched.restand
 
     let private systemOn
         (platform : SimulatedUnixPlatform)
@@ -375,7 +378,7 @@ module TestCloneFile =
                     vfs
 
             let system =
-                systemOnWith (UnixBootImage.withUmask context (mode 0o777)) SimulatedUnixPlatform.macOsArm64 u501 vfs
+                systemOnWith (Launched.umask (mode 0o777)) SimulatedUnixPlatform.macOsArm64 u501 vfs
 
             let now = UnixMachineState.realtime system.Machine
 
@@ -432,7 +435,14 @@ module TestCloneFile =
         |> shouldEqual (Error (CloneFileRefusal.UnmodelledFlavour SimulatedUnixFlavour.Linux))
 
         let nfs =
-            systemOnWith (UnixBootImage.withMount (Some EmulatedMount.Nfs)) SimulatedUnixPlatform.macOsArm64 u501 tree
+            systemOnWith id SimulatedUnixPlatform.macOsArm64 u501 tree
+            |> fun system ->
+                { system with
+                    Machine =
+                        { system.Machine with
+                            Mount = EmulatedMount.Nfs
+                        }
+                }
 
         clone "f" "new" 0x4 nfs
         |> Result.map fst
@@ -471,6 +481,7 @@ module TestCloneFile =
                         CurrentDirectoryInode = inodeAt vfs "/orph"
                     }
             }
+            |> Launched.restand
 
         let system =
             match UnixNamespace.rmdir (PathArg.ofPath (UnixPath.parseOrFail context "/orph")) system with

@@ -29,7 +29,7 @@ module TestEffectiveProcessorCount =
             |> List.map (fun (name, value) -> EnvironmentPal.nameValueEntry name value)
 
         EmulatedKernel.initialImage
-        |> UnixBootImage.withProcessorCount detected
+        |> KernelImage.mapMachine (UnixBootImage.withProcessorCount detected)
         |> EmulatedKernel.withEnvironment "test" entries
         |> EmulatedKernel.boot
 

@@ -466,7 +466,7 @@ module TestKernelConfig =
                 SupplementaryGroups = List.init 17 (fun i -> uint32 (100 + i))
             }
         |> fun message ->
-            message.StartsWith ("KernelConfig: ", System.StringComparison.Ordinal)
+            message.StartsWith ("KernelConfig.SupplementaryGroups: ", System.StringComparison.Ordinal)
             |> shouldEqual true
 
     [<Test>]

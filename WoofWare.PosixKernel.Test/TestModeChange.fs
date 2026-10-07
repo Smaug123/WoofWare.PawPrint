@@ -266,9 +266,8 @@ module TestModeChange =
         : UnixSystem<int, string>
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context credentials
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Machine =
@@ -280,6 +279,7 @@ module TestModeChange =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
+        |> Launched.restand
 
     let private inodeOf (p : string) (system : UnixSystem<int, string>) : Inode =
         match VirtualFileSystem.tryGet (inodeAt system.Machine.FileSystem p) system.Machine.FileSystem with
@@ -598,8 +598,8 @@ module TestModeChange =
     let ``fchmod of a descriptor that is not open is EBADF`` () : unit =
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             let system =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial<int, string> platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             for fd in [ 1000 ; -1 ; 3 ] do
                 fchmodAnswer fd 0o644 system
@@ -608,12 +608,12 @@ module TestModeChange =
     [<Test>]
     let ``fchmod of a descriptor with no inode answers as each flavour measured`` () : unit =
         let linux =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let darwin =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         // The flavour's own event queue: an epoll instance, or a kqueue.
         let eventQueue (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
@@ -702,9 +702,12 @@ module TestModeChange =
         let changesIds = creator <> caller
 
         let system =
-            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context (if changesIds then Owners.root else creator)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> platform
+            |> (Launched.bootWith
+                    (Launched.credentials (if changesIds then Owners.root else creator))
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0))
 
         let system =
             if changesIds then

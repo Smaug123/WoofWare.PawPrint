@@ -25,12 +25,13 @@ module TestBind =
         (platform : SimulatedUnixPlatform)
         : UnixSystem<int, string>
         =
-        let image = UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let configure =
+            match credentials with
+            | None -> id
+            | Some credentials -> Launched.credentials credentials
 
-        match credentials with
-        | None -> image
-        | Some credentials -> UnixBootImage.withCredentials context credentials image
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.bootWith configure UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it.

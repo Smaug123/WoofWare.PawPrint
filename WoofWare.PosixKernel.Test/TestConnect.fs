@@ -33,10 +33,10 @@ module TestConnect =
         (platform : SimulatedUnixPlatform)
         : UnixSystem<int, string>
         =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial platform
         |> UnixBootImage.withLocalAddresses UnixSystem.defaultLocalAddresses []
         |> configure
-        |> UnixBootImage.boot
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// A simulated process on the flavour asked for, before anything has
     /// happened to it, on a machine with no local routes.

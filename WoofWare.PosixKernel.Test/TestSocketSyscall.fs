@@ -20,8 +20,8 @@ open WoofWare.PosixKernel
 module TestSocketSyscall =
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private numbering (platform : SimulatedUnixPlatform) : RawErrnoNumbering =
         match SimulatedUnixPlatform.flavour platform with

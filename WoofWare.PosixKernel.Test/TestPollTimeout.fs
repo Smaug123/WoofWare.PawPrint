@@ -46,8 +46,8 @@ module TestPollTimeout =
     /// empty accept queue, and the descriptor onto it.
     let private world : int * UnixSystem<int, string> =
         let system =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let system = Tasks.spawn task system
 

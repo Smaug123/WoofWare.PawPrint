@@ -39,11 +39,10 @@ module TestPipe =
             SimulatedUnixPlatform.macOsArm64
         ]
 
-    let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+    let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> = UnixSystem.initial platform
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        imageOn platform |> UnixBootImage.boot
+        imageOn platform |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
 
     let private flavourOf (system : UnixSystem<int, string>) : SimulatedUnixFlavour =
         SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
@@ -820,10 +819,13 @@ module TestPipe =
     let ``fstat of a Linux pipe: 0600 FIFO, one inode for both ends, the pipe device, and nothing moves`` () : unit =
         let system =
             imageOn SimulatedUnixPlatform.linuxX64
-            |> UnixBootImage.withCredentials
-                "test"
-                (Credentials.ofIds (UserId.parseOrFail "test" 1234u) (GroupId.parseOrFail "test" 99u) [])
-            |> UnixBootImage.boot
+            |> (Launched.bootWith
+                    (Launched.credentials (
+                        Credentials.ofIds (UserId.parseOrFail "test" 1234u) (GroupId.parseOrFail "test" 99u) []
+                    ))
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0))
 
         let (r, w), system = pipeOrFail 0 system
         let (r2, w2), system = pipeOrFail 0 system
@@ -1529,7 +1531,7 @@ module TestPipe =
         let pipeDeviceBootedWith (device : int64 option) : int64 =
             (imageOn SimulatedUnixPlatform.linuxX64
              |> UnixBootImage.withPipeDevice device
-             |> UnixBootImage.boot)
+             |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
                 .Machine.PipeDevice
 
         pipeDeviceBootedWith (Some 42L) |> shouldEqual 42L

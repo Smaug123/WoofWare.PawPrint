@@ -144,7 +144,7 @@ module TestUserBufferCheck =
 
     let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
         EmulatedKernel.image platform StandardStreamsConfig.piped
-        |> UnixBootImage.withUserAddressLimit limit
+        |> KernelImage.mapMachine (UnixBootImage.withUserAddressLimit limit)
         |> EmulatedKernel.boot
 
     /// macOS performs no up-front check at all: measured, every address at

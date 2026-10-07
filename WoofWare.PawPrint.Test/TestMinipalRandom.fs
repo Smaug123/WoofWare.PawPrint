@@ -30,8 +30,10 @@ module TestMinipalRandom =
 
     /// A process booted from `image`, whose entropy pool is seeded with
     /// `seed`.
-    let private bootedWithPool (image : UnixBootImage<ThreadId, NativeSignalHandler>) (seed : uint64) : EmulatedKernel =
-        image |> UnixBootImage.withEntropySeed seed |> EmulatedKernel.boot
+    let private bootedWithPool (image : KernelImage) (seed : uint64) : EmulatedKernel =
+        image
+        |> KernelImage.mapMachine (UnixBootImage.withEntropySeed seed)
+        |> EmulatedKernel.boot
 
     /// A fresh kernel on `platform` whose pool starts at `seed`.
     let private linuxAt (platform : SimulatedUnixPlatform) (seed : uint64) : EmulatedKernel =
@@ -337,8 +339,8 @@ module TestMinipalRandom =
                 UnixEntropy.getEntropy
                     UserBuffer.Mapped
                     32UL
-                    (UnixSystem.initial platform UnixSystem.pipedStandardStreams (ThreadId 0) (CpuId 0)
-                     |> UnixBootImage.boot)
+                    (UnixSystem.initial platform
+                     |> (Launched.boot UnixSystem.pipedStandardStreams (ThreadId 0) (CpuId 0)))
             with
             | Ok (GetEntropyAnswer.Completed draw, system) -> EntropyDraw.bytes draw, system
             | other -> failwith $"%A{other}"

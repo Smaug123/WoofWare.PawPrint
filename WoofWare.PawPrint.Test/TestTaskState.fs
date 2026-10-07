@@ -43,7 +43,7 @@ module TestTaskState =
         (bare ())
             .MapKernel (fun _ ->
                 EmulatedKernel.initialImage
-                |> UnixBootImage.withProcessorCount 4
+                |> KernelImage.mapMachine (UnixBootImage.withProcessorCount 4)
                 |> EmulatedKernel.boot
             )
 

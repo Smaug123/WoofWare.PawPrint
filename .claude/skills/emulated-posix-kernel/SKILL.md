@@ -55,13 +55,19 @@ Two traps when adding a `KernelConfig` field:
   `UnixSystem.initial` and `EmulatedKernel.image` take it, and nothing
   changes it afterwards, so a setter that reads `machine.UnixPlatform` for a
   flavour-derived default (`withSoMaxConn`, `withMount`, the limits
-  `withFileSystemAndCurrentDirectory` admits a directory under) is not
+  `withFileSystem` admits a seed's names under) is not
   order-dependent: there is no platform setter to run after it. A field whose
   default depends on the flavour is an `option` in `KernelConfig`, resolved by
-  such a setter in `toKernel`. Fuse two knobs into one setter when neither
-  answer is well-formed without the other — a current directory is an inode
-  of *this* filesystem, and a new filesystem invalidates every inode number
-  the previous one handed out.
+  such a setter in `toKernel`. When one knob's answer is not well-formed
+  without another's, resolve it where both are final: a current directory is
+  an inode of *this* filesystem, and a new filesystem invalidates every inode
+  number the previous one handed out, so `ProcessLaunch` holds the directory as
+  a path and the launch resolves it against the machine it starts on.
+- **How a process starts is a `ProcessLaunch`, not a boot-image setter.** The
+  first process (`UnixBootImage.boot`) and every later one
+  (`SimulatedMachine.launch`) start from one, so a per-process knob goes on
+  `ProcessLaunch` and a machine knob on `UnixBootImage`. The kernel chooses a
+  later process's ID; only the first one's is configuration.
 
 ## 2. Per-thread state: field or map?
 

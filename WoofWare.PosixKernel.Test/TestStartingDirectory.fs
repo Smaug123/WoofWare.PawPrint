@@ -112,19 +112,17 @@ module TestStartingDirectory =
             ]
 
     let private boot (envelope : Envelope) : UnixSystem<int, string> =
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial envelope.Platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context envelope.Credentials
+        let image : UnixBootImage<int, string> = UnixSystem.initial envelope.Platform
 
-        match
-            UnixBootImage.withFileSystemAndCurrentDirectory
-                epoch
-                (InodeOwner.ofProcess envelope.Credentials)
-                seed
-                (AbsoluteUnixPath.parseOrFail context "/c/w")
+        match UnixBootImage.withFileSystem epoch (InodeOwner.ofProcess envelope.Credentials) seed image with
+        | Ok image ->
+            (Launched.bootWith
+                (Launched.credentials envelope.Credentials
+                 >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/c/w"))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0))
                 image
-        with
-        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"%s{context}: could not build the probe's cell: %A{fault}"
 
     let private readOnly : OpenFlags =
@@ -1123,20 +1121,18 @@ module TestStartingDirectory =
         (cwd : string)
         : UnixSystem<int, string>
         =
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context credentials
+        let image : UnixBootImage<int, string> = UnixSystem.initial platform
 
         let system =
-            match
-                UnixBootImage.withFileSystemAndCurrentDirectory
-                    epoch
-                    (InodeOwner.ofProcess credentials)
-                    walkSeed
-                    (AbsoluteUnixPath.parseOrFail context "/")
+            match UnixBootImage.withFileSystem epoch (InodeOwner.ofProcess credentials) walkSeed image with
+            | Ok image ->
+                (Launched.bootWith
+                    (Launched.credentials credentials
+                     >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/"))
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0))
                     image
-            with
-            | Ok image -> UnixBootImage.boot image
             | Error fault -> failwith $"%s{context}: could not build the walk tree: %A{fault}"
 
         let inode =
@@ -1159,6 +1155,7 @@ module TestStartingDirectory =
                     CurrentDirectoryInode = inode
                 }
         }
+        |> Launched.restand
 
     let private walkPaths : Gen<UnixPath> =
         let pathComponent =
@@ -1271,6 +1268,7 @@ module TestStartingDirectory =
                             CurrentDirectoryInode = VirtualFileSystem.root held.Machine.FileSystem
                         }
                 }
+                |> Launched.restand
 
             let inCwd = walkSystem platform credentials cwd
 
@@ -1329,6 +1327,7 @@ module TestStartingDirectory =
                             CurrentDirectoryInode = VirtualFileSystem.root held.Machine.FileSystem
                         }
                 }
+                |> Launched.restand
 
             // The tree was built by root, so its unowned entries are root's:
             // compare with stat from the same tree, by the same caller.
@@ -1386,6 +1385,7 @@ module TestStartingDirectory =
                             CurrentDirectoryInode = VirtualFileSystem.root held.Machine.FileSystem
                         }
                 }
+                |> Launched.restand
 
             let heldInCwd =
                 { held with
@@ -1464,6 +1464,7 @@ module TestStartingDirectory =
                             CurrentDirectoryInode = cwdInode
                         }
                 }
+                |> Launched.restand
 
             let atRoot = withCaller (VirtualFileSystem.root held.Machine.FileSystem)
             let heldInCwd = withCaller held.Process.CurrentDirectoryInode

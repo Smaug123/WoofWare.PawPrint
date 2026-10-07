@@ -39,65 +39,97 @@ module TestBootImage =
     let private describe (m : MethodInfo) : string =
         $"%s{m.DeclaringType.FullName}.%s{m.Name}"
 
+    let private launchType : Type = typedefof<ProcessLaunch<int>>
+
+    /// `withX`, the setter naming convention: `withoutTaking` is not one.
+    let private setters : MethodInfo list =
+        publicFunctions
+        |> List.filter (fun m ->
+            m.Name.StartsWith ("with", StringComparison.Ordinal)
+            && m.Name.Length > 4
+            && Char.IsUpper m.Name.[4]
+        )
+
+    /// That `setter` takes a `configured` last and returns one, or a `Result`
+    /// of one.
+    let private configures (configured : Type) (setter : MethodInfo) : unit =
+        let parameters = setter.GetParameters ()
+        let last = parameters.[parameters.Length - 1].ParameterType
+
+        if not (isGenericOf configured last) then
+            failwith $"%s{describe setter} takes a %s{last.Name} last, not a %s{configured.Name}."
+
+        let returned = setter.ReturnType
+
+        let returnsConfigured =
+            isGenericOf configured returned
+            || (isGenericOf typedefof<Result<int, int>> returned
+                && isGenericOf configured (returned.GetGenericArguments ()).[0])
+
+        if not returnsConfigured then
+            failwith $"%s{describe setter} returns a %s{returned.Name}, not a %s{configured.Name}."
+
     [<Test>]
-    let ``every public setter takes and returns a boot image`` () : unit =
-        let setters =
-            publicFunctions
-            // `withX`, the setter naming convention: `withoutTaking` is not one.
-            |> List.filter (fun m ->
-                m.Name.StartsWith ("with", StringComparison.Ordinal)
-                && m.Name.Length > 4
-                && Char.IsUpper m.Name.[4]
-            )
+    let ``every public setter configures a boot image or a process launch`` () : unit =
+        let declaredIn (moduleName : string) : MethodInfo list =
+            setters
+            |> List.filter (fun m -> m.DeclaringType.FullName = $"WoofWare.PosixKernel.%s{moduleName}")
 
         // The ones there are, so that this cannot pass by finding none.
-        setters
-        |> List.map (fun m -> m.Name)
-        |> List.distinct
-        |> List.sort
-        |> String.concat " "
+        let names (methods : MethodInfo list) : string =
+            methods
+            |> List.map (fun m -> m.Name)
+            |> List.distinct
+            |> List.sort
+            |> String.concat " "
+
+        (declaredIn "UnixBootImage" @ declaredIn "ProcessLaunch")
+        |> List.length
+        |> shouldEqual setters.Length
+
+        declaredIn "UnixBootImage"
+        |> names
         |> shouldEqual (
             String.concat " "
             <| List.sort
                 [
                     "withBootTime"
-                    "withCoreDumps"
-                    "withCredentials"
                     "withEntropySeed"
-                    "withEnvironment"
                     "withEphemeralPortRange"
-                    "withFileSystemAndCurrentDirectory"
+                    "withFileSystem"
                     "withLeaderThreadId"
                     "withLocalAddresses"
                     "withMount"
                     "withPipeDevice"
                     "withProcessId"
-                    "withProcessPath"
                     "withProcessorCount"
                     "withProtectedFiles"
                     "withSoMaxConn"
                     "withTcpSendSpace"
-                    "withUmask"
                     "withUserAddressLimit"
                 ]
         )
 
-        for setter in setters do
-            let parameters = setter.GetParameters ()
-            let last = parameters.[parameters.Length - 1].ParameterType
+        declaredIn "ProcessLaunch"
+        |> names
+        |> shouldEqual (
+            String.concat " "
+            <| List.sort
+                [
+                    "withCoreDumps"
+                    "withCredentials"
+                    "withCurrentDirectory"
+                    "withEnvironment"
+                    "withProcessPath"
+                    "withUmask"
+                ]
+        )
 
-            if not (isGenericOf imageType last) then
-                failwith $"%s{describe setter} takes a %s{last.Name} last, not a boot image."
+        for setter in declaredIn "UnixBootImage" do
+            configures imageType setter
 
-            let returned = setter.ReturnType
-
-            let returnsImage =
-                isGenericOf imageType returned
-                || (isGenericOf typedefof<Result<int, int>> returned
-                    && isGenericOf imageType (returned.GetGenericArguments ()).[0])
-
-            if not returnsImage then
-                failwith $"%s{describe setter} returns a %s{returned.Name}, not a boot image."
+        for setter in declaredIn "ProcessLaunch" do
+            configures launchType setter
 
     [<Test>]
     let ``only boot makes a system from an image, and nothing makes an image from a system`` () : unit =
@@ -105,8 +137,13 @@ module TestBootImage =
             m.GetParameters ()
             |> Array.exists (fun p -> isGenericOf definition p.ParameterType)
 
+        let makesSystem (m : MethodInfo) : bool =
+            isGenericOf systemType m.ReturnType
+            || (isGenericOf typedefof<Result<int, int>> m.ReturnType
+                && isGenericOf systemType (m.ReturnType.GetGenericArguments ()).[0])
+
         publicFunctions
-        |> List.filter (fun m -> takes imageType m && isGenericOf systemType m.ReturnType)
+        |> List.filter (fun m -> takes imageType m && makesSystem m)
         |> List.map describe
         |> shouldEqual [ "WoofWare.PosixKernel.UnixBootImage.boot" ]
 
@@ -114,6 +151,30 @@ module TestBootImage =
         |> List.filter (fun m -> takes systemType m && isGenericOf imageType m.ReturnType)
         |> List.map describe
         |> shouldEqual []
+
+    [<Test>]
+    let ``a process starts only from a launch, by boot or by SimulatedMachine.launch`` () : unit =
+        let takes (definition : Type) (m : MethodInfo) : bool =
+            m.GetParameters ()
+            |> Array.exists (fun p -> isGenericOf definition p.ParameterType)
+
+        publicFunctions
+        |> List.filter (fun m -> takes launchType m && not (isGenericOf launchType m.ReturnType))
+        |> List.filter (fun m ->
+            not (
+                isGenericOf typedefof<Result<int, int>> m.ReturnType
+                && isGenericOf launchType (m.ReturnType.GetGenericArguments ()).[0]
+            )
+        )
+        |> List.map describe
+        |> List.sort
+        |> shouldEqual
+            [
+                "WoofWare.PosixKernel.ProcessLaunch.leader"
+                "WoofWare.PosixKernel.ProcessLaunch.platform"
+                "WoofWare.PosixKernel.SimulatedMachine.launch"
+                "WoofWare.PosixKernel.UnixBootImage.boot"
+            ]
 
     [<Test>]
     let ``a boot image is opaque`` () : unit =
@@ -135,6 +196,9 @@ module TestBootImage =
         let records : Type list =
             [
                 typeof<UnixSystem<int, string>>
+                typeof<SimulatedMachine<int, string>>
+                typeof<ProcessSlot<int, string>>
+                typeof<ProcessLaunch<int>>
                 typeof<UnixMachineState>
                 typeof<UnixProcessState<int, string>>
                 typeof<UnixTaskState>

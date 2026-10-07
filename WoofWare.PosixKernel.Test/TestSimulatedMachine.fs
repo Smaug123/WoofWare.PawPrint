@@ -18,8 +18,8 @@ module TestSimulatedMachine =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
     let private world (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial<int, string> platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private sorted (defects : 'a list) : 'a list = List.sortBy (sprintf "%A") defects
 
@@ -218,9 +218,9 @@ module TestSimulatedMachine =
             let machine = SimulatedMachine.ofSystem (world platform)
 
             let stranger =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" 77)
-                |> UnixBootImage.boot
+                UnixSystem.initial<int, string> platform
+                |> Launched.processId (ProcessId.parseOrFail "test" 77)
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let error =
                 Assert.Throws<exn> (fun () -> SimulatedMachine.unfocus stranger machine |> ignore)
@@ -228,20 +228,17 @@ module TestSimulatedMachine =
             error.Message |> shouldContainText "no process on the machine has ID 77"
 
     [<Test>]
-    let ``ofSystem refuses a view of a machine whose other processes hold live thread IDs`` () : unit =
+    let ``ofSystem refuses a view of a machine holding other processes`` () : unit =
         for platform in platforms do
             let system = world platform
 
             let crowded =
-                match ThreadIdAllocator.allocate system.Machine.ThreadIds with
-                | Ok (_, threadIds) ->
-                    { system with
-                        Machine =
-                            { system.Machine with
-                                ThreadIds = threadIds
-                            }
-                    }
-                | Error error -> failwith $"allocate: %O{error}"
+                { system with
+                    Machine =
+                        { system.Machine with
+                            ProcessIds = ProcessIdTable.add (ProcessId.parseOrFail "test" 77) system.Machine.ProcessIds
+                        }
+                }
 
             let error =
                 Assert.Throws<exn> (fun () -> SimulatedMachine.ofSystem crowded |> ignore)
@@ -281,6 +278,9 @@ module TestSimulatedMachine =
                 sorted (
                     [
                         SimulatedMachineDefect.Machine (UnixSystemDefect.DuplicateOsThreadId (leaderTid, [ 0 ; 0 ]))
+                        SimulatedMachineDefect.Machine (
+                            UnixSystemDefect.CurrentDirectoryHoldMismatch (system.Process.CurrentDirectoryInode, 1, 2)
+                        )
                         SimulatedMachineDefect.SlotUnderAnotherProcessId (other, pid)
                         SimulatedMachineDefect.DuplicateProcessId pid
                     ]
@@ -349,6 +349,6 @@ module TestSimulatedMachine =
             sorted
                 [
                     SimulatedMachineDefect.View (pid, UnixSystemDefect.KqueueOfAnotherProcess (kqueue, id, gone))
-                    SimulatedMachineDefect.KqueueOwnerNotOnMachine (id, gone)
+                    SimulatedMachineDefect.Machine (UnixSystemDefect.KqueueOwnerNotLive (id, gone))
                 ]
         )

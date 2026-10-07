@@ -1728,16 +1728,22 @@ module UnixPathResolution =
         // no path reaches that inode.
         let moved =
             { system with
+                Machine =
+                    system.Machine
+                    |> UnixMachineState.holdCurrentDirectory target
+                    |> UnixMachineState.releaseCurrentDirectory previous
                 Process =
                     { system.Process with
                         CurrentDirectoryInode = target
                     }
             }
 
-        // The current directory is pinned — `UnixProcessState.heldInodes`
-        // includes it — so leaving one is a reference-dropping operation, and the
-        // directory a process `rmdir`d before stepping out of it becomes free
-        // exactly here. Without this it would be stranded for the run.
+        // The current directory is pinned — the machine counts the processes
+        // standing in it (`UnixMachineState.CurrentDirectories`) — so leaving
+        // one is a reference-dropping operation, and the directory a process
+        // `rmdir`d before stepping out of it becomes free exactly here, unless
+        // another process stands in it too. Without this it would be stranded
+        // for the run.
         Ok (SyscallAnswer.Completed 0L, ObjectLifetime.forgetIfUnheld previous moved)
 
     /// <summary>
@@ -1919,7 +1925,7 @@ module UnixPathResolution =
     /// Without <c>AT_EACCESS</c> the path is walked, and the inode judged, with the process's
     /// <i>real</i> user and group (see <c>Credentials.realIdsAsEffective</c>); with it, with
     /// the effective ones, as every other syscall is. On Darwin the two are always the
-    /// same, since <c>UnixBootImage.withCredentials</c> admits no Darwin process whose real
+    /// same, since <c>ProcessLaunch.withCredentials</c> admits no Darwin process whose real
     /// and effective IDs differ.
     ///
     /// Answers 0 or the errno, and changes nothing: measured on both, it moves no

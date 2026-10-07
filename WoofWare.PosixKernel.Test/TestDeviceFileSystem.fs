@@ -53,11 +53,11 @@ module TestDeviceFileSystem =
             Create = true
         }
 
-    /// A machine booted at `bootTime` from an image `configure` configured,
+    /// A machine booted at `bootTime` with its first process as `configure` configures it,
     /// whose root, owned by root as a real one is, holds a file `f` and a
     /// directory `d`.
     let private bootedAtWith
-        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
+        (configure : ProcessLaunch<int> -> ProcessLaunch<int>)
         (platform : SimulatedUnixPlatform)
         (bootTime : UnixTimestamp)
         : UnixSystem<int, string>
@@ -69,12 +69,10 @@ module TestDeviceFileSystem =
                     name "d", SeedEntry.Directory (Map.empty, PermissionBits.parseOrFail context 0o777, None)
                 ]
 
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> configure
+        let image : UnixBootImage<int, string> = UnixSystem.initial platform
 
-        match UnixBootImage.withFileSystemAndCurrentDirectory bootTime rootOwner seed AbsoluteUnixPath.root image with
-        | Ok image -> UnixBootImage.boot image
+        match UnixBootImage.withFileSystem bootTime rootOwner seed image with
+        | Ok image -> Launched.bootWith configure UnixSystem.pipedStandardStreams 0 (CpuId 0) image
         | Error fault -> failwith $"booting failed: %A{fault}"
 
     /// A machine booted at `bootTime` whose root, owned by root as a real one
@@ -89,7 +87,7 @@ module TestDeviceFileSystem =
     /// `booted`, with the process root rather than the default user.
     let private bootedAsRoot (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         bootedAtWith
-            (UnixBootImage.withCredentials context (Credentials.ofIds UserId.root (GroupId.parseOrFail context 0u) []))
+            (Launched.credentials (Credentials.ofIds UserId.root (GroupId.parseOrFail context 0u) []))
             platform
             (UnixTimestamp.ofSeconds 1_700_000_000L)
 
@@ -535,23 +533,22 @@ module TestDeviceFileSystem =
             UnixSystem.checkInvariants (booted platform) |> shouldEqual []
 
             UnixSystem.checkInvariants (
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial<int, string> platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             )
             |> shouldEqual []
 
     [<Test>]
     let ``a seed's empty dev is the directory the mount covers, and a populated one is refused`` () : unit =
-        let system : UnixBootImage<int, string> =
-            UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let system : UnixBootImage<int, string> = UnixSystem.initial linux
 
         let epoch = UnixTimestamp.ofSeconds 0L
 
         let emptyDev = Map.ofList [ name "dev", SeedEntry.directory Map.empty ]
 
-        match UnixBootImage.withFileSystemAndCurrentDirectory epoch rootOwner emptyDev AbsoluteUnixPath.root system with
+        match UnixBootImage.withFileSystem epoch rootOwner emptyDev system with
         | Ok image ->
-            let booted = UnixBootImage.boot image
+            let booted = Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image
             (reported "/dev/null" booted).Mode |> shouldEqual 0o020666
             UnixSystem.checkInvariants booted |> shouldEqual []
         | Error fault -> failwith $"an empty dev was refused: %A{fault}"
@@ -561,14 +558,9 @@ module TestDeviceFileSystem =
                 SeedEntry.directory (Map.ofList [ name "x", SeedEntry.file ImmutableArray.Empty ])
                 SeedEntry.file ImmutableArray.Empty
             ] do
-            UnixBootImage.withFileSystemAndCurrentDirectory
-                epoch
-                rootOwner
-                (Map.ofList [ name "dev", populated ])
-                AbsoluteUnixPath.root
-                system
+            UnixBootImage.withFileSystem epoch rootOwner (Map.ofList [ name "dev", populated ]) system
             |> Result.map ignore
-            |> shouldEqual (Error (CurrentDirectoryFault.SeedCoversDeviceFileSystem (name "dev")))
+            |> shouldEqual (Error (FileSystemSeedFault.SeedCoversDeviceFileSystem (name "dev")))
 
     [<Test>]
     let ``checkInvariants reports each forged mount defect`` () : unit =

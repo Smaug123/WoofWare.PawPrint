@@ -74,9 +74,9 @@ module SocketLadder =
     /// socket the call is made on, in `state`.
     let setUp (platform : SimulatedUnixPlatform) (kind : SocketKind) (state : State) : int * UnixSystem<int, string> =
         let system =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial platform
             |> UnixBootImage.withLocalAddresses UnixSystem.defaultLocalAddresses []
-            |> UnixBootImage.boot
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let bindTo (fd : int) (endpoint : InternetEndpoint) (system : UnixSystem<int, string>) =
             match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with

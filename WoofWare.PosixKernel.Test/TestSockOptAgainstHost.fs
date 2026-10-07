@@ -230,8 +230,8 @@ module TestSockOptAgainstHost =
             let property ((target : Target, buffer : Buffer), (optionLength : uint32, value : int)) : unit =
                 withTarget
                     target
-                    (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                     |> UnixBootImage.boot)
+                    (UnixSystem.initial platform
+                     |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
                     (fun hostFd modelFd system ->
                         let hostErrno =
                             withBuffer
@@ -315,8 +315,8 @@ module TestSockOptAgainstHost =
                 =
                 withTarget
                     target
-                    (UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                     |> UnixBootImage.boot)
+                    (UnixSystem.initial platform
+                     |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
                     (fun hostFd modelFd system ->
                         let isSocket =
                             match target with

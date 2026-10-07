@@ -26,8 +26,9 @@ module DescriptionReleaseRefusal =
 [<RequireQualifiedAccess>]
 module ObjectLifetime =
 
-    /// Every inode that must not be freed: `UnixMachineState.heldInodes` and
-    /// `UnixProcessState.heldInodes`, closed under `DirectoryContent.Parent`.
+    /// Every inode that must not be freed: `UnixMachineState.heldInodes`, which
+    /// holds every process's current directory as well as every open file
+    /// description's inode, closed under `DirectoryContent.Parent`.
     ///
     /// The closure is not caution — it is measured. `rmdir` can remove a
     /// directory something still holds, and that orphan keeps its "..": probed
@@ -67,10 +68,7 @@ module ObjectLifetime =
                 | Some (InodeContent.Symlink _)
                 | None -> climb rest seen
 
-        let held =
-            Set.union (UnixMachineState.heldInodes system.Machine) (UnixProcessState.heldInodes system.Process)
-
-        climb (Set.toList held) Set.empty
+        climb (Set.toList (UnixMachineState.heldInodes system.Machine)) Set.empty
 
     /// Free `inode` if the filesystem no longer names it and this system holds
     /// no reference to it — what a real kernel does once the last link and the

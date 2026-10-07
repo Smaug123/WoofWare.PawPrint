@@ -442,10 +442,9 @@ module TestProtectedFiles =
         : UnixSystem<int, string>
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context credentials
+            UnixSystem.initial platform
             |> UnixBootImage.withProtectedFiles context protection
-            |> UnixBootImage.boot
+            |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Machine =
@@ -457,6 +456,7 @@ module TestProtectedFiles =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
+        |> Launched.restand
 
     let private answerText (answer : SyscallAnswer) : string =
         match answer with
@@ -987,14 +987,14 @@ module TestProtectedFiles =
     [<Test>]
     let ``a Darwin machine refuses every sysctl but Off`` () =
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.macOsArm64
 
-        let system = UnixBootImage.boot image
+        let system = Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image
 
         system.Machine.ProtectedFiles |> shouldEqual ProtectedFiles.off
 
         UnixBootImage.withProtectedFiles "test" ProtectedFiles.off image
-        |> UnixBootImage.boot
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> shouldEqual system
 
         for symlinks in allSymlinkProtections do
@@ -1036,10 +1036,9 @@ module TestProtectedFiles =
 
     [<Test>]
     let ``a Linux machine starts with every sysctl Off and admits any setting`` () =
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let image : UnixBootImage<int, string> = UnixSystem.initial linux
 
-        (UnixBootImage.boot image).Machine.ProtectedFiles
+        (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine.ProtectedFiles
         |> shouldEqual ProtectedFiles.off
 
         for symlinks in allSymlinkProtections do
@@ -1055,7 +1054,8 @@ module TestProtectedFiles =
                             }
 
                         let set =
-                            UnixBootImage.withProtectedFiles "test" protection image |> UnixBootImage.boot
+                            UnixBootImage.withProtectedFiles "test" protection image
+                            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                         set.Machine.ProtectedFiles |> shouldEqual protection
                         UnixSystem.checkInvariants set |> shouldEqual []

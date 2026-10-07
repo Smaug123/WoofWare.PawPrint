@@ -59,10 +59,31 @@ type SimulatedMachineDefect<'Task> =
     | SlotUnderAnotherProcessId of key : ProcessId * recorded : ProcessId
     /// More than one process has the process ID `processId`.
     | DuplicateProcessId of processId : ProcessId
-    /// A kqueue is owned (`KqueueState.Owner`) by `owner`, which is no process
-    /// on the machine. Its registrations name descriptors in that process's
-    /// table, which no longer exists.
-    | KqueueOwnerNotOnMachine of kqueue : OpenFileDescriptionId * owner : ProcessId
+
+/// Why `SimulatedMachine.launch` will not start a process.
+[<RequireQualifiedAccess>]
+type ProcessCreationRefusal =
+    /// The launch itself is refused; see `LaunchRefusal`.
+    | Launch of LaunchRefusal
+    /// On Linux, every ID the machine would hand out, from 300 up to its
+    /// `pid_max`, is a live thread's, so `fork(2)` would answer EAGAIN.
+    | NoFreeProcessId
+    /// On Darwin, the process ID counter has reached `pidMax`
+    /// (`ProcessIdTable.darwinPidMax`). xnu wraps it back to 100, skipping IDs
+    /// in use; that has not been measured, so this library does not wrap.
+    | DarwinPidMaxReached of pidMax : int32
+
+[<RequireQualifiedAccess>]
+module ProcessCreationRefusal =
+    /// What this library knows about why it would not start the process, for
+    /// a client composing a diagnostic that names its own knob.
+    let describe (refusal : ProcessCreationRefusal) : string =
+        match refusal with
+        | ProcessCreationRefusal.Launch refusal -> LaunchRefusal.describe refusal
+        | ProcessCreationRefusal.NoFreeProcessId ->
+            "every process ID the machine would hand out is a live thread's, so fork(2) would answer EAGAIN."
+        | ProcessCreationRefusal.DarwinPidMaxReached pidMax ->
+            $"the machine's process ID counter has reached Darwin's PID_MAX %d{pidMax}; what Darwin does next (xnu's source wraps to 100) has not been measured."
 
 /// Moving between a `SimulatedMachine` and the views of it its processes'
 /// syscalls are made in.
@@ -86,24 +107,18 @@ module SimulatedMachine =
     /// one. `system` is itself a view of the result, which `unfocus` accepts.
     ///
     /// Fails loudly if `system` is a view of a machine holding other processes
-    /// besides: the machine records a thread ID as live that none of `system`'s
-    /// tasks holds, so some other process's task holds it, and a machine
-    /// without that process would not be one any kernel could be in.
+    /// besides, which a machine without them would not be one any kernel could
+    /// be in.
     let ofSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : SimulatedMachine<'Task, 'Handler>
         =
-        let held =
-            system.Tasks
-            |> Map.toSeq
-            |> Seq.map (fun (_, state) -> state.OsThreadId)
-            |> Set.ofSeq
+        let others =
+            Set.remove system.Process.ProcessId (ProcessIdTable.live system.Machine.ProcessIds)
 
-        let live = ThreadIdAllocator.live system.Machine.ThreadIds
-
-        if live <> held then
+        if not others.IsEmpty then
             failwith
-                $"SimulatedMachine.ofSystem: the machine records the thread IDs %A{Set.toList (Set.difference live held)} as live, which none of process %O{system.Process.ProcessId}'s tasks holds, so the system is a view of a machine holding other processes besides."
+                $"SimulatedMachine.ofSystem: the machine holds the processes %A{Set.toList others} besides process %O{system.Process.ProcessId}, so the system is a view of a machine holding other processes besides."
 
         {
             Machine = system.Machine
@@ -118,6 +133,86 @@ module SimulatedMachine =
                     }
             Generation = system.Generation
         }
+
+    /// Start a new process on the machine, as `launch` describes it: the
+    /// process ID the kernel chose for it, and the machine with it on.
+    ///
+    /// On Linux the process's ID is its leader's thread ID, the next the
+    /// machine's thread ID counter hands out, so it is no live process's or
+    /// thread's. On Darwin it is the next from a process ID counter of its own,
+    /// which started one past the first process's ID, and the leader's thread
+    /// ID is the next from the 64-bit thread ID counter.
+    ///
+    /// Refuses a launch `LaunchRefusal` describes, and a machine with no
+    /// process ID left to hand out.
+    let launch<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (launch : ProcessLaunch<'Task>)
+        (machine : SimulatedMachine<'Task, 'Handler>)
+        : Result<ProcessId * SimulatedMachine<'Task, 'Handler>, ProcessCreationRefusal>
+        =
+        let current = machine.Machine
+
+        let allocated =
+            match current.ProcessIds.Counter with
+            | ProcessIdCounter.ThreadIds ->
+                match ThreadIdAllocator.allocate current.ThreadIds with
+                | Error _ -> Error ProcessCreationRefusal.NoFreeProcessId
+                | Ok (leader, threadIds) ->
+                    let pid =
+                        ProcessId.parseOrFail "SimulatedMachine.launch" (int32 (OsThreadId.toUInt64 leader))
+
+                    Ok (
+                        pid,
+                        leader,
+                        { current with
+                            ThreadIds = threadIds
+                        }
+                    )
+            | ProcessIdCounter.Darwin _ ->
+                match ProcessIdTable.nextDarwin current.ProcessIds with
+                | None -> Error (ProcessCreationRefusal.DarwinPidMaxReached ProcessIdTable.darwinPidMax)
+                | Some (pid, processIds) ->
+                    match ThreadIdAllocator.allocate current.ThreadIds with
+                    | Error error ->
+                        failwith
+                            $"SimulatedMachine.launch: Darwin's thread ID counter answered %O{error}, which it never does (this is a bug in this library)."
+                    | Ok (leader, threadIds) ->
+                        Ok (
+                            pid,
+                            leader,
+                            { current with
+                                ThreadIds = threadIds
+                                ProcessIds = processIds
+                            }
+                        )
+
+        match allocated with
+        | Error refusal -> Error refusal
+        | Ok (pid, leaderThreadId, allocatedMachine) ->
+
+        if Map.containsKey pid machine.Processes then
+            failwith
+                $"SimulatedMachine.launch: the kernel chose process ID %O{pid}, which a process on the machine already has (this is a bug in this library)."
+
+        match ProcessLaunch.launchOnto launch pid leaderThreadId allocatedMachine with
+        | Error refusal -> Error (ProcessCreationRefusal.Launch refusal)
+        | Ok (launched, proc, tasks) ->
+            Ok (
+                pid,
+                {
+                    Machine = launched
+                    Processes =
+                        Map.add
+                            pid
+                            {
+                                Process = proc
+                                Tasks = tasks
+                                Leader = ProcessLaunch.leader launch
+                            }
+                            machine.Processes
+                    Generation = MachineGeneration.next machine.Generation
+                }
+            )
 
     /// The process ID of every process on the machine.
     let processIds<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -223,8 +318,7 @@ module SimulatedMachine =
     /// (`FileDescriptorRegistry.checkDescriptorTableInvariants`); the open
     /// file table's (`OpenFileTable.checkInvariants`) read against every
     /// process's descriptor table; and the clauses relating processes to one
-    /// another: each is held under its own process ID, no two have one ID,
-    /// and every kqueue's owner is a process on the machine.
+    /// another: each is held under its own process ID, and no two have one ID.
     ///
     /// The filesystem's own rules are `VirtualFileSystem.checkInvariants`'s,
     /// and are not repeated here.
@@ -235,7 +329,8 @@ module SimulatedMachine =
         let slots = Map.toList machine.Processes
 
         let machineDefects =
-            UnixSystem.checkMachineInvariants
+            UnixSystem.machineDefects
+                true
                 (slots |> List.map (fun (_, slot) -> slot.Process, slot.Tasks))
                 machine.Machine
             |> List.map SimulatedMachineDefect.Machine
@@ -276,26 +371,9 @@ module SimulatedMachine =
             |> List.filter (fun (_, count) -> count > 1)
             |> List.map (fst >> SimulatedMachineDefect.DuplicateProcessId)
 
-        let kqueueOwners =
-            OpenFileTable.toSeq machine.Machine.OpenFiles
-            |> Seq.choose (fun (id, description) ->
-                match description.Target with
-                | OpenFileTarget.Kqueue state when not (Map.containsKey state.Owner machine.Processes) ->
-                    Some (SimulatedMachineDefect.KqueueOwnerNotOnMachine (id, state.Owner))
-                | OpenFileTarget.Kqueue _
-                | OpenFileTarget.Epoll _
-                | OpenFileTarget.File _
-                | OpenFileTarget.Directory _
-                | OpenFileTarget.Socket _
-                | OpenFileTarget.CharacterDevice _
-                | OpenFileTarget.Pipe _ -> None
-            )
-            |> Seq.toList
-
         machineDefects
         @ viewDefects
         @ tableDefects
         @ openFileDefects
         @ misplaced
         @ duplicates
-        @ kqueueOwners

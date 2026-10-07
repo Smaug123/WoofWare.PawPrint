@@ -231,8 +231,8 @@ module TestSocketErrorAgainstHost =
         : int * UnixSystem<int, string>
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let listener, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system

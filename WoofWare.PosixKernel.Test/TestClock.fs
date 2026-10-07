@@ -19,10 +19,10 @@ module TestClock =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
     let private imageOn (flavour : SimulatedUnixFlavour) : UnixBootImage<int, string> =
-        UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
 
     let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
-        (UnixBootImage.boot (imageOn flavour)).Machine
+        ((Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)) (imageOn flavour)).Machine
 
     /// A value in `[low, high]`, weighted towards both ends as well as spread across
     /// the whole range: the ends are where the arithmetic can overflow, and a uniform
@@ -76,7 +76,7 @@ module TestClock =
         =
         imageOn flavour
         |> UnixBootImage.withBootTime bootTime
-        |> UnixBootImage.boot
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> UnixSystem.advanceClock sinceBoot
 
     /// The machine `systemWith` runs on.

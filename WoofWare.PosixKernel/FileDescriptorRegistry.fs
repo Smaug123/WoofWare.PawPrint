@@ -628,7 +628,7 @@ type OpenFileTarget =
     /// resolves the name.
     | Socket of socket : SocketId
     /// One end of a pipe, handed out by `UnixPipe.pipe2`, or by the launch
-    /// table `UnixSystem.initial` takes.
+    /// table a process is launched with (`ProcessLaunch.create`).
     ///
     /// No offset: measured, `lseek` on either end of a pipe is ESPIPE on both
     /// flavours.

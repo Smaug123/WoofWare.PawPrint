@@ -162,16 +162,22 @@ module internal UnixParkState =
             Tasks = UnixTaskTable.unpark task system.Tasks
         }
 
-/// A simulated process and the machine it runs on before either has run: what
-/// `UnixSystem.initial` makes, which the setters in `UnixBootImage` configure
-/// and `UnixBootImage.boot` turns into the `UnixSystem` that syscalls take.
+/// A simulated machine before it has booted, with the ID its first process
+/// will have: what `UnixSystem.initial` makes, which the setters in
+/// `UnixBootImage` configure and `UnixBootImage.boot` turns, by launching that
+/// first process (`ProcessLaunch`), into the `UnixSystem` that syscalls take.
 ///
-/// Opaque, so that the only way to the system inside it is `boot`, after which
-/// no setter applies.
+/// Generic in the task and handler types of the system it boots into.
+///
+/// Opaque, so that the only way to a system from it is `boot`, after which no
+/// setter applies.
 type UnixBootImage<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     internal
         {
-            System : UnixSystem<'Task, 'Handler>
+            Machine : UnixMachineState
+            /// The ID the first process gets. The machine's thread ID allocator
+            /// already holds its leader's thread ID as its one live ID.
+            ProcessId : ProcessId
         }
 
 /// What the entry point returns, for a request this kernel could answer.

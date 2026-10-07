@@ -32,8 +32,8 @@ module TestSocketTable =
     let private genWalkSeed : Gen<int> = Gen.choose (0, System.Int32.MaxValue)
 
     let private initialSystem : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// `close(2)`. A refusal crashes the test; an errno comes back, because that
     /// is an answer.
@@ -72,8 +72,8 @@ module TestSocketTable =
     /// A process launched with no descriptors at all, and so no pipes: the base
     /// for a descriptor table built wholly by hand.
     let private unlaunchedSystem : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+        |> Launched.boot Map.empty 0 (CpuId 0)
 
     /// A kernel whose socket table and descriptor table are built by hand, so
     /// that `checkInvariants` has something unsound to reject. Every operation
@@ -348,6 +348,7 @@ module TestSocketTable =
                             CurrentDirectoryInode = VirtualFileSystem.root filesystem
                         }
                 }
+                |> Launched.restand
 
             for _ in 1..steps do
                 let live =

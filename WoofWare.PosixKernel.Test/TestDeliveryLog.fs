@@ -107,8 +107,8 @@ module TestDeliveryLog =
     let ``the machine's log after any sequence of writes is the reference's`` () : unit =
         let property (platform : SimulatedUnixPlatform, writes : (int * int) list) : unit =
             let initial : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let final, reference =
                 ((initial, ImmutableArray<Delivery>.Empty), List.indexed writes)
