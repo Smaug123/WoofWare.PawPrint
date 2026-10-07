@@ -701,6 +701,18 @@ module SimulatedUnixPlatform =
                 EmptyTarget = EmptySymlinkTarget.Accepted
             }
 
+    /// How this platform's `mknod(2)` treats the type of node it is asked
+    /// for; see `MkNodRules`.
+    let mkNodRules (platform : SimulatedUnixPlatform) : MkNodRules =
+        // Measured by `mknodat-rules.c` (TYPE, ORDER, PATH, PATHTYPE) on
+        // Linux 6.18.5, root and uid 1000, ext4 and tmpfs, and Darwin 27.0,
+        // uid 501. Linux's walk is its `mkdir`'s and `symlink`'s
+        // (`filename_create`): "f/", "dang/", "cyc/", "lf/" and "ld/" are
+        // EEXIST and a free "nx/" is ENOENT.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> MkNodRules.TypeBeforePath TrailingSeparatorPolicy.Ignore
+        | SimulatedUnixFlavour.Darwin -> MkNodRules.PrivilegeBeforePath
+
     /// How this platform's `open(2)` behaves when asked to create; see
     /// `CreatingOpenRules` for what each field means and how it was measured.
     let creatingOpenRules (platform : SimulatedUnixPlatform) : CreatingOpenRules =

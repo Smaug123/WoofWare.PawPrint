@@ -1657,6 +1657,148 @@ module UnixNamespace =
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
         mkdirFrom (AtDirectory.decode flavour dirfd) path mode system
 
+    let private mknodFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (dev : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, MkNodRefusal>
+        =
+        let platform = system.Machine.UnixPlatform
+        let credentials = system.Process.Credentials
+
+        match MkNodRules.screen (SimulatedUnixPlatform.mkNodRules platform) credentials mode dev with
+        | MkNodScreen.Fails error -> Ok (SyscallAnswer.Failed error, system)
+        | MkNodScreen.Refused refusal -> Error refusal
+        | MkNodScreen.Walks (node, trailingSeparator) ->
+
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path ->
+
+        // `NoFollowFinal`: like `mkdir` and `symlink`, `mknod` never
+        // dereferences the name it is about to bind.
+        match
+            UnixPathResolution.resolvePathFull directory SymlinkPolicy.NoFollowFinal trailingSeparator path system
+        with
+        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Error (PathFailure.Refused refusal) -> Error (MkNodRefusal.Path refusal)
+        | Ok resolution ->
+
+        let rules = SimulatedUnixPlatform.creatingOpenRules platform
+
+        // Measured (`mknodat-rules.c`, PATH and MODE): past the walk, a
+        // regular file is decided, and made, exactly as `open(O_CREAT|O_EXCL)`
+        // decides and makes it.
+        let creation =
+            CreatingOpenRules.verdict
+                rules
+                system.Machine.ProtectedFiles
+                (SimulatedUnixPlatform.bindableEntryNames platform)
+                credentials
+                true
+                true
+                resolution
+                system.Machine.FileSystem
+
+        match MkNodRules.verdict credentials node creation with
+        | MkNodVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
+        | MkNodVerdict.Refused refusal -> Error refusal
+        | MkNodVerdict.CreateRegularFile (directory, name) ->
+
+        let parent =
+            match VirtualFileSystem.tryGet directory system.Machine.FileSystem with
+            | Some ({
+                        Content = InodeContent.Directory parent
+                    } as entry) -> entry, parent
+            | Some _
+            | None ->
+                failwith
+                    $"UnixNamespace.mknod: about to create \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory}, which the walk had established was a directory, but it is now absent or not a directory (this is a bug in this library)."
+
+        let permissions =
+            CreatingOpenRules.createdPermissions
+                rules
+                (Standing.toward credentials (fst parent).Owner)
+                (snd parent).Permissions
+                system.Process.Umask
+                mode
+
+        let now = UnixMachineState.realtime system.Machine
+
+        match
+            VirtualFileSystem.createFile
+                directory
+                name
+                permissions
+                (newInodeOwner "UnixNamespace.mknod" directory system)
+                now
+                ImmutableArray<byte>.Empty
+                system.Machine.FileSystem
+        with
+        | Error error ->
+            failwith
+                $"UnixNamespace.mknod: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
+        | Ok (_, filesystem) ->
+
+        Ok (
+            SyscallAnswer.Completed 0L,
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+            }
+        )
+
+    /// `mknod(2)`: make a node of the type `mode` names at `path`. It is
+    /// `mknodat` from `AT_FDCWD`; see there for what it answers and refuses.
+    let mknod<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : PathArgumentBytes)
+        (mode : int)
+        (dev : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, MkNodRefusal>
+        =
+        mknodFrom AtDirectory.CurrentDirectory path mode dev system
+
+    /// `mknodat(2)`: make a node of the type `mode` names at `path`, starting
+    /// from `dirfd` if it is relative; `mknod` is this from `AT_FDCWD`.
+    ///
+    /// `dirfd`, `mode` and `dev` are raw, in this platform's own numbering.
+    /// The type field of `mode` is read before anything else, as
+    /// `MkNodRules.screen` says for the flavour: Linux answers a directory
+    /// EPERM and a field naming no type it makes EINVAL, and Darwin answers
+    /// any type but a FIFO EPERM to a caller without privilege, each before
+    /// the path is copied in. Then `path` is copied in (EFAULT, ENAMETOOLONG),
+    /// a relative path starts where `dirfd` says, as every `*at` call's does
+    /// (`UnixPathResolution.walkStart`), and the walk never follows a final
+    /// symbolic link. A regular file (`S_IFREG`, or a type field of 0) is
+    /// then decided and made as `open(O_CREAT|O_EXCL)` decides and makes one:
+    /// the same errnos in the same order, the same permission bits from
+    /// `mode` under the umask and the parent's set-group-ID bit, the same
+    /// owner, and the same timestamps. `dev` is not read for it. Only the
+    /// walk differs: on Linux a trailing separator is resolved as `mkdir`
+    /// resolves it, so `"f/"` is EEXIST where `open` answers EISDIR.
+    ///
+    /// Refuses, once every check that would fail the call has passed, to
+    /// make a FIFO, a socket or a device node, none of which this library
+    /// models, but answers Linux's EPERM to a caller without privilege who
+    /// asks for a device. Refuses Darwin's FIFO, which is `mkfifo(2)`, and
+    /// Darwin's privileged caller before the path is read. See
+    /// `MkNodRefusal`.
+    let mknodat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (dev : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, MkNodRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+        mknodFrom (AtDirectory.decode flavour dirfd) path mode dev system
+
     /// `unlinkat` without `AT_REMOVEDIR`, of a path this kernel has already
     /// copied in, starting from `directory` if it is relative.
     let internal unlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>

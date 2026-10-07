@@ -51,6 +51,7 @@
         <Compile Include="CreatingOpenRules.fs" />
         <Compile Include="MkDirRules.fs" />
         <Compile Include="SymlinkRules.fs" />
+        <Compile Include="MkNodRules.fs" />
         <Compile Include="LinkRules.fs" />
         <Compile Include="RemovalRules.fs" />
         <Compile Include="RenameRules.fs" />
