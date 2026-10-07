@@ -809,29 +809,46 @@ module TestUnixSystemInvariants =
 
     [<Test>]
     let ``a thread ID the counter could not have handed out is a defect`` () : unit =
-        // Linux: a live tid at or above pid_max, by taking a counter with a lower
-        // pid_max from another machine.
+        // Linux: a live tid no pid_max admits, by taking one from a Darwin
+        // machine. A tid at or above the pid_max now in force is not one, because
+        // the administrator may lower pid_max beneath live ids.
         let linux = spawned SimulatedUnixPlatform.linuxX64
 
-        let lowered =
-            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-             |> UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" 5)
-             |> UnixBootImage.boot
-             |> UnixSystem.writePidMaxSysctl "test" 1000)
-                .Machine.ThreadIds
-
-        { linux with
-            Machine =
-                { linux.Machine with
-                    ThreadIds = lowered
-                }
-        }
+        linux
+        |> UnixSystem.writePidMaxSysctl "test" 1000
         |> UnixSystem.checkInvariants
-        |> shouldEqual
-            [
-                UnixSystemDefect.OsThreadIdNotMintable (0, UnixTaskTable.osThreadIdOf 0 linux.Tasks, lowered)
-                UnixSystemDefect.OsThreadIdNotMintable (1, UnixTaskTable.osThreadIdOf 1 linux.Tasks, lowered)
-            ]
+        |> shouldEqual []
+
+        let withDarwinId (id : uint64) : OsThreadId * UnixSystem<int, string> =
+            let foreign =
+                (UnixSystem.initial<int, string>
+                    SimulatedUnixPlatform.macOsArm64
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0)
+                 |> UnixBootImage.withLeaderThreadId "test" id
+                 |> UnixBootImage.boot)
+                    .Tasks
+                |> UnixTaskTable.osThreadIdOf 0
+
+            foreign,
+            { linux with
+                Tasks =
+                    Map.add
+                        1
+                        { UnixTaskTable.get 1 linux.Tasks with
+                            OsThreadId = foreign
+                        }
+                        linux.Tasks
+            }
+
+        let _, below = withDarwinId 4194303UL
+        UnixSystem.checkInvariants below |> shouldEqual []
+
+        let foreign, at = withDarwinId 4194304UL
+
+        UnixSystem.checkInvariants at
+        |> shouldEqual [ UnixSystemDefect.OsThreadIdNotMintable (1, foreign, linux.Machine.ThreadIds) ]
 
         // Darwin: an id the counter has not reached, which it would hand out again.
         let darwin = spawned SimulatedUnixPlatform.macOsArm64
