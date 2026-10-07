@@ -727,6 +727,26 @@ module TestSocketOptions =
             | Error refusal -> failwith $"after the peer closed: %s{CloseRefusal.describe refusal}"
         | Error refusal -> failwith $"closing the peer: %s{CloseRefusal.describe refusal}"
 
+    [<Test>]
+    let ``a Linux accept that drops a connection whose end would reset it is refused`` () : unit =
+        let withLinger (time : int) =
+            let listener, system = listening linux
+            let system = setOk Option.Linger listener (OptionValue.ofLinger 1 time) system
+            let client, system = socketOf SocketDomain.Inet SocketKind.Stream system
+            let system = connectTo 5000us client system
+            // A negative length: Linux takes the connection, then answers
+            // EINVAL and drops it.
+            UnixConnection.accept 0 listener UserBuffer.Mapped System.UInt32.MaxValue system
+
+        match withLinger 0 with
+        | Error (AcceptRefusal.AbortiveDrop _) -> ()
+        | other -> failwith $"expected a refusal, got %A{other}"
+
+        // Lingering for some time drops it in order, as before.
+        match withLinger 1 with
+        | Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, _) -> ()
+        | other -> failwith $"expected a dropped connection, got %A{other}"
+
     // ------------------------------------------------------------------
     // Caller bugs
     // ------------------------------------------------------------------

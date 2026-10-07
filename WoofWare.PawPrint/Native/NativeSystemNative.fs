@@ -5224,7 +5224,8 @@ module NativeSystemNative =
                 | Error (AcceptRefusal.DescriptorLimit _ as refusal)
                 | Error (AcceptRefusal.Interruption _ as refusal)
                 | Error (AcceptRefusal.Release _ as refusal)
-                | Error (AcceptRefusal.DarwinDrainedListener _ as refusal) ->
+                | Error (AcceptRefusal.DarwinDrainedListener _ as refusal)
+                | Error (AcceptRefusal.AbortiveDrop _ as refusal) ->
                     failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
                 // A signal ended the sleep. The shim's `accept4` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
