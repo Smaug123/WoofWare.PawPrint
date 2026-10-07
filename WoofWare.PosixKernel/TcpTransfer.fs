@@ -28,8 +28,12 @@ module internal TcpError =
 type internal TcpEndState =
     /// The peer may still send.
     | Open
-    /// The peer closed cleanly. Once the bytes already on their way are read,
-    /// a read sees end of file.
+    /// The peer closed cleanly, but its FIN waits in its send buffer behind
+    /// bytes this end's receive buffer has no room for yet. The FIN arrives,
+    /// and this becomes `FinReceived`, when the last of them does.
+    | FinQueued
+    /// The peer closed cleanly and its FIN has arrived. Once the bytes
+    /// already in the receive buffer are read, a read sees end of file.
     | FinReceived
     /// The connection was reset. `afterFin` says whether a FIN had arrived
     /// first, which on Linux decides both the pending error (`EPIPE` rather
@@ -246,6 +250,7 @@ module internal TcpTransfer =
 
                 match direction.Receiver with
                 | TcpEndState.Open
+                | TcpEndState.FinQueued
                 | TcpEndState.FinReceived ->
                     if sending > 0 && receiving < direction.ReceiveCapacity then
                         $"towards %A{receiver}: %d{sending} bytes wait to be sent while the receive buffer has room"
@@ -265,9 +270,22 @@ module internal TcpTransfer =
                         | other ->
                             $"towards %A{receiver}: %d{sending} bytes kept in flight to a closed end, by a sender in %A{other} rather than one that was reset"
 
+                match direction.Receiver with
+                | TcpEndState.FinQueued ->
+                    if sending = 0 then
+                        $"towards %A{receiver}: a FIN is queued behind no bytes, so it has arrived"
+                | TcpEndState.FinReceived ->
+                    if sending > 0 then
+                        $"towards %A{receiver}: a FIN has arrived ahead of %d{sending} bytes sent before it"
+                | TcpEndState.Open
+                | TcpEndState.Reset _
+                | TcpEndState.Closed -> ()
+
                 match direction.Receiver, peerState with
+                | TcpEndState.FinQueued, TcpEndState.Closed
                 | TcpEndState.FinReceived, TcpEndState.Closed
                 | TcpEndState.Reset _, TcpEndState.Closed -> ()
+                | TcpEndState.FinQueued, other
                 | TcpEndState.FinReceived, other
                 | TcpEndState.Reset _, other ->
                     $"%A{receiver} is in %A{direction.Receiver} while its peer is in %A{other} rather than closed"
@@ -284,6 +302,7 @@ module internal TcpTransfer =
                     for sender in armed do
                         match (towards sender transfer).Receiver with
                         | TcpEndState.Open
+                        | TcpEndState.FinQueued
                         | TcpEndState.FinReceived -> ()
                         | other -> $"%A{sender}'s send-space wake is armed, but it is in %A{other} and cannot write"
                 ]
@@ -350,6 +369,7 @@ module internal TcpTransfer =
         | TcpEndState.Closed
         | TcpEndState.Reset _ -> [], transfer
         | TcpEndState.Open
+        | TcpEndState.FinQueued
         | TcpEndState.FinReceived ->
 
         match transfer.Rules with
@@ -361,19 +381,24 @@ module internal TcpTransfer =
                 [], transfer
 
     /// How many bytes a write of `count` takes when `space` bytes are free.
-    let private taking (transfer : TcpTransfer) (count : int) (space : int) : int option =
+    let private taking (transfer : TcpTransfer) (count : int) (space : int64) : int option =
         match transfer.Rules with
         // Linux takes any positive remainder.
-        | TcpTransferRules.Linux _ -> if space > 0 then Some (min count space) else None
+        | TcpTransferRules.Linux _ ->
+            if space > 0L then
+                Some (int (min (int64 count) space))
+            else
+                None
         | TcpTransferRules.Darwin ->
-            if count <= space then Some count
-            elif space >= darwinSendLowWater then Some space
+            if int64 count <= space then Some count
+            elif space >= int64 darwinSendLowWater then Some (int space)
             else None
 
     /// What a write of `count` bytes by `writer` decides before the caller's
     /// buffer is read, and the transfer after: a failed write takes a pending
-    /// error on Linux, and a Linux write that meets `EAGAIN` arms the
-    /// writer's send-space wake.
+    /// error on Linux, and a Linux write that runs out of space, whether it
+    /// meets `EAGAIN` or takes only part of its bytes, arms the writer's
+    /// send-space wake (`SOCK_NOSPACE`).
     let admitWrite (writer : ConnectionEnd) (count : int) (transfer : TcpTransfer) : TcpWriteAdmission * TcpTransfer =
         if count < 0 then
             failwith $"TcpTransfer.admitWrite: a write of %d{count} bytes (this is a bug in this library)."
@@ -411,6 +436,7 @@ module internal TcpTransfer =
             | TcpTransferRules.Darwin ->
                 TcpWriteAdmission.Answered (TcpWriteAnswer.Failed TcpError.BrokenPipe), transfer
         | TcpEndState.Open
+        | TcpEndState.FinQueued
         | TcpEndState.FinReceived ->
 
         if count = 0 then
@@ -420,16 +446,20 @@ module internal TcpTransfer =
         let space =
             match outbound.Receiver with
             | TcpEndState.Open ->
-                (outbound.ReceiveCapacity - ByteQueue.length outbound.Receiving)
-                + (outbound.SendCapacity - ByteQueue.length outbound.Sending)
+                int64 (outbound.ReceiveCapacity - ByteQueue.length outbound.Receiving)
+                + int64 (outbound.SendCapacity - ByteQueue.length outbound.Sending)
             // The peer has gone, so nothing drains the send buffer.
-            | TcpEndState.Closed -> outbound.SendCapacity - ByteQueue.length outbound.Sending
+            | TcpEndState.Closed -> int64 (outbound.SendCapacity - ByteQueue.length outbound.Sending)
+            | TcpEndState.FinQueued
             | TcpEndState.FinReceived
             | TcpEndState.Reset _ ->
                 failwith
                     $"TcpTransfer.admitWrite: the %A{writer} end has sent its FIN, which only its close does (this library models no shutdown), but it is still writing (this is a bug in this library)."
 
         match taking transfer count space with
+        // `tcp_sendmsg` marks the socket out of space before it returns a
+        // short count, as before it answers `EAGAIN`.
+        | Some taken when taken < count -> TcpWriteAdmission.Take taken, withArmed writer true transfer
         | Some taken -> TcpWriteAdmission.Take taken, transfer
         | None -> TcpWriteAdmission.Answered TcpWriteAnswer.WouldBlock, withArmed writer true transfer
 
@@ -550,6 +580,9 @@ module internal TcpTransfer =
 
         let queued = ByteQueue.length direction.Receiving
 
+        let unqueuedFin : string =
+            $"TcpTransfer.read: the %A{receiver} end's FIN waits behind bytes in flight, but its receive buffer is empty, which TcpTransfer.violations forbids (this is a bug in this library)."
+
         // Linux's `read(2)` answers a zero-length request before it reaches
         // the socket.
         if isLinux && count = 0 && call = TcpReceiveCall.Read then
@@ -569,6 +602,19 @@ module internal TcpTransfer =
                             Receiving = receiving
                         }
 
+                // A FIN queued behind the bytes arrives with the last of them.
+                let finArrives =
+                    direction.Receiver = TcpEndState.FinQueued
+                    && ByteQueue.length direction.Sending = 0
+
+                let direction =
+                    if finArrives then
+                        { direction with
+                            Receiver = TcpEndState.FinReceived
+                        }
+                    else
+                        direction
+
                 let transfer = withTowards receiver direction transfer
                 let sender = otherEnd receiver
                 let spaceWakes, transfer = spaceFreed sender moved transfer
@@ -577,6 +623,8 @@ module internal TcpTransfer =
                     [
                         if moved > 0 then
                             TcpWake.DataArrived receiver
+                        if finArrives then
+                            TcpWake.PeerFinished receiver
                         yield! spaceWakes
                     ]
 
@@ -590,6 +638,7 @@ module internal TcpTransfer =
             | TcpEndState.Reset (true, _)
             | TcpEndState.Reset (false, false) -> TcpReadAnswer.EndOfFile, [], transfer
             | TcpEndState.Reset (false, true) -> TcpReadAnswer.Failed (pendingError receiver transfer), [], takeError ()
+            | TcpEndState.FinQueued -> failwith unqueuedFin
             | TcpEndState.Closed -> failwith "TcpTransfer.read: unreachable, the closed end was refused above."
         else
             // `soreceive` takes the pending error unless peeking, and a
@@ -611,6 +660,7 @@ module internal TcpTransfer =
                     TcpReadAnswer.Bytes ImmutableArray.Empty, [], transfer
                 else
                     TcpReadAnswer.WouldBlock, [], transfer
+            | TcpEndState.FinQueued -> failwith unqueuedFin
             | TcpEndState.Closed -> failwith "TcpTransfer.read: unreachable, the closed end was refused above."
 
     /// `getsockopt(SO_ERROR)` on `receiver`'s socket: the pending error, which
@@ -631,6 +681,7 @@ module internal TcpTransfer =
                 }
                 transfer
         | TcpEndState.Open
+        | TcpEndState.FinQueued
         | TcpEndState.FinReceived
         | TcpEndState.Reset (_, false) -> None, transfer
 
@@ -674,6 +725,7 @@ module internal TcpTransfer =
                     }
 
             [], keepingRules context transfer
+        | TcpEndState.FinQueued
         | TcpEndState.FinReceived
         | TcpEndState.Reset _ ->
             failwith
@@ -709,17 +761,23 @@ module internal TcpTransfer =
             [ TcpWake.PeerReset peer ], keepingRules context transfer
         else
             // What the closer had left to send keeps draining as the peer
-            // reads, and the peer reads end of file after it.
+            // reads, and the FIN follows it.
+            let finQueued = ByteQueue.length outbound.Sending > 0
+
             let transfer =
                 transfer
                 |> withTowards closer (closedOwn ByteQueue.empty)
                 |> withTowards
                     peer
                     { outbound with
-                        Receiver = TcpEndState.FinReceived
+                        Receiver =
+                            if finQueued then
+                                TcpEndState.FinQueued
+                            else
+                                TcpEndState.FinReceived
                     }
 
-            [ TcpWake.PeerFinished peer ], keepingRules context transfer
+            (if finQueued then [] else [ TcpWake.PeerFinished peer ]), keepingRules context transfer
 
     /// `closer`'s socket closes. With nothing unread, and nothing on its way
     /// to it, the close is a FIN: the peer reads what was sent, then end of

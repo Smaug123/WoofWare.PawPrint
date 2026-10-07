@@ -316,6 +316,7 @@ module TestTcpTransferMeasured =
         match (TcpTransfer.towards s transfer).Receiver with
         | TcpEndState.Reset (_, pending) -> pending
         | TcpEndState.Open
+        | TcpEndState.FinQueued
         | TcpEndState.FinReceived
         | TcpEndState.Closed -> false
 
