@@ -1006,3 +1006,63 @@ module TestCrossProcess =
                 machine.Machine.Sockets |> shouldEqual Map.empty
                 machine.Machine.Connections |> shouldEqual Map.empty
             | Error refusal -> failwith $"endProcess: %s{ProcessEndRefusal.describe refusal}"
+
+    /// Nothing yet passes a descriptor from one process to another, so no queue
+    /// a kernel wakes one waiter of is shared by two processes. `fork` would
+    /// share one; this forges the state it would leave, the other process's
+    /// table naming the listener's description too, to hold the machine's
+    /// wakes to choosing across processes.
+    [<Test>]
+    let ``a woken call in one process keeps a shared listener from waking another process's accepter`` () : unit =
+        let pids, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 2
+        let a, b = pids.[0], pids.[1]
+
+        let listener, machine = Machines.inProcess a (KeventWorld.listenerAt 8080us) machine
+
+        let shared = 9
+
+        let machine =
+            let listenerId = KeventWorld.idOf listener (Machines.viewOf a machine)
+
+            let named (pid : ProcessId) =
+                FileDescriptorRegistry.fds (UnixSystem.fileDescriptors (Machines.viewOf pid machine))
+
+            Machines.doIn
+                b
+                (fun view ->
+                    let fds = named b |> Map.add shared listenerId
+                    let openFiles = UnixSystem.openFiles view
+
+                    let forged =
+                        FileDescriptorRegistry.Unchecked.ofParts
+                            fds
+                            (OpenFileTable.descriptions openFiles)
+                            (OpenFileDescriptionId 1000L)
+
+                    // Each description counts the descriptors naming it in
+                    // both tables.
+                    let forged =
+                        (forged, named a |> Map.toList |> List.countBy snd)
+                        ||> List.fold (fun registry (id, inA) ->
+                            let inB = fds |> Map.filter (fun _ named -> named = id) |> Map.count
+                            FileDescriptorRegistry.Unchecked.setDescriptorCount id (inA + inB) registry
+                        )
+
+                    UnixSystemState.withFileDescriptors forged view
+                )
+                machine
+
+        SimulatedMachine.checkInvariants machine |> shouldEqual []
+
+        // a's accepter parks first, then b's, on the one listener; then a
+        // connection is queued.
+        let machine = machine |> sleepInAccept a 1 listener |> sleepInAccept b 1 shared
+        let _, machine = Machines.inProcess b (KeventWorld.client 8080us) machine
+        SimulatedMachine.checkInvariants machine |> shouldEqual []
+
+        woken [ a, 1 ; b, 1 ] machine |> List.map fst |> shouldEqual [ a, 1 ]
+
+        // Either woken and not yet finished stands for the connection, in
+        // whichever process, so the other does not wake.
+        woken [ b, 1 ] machine |> shouldEqual []
+        woken [ a, 1 ] machine |> shouldEqual []
