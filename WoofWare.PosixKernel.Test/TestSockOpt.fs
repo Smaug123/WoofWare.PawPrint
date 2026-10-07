@@ -433,6 +433,8 @@ module TestSockOpt =
         for platform in platforms do
             for phase, shutDown in phases do
                 let socketFd, _, system = systemWith platform phase
+                // The connected phases' connection, open at both ends.
+                let system = ForgedConnection.add (ConnectionId 0L) SocketDomain.Inet [] system
                 let level, optionName = numbered platform Option.ReuseAddress
 
                 let expected =
