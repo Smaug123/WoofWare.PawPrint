@@ -290,3 +290,377 @@ module TestCrossProcess =
         finishPoll b 1 machine
         |> fst
         |> shouldEqual (PollOutcome.Answered ([ pollIn ], 1))
+
+    // ------------------------------------------------------ the machine's wakes
+
+    let private woken
+        (asleep : (ProcessId * int) list)
+        (machine : SimulatedMachine<int, string>)
+        : ((ProcessId * int) * Set<WakePrimitive>) list
+        =
+        let asleep =
+            asleep
+            |> List.groupBy fst
+            |> List.map (fun (pid, tasks) -> pid, tasks |> List.map snd |> Set.ofList)
+            |> Map.ofList
+
+        SimulatedMachine.wakes asleep machine
+
+    /// `task` of `pid` accepts on the blocking listener `listener`, which holds
+    /// nothing, and sleeps.
+    let private sleepInAccept
+        (pid : ProcessId)
+        (task : int)
+        (listener : int)
+        (machine : SimulatedMachine<int, string>)
+        : SimulatedMachine<int, string>
+        =
+        Machines.doIn
+            pid
+            (fun view ->
+                match UnixConnection.accept task listener UserBuffer.Mapped 16u view with
+                | Ok (AcceptOutcome.WouldBlock _, view) -> view
+                | other -> failwith $"accept: expected to sleep, got %A{other}"
+            )
+            machine
+
+    let private finishAccept
+        (pid : ProcessId)
+        (task : int)
+        (machine : SimulatedMachine<int, string>)
+        : AcceptOutcome * SimulatedMachine<int, string>
+        =
+        Machines.inProcess
+            pid
+            (fun view ->
+                match UnixConnection.finishAccept task view with
+                | Ok finished -> finished
+                | Error refusal -> failwith $"finishAccept: %A{refusal}"
+            )
+            machine
+
+    [<Test>]
+    let ``a connection from another process wakes an accept asleep on the listener`` () : unit =
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a, b = pids.[0], pids.[1]
+
+            let listener, machine = Machines.inProcess b (KeventWorld.listenerAt 8080us) machine
+
+            let machine = sleepInAccept b 1 listener machine
+            Machines.assertClean machine
+            woken [ b, 1 ] machine |> shouldEqual []
+
+            let _, machine = Machines.inProcess a (KeventWorld.client 8080us) machine
+            Machines.assertClean machine
+
+            let listenerId = KeventWorld.idOf listener (Machines.viewOf b machine)
+
+            woken [ b, 1 ] machine
+            |> shouldEqual [ (b, 1), Set.singleton (WakePrimitive.AcceptQueueNonEmpty listenerId) ]
+
+            match finishAccept b 1 machine with
+            | AcceptOutcome.Accepted _, machine -> Machines.assertClean machine
+            | other, _ -> failwith $"finishAccept: %A{other}"
+
+    [<Test>]
+    let ``a connection from another process wakes an epoll_wait on an instance watching the listener`` () : unit =
+        let pids, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 2
+        let a, b = pids.[0], pids.[1]
+
+        let (listener, epoll), machine =
+            Machines.inProcess
+                b
+                (fun view ->
+                    let listener, view = KeventWorld.listenerAt 8080us view
+
+                    let epoll, view =
+                        match UnixPoll.epollCreate1 0 view with
+                        | Ok (Ok created) -> created
+                        | other -> failwith $"epoll_create1: %A{other}"
+
+                    let view =
+                        match
+                            UnixPoll.epollCtl
+                                epoll
+                                1
+                                listener
+                                (EpollEventArgument.Readable (EpollEvents.In ||| EpollEvents.EdgeTriggered, 5UL))
+                                view
+                        with
+                        | Ok (EpollCtlAnswer.Changed, view) -> view
+                        | other -> failwith $"epoll_ctl: %A{other}"
+
+                    (listener, epoll), view
+                )
+                machine
+
+        let machine =
+            Machines.doIn
+                b
+                (fun view ->
+                    match UnixPoll.epollWait 1 epoll 4 UserBuffer.Mapped -1 view with
+                    | Ok (EpollWaitOutcome.WouldBlock _, view) -> view
+                    | other -> failwith $"epoll_wait: expected to sleep, got %A{other}"
+                )
+                machine
+
+        woken [ b, 1 ] machine |> shouldEqual []
+
+        let _, machine = Machines.inProcess a (KeventWorld.client 8080us) machine
+        Machines.assertClean machine
+
+        let epollId = KeventWorld.idOf epoll (Machines.viewOf b machine)
+
+        woken [ b, 1 ] machine
+        |> shouldEqual [ (b, 1), Set.singleton (WakePrimitive.EpollEventDeliverable epollId) ]
+
+        let outcome, machine =
+            Machines.inProcess
+                b
+                (fun view ->
+                    match UnixPoll.finishEpollWait 1 view with
+                    | Ok finished -> finished
+                    | Error refusal -> failwith $"finishEpollWait: %A{refusal}"
+                )
+                machine
+
+        outcome |> shouldEqual (EpollWaitOutcome.Answered [ 5UL, EpollEvents.In ])
+        ignore listener
+        Machines.assertClean machine
+
+    [<Test>]
+    let ``another process's close wakes an epoll_wait watching the peer, with the half-close`` () : unit =
+        let pids, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 2
+        let a, b = pids.[0], pids.[1]
+
+        let listener, machine = Machines.inProcess b (KeventWorld.listenerAt 8080us) machine
+
+        let client, machine = Machines.inProcess a (KeventWorld.client 8080us) machine
+
+        let epoll, machine =
+            Machines.inProcess
+                b
+                (fun view ->
+                    let accepted, view = KeventWorld.accept listener view
+
+                    let epoll, view =
+                        match UnixPoll.epollCreate1 0 view with
+                        | Ok (Ok created) -> created
+                        | other -> failwith $"epoll_create1: %A{other}"
+
+                    let view =
+                        match
+                            UnixPoll.epollCtl
+                                epoll
+                                1
+                                accepted
+                                (EpollEventArgument.Readable (EpollEvents.RdHup ||| EpollEvents.EdgeTriggered, 6UL))
+                                view
+                        with
+                        | Ok (EpollCtlAnswer.Changed, view) -> view
+                        | other -> failwith $"epoll_ctl: %A{other}"
+
+                    epoll, view
+                )
+                machine
+
+        let machine =
+            Machines.doIn
+                b
+                (fun view ->
+                    match UnixPoll.epollWait 1 epoll 4 UserBuffer.Mapped -1 view with
+                    | Ok (EpollWaitOutcome.WouldBlock _, view) -> view
+                    | other -> failwith $"epoll_wait: expected to sleep, got %A{other}"
+                )
+                machine
+
+        woken [ b, 1 ] machine |> shouldEqual []
+
+        let machine = Machines.doIn a (KeventWorld.close client) machine
+        Machines.assertClean machine
+
+        woken [ b, 1 ] machine |> List.map fst |> shouldEqual [ b, 1 ]
+
+        let outcome, machine =
+            Machines.inProcess
+                b
+                (fun view ->
+                    match UnixPoll.finishEpollWait 1 view with
+                    | Ok finished -> finished
+                    | Error refusal -> failwith $"finishEpollWait: %A{refusal}"
+                )
+                machine
+
+        outcome |> shouldEqual (EpollWaitOutcome.Answered [ 6UL, EpollEvents.RdHup ])
+        Machines.assertClean machine
+
+    [<Test>]
+    let ``a connection from another process wakes a kevent wait on a kqueue watching the listener`` () : unit =
+        let pids, machine = Machines.ofCount darwin 2
+        let a, b = pids.[0], pids.[1]
+
+        let (listener, kq), machine =
+            Machines.inProcess
+                b
+                (fun view ->
+                    let listener, view = KeventWorld.listenerAt 8080us view
+                    let kq, view = KeventWorld.kqueue view
+                    (listener, kq), KeventWorld.register kq listener KeventFilter.Read addClear 7UL view
+                )
+                machine
+
+        let machine =
+            Machines.doIn
+                b
+                (fun view ->
+                    match UnixKqueue.kevent 1 kq 0 [] 4 UserBuffer.Mapped KeventTimeout.Null view with
+                    | Ok (KeventOutcome.WouldBlock _, view) -> view
+                    | other -> failwith $"kevent: expected to sleep, got %A{other}"
+                )
+                machine
+
+        woken [ b, 1 ] machine |> shouldEqual []
+
+        let _, machine = Machines.inProcess a (KeventWorld.client 8080us) machine
+        Machines.assertClean machine
+
+        let kqueueId = KeventWorld.idOf kq (Machines.viewOf b machine)
+
+        woken [ b, 1 ] machine
+        |> shouldEqual [ (b, 1), Set.singleton (WakePrimitive.KqueueEventDeliverable kqueueId) ]
+
+        let outcome, machine =
+            Machines.inProcess
+                b
+                (fun view ->
+                    match UnixKqueue.finishKevent 1 view with
+                    | Ok finished -> finished
+                    | Error refusal -> failwith $"finishKevent: %A{refusal}"
+                )
+                machine
+
+        match outcome with
+        | KeventOutcome.Answered events -> summary events |> shouldEqual [ uint64 listener, KeventFilter.Read, 1L, 7UL ]
+        | other -> failwith $"finishKevent: %A{other}"
+
+        Machines.assertClean machine
+
+    [<Test>]
+    let ``a lock released in one process wakes an flock asleep on the same file in another`` () : unit =
+        let lockEx = 2
+        let lockUn = 8
+
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a, b = pids.[0], pids.[1]
+
+            let openShared (view : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+                match
+                    OpenFlagWords.openPath
+                        {
+                            Access = FileAccessMode.ReadWrite
+                            Create = true
+                            Exclusive = false
+                            Truncate = false
+                            NoFollow = false
+                            CloseOnExec = false
+                            Synchronous = false
+                            DataSynchronous = false
+                            Directory = false
+                        }
+                        (PathArg.ofText "/locked")
+                        0o644
+                        view
+                with
+                | Ok (SyscallAnswer.Completed fd, view) -> int fd, view
+                | other -> failwith $"open: %A{other}"
+
+            let flock (task : int) (fd : int) (operation : int) (view : UnixSystem<int, string>) =
+                match UnixDescriptor.flock task fd operation view with
+                | Ok answered -> answered
+                | Error refusal -> failwith $"flock: %A{refusal}"
+
+            let held, machine = Machines.inProcess a openShared machine
+            let waiting, machine = Machines.inProcess b openShared machine
+
+            let outcome, machine = Machines.inProcess a (flock 1 held lockEx) machine
+            outcome |> shouldEqual (SyscallOutcome.Answered (SyscallAnswer.Completed 0L))
+
+            let outcome, machine = Machines.inProcess b (flock 1 waiting lockEx) machine
+
+            match outcome with
+            | SyscallOutcome.WouldBlock _ -> ()
+            | other -> failwith $"the second flock: expected to sleep, got %A{other}"
+
+            Machines.assertClean machine
+            woken [ b, 1 ] machine |> shouldEqual []
+
+            let outcome, machine = Machines.inProcess a (flock 1 held lockUn) machine
+            outcome |> shouldEqual (SyscallOutcome.Answered (SyscallAnswer.Completed 0L))
+
+            let waitingId = KeventWorld.idOf waiting (Machines.viewOf b machine)
+
+            woken [ b, 1 ] machine
+            |> shouldEqual
+                [
+                    (b, 1), Set.singleton (WakePrimitive.FlockGrantable (waitingId, FlockMode.Exclusive))
+                ]
+
+            let outcome, machine =
+                Machines.inProcess
+                    b
+                    (fun view ->
+                        match UnixDescriptor.flockAcquire 1 view with
+                        | Ok finished -> finished
+                        | Error refusal -> failwith $"flockAcquire: %A{refusal}"
+                    )
+                    machine
+
+            outcome |> shouldEqual (SyscallOutcome.Answered (SyscallAnswer.Completed 0L))
+            Machines.assertClean machine
+
+    [<Test>]
+    let ``the machine wakes in park order across processes, and one waiter of an exclusive queue`` () : unit =
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a, b = pids.[0], pids.[1]
+
+            let listenerA, machine =
+                Machines.inProcess a (KeventWorld.listenerAt 8080us) machine
+
+            let listenerB, machine =
+                Machines.inProcess b (KeventWorld.listenerAt 8081us) machine
+
+            // Parked in this order: b's 1, a's 1, b's 2, the last two on the
+            // listeners the first two are not.
+            let machine =
+                machine
+                |> sleepInAccept b 1 listenerB
+                |> sleepInAccept a 1 listenerA
+                |> sleepInAccept b 2 listenerB
+
+            let asleep = [ a, 1 ; b, 1 ; b, 2 ]
+            woken asleep machine |> shouldEqual []
+
+            // One connection to each, made by the other process's third task.
+            let _, machine = Machines.inProcess a (KeventWorld.client 8081us) machine
+            let _, machine = Machines.inProcess b (KeventWorld.client 8080us) machine
+            Machines.assertClean machine
+
+            // Park order, not process order; and of b's two accepters on one
+            // listener holding one connection, the one that parked first.
+            woken asleep machine |> List.map fst |> shouldEqual [ b, 1 ; a, 1 ]
+
+            // A woken accepter that has not yet finished stands for the
+            // connection, so its queue wakes nobody else meanwhile.
+            woken [ a, 1 ; b, 2 ] machine |> List.map fst |> shouldEqual [ a, 1 ]
+
+    [<Test>]
+    let ``the machine's wakes refuse a process it does not hold`` () : unit =
+        let _, machine = Machines.ofCount SimulatedUnixPlatform.linuxX64 1
+        let ghost = ProcessId.parseOrFail "test" 77
+
+        let error = Assert.Throws<exn> (fun () -> woken [ ghost, 1 ] machine |> ignore)
+
+        error.Message |> shouldContainText "77"

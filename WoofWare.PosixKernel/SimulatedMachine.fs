@@ -332,6 +332,45 @@ module SimulatedMachine =
             | Error refusal -> Error refusal, machine
         )
 
+    /// The tasks `asleep` names that the machine wakes now, each with its
+    /// process and the primitives of its wake condition which hold, in the
+    /// order they parked: `UnixWait.wakes` of every process at once.
+    ///
+    /// `asleep` holds, for each process, the tasks of it the client is holding
+    /// asleep in a syscall. A parked task it leaves out, in a process it names
+    /// or one it does not, is one the client has woken and whose call has not
+    /// yet finished.
+    ///
+    /// Each task's condition is asked of its own process's view, so a
+    /// condition another process's call has made true (a connection queued on
+    /// a listener, a peer's FIN, a lock let go of) wakes it here. Where a
+    /// kernel wakes one waiter of a queue at a time (`UnixWait.wakes` says
+    /// which queues, and which waiter), the choice is made across every
+    /// process, by the order of the machine's parks, which every process's
+    /// parks share. A woken task's call is finished in its own process's view
+    /// (`inView`), by the finishing call of the syscall it is asleep in.
+    ///
+    /// Fails loudly if `asleep` names a process the machine does not hold.
+    let wakes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (asleep : Map<ProcessId, Set<'Task>>)
+        (machine : SimulatedMachine<'Task, 'Handler>)
+        : ((ProcessId * 'Task) * Set<WakePrimitive>) list
+        =
+        for KeyValue (processId, _) in asleep do
+            if not (Map.containsKey processId machine.Processes) then
+                failwith
+                    $"SimulatedMachine.wakes: no process on the machine has ID %O{processId}, but the client holds tasks of it asleep (this is a bug in the client)."
+
+        let views =
+            machine.Processes
+            |> Map.toList
+            |> List.map (fun (processId, slot) ->
+                processId, Map.tryFind processId asleep |> Option.defaultValue Set.empty, viewOf machine slot
+            )
+
+        UnixWait.wakesAmong views machine.Machine
+        |> List.map (fun (processId, task, fired) -> (processId, task), fired)
+
     /// Every way `machine` fails to be a machine any kernel could be in: the
     /// machine's clauses (`UnixSystem.checkMachineInvariants`) read against
     /// every process on it; each process's view's clauses
