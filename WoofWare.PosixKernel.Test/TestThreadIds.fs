@@ -503,6 +503,12 @@ module TestThreadIds =
             // Unique among live tasks.
             (liveIds system).Count |> shouldEqual system.Tasks.Count
 
+            // The machine's allocator records exactly the live tasks' IDs, which
+            // is what it skips.
+            ThreadIdAllocator.live system.Machine.ThreadIds
+            |> Set.map OsThreadId.toUInt64
+            |> shouldEqual (liveIds system)
+
             match setup with
             | Setup.Linux (pidValue, _) -> idOf 0 system |> shouldEqual (uint64 pidValue)
             | Setup.Darwin _ -> ()
@@ -564,7 +570,16 @@ module TestThreadIds =
             | Op.ExitGroup index ->
                 let task = live.[index % live.Length]
                 let ended = UnixTaskLifecycle.exitGroup task 0 system
-                ended.Machine |> shouldEqual system.Machine
+
+                // Every task's ID is freed with it, and nothing else on the
+                // machine moves.
+                ThreadIdAllocator.live ended.Machine.ThreadIds |> shouldEqual Set.empty
+
+                { ended.Machine with
+                    ThreadIds = system.Machine.ThreadIds
+                }
+                |> shouldEqual system.Machine
+
                 coverage.Groups <- coverage.Groups + 1
                 system, model, nextName, minted, last
 

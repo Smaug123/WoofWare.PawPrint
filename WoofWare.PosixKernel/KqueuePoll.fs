@@ -277,13 +277,15 @@ module KqueuePoll =
     /// What closing the descriptor `fd` does to the kqueue of every Darwin
     /// `poll` asleep in `tasks`: each filter registered through `fd` goes, as
     /// `FileDescriptorRegistry.dropDescriptor` removes those of every kqueue the
-    /// process holds (XNU's `knote_fdclose`). The poll sleeps on, and the entry
+    /// process owns (XNU's `knote_fdclose`). The poll sleeps on, and the entry
     /// reports nothing more, whatever a new descriptor at the number does.
     let dropRegistrationsThrough<'Task when 'Task : comparison>
         (fd : int)
         (tasks : Map<'Task, UnixTaskState>)
         : Map<'Task, UnixTaskState>
         =
+        // A Darwin poll holds no description (`ParkedSyscall.descriptions`), so
+        // rewriting its park moves no hold.
         tasks
         |> Map.map (fun _ task ->
             match task.Parked with

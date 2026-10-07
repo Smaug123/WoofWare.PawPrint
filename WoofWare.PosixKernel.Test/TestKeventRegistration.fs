@@ -1038,6 +1038,7 @@ module TestKeventRegistration =
 
         let honest =
             {
+                Owner = system.Process.ProcessId
                 Drained = false
                 Registrations = Map.ofList [ (listener, KqueueFilter.Read), registration ]
                 Active = []

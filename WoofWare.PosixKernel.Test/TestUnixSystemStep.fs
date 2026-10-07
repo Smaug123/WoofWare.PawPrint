@@ -2326,7 +2326,12 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not unlink the file: %O{error}"
 
         let released =
-            match FileDescriptorRegistry.dropDescriptor fd Set.empty (UnixSystemState.fileDescriptors system) with
+            match
+                FileDescriptorRegistry.dropDescriptor
+                    system.Process.ProcessId
+                    fd
+                    (UnixSystemState.fileDescriptors system)
+            with
             | Ok (registry, _) -> registry
             | Error error -> failwith $"could not close the descriptor: %O{error}"
 
@@ -2875,8 +2880,19 @@ module TestUnixSystemStep =
         let held = UnixDescriptor.flock holderTask first 2 system |> granted
         let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
 
+        // The forgery lets go of the park's hold behind its back as well.
+        let secondId =
+            FileDescriptorRegistry.tryFindId second (UnixSystemState.fileDescriptors parkedIn)
+            |> Option.get
+
         let closed =
-            match FileDescriptorRegistry.dropDescriptor second Set.empty (UnixSystemState.fileDescriptors parkedIn) with
+            match
+                FileDescriptorRegistry.dropDescriptor
+                    parkedIn.Process.ProcessId
+                    second
+                    (UnixSystemState.fileDescriptors parkedIn
+                     |> FileDescriptorRegistry.mapOpenFiles (OpenFileTable.releaseHold secondId))
+            with
             | Ok (registry, Some _) -> UnixSystemState.withFileDescriptors registry parkedIn
             | other -> failwith $"expected the forged close to destroy the description, got %A{other}"
 
@@ -3511,7 +3527,12 @@ module TestUnixSystemStep =
         let queueId = descriptionOf fd system
 
         let closed =
-            match FileDescriptorRegistry.dropDescriptor fd Set.empty (UnixSystemState.fileDescriptors system) with
+            match
+                FileDescriptorRegistry.dropDescriptor
+                    system.Process.ProcessId
+                    fd
+                    (UnixSystemState.fileDescriptors system)
+            with
             | Ok (registry, _) -> UnixSystemState.withFileDescriptors registry system
             | Error error -> failwith $"expected the close to succeed, got %O{error}"
 

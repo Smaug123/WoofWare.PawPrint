@@ -41,7 +41,7 @@ Converting those to and from a client's own encoding is the client's business.
 
 The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three parts:
 
-* the machine (`UnixMachineState`): the filesystem, the open file descriptions (with the state of each epoll instance and kqueue), sockets, connections and pipes, the clock, the entropy pool, and the platform being simulated;
+* the machine (`UnixMachineState`): the filesystem, the open file descriptions (with the state of each epoll instance and kqueue, and how many descriptors and calls in flight reference each), sockets, connections and pipes, the thread IDs live tasks hold, the clock, the entropy pool, and the platform being simulated;
 * the process (`UnixProcessState`): the descriptor table, which says only which open file description each descriptor names, and the process's credentials, umask, current directory, environment and signal state;
 * the tasks (`UnixTaskState`): the process's tasks, and what each is blocked in, if anything.
 
@@ -119,6 +119,8 @@ Every descriptor lies below `SimulatedUnixPlatform.descriptorBound`, the soft `R
 
 `UnixSystem.checkInvariants` lists every way a system's tables disagree with each other.
 No sequence of syscalls should ever produce one.
+It is two halves: `UnixSystem.checkMachineInvariants`, the rules about the machine, which takes every process on it, and `UnixSystem.checkViewInvariants`, those about one process's view of it.
+A fact a syscall needs about other processes is kept on the machine's object rather than derived from the processes: each open file description counts the descriptors naming it and the holds of calls in flight on it, the thread ID allocator records which IDs live tasks hold, and a kqueue records the process that owns it, whose descriptor numbers its registrations name.
 
 ### Answers and refusals
 
@@ -138,6 +140,8 @@ That is the state the kernel sleeps in, which can differ from the one the call a
 The library has no scheduler, and does not want one.
 Waking is pulled rather than pushed: after each step, the client asks `UnixWait.wakes` which of the tasks it holds asleep may wake now, and with nothing runnable, `UnixWait.deadlines` says how far it may advance the clock.
 A woken task finishes its call through the family's finishing function (`UnixDescriptor.flockAcquire`, `UnixPoll.finishPoll`, `UnixReadWrite.finishRead`, and so on), which may answer, park again, or say the call restarts because a signal handler interrupted it.
+
+A parked call holds the open file descriptions it waits on (`ParkedSyscall.descriptions`), as a real one holds a reference to each file: a description goes when no descriptor names it and no call holds it, so one closed under a sleeping call goes when the call returns.
 
 ## Flavours and divergence from host platforms
 

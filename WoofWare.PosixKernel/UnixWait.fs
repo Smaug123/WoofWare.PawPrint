@@ -21,11 +21,12 @@ type internal ExclusiveWaitQueue =
 module UnixWait =
 
     /// Record that `task` has parked in `parked`, placing it after every park
-    /// made before it.
+    /// made before it, and taking the holds the call keeps on the open file
+    /// descriptions it names (`ParkedSyscall.descriptions`).
     ///
     /// Refuses to replace a park of one syscall with a park of another, and
     /// otherwise accepts a re-park of the same syscall, which moves the task to
-    /// the back of park order.
+    /// the back of park order and lets go of the holds the earlier park took.
     let internal park<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (parked : ParkedSyscall)
@@ -45,8 +46,8 @@ module UnixWait =
                 { system.Machine with
                     NextParkOrdinal = ParkOrdinal.ParkOrdinal (ordinal + 1L)
                 }
-            Tasks = UnixTaskTable.withPark task taskPark system.Tasks
         }
+        |> UnixParkState.setPark task taskPark
 
     /// The tasks of `asleep` that `system` wakes now, in the order they parked,
     /// each with the primitives of its wake condition which hold.

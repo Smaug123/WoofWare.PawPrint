@@ -1337,10 +1337,7 @@ module UnixDescriptor =
         // (`open-file-references.c` sections D and F: the lock it was granted
         // goes with it).
         let finished () =
-            let unparked =
-                { advanced with
-                    Tasks = UnixTaskTable.unpark task advanced.Tasks
-                }
+            let unparked = (UnixParkState.unpark task advanced)
 
             // A socket has one description, so no other description's lock can
             // obstruct an `flock` of one, and such a call never sleeps.
@@ -1593,9 +1590,9 @@ module UnixDescriptor =
     /// inode is still named is a question about the filesystem, and what a
     /// sleeping call holds is the task table's.
     ///
-    /// Every kqueue registration made through `fd` goes with it, in a kqueue the
-    /// process holds and in the kqueue of every Darwin `poll` asleep
-    /// (`ParkedKqueuePoll`), whose entry then reports nothing.
+    /// Every kqueue registration made through `fd` goes with it, in each kqueue
+    /// the process owns (`KqueueState.Owner`) and in the kqueue of every Darwin
+    /// `poll` asleep (`ParkedKqueuePoll`), whose entry then reports nothing.
     ///
     /// EBADF is its only errno; see `CloseRefusal` for the inputs it declines
     /// to answer at all.
@@ -1842,27 +1839,29 @@ module UnixDescriptor =
                     failwith
                         $"UnixDescriptor.close: an accept sleeps through fd %d{fd}, which names %A{target} rather than a socket (this is a bug in this library, or in a caller that assembled the state by hand)."
 
-        let tasks =
-            (system.Tasks, endedCalls)
-            ||> List.fold (fun tasks (task, ended) ->
-                let state = UnixTaskTable.get task tasks
-
-                match state.Parked with
+        // Each ended call keeps its park, for its finishing call to read, and
+        // lets go of the hold it had on what it slept on.
+        let ended =
+            ({ system with
+                Machine = machine
+             },
+             endedCalls)
+            ||> List.fold (fun system (task, ended) ->
+                match UnixTaskTable.parkOf task system.Tasks with
                 | Some park ->
-                    Map.add
+                    UnixParkState.setPark
                         task
-                        { state with
-                            Parked =
-                                Some
-                                    { park with
-                                        Syscall = ended
-                                    }
+                        { park with
+                            Syscall = ended
                         }
-                        tasks
+                        system
                 | None ->
                     failwith
                         $"UnixDescriptor.close: task %O{task} was parked a moment ago and is not now (this is a bug in this library)."
             )
+
+        let machine = ended.Machine
+        let tasks = ended.Tasks
 
         // Measured (`close-ends-call.c` sections P2-P4 and P7): each write the
         // close ends raises SIGPIPE for the process as it returns, which is
@@ -1954,8 +1953,8 @@ module UnixDescriptor =
         let registry, destroyed =
             match
                 FileDescriptorRegistry.dropDescriptor
+                    system.Process.ProcessId
                     fd
-                    (ObjectLifetime.heldByCalls system.Tasks)
                     (UnixSystemState.fileDescriptors system)
             with
             | Ok dropped -> dropped
@@ -1964,7 +1963,7 @@ module UnixDescriptor =
                     $"UnixDescriptor.close: fd %d{fd} named open file description %O{closingId} (%A{closing.Target}) a moment ago, and the registry now calls it a bad descriptor (this is a bug in this library)."
 
         // `dropDescriptor` removed the kqueue registrations made through `fd`
-        // from every kqueue the process holds; a sleeping Darwin poll's kqueue
+        // from every kqueue the process owns; a sleeping Darwin poll's kqueue
         // is the call's own, so it loses them here (measured, `poll-timeout.c`
         // section E: the entry then reports nothing, and the poll sleeps on to
         // its timeout).

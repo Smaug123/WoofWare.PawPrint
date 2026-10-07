@@ -118,10 +118,7 @@ module TestUnixWait =
     let private apply (op : Op) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match op with
         | Op.Park task -> UnixWait.park task (parkOfTask task) system
-        | Op.Unpark task ->
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        | Op.Unpark task -> UnixParkState.unpark task system
         | Op.AdvanceClock nanoseconds ->
             { system with
                 Machine = UnixMachineState.advanceClock nanoseconds system.Machine
@@ -257,9 +254,7 @@ module TestUnixWait =
         let cleared =
             let parked = system |> UnixWait.park 1 (parkOfTask 1)
 
-            { parked with
-                Tasks = UnixTaskTable.unpark 1 parked.Tasks
-            }
+            UnixParkState.unpark 1 parked
 
         UnixWait.park 1 (parkOfTask 3) cleared
         |> fun system -> UnixTaskTable.parkedFor 1 system.Tasks

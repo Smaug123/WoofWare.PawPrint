@@ -1746,12 +1746,7 @@ module UnixConnection =
             // ECONNABORTED, whatever is queued and whatever signal is pending,
             // since a woken accept on a drained listener answers it whatever
             // woke it (section A7).
-            Ok (
-                AcceptOutcome.Failed UnixError.ECONNABORTED,
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
-            )
+            Ok (AcceptOutcome.Failed UnixError.ECONNABORTED, (UnixParkState.unpark task system))
         | SleepTarget.Waiting (listenerId, _) ->
 
         let description =
@@ -1773,10 +1768,7 @@ module UnixConnection =
                 failwith
                     $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{listenerId}, which names %A{description.Target} rather than a socket. `accept` parks only on a listening socket (this is a bug in the caller that recorded the park)."
 
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        let finished = (UnixParkState.unpark task system)
 
         match (UnixMachineState.socket socketId system.Machine).Phase with
         | SocketPhase.Listening {

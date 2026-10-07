@@ -49,8 +49,11 @@ module TestWakeCondition =
 
         // Two kqueues, for `KqueueDrained`'s two live answers: fds 5 and 6. The world is
         // Linux's, which has no kqueue; the primitive asks only of the description.
-        let _, registry = FileDescriptorRegistry.createKqueue registry
-        let drainedFd, registry = FileDescriptorRegistry.createKqueue registry
+        let _, registry =
+            FileDescriptorRegistry.createKqueue system.Process.ProcessId registry
+
+        let drainedFd, registry =
+            FileDescriptorRegistry.createKqueue system.Process.ProcessId registry
 
         let registry =
             match FileDescriptorRegistry.tryFindId drainedFd registry with
@@ -102,6 +105,7 @@ module TestWakeCondition =
                 (OpenFileTable.setKqueueState
                     (idOf 5 system)
                     {
+                        Owner = system.Process.ProcessId
                         Drained = false
                         Registrations =
                             Map.ofList

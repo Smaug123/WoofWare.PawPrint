@@ -30,6 +30,8 @@
     <Compile Include="LaunchedStreams.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="Tasks.fs" />
+    <Compile Include="EndedMachine.fs" />
+    <Compile Include="ForgedPark.fs" />
     <Compile Include="FcntlWorld.fs" />
     <Compile Include="PendingSignal.fs" />
     <Compile Include="HandlerFrames.fs" />
@@ -56,6 +58,7 @@
     <Compile Include="TestSyscallInterruption.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />
     <Compile Include="TestThreadIds.fs" />
+    <Compile Include="TestCallHolds.fs" />
     <Compile Include="TestProcessTermination.fs" />
     <Compile Include="TestProcessTerminationAgainstHost.fs" />
     <Compile Include="TestUnixProcessState.fs" />

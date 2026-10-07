@@ -20,6 +20,18 @@ module UnixBootImage =
             System = system
         }
 
+    /// Fails loudly unless the boot image's system `system` has one task, its
+    /// leader: a setter that restarts the thread ID allocator gives it the
+    /// leader's ID as its one live ID, which is right only then.
+    let private assertLeaderOnly<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (context : string)
+        (system : UnixSystem<'Task, 'Handler>)
+        : unit
+        =
+        if system.Tasks.Count <> 1 then
+            failwith
+                $"%s{context}: the boot image has %d{system.Tasks.Count} tasks, where it starts with its leader alone and no syscall takes an image (this is a bug in this library)."
+
     let private withMachine<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (image : UnixBootImage<'Task, 'Handler>)
         (machine : UnixMachineState)
@@ -66,11 +78,12 @@ module UnixBootImage =
         let system = image.System
 
         let pid = ProcessId.assertValid context pid
+        assertLeaderOnly context system
         let leader = UnixTaskTable.get system.Leader system.Tasks
 
         let tasks, machine =
-            match system.Machine.ThreadIds with
-            | ThreadIdAllocator.Linux (_, pidMax) ->
+            match system.Machine.ThreadIds.Counter with
+            | ThreadIdCounter.Linux (_, pidMax) ->
                 let leaderThreadId, threadIds = ThreadIdAllocator.startLinux context pidMax pid
 
                 Map.add
@@ -82,7 +95,7 @@ module UnixBootImage =
                 { system.Machine with
                     ThreadIds = threadIds
                 }
-            | ThreadIdAllocator.Darwin _ -> system.Tasks, system.Machine
+            | ThreadIdCounter.Darwin _ -> system.Tasks, system.Machine
 
         // The pipes the process was launched with name it as the process they
         // were launched into, so they follow it to its new ID. Nothing has been
@@ -132,12 +145,13 @@ module UnixBootImage =
         =
         let system = image.System
 
-        match system.Machine.ThreadIds with
-        | ThreadIdAllocator.Linux _ ->
+        match system.Machine.ThreadIds.Counter with
+        | ThreadIdCounter.Linux _ ->
             failwith
                 $"%s{context}: on Linux the leader's thread ID is the process ID, so it cannot be set apart from it; set the process ID instead."
-        | ThreadIdAllocator.Darwin _ ->
+        | ThreadIdCounter.Darwin _ ->
 
+        assertLeaderOnly context system
         let leader = UnixTaskTable.get system.Leader system.Tasks
         let leaderThreadId, threadIds = ThreadIdAllocator.startDarwin context id
 

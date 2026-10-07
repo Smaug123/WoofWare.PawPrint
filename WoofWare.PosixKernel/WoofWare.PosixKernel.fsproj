@@ -34,6 +34,7 @@
         <Compile Include="VirtualFileSystem.fs" />
         <Compile Include="PathWalk.fs" />
         <Compile Include="InternetEndpoint.fs" />
+        <Compile Include="ProcessId.fs" />
         <Compile Include="FileDescriptorRegistry.fs" />
         <Compile Include="Signal.fs" />
         <Compile Include="SignalState.fs" />
@@ -44,7 +45,6 @@
         <Compile Include="EmulatedFileSystemType.fs" />
         <Compile Include="DeviceFileSystem.fs" />
         <Compile Include="UserBuffer.fs" />
-        <Compile Include="ProcessId.fs" />
         <Compile Include="OsThreadId.fs" />
         <Compile Include="UnixTask.fs" />
         <Compile Include="Sockaddr.fs" />
