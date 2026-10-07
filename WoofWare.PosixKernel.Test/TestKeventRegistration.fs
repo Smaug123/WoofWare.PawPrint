@@ -1028,12 +1028,15 @@ module TestKeventRegistration =
             UnixSystemState.mapOpenFiles (OpenFileTable.setKqueueState kqueueId state) system
             |> UnixSystem.checkInvariants
 
+        let listenerSocket = (socketOf listener system).Value
+
         let registration : KqueueRegistration =
             {
                 Clear = true
                 Receipt = false
                 UserData = 0UL
                 RegisteredAt = 0L
+                Socket = listenerSocket
             }
 
         let honest =
@@ -1089,6 +1092,29 @@ module TestKeventRegistration =
                     0,
                     KqueueFilter.Read,
                     (FileDescriptorRegistry.tryFindTarget 0 (UnixSystemState.fileDescriptors system)).Value
+                )
+            ]
+
+        // Attached to a socket other than the one its descriptor names.
+        defects
+            { honest with
+                Registrations =
+                    Map.ofList
+                        [
+                            (listener, KqueueFilter.Read),
+                            { registration with
+                                Socket = SocketId 99L
+                            }
+                        ]
+            }
+        |> shouldEqual
+            [
+                FileDescriptorRegistryDefect.KqueueRegistrationOnAnotherSocket (
+                    kqueueId,
+                    listener,
+                    KqueueFilter.Read,
+                    SocketId 99L,
+                    listenerSocket
                 )
             ]
 

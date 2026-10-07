@@ -521,6 +521,14 @@ type KqueueRegistration =
         /// and filter at once, made through different descriptors onto it, and
         /// they are queued newest-registered first.
         RegisteredAt : int64
+        /// The socket the descriptor named when this registration was first
+        /// added: what the filter is attached to, as XNU attaches a knote to
+        /// the socket's own list at registration. An event on the socket
+        /// reaches the registration through this, whichever process's call
+        /// caused it, without reading any descriptor table. The descriptor
+        /// names this socket for as long as the registration lasts, since
+        /// closing the descriptor removes the registration.
+        Socket : SocketId
     }
 
 /// Everything one Darwin kqueue holds.
@@ -1075,6 +1083,16 @@ type FileDescriptorRegistryDefect =
         fd : int *
         filter : KqueueFilter *
         target : OpenFileTarget
+    /// A kqueue holds a registration attached to the socket `registered`,
+    /// made through a descriptor that now names the socket `named` instead.
+    /// Closing the descriptor removes the registration, so the number cannot
+    /// have come to name another socket while it lasts.
+    | KqueueRegistrationOnAnotherSocket of
+        kqueue : OpenFileDescriptionId *
+        fd : int *
+        filter : KqueueFilter *
+        registered : SocketId *
+        named : SocketId
     /// A kqueue's queue of activated registrations holds an entry it does not
     /// register. Every path that removes a registration removes its queue entry
     /// in the same step.
@@ -2875,7 +2893,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Kqueue state ->
                     state.Registrations
                     |> Map.toList
-                    |> List.choose (fun ((fd, filter), _) ->
+                    |> List.choose (fun ((fd, filter), registration) ->
                         match named fd registry.Descriptors.Fds with
                         | None ->
                             Some (
@@ -2888,8 +2906,20 @@ module FileDescriptorRegistry =
                         | Some id ->
                             match Map.tryFind id descriptions with
                             | Some {
-                                       Target = OpenFileTarget.Socket _
-                                   }
+                                       Target = OpenFileTarget.Socket socket
+                                   } when socket = registration.Socket -> None
+                            | Some {
+                                       Target = OpenFileTarget.Socket socket
+                                   } ->
+                                Some (
+                                    FileDescriptorRegistryDefect.KqueueRegistrationOnAnotherSocket (
+                                        kqueue,
+                                        fd,
+                                        filter,
+                                        registration.Socket,
+                                        socket
+                                    )
+                                )
                             // A dangling descriptor is `DanglingFd`'s to report.
                             | None -> None
                             | Some other ->

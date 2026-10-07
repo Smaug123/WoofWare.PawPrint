@@ -80,8 +80,12 @@ module DebuggerServer =
     /// for any other thread it is an interpreter bug that
     /// `EmulatedKernel.checkTaskInvariants` names, and this reports it rather than raising,
     /// because a debugger is most wanted when the machine is already wrong.
+    ///
+    /// `system` is the kernel the task is in, which holds what a sleeping Darwin
+    /// poll registered (`ParkedKqueuePoll.Queue`).
     let private writeThreadStatus
         (writer : Utf8JsonWriter)
+        (system : UnixSystem<ThreadId, NativeSignalHandler>)
         (task : UnixTaskState option)
         (status : ThreadStatus)
         : unit
@@ -250,9 +254,15 @@ module DebuggerServer =
                     writer.WriteEndObject ()
 
                 writer.WriteEndArray ()
+
+                let registrations, active =
+                    match UnixSystem.pollQueue parked.Queue system with
+                    | Some queue -> queue.Registrations, queue.Active
+                    | None -> Map.empty, []
+
                 writer.WriteStartArray "registrations"
 
-                for (fd, filter), registration in Map.toList parked.Registrations do
+                for (fd, filter), registration in Map.toList registrations do
                     writer.WriteStartObject ()
                     writer.WriteNumber ("fd", fd)
 
@@ -264,7 +274,7 @@ module DebuggerServer =
                     )
 
                     writer.WriteNumber ("entry", registration.Entry)
-                    writer.WriteBoolean ("active", List.contains (fd, filter) parked.Active)
+                    writer.WriteBoolean ("active", List.contains (fd, filter) active)
                     writer.WriteEndObject ()
 
                 writer.WriteEndArray ()
@@ -392,7 +402,7 @@ module DebuggerServer =
         writer.WriteStartObject ()
         writer.WriteNumber ("id", threadIdValue threadId)
         writer.WritePropertyName "status"
-        writeThreadStatus writer (state.Kernel.Tasks |> Map.tryFind threadId) threadState.Status
+        writeThreadStatus writer state.Kernel.System (state.Kernel.Tasks |> Map.tryFind threadId) threadState.Status
 
         if ThreadStatus.hasNoActiveFrame threadState.Status then
             // A frameless thread (pre-`Start`, or a kernel-owned Parked
@@ -808,7 +818,7 @@ module DebuggerServer =
             writer.WriteStartObject ()
             writer.WriteNumber ("id", threadIdValue threadId)
             writer.WritePropertyName "status"
-            writeThreadStatus writer (state.Kernel.Tasks |> Map.tryFind threadId) threadState.Status
+            writeThreadStatus writer state.Kernel.System (state.Kernel.Tasks |> Map.tryFind threadId) threadState.Status
 
             if ThreadStatus.hasNoActiveFrame threadState.Status then
                 writer.WriteNull "activeAssembly"
@@ -905,7 +915,7 @@ module DebuggerServer =
             writer.WriteStartObject ()
             writer.WriteNumber ("id", threadIdValue threadId)
             writer.WritePropertyName "status"
-            writeThreadStatus writer (state.Kernel.Tasks |> Map.tryFind threadId) threadState.Status
+            writeThreadStatus writer state.Kernel.System (state.Kernel.Tasks |> Map.tryFind threadId) threadState.Status
 
             if ThreadStatus.hasNoActiveFrame threadState.Status then
                 writer.WriteNull "activeAssembly"
@@ -1749,6 +1759,10 @@ module DebuggerServer =
             /// The kernel's record for the thread, which a `BlockedInSyscall` status is rendered
             /// from and which can change while the thread's own state does not.
             Task : UnixTaskState option
+            /// The kqueue of the thread's sleeping Darwin poll, if it is asleep in
+            /// one, which its status is rendered from too: another task's call
+            /// activates it without changing this thread's task.
+            PollQueue : PollQueue option
             Status : int
             Assembly : int option
             ActiveFrame : int option
@@ -1758,6 +1772,13 @@ module DebuggerServer =
         }
 
     let private sameTask (a : UnixTaskState option) (b : UnixTaskState option) : bool =
+        match a, b with
+        | None, None -> true
+        | Some a, Some b -> Object.ReferenceEquals (a, b)
+        | Some _, None
+        | None, Some _ -> false
+
+    let private samePollQueue (a : PollQueue option) (b : PollQueue option) : bool =
         match a, b with
         | None, None -> true
         | Some a, Some b -> Object.ReferenceEquals (a, b)
@@ -1849,23 +1870,37 @@ module DebuggerServer =
         =
         let task = state.Kernel.Tasks |> Map.tryFind threadId
 
+        let pollQueue =
+            match task |> Option.bind UnixTaskState.park with
+            | Some {
+                       Syscall = ParkedSyscall.KqueuePoll parked
+                   } -> UnixSystem.pollQueue parked.Queue state.Kernel.System
+            | Some _
+            | None -> None
+
         let unchangedThread =
             match previous with
             | Some previous -> Object.ReferenceEquals (previous.Thread, thread)
             | None -> false
 
         match previous with
-        | Some previous when unchangedThread && sameTask previous.Task task -> previous
+        | Some previous when
+            unchangedThread
+            && sameTask previous.Task task
+            && samePollQueue previous.PollQueue pollQueue
+            ->
+            previous
         | _ ->
 
         let status =
-            renderer.Render (fun writer -> writeThreadStatus writer task thread.Status)
+            renderer.Render (fun writer -> writeThreadStatus writer state.Kernel.System task thread.Status)
             |> tables.Statuses.Intern
 
         match previous with
         | Some previous when unchangedThread ->
             { previous with
                 Task = task
+                PollQueue = pollQueue
                 Status = status
             }
         | _ ->
@@ -1900,6 +1935,7 @@ module DebuggerServer =
         {
             Thread = thread
             Task = task
+            PollQueue = pollQueue
             Status = status
             Assembly =
                 if hasActiveFrame then

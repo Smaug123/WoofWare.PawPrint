@@ -150,11 +150,35 @@ module internal UnixParkState =
         (openFiles, descriptions taken)
         ||> List.fold (fun openFiles id -> OpenFileTable.hold id openFiles)
 
+    /// The machine's sleeping Darwin polls' kqueues with the one `released`
+    /// names destroyed, unless `taken` names it too: a Darwin poll's park holds
+    /// its kqueue, and a re-park of the call keeps it.
+    let private moveQueue
+        (released : TaskPark option)
+        (taken : TaskPark option)
+        (queues : Map<PollQueueId, PollQueue>)
+        : Map<PollQueueId, PollQueue>
+        =
+        let queueOf (park : TaskPark option) : PollQueueId option =
+            match park with
+            | Some {
+                       Syscall = ParkedSyscall.KqueuePoll poll
+                   } -> Some poll.Queue
+            | Some _
+            | None -> None
+
+        match queueOf released with
+        | Some queue when queueOf taken <> Some queue -> Map.remove queue queues
+        | Some _
+        | None -> queues
+
     /// `system` with `task` parked in `park`, which replaces any park it was in,
     /// and with the holds the machine records moved to match: the old park's
-    /// let go of, and the new park's taken. Every write of a park goes through
-    /// here or `unpark`, so the holds the open file table records are always
-    /// those the parks name.
+    /// let go of, and the new park's taken; and a Darwin poll's kqueue the old
+    /// park held destroyed, unless the new one holds it too. Every write of a
+    /// park goes through here or `unpark`, so the holds the open file table
+    /// records are always those the parks name, and the machine holds the
+    /// kqueue of exactly the Darwin polls asleep.
     ///
     /// Refuses to replace a park of one syscall with a park of another, as
     /// `UnixTaskTable.withPark` does. Writes `park` as it stands, ordinal and
@@ -171,14 +195,16 @@ module internal UnixParkState =
             Machine =
                 { system.Machine with
                     OpenFiles = moveHolds previous (Some park) system.Machine.OpenFiles
+                    PollQueues = moveQueue previous (Some park) system.Machine.PollQueues
                 }
             Tasks = UnixTaskTable.withPark task park system.Tasks
         }
 
     /// `system` with `task` no longer parked, its call having returned or been
-    /// ended, and the holds its park took let go of. Destroys nothing: a
+    /// ended, and the holds its park took let go of. Destroys no description: a
     /// description only the park held stays in the table until
-    /// `ObjectLifetime.releaseUnreferenced` is asked about it.
+    /// `ObjectLifetime.releaseUnreferenced` is asked about it. A Darwin poll's
+    /// kqueue, which nothing but its park reaches, goes with the park.
     let unpark<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
@@ -190,6 +216,7 @@ module internal UnixParkState =
             Machine =
                 { system.Machine with
                     OpenFiles = moveHolds previous None system.Machine.OpenFiles
+                    PollQueues = moveQueue previous None system.Machine.PollQueues
                 }
             Tasks = UnixTaskTable.unpark task system.Tasks
         }
