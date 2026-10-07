@@ -76,6 +76,7 @@ module TestClock =
         =
         imageOn flavour
         |> UnixBootImage.withBootTime bootTime
+        |> Configured.expectOk BootTimeRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> UnixSystem.advanceClock sinceBoot
 
@@ -222,22 +223,72 @@ module TestClock =
                             anywhereIn Int64.MinValue Int64.MaxValue
                             anywhereIn -1_000L 1_000L
                             anywhereIn (UnixMachineState.maxBootTimeSeconds - 1_000L) Int64.MaxValue
+                            // Each side of both boundaries, which a draw from even
+                            // a thousand seconds lands on rarely.
+                            Gen.elements
+                                [
+                                    -1L
+                                    0L
+                                    UnixMachineState.maxBootTimeSeconds
+                                    UnixMachineState.maxBootTimeSeconds + 1L
+                                ]
                         ]
 
                 let! micros = Gen.choose64 (0L, 999_999L)
                 return seconds, int micros * 1000
             }
 
-        let property (seconds : int64, nanos : int) : bool =
+        let property (seconds : int64, nanos : int) : unit =
             let timestamp = UnixTimestamp.createOrFail "TestClock" seconds nanos
-            let admissible = seconds >= 0L && seconds <= UnixMachineState.maxBootTimeSeconds
 
-            flavours
-            |> List.forall (fun flavour ->
-                succeeds (fun () -> UnixBootImage.withBootTime timestamp (imageOn flavour)) = admissible
-            )
+            let expected : Result<unit, BootTimeRefusal> =
+                if seconds < 0L then
+                    Error (BootTimeRefusal.BeforeEpoch timestamp)
+                elif seconds > UnixMachineState.maxBootTimeSeconds then
+                    Error (BootTimeRefusal.PastMaxBootTime (timestamp, UnixMachineState.maxBootTimeSeconds))
+                else
+                    Ok ()
+
+            for flavour in flavours do
+                match UnixBootImage.withBootTime timestamp (imageOn flavour) with
+                | Ok image ->
+                    expected |> shouldEqual (Ok ())
+
+                    (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine.BootTime
+                    |> shouldEqual timestamp
+                | Error refusal -> Error refusal |> shouldEqual expected
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen gen) property)
+
+    [<Test>]
+    let ``withBootTime's boundaries`` () : unit =
+        let outcome (flavour : SimulatedUnixFlavour) (seconds : int64) (nanos : int) : Result<unit, BootTimeRefusal> =
+            UnixBootImage.withBootTime (UnixTimestamp.createOrFail "TestClock" seconds nanos) (imageOn flavour)
+            |> Result.map ignore<UnixBootImage<int, string>>
+
+        let latest = UnixMachineState.maxBootTimeSeconds
+
+        for flavour in flavours do
+            outcome flavour -1L 999_999_000
+            |> shouldEqual (
+                Error (BootTimeRefusal.BeforeEpoch (UnixTimestamp.createOrFail "TestClock" -1L 999_999_000))
+            )
+
+            outcome flavour 0L 0 |> shouldEqual (Ok ())
+            outcome flavour latest 999_999_000 |> shouldEqual (Ok ())
+
+            outcome flavour (latest + 1L) 0
+            |> shouldEqual (
+                Error (BootTimeRefusal.PastMaxBootTime (UnixTimestamp.createOrFail "TestClock" (latest + 1L) 0, latest))
+            )
+
+        // Before the epoch is refused as that first, even where Darwin would
+        // also refuse the sub-microsecond part.
+        outcome SimulatedUnixFlavour.Darwin -1L 1
+        |> shouldEqual (Error (BootTimeRefusal.BeforeEpoch (UnixTimestamp.createOrFail "TestClock" -1L 1)))
+
+        outcome SimulatedUnixFlavour.Darwin 0L 1
+        |> shouldEqual (Error (BootTimeRefusal.FinerThanMicrosecond (UnixTimestamp.createOrFail "TestClock" 0L 1)))
 
     [<Test>]
     let ``Darwin refuses a boot instant finer than a microsecond, and Linux does not`` () : unit =
@@ -248,16 +299,24 @@ module TestClock =
                 return seconds, int nanos
             }
 
-        let property (seconds : int64, nanos : int) : bool =
+        let property (seconds : int64, nanos : int) : unit =
             let timestamp = UnixTimestamp.createOrFail "TestClock" seconds nanos
 
-            let linux =
-                succeeds (fun () -> UnixBootImage.withBootTime timestamp (imageOn SimulatedUnixFlavour.Linux))
+            let outcome (flavour : SimulatedUnixFlavour) : Result<UnixTimestamp, BootTimeRefusal> =
+                UnixBootImage.withBootTime timestamp (imageOn flavour)
+                |> Result.map (fun image ->
+                    (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine.BootTime
+                )
 
-            let darwin =
-                succeeds (fun () -> UnixBootImage.withBootTime timestamp (imageOn SimulatedUnixFlavour.Darwin))
+            outcome SimulatedUnixFlavour.Linux |> shouldEqual (Ok timestamp)
 
-            linux && darwin = (nanos % 1000 = 0)
+            outcome SimulatedUnixFlavour.Darwin
+            |> shouldEqual (
+                if nanos % 1000 = 0 then
+                    Ok timestamp
+                else
+                    Error (BootTimeRefusal.FinerThanMicrosecond timestamp)
+            )
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen gen) property)
 

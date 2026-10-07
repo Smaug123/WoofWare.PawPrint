@@ -331,7 +331,7 @@ module TestUnixSystemStep =
         // (`TestUnconnectedSocketTransfer` holds those rows to the measured
         // ones): ENOTCONN for an INET stream socket on both flavours.
         for platform in [ linux ; darwin ] do
-            let established = SocketPhase.Established (ConnectionId 0L)
+            let established = SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
             let fd, system = withSocketIn established platform
 
             ReadOutcomes.read fd UserBuffer.Mapped 5UL system
@@ -404,7 +404,7 @@ module TestUnixSystemStep =
                         ListenState.Queue = []
                         ListenState.Drained = false
                     }
-                SocketPhase.Established (ConnectionId 0L)
+                SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L)
                 SocketPhase.Refused RefusalError.Pending
             ]
@@ -637,7 +637,7 @@ module TestUnixSystemStep =
         // not extract bytes for a write that cannot happen, and `write` because
         // a caller that skipped the admission must not get a guess either.
         let socketId = SocketId 0L
-        let established = SocketPhase.Established (ConnectionId 0L)
+        let established = SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
 
         let socket : SocketDescription =
             {
@@ -710,7 +710,7 @@ module TestUnixSystemStep =
         let refusing =
             [
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L)
-                SocketPhase.Established (ConnectionId 0L)
+                SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
                 SocketPhase.DatagramPeer (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 9us)
@@ -1010,7 +1010,7 @@ module TestUnixSystemStep =
         // phase, and is refused in some, but its seekability does not — every
         // socket is unseekable whatever it is connected to, so `pread` never
         // reaches the read operation to ask.
-        let established = SocketPhase.Established (ConnectionId 0L)
+        let established = SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
         let fd, system = withSocketIn established linux
 
         ReadOutcomes.read fd UserBuffer.Mapped 5UL system
@@ -2173,10 +2173,14 @@ module TestUnixSystemStep =
                 // A mode the default umask does *not* reduce to the same thing
                 // as 0o777: with umask 0o022 both 0o755 and 0o777 become 0o755,
                 // so a dispatcher that dropped the mode would agree.
-                Syscall.MkDir (PathArg.ofPath (statPath "/new"), 0o700),
+                // AT_FDCWD on Linux.
+                Syscall.MkDirAt (-100, PathArg.ofPath (statPath "/new"), 0o700),
                 Answered.mkdir (PathArg.ofPath (statPath "/new")) 0o700 system
-                Syscall.Unlink (PathArg.ofPath (statPath "/d/inner/t")), Answered.unlink (statPath "/d/inner/t") system
-                Syscall.RmDir (PathArg.ofPath (statPath "/d")), Answered.rmdir (statPath "/d") system
+                // AT_FDCWD on Linux, with no flags and with Linux's
+                // AT_REMOVEDIR.
+                Syscall.UnlinkAt (-100, PathArg.ofPath (statPath "/d/inner/t"), 0),
+                Answered.unlink (statPath "/d/inner/t") system
+                Syscall.UnlinkAt (-100, PathArg.ofPath (statPath "/d"), 0x200), Answered.rmdir (statPath "/d") system
                 // A *successful* chdir, so the comparison covers the state it
                 // moves rather than only an errno: this one changes both the
                 // current directory inode and the cached path, and a dispatcher
@@ -2188,6 +2192,84 @@ module TestUnixSystemStep =
             UnixSystem.step holderTask call system
             |> stepAnswered
             |> shouldEqual (Ok expected)
+
+    [<Test>]
+    let ``mkdirat through step starts from its dirfd`` () : unit =
+        // The cwd is the root, where "new" is free; from `/d/inner` the same
+        // relative name lands somewhere else, so a dispatcher that dropped the
+        // dirfd would create `/new` and disagree.
+        let _, _, _, system = withTree linux
+
+        let fd, system =
+            match UnixNamespace.openPath 0 (PathArg.ofText "/d/inner") 0 system with
+            | Ok (SyscallAnswer.Completed fd, system) -> int fd, system
+            | other -> failwith $"open(/d/inner) did not open: %A{other}"
+
+        let viaStep =
+            UnixSystem.step holderTask (Syscall.MkDirAt (fd, PathArg.ofText "new", 0o700)) system
+            |> stepAnswered
+
+        viaStep
+        |> shouldEqual (
+            UnixNamespace.mkdirat fd (PathArg.ofText "new") 0o700 system
+            |> Result.mapError SyscallRefusal.MkDir
+        )
+
+        match viaStep with
+        | Ok (SyscallAnswer.Completed _, after) ->
+            match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText "/d/inner/new") after with
+            | Ok (FileStatusAnswer.Reported _) -> ()
+            | other -> failwith $"/d/inner/new was not created: %A{other}"
+
+            UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText "/new") after
+            |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
+        | other -> failwith $"mkdirat(/d/inner, new) did not create: %A{other}"
+
+    [<Test>]
+    let ``unlinkat through step starts from its dirfd, and AT_REMOVEDIR makes it rmdir`` () : unit =
+        // The cwd is the root, which holds no "t" and no "inner": a dispatcher
+        // that dropped the dirfd would answer ENOENT, and one that dropped the
+        // flags would answer `unlink`'s EISDIR for the directory.
+        let _, _, _, system = withTree linux
+
+        let opened (path : string) (system : UnixSystem<int, string>) =
+            match UnixNamespace.openPath 0 (PathArg.ofText path) 0 system with
+            | Ok (SyscallAnswer.Completed fd, system) -> int fd, system
+            | other -> failwith $"open(%s{path}) did not open: %A{other}"
+
+        let innerFd, system = opened "/d/inner" system
+        let dFd, system = opened "/d" system
+
+        let step (call : Syscall) (system : UnixSystem<int, string>) =
+            UnixSystem.step holderTask call system |> stepAnswered
+
+        let viaStep = step (Syscall.UnlinkAt (innerFd, PathArg.ofText "t", 0)) system
+
+        viaStep
+        |> shouldEqual (
+            UnixNamespace.unlinkat innerFd (PathArg.ofText "t") 0 system
+            |> Result.mapError SyscallRefusal.UnlinkAt
+        )
+
+        let system =
+            match viaStep with
+            | Ok (SyscallAnswer.Completed _, after) -> after
+            | other -> failwith $"unlinkat(/d/inner, t) did not remove: %A{other}"
+
+        // Linux's AT_REMOVEDIR.
+        let viaStep = step (Syscall.UnlinkAt (dFd, PathArg.ofText "inner", 0x200)) system
+
+        viaStep
+        |> shouldEqual (
+            UnixNamespace.unlinkat dFd (PathArg.ofText "inner") 0x200 system
+            |> Result.mapError SyscallRefusal.UnlinkAt
+        )
+
+        match viaStep with
+        | Ok (SyscallAnswer.Completed _, after) ->
+            UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText "/d/inner") after
+            |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
+        | other -> failwith $"unlinkat(/d, inner, AT_REMOVEDIR) did not remove: %A{other}"
 
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =

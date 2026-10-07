@@ -72,14 +72,14 @@ module TestKernelConfigSplit =
         EmulatedKernel.image platform config.StandardStreams
         |> launch (ProcessLaunch.withCoreDumps config.CoreDumps)
         |> EmulatedKernel.withEnvironment "reference" config.Environment
-        |> machine (UnixBootImage.withProcessorCount config.ProcessorCount)
+        |> machine (UnixBootImage.withProcessorCount config.ProcessorCount >> ok)
         |> machine (fun image ->
             match config.UserAddressLimit with
             | None -> image
-            | Some limit -> UnixBootImage.withUserAddressLimit limit image
+            | Some limit -> UnixBootImage.withUserAddressLimit limit image |> ok
         )
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
-        |> machine (UnixBootImage.withMount config.Mount)
+        |> machine (UnixBootImage.withMount config.Mount >> ok)
         |> launch (ProcessLaunch.withProcessPath "reference" config.ProcessPath)
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
@@ -93,10 +93,11 @@ module TestKernelConfigSplit =
                 config.EphemeralPortRange
                 |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour)
             )
+            >> ok
         )
-        |> machine (UnixBootImage.withSoMaxConn config.SoMaxConn)
-        |> machine (UnixBootImage.withTcpSendSpace config.TcpSendSpace)
-        |> machine (UnixBootImage.withProtectedFiles "reference" config.ProtectedFiles)
+        |> machine (UnixBootImage.withSoMaxConn config.SoMaxConn >> ok)
+        |> machine (UnixBootImage.withTcpSendSpace config.TcpSendSpace >> ok)
+        |> machine (UnixBootImage.withProtectedFiles config.ProtectedFiles >> ok)
         |> machine (UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> launch (ProcessLaunch.withUmask config.Umask >> ok)
         |> machine (UnixBootImage.withProcessId config.ProcessId >> ok)

@@ -345,7 +345,7 @@ module NativeLibc =
         | SimulatedUnixFlavour.Linux ->
             let id = OsThreadId.toUInt64 id
 
-            // A Linux tid is below `pid_max`, which is at most 2^22.
+            // A Linux tid is below the greatest `pid_max` Linux takes, 2^22.
             if id > uint64 System.Int32.MaxValue then
                 failwith $"libc gettid: the kernel minted the Linux thread ID %d{id}, which is not a pid_t"
 
