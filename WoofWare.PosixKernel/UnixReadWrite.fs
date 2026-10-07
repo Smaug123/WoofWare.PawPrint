@@ -1054,7 +1054,8 @@ module UnixReadWrite =
                                         Map.add
                                             socketId
                                             { socket with
-                                                Binding = Some binding
+                                                Addressing =
+                                                    SocketAddressing.replaceBinding (Some binding) socket.Addressing
                                             }
                                             machine.Sockets
                                 }

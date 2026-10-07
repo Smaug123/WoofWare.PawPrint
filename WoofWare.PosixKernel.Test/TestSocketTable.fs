@@ -113,10 +113,9 @@ module TestSocketTable =
 
     let private someSocket : SocketDescription =
         {
-            Domain = SocketDomain.Inet
+            Addressing = SocketAddressing.Inet None
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
-            Binding = None
             Phase = SocketPhase.Idle
             ReuseAddress = false
             Options = SocketOptions.initial
@@ -728,13 +727,15 @@ module TestSocketTable =
                 yield
                     0L,
                     { someSocket with
-                        Binding =
-                            Some
-                                {
-                                    Endpoint = loopback port
-                                    LockedAddress = None
-                                    LockedPort = false
-                                }
+                        Addressing =
+                            SocketAddressing.replaceBinding
+                                (Some
+                                    {
+                                        Endpoint = loopback port
+                                        LockedAddress = None
+                                        LockedPort = false
+                                    })
+                                someSocket.Addressing
                         Phase =
                             SocketPhase.Listening
                                 {
@@ -968,13 +969,15 @@ module TestSocketTable =
                             Map.add
                                 (SocketId 1L)
                                 { someSocket with
-                                    Binding =
-                                        Some
-                                            {
-                                                Endpoint = loopback 4444us
-                                                LockedAddress = None
-                                                LockedPort = false
-                                            }
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (Some
+                                                {
+                                                    Endpoint = loopback 4444us
+                                                    LockedAddress = None
+                                                    LockedPort = false
+                                                })
+                                            someSocket.Addressing
                                 }
                                 kernel.Machine.Sockets
                     }
@@ -1063,13 +1066,15 @@ module TestSocketTable =
                 [
                     0L,
                     { someSocket with
-                        Binding =
-                            Some
-                                {
-                                    Endpoint = loopback 5000us
-                                    LockedAddress = None
-                                    LockedPort = false
-                                }
+                        Addressing =
+                            SocketAddressing.replaceBinding
+                                (Some
+                                    {
+                                        Endpoint = loopback 5000us
+                                        LockedAddress = None
+                                        LockedPort = false
+                                    })
+                                someSocket.Addressing
                         Phase =
                             SocketPhase.Listening
                                 {
@@ -1352,13 +1357,15 @@ module TestSocketTable =
                 [
                     0L,
                     { someSocket with
-                        Binding =
-                            Some
-                                {
-                                    Endpoint = loopback 2us
-                                    LockedAddress = None
-                                    LockedPort = false
-                                }
+                        Addressing =
+                            SocketAddressing.replaceBinding
+                                (Some
+                                    {
+                                        Endpoint = loopback 2us
+                                        LockedAddress = None
+                                        LockedPort = false
+                                    })
+                                someSocket.Addressing
                         Phase =
                             SocketPhase.Listening
                                 {
@@ -1435,13 +1442,15 @@ module TestSocketTable =
                 [
                     0L,
                     { someSocket with
-                        Binding =
-                            Some
-                                {
-                                    Endpoint = loopback 2us
-                                    LockedAddress = None
-                                    LockedPort = false
-                                }
+                        Addressing =
+                            SocketAddressing.replaceBinding
+                                (Some
+                                    {
+                                        Endpoint = loopback 2us
+                                        LockedAddress = None
+                                        LockedPort = false
+                                    })
+                                someSocket.Addressing
                         Phase =
                             SocketPhase.Listening
                                 {
@@ -1507,13 +1516,15 @@ module TestSocketTable =
                  |> List.mapi (fun i phase ->
                      int64 i,
                      { someSocket with
-                         Binding =
-                             Some
-                                 {
-                                     Endpoint = loopback (uint16 (100 + i))
-                                     LockedAddress = None
-                                     LockedPort = false
-                                 }
+                         Addressing =
+                             SocketAddressing.replaceBinding
+                                 (Some
+                                     {
+                                         Endpoint = loopback (uint16 (100 + i))
+                                         LockedAddress = None
+                                         LockedPort = false
+                                     })
+                                 someSocket.Addressing
                          Phase = phase
                      }
                  ))
@@ -1636,14 +1647,16 @@ module TestSocketTable =
                             Map.add
                                 (SocketId 0L)
                                 { UnixMachineState.socket (SocketId 0L) kernel.Machine with
-                                    Binding =
-                                        Some
-                                            {
-                                                Endpoint =
-                                                    InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
-                                                LockedAddress = None
-                                                LockedPort = false
-                                            }
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (Some
+                                                {
+                                                    Endpoint =
+                                                        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
+                                                    LockedAddress = None
+                                                    LockedPort = false
+                                                })
+                                            (UnixMachineState.socket (SocketId 0L) kernel.Machine).Addressing
                                 }
                                 kernel.Machine.Sockets
                     }
@@ -1740,14 +1753,16 @@ module TestSocketTable =
                             Map.add
                                 (SocketId 1L)
                                 { someSocket with
-                                    Binding =
-                                        Some
-                                            {
-                                                Endpoint =
-                                                    InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 4444us
-                                                LockedAddress = None
-                                                LockedPort = false
-                                            }
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (Some
+                                                {
+                                                    Endpoint =
+                                                        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 4444us
+                                                    LockedAddress = None
+                                                    LockedPort = false
+                                                })
+                                            someSocket.Addressing
                                 }
                                 kernel.Machine.Sockets
                     }
@@ -1840,7 +1855,8 @@ module TestSocketTable =
                                     Map.add
                                         (SocketId 0L)
                                         { someSocket with
-                                            Binding = preBinding
+                                            Addressing =
+                                                SocketAddressing.replaceBinding preBinding someSocket.Addressing
                                         }
                                         kernel.Machine.Sockets
                             }
@@ -1907,13 +1923,15 @@ module TestSocketTable =
                     [
                         0L,
                         { someSocket with
-                            Binding =
-                                Some
-                                    {
-                                        Endpoint = loopback 5000us
-                                        LockedAddress = Some InternetEndpoint.LoopbackAddress
-                                        LockedPort = true
-                                    }
+                            Addressing =
+                                SocketAddressing.replaceBinding
+                                    (Some
+                                        {
+                                            Endpoint = loopback 5000us
+                                            LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                            LockedPort = true
+                                        })
+                                    someSocket.Addressing
                             Phase = phase
                         }
                         1L, someSocket
@@ -1990,25 +2008,29 @@ module TestSocketTable =
                             |> Map.add
                                 (SocketId 0L)
                                 { UnixMachineState.socket (SocketId 0L) kernel.Machine with
-                                    Binding =
-                                        Some
-                                            {
-                                                Endpoint =
-                                                    InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
-                                                LockedAddress = Some InternetEndpoint.WildcardAddress
-                                                LockedPort = true
-                                            }
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (Some
+                                                {
+                                                    Endpoint =
+                                                        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
+                                                    LockedAddress = Some InternetEndpoint.WildcardAddress
+                                                    LockedPort = true
+                                                })
+                                            (UnixMachineState.socket (SocketId 0L) kernel.Machine).Addressing
                                 }
                             |> Map.add
                                 (SocketId 1L)
                                 { someSocket with
-                                    Binding =
-                                        Some
-                                            {
-                                                Endpoint = loopback 5000us
-                                                LockedAddress = Some InternetEndpoint.LoopbackAddress
-                                                LockedPort = true
-                                            }
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (Some
+                                                {
+                                                    Endpoint = loopback 5000us
+                                                    LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                                    LockedPort = true
+                                                })
+                                            someSocket.Addressing
                                 }
                     }
             }
@@ -2030,13 +2052,15 @@ module TestSocketTable =
                             Map.add
                                 (SocketId socketId)
                                 { someSocket with
-                                    Binding =
-                                        Some
-                                            {
-                                                Endpoint = loopback 4444us
-                                                LockedAddress = Some InternetEndpoint.LoopbackAddress
-                                                LockedPort = true
-                                            }
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (Some
+                                                {
+                                                    Endpoint = loopback 4444us
+                                                    LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                                    LockedPort = true
+                                                })
+                                            someSocket.Addressing
                                 }
                                 kernel.Machine.Sockets
                     }
@@ -2115,13 +2139,15 @@ module TestSocketTable =
                             Map.add
                                 (SocketId 1L)
                                 { someSocket with
-                                    Binding =
-                                        Some
-                                            {
-                                                Endpoint = loopback 4444us
-                                                LockedAddress = Some InternetEndpoint.LoopbackAddress
-                                                LockedPort = true
-                                            }
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (Some
+                                                {
+                                                    Endpoint = loopback 4444us
+                                                    LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                                    LockedPort = true
+                                                })
+                                            someSocket.Addressing
                                 }
                                 kernel.Machine.Sockets
                         Connections =

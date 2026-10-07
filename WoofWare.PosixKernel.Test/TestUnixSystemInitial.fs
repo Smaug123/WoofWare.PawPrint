@@ -196,10 +196,9 @@ module TestUnixSystemInitial =
 
         let socket : SocketDescription =
             {
-                Domain = SocketDomain.Inet
+                Addressing = SocketAddressing.Inet None
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
-                Binding = None
                 ReuseAddress = false
                 Options = SocketOptions.initial
                 Phase = SocketPhase.Idle

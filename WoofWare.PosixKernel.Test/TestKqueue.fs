@@ -321,10 +321,9 @@ module TestKqueue =
         let socketFd, system =
             let socket =
                 {
-                    Domain = SocketDomain.Inet
+                    Addressing = SocketAddressing.Inet None
                     Kind = SocketKind.Datagram
                     Protocol = SocketProtocol.Udp
-                    Binding = None
                     ReuseAddress = false
                     Options = SocketOptions.initial
                     Phase = SocketPhase.Idle

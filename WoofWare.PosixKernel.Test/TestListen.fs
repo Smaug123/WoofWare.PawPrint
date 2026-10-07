@@ -40,14 +40,13 @@ module TestListen =
         : SocketDescription
         =
         {
-            Domain = SocketDomain.Inet
+            Addressing = SocketAddressing.Inet binding
             Kind = kind
             Protocol =
                 if kind = SocketKind.Stream then
                     SocketProtocol.Tcp
                 else
                     SocketProtocol.Udp
-            Binding = binding
             ReuseAddress = reuse
             Options = SocketOptions.initial
             Phase = phase
@@ -333,7 +332,7 @@ module TestListen =
         for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
             let socket =
                 { socketWith SocketKind.Stream None false SocketPhase.Idle with
-                    Domain = domain
+                    Addressing = SocketAddressing.initial domain false
                 }
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)

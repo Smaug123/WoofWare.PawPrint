@@ -50,14 +50,13 @@ module TestBind =
 
     let private socketOfKind (kind : SocketKind) (phase : SocketPhase) : SocketDescription =
         {
-            Domain = SocketDomain.Inet
+            Addressing = SocketAddressing.Inet None
             Kind = kind
             Protocol =
                 if kind = SocketKind.Stream then
                     SocketProtocol.Tcp
                 else
                     SocketProtocol.Udp
-            Binding = None
             ReuseAddress = false
             Options = SocketOptions.initial
             Phase = phase

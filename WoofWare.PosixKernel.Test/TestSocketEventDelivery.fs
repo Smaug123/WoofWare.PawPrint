@@ -127,13 +127,15 @@ module TestSocketEventDelivery =
                             |> Map.add
                                 socketId
                                 { UnixMachineState.socket socketId kernel.Machine with
-                                    Binding =
-                                        Some
-                                            {
-                                                Endpoint = loopback port
-                                                LockedAddress = None
-                                                LockedPort = false
-                                            }
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (Some
+                                                {
+                                                    Endpoint = loopback port
+                                                    LockedAddress = None
+                                                    LockedPort = false
+                                                })
+                                            (UnixMachineState.socket socketId kernel.Machine).Addressing
                                     Phase =
                                         SocketPhase.Listening
                                             {

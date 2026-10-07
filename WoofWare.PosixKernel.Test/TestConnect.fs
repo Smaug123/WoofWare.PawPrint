@@ -73,10 +73,9 @@ module TestConnect =
 
     let private streamSocket (binding : SocketBinding option) (phase : SocketPhase) : SocketDescription =
         {
-            Domain = SocketDomain.Inet
+            Addressing = SocketAddressing.Inet binding
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
-            Binding = binding
             ReuseAddress = false
             Options = SocketOptions.initial
             Phase = phase
@@ -174,7 +173,7 @@ module TestConnect =
         for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
             let socket =
                 { streamSocket None SocketPhase.Idle with
-                    Domain = domain
+                    Addressing = SocketAddressing.initial domain false
                 }
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
@@ -197,7 +196,7 @@ module TestConnect =
                             Map.add
                                 (SocketId 0L)
                                 { streamSocket None SocketPhase.Idle with
-                                    Domain = SocketDomain.Unix
+                                    Addressing = SocketAddressing.initial SocketDomain.Unix false
                                 }
                                 system.Machine.Sockets
                     }
@@ -219,7 +218,7 @@ module TestConnect =
             withSocket
                 (SocketId 9L)
                 ({ streamSocket None SocketPhase.Idle with
-                    Domain = SocketDomain.Unix
+                    Addressing = SocketAddressing.Unix
                 })
                 system
 

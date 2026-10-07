@@ -73,7 +73,7 @@ module TestSockOpt =
                                 (Option.map (fun socket ->
                                     { socket with
                                         Phase = phase
-                                        Binding = binding
+                                        Addressing = SocketAddressing.replaceBinding binding socket.Addressing
                                     }
                                 ))
                     }

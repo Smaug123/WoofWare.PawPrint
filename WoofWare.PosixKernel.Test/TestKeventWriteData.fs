@@ -175,10 +175,9 @@ module TestKeventWriteData =
     /// an IPv6 one.
     let private socketIn (domain : SocketDomain) (phase : SocketPhase) : SocketDescription =
         {
-            Domain = domain
+            Addressing = SocketAddressing.initial domain false
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
-            Binding = None
             ReuseAddress = false
             Options = SocketOptions.initial
             Phase = phase

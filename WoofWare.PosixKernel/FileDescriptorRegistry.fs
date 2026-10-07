@@ -286,10 +286,6 @@ type SocketOptions =
         /// whatever its size, so there is nothing for the algorithm to hold
         /// back.
         NoDelay : bool
-        /// `IPV6_V6ONLY`, which confines an IPv6 socket to IPv6 peers. Only an
-        /// IPv6 socket has it; it can change only while the socket has no
-        /// address.
-        Ipv6Only : bool
         /// `SO_LINGER`. Stored only: what a close does with it belongs with
         /// `close` and `shutdown`, which do not model it yet, and so refuse the
         /// close of a connected socket where it would differ from the ordinary
@@ -304,12 +300,11 @@ type SocketOptions =
 [<RequireQualifiedAccess>]
 module internal SocketOptions =
     /// What a socket starts with on both kernels, measured: every option off,
-    /// and a linger time of zero. A new IPv6 socket's `Ipv6Only` is instead the
-    /// machine's sysctl; see `UnixMachineState.Ipv6OnlyByDefault`.
+    /// and a linger time of zero. `IPV6_V6ONLY` is not here but in the
+    /// socket's `SocketAddressing`.
     let initial : SocketOptions =
         {
             NoDelay = false
-            Ipv6Only = false
             Linger =
                 {
                     Enabled = false
@@ -317,23 +312,86 @@ module internal SocketOptions =
                 }
         }
 
+/// A socket's domain, with its `IPV6_V6ONLY` where it is an IPv6 socket, and
+/// the local address it holds.
+///
+/// One value rather than three fields because they constrain one another.
+/// This kernel has no IPv6 transport: an IPv6 socket talks only to IPv4 peers,
+/// through v4-mapped addresses (`::ffff:a.b.c.d`), and only with
+/// `IPV6_V6ONLY` off. So a socket with `IPV6_V6ONLY` on has no address it
+/// could hold, and the case for it carries none. `IPV6_V6ONLY` changes only
+/// while a socket has no address (measured: EINVAL once it has one), so
+/// `setsockopt(2)` moves between the two IPv6 cases only without a binding.
+[<RequireQualifiedAccess>]
+type SocketAddressing =
+    /// `AF_INET`, and where it is bound, if anywhere.
+    | Inet of binding : SocketBinding option
+    /// `AF_INET6` with `IPV6_V6ONLY` off. Its binding is an IPv4 one, which the
+    /// socket presents to a process as the v4-mapped IPv6 address.
+    | Inet6DualMode of binding : SocketBinding option
+    /// `AF_INET6` with `IPV6_V6ONLY` on. Never bound: every address it could
+    /// hold is an IPv6 one.
+    | Inet6V6Only
+    /// `AF_UNIX`. Never bound: this kernel binds no Unix-domain socket.
+    | Unix
+
+[<RequireQualifiedAccess>]
+module SocketAddressing =
+    /// The domain `socket(2)` was given.
+    let domain (addressing : SocketAddressing) : SocketDomain =
+        match addressing with
+        | SocketAddressing.Inet _ -> SocketDomain.Inet
+        | SocketAddressing.Inet6DualMode _
+        | SocketAddressing.Inet6V6Only -> SocketDomain.Inet6
+        | SocketAddressing.Unix -> SocketDomain.Unix
+
+    /// Where the socket is bound, if anywhere.
+    let binding (addressing : SocketAddressing) : SocketBinding option =
+        match addressing with
+        | SocketAddressing.Inet binding
+        | SocketAddressing.Inet6DualMode binding -> binding
+        | SocketAddressing.Inet6V6Only
+        | SocketAddressing.Unix -> None
+
+    /// What a new socket in `domain` starts with: no address, and on an IPv6
+    /// socket the `IPV6_V6ONLY` the machine's sysctl gives
+    /// (`UnixMachineState.Ipv6OnlyByDefault`).
+    let initial (domain : SocketDomain) (ipv6OnlyByDefault : bool) : SocketAddressing =
+        match domain with
+        | SocketDomain.Inet -> SocketAddressing.Inet None
+        | SocketDomain.Inet6 when ipv6OnlyByDefault -> SocketAddressing.Inet6V6Only
+        | SocketDomain.Inet6 -> SocketAddressing.Inet6DualMode None
+        | SocketDomain.Unix -> SocketAddressing.Unix
+
+    /// The same socket bound at `binding` instead, or unbound for `None`.
+    ///
+    /// Only a socket with an IPv4 transport can be bound: an `Inet6V6Only` or
+    /// `Unix` one given a binding is refused, as a bug in the caller, which
+    /// should have answered for the socket before it reached an IPv4 binding.
+    let replaceBinding (binding : SocketBinding option) (addressing : SocketAddressing) : SocketAddressing =
+        match addressing, binding with
+        | SocketAddressing.Inet _, _ -> SocketAddressing.Inet binding
+        | SocketAddressing.Inet6DualMode _, _ -> SocketAddressing.Inet6DualMode binding
+        | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix), None -> addressing
+        | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix), Some binding ->
+            failwith
+                $"SocketAddressing.replaceBinding: %A{addressing} has no IPv4 transport, so it cannot be bound at %s{InternetEndpoint.toString binding.Endpoint} (this is a bug in the caller)."
+
 /// A socket, as the emulated kernel's socket table holds it.
 ///
 /// Carries no identity of its own: the table is keyed by `SocketId`, so a field
 /// here would be a second copy of the key, free to disagree with it.
 type SocketDescription =
     {
-        /// The domain given to `socket(2)`, and fixed for the socket's life:
-        /// no modelled syscall can change it.
-        Domain : SocketDomain
+        /// The domain given to `socket(2)`, fixed for the socket's life, with
+        /// its `IPV6_V6ONLY` and its local address. `None` binding until
+        /// `bind(2)` or a call that binds implicitly.
+        Addressing : SocketAddressing
         /// The socket's type, as `getsockopt(SO_TYPE)` reports it, and likewise
         /// fixed. Not always the type `socket(2)` was asked for: see `SocketKind`.
         Kind : SocketKind
         /// The protocol given to `socket(2)`, likewise fixed.
         Protocol : SocketProtocol
-        /// Where this socket is bound, if anywhere. `None` until `bind(2)` or a
-        /// `listen(2)` that binds implicitly.
-        Binding : SocketBinding option
         /// Whether `SO_REUSEADDR` is set on this socket. `setsockopt(2)` sets
         /// and clears it at any point in the socket's life, `getsockopt(2)`
         /// reads it back, and `accept(2)` gives the socket it returns the
@@ -355,6 +413,12 @@ type SocketDescription =
         /// one may not.
         Phase : SocketPhase
     }
+
+    /// The domain given to `socket(2)`.
+    member this.Domain : SocketDomain = SocketAddressing.domain this.Addressing
+
+    /// Where this socket is bound, if anywhere.
+    member this.Binding : SocketBinding option = SocketAddressing.binding this.Addressing
 
 /// What an open file description refers to — the kernel object on the far side
 /// of the descriptor.
