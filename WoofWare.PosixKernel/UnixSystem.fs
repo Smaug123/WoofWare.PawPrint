@@ -29,10 +29,11 @@ type Syscall =
     | FLock of fd : int * operation : int
     | FTruncate of fd : int * length : int64
     | Close of fd : int
-    /// `mode` is raw, as `mkdir(2)` takes it: how it combines with the umask
-    /// and with the parent's set-group-ID bit is behaviour this kernel models,
-    /// and models per flavour.
-    | MkDir of path : PathArgumentBytes * mode : int
+    /// `dirfd` and `mode` are raw, as `mkdirat(2)` takes them: how `mode`
+    /// combines with the umask and with the parent's set-group-ID bit is
+    /// behaviour this kernel models, and models per flavour. `mkdir(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`).
+    | MkDirAt of dirfd : int * path : PathArgumentBytes * mode : int
     | Unlink of path : PathArgumentBytes
     | RmDir of path : PathArgumentBytes
     | ChDir of path : PathArgumentBytes
@@ -858,8 +859,8 @@ module UnixSystem =
             UnixDescriptor.close fd system
             |> answered
             |> Result.mapError SyscallRefusal.Close
-        | Syscall.MkDir (path, mode) ->
-            UnixNamespace.mkdir path mode system
+        | Syscall.MkDirAt (dirfd, path, mode) ->
+            UnixNamespace.mkdirat dirfd path mode system
             |> answered
             |> Result.mapError SyscallRefusal.MkDir
         | Syscall.Unlink path ->

@@ -2,6 +2,7 @@ namespace WoofWare.PosixKernel.Test
 
 open System
 open System.Collections.Immutable
+open System.Reflection
 open System.Runtime.InteropServices
 open FsCheck
 open FsCheck.FSharp
@@ -650,3 +651,39 @@ module TestPipeBuffer =
         |> ignore
 
         GC.Collect ()
+
+    /// The functions that step a buffer through a write take counts, bytes and
+    /// buffers that only the library's own syscalls produce, and throw for
+    /// others: a Darwin buffer below its largest size, for one, is never
+    /// resumed. A client changes a pipe's buffer only through the syscalls, so
+    /// the library does not export them.
+    [<Test>]
+    let ``the write-stepping functions are not exported`` () : unit =
+        let pipeBufferModule =
+            typeof<PipeBuffer>.Assembly.GetType ("WoofWare.PosixKernel.PipeBufferModule", true)
+
+        let isPublic (name : string) : bool =
+            match
+                pipeBufferModule.GetMethod (
+                    name,
+                    BindingFlags.Static ||| BindingFlags.Public ||| BindingFlags.NonPublic
+                )
+            with
+            | null -> failwith $"PipeBuffer.%s{name} was not found; this test names it by its compiled name"
+            | m -> m.IsPublic
+
+        // A control, so that this cannot pass by reading every function as non-public.
+        pipeBufferModule.IsPublic |> shouldEqual true
+        isPublic "read" |> shouldEqual true
+
+        [
+            "wouldTake"
+            "withoutTaking"
+            "write"
+            "writeWith"
+            "resumeTakes"
+            "resumeWith"
+            "resume"
+        ]
+        |> List.filter isPublic
+        |> shouldBeEmpty
