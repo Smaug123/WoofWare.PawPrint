@@ -71,7 +71,7 @@ module TestKeventRegistration =
                 other <> socketId
                 && (
                     match socket.Phase with
-                    | SocketPhase.Established c -> c = connection
+                    | SocketPhase.Established (c, _) -> c = connection
                     | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
                     | _ -> false
                 )
@@ -80,7 +80,8 @@ module TestKeventRegistration =
         match phase, filter with
         | SocketPhase.Listening listenState, KqueueFilter.Read when not (List.isEmpty listenState.Queue) ->
             Some (int64 (List.length listenState.Queue), false, 0u)
-        | SocketPhase.Established connection, KqueueFilter.Read when not (peerOpen connection) -> Some (0L, true, 0u)
+        | SocketPhase.Established (connection, _), KqueueFilter.Read when not (peerOpen connection) ->
+            Some (0L, true, 0u)
         // The send buffer's free space, measured over IPv4 loopback
         // (`kevent-write-data.c`), at either end.
         | SocketPhase.Established _, KqueueFilter.Write -> Some (146988L, false, 0u)
@@ -512,10 +513,14 @@ module TestKeventRegistration =
                         // The peer's FIN reaches the other end of an established
                         // connection when its last descriptor closes.
                         match (UnixMachineState.socket socketId system.Machine).Phase with
-                        | SocketPhase.Established connection when last ->
+                        | SocketPhase.Established (connection, _) when last ->
                             let survivors =
                                 after.Machine.Sockets
-                                |> Map.filter (fun _ socket -> socket.Phase = SocketPhase.Established connection)
+                                |> Map.filter (fun _ socket ->
+                                    match socket.Phase with
+                                    | SocketPhase.Established (c, _) -> c = connection
+                                    | _ -> false
+                                )
                                 |> Map.toList
                                 |> List.map fst
 

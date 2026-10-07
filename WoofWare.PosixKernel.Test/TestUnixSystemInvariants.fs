@@ -154,7 +154,7 @@ module TestUnixSystemInvariants =
                                             Protocol = SocketProtocol.Tcp
                                             Binding = None
                                             ReuseAddress = false
-                                            Phase = SocketPhase.Established connection
+                                            Phase = SocketPhase.Established (connection, ConnectionEnd.Client)
                                         }
                                     ]
                             NextSocketId = SocketId 1L

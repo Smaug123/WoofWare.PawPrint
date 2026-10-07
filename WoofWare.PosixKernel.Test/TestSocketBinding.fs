@@ -142,7 +142,8 @@ module TestSocketBinding =
                 Drained = false
             }
 
-    let private establishedPhase = SocketPhase.Established (ConnectionId 0L)
+    let private establishedPhase =
+        SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
 
     /// The measured conflict matrix, row by row: `(first address, first phase,
     /// first reuse, second address, second reuse)` against what each flavour

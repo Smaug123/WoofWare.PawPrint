@@ -211,7 +211,7 @@ module TestKeventWriteData =
 
         let modelled =
             DarwinReadiness.sendBufferSpace
-                (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L)))
+                (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)))
                 (darwinMachine None)
 
         for (_, values) in measured do
@@ -239,7 +239,7 @@ module TestKeventWriteData =
         for (size, values) in measured do
             let modelled =
                 DarwinReadiness.sendBufferSpace
-                    (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L)))
+                    (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)))
                     (darwinMachine (Some size))
 
             (size, List.distinct values) |> shouldEqual (size, [ modelled ])
@@ -328,7 +328,7 @@ module TestKeventWriteData =
             connecting @ accepted |> List.distinct |> shouldEqual [ grown 16332L sendSpace ]
 
             DarwinReadiness.sendBufferSpace
-                (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L)))
+                (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)))
                 (darwinMachine (Some sendSpace))
             |> shouldEqual (grown 16312L sendSpace)
 
@@ -395,7 +395,7 @@ module TestKeventWriteData =
     [<Test>]
     let ``the send buffer is refused where Darwin's rule does not reach`` () : unit =
         let established =
-            socketIn SocketDomain.Inet (SocketPhase.Established (ConnectionId 0L))
+            socketIn SocketDomain.Inet (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client))
 
         let linux =
             (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64

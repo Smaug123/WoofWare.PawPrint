@@ -533,13 +533,16 @@ module TestEpollCtl =
                         }),
                 0x0041u
                 "IPv4 TCP, established, peer alive",
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection),
+                withSocket
+                    SocketDomain.Inet
+                    SocketKind.Stream
+                    (SocketPhase.Established (connection, ConnectionEnd.Client)),
                 0x0104u
                 "IPv4 TCP, established pending report, peer alive",
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.EstablishedPendingReport connection),
                 0x0104u
                 "IPv4 TCP, established, peer closed",
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established orphan),
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (orphan, ConnectionEnd.Client)),
                 0x2145u
                 "IPv4 TCP, refused, pending delivery",
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending),
@@ -562,7 +565,11 @@ module TestEpollCtl =
         // The peer of the "peer alive" rows: a second end on the same
         // connection. Not itself a row, because it duplicates one.
         let _, system =
-            withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection) system
+            withSocket
+                SocketDomain.Inet
+                SocketKind.Stream
+                (SocketPhase.Established (connection, ConnectionEnd.Server))
+                system
 
         List.rev rows, system
 
