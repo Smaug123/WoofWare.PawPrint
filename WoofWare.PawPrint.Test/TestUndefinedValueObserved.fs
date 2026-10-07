@@ -1514,3 +1514,75 @@ unsafe class Program
                     index |> shouldEqual 2
                 | other -> failwith $"expected the span constructor's argument, got %O{other}"
             )
+
+    [<Test>]
+    let ``Binding a delegate to a target nothing wrote ends the run at the bind`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+
+[module: SkipLocalsInit]
+
+struct S
+{
+    public object X;
+}
+
+unsafe class Program
+{
+    public static int Answer(object target) => 7;
+
+    static int Main(string[] args)
+    {
+        byte* bytes = stackalloc byte[sizeof(nint)];
+        S s = Unsafe.Read<S>(bytes);
+        // CoreLib hands the first argument to the runtime unread.
+        Delegate bound =
+            Delegate.CreateDelegate(typeof(Func<int>), s.X, typeof(Program).GetMethod(nameof(Answer)), false);
+        return bound == null ? 1 : 0;
+    }
+}
+"""
+
+        run
+            "UndefinedDelegateTarget.cs"
+            source
+            (fun observation ->
+                observation.Value.Kind |> shouldEqual UndefinedPrimitive.ObjectRef
+                stackOrigins observation.Value |> shouldEqual [ 0..7 ]
+                expectReadByRuntime "<BindToMethodInfo>g__" "the target it binds the delegate to" observation
+            )
+
+    [<Test>]
+    let ``Waiting on a handle nothing wrote ends the run at the wait`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using Microsoft.Win32.SafeHandles;
+
+[module: SkipLocalsInit]
+
+unsafe class Program
+{
+    static int Main(string[] args)
+    {
+        nint* handles = stackalloc nint[1];
+        using ManualResetEvent ev = new ManualResetEvent(false);
+        // Moved into the safe handle, and from there into the array CoreLib hands the runtime.
+        ev.SafeWaitHandle = new SafeWaitHandle(handles[0], ownsHandle: false);
+        return WaitHandle.WaitAny(new WaitHandle[] { ev }, 0) == WaitHandle.WaitTimeout ? 0 : 1;
+    }
+}
+"""
+
+        run
+            "UndefinedWaitHandle.cs"
+            source
+            (fun observation ->
+                stackOrigins observation.Value |> shouldEqual [ 0..7 ]
+
+                expectReadByRuntime "<WaitMultipleIgnoringSyncContext>g__" "the handles it waits on" observation
+            )
