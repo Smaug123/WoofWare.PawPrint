@@ -156,9 +156,11 @@ module TestConnectDestinationMeasured =
     /// 0 is one it answers ENOTCONN for.
     let private peerOf (system : UnixSystem<int, string>) (socket : SocketDescription) : InternetEndpoint option =
         match socket.Phase with
-        | SocketPhase.Established connection
+        | SocketPhase.Established (connection, ConnectionEnd.Client)
         | SocketPhase.EstablishedPendingReport connection ->
             Some (UnixMachineState.connection connection system.Machine).ServerAddress
+        | SocketPhase.Established (connection, ConnectionEnd.Server) ->
+            Some (UnixMachineState.connection connection system.Machine).ClientAddress
         | SocketPhase.DatagramPeer endpoint when endpoint.Port <> 0us -> Some endpoint
         | _ -> None
 
@@ -384,7 +386,7 @@ module TestConnectDestinationMeasured =
 
                 let peerName =
                     match socket.Phase with
-                    | SocketPhase.Established connection ->
+                    | SocketPhase.Established (connection, ConnectionEnd.Client) ->
                         name (UnixMachineState.connection connection after.Machine).ServerAddress.Address
                     | SocketPhase.DatagramPeer endpoint -> name endpoint.Address
                     | _ -> "none"

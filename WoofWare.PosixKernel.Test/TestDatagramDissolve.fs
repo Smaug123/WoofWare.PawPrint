@@ -31,6 +31,7 @@ module TestDatagramDissolve =
 
         system
         |> UnixBootImage.withEphemeralPortRange (40000us, 40009us)
+        |> Configured.expectOk EphemeralPortRangeRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private socketOf (fd : int) (system : UnixSystem<int, string>) : SocketId =

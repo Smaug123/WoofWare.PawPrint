@@ -55,7 +55,7 @@ The library never looks inside either; it only compares them.
 Configure it with the setters in the `UnixBootImage` module, such as `withFileSystem`, `withBootTime` and `withProcessId` (the first process's ID, where the machine's counters start).
 How a process starts is a `ProcessLaunch`: `ProcessLaunch.create` takes the descriptors it is launched with and its first task, and the setters in the `ProcessLaunch` module set the rest, such as `withCredentials`, `withCurrentDirectory` and `withEnvironment`.
 `UnixBootImage.boot` launches the machine's first process from one, to get the `UnixSystem` its first syscall takes.
-A setter that rejects a value returns `Result`, with a refusal type of its own whose `describe` says why; only the caller knows what it called the value.
+A setter that rejects a value, such as `withBootTime` or `withMount`, returns `Result`, with a refusal type of its own whose `describe` says why (see "Answers and refusals" below); only the caller knows what it called the value.
 Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
 What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixSystem.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
 
@@ -86,8 +86,11 @@ let system : UnixSystem<int, unit> =
     |> UnixBootImage.boot launch
     |> orFail LaunchRefusal.describe
 
+// mkdir(2) is mkdirat(2) from AT_FDCWD, in the flavour's own numbering.
+let atFdCwd : int = AtDirectory.atFdCwd SimulatedUnixFlavour.Linux
+
 let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
-    match UnixSystem.step 0 (Syscall.MkDir (path "/tmp", 0o755)) system with
+    match UnixSystem.step 0 (Syscall.MkDirAt (atFdCwd, path "/tmp", 0o755)) system with
     | Error refusal -> failwith $"this kernel will not say what happens: %O{refusal}"
     | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed result), system) ->
         printfn "mkdir returned %d" result
@@ -122,7 +125,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | --- | --- |
 | `UnixDescriptor` | `dup`, `dup2`, `dup3`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `lseek`, `flock`, `ftruncate`, `posix_fadvise`, `close`, `ioctl` (`FICLONE` and `FIONREAD`), `tcgetattr`, `geteuid`, `getegid`, `getgroups` |
 | `UnixPathResolution` | `stat`, `fstat`, `fstatat`, `chmod`, `fchmod`, `chown`, `lchown`, `fchown`, `futimens`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
-| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `unlink`, `rmdir`, `rename`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
+| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `unlink`, `rmdir`, `unlinkat`, `rename`, `renameat`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
 | `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
 | `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt` |
@@ -154,6 +157,12 @@ A syscall's result has two levels.
 * `Error` is a refusal: this library will not say what the kernel does, usually because nobody has measured it on the platform being simulated, or because it is not modelled. A refusal says why, and carries no system. A client decides what a refusal means for it; retrying will not help.
 
 A call that a real kernel would not let happen at all, such as a task making a syscall while it is blocked in another, is a bug in the client, and throws.
+
+A setter of the machine's boot configuration or of a process's launch refuses the same way.
+Each one that can refuse a value returns a `Result`, with a refusal type of its own (`BootTimeRefusal`, `MountRefusal`, `ProcessIdRefusal`, `CredentialsRefusal` and so on) whose cases state the facts: a value this library has not measured or does not model, or one no machine of the flavour could have.
+Each refusal type has a `describe`.
+The library does not know what the client called the value, so it names no knob; the client does that.
+A value no `parse` could have produced, such as one built with `Unchecked.defaultof`, is still a bug in the client, and throws.
 
 ### Blocking
 

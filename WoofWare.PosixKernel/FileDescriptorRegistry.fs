@@ -48,6 +48,19 @@ type ConnectionId =
         match this with
         | ConnectionId value -> string<int64> value
 
+/// Which end of a TCP connection a socket is.
+///
+/// Recorded by the call that makes the socket an end, rather than inferred
+/// from its binding: a socket connected to its own address has the same
+/// address at both ends.
+[<RequireQualifiedAccess>]
+type ConnectionEnd =
+    /// The socket whose `connect(2)` opened the connection, at its
+    /// `ClientAddress`.
+    | Client
+    /// The socket `accept(2)` made for the connection, at its `ServerAddress`.
+    | Server
+
 /// Identity of a pipe. Never visible to the simulated process: `fstat` reports
 /// the inode numbers the pipe table mints for it, which are a separate thing.
 ///
@@ -199,9 +212,13 @@ type SocketPhase =
     /// once (Linux; Darwin never enters this state — its retry answers
     /// EISCONN directly, so its non-blocking completion goes straight to
     /// `Established`).
+    ///
+    /// Only `connect(2)` enters it, so the socket is the connection's
+    /// `ConnectionEnd.Client`.
     | EstablishedPendingReport of connection : ConnectionId
-    /// Connected. `connect(2)` answers EISCONN.
-    | Established of connection : ConnectionId
+    /// Connected, as the given end of the connection. `connect(2)` answers
+    /// EISCONN.
+    | Established of connection : ConnectionId * connectionEnd : ConnectionEnd
     /// A connect was refused.
     ///
     /// A non-blocking refusal leaves its ECONNREFUSED `Pending`, and an

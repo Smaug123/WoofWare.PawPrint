@@ -51,6 +51,7 @@ module TestEphemeralPorts =
 
         system
         |> UnixBootImage.withEphemeralPortRange (low, high)
+        |> Configured.expectOk EphemeralPortRangeRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private newStream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =

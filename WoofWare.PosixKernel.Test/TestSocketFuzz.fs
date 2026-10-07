@@ -99,6 +99,50 @@ module TestSocketFuzz =
         | EmulatedRun.Transcript transcript ->
             Assert.Fail $"an out-of-range interest mask was accepted outright: %s{transcript}"
 
+    /// The generator's sequences, run on this kernel alone: no state any of
+    /// them reaches breaks `UnixSystem.checkInvariants`, which
+    /// `executeEmulated` checks after every op. Needs no container, so every
+    /// run of the suite holds the model's invariants over connects, accepts,
+    /// closes and dups, where `SocketFuzzLive` runs only on request.
+    [<Test>]
+    let ``SocketFuzzEmulated: generated sequences reach no defect`` () : unit =
+        let rng = Random 20261007
+        let sequences = List.init 2000 (fun _ -> SocketFuzz.generate rng)
+        let runs = sequences |> List.map (fun ops -> ops, SocketFuzz.executeEmulated ops)
+
+        runs
+        |> List.choose (fun (ops, run) ->
+            match run with
+            | EmulatedRun.Defect (index, message) ->
+                Some $"sequence: %s{SocketFuzz.serialize ops}\ndefect at op %d{index}: %s{message}"
+            | EmulatedRun.Transcript _
+            | EmulatedRun.Refused _ -> None
+        )
+        |> List.truncate 5
+        |> shouldEqual []
+
+        // The run must have made connections with both ends held by sockets:
+        // an accept that answered, in a sequence the kernel answered whole.
+        let accepted =
+            runs
+            |> List.sumBy (fun (ops, run) ->
+                match run with
+                | EmulatedRun.Transcript transcript ->
+                    List.zip ops (List.ofArray (transcript.Split ' '))
+                    |> List.filter (fun (op, answer) ->
+                        match op with
+                        | FuzzOp.Accept _ -> answer = "ok"
+                        | _ -> false
+                    )
+                    |> List.length
+                | EmulatedRun.Refused _
+                | EmulatedRun.Defect _ -> 0
+            )
+
+        if accepted < 50 then
+            Assert.Fail
+                $"only %d{accepted} accepts answered across 2000 sequences: the run is not reaching accepted connections"
+
     /// A typed refusal from any op is a skip, never a finding: the model has
     /// said, in its own type, that the sequence is outside what it answers.
     /// One from `close` (a listener with an unaccepted client) and one from

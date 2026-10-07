@@ -200,7 +200,7 @@ module ObjectLifetime =
         // inet_csk_listen_stop discards a closed listener's accept queue).
         let candidates =
             match dying.Phase with
-            | SocketPhase.Established connection
+            | SocketPhase.Established (connection, _)
             | SocketPhase.EstablishedPendingReport connection -> [ connection ]
             | SocketPhase.Listening listenState -> listenState.Queue
             | SocketPhase.Idle
@@ -211,7 +211,7 @@ module ObjectLifetime =
             sockets
             |> Map.exists (fun _ survivor ->
                 match survivor.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c -> c = connection
                 | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
                 | SocketPhase.Idle
@@ -238,7 +238,7 @@ module ObjectLifetime =
                 |> Map.toList
                 |> List.choose (fun (survivorId, survivor) ->
                     match survivor.Phase with
-                    | SocketPhase.Established c
+                    | SocketPhase.Established (c, _)
                     | SocketPhase.EstablishedPendingReport c when List.contains c candidates -> Some survivorId
                     | _ -> None
                 )
@@ -252,7 +252,7 @@ module ObjectLifetime =
                         |> Map.toSeq
                         |> Seq.filter (fun (_, survivor) ->
                             match survivor.Phase with
-                            | SocketPhase.Established c
+                            | SocketPhase.Established (c, _)
                             | SocketPhase.EstablishedPendingReport c -> c = candidate
                             | SocketPhase.Listening _
                             | SocketPhase.Idle
