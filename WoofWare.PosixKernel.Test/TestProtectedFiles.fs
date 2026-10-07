@@ -444,7 +444,8 @@ module TestProtectedFiles =
         let system : UnixSystem<int, string> =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixBootImage.withCredentials context credentials
-            |> UnixBootImage.withProtectedFiles context protection
+            |> UnixBootImage.withProtectedFiles protection
+            |> Configured.expectOk ProtectedFilesRefusal.describe
             |> UnixBootImage.boot
 
         { system with
@@ -813,10 +814,10 @@ module TestProtectedFiles =
                 UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> UnixBootImage.withCredentials context (Credentials.ofIds UserId.root (gid 0u) [])
                 |> UnixBootImage.withProtectedFiles
-                    context
                     { ProtectedFiles.off with
                         Symlinks = SymlinkProtection.InWorldWritableStickyDirectories
                     }
+                |> Configured.expectOk ProtectedFilesRefusal.describe
                 |> UnixBootImage.boot
 
             let setUp =
@@ -1177,7 +1178,8 @@ module TestProtectedFiles =
 
         system.Machine.ProtectedFiles |> shouldEqual ProtectedFiles.off
 
-        UnixBootImage.withProtectedFiles "test" ProtectedFiles.off image
+        UnixBootImage.withProtectedFiles ProtectedFiles.off image
+        |> Configured.expectOk ProtectedFilesRefusal.describe
         |> UnixBootImage.boot
         |> shouldEqual system
 
@@ -1194,16 +1196,11 @@ module TestProtectedFiles =
                             }
 
                         if protection <> ProtectedFiles.off then
-                            let thrown =
-                                try
-                                    UnixBootImage.withProtectedFiles "test" protection image |> ignore
-                                    None
-                                with e ->
-                                    Some e.Message
-
-                            match thrown with
-                            | Some message -> message |> shouldContainText "test:"
-                            | None -> failwith $"%A{protection} was admitted on Darwin"
+                            UnixBootImage.withProtectedFiles protection image
+                            |> Result.map ignore<UnixBootImage<int, string>>
+                            |> shouldEqual (
+                                Error (ProtectedFilesRefusal.NoSuchSysctls (protection, SimulatedUnixFlavour.Darwin))
+                            )
 
                             let forged =
                                 { system with
@@ -1239,7 +1236,9 @@ module TestProtectedFiles =
                             }
 
                         let set =
-                            UnixBootImage.withProtectedFiles "test" protection image |> UnixBootImage.boot
+                            UnixBootImage.withProtectedFiles protection image
+                            |> Configured.expectOk ProtectedFilesRefusal.describe
+                            |> UnixBootImage.boot
 
                         set.Machine.ProtectedFiles |> shouldEqual protection
                         UnixSystem.checkInvariants set |> shouldEqual []

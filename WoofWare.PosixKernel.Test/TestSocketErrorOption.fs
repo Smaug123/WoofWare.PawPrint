@@ -50,7 +50,7 @@ module TestSocketErrorOption =
     let private minus1 : uint32 = System.UInt32.MaxValue
 
     let private socketIdOf (fd : int) (system : UnixSystem<int, string>) : SocketId =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) -> socketId
         | other -> failwith $"fd %d{fd} names %A{other}, not a socket"
 

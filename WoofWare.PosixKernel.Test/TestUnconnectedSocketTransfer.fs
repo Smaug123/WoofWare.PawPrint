@@ -308,7 +308,7 @@ module TestUnconnectedSocketTransfer =
             |> connectTo (loopbackAt 9us) SimulatedUnixPlatform.internetAddressFamily
 
         let socketId =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other -> failwith $"not a socket: %A{other}"
 
@@ -434,7 +434,7 @@ module TestUnconnectedSocketTransfer =
         : bool
         =
         let socketId =
-            match FileDescriptorRegistry.tryFindTarget fd before.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors before) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other -> failwith $"fd %d{fd} is not a socket: %A{other}"
 

@@ -80,16 +80,9 @@ module TestSockOpt =
             }
 
         let queueFd, registry =
-            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
-        socketFd,
-        queueFd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        socketFd, queueFd, UnixSystemState.withFileDescriptors registry system
 
     let private reuseFlag (system : UnixSystem<int, string>) : bool =
         (UnixMachineState.socket (SocketId 0L) system.Machine).ReuseAddress
@@ -429,7 +422,8 @@ module TestSockOpt =
                         Drained = false
                     },
                 false
-                SocketPhase.Established (ConnectionId 0L), false
+                SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client), false
+                SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Server), false
                 SocketPhase.EstablishedPendingReport (ConnectionId 0L), false
                 SocketPhase.DatagramPeer (loopback 5000us), false
                 SocketPhase.Refused RefusalError.Pending, true

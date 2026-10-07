@@ -679,7 +679,7 @@ class ClosesAParkedPort
             // The waiter is still parked, on a port no descriptor names and the park keeps.
             List.length ports |> shouldEqual 1
 
-            FileDescriptorRegistry.descriptions (UnixSystem.fileDescriptors unix)
+            OpenFileTable.descriptions (UnixSystem.openFiles unix)
             |> Map.containsKey ports.Head
             |> shouldEqual true
 

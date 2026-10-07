@@ -167,6 +167,7 @@ module TestUserBufferCheckAgainstHost =
                     | Some limit ->
                         (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
                          |> UnixBootImage.withUserAddressLimit limit
+                         |> Configured.expectOk UserAddressLimitRefusal.describe
                          |> UnixBootImage.boot)
                             .Machine
                         |> UnixMachineState.userBufferCheck

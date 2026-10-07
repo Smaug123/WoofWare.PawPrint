@@ -811,7 +811,7 @@ module UnixNamespace =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (OpenRefusal.DescriptorLimit refusal)
         | Ok () ->
@@ -842,12 +842,16 @@ module UnixNamespace =
             let fd, registry =
                 match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
                 | Some (InodeContent.Directory _) ->
-                    FileDescriptorRegistry.openDirectory inode system.Process.FileDescriptors
+                    FileDescriptorRegistry.openDirectory inode (UnixSystemState.fileDescriptors system)
                 | Some (InodeContent.CharacterDevice (device, _)) ->
-                    FileDescriptorRegistry.openCharacterDevice inode device flags.Access system.Process.FileDescriptors
+                    FileDescriptorRegistry.openCharacterDevice
+                        inode
+                        device
+                        flags.Access
+                        (UnixSystemState.fileDescriptors system)
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
-                | None -> FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
+                | None -> FileDescriptorRegistry.openFile inode flags.Access (UnixSystemState.fileDescriptors system)
 
             let registry =
                 FileDescriptorRegistry.setFlags
@@ -869,31 +873,25 @@ module UnixNamespace =
             let registry =
                 match FileDescriptorRegistry.tryFindId fd registry with
                 | Some id ->
-                    FileDescriptorRegistry.mapStatus
-                        id
-                        (fun status ->
-                            { status with
-                                Synchronous = flags.Synchronous
-                                DataSynchronous = flags.DataSynchronous
-                                OpenedDirectory = linux && flags.Directory
-                                OpenedNoFollow = linux && flags.NoFollow
-                                Written = not linux && truncatedExisting
-                            }
-                        )
-                        registry
+                    registry
+                    |> FileDescriptorRegistry.mapOpenFiles (
+                        OpenFileTable.mapStatus
+                            id
+                            (fun status ->
+                                { status with
+                                    Synchronous = flags.Synchronous
+                                    DataSynchronous = flags.DataSynchronous
+                                    OpenedDirectory = linux && flags.Directory
+                                    OpenedNoFollow = linux && flags.NoFollow
+                                    Written = not linux && truncatedExisting
+                                }
+                            )
+                    )
                 | None ->
                     failwith
                         $"UnixNamespace.openPath: fd %d{fd} was handed out a moment ago and is not live (this is a bug in this library)."
 
-            Ok (
-                SyscallAnswer.Completed (int64 fd),
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
-            )
+            Ok (SyscallAnswer.Completed (int64 fd), UnixSystemState.withFileDescriptors registry system)
 
         if
             flags.Directory
@@ -1142,7 +1140,7 @@ module UnixNamespace =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
 
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, room with
         | SimulatedUnixFlavour.Darwin, Error refusal -> Error (OpenRefusal.DescriptorLimit refusal)
@@ -1250,7 +1248,7 @@ module UnixNamespace =
                 // eventq rows): a pipe, a socket or an epoll instance is
                 // ENOENT, as a file or directory that is not a link is.
                 let named =
-                    match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
                     | None -> Error UnixError.EBADF
                     | Some description ->
 
@@ -1452,7 +1450,7 @@ module UnixNamespace =
         =
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
-        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (ReadDirectoryAnswer.Failed UnixError.EBADF, system)
         | Some description ->
 
@@ -1493,13 +1491,9 @@ module UnixNamespace =
         | None ->
 
         let withPosition (position : DirectoryPosition) (system : UnixSystem<'Task, 'Handler>) =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.setDirectoryPosition fd position system.Process.FileDescriptors
-                    }
-            }
+            UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.setDirectoryPosition fd position (UnixSystemState.fileDescriptors system))
+                system
 
         // A directory `rmdir` has removed yields nothing, from any position:
         // measured one call at a time, on a fresh description, after a partial
@@ -1660,8 +1654,10 @@ module UnixNamespace =
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
         mkdirFrom (AtDirectory.decode flavour dirfd) path mode system
 
-    /// `unlink`, of a path this kernel has already copied in.
+    /// `unlinkat` without `AT_REMOVEDIR`, of a path this kernel has already
+    /// copied in, starting from `directory` if it is relative.
     let internal unlinkParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RemovalRefusal>
@@ -1673,12 +1669,7 @@ module UnixNamespace =
         // only thing that can reach past a final symlink, and only on Darwin;
         // see `UnlinkRules.TrailingSeparator`.
         match
-            UnixPathResolution.resolvePathFull
-                AtDirectory.CurrentDirectory
-                SymlinkPolicy.NoFollowFinal
-                rules.TrailingSeparator
-                path
-                system
+            UnixPathResolution.resolvePathFull directory SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
         with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
@@ -1746,7 +1737,7 @@ module UnixNamespace =
         )
 
     /// `unlink(2)`: remove the name `path`, and the inode it named if nothing
-    /// else holds it.
+    /// else holds it. It is `unlinkat` from `AT_FDCWD` with no flags.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller, where this kernel will not
@@ -1762,10 +1753,12 @@ module UnixNamespace =
         =
         match UnixPathResolution.copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> unlinkParsed path system
+        | Ok path -> unlinkParsed AtDirectory.CurrentDirectory path system
 
-    /// `rmdir`, of a path this kernel has already copied in.
+    /// `unlinkat` with `AT_REMOVEDIR`, of a path this kernel has already
+    /// copied in, starting from `directory` if it is relative.
     let internal rmdirParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, RemovalRefusal>
@@ -1777,12 +1770,7 @@ module UnixNamespace =
         // `rmdir("ld/")` removes the *link's target* there and is ENOTDIR on
         // Linux. See `RmDirRules.TrailingSeparator`.
         match
-            UnixPathResolution.resolvePathFull
-                AtDirectory.CurrentDirectory
-                SymlinkPolicy.NoFollowFinal
-                rules.TrailingSeparator
-                path
-                system
+            UnixPathResolution.resolvePathFull directory SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
         with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (RemovalRefusal.Path refusal)
@@ -1847,7 +1835,8 @@ module UnixNamespace =
                 }
         )
 
-    /// `rmdir(2)`: remove the empty directory `path` names.
+    /// `rmdir(2)`: remove the empty directory `path` names. It is `unlinkat`
+    /// from `AT_FDCWD` with `AT_REMOVEDIR`.
     ///
     /// Every outcome is a success or an errno, except where Darwin's sticky
     /// rule has not been measured for this caller, where this kernel will not
@@ -1863,7 +1852,47 @@ module UnixNamespace =
         =
         match UnixPathResolution.copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> rmdirParsed path system
+        | Ok path -> rmdirParsed AtDirectory.CurrentDirectory path system
+
+    /// `unlinkat(2)`: `unlink` of `path`, or with `AT_REMOVEDIR` `rmdir` of
+    /// it, starting from `dirfd` if it is relative; `unlink` and `rmdir` are
+    /// this from `AT_FDCWD`.
+    ///
+    /// `dirfd` and `flags` are raw, in this platform's own numbering. The flag
+    /// word is screened first, ahead of the path and `dirfd`
+    /// (`UnlinkAtRules.screen`). Then everything `unlink` or `rmdir` says
+    /// holds, with one more step: once the path is copied in, a relative path
+    /// starts where `dirfd` says, as every `*at` call's does
+    /// (`UnixPathResolution.walkStart`), and nothing else about the call
+    /// changes.
+    ///
+    /// Refuses a flag word carrying flags the flavour accepts and this library
+    /// does not model, and whatever `unlink` or `rmdir` refuses; see
+    /// `UnlinkAtRefusal`. A refusal changes nothing.
+    let unlinkat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, UnlinkAtRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match UnlinkAtRules.screen flavour flags with
+        | UnlinkAtScreen.Failed error -> Ok (SyscallAnswer.Failed error, system)
+        | UnlinkAtScreen.Unmodelled flags -> Error (UnlinkAtRefusal.UnmodelledFlags flags)
+        | UnlinkAtScreen.Screened kind ->
+
+        match UnixPathResolution.copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path ->
+
+        let directory = AtDirectory.decode flavour dirfd
+
+        match kind with
+        | RemovalKind.Unlink -> unlinkParsed directory path system
+        | RemovalKind.RmDir -> rmdirParsed directory path system
+        |> Result.mapError UnlinkAtRefusal.Removal
 
     let private renameStopped
         (system : UnixSystem<'Task, 'Handler>)

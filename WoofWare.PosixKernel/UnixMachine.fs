@@ -4,22 +4,28 @@ open System.Collections.Immutable
 
 /// The kernel-image facts a POSIX simulator owns: the platform it is
 /// impersonating, its filesystem, its clock and entropy, its network
-/// configuration, its socket and pipe tables, what clients draining its pipes
-/// have received, and the two numbers a process reads back about the machine it
-/// is running on.
+/// configuration, its open file descriptions and its socket and pipe tables,
+/// what clients draining its pipes have received, and the two numbers a process
+/// reads back about the machine it is running on.
 ///
 /// Everything here is state any client of a POSIX simulator would have.
 type UnixMachineState =
     internal
         {
-            /// Every socket the simulated process owns, by identity.
+            /// Every open file description on the machine, whichever process's
+            /// descriptors name it, with the state an epoll instance or a kqueue
+            /// keeps in its description. A process's descriptor table
+            /// (`UnixProcessState.FileDescriptors`) holds only which of these
+            /// each descriptor names.
+            OpenFiles : OpenFileTable
+            /// Every socket on the machine, by identity.
             ///
-            /// Separate from `FileDescriptors` because a socket's lifetime is not
-            /// a descriptor's: an `OpenFileTarget.Socket` holds only the
+            /// Separate from `OpenFiles` because a socket's lifetime is not
+            /// a description's: an `OpenFileTarget.Socket` holds only the
             /// `SocketId`, and this is what it names. Every entry has exactly one
             /// description naming it, enforced in two halves: at least one by
             /// `UnixSystem.checkInvariants` (`UnreferencedSocket`), at most one by
-            /// `FileDescriptorRegistry.checkInvariants` (`DuplicateSocketId`). A
+            /// `OpenFileTable.checkInvariants` (`DuplicateSocketId`). A
             /// connection awaiting `accept(2)` is a `TcpConnection` in
             /// `Connections`, not a socket, precisely so this rule can stay
             /// strict.
@@ -87,10 +93,10 @@ type UnixMachineState =
             /// address inside and Darwin ignores. See
             /// `UnixSystem.defaultLocalRoutes`.
             LocalRoutes : Ipv4Prefix list
-            /// Every pipe with an end open, by identity: an end the simulated
-            /// process holds, or one the client holds (`PipeState.heldByClient`).
+            /// Every pipe with an end open, by identity: an end an open file
+            /// description names, or one the client holds (`PipeState.heldByClient`).
             ///
-            /// Separate from the descriptor table for the reason `Sockets` is: an
+            /// Separate from `OpenFiles` for the reason `Sockets` is: an
             /// `OpenFileTarget.Pipe` holds only the `PipeId`, and both ends' descriptions
             /// name the one pipe. A pipe is in the table exactly while one of its
             /// ends is open (`UnixSystem.checkInvariants` states both halves), and
@@ -101,10 +107,11 @@ type UnixMachineState =
             /// `NextSocketId` gives.
             NextPipeId : PipeId
             /// Every write that reached a client draining a pipe, oldest first: the
-            /// bytes the outside world has received from the process.
+            /// bytes the outside world has received from the machine's processes.
             ///
             /// A client reads what its own ends received by filtering on
-            /// `Delivery.Endpoint`. One log rather than one per endpoint, so that
+            /// `Delivery.Endpoint`, which names the process the pipe was launched
+            /// into as well as the descriptor. One log rather than one per endpoint, so that
             /// the order of writes across endpoints is kept: a process writing to
             /// its output, then its error stream, then its output again is read
             /// back in that order. It grows without bound: a process that writes
@@ -358,6 +365,71 @@ module UnixMachineState =
             failwith
                 $"UnixMachineState.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and UnixSystemDefect.DanglingSocket exists to make that unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand, rather than anything the simulated process did."
 
+    /// Every live open file description on the machine naming `socketId`.
+    let descriptionsNamingSocket (socketId : SocketId) (machine : UnixMachineState) : Set<OpenFileDescriptionId> =
+        OpenFileTable.toSeq machine.OpenFiles
+        |> Seq.choose (fun (descriptionId, description) ->
+            match description.Target with
+            | OpenFileTarget.Socket target when target = socketId -> Some descriptionId
+            | _ -> None
+        )
+        |> Set.ofSeq
+
+    /// Every live open file description on the machine naming `pipeEnd` of
+    /// `pipeId`.
+    let descriptionsNamingPipeEnd
+        (pipeId : PipeId)
+        (pipeEnd : PipeEnd)
+        (machine : UnixMachineState)
+        : Set<OpenFileDescriptionId>
+        =
+        OpenFileTable.toSeq machine.OpenFiles
+        |> Seq.choose (fun (descriptionId, description) ->
+            if description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd) then
+                Some descriptionId
+            else
+                None
+        )
+        |> Set.ofSeq
+
+    /// Whether `pipeEnd` of the pipe `pipeId`, which is `pipe`, is still open:
+    /// whether some open file description on the machine names it, or the
+    /// client holds it (`PipeState.heldByClient`).
+    ///
+    /// Derived rather than stored, so it cannot disagree with the table: the
+    /// end closes when the last description onto it goes, which is when its
+    /// last descriptor closes, or when a call that held it returns after that,
+    /// unless the client holds it; and `dup` keeps it open.
+    let pipeEndOpen (pipeId : PipeId) (pipe : PipeState) (pipeEnd : PipeEnd) (machine : UnixMachineState) : bool =
+        PipeState.heldByClient pipeEnd pipe
+        || OpenFileTable.toSeq machine.OpenFiles
+           |> Seq.exists (fun (_, description) -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
+
+    /// Every inode the machine's open file descriptions hold a reference to
+    /// *directly*, independently of any name the filesystem binds to it: each
+    /// one onto a file, a directory or a device's node.
+    ///
+    /// A real kernel keeps an inode alive while any reference survives. Every
+    /// kind of description that can *create* a reference must appear here: an
+    /// omission makes a live inode look free, and freeing it leaves a
+    /// descriptor pointing at nothing. It is not what callers want, though —
+    /// see `ObjectLifetime.pinnedInodes`, which adds each process's own
+    /// references (`UnixProcessState.heldInodes`) and those the *filesystem*
+    /// holds on behalf of both.
+    let heldInodes (machine : UnixMachineState) : Set<InodeNumber> =
+        OpenFileTable.toSeq machine.OpenFiles
+        |> Seq.choose (fun (_, description) ->
+            match description.Target with
+            | OpenFileTarget.File (inode, _)
+            | OpenFileTarget.Directory (inode, _)
+            | OpenFileTarget.CharacterDevice (inode, _) -> Some inode
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _
+            | OpenFileTarget.Pipe _ -> None
+        )
+        |> Set.ofSeq
+
     /// The pipe `pipeId` names.
     ///
     /// Loudly partial rather than an option, as `socket` is: every `PipeId` a
@@ -407,7 +479,7 @@ module UnixMachineState =
             otherId <> socketId
             && (
                 match other.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c -> c = connectionId
                 | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
                 | SocketPhase.Idle
@@ -428,6 +500,9 @@ module UnixMachineState =
     /// flavour before reaching here — epoll, which Darwin does not have, and
     /// `UnixPoll.poll` — and Darwin's kqueue reads its own filters'
     /// readiness (`DarwinReadiness`), not this.
+    ///
+    /// Defined only for a socket `LinuxReadiness.modelsSocket` accepts, and
+    /// failing for a `SOCK_SEQPACKET` one, whose epoll level is unmeasured.
     let socketReadinessLevel (socketId : SocketId) (machine : UnixMachineState) : ReadinessLevel =
         let target = socket socketId machine
 
@@ -451,10 +526,22 @@ module UnixMachineState =
                     Out = true
                 }
             | SocketKind.SeqPacket ->
+                // On Linux `poll(2)` reports OUT|HUP|WRNORM|WRBAND for a
+                // fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c,
+                // and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c
+                // for the WRNORM and WRBAND bits). That row is the whole answer
+                // only while `listen`, `connect` and `accept` keep refusing the
+                // kind (their `UnmeasuredKind` refusals), which is what confines
+                // such a socket to `Idle`. What `epoll_wait` reports would only
+                // be *inferred* from the two waiters sharing one poll handler,
+                // and every other row here is measured through both; answering
+                // here makes epoll delivery answer too. So both waiters refuse
+                // the kind first (`PollRefusal.UnmeasuredSocketKind`,
+                // `EpollCtlRefusal.UnmeasuredSocketKind`).
                 failwith
-                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll. The kind is reachable only in the AF_UNIX domain, and two callers arrive here: an epoll ADD through `UnixPoll.epollCtl` (the registration screen rejects only regular files, so a socket of any kind is admitted) and `UnixPoll.poll` (which needs no registration at all). On Linux `poll(2)` reports OUT|HUP|WRNORM|WRBAND for a fresh SOCK_SEQPACKET (docs/plans/2026-08-23-socket-poll/pollgaps.c, and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c for the WRNORM and WRBAND bits). That row is the whole answer only while `listen`, `connect` and `accept` keep refusing the kind (their `UnmeasuredKind` refusals), which is what confines such a socket to `Idle` — the real kernel does accept connections on SOCK_SEQPACKET, so measuring those operations reopens every other phase for it. It is still refused because what `epoll_wait` reports is only *inferred* from the two waiters sharing one poll handler, and every other row in this function is measured through both. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before answering, since answering here makes epoll delivery answer too."
+                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll, so it is not modelled. `UnixPoll.poll` and `UnixPoll.epollCtl` both refuse such a socket (LinuxReadiness.modelsSocket) before asking, so this is a bug in this library, or in a caller that asked about a socket LinuxReadiness.modelsSocket rejects. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before modelling the kind."
         | SocketPhase.EstablishedPendingReport connectionId
-        | SocketPhase.Established connectionId ->
+        | SocketPhase.Established (connectionId, _) ->
             // With the peer alive and no receive path modelled, both ends
             // are exactly write-ready; once the peer is gone, the level is
             // the measured half-closed one.
@@ -544,7 +631,7 @@ module UnixMachineState =
             machine.Sockets
             |> Map.exists (fun _ socket ->
                 match socket.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c ->
                     c = connectionId
                     && (socket.Binding |> Option.exists (fun binding -> binding.Endpoint = held))

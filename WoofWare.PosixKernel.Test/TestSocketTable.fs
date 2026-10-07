@@ -108,11 +108,8 @@ module TestSocketTable =
                     Sockets = sockets |> List.map (fun (id, socket) -> SocketId id, socket) |> Map.ofList
                     NextSocketId = SocketId nextSocketId
                 }
-            Process =
-                { unlaunchedSystem.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     let private someSocket : SocketDescription =
         {
@@ -131,7 +128,7 @@ module TestSocketTable =
         let fd, kernel =
             NewSocket.create SocketDomain.Inet6 SocketKind.Datagram SocketProtocol.Udp initialSystem
 
-        match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors kernel) with
         | None -> failwith "the socket descriptor is not live"
         | Some description ->
 
@@ -190,15 +187,8 @@ module TestSocketTable =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let duped, kernel =
-            match FileDescriptorRegistry.dup fd kernel.Process.FileDescriptors with
-            | Ok (duped, registry) ->
-                duped,
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            FileDescriptors = registry
-                        }
-                }
+            match FileDescriptorRegistry.dup fd (UnixSystemState.fileDescriptors kernel) with
+            | Ok (duped, registry) -> duped, UnixSystemState.withFileDescriptors registry kernel
             | Error e -> failwith $"expected dup to succeed, got %O{e}"
 
         match closeFd duped kernel with
@@ -209,7 +199,7 @@ module TestSocketTable =
         UnixSystem.checkInvariants kernel |> shouldEqual []
 
         // And the surviving descriptor still resolves to it.
-        match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors kernel) with
         | Some description ->
             match description.Target with
             | OpenFileTarget.Socket socketId ->
@@ -226,15 +216,9 @@ module TestSocketTable =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let epoll, registry =
-            FileDescriptorRegistry.createEpoll kernel.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors kernel)
 
-        let kernel =
-            { kernel with
-                Process =
-                    { kernel.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let kernel = UnixSystemState.withFileDescriptors registry kernel
 
         match closeFd epoll kernel with
         | Error e -> failwith $"expected close to succeed, got %O{e}"
@@ -367,12 +351,12 @@ module TestSocketTable =
 
             for _ in 1..steps do
                 let live =
-                    FileDescriptorRegistry.fds kernel.Process.FileDescriptors
+                    FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors kernel)
                     |> Map.toList
                     |> List.map fst
 
                 let namesSocket (fd : int) : bool =
-                    match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors kernel) with
                     | Some description ->
                         match description.Target with
                         | OpenFileTarget.Socket _ -> true
@@ -396,15 +380,11 @@ module TestSocketTable =
                     | Error e -> failwith $"unexpected close error: %O{e}"
                 | 2
                 | 3 ->
-                    match FileDescriptorRegistry.dup live.[rng.Next live.Length] kernel.Process.FileDescriptors with
+                    match
+                        FileDescriptorRegistry.dup live.[rng.Next live.Length] (UnixSystemState.fileDescriptors kernel)
+                    with
                     | Ok (_, registry) ->
-                        kernel <-
-                            { kernel with
-                                Process =
-                                    { kernel.Process with
-                                        FileDescriptors = registry
-                                    }
-                            }
+                        kernel <- UnixSystemState.withFileDescriptors registry kernel
 
                         observedDups <- observedDups + 1
                     | Error e -> failwith $"unexpected dup error: %O{e}"
@@ -428,20 +408,14 @@ module TestSocketTable =
                         let _, registry =
                             match VirtualFileSystem.tryGetContent inode kernel.Machine.FileSystem with
                             | Some (InodeContent.Directory _) ->
-                                FileDescriptorRegistry.openDirectory inode kernel.Process.FileDescriptors
+                                FileDescriptorRegistry.openDirectory inode (UnixSystemState.fileDescriptors kernel)
                             | _ ->
                                 FileDescriptorRegistry.openFile
                                     inode
                                     FileAccessMode.ReadOnly
-                                    kernel.Process.FileDescriptors
+                                    (UnixSystemState.fileDescriptors kernel)
 
-                        kernel <-
-                            { kernel with
-                                Process =
-                                    { kernel.Process with
-                                        FileDescriptors = registry
-                                    }
-                            }
+                        kernel <- UnixSystemState.withFileDescriptors registry kernel
                 | 7 ->
                     // Remove a name at random, from *any* directory the graph
                     // still contains, and reap if that was the last reference.
@@ -523,15 +497,10 @@ module TestSocketTable =
                             | Some (InodeContent.Symlink _)
                             | None -> ()
                 | 6 ->
-                    let _, registry = FileDescriptorRegistry.createEpoll kernel.Process.FileDescriptors
+                    let _, registry =
+                        FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors kernel)
 
-                    kernel <-
-                        { kernel with
-                            Process =
-                                { kernel.Process with
-                                    FileDescriptors = registry
-                                }
-                        }
+                    kernel <- UnixSystemState.withFileDescriptors registry kernel
                 | _ ->
                     // A different triple each time, so that a `socket`
                     // which keyed identity off the triple rather than off a
@@ -555,7 +524,7 @@ module TestSocketTable =
 
                 UnixSystem.checkInvariants kernel |> shouldEqual []
 
-                FileDescriptorRegistry.checkInvariants kernel.Process.FileDescriptors
+                FileDescriptorRegistry.checkInvariants (UnixSystemState.fileDescriptors kernel)
                 |> shouldEqual []
 
                 VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes kernel) kernel.Machine.FileSystem
@@ -826,7 +795,7 @@ module TestSocketTable =
 
         let connectionId =
             match client.Phase with
-            | SocketPhase.Established connectionId -> connectionId
+            | SocketPhase.Established (connectionId, ConnectionEnd.Client) -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase with
@@ -859,7 +828,7 @@ module TestSocketTable =
 
         let connectionOf (client : int64) =
             match (UnixMachineState.socket (SocketId client) kernel.Machine).Phase with
-            | SocketPhase.Established connectionId -> connectionId
+            | SocketPhase.Established (connectionId, ConnectionEnd.Client) -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase with
@@ -885,7 +854,7 @@ module TestSocketTable =
         outcome |> shouldEqual ConnectOutcome.Completed
 
         match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
-        | SocketPhase.Established reported -> reported |> shouldEqual connectionId
+        | SocketPhase.Established (reported, ConnectionEnd.Client) -> reported |> shouldEqual connectionId
         | other -> failwith $"expected Established, got %A{other}"
 
         let outcome, _ = connect (SocketId 1L) true (loopback 5000us) kernel
@@ -1004,7 +973,7 @@ module TestSocketTable =
 
         let connectionId =
             match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
-            | SocketPhase.Established connectionId -> connectionId
+            | SocketPhase.Established (connectionId, ConnectionEnd.Client) -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         (UnixMachineState.connection connectionId kernel.Machine).ClientAddress
@@ -1146,7 +1115,7 @@ module TestSocketTable =
 
         let connectionOf (client : int64) =
             match (UnixMachineState.socket (SocketId client) kernel.Machine).Phase with
-            | SocketPhase.Established connectionId -> connectionId
+            | SocketPhase.Established (connectionId, ConnectionEnd.Client) -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         let fd, tcpConnection, kernel = UnixConnection.acceptConnection (SocketId 0L) kernel
@@ -1154,7 +1123,7 @@ module TestSocketTable =
         tcpConnection |> shouldEqual firstClient
 
         let acceptedId =
-            match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors kernel) with
             | Some description ->
                 match description.Target with
                 | OpenFileTarget.Socket socketId -> socketId
@@ -1162,7 +1131,9 @@ module TestSocketTable =
             | None -> failwith "the accepted descriptor is not live"
 
         let accepted = UnixMachineState.socket acceptedId kernel.Machine
-        accepted.Phase |> shouldEqual (SocketPhase.Established (connectionOf 1L))
+
+        accepted.Phase
+        |> shouldEqual (SocketPhase.Established (connectionOf 1L, ConnectionEnd.Server))
 
         accepted.Binding
         |> shouldEqual (
@@ -1199,7 +1170,7 @@ module TestSocketTable =
 
         let connectionId =
             match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
-            | SocketPhase.Established connectionId -> connectionId
+            | SocketPhase.Established (connectionId, ConnectionEnd.Client) -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         // The client dies; the accepted socket still references the
@@ -1230,7 +1201,7 @@ module TestSocketTable =
 
         let connectionId =
             match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
-            | SocketPhase.Established connectionId -> connectionId
+            | SocketPhase.Established (connectionId, ConnectionEnd.Client) -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         let kernel =
@@ -1346,7 +1317,7 @@ module TestSocketTable =
                 [
                     0L,
                     { someSocket with
-                        Phase = SocketPhase.Established (ConnectionId 5L)
+                        Phase = SocketPhase.Established (ConnectionId 5L, ConnectionEnd.Client)
                     }
                 ]
                 1L
@@ -1482,6 +1453,130 @@ module TestSocketTable =
         UnixSystem.checkInvariants kernel
         |> shouldEqual [ UnixSystemDefect.DuplicateQueuedConnection (ConnectionId 0L) ]
 
+    /// One connection, held by sockets 0, 1, ... in the phases given: each a
+    /// stream socket with a descriptor, bound at a port of its own.
+    let private connectionHeldBy (phases : SocketPhase list) : UnixSystem<int, string> =
+        let kernel =
+            forge
+                [
+                    for i in 0 .. phases.Length - 1 ->
+                        3 + i, OpenFileDescriptionId (int64 (10 + i)), OpenFileTarget.Socket (SocketId (int64 i))
+                ]
+                (phases
+                 |> List.mapi (fun i phase ->
+                     int64 i,
+                     { someSocket with
+                         Binding =
+                             Some
+                                 {
+                                     Endpoint = loopback (uint16 (100 + i))
+                                     LockedAddress = None
+                                     LockedPort = false
+                                 }
+                         Phase = phase
+                     }
+                 ))
+                (int64 phases.Length)
+
+        { kernel with
+            Machine =
+                { kernel.Machine with
+                    Connections =
+                        Map.ofList
+                            [
+                                ConnectionId 0L,
+                                {
+                                    ClientAddress = loopback 1us
+                                    ServerAddress = loopback 2us
+                                }
+                            ]
+                    NextConnectionId = ConnectionId 1L
+                }
+        }
+
+    let private queuing (connections : ConnectionId list) : SocketPhase =
+        SocketPhase.Listening
+            {
+                Backlog = 8
+                Queue = connections
+                Drained = false
+            }
+
+    /// A connection has one client and one server: the server end is queued
+    /// at a listener until `accept(2)` and an accepted socket after, so either
+    /// pairing with the client is sound, and any second holder of one end is
+    /// not.
+    [<Test>]
+    let ``checkInvariants accepts a connection with one holder of each end`` () : unit =
+        let connection = ConnectionId 0L
+        let client = SocketPhase.Established (connection, ConnectionEnd.Client)
+        let server = SocketPhase.Established (connection, ConnectionEnd.Server)
+
+        for phases in
+            [
+                [ server ; client ]
+                [ queuing [ connection ] ; client ]
+                [ queuing [ connection ] ; SocketPhase.EstablishedPendingReport connection ]
+                [ server ]
+                [ client ]
+                [ queuing [ connection ] ]
+            ] do
+            UnixSystem.checkInvariants (connectionHeldBy phases) |> shouldEqual []
+
+    [<Test>]
+    let ``checkInvariants rejects a connection end two sockets hold`` () : unit =
+        let connection = ConnectionId 0L
+        let client = SocketPhase.Established (connection, ConnectionEnd.Client)
+        let server = SocketPhase.Established (connection, ConnectionEnd.Server)
+
+        let heldTwice connectionEnd holders =
+            UnixSystemDefect.ConnectionEndHeldTwice (connection, connectionEnd, holders |> List.map SocketId)
+
+        UnixSystem.checkInvariants (connectionHeldBy [ server ; client ; client ])
+        |> shouldEqual [ heldTwice ConnectionEnd.Client [ 1L ; 2L ] ]
+
+        UnixSystem.checkInvariants (
+            connectionHeldBy [ server ; client ; SocketPhase.EstablishedPendingReport connection ]
+        )
+        |> shouldEqual [ heldTwice ConnectionEnd.Client [ 1L ; 2L ] ]
+
+        UnixSystem.checkInvariants (connectionHeldBy [ server ; client ; server ])
+        |> shouldEqual [ heldTwice ConnectionEnd.Server [ 0L ; 2L ] ]
+
+        // Accepted, and still queued.
+        UnixSystem.checkInvariants (connectionHeldBy [ queuing [ connection ] ; client ; server ])
+        |> shouldEqual [ heldTwice ConnectionEnd.Server [ 0L ; 2L ] ]
+
+        // Both ends at once.
+        UnixSystem.checkInvariants (connectionHeldBy [ server ; client ; client ; server ])
+        |> shouldEqual
+            [
+                heldTwice ConnectionEnd.Client [ 1L ; 2L ]
+                heldTwice ConnectionEnd.Server [ 0L ; 3L ]
+            ]
+
+    /// A listener that queues one connection twice holds its server end once,
+    /// and is `DuplicateQueuedConnection`'s alone; two listeners queuing it are
+    /// both.
+    [<Test>]
+    let ``a connection queued twice is reported once by each rule that sees it`` () : unit =
+        let connection = ConnectionId 0L
+        let client = SocketPhase.Established (connection, ConnectionEnd.Client)
+
+        UnixSystem.checkInvariants (connectionHeldBy [ queuing [ connection ; connection ] ; client ])
+        |> shouldEqual [ UnixSystemDefect.DuplicateQueuedConnection connection ]
+
+        UnixSystem.checkInvariants (connectionHeldBy [ queuing [ connection ] ; client ; queuing [ connection ] ])
+        |> shouldEqual
+            [
+                UnixSystemDefect.DuplicateQueuedConnection connection
+                UnixSystemDefect.ConnectionEndHeldTwice (
+                    connection,
+                    ConnectionEnd.Server,
+                    [ SocketId 0L ; SocketId 2L ]
+                )
+            ]
+
     /// A wildcard-bound listener receives a loopback-destined connect — the
     /// shape `listen(2)`'s implicit bind creates, which a process that binds
     /// loopback explicitly never reaches.
@@ -1515,7 +1610,7 @@ module TestSocketTable =
 
         let connectionId =
             match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
-            | SocketPhase.Established connectionId -> connectionId
+            | SocketPhase.Established (connectionId, ConnectionEnd.Client) -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         // The connection's server address is the *destination*, not the
@@ -1627,7 +1722,7 @@ module TestSocketTable =
 
         let connectionId =
             match client.Phase with
-            | SocketPhase.Established connectionId -> connectionId
+            | SocketPhase.Established (connectionId, ConnectionEnd.Client) -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
         (UnixMachineState.connection connectionId kernel.Machine).ClientAddress
@@ -1795,7 +1890,7 @@ module TestSocketTable =
         // dead, as a refused Darwin socket does.
         let established =
             kernelWith
-                (SocketPhase.Established (ConnectionId 0L))
+                (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Server))
                 (Map.ofList
                     [
                         ConnectionId 0L,

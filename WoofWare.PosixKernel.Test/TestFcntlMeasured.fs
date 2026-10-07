@@ -627,7 +627,7 @@ module TestFcntlMeasured =
                 system
 
             let isOpen (fd : int) (system : UnixSystem<int, string>) : string =
-                match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
                 | Some _ -> "open"
                 | None -> "closed"
 

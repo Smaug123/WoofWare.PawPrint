@@ -59,7 +59,7 @@ module TestListen =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         let (SocketId raw) = socketId
         let (SocketId next) = system.Machine.NextSocketId
@@ -71,11 +71,8 @@ module TestListen =
                     Sockets = Map.add socketId socket system.Machine.Sockets
                     NextSocketId = SocketId (max next (raw + 1L))
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     let private boundAt (endpoint : InternetEndpoint) : SocketBinding option =
         Some
@@ -211,17 +208,14 @@ module TestListen =
         let system = systemOn platform
 
         let fileFd, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile
+                (InodeNumber 1L)
+                FileAccessMode.ReadOnly
+                (UnixSystemState.fileDescriptors system)
 
         let queueFd, registry = FileDescriptorRegistry.createEpoll registry
 
-        let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry system
 
         for fd in [ 0 ; fileFd ; queueFd ] do
             listenOrFail fd 8 system
@@ -363,7 +357,8 @@ module TestListen =
         let phases =
             [
                 SocketPhase.EstablishedPendingReport (ConnectionId 7L)
-                SocketPhase.Established (ConnectionId 7L)
+                SocketPhase.Established (ConnectionId 7L, ConnectionEnd.Client)
+                SocketPhase.Established (ConnectionId 7L, ConnectionEnd.Server)
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
                 SocketPhase.DatagramPeer (loopback 9000us)

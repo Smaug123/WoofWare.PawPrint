@@ -137,6 +137,7 @@ module TestFileSystemTypePal =
         let system : UnixSystem<int, string> =
             UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
+            |> Result.defaultWith (fun refusal -> failwith $"test bug: %s{MountRefusal.describe refusal}")
             |> UnixBootImage.boot
 
         match target with
