@@ -180,7 +180,7 @@ module TestSchedulerPct =
         // Empty-runnable is the deadlock signal: state must be returned unchanged
         // (no RNG advance), so a quiescent probe followed by a wake-up resumes
         // from the same PRNG position as if the probe never happened. This is
-        // what keeps replay bit-exact across `advanceUntilRunnableOrQuiescent`.
+        // what keeps replay bit-exact across the driver's jump to the deadlines.
         let initial =
             baseState ()
             |> withThreads

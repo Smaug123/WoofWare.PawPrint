@@ -242,6 +242,8 @@
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="AppContextSeed.fs" />
     <Compile Include="CommandLineArgsInit.fs" />
+    <Compile Include="RunningProgram.fs" />
+    <Compile Include="MultiProgram.fs" />
     <Compile Include="Program.fs" />
     <EmbeddedResource Include="version.json" />
   </ItemGroup>

@@ -137,8 +137,11 @@ module TestKernelConfig =
         KernelConfig.Default.InstructionCostTicks
         |> shouldEqual EmulatedKernel.defaultInstructionCostTicks
 
+        let clockOf (config : KernelConfig) : MachineClock =
+            MachineConfig.clock "KernelConfig" (fst (KernelConfig.split config))
+
         let configured =
-            KernelConfig.toKernel
+            clockOf
                 { KernelConfig.Default with
                     InstructionCostTicks = 10_000L
                 }
@@ -147,14 +150,14 @@ module TestKernelConfig =
 
         // Zero would freeze the clock, so every guest waiting for time to pass would spin
         // forever: a hang rather than a wrong answer, and the sort of thing a host sweeping the
-        // knob could reach by off-by-one. Rejected at the setter, like `ProcessorCount`.
+        // knob could reach by off-by-one. Rejected before the machine boots, like `ProcessorCount`.
         for bad in [ 0L ; -1L ] do
             let apply () =
-                KernelConfig.toKernel
+                clockOf
                     { KernelConfig.Default with
                         InstructionCostTicks = bad
                     }
-                |> ignore<EmulatedKernel>
+                |> ignore<MachineClock>
 
             Assert.Throws<Exception> (TestDelegate apply) |> ignore<Exception>
 

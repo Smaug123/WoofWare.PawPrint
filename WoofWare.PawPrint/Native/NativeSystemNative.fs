@@ -3897,9 +3897,9 @@ module NativeSystemNative =
             let request = NativeCall.int32Argument operation instruction.Arguments.[1]
 
             // Park re-entrantly: leave the native frame on the stack and the
-            // caller's program counter naming the call, so a wake —
-            // `Program.fireSyscallWakes` flipping this thread back to
-            // Runnable once the lock could be granted — re-enters this handler
+            // caller's program counter naming the call, so a wake — the
+            // driver's syscall wakes (`MultiProgram.advance`) flipping this thread back
+            // to Runnable once the lock could be granted — re-enters this handler
             // and finishes the acquisition from the caller's own frame.
             let park (system : UnixSystem<ThreadId, NativeSignalHandler>) =
                 // The library recorded the park in `system` when it answered

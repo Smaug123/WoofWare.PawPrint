@@ -8,18 +8,18 @@ open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// `EmulatedKernel.retireStep` is the per-instruction clock advance: bump `StepCounter` by one
-/// and charge `InstructionCostTicks` of virtual time. It exists as its own function only so that
+/// and charge an instruction's cost of virtual time. It exists as its own function only so that
 /// the two field writes cost one record copy instead of two — the interpreter performs it once
-/// per retired IL instruction, and `EmulatedKernel` has 31 fields.
+/// per retired IL instruction, and `EmulatedKernel` has 18 fields.
 ///
 /// That makes the whole risk of the function a divergence from the composition it replaced, so
 /// that composition is the oracle here: bumping `StepCounter` by record-copy and then calling the
 /// validating setter `withVirtualClockTicks`. The properties below assert the two agree on the
 /// resulting kernel *and* on which inputs are rejected, because collapsing the copies must not
-/// quietly collapse the validation with it. `EmulatedKernel.withInstructionCostTicks` rejects a
-/// cost below 1 and `KernelConfig.toKernel` is the only production path that writes the field, so
-/// the kernels below — assembled by record-copy, which bypasses that setter — are reaching the
-/// same hole `validateVirtualClockTicks`' own comment cites for its negative check.
+/// quietly collapse the validation with it. `MachineConfig.clock` rejects a cost below 1 and the
+/// driver's `MachineClock` is the only production source of one, so the costs below — passed
+/// raw, bypassing that check — are reaching the same hole `validateVirtualClockTicks`' own
+/// comment cites for its negative check.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestRetireStep =
@@ -27,11 +27,11 @@ module TestRetireStep =
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     /// The composition `retireStep` replaces, kept verbatim so it can act as the oracle.
-    let private byComposition (kernel : EmulatedKernel) : EmulatedKernel =
+    let private byComposition (cost : int64) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
             StepCounter = kernel.StepCounter + 1L
         }
-        |> EmulatedKernel.withVirtualClockTicks (kernel.VirtualClockTicks + kernel.InstructionCostTicks)
+        |> EmulatedKernel.withVirtualClockTicks (kernel.VirtualClockTicks + cost)
 
     /// Run `f`, reporting either the value or the fact that it threw. Which inputs are rejected is
     /// half of what is being compared, so a throw is an outcome rather than a test failure.
@@ -41,9 +41,8 @@ module TestRetireStep =
         with _ ->
             Error ()
 
-    let private kernelWith (clock : int64) (cost : int64) (step : int64) : EmulatedKernel =
+    let private kernelWith (clock : int64) (step : int64) : EmulatedKernel =
         { EmulatedKernel.withVirtualClockTicks clock EmulatedKernel.initial with
-            InstructionCostTicks = cost
             StepCounter = step
         }
 
@@ -63,10 +62,10 @@ module TestRetireStep =
             Prop.forAll
                 (Arb.fromGen gen)
                 (fun (clock, cost, step) ->
-                    let kernel = kernelWith clock cost step
+                    let kernel = kernelWith clock step
 
-                    let expected = byComposition kernel
-                    let actual = EmulatedKernel.retireStep kernel
+                    let expected = byComposition cost kernel
+                    let actual = EmulatedKernel.retireStep cost kernel
 
                     actual.StepCounter |> shouldEqual expected.StepCounter
                     actual.VirtualClockTicks |> shouldEqual expected.VirtualClockTicks
@@ -92,7 +91,7 @@ module TestRetireStep =
             Prop.forAll
                 (Arb.fromGen gen)
                 (fun (clock, cost, step) ->
-                    let actual = EmulatedKernel.retireStep (kernelWith clock cost step)
+                    let actual = EmulatedKernel.retireStep cost (kernelWith clock step)
 
                     actual.StepCounter |> shouldEqual (step + 1L)
                     actual.VirtualClockTicks |> shouldEqual (clock + cost)
@@ -100,12 +99,12 @@ module TestRetireStep =
 
         Check.One (propertyConfig, property)
 
-    /// Every other field must survive untouched. `EmulatedKernel` has 31 of them, and a `with`
+    /// Every other field must survive untouched. `EmulatedKernel` has 18 of them, and a `with`
     /// expression that named the wrong one would still satisfy the two properties above.
     [<Test>]
     let ``leaves every other field alone`` () =
-        let kernel = kernelWith 500L 7L 11L
-        let actual = EmulatedKernel.retireStep kernel
+        let kernel = kernelWith 500L 11L
+        let actual = EmulatedKernel.retireStep 7L kernel
 
         actual
         |> shouldEqual (
@@ -115,9 +114,9 @@ module TestRetireStep =
             |> EmulatedKernel.withVirtualClockTicks 507L
         )
 
-    /// A cost of zero freezes the clock and a negative one rewinds it. A record-copy can write
-    /// either past `withInstructionCostTicks`, so `retireStep` must answer them exactly as the
-    /// composition did — this is the property that fails if the fused copy skips validation.
+    /// A cost of zero freezes the clock and a negative one rewinds it. A caller can pass either
+    /// without going through `MachineConfig.clock`, so `retireStep` must answer them exactly as
+    /// the composition did — this is the property that fails if the fused copy skips validation.
     [<Test>]
     let ``rejects a non-advancing cost exactly as the composition does`` () =
         let gen =
@@ -132,10 +131,10 @@ module TestRetireStep =
             Prop.forAll
                 (Arb.fromGen gen)
                 (fun (clock, cost, step) ->
-                    let kernel = kernelWith clock cost step
+                    let kernel = kernelWith clock step
 
-                    let expected = outcome (fun () -> byComposition kernel)
-                    let actual = outcome (fun () -> EmulatedKernel.retireStep kernel)
+                    let expected = outcome (fun () -> byComposition cost kernel)
+                    let actual = outcome (fun () -> EmulatedKernel.retireStep cost kernel)
 
                     // A zero cost leaves the clock where it is, which the monotonicity check permits; a
                     // negative one moves it backwards, which it does not. Whichever this input is, both
@@ -165,10 +164,10 @@ module TestRetireStep =
             Prop.forAll
                 (Arb.fromGen gen)
                 (fun (clock, cost) ->
-                    let kernel = kernelWith clock cost 0L
+                    let kernel = kernelWith clock 0L
 
-                    let expected = outcome (fun () -> byComposition kernel)
-                    let actual = outcome (fun () -> EmulatedKernel.retireStep kernel)
+                    let expected = outcome (fun () -> byComposition cost kernel)
+                    let actual = outcome (fun () -> EmulatedKernel.retireStep cost kernel)
 
                     match expected, actual with
                     | Ok e, Ok a -> a |> shouldEqual e
@@ -202,7 +201,7 @@ module TestRetireStep =
             Prop.forAll
                 (Arb.fromGen gen)
                 (fun (clock, cost) ->
-                    match outcome (fun () -> EmulatedKernel.retireStep (kernelWith clock cost 0L)) with
+                    match outcome (fun () -> EmulatedKernel.retireStep cost (kernelWith clock 0L)) with
                     | Error () -> ()
                     | Ok k ->
                         failwith
@@ -213,11 +212,11 @@ module TestRetireStep =
 
     /// The other half of the boundary, so the test above is not passing because `retireStep`
     /// rejects everything. A zero cost leaves the clock exactly where it was, which monotonicity
-    /// permits — it is `withInstructionCostTicks`' "must be >= 1" that a zero violates, and
+    /// permits — it is `MachineConfig.clock`'s "must be >= 1" that a zero violates, and
     /// re-enforcing that rule is not this function's job.
     [<Test>]
     let ``a zero instruction cost is accepted and freezes the clock`` () =
-        let actual = EmulatedKernel.retireStep (kernelWith 4_096L 0L 7L)
+        let actual = EmulatedKernel.retireStep 0L (kernelWith 4_096L 7L)
 
         actual.VirtualClockTicks |> shouldEqual 4_096L
         actual.StepCounter |> shouldEqual 8L
@@ -232,7 +231,7 @@ module TestRetireStep =
             [ 0L .. 1000L ]
             |> List.map (fun belowHorizon ->
                 let cost = 500L
-                outcome (fun () -> EmulatedKernel.retireStep (kernelWith (horizon - belowHorizon) cost 0L))
+                outcome (fun () -> EmulatedKernel.retireStep cost (kernelWith (horizon - belowHorizon) 0L))
             )
 
         outcomes |> List.filter Result.isOk |> List.isEmpty |> shouldEqual false
