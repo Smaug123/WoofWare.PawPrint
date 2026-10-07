@@ -354,6 +354,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- What a reset leaves of a connected socket's binding and options,
+         against a FIN, measured per flavour by
+         docs/plans/2026-10-07-tcp-byte-transfer/reset-binding.c, whose output
+         is embedded from beside it. `TestConnectedTransfer` holds the kernel to
+         it. -->
+    <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\reset-binding.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.resetBinding.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\reset-binding.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.resetBinding.darwin.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- What a real pipe answered to random non-blocking reads and writes,
          measured per flavour; `TestPipeBufferCorpus` holds `PipeBuffer` to it. -->
     <EmbeddedResource Include="pipeBuffer\*.txt" />

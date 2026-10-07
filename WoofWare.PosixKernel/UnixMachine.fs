@@ -707,8 +707,31 @@ module UnixMachineState =
                 Err = false
             }
 
+    /// Whether the connected socket `socket`'s binding stopped reserving its
+    /// port when its connection was reset: on Darwin always, and on Linux
+    /// unless the port was bound explicitly (`SocketBinding.LockedPort`).
+    /// Measured on both (`reset-binding.c` in
+    /// docs/plans/2026-10-07-tcp-byte-transfer): a fresh socket binds the
+    /// survivor's exact endpoint once a reset has reached it, at either end,
+    /// though `getsockname` still reports the port; after a FIN it cannot.
+    let resetReleasedPort (socket : SocketDescription) (machine : UnixMachineState) : bool =
+        match SocketPhase.connectionEnd socket.Phase with
+        | None -> false
+        | Some (connectionId, connectionEnd) ->
+            match (TcpTransfer.towards connectionEnd (connection connectionId machine).Transfer).Receiver with
+            | TcpEndState.Reset _ ->
+                match SimulatedUnixPlatform.flavour machine.UnixPlatform, socket.Binding with
+                | SimulatedUnixFlavour.Darwin, _ -> true
+                | SimulatedUnixFlavour.Linux, Some binding -> not binding.LockedPort
+                | SimulatedUnixFlavour.Linux, None -> true
+            | TcpEndState.Open
+            | TcpEndState.FinQueued
+            | TcpEndState.FinReceived
+            | TcpEndState.Closed -> false
+
     /// Whether any *other* socket's binding conflicts with `candidate`, taken
-    /// on behalf of `socket`.
+    /// on behalf of `socket`. A binding a reset released
+    /// (`resetReleasedPort`) conflicts with nothing.
     ///
     /// The relation `bind(2)` decides admission with, `listen(2)` asks again
     /// on the flavour that re-screens an already-bound socket, and every
@@ -722,7 +745,7 @@ module UnixMachineState =
         =
         machine.Sockets
         |> Map.exists (fun otherId (other : SocketDescription) ->
-            if otherId = socketId then
+            if otherId = socketId || resetReleasedPort other machine then
                 false
             else
 

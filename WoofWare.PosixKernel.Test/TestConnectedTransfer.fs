@@ -706,6 +706,162 @@ module TestConnectedTransfer =
 
                 (build, direct) |> shouldEqual (build, admitted)
 
+    /// What a reset leaves of the survivor's binding and options, against a
+    /// FIN, replayed from `reset-binding.c`'s rows for both flavours: a reset
+    /// releases the survivor's port (on Linux, unless it was bound
+    /// explicitly) though `getsockname` still reports it, and Darwin then
+    /// refuses `setsockopt`.
+    [<Test>]
+    let ``a reset releases its survivor's port and, on Darwin, its options, as each flavour was measured to``
+        ()
+        : unit
+        =
+        for platform in Machines.platforms do
+            let resource =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> "WoofWare.PosixKernel.Test.resetBinding.linux.txt"
+                | SimulatedUnixFlavour.Darwin -> "WoofWare.PosixKernel.Test.resetBinding.darwin.txt"
+
+            use stream =
+                match Assembly.GetExecutingAssembly().GetManifestResourceStream resource with
+                | null -> failwith $"embedded resource %s{resource} not found"
+                | stream -> stream
+
+            use reader = new StreamReader (stream)
+
+            let rows =
+                reader.ReadToEnd().Split '\n'
+                |> Array.filter (fun line -> line.StartsWith ("survivor=", StringComparison.Ordinal))
+                |> Array.toList
+
+            rows.Length |> shouldEqual 8
+
+            let answer (failed : UnixError option) : string =
+                match failed with
+                | None -> "ok"
+                | Some UnixError.EINVAL -> "-1 Invalid argument"
+                | Some UnixError.EADDRINUSE -> "-1 Address already in use"
+                | Some other -> $"-1 %O{other}"
+
+            for row in rows do
+                let field (name : string) =
+                    row.Split ' '
+                    |> Array.find (fun part -> part.StartsWith (name + "=", StringComparison.Ordinal))
+                    |> fun part -> part.Substring (name.Length + 1)
+
+                let survivor = field "survivor"
+                let reset = field "how" = "r"
+                let locked = field "locked" = "1"
+
+                let system = systemOn id platform
+                let listener, system = KeventWorld.stream false system
+                let listenerPort = if locked then 47100us else 0us
+
+                let system =
+                    match
+                        CopyIn.bind
+                            listener
+                            UserBuffer.Mapped
+                            16u
+                            (CopyIn.inet platform (KeventWorld.loopback listenerPort))
+                            system
+                    with
+                    | Ok (BindAnswer.Bound _, system) -> system
+                    | other -> failwith $"bind: %A{other}"
+
+                let system = KeventWorld.listen listener system
+
+                let port =
+                    match (UnixMachineState.socket (socketOf listener system) system.Machine).Binding with
+                    | Some binding -> binding.Endpoint.Port
+                    | None -> failwith "the listener is unbound"
+
+                let client, system = KeventWorld.stream false system
+
+                let system =
+                    if locked then
+                        KeventWorld.bind client 47101us system
+                    else
+                        system
+
+                let system =
+                    match KeventWorld.connect client port system with
+                    | ConnectOutcome.Completed, system -> system
+                    | other, _ -> failwith $"connect: %A{other}"
+
+                let accepted, system = KeventWorld.accept listener system
+                let system = KeventWorld.close listener system
+
+                let keep, gone =
+                    if survivor = "c" then
+                        client, accepted
+                    else
+                        accepted, client
+
+                let system = if reset then sentAll keep 10 system else system
+                let system = KeventWorld.close gone system
+
+                let endpoint =
+                    match (UnixMachineState.socket (socketOf keep system) system.Machine).Binding with
+                    | Some binding -> binding.Endpoint
+                    | None -> failwith "the survivor is unbound"
+
+                let soError, system =
+                    match KeventWorld.readSocketError keep system with
+                    | GetSockOptAnswer.Reported (value, _), system -> value, system
+                    | other -> failwith $"SO_ERROR: %A{other}"
+
+                let level = SimulatedUnixPlatform.socketOptionLevel platform
+                let reuse = SimulatedUnixPlatform.reuseAddressOption platform
+
+                let setsockopt, system =
+                    match UnixSocket.admitSetSockOpt keep level reuse UserBuffer.Mapped 4u system with
+                    | Ok (SetSockOptAdmission.Answered error) -> Some error, system
+                    | Ok (SetSockOptAdmission.Transfer _) ->
+                        match UnixSocket.setsockopt keep level reuse UserBuffer.Mapped 4u (Some 1) system with
+                        | Ok (SetSockOptAnswer.Set, system) -> None, system
+                        | Ok (SetSockOptAnswer.Failed error, system) -> Some error, system
+                        | Error refusal -> failwith $"setsockopt: %A{refusal}"
+                    | Error refusal -> failwith $"setsockopt: %A{refusal}"
+
+                let bindFresh (withReuse : bool) (system : UnixSystem<int, string>) =
+                    let fresh, system = KeventWorld.stream false system
+
+                    let system =
+                        if withReuse then
+                            ReuseAddress.set true fresh system
+                        else
+                            system
+
+                    match CopyIn.bind fresh UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
+                    | Ok (BindAnswer.Bound _, system) -> None, system
+                    | Ok (BindAnswer.Failed error, system) -> Some error, system
+                    | other -> failwith $"bind: %A{other}"
+
+                let bind, system = bindFresh false system
+                let bindReuse, system = bindFresh true system
+
+                let portSame =
+                    (UnixMachineState.socket (socketOf keep system) system.Machine).Binding
+                    |> Option.map (fun binding -> binding.Endpoint)
+                    |> (=) (Some endpoint)
+
+                assertClean system
+
+                let how = field "how"
+                let lockedField = field "locked"
+                let setsockoptAnswer = answer setsockopt
+                let bindAnswer = answer bind
+                let bindReuseAnswer = answer bindReuse
+                let same = if portSame then 1 else 0
+
+                // SO_ERROR in the flavour's own numbering, which is the
+                // measured host's.
+                let modelled =
+                    $"survivor=%s{survivor} how=%s{how} locked=%s{lockedField} so_error=%d{soError} setsockopt=%s{setsockoptAnswer} bind=%s{bindAnswer} bind_reuse=%s{bindReuseAnswer} getsockname_port_same=%d{same}"
+
+                modelled |> shouldEqual row
+
     /// Linux's accept that reads a negative address length answers EINVAL
     /// having taken the connection, whose server end then closes as a close
     /// does: over bytes the client had sent it, a reset.

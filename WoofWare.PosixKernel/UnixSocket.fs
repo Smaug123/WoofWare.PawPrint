@@ -1533,15 +1533,28 @@ module UnixSocket =
         // Darwin refuses every option on a socket that can neither send nor
         // receive any more, ahead of the length and the copy: measured EINVAL
         // after a refused connect, whether or not the refusal is still pending,
-        // even through an unmapped value. Linux takes the option in every phase.
+        // even through an unmapped value, and after a reset reached a
+        // connected socket, but not after a FIN, which shuts only the receive
+        // side (`reset-binding.c`). Linux takes the option in every phase.
         let darwinShutDown =
             flavour = SimulatedUnixFlavour.Darwin
             && match socket.Phase with
                | SocketPhase.Refused _ -> true
+               | SocketPhase.Established (connectionId, connectionEnd) ->
+                   match
+                       (TcpTransfer.towards
+                           connectionEnd
+                           (UnixMachineState.connection connectionId system.Machine).Transfer)
+                           .Receiver
+                   with
+                   | TcpEndState.Reset _ -> true
+                   | TcpEndState.Open
+                   | TcpEndState.FinQueued
+                   | TcpEndState.FinReceived
+                   | TcpEndState.Closed -> false
                | SocketPhase.Idle
                | SocketPhase.Listening _
                | SocketPhase.EstablishedPendingReport _
-               | SocketPhase.Established _
                | SocketPhase.DatagramPeer _ -> false
 
         if darwinShutDown then
