@@ -56,6 +56,7 @@
         <Compile Include="RenameRules.fs" />
         <Compile Include="AccessRules.fs" />
         <Compile Include="StatRules.fs" />
+        <Compile Include="AttributeChangeRules.fs" />
         <Compile Include="OwnerChangeRules.fs" />
         <Compile Include="UnconnectedSocketRules.fs" />
         <Compile Include="SimulatedUnixPlatform.fs" />

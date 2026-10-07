@@ -194,7 +194,8 @@ module FStatAtRefusal =
         | FStatAtRefusal.Stat refusal -> StatRefusal.describe refusal
         | FStatAtRefusal.Descriptor refusal -> FStatRefusal.describe refusal
 
-/// Why this kernel will not answer a `chmod(2)`.
+/// Why this kernel will not answer a `chmod(2)`, or an `fchmodat(2)` that
+/// walks its path.
 [<RequireQualifiedAccess>]
 type ChModRefusal =
     /// What the mode change would do to the inode at `inode` has not been
@@ -202,6 +203,15 @@ type ChModRefusal =
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
     /// This kernel will not resolve the path.
     | Path of PathRefusal
+    /// `fchmodat(2)` with `AT_SYMLINK_NOFOLLOW` reached the symbolic link at
+    /// `inode`, on a flavour whose links take the mode asked for
+    /// (`SymlinkModeChange.ChangesLink`), and the caller may change it: the link
+    /// would get `bits`. This library does not model that change: a link may
+    /// hold only the bits link creation gives it (`UnixSystem.checkInvariants`,
+    /// `SymlinkPermissionsNotOfFlavour`), and such a flavour's change can set
+    /// the set-ID and sticky bits too. `chmod(2)` follows a final link, so only
+    /// `fchmodat` reaches this.
+    | SymlinkMode of inode : InodeNumber * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
 module ChModRefusal =
@@ -212,6 +222,8 @@ module ChModRefusal =
         | ChModRefusal.UnmeasuredModeChange (inode, refusal) ->
             $"changing the mode of inode %O{inode}: %s{ModeChangeRefusal.describe refusal}"
         | ChModRefusal.Path refusal -> PathRefusal.describe refusal
+        | ChModRefusal.SymlinkMode (inode, bits) ->
+            $"AT_SYMLINK_NOFOLLOW reached symbolic link %O{inode}, whose own mode this flavour would set to %O{bits}. Measured on Darwin 27.0, that sets the link's own mode by chmod's rule, set-ID and sticky bits included; this library does not model the change, since it keeps a link only the bits link creation gives it (UnixSystem.checkInvariants, SymlinkPermissionsNotOfFlavour)."
 
 /// Why this kernel will not answer an `fchmod(2)`.
 [<RequireQualifiedAccess>]
@@ -241,7 +253,32 @@ module FChModRefusal =
         | FChModRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchmod on a socket of every domain and kind succeeds and changes the mode fstat then reports (0777 to 0600, say); this kernel holds no inode for a socket and so no mode to change, and answering success while changing nothing would be a lie the moment one is modelled."
 
-/// Why this kernel will not answer a `chown(2)` or `lchown(2)`.
+/// Why this kernel will not answer an `fchmodat(2)`.
+[<RequireQualifiedAccess>]
+type FChModAtRefusal =
+    /// The flag word carries flags the flavour accepts and this library does
+    /// not model; see `AttributeChangeScreen.Unmodelled`. `flags` is the whole
+    /// word.
+    | UnmodelledFlags of flags : int
+    /// The call walked its path, and `chmod(2)` refuses what it reached.
+    | ChMod of ChModRefusal
+    /// Linux's `AT_EMPTY_PATH` with the empty path named `dirfd` itself, and
+    /// `fchmod(2)` refuses it.
+    | Descriptor of FChModRefusal
+
+[<RequireQualifiedAccess>]
+module FChModAtRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which path.
+    let describe (refusal : FChModAtRefusal) : string =
+        match refusal with
+        | FChModAtRefusal.UnmodelledFlags flags ->
+            $"the flag word 0x%x{flags} carries a flag this flavour accepts and this library does not model: Darwin's AT_SYMLINK_NOFOLLOW_ANY (0x800), AT_RESOLVE_BENEATH (0x2000) or AT_UNIQUE (0x8000)."
+        | FChModAtRefusal.ChMod refusal -> ChModRefusal.describe refusal
+        | FChModAtRefusal.Descriptor refusal -> FChModRefusal.describe refusal
+
+/// Why this kernel will not answer a `chown(2)` or `lchown(2)`, or an
+/// `fchownat(2)` that walks its path.
 [<RequireQualifiedAccess>]
 type ChOwnRefusal =
     /// What the owner change would do to the inode at `inode` has not been
@@ -287,6 +324,31 @@ module FChOwnRefusal =
             $"the descriptor is an end of pipe %O{pipe}, which the process was launched with rather than one it made. Measured on Linux, fchown on a pipe end changes the owner fstat then reports by the same rule as a file's, which depends on who owns the pipe; this pipe's owner is whoever launched the process, which the launch table does not state, so any answer would be a guess."
         | FChOwnRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}. Measured on Linux, fchown on a socket of every domain and kind changes the owner fstat then reports, by the same rule as a file's (the owner may give it one of its groups, a non-owner naming a user is EPERM, root may do anything); this kernel holds no owner for a socket, so it has nothing to judge the call against or to change."
+
+/// Why this kernel will not answer an `fchownat(2)`.
+[<RequireQualifiedAccess>]
+type FChOwnAtRefusal =
+    /// The flag word carries flags the flavour accepts and this library does
+    /// not model; see `AttributeChangeScreen.Unmodelled`. `flags` is the whole
+    /// word.
+    | UnmodelledFlags of flags : int
+    /// The call walked its path, and `chown(2)` or `lchown(2)` refuses what it
+    /// reached.
+    | ChOwn of ChOwnRefusal
+    /// Linux's `AT_EMPTY_PATH` with the empty path named `dirfd` itself, and
+    /// `fchown(2)` refuses it.
+    | Descriptor of FChOwnRefusal
+
+[<RequireQualifiedAccess>]
+module FChOwnAtRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which path.
+    let describe (refusal : FChOwnAtRefusal) : string =
+        match refusal with
+        | FChOwnAtRefusal.UnmodelledFlags flags ->
+            $"the flag word 0x%x{flags} carries a flag this flavour accepts and this library does not model: Darwin's AT_SYMLINK_NOFOLLOW_ANY (0x800), AT_RESOLVE_BENEATH (0x2000) or AT_UNIQUE (0x8000)."
+        | FChOwnAtRefusal.ChOwn refusal -> ChOwnRefusal.describe refusal
+        | FChOwnAtRefusal.Descriptor refusal -> FChOwnRefusal.describe refusal
 
 /// Why this kernel will not answer a `futimens(2)`.
 [<RequireQualifiedAccess>]
@@ -996,8 +1058,11 @@ module UnixPathResolution =
             }
         )
 
-    /// `chmod`, of a path this kernel has already copied in.
+    /// `fchmodat` without `AT_EMPTY_PATH`, of a path this kernel has already
+    /// copied in, starting from `directory` if it is relative.
     let internal chmodParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (policy : SymlinkPolicy)
         (path : UnixPath)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1008,15 +1073,41 @@ module UnixPathResolution =
         // "d/" and "ld/" are the directory, "f/" and "lf/" ENOTDIR, a
         // dangling link and an absent name ENOENT, a link to itself ELOOP,
         // the empty path ENOENT and "f/under" ENOTDIR. Those are exactly what
-        // `Follow` with a demanded trailing separator answers.
-        match resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow path system with
+        // `Follow` with a demanded trailing separator answers. Under
+        // AT_SYMLINK_NOFOLLOW (`chmod-chown-at.c`, NOFOLLOW) a final link is
+        // the link itself, dangling or looping or not, and "ld/" is still the
+        // directory and "lf/" ENOTDIR, as `NoFollowFinal` answers.
+        match resolvePath directory policy path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChModRefusal.Path refusal)
         | Ok inode ->
+
+        match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
+        | None ->
+            failwith
+                $"UnixPathResolution.chmodParsed: resolving %O{path} returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+        | Some entry ->
+
+        match entry.Content with
+        | InodeContent.Symlink _ ->
+            match SimulatedUnixPlatform.symlinkModeChange system.Machine.UnixPlatform with
+            | SymlinkModeChange.NotSupported -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
+            | SymlinkModeChange.ChangesLink ->
+
+            let rule = SimulatedUnixPlatform.privilegedModeChange system.Machine.UnixPlatform
+
+            match PermissionBits.afterModeChange rule (Standing.toward system.Process.Credentials entry.Owner) mode with
+            | Error refusal -> Error (ChModRefusal.UnmeasuredModeChange (inode, refusal))
+            | Ok ModeChange.Forbidden -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
+            | Ok (ModeChange.Permitted bits) -> Error (ChModRefusal.SymlinkMode (inode, bits))
+        | InodeContent.RegularFile _
+        | InodeContent.Directory _
+        | InodeContent.CharacterDevice _ ->
             changeModeOf inode mode system
             |> Result.mapError ChModRefusal.UnmeasuredModeChange
 
-    /// `chmod(2)`: change the mode of the inode `path` names.
+    /// `chmod(2)`: change the mode of the inode `path` names. This is
+    /// `fchmodat` from `AT_FDCWD` with no flags.
     ///
     /// `mode` is the raw mode word, of which only the low twelve bits are read;
     /// see `PermissionBits.afterModeChange` for what the caller may set.
@@ -1038,7 +1129,7 @@ module UnixPathResolution =
         =
         match copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> chmodParsed path mode system
+        | Ok path -> chmodParsed AtDirectory.CurrentDirectory SymlinkPolicy.Follow path mode system
 
     /// `fchmod(2)`: change the mode of the inode `fd` names.
     ///
@@ -1199,8 +1290,11 @@ module UnixPathResolution =
             }
         )
 
-    /// `chown`, of a path this kernel has already copied in.
+    /// `fchownat` without `AT_EMPTY_PATH`, of a path this kernel has already
+    /// copied in, starting from `directory` if it is relative.
     let internal chownParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (directory : AtDirectory)
+        (policy : SymlinkPolicy)
         (path : UnixPath)
         (user : UserId option)
         (group : GroupId option)
@@ -1214,14 +1308,21 @@ module UnixPathResolution =
         // the empty path ENOENT, "f/under" ENOTDIR, and a path through an
         // unsearchable directory EACCES even naming another's uid. Someone
         // else's file named as "f/" or "f/under" is ENOTDIR, not EPERM.
-        match resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.Follow path system with
+        // Without following (`lchown`): a link to a file, a link to a
+        // directory, a dangling link and a link to itself each change
+        // themselves; "ld/" changes the directory and "lf/" is ENOTDIR; the
+        // remaining path rows answer as `chown`'s do. `chmod-chown-at.c`
+        // (LCHOWN): `fchownat` with AT_SYMLINK_NOFOLLOW answers every one of
+        // those as `lchown` does.
+        match resolvePath directory policy path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChOwnRefusal.Path refusal)
         | Ok inode ->
             changeOwnerOf inode user group system
             |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
 
-    /// `chown(2)`: change the owner and group of the inode `path` names.
+    /// `chown(2)`: change the owner and group of the inode `path` names. This
+    /// is `fchownat` from `AT_FDCWD` with no flags.
     ///
     /// `None` is `(uid_t)-1` or `(gid_t)-1`, which leaves that ID as it is.
     /// See `OwnerChangeRules.verdict` for who may name which IDs, and which
@@ -1246,30 +1347,12 @@ module UnixPathResolution =
         =
         match copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> chownParsed path user group system
-
-    /// `lchown`, of a path this kernel has already copied in.
-    let internal lchownParsed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (path : UnixPath)
-        (user : UserId option)
-        (group : GroupId option)
-        (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, ChOwnRefusal>
-        =
-        // Measured on both platforms (`chown-rules.c`): a link to a file, a
-        // link to a directory, a dangling link and a link to itself each
-        // change themselves; "ld/" changes the directory and "lf/" is
-        // ENOTDIR; the remaining path rows answer as `chown`'s do.
-        match resolvePath AtDirectory.CurrentDirectory SymlinkPolicy.NoFollowFinal path system with
-        | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
-        | Error (PathFailure.Refused refusal) -> Error (ChOwnRefusal.Path refusal)
-        | Ok inode ->
-            changeOwnerOf inode user group system
-            |> Result.mapError ChOwnRefusal.UnmeasuredOwnerChange
+        | Ok path -> chownParsed AtDirectory.CurrentDirectory SymlinkPolicy.Follow path user group system
 
     /// `lchown(2)`: change the owner and group of the inode `path` names,
     /// without following a symbolic link in the final position, so a link
-    /// itself changes.
+    /// itself changes. This is `fchownat` from `AT_FDCWD` with
+    /// `AT_SYMLINK_NOFOLLOW`.
     ///
     /// A trailing separator makes the final component a directory, so "l/" for
     /// a link to a directory changes the directory, and for a link to anything
@@ -1286,7 +1369,7 @@ module UnixPathResolution =
         =
         match copyIn path system with
         | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> lchownParsed path user group system
+        | Ok path -> chownParsed AtDirectory.CurrentDirectory SymlinkPolicy.NoFollowFinal path user group system
 
     /// `fchown(2)`: change the owner and group of the inode `fd` names.
     ///
@@ -1382,6 +1465,124 @@ module UnixPathResolution =
                         }
                 }
             )
+
+    /// `fchmodat(2)`: change the mode of the inode `path` names, starting
+    /// from `dirfd` if it is relative; `chmod(2)` is this from the current
+    /// directory with no flags.
+    ///
+    /// `dirfd` and `flags` are raw, in this platform's own numbering;
+    /// `AttributeChangeRules.screen` says which flag words each flavour
+    /// rejects, before anything else, and what the rest mean. `path` is the
+    /// argument's bytes, copied in next. A relative path then starts where
+    /// `dirfd` says, as every `*at` call's does, and the inode it names
+    /// changes as under `chmod`.
+    ///
+    /// Under `AT_SYMLINK_NOFOLLOW` a symbolic link in the final position is
+    /// itself the inode, and what that does is the flavour's
+    /// (`SimulatedUnixPlatform.symlinkModeChange`): Linux answers EOPNOTSUPP;
+    /// Darwin changes the link's own mode, which this library refuses where
+    /// the caller may make the change (`ChModRefusal.SymlinkMode`).
+    ///
+    /// Under Linux's `AT_EMPTY_PATH` the empty path is `fchmod(2)` of
+    /// `dirfd`, whatever kind of descriptor it is, or `chmod` of the current
+    /// directory for `AT_FDCWD`; an unreadable pathname is EFAULT, NULL
+    /// included. A path that is not empty is resolved as if the flag were
+    /// absent.
+    ///
+    /// Refuses the flags the screen does not model, and whatever `chmod` or
+    /// `fchmod` refuses of what the call reaches; see `FChModAtRefusal`.
+    let fchmodat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (mode : int)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FChModAtRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match AttributeChangeRules.screen flavour flags with
+        | AttributeChangeScreen.Failed error -> Ok (SyscallAnswer.Failed error, system)
+        | AttributeChangeScreen.Unmodelled flags -> Error (FChModAtRefusal.UnmodelledFlags flags)
+        | AttributeChangeScreen.Screened arguments ->
+
+        let directory = AtDirectory.decode flavour dirfd
+
+        // Measured by `chmod-chown-at.c` (EMPTY) on Linux 6.18.5, as root and
+        // as uid 1000: under AT_EMPTY_PATH, NULL is EFAULT, and the empty path
+        // answers and changes exactly what fchmod of the descriptor does (or
+        // chmod of "." for AT_FDCWD), for every kind of descriptor -- pipes,
+        // sockets, epoll, /dev/null, unlinked files, removed directories, one
+        // root opened on the caller's behalf -- AT_SYMLINK_NOFOLLOW or not.
+        // EMPTYPATH: a path that is not empty answers as it does without it.
+        match copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path ->
+
+        match arguments.EmptyPath, directory with
+        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
+            fchmod fd mode system |> Result.mapError FChModAtRefusal.Descriptor
+        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
+            changeModeOf system.Process.CurrentDirectoryInode mode system
+            |> Result.mapError (ChModRefusal.UnmeasuredModeChange >> FChModAtRefusal.ChMod)
+        | EmptyPathMeaning.NamesStartingPoint, _
+        | EmptyPathMeaning.Walked, _ ->
+            chmodParsed directory arguments.FinalSymlink path mode system
+            |> Result.mapError FChModAtRefusal.ChMod
+
+    /// `fchownat(2)`: change the owner and group of the inode `path` names,
+    /// starting from `dirfd` if it is relative; `chown(2)` is this from the
+    /// current directory with no flags, and `lchown(2)` with
+    /// `AT_SYMLINK_NOFOLLOW`.
+    ///
+    /// `dirfd` and `flags` are raw, in this platform's own numbering, and
+    /// screened as `fchmodat`'s are. `None` is `(uid_t)-1` or `(gid_t)-1`, as
+    /// for `chown`. A relative path starts where `dirfd` says, and the inode
+    /// it names changes as under `chown`, or under `lchown` with
+    /// `AT_SYMLINK_NOFOLLOW`.
+    ///
+    /// Under Linux's `AT_EMPTY_PATH` the empty path is `fchown(2)` of
+    /// `dirfd`, whatever kind of descriptor it is, or `chown` of the current
+    /// directory for `AT_FDCWD`; an unreadable pathname is EFAULT, NULL
+    /// included. A path that is not empty is resolved as if the flag were
+    /// absent.
+    ///
+    /// Refuses the flags the screen does not model, and whatever `chown` or
+    /// `fchown` refuses of what the call reaches; see `FChOwnAtRefusal`.
+    let fchownat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (dirfd : int)
+        (path : PathArgumentBytes)
+        (user : UserId option)
+        (group : GroupId option)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FChOwnAtRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        match AttributeChangeRules.screen flavour flags with
+        | AttributeChangeScreen.Failed error -> Ok (SyscallAnswer.Failed error, system)
+        | AttributeChangeScreen.Unmodelled flags -> Error (FChOwnAtRefusal.UnmodelledFlags flags)
+        | AttributeChangeScreen.Screened arguments ->
+
+        let directory = AtDirectory.decode flavour dirfd
+
+        // Measured by `chmod-chown-at.c` (EMPTY, EMPTYPATH) as `fchmodat`'s
+        // is, for the caller's own group and for uid 2000 alike.
+        match copyIn path system with
+        | Error error -> Ok (SyscallAnswer.Failed error, system)
+        | Ok path ->
+
+        match arguments.EmptyPath, directory with
+        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.Descriptor fd when UnixPath.isEmpty path ->
+            fchown fd user group system |> Result.mapError FChOwnAtRefusal.Descriptor
+        | EmptyPathMeaning.NamesStartingPoint, AtDirectory.CurrentDirectory when UnixPath.isEmpty path ->
+            changeOwnerOf system.Process.CurrentDirectoryInode user group system
+            |> Result.mapError (ChOwnRefusal.UnmeasuredOwnerChange >> FChOwnAtRefusal.ChOwn)
+        | EmptyPathMeaning.NamesStartingPoint, _
+        | EmptyPathMeaning.Walked, _ ->
+            chownParsed directory arguments.FinalSymlink path user group system
+            |> Result.mapError FChOwnAtRefusal.ChOwn
 
     /// `futimens(2)` with two explicit times: set the access and modification
     /// times of the file or directory `fd` names to `access` and
