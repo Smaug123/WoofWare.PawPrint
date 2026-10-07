@@ -50,13 +50,16 @@ module internal TcpTransferReference =
             RecvCap : int
         }
 
-    /// What one end knows. `GotFin` and `GotReset` are both set when a reset
-    /// followed a FIN.
+    /// What one end knows.
     type End =
         {
             Closed : bool
-            GotFin : bool
+            /// The peer closed cleanly. Its FIN arrives once the bytes in
+            /// flight here have.
+            FinSent : bool
             GotReset : bool
+            /// The FIN had arrived when the reset came.
+            ResetAfterFin : bool
             ErrorWaiting : bool
             /// Linux's `SOCK_NOSPACE` on this end's send buffer.
             Armed : bool
@@ -87,8 +90,9 @@ module internal TcpTransferReference =
         let fresh =
             {
                 Closed = false
-                GotFin = false
+                FinSent = false
                 GotReset = false
+                ResetAfterFin = false
                 ErrorWaiting = false
                 Armed = false
             }
@@ -111,7 +115,7 @@ module internal TcpTransferReference =
 
     /// The error a waiting one is, at end `e`.
     let private errorAt (m : Model) (e : ConnectionEnd) : TcpError =
-        if m.Linux && m.Ends.[e].GotFin then
+        if m.Linux && m.Ends.[e].ResetAfterFin then
             TcpError.BrokenPipe
         else
             TcpError.ConnectionReset
@@ -190,6 +194,18 @@ module internal TcpTransferReference =
             | Some n ->
                 let taken = List.take n bytes
 
+                // Linux marks the socket out of space when it takes only part.
+                let m =
+                    if m.Linux && n < bytes.Length then
+                        setEnd
+                            w
+                            { me with
+                                Armed = true
+                            }
+                            m
+                    else
+                        m
+
                 if peerGone then
                     let toPeer =
                         if m.Linux then
@@ -214,6 +230,7 @@ module internal TcpTransferReference =
                         w
                         { me with
                             GotReset = true
+                            ResetAfterFin = me.FinSent && m.Flows.[w].InFlight.IsEmpty
                             ErrorWaiting = true
                             Armed = false
                         }
@@ -278,9 +295,17 @@ module internal TcpTransferReference =
                     else
                         [], m
 
-                TcpTransferSeen.Bytes got, (if moved > 0 then [ TcpWake.DataArrived r ] else []) @ spaceWakes, m
+                let finWake =
+                    if moved > 0 && f.InFlight.IsEmpty && me.FinSent && not me.GotReset then
+                        [ TcpWake.PeerFinished r ]
+                    else
+                        []
+
+                TcpTransferSeen.Bytes got,
+                (if moved > 0 then [ TcpWake.DataArrived r ] else []) @ finWake @ spaceWakes,
+                m
         elif m.Linux then
-            if me.GotFin then
+            if me.GotReset && me.ResetAfterFin then
                 TcpTransferSeen.EndOfFile, [], m
             elif me.GotReset && me.ErrorWaiting then
                 TcpTransferSeen.ReadFailed (errorAt m r),
@@ -291,7 +316,7 @@ module internal TcpTransferReference =
                         ErrorWaiting = false
                     }
                     m
-            elif me.GotReset then
+            elif me.GotReset || me.FinSent then
                 TcpTransferSeen.EndOfFile, [], m
             else
                 TcpTransferSeen.WouldBlock, [], m
@@ -308,7 +333,7 @@ module internal TcpTransferReference =
                         m
 
             TcpTransferSeen.ReadFailed TcpError.ConnectionReset, [], m
-        elif me.GotReset || me.GotFin then
+        elif me.GotReset || me.FinSent then
             TcpTransferSeen.EndOfFile, [], m
         elif count = 0 then
             TcpTransferSeen.Bytes [], [], m
@@ -379,13 +404,16 @@ module internal TcpTransferReference =
                         InFlight = []
                     }
             else
-                [ TcpWake.PeerFinished p ],
+                (if toPeer.InFlight.IsEmpty then
+                     [ TcpWake.PeerFinished p ]
+                 else
+                     []),
                 m
                 |> setEnd c closedMe
                 |> setEnd
                     p
                     { m.Ends.[p] with
-                        GotFin = true
+                        FinSent = true
                     }
 
 /// `TcpTransfer` held to `TcpTransferReference` over random calls.
@@ -414,17 +442,19 @@ module TestTcpTransfer =
             | TcpTransferRules.Darwin -> false
 
         let endOf (e : ConnectionEnd) : TcpTransferReference.End =
-            let closed, fin, reset, waiting =
+            let closed, finSent, reset, afterFin, waiting =
                 match (TcpTransfer.towards e transfer).Receiver with
-                | TcpEndState.Open -> false, false, false, false
-                | TcpEndState.FinReceived -> false, true, false, false
-                | TcpEndState.Reset (afterFin, pending) -> false, afterFin, true, pending
-                | TcpEndState.Closed -> true, false, false, false
+                | TcpEndState.Open -> false, false, false, false, false
+                | TcpEndState.FinQueued
+                | TcpEndState.FinReceived -> false, true, false, false, false
+                | TcpEndState.Reset (afterFin, pending) -> false, false, true, afterFin, pending
+                | TcpEndState.Closed -> true, false, false, false, false
 
             {
                 Closed = closed
-                GotFin = fin
+                FinSent = finSent
                 GotReset = reset
+                ResetAfterFin = afterFin
                 ErrorWaiting = waiting
                 Armed = armed e
             }
@@ -438,7 +468,9 @@ module TestTcpTransfer =
             Ends = ends |> List.map (fun e -> e, endOf e) |> Map.ofList
         }
 
-    /// A closed end's flags past `Closed` are not state the library keeps.
+    /// A closed end's flags past `Closed` are not state the library keeps,
+    /// nor is whether a reset end's peer had closed cleanly, past
+    /// `ResetAfterFin`.
     let private comparable (m : TcpTransferReference.Model) : TcpTransferReference.Model =
         { m with
             Ends =
@@ -447,10 +479,15 @@ module TestTcpTransfer =
                     if e.Closed then
                         {
                             Closed = true
-                            GotFin = false
+                            FinSent = false
                             GotReset = false
+                            ResetAfterFin = false
                             ErrorWaiting = false
                             Armed = false
+                        }
+                    elif e.GotReset then
+                        { e with
+                            FinSent = false
                         }
                     else
                         e
@@ -677,6 +714,92 @@ module TestTcpTransfer =
         // Once only.
         let wakes, _ = drain 10 transfer
         wakes |> shouldEqual [ TcpWake.DataArrived ConnectionEnd.Server ]
+
+    [<Test>]
+    let ``a Linux write that takes only part of its bytes arms the send-space wake`` () : unit =
+        // `tcp_sendmsg` sets SOCK_NOSPACE before it returns a short count.
+        let transfer = TcpTransfer.create SimulatedUnixFlavour.Linux 30 10
+
+        let transfer =
+            match TcpTransfer.admitWrite ConnectionEnd.Client 41 transfer with
+            | TcpWriteAdmission.Take 40, transfer ->
+                snd (
+                    TcpTransfer.write
+                        ConnectionEnd.Client
+                        (ImmutableArray.CreateRange (Array.zeroCreate<byte> 40))
+                        transfer
+                )
+            | other, _ -> failwith $"the write of 41 was %A{other}"
+
+        let _, wakes, _ =
+            TcpTransfer.read ConnectionEnd.Server TcpReceiveCall.Read 10 transfer
+
+        wakes
+        |> shouldEqual
+            [
+                TcpWake.DataArrived ConnectionEnd.Server
+                TcpWake.SendSpace ConnectionEnd.Client
+            ]
+
+    [<Test>]
+    let ``a FIN still behind bytes in flight has not arrived when the peer resets`` () : unit =
+        // The client closes cleanly with ten bytes still in its send buffer,
+        // so its FIN waits behind them. The server writes back before reading:
+        // the reset reaches an ESTABLISHED end, so Linux pends ECONNRESET and
+        // reports it, rather than the EPIPE of a reset in CLOSE_WAIT.
+        let transfer = TcpTransfer.create SimulatedUnixFlavour.Linux 10 10
+
+        let transfer =
+            match TcpTransfer.admitWrite ConnectionEnd.Client 20 transfer with
+            | TcpWriteAdmission.Take 20, transfer ->
+                snd (
+                    TcpTransfer.write
+                        ConnectionEnd.Client
+                        (ImmutableArray.CreateRange (Array.zeroCreate<byte> 20))
+                        transfer
+                )
+            | other, _ -> failwith $"the write of 20 was %A{other}"
+
+        let wakes, transfer = TcpTransfer.close ConnectionEnd.Client transfer
+        wakes |> shouldEqual []
+
+        (TcpTransfer.towards ConnectionEnd.Server transfer).Receiver
+        |> shouldEqual TcpEndState.FinQueued
+
+        let transfer =
+            match TcpTransfer.admitWrite ConnectionEnd.Server 5 transfer with
+            | TcpWriteAdmission.Take 5, transfer ->
+                snd (
+                    TcpTransfer.write
+                        ConnectionEnd.Server
+                        (ImmutableArray.CreateRange (Array.zeroCreate<byte> 5))
+                        transfer
+                )
+            | other, _ -> failwith $"the write of 5 was %A{other}"
+
+        (TcpTransfer.towards ConnectionEnd.Server transfer).Receiver
+        |> shouldEqual (TcpEndState.Reset (false, true))
+
+        let answer, _, transfer =
+            TcpTransfer.read ConnectionEnd.Server TcpReceiveCall.Read 100 transfer
+
+        match answer with
+        | TcpReadAnswer.Bytes bytes -> bytes.Length |> shouldEqual 10
+        | other -> failwith $"the first read answered %A{other}"
+
+        let answer, _, _ =
+            TcpTransfer.read ConnectionEnd.Server TcpReceiveCall.Read 100 transfer
+
+        answer |> shouldEqual (TcpReadAnswer.Failed TcpError.ConnectionReset)
+
+    [<Test>]
+    let ``a Linux send buffer near Int32.MaxValue does not overflow the space a write sees`` () : unit =
+        let transfer =
+            TcpTransfer.create SimulatedUnixFlavour.Linux System.Int32.MaxValue 131072
+
+        TcpTransfer.admitWrite ConnectionEnd.Client 1 transfer
+        |> fst
+        |> shouldEqual (TcpWriteAdmission.Take 1)
 
     [<Test>]
     let ``ByteQueue.peek answers what take would and leaves the queue as it was`` () : unit =
