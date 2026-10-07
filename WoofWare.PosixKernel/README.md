@@ -167,6 +167,18 @@ We try very hard to return only values that we have observed from a real system 
 Where real platforms of a given flavour have been observed to disagree, we choose a permitted answer (generally an *inconvenient* one, since I want to help you avoid accidentally relying on unspecified behaviour).
 For example, directory enumeration order has been observed to be extremely odd on Linux: we've even seen `..` and `.` appear at the *end* of the enumeration, in the GitHub Actions ext4 runner!
 
+## Changing its API
+
+The library's public API is recorded in `SurfaceBaseline.txt`, beside its project file, and a test in `WoofWare.PosixKernel.Test` fails whenever the compiled API differs from it.
+After an intended change to the API, regenerate the file and commit it with the change:
+
+```sh
+nix develop -c dotnet test WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj --filter "FullyQualifiedName~TestSurface&Name~Update"
+```
+
+(The NUnit adapter cannot parse a filter value containing spaces, so the test's full name `Update API surface` will not do.)
+A conflict in `SurfaceBaseline.txt` after a rebase is resolved by regenerating the file, never by hand.
+
 ## Licence
 
 MIT.
