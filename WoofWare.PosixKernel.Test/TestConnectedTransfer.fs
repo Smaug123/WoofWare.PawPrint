@@ -862,6 +862,108 @@ module TestConnectedTransfer =
 
                 modelled |> shouldEqual row
 
+    /// A reset frees its connection's four-tuple; a FIN does not (measured,
+    /// `reset-tuple.c`: a fresh socket bound to the survivor's endpoint
+    /// connects to the same listener after a reset, on both flavours, and
+    /// after a FIN fails, with EADDRINUSE on Darwin and EADDRNOTAVAIL on
+    /// Linux, which this kernel refuses as unmeasured rather than answers).
+    [<Test>]
+    let ``a reset frees its connection's four-tuple for a fresh connect, and a FIN does not`` () : unit =
+        for platform in Machines.platforms do
+            for reset in [ true ; false ] do
+                for explicitPort in [ false ; true ] do
+                    let system = systemOn id platform
+                    let listener, system = KeventWorld.listenerAt port system
+                    let client, system = KeventWorld.stream false system
+                    let system = ReuseAddress.set true client system
+
+                    let system =
+                        if explicitPort then
+                            KeventWorld.bind client 48200us system
+                        else
+                            system
+
+                    let system =
+                        match KeventWorld.connect client port system with
+                        | ConnectOutcome.Completed, system -> system
+                        | other, _ -> failwith $"connect: %A{other}"
+
+                    let accepted, system = KeventWorld.accept listener system
+                    let system = if reset then sentAll client 10 system else system
+                    let system = KeventWorld.close accepted system
+
+                    let source =
+                        match (UnixMachineState.socket (socketOf client system) system.Machine).Binding with
+                        | Some binding -> binding.Endpoint
+                        | None -> failwith "the client is unbound"
+
+                    let fresh, system = KeventWorld.stream false system
+                    let system = ReuseAddress.set true fresh system
+
+                    let system =
+                        match CopyIn.bind fresh UserBuffer.Mapped 16u (CopyIn.inet platform source) system with
+                        | Ok (BindAnswer.Bound _, system) -> system
+                        | other -> failwith $"bind: %A{other}"
+
+                    match
+                        CopyIn.connect
+                            fresh
+                            UserBuffer.Mapped
+                            16u
+                            (CopyIn.inet platform (KeventWorld.loopback port))
+                            system
+                    with
+                    | Ok (ConnectOutcome.Completed, system) when reset -> assertClean system
+                    | Error (ConnectRefusal.DuplicateFourTuple _) when not reset -> ()
+                    | other -> failwith $"%O{platform} reset %b{reset}: %A{other}"
+
+    /// The port and four-tuple a reset frees are free to an implicit bind too:
+    /// with one ephemeral port, a second client takes the one a reset client
+    /// still holds a descriptor on.
+    [<Test>]
+    let ``a reset frees its ephemeral port and four-tuple to the next connect's implicit bind`` () : unit =
+        for platform in Machines.platforms do
+            let system =
+                systemOn (UnixBootImage.withEphemeralPortRange (40000us, 40000us)) platform
+
+            let listener, system = KeventWorld.listenerAt port system
+            let first, system = KeventWorld.stream false system
+            let _, system = KeventWorld.connect first port system
+            let accepted, system = KeventWorld.accept listener system
+            let system = sentAll first 10 system |> KeventWorld.close accepted
+            let second, system = KeventWorld.stream false system
+
+            match
+                CopyIn.connect second UserBuffer.Mapped 16u (CopyIn.inet platform (KeventWorld.loopback port)) system
+            with
+            | Ok (ConnectOutcome.Completed, system) ->
+                (UnixMachineState.socket (socketOf second system) system.Machine).Binding
+                |> Option.map (fun binding -> binding.Endpoint.Port)
+                |> shouldEqual (Some 40000us)
+
+                assertClean system
+            | other -> failwith $"%O{platform}: %A{other}"
+
+    /// A Linux socket whose connect has not reported its completion, reset
+    /// before it does: what Linux's retry then does to the socket is
+    /// unmeasured, so it is refused.
+    [<Test>]
+    let ``a connect after a reset reached an unreported Linux connection is refused`` () : unit =
+        let system = systemOn id SimulatedUnixPlatform.linuxX64
+        let listener, system = KeventWorld.listenerAt port system
+        let client, system = KeventWorld.client port system
+        let accepted, system = KeventWorld.accept listener system
+        let system = sentAll client 10 system |> KeventWorld.close accepted
+
+        CopyIn.connect
+            client
+            UserBuffer.Mapped
+            16u
+            (CopyIn.inet SimulatedUnixPlatform.linuxX64 (KeventWorld.loopback port))
+            system
+        |> Result.map fst
+        |> shouldEqual (Error (ConnectRefusal.ResetBeforeReport (socketOf client system)))
+
     /// Linux's accept that reads a negative address length answers EINVAL
     /// having taken the connection, whose server end then closes as a close
     /// does: over bytes the client had sent it, a reset.

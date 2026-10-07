@@ -1,0 +1,4 @@
+how=r explicit=0 bind=ok connect_same_tuple=ok
+how=r explicit=1 bind=ok connect_same_tuple=ok
+how=f explicit=0 bind=ok connect_same_tuple=-1 Cannot assign requested address
+how=f explicit=1 bind=ok connect_same_tuple=-1 Cannot assign requested address

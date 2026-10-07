@@ -166,6 +166,11 @@ type ConnectRefusal =
     /// this destination, and how a kernel refuses the duplicate four-tuple is
     /// unmeasured.
     | DuplicateFourTuple of source : InternetEndpoint * destination : InternetEndpoint
+    /// A Linux socket whose non-blocking connect completed, and whose
+    /// connection was then reset before any connect reported the completion.
+    /// Linux's retry would answer the reset's pending error, or ECONNABORTED
+    /// once it is taken, and disconnect the socket; unmeasured.
+    | ResetBeforeReport of socket : SocketId
     /// The destination is the socket's own bound address with nothing
     /// listening: TCP simultaneous open, which is unmodelled.
     | SimultaneousOpen of destination : InternetEndpoint
@@ -210,6 +215,8 @@ module ConnectRefusal =
             $"the resolved source %s{InternetEndpoint.toString endpoint} equals the destination, with a listener present. What a real kernel does with this self-tuple (plausibly EINVAL on Darwin, a completed self-connect on Linux) is unmeasured, so measure it rather than guessing."
         | ConnectRefusal.DuplicateFourTuple (source, destination) ->
             $"a connection from %s{InternetEndpoint.toString source} to %s{InternetEndpoint.toString destination} already exists, and a real kernel refuses a duplicate four-tuple in ways that are unmeasured (plausibly EADDRINUSE at connect time). Measure it rather than guessing."
+        | ConnectRefusal.ResetBeforeReport socket ->
+            $"socket %O{socket}'s non-blocking connect completed, and its connection was reset before any connect reported the completion. Linux's retry finds the socket closed and answers the reset's pending error, or ECONNABORTED once an SO_ERROR read has taken it, and disconnects the socket, as for a refused connect; what that leaves of the socket's binding is unmeasured."
         | ConnectRefusal.SimultaneousOpen destination ->
             $"destination %s{InternetEndpoint.toString destination} is this socket's own bound address and nothing is listening there. A real kernel can complete this as a TCP simultaneous open -- connecting the socket to itself -- which this library does not model."
         | ConnectRefusal.DarwinSynDropped destination ->
@@ -535,11 +542,13 @@ module UnixConnection =
                     system.Machine.Connections
                     |> Map.exists (fun _ connection ->
                         // In either orientation: a connection's endpoint
-                        // pair occupies the tuple from both ends.
-                        (connection.ClientAddress = clientBinding.Endpoint
-                         && connection.ServerAddress = dest)
-                        || (connection.ClientAddress = dest
-                            && connection.ServerAddress = clientBinding.Endpoint)
+                        // pair occupies the tuple from both ends, until a
+                        // reset releases it.
+                        not (UnixMachineState.resetReleasedTuple connection)
+                        && ((connection.ClientAddress = clientBinding.Endpoint
+                             && connection.ServerAddress = dest)
+                            || (connection.ClientAddress = dest
+                                && connection.ServerAddress = clientBinding.Endpoint))
                     )
                 then
                     // Established tuples are unique in a real kernel; a second
@@ -762,6 +771,20 @@ module UnixConnection =
                 else
 
                 match sock.Phase with
+                | SocketPhase.EstablishedPendingReport connectionId when
+                    (match
+                        (TcpTransfer.towards
+                            ConnectionEnd.Client
+                            (UnixMachineState.connection connectionId system.Machine).Transfer)
+                            .Receiver
+                     with
+                     | TcpEndState.Reset _ -> true
+                     | TcpEndState.Open
+                     | TcpEndState.FinQueued
+                     | TcpEndState.FinReceived
+                     | TcpEndState.Closed -> false)
+                    ->
+                    Error (ConnectRefusal.ResetBeforeReport socketId)
                 | SocketPhase.EstablishedPendingReport connectionId ->
                     // The one completion-reporting SUCCESS (measured). The
                     // destination is ignored, as the state transition is.

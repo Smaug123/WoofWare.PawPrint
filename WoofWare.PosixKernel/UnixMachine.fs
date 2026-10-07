@@ -707,6 +707,22 @@ module UnixMachineState =
                 Err = false
             }
 
+    /// Whether a reset has reached `connection`, which then no longer
+    /// occupies its four-tuple: measured on both (`reset-tuple.c` in
+    /// docs/plans/2026-10-07-tcp-byte-transfer), a fresh socket bound to the
+    /// surviving end's address connects to the same destination once a reset
+    /// has reached it, though not after a FIN.
+    let resetReleasedTuple (connection : TcpConnection) : bool =
+        [ ConnectionEnd.Client ; ConnectionEnd.Server ]
+        |> List.exists (fun connectionEnd ->
+            match (TcpTransfer.towards connectionEnd connection.Transfer).Receiver with
+            | TcpEndState.Reset _ -> true
+            | TcpEndState.Open
+            | TcpEndState.FinQueued
+            | TcpEndState.FinReceived
+            | TcpEndState.Closed -> false
+        )
+
     /// Whether the connected socket `socket`'s binding stopped reserving its
     /// port when its connection was reset: on Darwin always, and on Linux
     /// unless the port was bound explicitly (`SocketBinding.LockedPort`).
@@ -804,7 +820,8 @@ module UnixMachineState =
         )
 
     /// Whether a TCP connection occupies the four-tuple between `source` and
-    /// `destination`, in either orientation.
+    /// `destination`, in either orientation. One a reset has reached does
+    /// not (`resetReleasedTuple`).
     let private connectionOccupiesTuple
         (source : InternetEndpoint)
         (destination : InternetEndpoint)
@@ -813,8 +830,9 @@ module UnixMachineState =
         =
         machine.Connections
         |> Map.exists (fun _ connection ->
-            (connection.ClientAddress = source && connection.ServerAddress = destination)
-            || (connection.ClientAddress = destination && connection.ServerAddress = source)
+            not (resetReleasedTuple connection)
+            && ((connection.ClientAddress = source && connection.ServerAddress = destination)
+                || (connection.ClientAddress = destination && connection.ServerAddress = source))
         )
 
     /// Hands out the lowest free port at or after the cursor, sweeping the
