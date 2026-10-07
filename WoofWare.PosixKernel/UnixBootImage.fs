@@ -747,6 +747,17 @@ module UnixBootImage =
         |> withMachine image
         |> Ok
 
+    /// Set the IPv4 addresses this machine holds (`addresses`, host order) and
+    /// the prefixes of its local routes (`routes`). Together they decide which
+    /// addresses `bind(2)` takes, which the flavours read differently (see
+    /// `SimulatedUnixPlatform.isBindableAddress`), and which destinations
+    /// `connect(2)` treats as this machine's own.
+    ///
+    /// Admits any lists, stored as given. An empty list is a machine with
+    /// nothing in it: with no addresses, only the wildcard binds. Entries may
+    /// repeat or overlap, as on a real machine: every Linux's local table holds
+    /// both `127.0.0.0/8` and `127.0.0.1/32`, and an address assigned to two
+    /// interfaces holds two routes to one prefix.
     let withLocalAddresses<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (addresses : uint32 list)
         (routes : Ipv4Prefix list)
@@ -755,15 +766,6 @@ module UnixBootImage =
         =
         let machine = image.System.Machine
 
-        // The prefix record is public, so a host can build one whose length is
-        // outside [0, 32]; the CLI masks such a shift rather than faulting, which
-        // would give an unrelated mask and a silently wrong bindability.
-        let routes =
-            routes |> List.map (Ipv4Prefix.assertValid "UnixMachineState.LocalRoutes")
-
-        // An empty list is legal and means a machine with no addresses at all,
-        // on which only the wildcard binds. That is a strange machine but a
-        // representable one, and refusing it here would be inventing a rule.
         { machine with
             LocalAddresses = addresses
             LocalRoutes = routes

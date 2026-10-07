@@ -1946,7 +1946,7 @@ type KernelConfig =
         /// They decide anything only where a seed gives some inode an owner
         /// other than the process (see `FileSystem`).
         ProtectedFiles : ProtectedFiles
-        /// The IPv4 addresses this machine holds, as prefixes. See
+        /// The IPv4 addresses this machine holds, host order. See
         /// `UnixSystem.defaultLocalAddresses`, and note the flavours read one
         /// list differently.
         LocalAddresses : uint32 list
