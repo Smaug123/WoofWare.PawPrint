@@ -77,11 +77,19 @@ module TestUnixSystemInitial =
 
         let flavour = SimulatedUnixPlatform.flavour platform
 
-        let configured = image |> UnixBootImage.withSoMaxConn (Some 7)
+        let configured =
+            image
+            |> UnixBootImage.withSoMaxConn (Some 7)
+            |> Configured.expectOk SoMaxConnRefusal.describe
+
         (UnixBootImage.boot configured).Machine.SoMaxConn |> shouldEqual 7
 
         // Back to the default, from an image that no longer carries it.
-        (configured |> UnixBootImage.withSoMaxConn None |> UnixBootImage.boot).Machine.SoMaxConn
+        (configured
+         |> UnixBootImage.withSoMaxConn None
+         |> Configured.expectOk SoMaxConnRefusal.describe
+         |> UnixBootImage.boot)
+            .Machine.SoMaxConn
         |> shouldEqual (UnixMachineState.defaultSoMaxConn flavour)
 
     /// The platform is fixed at construction and nothing validates it later,

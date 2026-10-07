@@ -110,10 +110,10 @@ module TestLink =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixBootImage.withCredentials context credentials
             |> UnixBootImage.withProtectedFiles
-                context
                 { ProtectedFiles.off with
                     Hardlinks = protection
                 }
+            |> Configured.expectOk ProtectedFilesRefusal.describe
 
         match
             UnixBootImage.withFileSystemAndCurrentDirectory
@@ -934,6 +934,7 @@ module TestLink =
         let image : UnixBootImage<int, string> =
             UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixBootImage.withMount (Some EmulatedMount.Nfs)
+            |> Configured.expectOk MountRefusal.describe
 
         let credentials = UnixSystem.defaultCredentials SimulatedUnixFlavour.Linux
 

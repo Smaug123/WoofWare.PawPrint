@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
+    <Compile Include="Configured.fs" />
     <Compile Include="WriteAdmissions.fs" />
     <Compile Include="ReadOutcomes.fs" />
     <Compile Include="NewSocket.fs" />
@@ -65,6 +66,7 @@
         <Compile Include="TestUnixSystemStep.fs" />
     <Compile Include="TestUnixSystemInitial.fs" />
     <Compile Include="TestBootImage.fs" />
+    <Compile Include="TestMachineSetterRefusals.fs" />
     <Compile Include="TestUnixSystemInvariants.fs" />
     <Compile Include="TestSocketTable.fs" />
     <Compile Include="TestSocketEventDelivery.fs" />

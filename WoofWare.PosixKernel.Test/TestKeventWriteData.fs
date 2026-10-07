@@ -123,7 +123,10 @@ module TestKeventWriteData =
 
     /// `KeventWorld.darwin`, booted with the send space `sendSpace`.
     let private darwinWithSendSpace (sendSpace : int option) : UnixSystem<int, string> =
-        KeventWorld.darwinWith (UnixBootImage.withTcpSendSpace sendSpace)
+        KeventWorld.darwinWith (
+            UnixBootImage.withTcpSendSpace sendSpace
+            >> Configured.expectOk TcpSendSpaceRefusal.describe
+        )
 
     /// The `data` of the WRITE event registering `fd` in a new kqueue reports, under
     /// EV_CLEAR or level registration.
@@ -351,31 +354,53 @@ module TestKeventWriteData =
 
         (UnixBootImage.boot linux).Machine.TcpSendSpace |> shouldEqual 16384
 
-        (UnixBootImage.withTcpSendSpace None linux |> UnixBootImage.boot).Machine.TcpSendSpace
+        (UnixBootImage.withTcpSendSpace None linux
+         |> Configured.expectOk TcpSendSpaceRefusal.describe
+         |> UnixBootImage.boot)
+            .Machine.TcpSendSpace
         |> shouldEqual 16384
 
         (darwinMachine None).TcpSendSpace |> shouldEqual 131072
 
     [<Test>]
-    let ``a Darwin send space outside the admissible range is refused`` () : unit =
-        let outside =
+    let ``a Darwin send space outside the admissible range is refused, naming the bound it is past`` () : unit =
+        let darwin =
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 Map.empty 0 (CpuId 0)
+
+        let anywhere =
             Gen.oneof
                 [
                     Gen.choose (Int32.MinValue, UnixMachineState.darwinLoopbackSendPipe - 1)
                     Gen.choose (UnixMachineState.darwinSocketBufferMax + 1, Int32.MaxValue)
+                    Gen.choose (UnixMachineState.darwinLoopbackSendPipe, UnixMachineState.darwinSocketBufferMax)
                     Gen.elements
                         [
                             UnixMachineState.darwinLoopbackSendPipe - 1
+                            UnixMachineState.darwinLoopbackSendPipe
+                            UnixMachineState.darwinSocketBufferMax
                             UnixMachineState.darwinSocketBufferMax + 1
                             0
                         ]
                 ]
 
         let property (size : int) : unit =
-            Assert.Throws<Exception> (fun () -> darwinMachine (Some size) |> ignore)
-            |> ignore
+            // The bounds as numbers, so that the oracle shares no constant with
+            // the setter: 3 x the loopback MTU of 16384, and kern.ipc.maxsockbuf.
+            let expected : Result<unit, TcpSendSpaceRefusal> =
+                if size > 8388608 then
+                    Error (TcpSendSpaceRefusal.AboveSocketBufferMax (size, 8388608))
+                elif size < 49152 then
+                    Error (TcpSendSpaceRefusal.BelowLoopbackSendPipe (size, 49152))
+                else
+                    Ok ()
 
-        Check.One (config, Prop.forAll (Arb.fromGen outside) property)
+            match UnixBootImage.withTcpSendSpace (Some size) darwin with
+            | Ok image ->
+                expected |> shouldEqual (Ok ())
+                (UnixBootImage.boot image).Machine.TcpSendSpace |> shouldEqual size
+            | Error refusal -> Error refusal |> shouldEqual expected
+
+        Check.One (config, Prop.forAll (Arb.fromGen anywhere) property)
 
         (darwinMachine (Some UnixMachineState.darwinLoopbackSendPipe)).TcpSendSpace
         |> shouldEqual UnixMachineState.darwinLoopbackSendPipe
@@ -388,10 +413,10 @@ module TestKeventWriteData =
         let linux =
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
 
-        let e =
-            Assert.Throws<Exception> (fun () -> UnixBootImage.withTcpSendSpace (Some 16384) linux |> ignore)
-
-        e.Message |> shouldContainText "Linux"
+        for size in [ Int32.MinValue ; 0 ; 16384 ; 131072 ; Int32.MaxValue ] do
+            UnixBootImage.withTcpSendSpace (Some size) linux
+            |> Result.map ignore<UnixBootImage<int, string>>
+            |> shouldEqual (Error (TcpSendSpaceRefusal.NotReadOn (SimulatedUnixFlavour.Linux, size)))
 
     [<Test>]
     let ``the send buffer is refused where Darwin's rule does not reach`` () : unit =
