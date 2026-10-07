@@ -18,6 +18,15 @@ type PollRefusal =
     /// this kernel does not model (see `DarwinReadiness.modelsSocket`) for a
     /// bit that registers one.
     | UnmodelledSocket of fd : int * domain : SocketDomain * kind : SocketKind
+    /// Under Linux, the entry names a socket of a kind whose readiness this
+    /// kernel does not model (see `LinuxReadiness.modelsSocket`), whatever was
+    /// asked: `HUP` is reported unasked, so even `events = 0` reads the level.
+    ///
+    /// That is an `AF_UNIX` `SOCK_SEQPACKET` socket. Its `poll` row is
+    /// measured but its epoll one is not, and the two waiters read one level,
+    /// so answering `poll` alone would make epoll delivery answer from an
+    /// inference.
+    | UnmeasuredSocketKind of fd : int * domain : SocketDomain * kind : SocketKind
     /// Under Darwin, nothing is ready and the call would sleep with an
     /// `EVFILT_VNODE` filter registered on the regular file or directory `fd`
     /// names: such a filter reports only when the file changes, which this
@@ -79,6 +88,8 @@ module PollRefusal =
             $"fd %d{fd} names an event queue (an epoll instance, or a kqueue asked for a read bit), which this kernel does not answer `poll(2)` for. An event queue's own readiness depends on re-reading what it has queued, and what that leaves queued is unmeasured; model that before answering."
         | PollRefusal.UnmodelledSocket (fd, domain, kind) ->
             $"fd %d{fd} is a %O{kind} socket in %O{domain}, and the entry asks for a bit that registers a kqueue filter on it. This kernel models those filters for IPv4 and IPv6 stream sockets only: what activates a datagram socket's filters is not modelled, and a Unix-domain socket's are not measured."
+        | PollRefusal.UnmeasuredSocketKind (fd, domain, kind) ->
+            $"fd %d{fd} is a %O{kind} socket in %O{domain}, whose readiness level this kernel does not model. poll(2) and epoll read one level, and only poll's has been measured for this kind (OUT|HUP|WRNORM|WRBAND when fresh); measure what an epoll wait reports for one before answering either."
         | PollRefusal.UnmodelledVnodeWait fd ->
             $"nothing is ready, and the poll would sleep with an EVFILT_VNODE filter registered on fd %d{fd} for a vnode bit (POLLEXTEND, POLLATTRIB, POLLNLINK or POLLWRITE). That filter reports when the file changes, which this kernel does not model."
         | PollRefusal.UnmeasuredNegativeTimeout milliseconds ->
@@ -298,6 +309,11 @@ type EpollCtlRefusal =
     /// signal, and which transfers and closes signal a pipe's waiters, and with
     /// which events, is not measured.
     | PipeTarget of targetFd : int
+    /// An `EPOLL_CTL_ADD` whose target is a socket of a kind whose readiness
+    /// this kernel does not model (see `LinuxReadiness.modelsSocket`): an
+    /// `AF_UNIX` `SOCK_SEQPACKET` socket, which Linux registers. What a wait
+    /// reports for one is unmeasured.
+    | UnmeasuredSocketKind of targetFd : int * domain : SocketDomain * kind : SocketKind
 
 [<RequireQualifiedAccess>]
 module EpollCtlRefusal =
@@ -318,6 +334,8 @@ module EpollCtlRefusal =
             "the event carries EPOLLWAKEUP, and the registration would succeed. The kernel keeps the bit only for a caller with CAP_BLOCK_SUSPEND on a kernel built with power management, clearing it silently otherwise, and this library models neither capabilities nor wakeup sources."
         | EpollCtlRefusal.PipeTarget targetFd ->
             $"fd %d{targetFd} is an end of a pipe the process made, and the registration would succeed. An edge-triggered registration is made pending by the wakes its target signals, and which reads, writes and closes signal a pipe's waiters, with which events, is unmeasured: Linux's pipe_write, for one, wakes readers on every write once a waiter has polled the pipe, not only on the write that makes it non-empty. poll(2) on a pipe is answered; measure the pipe's wakes before registering one."
+        | EpollCtlRefusal.UnmeasuredSocketKind (targetFd, domain, kind) ->
+            $"fd %d{targetFd} is a %O{kind} socket in %O{domain}, and the registration would succeed. What an epoll wait reports for this kind is unmeasured: only poll(2)'s level is (OUT|HUP|WRNORM|WRBAND when fresh), and the two waiters read one level, which this kernel will not infer from one of them. Measure an epoll wait on one before registering it."
         | EpollCtlRefusal.LevelTriggered ->
             "the event lacks EPOLLET, asking to be level-triggered, and the registration would succeed. This library's epoll models edge-triggered registrations only: the ready list is consumed as it is drained and a still-ready entry is never re-armed, so a wait after a partly drained level would sleep where a real epoll_wait returns again. Register with EPOLLET, or model level-triggering before answering."
 
@@ -605,6 +623,24 @@ module UnixPoll =
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ -> false
 
+        // A socket whose readiness this kernel does not model is refused at
+        // the commit, as a made pipe is.
+        let unmodelledSocket : EpollCtlRefusal option =
+            match targetDescription.Target with
+            | OpenFileTarget.Socket socketId ->
+                let socket = UnixMachineState.socket socketId system.Machine
+
+                if LinuxReadiness.modelsSocket socket then
+                    None
+                else
+                    Some (EpollCtlRefusal.UnmeasuredSocketKind (fd, socket.Domain, socket.Kind))
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _ -> None
+
         if op = add then
             if registered then
                 failed EpollCtlError.AlreadyRegistered
@@ -617,6 +653,10 @@ module UnixPoll =
             if targetIsPipe then
                 Error (EpollCtlRefusal.PipeTarget fd)
             else
+
+            match unmodelledSocket with
+            | Some refusal -> Error refusal
+            | None ->
 
             let ordinal = system.Machine.NextEventRegistrationOrdinal
 
@@ -708,6 +748,14 @@ module UnixPoll =
             Ok linuxPollNval
         | Some (descriptionId, description) ->
 
+        // `do_pollfd`'s own shape: the level, filtered by the request with
+        // POLLERR and POLLHUP added whatever was asked. The level's bits all
+        // lie below 0x10000, where `<poll.h>` and `<sys/epoll.h>` share their
+        // numbering.
+        let answer () : int16 =
+            int16 (LinuxReadiness.ofDescription descriptionId system)
+            &&& (entry.Events ||| linuxPollErr ||| linuxPollHup)
+
         match description.Target with
         // Measured on Linux (`poll-alphabet.c`): POLLIN|POLLRDNORM when an
         // event is deliverable, nothing otherwise, under the same
@@ -717,18 +765,19 @@ module UnixPoll =
         // is unmeasured.
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Error (PollRefusal.UnmodelledTarget entry.Fd)
-        | OpenFileTarget.Socket _
+        | OpenFileTarget.Socket socketId ->
+            let socket = UnixMachineState.socket socketId system.Machine
+
+            if LinuxReadiness.modelsSocket socket then
+                Ok (answer ())
+            else
+                // Refused whatever was asked: `HUP` is reported unasked, so
+                // even `events = 0` reads the level.
+                Error (PollRefusal.UnmeasuredSocketKind (entry.Fd, socket.Domain, socket.Kind))
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
-        | OpenFileTarget.Pipe _ ->
-            // `do_pollfd`'s own shape: the level, filtered by the request
-            // with POLLERR and POLLHUP added whatever was asked.
-            // The level's bits all lie below 0x10000, where `<poll.h>`
-            // and `<sys/epoll.h>` share their numbering.
-            int16 (LinuxReadiness.ofDescription descriptionId system)
-            &&& (entry.Events ||| linuxPollErr ||| linuxPollHup)
-            |> Ok
+        | OpenFileTarget.Pipe _ -> Ok (answer ())
 
     /// Every entry's report, in list order, stopping at the first entry that
     /// cannot be answered: a real `poll` inspects its entries in order, so that

@@ -144,6 +144,7 @@
     <Compile Include="TestSocketErrorOption.fs" />
     <Compile Include="TestSocketErrorAgainstHost.fs" />
     <Compile Include="TestUnconnectedSocketTransfer.fs" />
+    <Compile Include="TestConnectedTransferAgainstHost.fs" />
     <Compile Include="TestTcpTransfer.fs" />
     <Compile Include="TestTcpTransferMeasured.fs" />
     <Compile Include="TestTcpBufferSizing.fs" />

@@ -473,6 +473,43 @@ module TestPoll =
     // Refusals
     // ------------------------------------------------------------------
 
+    /// Linux makes an `AF_UNIX` `SOCK_SEQPACKET` socket, and its `poll` row is
+    /// measured, but what epoll reports for one is not, and the two waiters
+    /// share one level. So `poll` refuses it whatever was asked, `events = 0`
+    /// included, which still reports the unasked `HUP`.
+    [<Test>]
+    let ``an entry naming a Unix-domain seqpacket socket is refused, whatever was asked`` () : unit =
+        let fd, system =
+            NewSocket.create SocketDomain.Unix SocketKind.SeqPacket SocketProtocol.Default linux
+
+        let expected =
+            Error (PollRefusal.UnmeasuredSocketKind (fd, SocketDomain.Unix, SocketKind.SeqPacket))
+
+        for events in [ 0s ; pollIn ; pollOut ; pollHup ; everything ] do
+            pollNow [ entry fd events ] 0 system |> shouldEqual expected
+
+            pollNow [ entry 1 everything ; entry fd events ] 0 system
+            |> shouldEqual expected
+
+    /// Every socket `socket(2)` makes, on either flavour, is answered or
+    /// refused by `poll`, under each single bit, no bit and every bit: never
+    /// an exception, which is what a legal call must not provoke.
+    [<Test>]
+    let ``every socket the kernel makes is answered or refused`` () : unit =
+        let masks = [ 0s ; everything ] @ [ for bit in 0..15 -> int16 (1 <<< bit) ]
+
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            for domain, kind, protocol in NewSocket.requests do
+                match NewSocket.tryCreate domain kind protocol (systemOn platform) with
+                | None -> ()
+                | Some (fd, system) ->
+                    let system = Tasks.ensure poller system
+
+                    for events in masks do
+                        match UnixPoll.poll poller [ entry fd events ] 0 system with
+                        | Ok _
+                        | Error _ -> ()
+
     /// A process can reach this where it cannot reach epoll's equivalent:
     /// `epoll_ctl` screens the targets it accepts, and `poll(2)` accepts any
     /// descriptor.

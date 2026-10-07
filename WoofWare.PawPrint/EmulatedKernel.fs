@@ -1972,8 +1972,10 @@ type KernelConfig =
         /// Defaults to `Suppressed`, as under an `RLIMIT_CORE` of 0; see
         /// `UnixProcessState.CoreDumps`.
         CoreDumps : CoreDumps
-        /// Linux's `kernel.pid_max`: thread IDs are below it, and once they reach
-        /// it they start again from 300, skipping those in use. `None` takes
+        /// Linux's `kernel.pid_max`: the thread IDs the process's threads get are
+        /// below it, and once they reach it they start again from 300, skipping
+        /// those in use. It may be at or below `ProcessId`, as a real
+        /// administrator may lower it after the process started. `None` takes
         /// `UnixSystem.defaultPidMax`, the largest Linux allows, so an ID is reused
         /// only after four million threads. Refused on Darwin, which has no such
         /// setting.
@@ -2129,8 +2131,8 @@ module KernelConfig =
         // `pid_max` is a sysctl the machine's administrator writes, here before
         // the process has run anything. The process ID was set before it: the
         // machine boots with the largest `pid_max` Linux has, so any process ID
-        // a Linux kernel could have is admitted, and the write then refuses a
-        // `pid_max` at or below it.
+        // a Linux kernel could have is admitted, and it keeps that ID whatever
+        // `pid_max` is then written.
         |> EmulatedKernel.mapUnix (fun system ->
             match config.PidMax with
             | None -> system

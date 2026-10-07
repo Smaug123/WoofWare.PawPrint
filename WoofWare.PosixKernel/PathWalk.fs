@@ -125,6 +125,13 @@ type PathRefusal =
     /// kernel answers about such an object through an empty path has not been
     /// measured.
     | UnmodelledStartingObject of fd : int
+    /// Linux's `fs.protected_symlinks` forbids the walk to follow `link`, a
+    /// final symbolic link in the sticky, world-writable `directory`, and that
+    /// link is the walk's `traversal`-th of the `limit` it may make. Within the
+    /// first half of the budget a kernel answers EACCES; this far down a chain
+    /// it answers EACCES or ELOOP according to the state of its dentry cache,
+    /// which this kernel does not model.
+    | ProtectedSymlinkCacheDependent of directory : InodeNumber * link : InodeNumber * traversal : int * limit : int
 
 [<RequireQualifiedAccess>]
 module PathRefusal =
@@ -138,6 +145,8 @@ module PathRefusal =
             $"the path looks up \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory}, on the device filesystem. This kernel's device filesystem holds a node only for each device it has a driver for, and a real one holds many more, so whether that name exists is unknown."
         | PathRefusal.UnmodelledStartingObject fd ->
             $"the path is empty and the call asks about what fd %d{fd} names, which is a pipe, a socket or an event queue rather than a filesystem object. What a kernel answers about such an object through an empty path has not been measured."
+        | PathRefusal.ProtectedSymlinkCacheDependent (directory, link, traversal, limit) ->
+            $"fs.protected_symlinks forbids following the symbolic link at inode %O{link}, in the sticky world-writable directory at inode %O{directory}, and that link is traversal %d{traversal} of the %d{limit} the walk may make. That far down a chain of links, Linux answers EACCES or ELOOP according to the state of its dentry cache, which this kernel does not model."
 
 /// How a path resolution failed: with the errno a real kernel answers, or with
 /// a refusal of this one's.
@@ -640,7 +649,7 @@ module PathWalk =
         (paused : PausedResolution)
         (directory : InodeNumber)
         (link : InodeNumber)
-        : UnixError option
+        : PathFailure option
         =
         let vfs = paused.FileSystem
 
@@ -688,11 +697,15 @@ module PathWalk =
         let traversal = paused.SymlinksTraversed + 1
         let limit = PathLimits.maxSymlinkTraversals paused.Limits
 
-        if 2 * traversal - 1 >= limit then
+        // `traverse` has already answered ELOOP past the budget.
+        if traversal > limit then
             failwith
-                $"PathWalk: the walk was refused a symbolic link (inode %O{link}, in the sticky world-writable directory %O{directory}) by fs.protected_symlinks at its traversal %d{traversal} of %d{limit}. That far down a chain, Linux answers EACCES or ELOOP according to whether its dentry cache let the walk start without taking references, which this model does not represent; refused rather than guessed."
+                $"PathWalk: the walk is screening its traversal %d{traversal} of a symbolic link (inode %O{link}), past its budget of %d{limit}, which the traversal itself should have answered ELOOP (this is a bug in this library)."
+
+        if 2 * traversal - 1 >= limit then
+            Some (PathFailure.Refused (PathRefusal.ProtectedSymlinkCacheDependent (directory, link, traversal, limit)))
         else
-            Some UnixError.EACCES
+            Some (PathFailure.Errno UnixError.EACCES)
 
     /// Look the final name up, finishing the resolution `resolveParent` paused.
     ///
@@ -815,7 +828,7 @@ module PathWalk =
             // After the traversal budget, which Linux spends on the link first:
             // a protected link that is the 41st traversal is ELOOP to everyone.
             match linkProtectionRefusal paused directory target with
-            | Some error -> Error (PathFailure.Errno error)
+            | Some failure -> Error failure
             | None ->
 
             // The link's own trailing separator only takes effect when
@@ -906,9 +919,9 @@ module PathWalk =
     /// A symbolic link in the final position that `symlinkProtection` forbids
     /// `credentials` to follow (see `ProtectedFiles.refusesToFollow`) is EACCES,
     /// once the traversal budget has admitted it. Interior links are never
-    /// screened. Throws rather than answer when that refusal falls on a
-    /// traversal past half the budget: Linux's answer there depends on its
-    /// dentry cache.
+    /// screened. When that refusal falls on a traversal past half the budget,
+    /// Linux's answer depends on its dentry cache, and the walk is refused
+    /// instead (`PathRefusal.ProtectedSymlinkCacheDependent`).
     let resolveParent
         (limits : PathLimits)
         (credentials : Credentials)
