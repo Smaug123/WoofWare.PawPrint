@@ -483,7 +483,7 @@ module TestPathCopyIn =
                 changing
                     $"mkdir 0o%o{mode}"
                     (fun path -> UnixNamespace.mkdir path mode)
-                    (fun path -> UnixNamespace.mkdirParsed path mode)
+                    (fun path -> UnixNamespace.mkdirParsed AtDirectory.CurrentDirectory path mode)
             )
 
         let flagsGen =
@@ -589,7 +589,8 @@ module TestPathCopyIn =
         // copy in is that errno, for every case that takes a path.
         let calls (path : PathArgumentBytes) : Syscall list =
             [
-                Syscall.MkDir (path, 0o777)
+                // AT_FDCWD on Linux, as for `FAccessAt` below.
+                Syscall.MkDirAt (-100, path, 0o777)
                 Syscall.Unlink path
                 Syscall.RmDir path
                 Syscall.ChDir path

@@ -2217,7 +2217,8 @@ module TestUnixSystemStep =
                 // A mode the default umask does *not* reduce to the same thing
                 // as 0o777: with umask 0o022 both 0o755 and 0o777 become 0o755,
                 // so a dispatcher that dropped the mode would agree.
-                Syscall.MkDir (PathArg.ofPath (statPath "/new"), 0o700),
+                // AT_FDCWD on Linux.
+                Syscall.MkDirAt (-100, PathArg.ofPath (statPath "/new"), 0o700),
                 Answered.mkdir (PathArg.ofPath (statPath "/new")) 0o700 system
                 Syscall.Unlink (PathArg.ofPath (statPath "/d/inner/t")), Answered.unlink (statPath "/d/inner/t") system
                 Syscall.RmDir (PathArg.ofPath (statPath "/d")), Answered.rmdir (statPath "/d") system
@@ -2232,6 +2233,38 @@ module TestUnixSystemStep =
             UnixSystem.step holderTask call system
             |> stepAnswered
             |> shouldEqual (Ok expected)
+
+    [<Test>]
+    let ``mkdirat through step starts from its dirfd`` () : unit =
+        // The cwd is the root, where "new" is free; from `/d/inner` the same
+        // relative name lands somewhere else, so a dispatcher that dropped the
+        // dirfd would create `/new` and disagree.
+        let _, _, _, system = withTree linux
+
+        let fd, system =
+            match UnixNamespace.openPath 0 (PathArg.ofText "/d/inner") 0 system with
+            | Ok (SyscallAnswer.Completed fd, system) -> int fd, system
+            | other -> failwith $"open(/d/inner) did not open: %A{other}"
+
+        let viaStep =
+            UnixSystem.step holderTask (Syscall.MkDirAt (fd, PathArg.ofText "new", 0o700)) system
+            |> stepAnswered
+
+        viaStep
+        |> shouldEqual (
+            UnixNamespace.mkdirat fd (PathArg.ofText "new") 0o700 system
+            |> Result.mapError SyscallRefusal.MkDir
+        )
+
+        match viaStep with
+        | Ok (SyscallAnswer.Completed _, after) ->
+            match UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText "/d/inner/new") after with
+            | Ok (FileStatusAnswer.Reported _) -> ()
+            | other -> failwith $"/d/inner/new was not created: %A{other}"
+
+            UnixPathResolution.stat SymlinkPolicy.Follow (PathArg.ofText "/new") after
+            |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
+        | other -> failwith $"mkdirat(/d/inner, new) did not create: %A{other}"
 
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =
