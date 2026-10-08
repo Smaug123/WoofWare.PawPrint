@@ -2494,18 +2494,28 @@ module TestSignalState =
         // The seed is drawn from the whole range, so that each run walks fresh
         // sequences: FsCheck draws a size-bounded integer from 0 to 100 only.
         // A seed has no meaningful shrink, so it is given no shrinker.
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.choose (0, System.Int32.MaxValue))) property)
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 1000,
+            Prop.forAll (Arb.fromGen (Gen.choose (0, System.Int32.MaxValue))) property
+        )
 
         // Distribution checks: the random walk must hit each of these
         // paths frequently enough that a regression would actually surface.
         // The thresholds are conservative: measured over 5000 runs per
-        // numbering, each resampling 500 walks from 5000, each sits at least
+        // numbering, each resampling 500 walks from 5000, each sat at least
         // four standard deviations below the mean, except for the
         // rare paths, which are only required to be reached. For each of
         // those (a frame holding back a caught signal, with means of 42 and
         // 91; an action past a skipped candidate, 24 and 29; a queued
         // real-time duplicate, 30; a merge refusal, 105), the chance that no
         // walk in a run reaches it is below one in a hundred million.
+        //
+        // Since then the walk has grown operations (mask changes, `suspend`)
+        // that take a share of the others, and nested frames fell to a mean of
+        // about 20 in 500 walks, with a standard deviation of 5 (measured over
+        // 60 runs per numbering, 2026-10-08), which its floor of 15 no longer
+        // clears safely. So the walk now runs 1000 times, which doubles every
+        // mean, rather than any floor being lowered.
         observedHandlerDeliveries |> shouldBeGreaterThan 30
         observedNonLeaderDeliveries |> shouldBeGreaterThan 10
         observedDefaultTerminates |> shouldBeGreaterThan 50
