@@ -33,8 +33,9 @@ module TestThreadIds =
 
     let private spawnOrFail (child : int) (system : UnixSystem<int, string>) : uint64 * UnixSystem<int, string> =
         match UnixTaskLifecycle.spawn system.Leader child (CpuId 0) system with
-        | Ok (id, system) -> OsThreadId.toUInt64 id, system
-        | Error error -> failwith $"spawning %d{child} failed with %O{error}"
+        | Ok (SpawnAnswer.Spawned id, system) -> OsThreadId.toUInt64 id, system
+        | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawning %d{child} failed with %O{error}"
+        | Error refusal -> failwith $"spawning %d{child} was refused: %s{SpawnRefusal.describe refusal}"
 
     let private exitOrFail (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixTaskLifecycle.exitThread task 0 system with
@@ -199,8 +200,12 @@ module TestThreadIds =
 
         let rec fill (child : int) (started : uint64 list) (system : UnixSystem<int, string>) =
             match UnixTaskLifecycle.spawn system.Leader child (CpuId 0) system with
-            | Ok (id, system) -> fill (child + 1) (OsThreadId.toUInt64 id :: started) system
-            | Error error -> List.rev started, error, system
+            | Ok (SpawnAnswer.Spawned id, system) -> fill (child + 1) (OsThreadId.toUInt64 id :: started) system
+            | Ok (SpawnAnswer.Failed error, after) ->
+                // A failed creation hands out no thread ID and adds no task.
+                after |> shouldEqual system
+                List.rev started, error, system
+            | Error refusal -> failwith $"spawning %d{child} was refused: %s{SpawnRefusal.describe refusal}"
 
         let started, error, system = fill (child + 4) [] system
 
@@ -380,7 +385,7 @@ module TestThreadIds =
 
         let spawn (parent : int) (child : int) (system : UnixSystem<int, string>) () : unit =
             UnixTaskLifecycle.spawn parent child (CpuId 0) system
-            |> ignore<Result<OsThreadId * UnixSystem<int, string>, UnixError>>
+            |> ignore<Result<SpawnAnswer * UnixSystem<int, string>, SpawnRefusal<int>>>
 
         fails (spawn 7 2 system) "names no task"
         fails (spawn 0 1 system) "already names a task"
@@ -397,6 +402,12 @@ module TestThreadIds =
                 system
 
         fails (spawn 1 2 parked) "parked"
+
+        // Each is a bug in the client even from inside a handler that blocks
+        // something, which would otherwise be refused.
+        let masked = system |> HandlerFrames.enterIn "h" 0 (Set.singleton Signal.SIGUSR1)
+        fails (spawn 0 1 masked) "already names a task"
+        fails (spawn 7 2 masked) "names no task"
 
     [<Test>]
     let ``a new thread starts with nothing pending on it, and is refused from inside a handler that blocks`` () : unit =
@@ -441,13 +452,87 @@ module TestThreadIds =
                 system
                 |> HandlerFrames.enterIn "h" 0 (Set.ofList [ Signal.SIGUSR1 ; Signal.SIGTERM ])
 
-            Assert.Throws (fun () -> spawnOrFail 1 masked |> ignore<uint64 * UnixSystem<int, string>>)
-            |> ignore<exn>
+            UnixTaskLifecycle.spawn 0 1 (CpuId 0) masked
+            |> shouldEqual (
+                Error (SpawnRefusal.InheritedHandlerMask (0, Set.ofList [ Signal.SIGUSR1 ; Signal.SIGTERM ]))
+            )
 
             // A handler that blocks nothing is no reason to refuse.
             let unmasked = system |> HandlerFrames.enterIn "h" 0 Set.empty
             let _, spawned = spawnOrFail 1 unmasked
             SignalState.maskOf 1 spawned.Process.Signals |> shouldEqual Set.empty
+
+    [<Test>]
+    let ``a thread created from inside a caught signal's handler is refused, and created once the handler returns``
+        ()
+        : unit
+        =
+        // The handler blocks its own signal while it runs (no SA_NODEFER), so
+        // the new thread would inherit a mask of SIGUSR1, which this library
+        // cannot give it.
+        for system in [ linux ; darwin ] do
+            let usr1 =
+                Signal.toRawSignoUnder (SignalState.numbering system.Process.Signals) Signal.SIGUSR1
+
+            let system =
+                match UnixSignal.sigaction usr1 (Some (SignalDisposition.Catch (SignalCatch.ofHandler "h"))) system with
+                | Ok (_, system) -> system
+                | Error error -> failwith $"sigaction failed with %O{error}"
+
+            let system =
+                match UnixSignal.pthreadKill 0 usr1 system with
+                | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                | other -> failwith $"pthread_kill answered %A{other}"
+
+            let frame, inHandler =
+                match UnixSignal.onReturnToUser 0 system with
+                | Ok (Some (SignalDelivery.RunHandlers [ frame ]), system) -> frame, system
+                | other -> failwith $"onReturnToUser answered %A{other}"
+
+            UnixTaskLifecycle.spawn 0 1 (CpuId 0) inHandler
+            |> shouldEqual (Error (SpawnRefusal.InheritedHandlerMask (0, Set.singleton Signal.SIGUSR1)))
+
+            // Once the handler has returned, the leader blocks nothing again.
+            let returned = UnixSignal.sigreturn 0 frame.Id inHandler
+            let id, spawned = spawnOrFail 1 returned
+            idOf 1 spawned |> shouldEqual id
+            UnixSystem.checkInvariants spawned |> shouldEqual []
+
+    [<Test>]
+    let ``Darwin: a thread created once the counter has reached the top is refused, and no ID is handed out``
+        ()
+        : unit
+        =
+        // The leader takes UInt64.MaxValue - 1, so the counter is left at
+        // UInt64.MaxValue, beyond which what Darwin does is unmeasured.
+        let system =
+            darwinImage
+            |> UnixBootImage.withLeaderThreadId "test" (System.UInt64.MaxValue - 1UL)
+            |> UnixBootImage.boot
+
+        UnixTaskLifecycle.spawn 0 1 (CpuId 0) system
+        |> shouldEqual (Error SpawnRefusal.ThreadIdCounterExhausted)
+
+        // The refusal carries no system, and the one before it is as it was:
+        // the leader's is still the only live ID, so the next try is refused too.
+        ThreadIdAllocator.live system.Machine.ThreadIds
+        |> Set.map OsThreadId.toUInt64
+        |> shouldEqual (Set.singleton (System.UInt64.MaxValue - 1UL))
+
+        UnixTaskLifecycle.spawn 0 2 (CpuId 0) system
+        |> shouldEqual (Error SpawnRefusal.ThreadIdCounterExhausted)
+
+        // One below, the counter hands out its last ID.
+        let system =
+            darwinImage
+            |> UnixBootImage.withLeaderThreadId "test" (System.UInt64.MaxValue - 2UL)
+            |> UnixBootImage.boot
+
+        let id, system = spawnOrFail 1 system
+        id |> shouldEqual (System.UInt64.MaxValue - 1UL)
+
+        UnixTaskLifecycle.spawn 0 2 (CpuId 0) system
+        |> shouldEqual (Error SpawnRefusal.ThreadIdCounterExhausted)
 
     // ------------------------------------------------------------------
     // The reference model.
@@ -478,19 +563,33 @@ module TestThreadIds =
         | Linux of cursor : int32 * pidMax : int32
         | Darwin of next : uint64
 
-    let private modelNext (live : Set<uint64>) (model : Model) : Result<uint64 * Model, unit> =
+    /// What the model says a spawn does.
+    [<RequireQualifiedAccess>]
+    type private Expected =
+        | Issued of id : uint64 * after : Model
+        /// Linux's EAGAIN: every id it would hand out is live.
+        | Exhausted
+        /// Darwin's counter is at the top of its range, beyond which nothing
+        /// has been measured: refused.
+        | CounterAtTop
+
+    let private modelNext (live : Set<uint64>) (model : Model) : Expected =
         match model with
         | Model.Linux (cursor, pidMax) ->
             let rec go (candidate : int32) (wrapped : bool) =
                 if candidate >= pidMax then
-                    if wrapped then Error () else go 300 true
+                    if wrapped then Expected.Exhausted else go 300 true
                 elif Set.contains (uint64 candidate) live then
                     go (candidate + 1) wrapped
                 else
-                    Ok (uint64 candidate, Model.Linux (candidate + 1, pidMax))
+                    Expected.Issued (uint64 candidate, Model.Linux (candidate + 1, pidMax))
 
             go cursor false
-        | Model.Darwin next -> Ok (next, Model.Darwin (next + 1UL))
+        | Model.Darwin next ->
+            if next = System.UInt64.MaxValue then
+                Expected.CounterAtTop
+            else
+                Expected.Issued (next, Model.Darwin (next + 1UL))
 
     /// Coverage of the paths the property exists for, so that a generator change
     /// which stops reaching one is noticed.
@@ -500,6 +599,8 @@ module TestThreadIds =
             mutable Wraps : int
             mutable SkippedLive : int
             mutable Exhausted : int
+            /// Spawns refused because Darwin's counter is at the top.
+            mutable CounterAtTop : int
             mutable Exits : int
             mutable Groups : int
             /// `pid_max` writes at or below a live id.
@@ -533,6 +634,9 @@ module TestThreadIds =
                 [
                     Gen.choose (1, 100000) |> Gen.map uint64
                     Gen.constant 0xFFFF_FFF0UL
+                    // Near the top of the range, so that a run reaches it.
+                    Gen.choose (1, 40)
+                    |> Gen.map (fun below -> System.UInt64.MaxValue - uint64 below)
                     ArbMap.defaults |> ArbMap.generate<uint32> |> Gen.map (fun i -> uint64 i + 1UL)
                 ]
             |> Gen.map Setup.Darwin
@@ -614,11 +718,18 @@ module TestThreadIds =
                 let actual = UnixTaskLifecycle.spawn parent nextName (CpuId 0) system
 
                 match modelNext held model, actual with
-                | Error (), Error error ->
+                | Expected.Exhausted, Ok (SpawnAnswer.Failed error, after) ->
                     error |> shouldEqual UnixError.EAGAIN
+                    // A failed creation hands out no thread ID and adds no task.
+                    after |> shouldEqual system
                     coverage.Exhausted <- coverage.Exhausted + 1
                     system, model, nextName + 1, minted, last
-                | Ok (expected, model), Ok (id, after) ->
+                | Expected.CounterAtTop, Error refusal ->
+                    refusal |> shouldEqual SpawnRefusal.ThreadIdCounterExhausted
+                    // A refusal carries no system, so the run goes on from this one.
+                    coverage.CounterAtTop <- coverage.CounterAtTop + 1
+                    system, model, nextName + 1, minted, last
+                | Expected.Issued (expected, model), Ok (SpawnAnswer.Spawned id, after) ->
                     let id = OsThreadId.toUInt64 id
                     id |> shouldEqual expected
                     idOf nextName after |> shouldEqual id
@@ -714,6 +825,7 @@ module TestThreadIds =
                 Wraps = 0
                 SkippedLive = 0
                 Exhausted = 0
+                CounterAtTop = 0
                 Exits = 0
                 Groups = 0
                 LoweredBeneathLive = 0
@@ -741,11 +853,13 @@ module TestThreadIds =
             coverage.Wraps |> shouldBeGreaterThan 50
             coverage.SkippedLive |> shouldBeGreaterThan 50
             coverage.Exhausted |> shouldBeGreaterThan 20
+            coverage.CounterAtTop |> shouldEqual 0
             coverage.LoweredBeneathLive |> shouldBeGreaterThan 100
             coverage.BootedAbove |> shouldBeGreaterThan 10
         | SimulatedUnixFlavour.Darwin ->
             coverage.Wraps |> shouldEqual 0
             coverage.SkippedLive |> shouldEqual 0
             coverage.Exhausted |> shouldEqual 0
+            coverage.CounterAtTop |> shouldBeGreaterThan 20
             coverage.LoweredBeneathLive |> shouldEqual 0
             coverage.BootedAbove |> shouldEqual 0

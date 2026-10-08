@@ -14,8 +14,9 @@ module Tasks =
         : UnixSystem<'Task, 'Handler>
         =
         match UnixTaskLifecycle.spawn system.Leader child (CpuId 0) system with
-        | Ok (_, system) -> system
-        | Error error -> failwith $"spawning %O{child} failed with %O{error}"
+        | Ok (SpawnAnswer.Spawned _, system) -> system
+        | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawning %O{child} failed with %O{error}"
+        | Error refusal -> failwith $"spawning %O{child} was refused: %s{SpawnRefusal.describe refusal}"
 
     /// `system` with a task `name`: itself if `name` is already a task, and
     /// otherwise with `name` spawned by the leader.
