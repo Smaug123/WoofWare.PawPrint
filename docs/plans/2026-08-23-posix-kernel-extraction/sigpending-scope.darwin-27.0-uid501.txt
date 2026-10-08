@@ -1,0 +1,12 @@
+# Darwin 27.0.0 arm64, uid 501
+# flavour darwin USR1 20000000 USR2 40000000 TERM 4000 CONT 40000 WINCH 8000000 URG 8000
+proc sender=main main=20000000 second=0 end=exit0
+proc sender=second main=20000000 second=0 end=exit0
+thread sender=main target=second main=0 second=40000000 end=exit0
+thread sender=second target=main main=40000000 second=0 end=exit0
+ignored USR1 SIG_IGN pending=0 after-unblock-reblock=0 end=exit0
+ignored WINCH SIG_DFL pending=0 after-unblock-reblock=0 end=exit0
+ignored URG SIG_DFL pending=0 after-unblock-reblock=0 end=exit0
+ignored CONT SIG_IGN pending=40000 after-unblock-reblock=0 end=exit0
+cont SIG_DFL pending=40000 end=exit0
+handler in-handler pending=20004000 mask=20004000 after pending=0 ran=USR1,USR1,TERM end=exit0

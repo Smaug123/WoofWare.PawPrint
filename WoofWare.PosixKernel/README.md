@@ -14,7 +14,7 @@ It includes:
 * the filesystem, including permissions, with every name a string of bytes exactly as the kernel stores it, never decoded as text
 * file descriptors, the open file descriptions they name, and pipes
 * sockets and connections, `poll`, Linux's epoll, and Darwin's kqueue
-* signals: sending them, their dispositions, delivery to a handler, and a process ended by one
+* signals: sending them, their dispositions, each task's mask, delivery to a handler, and a process ended by one
 * the process's tasks (its threads), and the syscalls they block in
 * clock
 * entropy
@@ -57,6 +57,8 @@ How a process starts is a `ProcessLaunch`: `ProcessLaunch.create` takes the desc
 `UnixBootImage.boot` launches the machine's first process from one, to get the `UnixSystem` its first syscall takes.
 A setter that rejects a value, such as `withBootTime` or `withMount`, returns `Result`, with a refusal type of its own whose `describe` says why (see "Answers and refusals" below); only the caller knows what it called the value.
 Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
+A process's leader starts blocking no signal; a client launching one whose parent left signals blocked sets that mask with `UnixSignal.pthreadSigmask` before the leader's first instruction, as it installs inherited ignores with `UnixSignal.sigaction`.
+A signal mask crosses the API as a `SignalMask`, the bits of a `sigset_t` under one numbering (`SignalMask.ofWord`, `SignalMask.toWord`), because Darwin keeps a bit that names no signal.
 What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixSystem.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
 
 ```fsharp
@@ -136,7 +138,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixConnection` | `connect`, `accept` |
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
 | `UnixKqueue` | `kqueue`, `kevent` |
-| `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigreturn`, and the signals a task takes as it returns to user mode |
+| `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigprocmask`, `pthread_sigmask`, `rt_sigprocmask`, `sigpending`, `sigreturn`, and the signals a task takes as it returns to user mode |
 | `UnixClock` | `clock_gettime`, `gettimeofday` |
 | `UnixEntropy` | `getrandom`, `getentropy` |
 | `UnixCredentials` | `getresuid`, `getresgid`, `setresuid`, `setresgid`, `setgroups` |

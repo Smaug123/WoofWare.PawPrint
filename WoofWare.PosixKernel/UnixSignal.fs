@@ -328,3 +328,207 @@ module UnixSignal =
         : Result<SignalDisposition<'Handler> * UnixSystem<'Task, 'Handler>, UnixError>
         =
         sigactionUnder false signo newAction system
+
+    /// `how` as the numbering's `<signal.h>` numbers it: `SIG_BLOCK`,
+    /// `SIG_UNBLOCK` and `SIG_SETMASK` are 0, 1 and 2 on Linux and 1, 2 and 3
+    /// on Darwin. Every other number names nothing.
+    let private decodeHow (numbering : SignalNumbering) (how : int32) : SignalMaskChange voption =
+        match numbering, how with
+        | SignalNumbering.Linux, 0
+        | SignalNumbering.Darwin, 1 -> ValueSome SignalMaskChange.Block
+        | SignalNumbering.Linux, 1
+        | SignalNumbering.Darwin, 2 -> ValueSome SignalMaskChange.Unblock
+        | SignalNumbering.Linux, 2
+        | SignalNumbering.Darwin, 3 -> ValueSome SignalMaskChange.SetMask
+        | _, _ -> ValueNone
+
+    /// Which tasks a mask call changes.
+    [<RequireQualifiedAccess>]
+    type private MaskScope =
+        /// The calling task alone.
+        | Caller
+        /// Every task of the process: Darwin's `sigprocmask`.
+        | EveryTask
+
+    /// The mask calls' common answer. `screened` are the signals the C
+    /// library takes out of `set` before the kernel sees it.
+    let private changeMaskUnder<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (operation : string)
+        (scope : MaskScope)
+        (screened : Set<Signal>)
+        (task : 'Task)
+        (how : int32)
+        (set : SignalMask option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SignalMask * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        match Map.tryFind task system.Tasks with
+        | None ->
+            failwith
+                $"UnixSignal.%s{operation}: task %O{task} is not one of the process's tasks (this is a bug in the client)."
+        | Some {
+                   Parked = Some park
+               } ->
+            failwith
+                $"UnixSignal.%s{operation}: task %O{task} is asleep in %A{park.Syscall}, so it cannot be making this call (this is a bug in the client)."
+        | Some _ ->
+
+        let signals = system.Process.Signals
+        let old = SignalState.maskOf task signals
+
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/sigprocmask-ops.c`
+        // on Linux 6.18.5 (glibc 2.41) and Darwin 27.0.0, through every route
+        // each has: with a NULL set, every `how` (the three named, -1, every
+        // small number, 100, INT_MAX and INT_MIN) answered the old mask and
+        // changed nothing; with a set, every unnamed `how` was EINVAL, left the
+        // mask as it was, and wrote nothing to `oldset`.
+        match set with
+        | None -> Ok (old, system)
+        | Some set ->
+
+        match decodeHow (SignalState.numbering signals) how with
+        | ValueNone -> Error UnixError.EINVAL
+        | ValueSome change ->
+            let set = SignalMask.without screened set
+
+            let targets =
+                match scope with
+                | MaskScope.Caller -> [ task ]
+                | MaskScope.EveryTask -> system.Tasks |> Map.keys |> List.ofSeq
+
+            let signals =
+                (signals, targets)
+                ||> List.fold (fun signals target -> SignalState.changeMask change set target signals)
+
+            Ok (old, withSignals signals system)
+
+    /// The signals Linux's C library takes out of every set its mask calls are
+    /// handed: its own 32 and 33. Darwin's takes none.
+    let private screenedByCLibrary (numbering : SignalNumbering) : Set<Signal> =
+        match numbering with
+        | SignalNumbering.Linux -> Set.ofList [ Signal.RealTime 0 ; Signal.RealTime 1 ]
+        | SignalNumbering.Darwin -> Set.empty
+
+    /// `pthread_sigmask(3)`, called by `task`: change its own signal mask as
+    /// `how` says, with `how` read under the process's own signal numbering
+    /// (`SIG_BLOCK`, `SIG_UNBLOCK` and `SIG_SETMASK` are 0, 1 and 2 on Linux,
+    /// and 1, 2 and 3 on Darwin). `set` is `None` for a NULL set, which asks for
+    /// the mask and changes nothing, whatever `how` is. The answer is the mask
+    /// before the call, with the system as the call leaves it; a client that
+    /// returns errno rather than setting it, as `pthread_sigmask` does, reads
+    /// the error from the `Error` case.
+    ///
+    /// A set's SIGKILL and SIGSTOP are dropped silently, and on Linux so are
+    /// the C library's own 32 and 33, before the kernel sees the set: blocking
+    /// either does nothing, and `SIG_SETMASK` clears both from the mask, though
+    /// the raw call can set them (`rtSigprocmask`). Every other bit is kept,
+    /// Darwin's bit 31 included, which names no signal (see `SignalMask`).
+    ///
+    /// Unblocking can make a pending signal deliverable: to `task` as it
+    /// returns from this call (`onReturnToUser`), which for several at once
+    /// pushes a frame for each before any handler runs.
+    ///
+    /// Darwin's raw `__pthread_sigmask` system call answered exactly as this on
+    /// every row measured, so this serves it too.
+    ///
+    /// An unnamed `how` with a set is `EINVAL`, and changes nothing.
+    ///
+    /// Fails loudly if `task` names no task, or is asleep in a syscall, each
+    /// of which is a bug in the client; and on a set made under another
+    /// numbering.
+    let pthreadSigmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (how : int32)
+        (set : SignalMask option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SignalMask * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        // Measured by `sigprocmask-ops.c`: blocking every bit through glibc left
+        // 0xfffffffe7ffbfeff (without 9, 19, 32 and 33), and through Darwin's
+        // C library 0xfffefeff (without 9 and 17, with bit 31). Through glibc,
+        // a SIG_SETMASK naming neither 32 nor 33 cleared both where the raw call
+        // had set them, and a SIG_UNBLOCK naming only them left both set.
+        let numbering = SignalState.numbering system.Process.Signals
+        changeMaskUnder "pthreadSigmask" MaskScope.Caller (screenedByCLibrary numbering) task how set system
+
+    /// `sigprocmask(2)`, called by `task`: on Linux exactly `pthreadSigmask`.
+    ///
+    /// On Darwin it changes **every** task's mask, each as `how` says, and
+    /// answers the calling task's mask before the call: measured by
+    /// `docs/plans/2026-08-23-posix-kernel-extraction/sigprocmask-ops.c` on
+    /// Darwin 27.0.0, with the main thread blocking SIGHUP and a second thread
+    /// SIGINT, the main thread's `SIG_BLOCK` of SIGTERM left the second
+    /// blocking SIGINT and SIGTERM, its `SIG_UNBLOCK` of both left both
+    /// threads blocking nothing, and its `SIG_SETMASK` of SIGTERM left both
+    /// blocking SIGTERM alone; Darwin's raw `sigprocmask` system call did the
+    /// same. Linux's changed the caller's alone, as `pthread_sigmask` did on
+    /// both. A signal another task blocked and no longer does may then be
+    /// deliverable to it: that task takes it as it next returns to user mode,
+    /// and if it is asleep in a syscall, `UnixWait.wakes` says so.
+    ///
+    /// Everything else is as `pthreadSigmask` answers.
+    let sigprocmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (how : int32)
+        (set : SignalMask option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SignalMask * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        let numbering = SignalState.numbering system.Process.Signals
+
+        let scope =
+            match numbering with
+            | SignalNumbering.Linux -> MaskScope.Caller
+            | SignalNumbering.Darwin -> MaskScope.EveryTask
+
+        changeMaskUnder "sigprocmask" scope (screenedByCLibrary numbering) task how set system
+
+    /// Linux's `rt_sigprocmask(2)`, made as a system call rather than through
+    /// the C library, by `task`: as `pthreadSigmask`, except that it takes
+    /// `sigsetSize`, the size the caller says its sets are, and screens out
+    /// only SIGKILL and SIGSTOP, so it can block the C library's own 32 and 33.
+    ///
+    /// A `sigsetSize` other than 8 is `EINVAL`, before anything else is
+    /// looked at, a NULL set included.
+    ///
+    /// Fails loudly on a Darwin process, which has no such system call: its raw
+    /// `sigprocmask` and `__pthread_sigmask` answered exactly as the C
+    /// library's calls on every row measured, so `sigprocmask` and
+    /// `pthreadSigmask` serve them.
+    let rtSigprocmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (how : int32)
+        (set : SignalMask option)
+        (sigsetSize : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SignalMask * UnixSystem<'Task, 'Handler>, UnixError>
+        =
+        match SignalState.numbering system.Process.Signals with
+        | SignalNumbering.Darwin ->
+            failwith
+                "UnixSignal.rtSigprocmask: a Darwin process has no rt_sigprocmask system call; its raw sigprocmask and __pthread_sigmask are UnixSignal.sigprocmask and UnixSignal.pthreadSigmask (this is a bug in the client)."
+        | SignalNumbering.Linux ->
+
+        // Measured by `sigprocmask-ops.c` on Linux 6.18.5: every size from 0
+        // to 16 but 8, and 128 (glibc's sizeof(sigset_t)), was EINVAL with a
+        // set, with a NULL set, and with a NULL set and an unnamed `how`, and
+        // wrote nothing to `oldset`. Blocking every bit left 0xfffffffffffbfeff.
+        if sigsetSize <> 8UL then
+            Error UnixError.EINVAL
+        else
+            changeMaskUnder "rtSigprocmask" MaskScope.Caller Set.empty task how set system
+
+    /// `sigpending(2)`, called by `task`: the signals pending that it sees and
+    /// that its mask blocks (see `SignalState.pendingBlocked`).
+    ///
+    /// Fails loudly if `task` names no task, which is a bug in the client.
+    let sigpending<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SignalMask
+        =
+        if not (Map.containsKey task system.Tasks) then
+            failwith
+                $"UnixSignal.sigpending: task %O{task} is not one of the process's tasks (this is a bug in the client)."
+
+        SignalState.pendingBlocked system.Leader task system.Process.Signals

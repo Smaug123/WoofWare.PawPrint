@@ -400,6 +400,8 @@ type UnixSystemDefect<'Task> =
     | BoundToPortZero of socket : SocketId
     /// A task the table does not hold has handler frames.
     | HandlerFramesWithoutTask of task : 'Task
+    /// A task the table does not hold has a signal mask.
+    | MaskWithoutTask of task : 'Task
     /// A pending signal is directed at a task the table does not hold, so it
     /// can never be delivered and sits in the queue for the rest of the run.
     | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
@@ -2265,6 +2267,12 @@ module UnixSystem =
                 |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
                 |> List.map UnixSystemDefect.HandlerFramesWithoutTask
 
+            let masks =
+                SignalState.tasksWithMasks signals
+                |> Set.toList
+                |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
+                |> List.map UnixSystemDefect.MaskWithoutTask
+
             let targets =
                 SignalState.pending signals
                 |> List.choose (fun entry ->
@@ -2275,7 +2283,7 @@ module UnixSystem =
                     | ValueNone -> None
                 )
 
-            numberings @ frames @ targets
+            numberings @ frames @ masks @ targets
 
         let supplementaryGroups =
             let count = List.length system.Process.Credentials.SupplementaryGroups

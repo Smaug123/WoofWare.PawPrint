@@ -4558,6 +4558,49 @@ module TestImpureCases =
                     )
             }
             {
+                // libc's pthread_sigmask, sigprocmask and sigpending under the
+                // Linux flavour: a raised SIGTERM held back by the main
+                // thread's mask, pending, and delivered once unblocked.
+                FileName = "LibcSignalMaskLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.linuxX64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                        SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
+                        |> shouldEqual SignalMask.empty
+                    )
+            }
+            {
+                // The Darwin column of the same: its numbering of `how`, its
+                // 32-bit set, and the bit 31 it keeps, which the main thread
+                // still blocks at the end.
+                FileName = "LibcSignalMaskDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                        SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
+                        |> SignalMask.toWord
+                        |> shouldEqual 0x80000000UL
+                    )
+            }
+            {
                 // libc's raise(3) under the Darwin flavour, from the main
                 // thread and another, on numbers that would end the run under
                 // Linux's numbering: the handler must read the signal under
