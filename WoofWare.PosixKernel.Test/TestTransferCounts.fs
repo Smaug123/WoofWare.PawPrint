@@ -681,6 +681,7 @@ module TestTransferCounts =
                                         Binding = None
                                         Phase = SocketPhase.Idle
                                         ReuseAddress = false
+                                        Options = SocketOptions.initial
                                     }
                                 ]
                     }

@@ -112,6 +112,13 @@ type AcceptRefusal =
     /// sleeps on through it. This kernel wakes a sleeping accept while a
     /// connection is queued, which would wake that second sleeper too.
     | DarwinDrainedListener of listener : SocketId
+    /// The accept fails after taking `connection` off `listener`'s queue, which
+    /// closes the connection's server end at once, and that end has the
+    /// listener's `SO_LINGER`, on with a time of zero, while the client is
+    /// still open. A real kernel resets the connection, and the client reads
+    /// ECONNRESET; this kernel models no reset. See
+    /// `DescriptionReleaseRefusal.AbortiveClose`.
+    | AbortiveDrop of listener : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module AcceptRefusal =
@@ -131,6 +138,8 @@ module AcceptRefusal =
         | AcceptRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
         | AcceptRefusal.Release refusal ->
             $"the accept slept on a listener no descriptor names any more, which goes as the call returns: %s{DescriptionReleaseRefusal.describe refusal}"
+        | AcceptRefusal.AbortiveDrop (listener, connection) ->
+            $"the accept fails having taken connection %O{connection} off socket %O{listener}'s queue, which closes its server end at once, and that end has the listener's SO_LINGER, on with a time of zero, while the client is open. A real kernel resets the connection, and the client reads ECONNRESET; this kernel models no reset, and would otherwise deliver an orderly end of stream instead."
         | AcceptRefusal.DarwinDrainedListener listener ->
             $"socket %O{listener} is a listener on which a close of the descriptor an accept was asleep through has ended every accept, and this accept would sleep on it. Measured on Darwin (close-ends-call.c section A7), such a sleep answers ECONNABORTED as soon as anything wakes it, a connection or a signal, and one connection wakes one such sleeper, the connection staying queued, so a second sleeper sleeps on through it. This kernel wakes a sleeping accept for as long as a connection is queued, so it would wake every such sleeper for one connection."
 
@@ -1374,10 +1383,12 @@ module UnixConnection =
                     // Both kernels copy the listener's socket options onto
                     // the new socket when the connection completes
                     // (inet_csk_clone_lock; sonewconn), not at accept.
-                    // Reading the listener now gives the same value because
-                    // `UnixSocket.setsockopt` refuses to change it while
-                    // connections are queued.
+                    // Reading the listener now gives the same values because
+                    // `UnixSocket.setsockopt` refuses to change any of them
+                    // while connections are queued. Measured for every option
+                    // here (`docs/probes/sockopt-options/`, P and Q).
                     ReuseAddress = listener.ReuseAddress
+                    Options = listener.Options
                     Phase = SocketPhase.Established (connectionId, ConnectionEnd.Server)
                 }
 
@@ -1519,16 +1530,46 @@ module UnixConnection =
             SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
             && int declaredLength < 0
 
+        // The dropped server end has the listener's options, so with
+        // lingering on for no time it would reset a client still open.
+        let dropped () : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal> =
+            let listener = UnixMachineState.socket socketId system.Machine
+
+            let head =
+                match listener.Phase with
+                | SocketPhase.Listening {
+                                            Queue = connectionId :: _
+                                        } -> connectionId
+                | phase ->
+                    failwith
+                        $"UnixConnection.handOver: socket %O{socketId} is in %A{phase}, not listening with a connection queued (this is a bug in this library)."
+
+            let clientOpen =
+                system.Machine.Sockets
+                |> Map.exists (fun _ socket ->
+                    match socket.Phase with
+                    | SocketPhase.Established (c, _)
+                    | SocketPhase.EstablishedPendingReport c -> c = head
+                    | _ -> false
+                )
+
+            if
+                listener.Options.Linger.Enabled
+                && listener.Options.Linger.Hundredths = 0L
+                && clientOpen
+            then
+                Error (AcceptRefusal.AbortiveDrop (socketId, head))
+            else
+                Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
+
         match linuxNegative, destination with
         | true, UserBuffer.Addressless ->
             // Whether the kernel reads the length at all turns on whether the
             // address is NULL, which a client with no number for it cannot say.
             Error (AcceptRefusal.Buffer BufferRefusal.AddresslessAtScreen)
         | true, UserBuffer.Mapped
-        | true, UserBuffer.Opaque ->
-            Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
-        | true, UserBuffer.Unmapped address when address <> 0UL ->
-            Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
+        | true, UserBuffer.Opaque -> dropped ()
+        | true, UserBuffer.Unmapped address when address <> 0UL -> dropped ()
         | true, UserBuffer.Unmapped _
         | false, _ ->
 

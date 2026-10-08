@@ -162,6 +162,7 @@
     <Compile Include="Native\FileStatusPal.fs" />
     <Compile Include="Native\DirectoryEntryPal.fs" />
     <Compile Include="Native\SocketShimPal.fs" />
+    <Compile Include="Native\SocketOptionPal.fs" />
     <Compile Include="Native\OsThreadIdPal.fs" />
     <Compile Include="Native\MinipalRandom.fs" />
     <Compile Include="Native\NativeCall.fs" />

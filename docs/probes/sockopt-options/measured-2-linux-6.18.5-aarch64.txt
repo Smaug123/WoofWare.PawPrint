@@ -1,0 +1,99 @@
+6.18.5
+W. linger time width
+  SO_LINGER set {0,40000}: OK, read SO_LINGER        -> OK {0,0}
+  SO_LINGER set {0,70000}: OK, read SO_LINGER        -> OK {0,0}
+  SO_LINGER set {0,-40000}: OK, read SO_LINGER       -> OK {0,0}
+  SO_LINGER set {0,2147483647}: OK, read SO_LINGER   -> OK {0,0}
+  SO_LINGER set {0,-2147483648}: OK, read SO_LINGER  -> OK {0,0}
+K. kind check against null and faulting buffers, and negative lengths
+  inet dgram TCP_NODELAY             get null value, cell 4        -> EOPNOTSUPP cell=4
+  inet dgram TCP_NODELAY             get null value, null cell     -> EOPNOTSUPP
+  inet dgram TCP_NODELAY             get len 0x80000000           -> EOPNOTSUPP cell=2147483648
+  inet dgram TCP_NODELAY             get len 0xffffffff           -> EOPNOTSUPP cell=4294967295
+  inet dgram TCP_NODELAY             set len 0x80000000           -> EINVAL
+  inet dgram TCP_NODELAY             set null, len 0x80000000     -> EINVAL
+  inet dgram TCP_NODELAY             set null, len 4              -> ENOPROTOOPT
+  inet dgram TCP_NODELAY             set null, len 0              -> ENOPROTOOPT
+  inet6 dgram TCP_NODELAY            get null value, cell 4        -> ENOPROTOOPT cell=4
+  inet6 dgram TCP_NODELAY            get null value, null cell     -> ENOPROTOOPT
+  inet6 dgram TCP_NODELAY            get len 0x80000000           -> ENOPROTOOPT cell=2147483648
+  inet6 dgram TCP_NODELAY            get len 0xffffffff           -> ENOPROTOOPT cell=4294967295
+  inet6 dgram TCP_NODELAY            set len 0x80000000           -> EINVAL
+  inet6 dgram TCP_NODELAY            set null, len 0x80000000     -> EINVAL
+  inet6 dgram TCP_NODELAY            set null, len 4              -> ENOPROTOOPT
+  inet6 dgram TCP_NODELAY            set null, len 0              -> ENOPROTOOPT
+  unix stream TCP_NODELAY            get null value, cell 4        -> EOPNOTSUPP cell=4
+  unix stream TCP_NODELAY            get null value, null cell     -> EOPNOTSUPP
+  unix stream TCP_NODELAY            get len 0x80000000           -> EOPNOTSUPP cell=2147483648
+  unix stream TCP_NODELAY            get len 0xffffffff           -> EOPNOTSUPP cell=4294967295
+  unix stream TCP_NODELAY            set len 0x80000000           -> EINVAL
+  unix stream TCP_NODELAY            set null, len 0x80000000     -> EINVAL
+  unix stream TCP_NODELAY            set null, len 4              -> EOPNOTSUPP
+  unix stream TCP_NODELAY            set null, len 0              -> EOPNOTSUPP
+  unix dgram TCP_NODELAY             get null value, cell 4        -> EOPNOTSUPP cell=4
+  unix dgram TCP_NODELAY             get null value, null cell     -> EOPNOTSUPP
+  unix dgram TCP_NODELAY             get len 0x80000000           -> EOPNOTSUPP cell=2147483648
+  unix dgram TCP_NODELAY             get len 0xffffffff           -> EOPNOTSUPP cell=4294967295
+  unix dgram TCP_NODELAY             set len 0x80000000           -> EINVAL
+  unix dgram TCP_NODELAY             set null, len 0x80000000     -> EINVAL
+  unix dgram TCP_NODELAY             set null, len 4              -> EOPNOTSUPP
+  unix dgram TCP_NODELAY             set null, len 0              -> EOPNOTSUPP
+  inet stream IPV6_V6ONLY            get null value, cell 4        -> EOPNOTSUPP cell=4
+  inet stream IPV6_V6ONLY            get null value, null cell     -> EOPNOTSUPP
+  inet stream IPV6_V6ONLY            get len 0x80000000           -> EOPNOTSUPP cell=2147483648
+  inet stream IPV6_V6ONLY            get len 0xffffffff           -> EOPNOTSUPP cell=4294967295
+  inet stream IPV6_V6ONLY            set len 0x80000000           -> EINVAL
+  inet stream IPV6_V6ONLY            set null, len 0x80000000     -> EINVAL
+  inet stream IPV6_V6ONLY            set null, len 4              -> ENOPROTOOPT
+  inet stream IPV6_V6ONLY            set null, len 0              -> ENOPROTOOPT
+  unix stream IPV6_V6ONLY            get null value, cell 4        -> EOPNOTSUPP cell=4
+  unix stream IPV6_V6ONLY            get null value, null cell     -> EOPNOTSUPP
+  unix stream IPV6_V6ONLY            get len 0x80000000           -> EOPNOTSUPP cell=2147483648
+  unix stream IPV6_V6ONLY            get len 0xffffffff           -> EOPNOTSUPP cell=4294967295
+  unix stream IPV6_V6ONLY            set len 0x80000000           -> EINVAL
+  unix stream IPV6_V6ONLY            set null, len 0x80000000     -> EINVAL
+  unix stream IPV6_V6ONLY            set null, len 4              -> EOPNOTSUPP
+  unix stream IPV6_V6ONLY            set null, len 0              -> EOPNOTSUPP
+  unix seqpacket TCP_NODELAY         get null value, cell 4        -> EOPNOTSUPP cell=4
+  unix seqpacket TCP_NODELAY         get null value, null cell     -> EOPNOTSUPP
+  unix seqpacket TCP_NODELAY         get len 0x80000000           -> EOPNOTSUPP cell=2147483648
+  unix seqpacket TCP_NODELAY         get len 0xffffffff           -> EOPNOTSUPP cell=4294967295
+  unix seqpacket TCP_NODELAY         set len 0x80000000           -> EINVAL
+  unix seqpacket TCP_NODELAY         set null, len 0x80000000     -> EINVAL
+  unix seqpacket TCP_NODELAY         set null, len 4              -> EOPNOTSUPP
+  unix seqpacket TCP_NODELAY         set null, len 0              -> EOPNOTSUPP
+  unix seqpacket IPV6_V6ONLY         get null value, cell 4        -> EOPNOTSUPP cell=4
+  unix seqpacket IPV6_V6ONLY         get null value, null cell     -> EOPNOTSUPP
+  unix seqpacket IPV6_V6ONLY         get len 0x80000000           -> EOPNOTSUPP cell=2147483648
+  unix seqpacket IPV6_V6ONLY         get len 0xffffffff           -> EOPNOTSUPP cell=4294967295
+  unix seqpacket IPV6_V6ONLY         set len 0x80000000           -> EINVAL
+  unix seqpacket IPV6_V6ONLY         set null, len 0x80000000     -> EINVAL
+  unix seqpacket IPV6_V6ONLY         set null, len 4              -> EOPNOTSUPP
+  unix seqpacket IPV6_V6ONLY         set null, len 0              -> EOPNOTSUPP
+  unix seqpacket SO_LINGER           get null value, cell 4        -> EFAULT cell=4
+  unix seqpacket SO_LINGER           get null value, null cell     -> EFAULT
+  unix seqpacket SO_LINGER           get len 0x80000000           -> EINVAL cell=2147483648
+  unix seqpacket SO_LINGER           get len 0xffffffff           -> EINVAL cell=4294967295
+  unix seqpacket SO_LINGER           set len 0x80000000           -> EINVAL
+  unix seqpacket SO_LINGER           set null, len 0x80000000     -> EINVAL
+  unix seqpacket SO_LINGER           set null, len 4              -> EFAULT
+  unix seqpacket SO_LINGER           set null, len 0              -> EINVAL
+  inet stream TCP_NODELAY            get null value, cell 4        -> EFAULT cell=4
+  inet stream TCP_NODELAY            get null value, null cell     -> EFAULT
+  inet stream TCP_NODELAY            get len 0x80000000           -> EINVAL cell=2147483648
+  inet stream TCP_NODELAY            get len 0xffffffff           -> EINVAL cell=4294967295
+  inet stream TCP_NODELAY            set len 0x80000000           -> EINVAL
+  inet stream TCP_NODELAY            set null, len 0x80000000     -> EINVAL
+  inet stream TCP_NODELAY            set null, len 4              -> EFAULT
+  inet stream TCP_NODELAY            set null, len 0              -> EINVAL
+  inet6 stream IPV6_V6ONLY           get null value, cell 4        -> EFAULT cell=4
+  inet6 stream IPV6_V6ONLY           get null value, null cell     -> EFAULT
+  inet6 stream IPV6_V6ONLY           get len 0x80000000           -> OK cell=4
+  inet6 stream IPV6_V6ONLY           get len 0xffffffff           -> OK cell=4
+  inet6 stream IPV6_V6ONLY           set len 0x80000000           -> EINVAL
+  inet6 stream IPV6_V6ONLY           set null, len 0x80000000     -> EINVAL
+  inet6 stream IPV6_V6ONLY           set null, len 4              -> OK
+  inet6 stream IPV6_V6ONLY           set null, len 0              -> EINVAL
+Q. an option changed on the listener while a connection is queued
+  accepted TCP_NODELAY = 0 (listener set it after the connection queued)
+  accepted SO_LINGER                                 -> OK {0,0}

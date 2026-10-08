@@ -251,7 +251,59 @@ module SocketPhase =
         | SocketPhase.Refused _
         | SocketPhase.DatagramPeer _ -> false
 
+/// `SO_LINGER` as a socket holds it.
+type SocketLinger =
+    {
+        /// `l_onoff`: whether a close lingers at all.
+        Enabled : bool
+        /// `l_linger`, in hundredths of a second, kept whether or not `Enabled`
+        /// is. Darwin keeps it at this resolution in sixteen bits, and a set
+        /// stores the low sixteen bits of what it computes (measured); Linux
+        /// keeps whole seconds, so its value here is always a multiple of 100.
+        Hundredths : int64
+    }
+
+/// The socket options `setsockopt(2)` sets and `getsockopt(2)` reads that this
+/// kernel stores and nothing else in it consults. `accept(2)` gives the socket
+/// it returns the listener's.
+type SocketOptions =
+    {
+        /// `TCP_NODELAY`, which turns Nagle's algorithm off. It has no
+        /// observable effect here: a loopback transfer is delivered at once
+        /// whatever its size, so there is nothing for the algorithm to hold
+        /// back.
+        NoDelay : bool
+        /// `IPV6_V6ONLY`, which confines an IPv6 socket to IPv6 peers. Only an
+        /// IPv6 socket has it; it can change only while the socket has no
+        /// address.
+        Ipv6Only : bool
+        /// `SO_LINGER`. Stored only: what a close does with it -- with a
+        /// linger time of zero, a reset instead of an orderly shutdown --
+        /// belongs with `close` and `shutdown`, which do not model it yet, and
+        /// so refuse the close of a connected socket whose connection that
+        /// reset would reach (`DescriptionReleaseRefusal.AbortiveClose`).
+        Linger : SocketLinger
+    }
+
+[<RequireQualifiedAccess>]
+module SocketOptions =
+    /// What a socket starts with on both kernels, measured: every option off,
+    /// and a linger time of zero. A new IPv6 socket's `Ipv6Only` is instead the
+    /// machine's sysctl; see `UnixMachineState.Ipv6OnlyByDefault`.
+    let initial : SocketOptions =
+        {
+            NoDelay = false
+            Ipv6Only = false
+            Linger =
+                {
+                    Enabled = false
+                    Hundredths = 0L
+                }
+        }
+
 /// A socket, as the emulated kernel's socket table holds it.
+///
+/// Carries no identity of its own:/// A socket, as the emulated kernel's socket table holds it.
 ///
 /// Carries no identity of its own: the table is keyed by `SocketId`, so a field
 /// here would be a second copy of the key, free to disagree with it.
@@ -278,6 +330,9 @@ type SocketDescription =
         /// the call rather than when it was bound. See
         /// `SimulatedUnixPlatform.bindConflict`.
         ReuseAddress : bool
+        /// The other options this kernel stores for the socket. See
+        /// `SocketOptions`.
+        Options : SocketOptions
         /// Where this socket is in its connection lifecycle: idle, listening
         /// (with the accept queue), connected, or latched by a refusal.
         ///

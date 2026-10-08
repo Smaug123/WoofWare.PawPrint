@@ -416,6 +416,23 @@ module EscapeAnalysis =
     let private corelibException (state : EscapeAnalysisState) (name : string) : ResolvedTypeIdentity =
         corelibType state "System" name
 
+    /// The parameterless instance constructor of a CoreLib exception type.
+    let private parameterlessConstructor (state : EscapeAnalysisState) (name : ExceptionName) : MethodKey =
+        let corelib = state.BaseTypes.Corelib
+
+        let found =
+            corelib.TryGetTopLevelTypeDef name.Namespace name.Name
+            |> Option.toList
+            |> List.collect (fun ty -> List.ofSeq ty.Methods)
+            |> List.filter (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Signature.ParameterTypes.IsEmpty)
+            |> List.choose (fun m -> m.TryMetadata)
+
+        match found with
+        | [ facts ] -> MethodKey.make corelib facts.Handle
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %O{name}(), found %d{found.Length}"
+
     /// What binding a type reference in `assembly` finds.
     let private bindTypeRef
         (state : EscapeAnalysisState)
@@ -1740,12 +1757,22 @@ module EscapeAnalysis =
     let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
         let assembly, method = methodOf state key
 
-        let contracted (raised : ThrownType list) (assumed : Assumption list) : LocalFacts =
+        let contracted (raised : ThrownType list) (assumed : Assumption list) (calls : MethodKey list) : LocalFacts =
             {
                 Raises = raised |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
                 Assumed = assumed |> List.map (fun assumption -> 0, assumption)
-                Calls = []
+                Calls =
+                    calls
+                    |> List.map (fun callee ->
+                        0,
+                        CallSite.Direct
+                            {
+                                Callee = callee
+                                Spelling = CalleeSpelling.Fixed
+                            },
+                        []
+                    )
                 Rethrows = []
                 Regions = []
                 OutsideBody = Set.empty
@@ -1761,9 +1788,14 @@ module EscapeAnalysis =
         match runsFor state.Assumptions assembly key with
         | Runs.Opaque reason -> state, opaqueFromEntry reason
         | Runs.Primitive primitive ->
-            state, contracted (contractRaises state (IntrinsicPrimitive.contract primitive)) []
-        | Runs.Native native -> state, contracted (exactly (NativeMethod.contract native).Raises) []
-        | Runs.Assumed assumption -> state, contracted (exactly (Assumption.raises assumption)) [ assumption ]
+            state, contracted (contractRaises state (IntrinsicPrimitive.contract primitive)) [] []
+        | Runs.Native native -> state, contracted (exactly (NativeMethod.contract native).Raises) [] []
+        | Runs.Assumed assumption ->
+            state,
+            contracted
+                (exactly (Assumption.raises assumption))
+                [ assumption ]
+                (Assumption.constructs assumption |> List.map (parameterlessConstructor state))
         | Runs.Il (body, selfCall) ->
 
         let ops = body.Instructions |> Array.ofList
