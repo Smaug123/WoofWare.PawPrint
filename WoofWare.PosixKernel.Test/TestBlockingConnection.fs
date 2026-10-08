@@ -179,13 +179,13 @@ module TestBlockingConnection =
 
     /// Whether a writer asleep at `connectionEnd` with `remaining` bytes left
     /// is woken by room: on Linux once the send buffer is at most two thirds
-    /// full, in the kernel's integer arithmetic; on Darwin once a write of
-    /// `remaining` would take something.
+    /// full, in the kernel's integer arithmetic, with room; on Darwin once a
+    /// write of `remaining` would take something.
     let private roomWakes (connectionEnd : ConnectionEnd) (remaining : int) (r : Reference) : bool =
         if r.Linux then
             let flow = r.Model.Flows.[other connectionEnd]
             let queued = List.length flow.InFlight
-            flow.SendCap - queued >= queued / 2
+            flow.SendCap - queued >= queued / 2 && room connectionEnd r > 0
         else
             (takes connectionEnd remaining r).IsSome
 
@@ -1275,7 +1275,7 @@ module TestBlockingConnection =
 
                 let expected =
                     if linux then
-                        sendCapacity - queued >= queued / 2
+                        sendCapacity - queued >= queued / 2 && queued < sendCapacity
                     else
                         let flow = (UnixMachineState.connection connection system.Machine).Transfer.ToServer
 
@@ -1921,3 +1921,35 @@ module TestBlockingConnection =
         match finishedWrite 1 (payload 13 (room + 100)) system with
         | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, _)) -> n |> shouldEqual (int64 (room + 100))
         | other -> failwith $"%A{other}"
+
+    /// A Linux send buffer of one byte, holding it, is two thirds full by the
+    /// kernel's integer arithmetic and still full: the sleeping writer is not
+    /// woken until a read makes room, or it would wake for ever and make no
+    /// progress.
+    [<Test>]
+    let ``a Linux writer is not woken by a full buffer that is two thirds full`` () : unit =
+        let tiny (image : UnixBootImage<int, string>) : UnixBootImage<int, string> =
+            image
+            |> UnixBootImage.withTcpSendSpaceMax (Some 1)
+            |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
+            |> UnixBootImage.withTcpReceiveSpace (Some 1)
+            |> Configured.expectOk TcpReceiveSpaceRefusal.describe
+
+        let system =
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            |> tiny
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> fun system -> (tasks, system) ||> List.foldBack Tasks.ensure
+
+        let client, server, system = pair system
+        let connection = connectionOf client system
+
+        let toServer =
+            (UnixMachineState.connection connection system.Machine).Transfer.ToServer
+
+        let room = toServer.SendCapacity + toServer.ReceiveCapacity
+        let system = asleepWriting 1 client (payload 14 (room + 1)) system
+        clientQueued connection system |> shouldEqual toServer.SendCapacity
+        wokenAmong [ 1 ] system |> shouldEqual []
+        let system = readNow server 1 system |> snd
+        wokenAmong [ 1 ] system |> shouldEqual [ 1 ]

@@ -475,7 +475,7 @@ module internal TcpTransfer =
     /// yet taken, is woken: by a reset at either flavour, and otherwise by
     /// room. On Linux a sleeping writer is woken only once its send buffer
     /// has drained to two thirds full (`sk_stream_write_space`), as an
-    /// edge-triggered waiter is; on Darwin, at every acknowledgement that
+    /// edge-triggered waiter is, and has room; on Darwin, at every acknowledgement that
     /// leaves room for a write of `remaining` to take something, by the low
     /// water mark `admitWrite` applies.
     ///
@@ -498,7 +498,12 @@ module internal TcpTransfer =
         | TcpEndState.FinReceived ->
 
         match transfer.Rules with
-        | TcpTransferRules.Linux _ -> linuxWritable (towards (otherEnd writer) transfer)
+        // The woken writer goes on only if the buffer is not full
+        // (`sk_stream_memory_free`), which a buffer of one byte holding one is
+        // while two thirds full.
+        | TcpTransferRules.Linux _ ->
+            linuxWritable (towards (otherEnd writer) transfer)
+            && writeSpace "writeResumes" writer transfer > 0L
         | TcpTransferRules.Darwin -> (taking transfer remaining (writeSpace "writeResumes" writer transfer)).IsSome
 
     /// What a write of `count` bytes by `writer` decides before the caller's

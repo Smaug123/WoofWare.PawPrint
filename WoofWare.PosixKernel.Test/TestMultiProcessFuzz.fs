@@ -200,7 +200,7 @@ module TestMultiProcessFuzz =
             // both long runs within one process and constant switching occur.
             let! stickiness = Gen.choose (0, 9)
             let! socketBias = Gen.choose (1, 6)
-            let! transferBias = Gen.elements [ 1 ; 1 ; 4 ; 12 ]
+            let! transferBias = Gen.elements [ 1 ; 1 ; 1 ; 3 ; 8 ]
             let! length = Gen.choose (20, 120)
 
             let rec steps (n : int) (current : int) (acc : Step list) : Gen<Step list> =
@@ -1253,12 +1253,16 @@ module TestMultiProcessFuzz =
                 Calls = 0
             }
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen caseGen) (run coverage))
+        // 1500 cases, because the cases biased towards transfers leave fewer
+        // steps for the rest, and 1000 reached the rarest of the paths below
+        // too seldom for its bound to be safe.
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1500, Prop.forAll (Arb.fromGen caseGen) (run coverage))
         printfn $"%A{coverage}"
 
         // The paths the property exists for, each reached often enough that a
         // generator regression shows here rather than as a silently weaker
-        // test: about a third of what 1000 cases reached when this was written.
+        // test: about a third of what 1000 cases reached when each was added,
+        // so well under a third of what 1500 reach.
         coverage.CrossConnects |> shouldBeGreaterThan 150
         coverage.CrossAddressInUse |> shouldBeGreaterThan 150
         coverage.Accepts |> shouldBeGreaterThan 100
