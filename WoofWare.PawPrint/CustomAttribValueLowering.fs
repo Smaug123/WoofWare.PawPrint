@@ -112,6 +112,15 @@ module CustomAttribValueLowering =
     /// <c>SerString</c> or a non-null <c>SZARRAY</c>. For every other variant the state is returned
     /// unchanged. <paramref name="plan"/> must be the plan the arg was decoded with.
     /// </summary>
+    /// <param name="loggerFactory">LoggerFactory into which to emit logs.</param>
+    /// <param name="baseClassTypes">
+    /// CoreLib's well-known types, which allocating a string or an array's elements needs.
+    /// </param>
+    /// <param name="plan">
+    /// The plan <paramref name="arg"/> was decoded with. Pairing a value with any other plan is a
+    /// caller bug and fails loudly.
+    /// </param>
+    /// <param name="arg">The decoded fixed argument to lower.</param>
     /// <param name="resolvedTypes">
     /// The <c>RuntimeType</c> objects for the names <c>CustomAttribute.typeNamesToResolve</c>
     /// listed for this arg, in that order. Each non-null <c>Type</c> met consumes the head, and
@@ -119,6 +128,7 @@ module CustomAttribValueLowering =
     /// checks that nothing is left at the end. Running out at a <c>Type</c> is a caller bug and
     /// fails loudly.
     /// </param>
+    /// <param name="state">The state to allocate in; the returned state holds whatever was allocated.</param>
     /// <remarks>
     /// The empty <c>SerString</c> routes through the canonical interned empty
     /// string, mirroring CoreCLR's <c>GetDataFromBlob</c> for

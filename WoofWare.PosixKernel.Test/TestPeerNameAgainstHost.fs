@@ -7,9 +7,11 @@ open System.Threading
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `getpeername(2)` put to the kernel running the suite and to the model of the
-/// same flavour, in every socket phase the model can reach, at every declared
-/// length and through every kind of destination.
+/// `getpeername(2)` put to the kernel running the suite and to a model of that
+/// same kernel (its flavour, its architecture and, on Linux, its own version,
+/// which decides the length cell after a faulting copy), in every socket phase
+/// the model can reach, at every declared length and through every kind of
+/// destination.
 ///
 /// Each host falsifies its own column: macOS locally, Linux in CI.
 /// `TestPeerName` carries both columns as literals. The probe is
@@ -774,11 +776,10 @@ module TestPeerNameAgainstHost =
 
     [<TestCaseSource(nameof scenarios)>]
     let ``getpeername answers as this kernel does`` (scenario : Scenario) : unit =
-        HostPlatform.onUnixHost (fun flavour ->
+        HostPlatform.onUnixHostKernel (fun platform ->
             if not BitConverter.IsLittleEndian then
                 Assert.Ignore "the model's presets are little-endian machines"
 
-            let platform = HostPlatform.platformOf flavour
             let hostFd, hostRoles, owned = hostBuild platform scenario
 
             try

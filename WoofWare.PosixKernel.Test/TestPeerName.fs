@@ -169,7 +169,7 @@ module TestPeerName =
 
         let system =
             match UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system with
-            | Ok (GetSockOptAnswer.Reported (error, 4u), system) when error <> 0 -> system
+            | Ok (GetSockOptAnswer.Reported (OptionValue.Int error), system) when error <> 0 -> system
             | other -> failwith $"SO_ERROR answered %A{other}"
 
         ask fd 16u system |> shouldEqual expected
@@ -260,14 +260,26 @@ module TestPeerName =
         ask client minus1 system
         |> shouldEqual (flavourColumn platform (failed UnixError.EINVAL) (Ok (GetSockNameAnswer.Reported (whole, 16))))
 
-    [<TestCaseSource(nameof platforms)>]
+    /// What the length cell holds after the copy faults, by the version of the
+    /// kernel each preset runs (`docs/probes/sockname-fault-length`, where
+    /// getpeername's rows are getsockname's): 16 on Linux 6.18.5, and the
+    /// declared length, untouched, on Linux 6.17 and Darwin.
+    let private faultPlatforms : TestCaseData list =
+        [
+            SimulatedUnixPlatform.linuxArm64, Some 16
+            SimulatedUnixPlatform.linuxX64, None
+            SimulatedUnixPlatform.macOsArm64, None
+        ]
+        |> List.map (fun (platform, lengthAfterFault) -> TestCaseData (platform, lengthAfterFault))
+
+    [<TestCaseSource(nameof faultPlatforms)>]
     let ``a faulting destination answers EFAULT, with getsockname's length-cell rule``
-        (platform : SimulatedUnixPlatform)
+        (platform : SimulatedUnixPlatform, lengthAfterFault : int option)
         =
         let _, client, system = queued platform
 
-        UnixSocket.getpeername client (UserBuffer.Unmapped 0x1000UL) 16u system
-        |> shouldEqual (Ok (GetSockNameAnswer.Failed (UnixError.EFAULT, flavourColumn platform (Some 16) None)))
+        UnixSocket.getpeername client (UserBuffer.Unmapped 0x1000UL) 13u system
+        |> shouldEqual (Ok (GetSockNameAnswer.Failed (UnixError.EFAULT, lengthAfterFault)))
 
         UnixSocket.getpeername client UserBuffer.Opaque 16u system
         |> shouldEqual (Error (GetSockNameRefusal.Buffer BufferRefusal.OpaqueAtTransfer))

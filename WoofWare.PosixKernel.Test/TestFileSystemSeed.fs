@@ -403,7 +403,12 @@ module TestFileSystemSeed =
         let custom =
             SimulatedUnixPlatform.createOrFail
                 "test"
-                SimulatedUnixFlavour.Linux
+                (SimulatedUnixKernel.Linux
+                    {
+                        Major = 5u
+                        Minor = 4u
+                        Patch = 0u
+                    })
                 SimulatedUnixArchitecture.X64
                 SimulatedPageSize.FourKiB
                 "5.4.0-1234-custom"
@@ -418,11 +423,16 @@ module TestFileSystemSeed =
         |> PermissionBits.toInt
         |> shouldEqual 0o777
 
-        // The presets are exactly their flavour, architecture, page size and
+        // The presets are exactly their kernel, architecture, page size and
         // release, so a custom platform that restates one *is* it.
         SimulatedUnixPlatform.createOrFail
             "test"
-            SimulatedUnixFlavour.Linux
+            (SimulatedUnixKernel.Linux
+                {
+                    Major = 6u
+                    Minor = 17u
+                    Patch = 0u
+                })
             SimulatedUnixArchitecture.X64
             SimulatedPageSize.FourKiB
             "6.17.0-1022-azure"
@@ -430,7 +440,7 @@ module TestFileSystemSeed =
 
         SimulatedUnixPlatform.createOrFail
             "test"
-            SimulatedUnixFlavour.Darwin
+            SimulatedUnixKernel.Darwin
             SimulatedUnixArchitecture.Arm64
             SimulatedPageSize.SixteenKiB
             "27.0.0"
@@ -447,7 +457,7 @@ module TestFileSystemSeed =
         // measured or not, so these errors are the release's alone.
         let create (release : string) =
             SimulatedUnixPlatform.create
-                SimulatedUnixFlavour.Linux
+                (SimulatedUnixPlatform.kernel SimulatedUnixPlatform.linuxX64)
                 SimulatedUnixArchitecture.X64
                 SimulatedPageSize.FourKiB
                 release

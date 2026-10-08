@@ -515,6 +515,8 @@ module NativeSystemNative =
                 "Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
             | CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _) ->
                 "Accept the connection or close the client before closing the listener."
+            | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
+                "Model the reset a zero-linger close sends, or close the peer first."
             | CloseRefusal.PolledDescriptor _ ->
                 "Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
             | CloseRefusal.DarwinEndedWriteSignal _ ->
@@ -4975,7 +4977,7 @@ module NativeSystemNative =
                     let reachedBy =
                         match domain with
                         | SocketDomain.Inet6 ->
-                            "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                            "A managed guest reaches this through any IPv6 or dual-mode `Socket`: `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket, which `SystemNative_SetSockOpt` answers, and what follows needs IPv6 transport, which is not modelled. Model it with IPV6_V6ONLY in view: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                         | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
                         | SocketDomain.Inet ->
                             failwith
@@ -5002,12 +5004,14 @@ module NativeSystemNative =
                 let sizeOfInt = 4u
                 let unix = state.Kernel.System
 
-                let setsockopt (supplied : int option) =
+                let setsockopt (supplied : ImmutableArray<byte> option) =
                     UnixSocket.setsockopt fd level optionName UserBuffer.Mapped sizeOfInt supplied unix
 
                 let answer =
                     match UnixSocket.admitSetSockOpt fd level optionName UserBuffer.Mapped sizeOfInt unix with
-                    | Ok (SetSockOptAdmission.Transfer _) -> setsockopt (Some 1)
+                    | Ok (SetSockOptAdmission.Transfer _) ->
+                        setsockopt (Some (ImmutableArray.CreateRange (SimulatedUnixPlatform.encodeCInt platform 1)))
+                    | Ok SetSockOptAdmission.NoCopy
                     | Ok (SetSockOptAdmission.Answered _)
                     | Error _ -> setsockopt None
 
@@ -5096,7 +5100,7 @@ module NativeSystemNative =
                 let reachedBy =
                     match refusal with
                     | ListenRefusal.UnmodelledDomain (_, SocketDomain.Inet6) ->
-                        " No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke."
+                        " A managed guest reaches this through any IPv6 or dual-mode `Socket`, once `SocketPal.CreateSocket` has set its IPV6_V6ONLY: IPv6 transport is not modelled."
                     | ListenRefusal.UnmodelledDomain (_, SocketDomain.Unix) ->
                         " That belongs with the filesystem work (issue #956), not here."
                     | ListenRefusal.UnmodelledDomain (_, SocketDomain.Inet) ->
@@ -5202,7 +5206,7 @@ module NativeSystemNative =
                     let reachedBy =
                         match domain with
                         | SocketDomain.Inet6 ->
-                            "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                            "A managed guest reaches this through any IPv6 or dual-mode `Socket`: `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket, which `SystemNative_SetSockOpt` answers, and what follows needs IPv6 transport, which is not modelled. Model it with IPV6_V6ONLY in view: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                         | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
                         | SocketDomain.Inet ->
                             failwith
@@ -5220,7 +5224,8 @@ module NativeSystemNative =
                 | Error (AcceptRefusal.DescriptorLimit _ as refusal)
                 | Error (AcceptRefusal.Interruption _ as refusal)
                 | Error (AcceptRefusal.Release _ as refusal)
-                | Error (AcceptRefusal.DarwinDrainedListener _ as refusal) ->
+                | Error (AcceptRefusal.DarwinDrainedListener _ as refusal)
+                | Error (AcceptRefusal.AbortiveDrop _ as refusal) ->
                     failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
                 // A signal ended the sleep. The shim's `accept4` loop calls again
                 // after EINTR, and a restart calls again with no EINTR.
@@ -5451,7 +5456,7 @@ module NativeSystemNative =
                     let reachedBy =
                         match domain with
                         | SocketDomain.Inet6 ->
-                            "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                            "A managed guest reaches this through any IPv6 or dual-mode `Socket`: `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket, which `SystemNative_SetSockOpt` answers, and what follows needs IPv6 transport, which is not modelled. Model it with IPV6_V6ONLY in view: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                         | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
                         | SocketDomain.Inet ->
                             failwith
@@ -5577,7 +5582,7 @@ module NativeSystemNative =
                 let reachedBy =
                     match domain with
                     | SocketDomain.Inet6 ->
-                        "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                        "A managed guest reaches this through any IPv6 or dual-mode `Socket`: `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket, which `SystemNative_SetSockOpt` answers, and what follows needs IPv6 transport, which is not modelled. Model it with IPV6_V6ONLY in view: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                     | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
                     | SocketDomain.Inet ->
                         failwith
@@ -5660,9 +5665,11 @@ module NativeSystemNative =
             | Error refusal ->
                 failwith
                     $"%s{operation}: fd %d{fd}: the shim's getsockopt(SO_ERROR) through its own stack buffers was refused: %s{SocketOptionRefusal.describe refusal}"
-            | Ok (GetSockOptAnswer.Failed error, unix) ->
+            | Ok (GetSockOptAnswer.Failed (error, _lengthOverwritten), unix) ->
                 // The system comes back on a failure too: a call that fails
                 // after reading the option has still taken a pending refusal.
+                // The length cell is the shim's own local, so nothing the
+                // kernel left in it reaches the caller.
                 let errno =
                     UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
 
@@ -5671,12 +5678,14 @@ module NativeSystemNative =
                     >> EmulatedKernel.withLastSystemError ctx.Thread errno
                 )
                 |> complete (UnixErrorPal.toPal error)
-            | Ok (GetSockOptAnswer.Reported (socketErrno, length), unix) ->
+            | Ok (GetSockOptAnswer.Reported copied, unix) ->
 
             // The shim asserts that the kernel reported a whole `int`.
-            if length <> 4u then
+            if copied.Length <> 4 then
                 failwith
-                    $"%s{operation}: fd %d{fd}: getsockopt(SO_ERROR) reported a length of %d{length} for the shim's four-byte cell. This is an interpreter bug."
+                    $"%s{operation}: fd %d{fd}: getsockopt(SO_ERROR) reported a length of %d{copied.Length} for the shim's four-byte cell. This is an interpreter bug."
+
+            let socketErrno = SimulatedUnixPlatform.decodeCInt platform copied 0
 
             let errorCell = requireStorage operation "error" errorArgument
             let bytes = Array.zeroCreate<byte> 4
@@ -5688,6 +5697,363 @@ module NativeSystemNative =
 
             state.MapKernel (EmulatedKernel.withUnix unix)
             |> writeBytesThrough ctx operation errorCell (ImmutableArray.CreateRange bytes)
+            |> complete UnixErrorPal.palSuccess
+        // `int32_t SystemNative_SetSockOpt(intptr_t socket, int32_t socketOptionLevel,
+        // int32_t socketOptionName, uint8_t* optionValue, int32_t optionLen)`
+        // (pal_networking.c:2397): the shim's screens, its own handling of
+        // `SO_REUSEADDR`, then `setsockopt(2)` at the POSIX option
+        // `TryGetPlatformSocketOption` names, through the caller's buffer.
+        | Some "SystemNative_SetSockOpt",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; _ ; _ ; ConcretePointer _ ; _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_SetSockOpt"
+            let palLevel = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let palName = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let valueArgument =
+                bufferPointerArgument operation "optionValue" instruction.Arguments.[3]
+
+            let optionLength = NativeCall.int32Argument operation instruction.Arguments.[4]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            // The shim's own screen, ahead of the descriptor: no syscall, so no
+            // errno.
+            match valueArgument with
+            | BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ when optionLength < 0 -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ ->
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let platform = state.Kernel.UnixPlatform
+
+            if
+                palLevel = SocketOptionPal.SolSocket
+                && (palName = SocketOptionPal.ReuseAddress
+                    || palName = SocketOptionPal.ExclusiveAddressUse)
+            then
+                // The shim's own path: a length other than an `int32`'s is
+                // EINVAL, as is an exclusive-use value other than 0 or 1, and
+                // then it sets SO_REUSEPORT before SO_REUSEADDR.
+                if optionLength <> 4 then
+                    complete (UnixErrorPal.toPal UnixError.EINVAL) state
+                else
+
+                let value =
+                    readBytesThrough ctx operation (requireStorage operation "optionValue" valueArgument) 4 state
+
+                let value = BinaryPrimitives.ReadInt32LittleEndian (value.AsSpan ())
+
+                if palName = SocketOptionPal.ExclusiveAddressUse && value <> 0 && value <> 1 then
+                    complete (UnixErrorPal.toPal UnixError.EINVAL) state
+                else
+                    failwith
+                        $"%s{operation}: fd %d{fd}: managed option %d{palName} at SOL_SOCKET: the shim sets SO_REUSEPORT and then SO_REUSEADDR, and the kernel does not model SO_REUSEPORT."
+            else
+
+            match SocketOptionPal.decode palLevel palName with
+            | ShimSocketOption.NotSupported -> complete (UnixErrorPal.toPal UnixError.ENOTSUP) state
+            | ShimSocketOption.Unmodelled description ->
+                failwith $"%s{operation}: fd %d{fd}: managed option %d{palName} at level %d{palLevel}: %s{description}."
+            | ShimSocketOption.Kernel option ->
+
+            let level, name = SocketOptionPal.numbered platform option
+            let unix = state.Kernel.System
+            let value = BufferPointer.toUserBuffer valueArgument
+
+            let supplied =
+                match UnixSocket.admitSetSockOpt fd level name value (uint32 optionLength) unix with
+                | Ok (SetSockOptAdmission.Transfer count) ->
+                    let storage =
+                        match BufferPointer.dereferenceable valueArgument with
+                        | Some storage -> storage
+                        | None ->
+                            failwith
+                                $"%s{operation}: `optionValue` is %O{valueArgument}, which names no storage, yet the library reached the copy rather than answering EFAULT. This is an interpreter bug."
+
+                    Some (readBytesThrough ctx operation storage count state)
+                | Ok SetSockOptAdmission.NoCopy
+                | Ok (SetSockOptAdmission.Answered _)
+                | Error _ -> None
+
+            match UnixSocket.setsockopt fd level name value (uint32 optionLength) supplied unix with
+            | Error (SocketOptionRefusal.Buffer refusal) ->
+                failwith (BufferPointer.refusalMessage valueArgument refusal)
+            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{SocketOptionRefusal.describe refusal}"
+            | Ok (SetSockOptAnswer.Set, unix) ->
+                state.MapKernel (EmulatedKernel.withUnix unix)
+                |> complete UnixErrorPal.palSuccess
+            | Ok (SetSockOptAnswer.Failed error, unix) ->
+                let errno =
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+
+                state.MapKernel (
+                    EmulatedKernel.withUnix unix
+                    >> EmulatedKernel.withLastSystemError ctx.Thread errno
+                )
+                |> complete (UnixErrorPal.toPal error)
+
+        // `int32_t SystemNative_GetSockOpt(intptr_t socket, int32_t socketOptionLevel,
+        // int32_t socketOptionName, uint8_t* optionValue, int32_t* optionLen)`
+        // (pal_networking.c:2252): the shim's screens and special cases, then
+        // `getsockopt(2)` through the caller's value buffer and a `socklen_t` of
+        // the shim's own, copied back to `optionLen` on success.
+        | Some "SystemNative_GetSockOpt",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; _ ; _ ; ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_GetSockOpt"
+            let palLevel = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let palName = NativeCall.int32Argument operation instruction.Arguments.[2]
+
+            let valueArgument =
+                bufferPointerArgument operation "optionValue" instruction.Arguments.[3]
+
+            let lengthArgument =
+                bufferPointerArgument operation "optionLen" instruction.Arguments.[4]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match lengthArgument with
+            | BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ ->
+
+            // The C dereferences the length pointer itself, after its null
+            // screen.
+            let lengthCell = requireStorage operation "optionLen" lengthArgument
+
+            let declared =
+                BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
+
+            if declared < 0 then
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            else
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let platform = state.Kernel.UnixPlatform
+
+            if
+                palLevel = SocketOptionPal.SolSocket
+                && (palName = SocketOptionPal.ReuseAddress
+                    || palName = SocketOptionPal.ExclusiveAddressUse)
+            then
+                if declared <> 4 then
+                    complete (UnixErrorPal.toPal UnixError.EINVAL) state
+                else
+                    failwith
+                        $"%s{operation}: fd %d{fd}: managed option %d{palName} at SOL_SOCKET: the shim reads SO_REUSEPORT, which the kernel does not model."
+            elif
+                palLevel = SocketOptionPal.SolSocket
+                && palName = SocketOptionPal.AcceptConnection
+                && SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Darwin
+            then
+                if declared <> 4 then
+                    complete (UnixErrorPal.toPal UnixError.EINVAL) state
+                else
+                    failwith
+                        $"%s{operation}: fd %d{fd}: SO_ACCEPTCONN under Darwin: the shim asks proc_pidfdinfo(PROC_PIDFDSOCKETINFO), which PawPrint does not model."
+            else
+
+            match SocketOptionPal.decode palLevel palName with
+            | ShimSocketOption.NotSupported -> complete (UnixErrorPal.toPal UnixError.ENOTSUP) state
+            | ShimSocketOption.Unmodelled description ->
+                failwith $"%s{operation}: fd %d{fd}: managed option %d{palName} at level %d{palLevel}: %s{description}."
+            | ShimSocketOption.Kernel option ->
+
+            let level, name = SocketOptionPal.numbered platform option
+            let unix = state.Kernel.System
+            let value = BufferPointer.toUserBuffer valueArgument
+
+            // The length cell is the shim's own `socklen_t`, so it is real
+            // storage holding what the caller's held.
+            let read =
+                match UnixSocket.admitGetSockOpt fd level name value UserBuffer.Mapped unix with
+                | Ok GetSockOptAdmission.ReadLength -> Some (uint32 declared)
+                | Ok GetSockOptAdmission.SkipLength
+                | Ok (GetSockOptAdmission.Answered _)
+                | Error _ -> None
+
+            match UnixSocket.getsockopt fd level name value UserBuffer.Mapped read unix with
+            | Error (SocketOptionRefusal.Buffer refusal) ->
+                failwith (BufferPointer.refusalMessage valueArgument refusal)
+            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{SocketOptionRefusal.describe refusal}"
+            | Ok (GetSockOptAnswer.Failed (error, _lengthOverwritten), unix) ->
+                // The shim copies its `socklen_t` back only on success, so
+                // whatever the kernel left in it dies on the shim's stack.
+                let errno =
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+
+                state.MapKernel (
+                    EmulatedKernel.withUnix unix
+                    >> EmulatedKernel.withLastSystemError ctx.Thread errno
+                )
+                |> complete (UnixErrorPal.toPal error)
+            | Ok (GetSockOptAnswer.Reported copied, unix) ->
+
+            let state = state.MapKernel (EmulatedKernel.withUnix unix)
+
+            let state =
+                if copied.IsEmpty then
+                    state
+                else
+                    match BufferPointer.dereferenceable valueArgument with
+                    | Some storage -> writeBytesThrough ctx operation storage copied state
+                    | None ->
+                        failwith
+                            $"%s{operation}: `optionValue` is %O{valueArgument}, which names no storage, yet the library answered with %d{copied.Length} bytes to write rather than EFAULT. This is an interpreter bug."
+
+            let length = Array.zeroCreate<byte> 4
+            BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> length, copied.Length)
+
+            state
+            |> writeBytesThrough ctx operation lengthCell (ImmutableArray.CreateRange length)
+            |> complete UnixErrorPal.palSuccess
+
+        // `int32_t SystemNative_SetLingerOption(intptr_t socket, LingerOption* option)`
+        // (pal_networking.c:1360): the shim's screens, then `setsockopt(2)` of a
+        // `struct linger` of its own at `SocketOptionPal.lingerOptionNumbered`.
+        | Some "SystemNative_SetLingerOption",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_SetLingerOption"
+
+            let optionArgument =
+                bufferPointerArgument operation "option" instruction.Arguments.[1]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match optionArgument with
+            | BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ ->
+
+            let platform = state.Kernel.UnixPlatform
+
+            let option =
+                readBytesThrough ctx operation (requireStorage operation "option" optionArgument) 8 state
+                |> SocketOptionPal.decodeLingerOption
+
+            if
+                option.OnOff <> 0
+                && (option.Seconds < 0 || option.Seconds > SocketOptionPal.maxLingerSeconds platform)
+            then
+                complete (UnixErrorPal.toPal UnixError.EINVAL) state
+            else
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let level, name = SocketOptionPal.lingerOptionNumbered platform
+            let unix = state.Kernel.System
+
+            let lingerValue =
+                Array.append
+                    (SimulatedUnixPlatform.encodeCInt platform option.OnOff)
+                    (SimulatedUnixPlatform.encodeCInt platform option.Seconds)
+
+            // The `struct linger` is the shim's own local, and it passes its size.
+            let supplied =
+                match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped 8u unix with
+                | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (lingerValue, 0, count))
+                | Ok SetSockOptAdmission.NoCopy
+                | Ok (SetSockOptAdmission.Answered _)
+                | Error _ -> None
+
+            match UnixSocket.setsockopt fd level name UserBuffer.Mapped 8u supplied unix with
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: the shim's setsockopt of its own struct linger was refused: %s{SocketOptionRefusal.describe refusal}"
+            | Ok (SetSockOptAnswer.Set, unix) ->
+                state.MapKernel (EmulatedKernel.withUnix unix)
+                |> complete UnixErrorPal.palSuccess
+            | Ok (SetSockOptAnswer.Failed error, unix) ->
+                let errno =
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+
+                let state =
+                    state.MapKernel (
+                        EmulatedKernel.withUnix unix
+                        >> EmulatedKernel.withLastSystemError ctx.Thread errno
+                    )
+
+                if error = UnixError.EINVAL && SocketOptionPal.lingerSwallowsInvalid platform then
+                    complete UnixErrorPal.palSuccess state
+                else
+                    complete (UnixErrorPal.toPal error) state
+
+        // `int32_t SystemNative_GetLingerOption(intptr_t socket, LingerOption* option)`
+        // (pal_networking.c:1331): `getsockopt(2)` of a `struct linger` of the
+        // shim's own at `SocketOptionPal.lingerOptionNumbered`, copied into the
+        // caller's `LingerOption`.
+        | Some "SystemNative_GetLingerOption",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_GetLingerOption"
+
+            let optionArgument =
+                bufferPointerArgument operation "option" instruction.Arguments.[1]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match optionArgument with
+            | BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ ->
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+            let platform = state.Kernel.UnixPlatform
+            let level, name = SocketOptionPal.lingerOptionNumbered platform
+            let unix = state.Kernel.System
+
+            let read =
+                match UnixSocket.admitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped unix with
+                | Ok GetSockOptAdmission.ReadLength -> Some 8u
+                | Ok GetSockOptAdmission.SkipLength
+                | Ok (GetSockOptAdmission.Answered _)
+                | Error _ -> None
+
+            match UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read unix with
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: the shim's getsockopt into its own struct linger was refused: %s{SocketOptionRefusal.describe refusal}"
+            | Ok (GetSockOptAnswer.Failed (error, _), unix) ->
+                let errno =
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+
+                state.MapKernel (
+                    EmulatedKernel.withUnix unix
+                    >> EmulatedKernel.withLastSystemError ctx.Thread errno
+                )
+                |> complete (UnixErrorPal.toPal error)
+            | Ok (GetSockOptAnswer.Reported copied, unix) ->
+
+            if copied.Length <> 8 then
+                failwith
+                    $"%s{operation}: fd %d{fd}: getsockopt reported %d{copied.Length} bytes for the shim's eight-byte struct linger. This is an interpreter bug."
+
+            let option =
+                {
+                    OnOff = SimulatedUnixPlatform.decodeCInt platform copied 0
+                    Seconds = SimulatedUnixPlatform.decodeCInt platform copied 4
+                }
+
+            state.MapKernel (EmulatedKernel.withUnix unix)
+            |> writeBytesThrough
+                ctx
+                operation
+                (requireStorage operation "option" optionArgument)
+                (ImmutableArray.CreateRange (SocketOptionPal.encodeLingerOption option))
             |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_CreateSocketEventPort",
           [ ConcretePointer _ ],

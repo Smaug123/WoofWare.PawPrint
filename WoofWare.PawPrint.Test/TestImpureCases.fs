@@ -1425,6 +1425,27 @@ module TestImpureCases =
             AssertTerminalState = None
         }
 
+    /// `SocketOptions.cs` under `platform`: TCP_NODELAY, IPV6_V6ONLY and
+    /// SO_LINGER through the managed `Socket` API, which exits 0 for Linux's
+    /// answers where the flavours disagree and 100 for Darwin's
+    /// (`docs/probes/sockopt-options/`).
+    let private socketOptionsCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketOptions.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     /// `SocketPeerName.cs` under `platform`: `getpeername(2)` through the
     /// managed `RemoteEndPoint` and by hand, which exits 0 for Linux's ENOTCONN
     /// on a refused socket and 100 for Darwin's EINVAL
@@ -1610,6 +1631,8 @@ module TestImpureCases =
             socketConnectPortZeroCase SimulatedUnixPlatform.macOsArm64
             socketConnectDestinationsCase SimulatedUnixPlatform.linuxX64
             socketConnectDestinationsCase SimulatedUnixPlatform.macOsArm64
+            socketOptionsCase SimulatedUnixPlatform.linuxX64
+            socketOptionsCase SimulatedUnixPlatform.macOsArm64
             socketPeerNameCase SimulatedUnixPlatform.linuxX64
             socketPeerNameCase SimulatedUnixPlatform.macOsArm64
             {
@@ -4902,7 +4925,7 @@ module TestImpureCases =
             let platform =
                 SimulatedUnixPlatform.createOrFail
                     "test"
-                    SimulatedUnixFlavour.Linux
+                    (SimulatedUnixPlatform.kernel SimulatedUnixPlatform.linuxX64)
                     SimulatedUnixArchitecture.X64
                     SimulatedPageSize.FourKiB
                     release

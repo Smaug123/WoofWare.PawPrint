@@ -158,11 +158,11 @@ module TestSocketErrorOption =
             let fd, system = refused platform
 
             let answer, system = readErrorPlainly fd system
-            answer |> shouldEqual (GetSockOptAnswer.Reported (refusedErrno platform, 4u))
+            answer |> shouldEqual (OptionValue.reported (refusedErrno platform) (4u))
             phaseOf fd system |> shouldEqual (SocketPhase.Refused RefusalError.Reported)
 
             let answer, after = readErrorPlainly fd system
-            answer |> shouldEqual (GetSockOptAnswer.Reported (0, 4u))
+            answer |> shouldEqual (OptionValue.reported (0) (4u))
             after |> shouldEqual system
 
     /// Every phase holding no pending refusal reads 0, and the read changes
@@ -234,7 +234,7 @@ module TestSocketErrorOption =
             for label, fd, system in cases do
                 let answer, after = readErrorPlainly fd system
 
-                if answer <> GetSockOptAnswer.Reported (0, 4u) then
+                if answer <> OptionValue.reported (0) (4u) then
                     failwith $"%O{platform} %s{label}: expected zero, got %A{answer}"
 
                 if after <> system then
@@ -258,9 +258,9 @@ module TestSocketErrorOption =
     /// buffer is not null. Every row measured on a freshly refused socket.
     let private readRows : ReadRow list =
         let reported (platform : SimulatedUnixPlatform) (length : uint32) =
-            GetSockOptAnswer.Reported (refusedErrno platform, length)
+            OptionValue.reported (refusedErrno platform) (length)
 
-        let efault = GetSockOptAnswer.Failed UnixError.EFAULT
+        let efault = GetSockOptAnswer.Failed (UnixError.EFAULT, None)
         let taken, kept = false, true
         let real = UserBuffer.Mapped
 
@@ -284,7 +284,7 @@ module TestSocketErrorOption =
                 real
                 real
                 minus1
-                (GetSockOptAnswer.Failed UnixError.EINVAL, kept)
+                (GetSockOptAnswer.Failed (UnixError.EINVAL, None), kept)
                 (reported darwin 4u, taken)
             row "null value, length 4" null' real 4u (efault, taken) (reported darwin 0u, taken)
             row "unmapped value, length 4" unmapped real 4u (efault, taken) (efault, taken)
@@ -301,7 +301,7 @@ module TestSocketErrorOption =
                 null'
                 real
                 minus1
-                (GetSockOptAnswer.Failed UnixError.EINVAL, kept)
+                (GetSockOptAnswer.Failed (UnixError.EINVAL, None), kept)
                 (reported darwin 0u, taken)
         ]
 

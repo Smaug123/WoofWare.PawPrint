@@ -78,6 +78,7 @@ module TestEpollCtl =
                     | _, _ -> SocketProtocol.Udp
                 Binding = None
                 ReuseAddress = false
+                Options = SocketOptions.initial
                 Phase = phase
             }
 

@@ -229,6 +229,10 @@ module DynamicSignatureDecoding =
 
     /// <summary>Decode a MethodDefSig (ECMA-335 II.23.2.1).</summary>
     /// <param name="internalType">What each `ELEMENT_TYPE_INTERNAL` run's handle names.</param>
+    /// <param name="blob">
+    /// The signature as the guest holds it: every byte a number, except that the eight bytes after
+    /// each `ELEMENT_TYPE_INTERNAL` must be bytes 0 to 7, in order, of one type handle.
+    /// </param>
     /// <remarks>
     /// Faithful rather than filtered: a vararg signature comes back with <c>RequiredParameterCount</c>
     /// saying where the fixed parameters stop, and a generic method's arity in
@@ -311,6 +315,10 @@ module DynamicSignatureDecoding =
 
     /// <summary>Decode a LocalVarSig (ECMA-335 II.23.2.6) into one type per local, in declaration order.</summary>
     /// <param name="internalType">What each `ELEMENT_TYPE_INTERNAL` run's handle names.</param>
+    /// <param name="blob">
+    /// The signature as the guest holds it: every byte a number, except that the eight bytes after
+    /// each `ELEMENT_TYPE_INTERNAL` must be bytes 0 to 7, in order, of one type handle.
+    /// </param>
     let decodeLocals
         (internalType : NativeIntSource -> InternalSignatureType)
         (blob : ImmutableArray<UInt8Source>)

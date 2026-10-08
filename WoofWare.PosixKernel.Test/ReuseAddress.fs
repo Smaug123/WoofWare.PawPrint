@@ -22,7 +22,8 @@ module ReuseAddress =
 
         let supplied =
             match UnixSocket.admitSetSockOpt fd level optionName UserBuffer.Mapped optionLength system with
-            | Ok (SetSockOptAdmission.Transfer _) -> Some (if value then 1 else 0)
+            | Ok (SetSockOptAdmission.Transfer _) -> Some (OptionValue.ofInt (if value then 1 else 0))
+            | Ok SetSockOptAdmission.NoCopy -> failwith "ReuseAddress.set: SO_REUSEADDR is always copied"
             | Ok (SetSockOptAdmission.Answered error) ->
                 failwith $"ReuseAddress.set: fd %d{fd} answered %O{error} before the value was read"
             | Error refusal -> failwith $"ReuseAddress.set: %s{SocketOptionRefusal.describe refusal}"
