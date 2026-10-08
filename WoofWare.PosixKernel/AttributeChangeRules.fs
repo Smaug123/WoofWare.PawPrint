@@ -2,7 +2,7 @@ namespace WoofWare.PosixKernel
 
 /// The flag word of `fchmodat(2)` or `fchownat(2)`, once this kernel has
 /// screened it. The two calls accept the same flags on each flavour.
-type AttributeChangeArguments =
+type internal AttributeChangeArguments =
     {
         /// Whether a symbolic link in the final position is followed:
         /// `AT_SYMLINK_NOFOLLOW` says not.
@@ -15,7 +15,7 @@ type AttributeChangeArguments =
 
 /// What screening the flag word of `fchmodat(2)` or `fchownat(2)` came to.
 [<RequireQualifiedAccess>]
-type AttributeChangeScreen =
+type internal AttributeChangeScreen =
     /// The word is one this kernel accepts, and this is what it says.
     | Screened of AttributeChangeArguments
     /// The call fails with this errno before its path is copied in.
@@ -39,7 +39,7 @@ type SymlinkModeChange =
     | ChangesLink
 
 [<RequireQualifiedAccess>]
-module AttributeChangeRules =
+module internal AttributeChangeRules =
 
     // `<fcntl.h>`'s numbering, measured by `at-dirfd.c` (CONST, FLAGS) on
     // Linux 6.18.5 and Darwin 27.0.

@@ -183,7 +183,7 @@ module SockaddrFamilyField =
 /// ENAMETOOLONG on Darwin where at 129 it is EAFNOSUPPORT. A length merely too
 /// short takes its ordinary place in `bindFaultOrder`.
 [<RequireQualifiedAccess>]
-type BindLengthVerdict =
+type internal BindLengthVerdict =
     /// A length this platform will parse an address out of.
     | Accepted
     /// Past the greatest length this platform will consider, and so refused
@@ -243,7 +243,7 @@ type internal CopiedInternetSockaddr =
 /// on a socket of some kind. This library models no use of either: it has no
 /// group membership, and no interface to receive or send on.
 [<RequireQualifiedAccess>]
-type BindGroupAddressRule =
+type internal BindGroupAddressRule =
     /// Bound like an address this machine holds, if nothing else faults. A bind
     /// that would succeed is refused (`BindRefusal.UnmodelledMulticast`) rather
     /// than recorded, since nothing downstream could honour the binding.

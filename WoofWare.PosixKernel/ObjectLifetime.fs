@@ -96,7 +96,7 @@ module ObjectLifetime =
     /// directory's ".." was the last reference to. So one call collects a whole
     /// orphaned chain, and the caller passes only the inode whose reference it
     /// just dropped.
-    let rec forgetIfUnheld<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let rec internal forgetIfUnheld<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
@@ -151,7 +151,7 @@ module ObjectLifetime =
     ///
     /// Destroying a stream socket's description sends its established peer the
     /// FIN, raising that peer's state-change edge.
-    let releaseDestroyed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal releaseDestroyed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destroyed : OpenFileDescription)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>
@@ -345,7 +345,7 @@ module ObjectLifetime =
     /// returned, and its park has let go of the holds it took, so that a
     /// description whose last descriptor closed while it slept goes now, as a
     /// real kernel releases the file when the call drops its reference.
-    let releaseUnreferenced<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal releaseUnreferenced<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (descriptions : OpenFileDescriptionId list)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>

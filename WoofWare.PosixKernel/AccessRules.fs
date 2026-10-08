@@ -4,7 +4,7 @@ namespace WoofWare.PosixKernel
 /// `X_OK` bits of its mode word, which are 4, 2 and 1 on every modelled Unix.
 ///
 /// All three false is `F_OK`, which asks only that the path resolve.
-type AccessQuestion =
+type internal AccessQuestion =
     {
         /// `R_OK`: may the caller read it?
         Read : bool
@@ -16,7 +16,7 @@ type AccessQuestion =
     }
 
 [<RequireQualifiedAccess>]
-module AccessQuestion =
+module internal AccessQuestion =
     /// `F_OK`: asks nothing of the inode, only that the path resolve.
     let exists : AccessQuestion =
         {
@@ -36,7 +36,7 @@ module AccessQuestion =
 
 /// Which of a process's IDs `faccessat(2)` checks a path with.
 [<RequireQualifiedAccess>]
-type AccessIds =
+type internal AccessIds =
     /// The real user and group: `access(2)`, and `faccessat` without
     /// `AT_EACCESS`. See `Credentials.realIdsAsEffective`.
     | Real
@@ -46,7 +46,7 @@ type AccessIds =
 
 /// The arguments of `faccessat(2)` other than its path and `dirfd`, once this
 /// kernel has screened its mode word and flag word.
-type AccessArguments =
+type internal AccessArguments =
     {
         /// What the call asks of the inode.
         Question : AccessQuestion
@@ -97,7 +97,7 @@ module AccessRefusal =
 
 /// What screening `faccessat(2)`'s mode word and flag word came to.
 [<RequireQualifiedAccess>]
-type AccessScreen =
+type internal AccessScreen =
     /// Both words are ones this kernel accepts, and this is what they say.
     | Screened of AccessArguments
     /// The call fails with this errno before its path is copied in.
@@ -106,7 +106,7 @@ type AccessScreen =
     | Refused of refusal : AccessRefusal
 
 [<RequireQualifiedAccess>]
-module AccessRules =
+module internal AccessRules =
 
     // `<fcntl.h>`'s numbering, measured by `access-rules.c` on Linux 6.18.5
     // and Darwin 27.0.
