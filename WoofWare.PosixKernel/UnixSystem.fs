@@ -375,8 +375,9 @@ type UnixSystemDefect<'Task> =
     /// (`ListenState.Drained`): the close that drains a listener ends every
     /// accept asleep on it, and `accept` refuses to sleep on one.
     | ParkedAcceptOnDrainedListener of task : 'Task * description : OpenFileDescriptionId
-    /// Under Darwin, a task is asleep in an `accept` or a pipe transfer made
-    /// through `fd`, which no longer names the description the call sleeps on
+    /// Under Darwin, a task is asleep in an `accept`, or a pipe or connection
+    /// transfer, made through `fd`, which no longer names the description the
+    /// call sleeps on
     /// (`current` is what it names now). Closing that descriptor ends the call,
     /// so this is a park recorded without the syscall or a descriptor closed
     /// around it.
@@ -385,8 +386,9 @@ type UnixSystemDefect<'Task> =
         fd : int *
         description : OpenFileDescriptionId *
         current : OpenFileDescriptionId option
-    /// Under Linux, a task's `accept` or pipe transfer records that a close has
-    /// ended it (`SleepTarget.EndedByClose`), which only Darwin's close does.
+    /// Under Linux, a task's `accept`, or pipe or connection transfer, records
+    /// that a close has ended it (`SleepTarget.EndedByClose`), which only
+    /// Darwin's close does.
     | ParkedCallEndedByCloseUnderLinux of task : 'Task
     /// Under Linux, a listener records that a close has drained it
     /// (`ListenState.Drained`), which only Darwin's close does.
@@ -400,6 +402,16 @@ type UnixSystemDefect<'Task> =
     /// them in, where a sleeping write has put in at least none and fewer than
     /// all.
     | ParkedPipeTransferProgress of task : 'Task * count : int * written : int
+    /// A task is asleep in a `read` or `write` of a connected socket through a
+    /// description that names something other than an end of a connection,
+    /// which no such call could have produced and on which
+    /// `WakeCondition.satisfied` crashes.
+    | ParkedConnectionTransferOnNonConnection of task : 'Task * description : OpenFileDescriptionId
+    /// A task is asleep in a connection transfer whose progress no call could
+    /// have made: a read of nothing, or a write of `count` bytes with
+    /// `written` of them taken, where a sleeping write has taken at least none
+    /// and fewer than all.
+    | ParkedConnectionTransferProgress of task : 'Task * count : int * written : int
     /// A task's park records an ordinal at or above the next one to mint, so
     /// some future park would repeat it, and the two waiters' order would be
     /// unspecified.
@@ -2005,8 +2017,8 @@ module UnixSystem =
                 | SimulatedUnixFlavour.Linux -> false
                 | SimulatedUnixFlavour.Darwin -> true
 
-            // Under Darwin a close of the descriptor a sleeping accept or pipe
-            // transfer was made through ends the call, so while it sleeps the
+            // Under Darwin a close of the descriptor a sleeping accept, or pipe
+            // or connection transfer, was made through ends the call, so while it sleeps the
             // descriptor still names what it sleeps on. Under Linux the close
             // leaves it asleep, and the number is not consulted.
             let enteredThrough (task : 'Task) (fd : int) (description : OpenFileDescriptionId) =
@@ -2023,6 +2035,33 @@ module UnixSystem =
                     []
                 else
                     [ UnixSystemDefect.ParkedCallEndedByCloseUnderLinux task ]
+
+            // What is wrong with what a connection transfer sleeps on.
+            let connectionTarget (task : 'Task) (target : SleepTarget<SocketId>) =
+                match target with
+                | SleepTarget.EndedByClose _ -> endedByClose task
+                | SleepTarget.Waiting (description, fd) ->
+
+                match Map.tryFind description descriptions with
+                | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, description) ]
+                | Some found ->
+                    let connected =
+                        match found.Target with
+                        | OpenFileTarget.Socket socketId ->
+                            match Map.tryFind socketId system.Machine.Sockets with
+                            | Some socket -> (SocketPhase.connectionEnd socket.Phase).IsSome
+                            | None -> false
+                        | OpenFileTarget.File _
+                        | OpenFileTarget.Directory _
+                        | OpenFileTarget.CharacterDevice _
+                        | OpenFileTarget.Pipe _
+                        | OpenFileTarget.Kqueue _
+                        | OpenFileTarget.Epoll _ -> false
+
+                    if connected then
+                        enteredThrough task fd description
+                    else
+                        [ UnixSystemDefect.ParkedConnectionTransferOnNonConnection (task, description) ]
 
             system.Tasks
             |> Map.toList
@@ -2282,6 +2321,24 @@ module UnixSystem =
                             | target -> [ UnixSystemDefect.ParkedPipeTransferOnWrongTarget (task, writer, target) ]
 
                     progress @ target
+                | Some (ParkedSyscall.ConnectionRead read) ->
+                    let progress =
+                        if read.Count > 0 then
+                            []
+                        else
+                            [ UnixSystemDefect.ParkedConnectionTransferProgress (task, read.Count, 0) ]
+
+                    progress @ connectionTarget task read.Socket
+                | Some (ParkedSyscall.ConnectionWrite write) ->
+                    let progress =
+                        if write.Written >= 0 && write.Written < write.Count then
+                            []
+                        else
+                            [
+                                UnixSystemDefect.ParkedConnectionTransferProgress (task, write.Count, write.Written)
+                            ]
+
+                    progress @ connectionTarget task write.Socket
             )
 
 

@@ -122,6 +122,8 @@ class Program
                 | Some (ParkedSyscall.Accept _)
                 | Some (ParkedSyscall.PipeRead _)
                 | Some (ParkedSyscall.PipeWrite _)
+                | Some (ParkedSyscall.ConnectionRead _)
+                | Some (ParkedSyscall.ConnectionWrite _)
                 | None -> None
         )
 

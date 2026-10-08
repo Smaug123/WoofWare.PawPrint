@@ -242,8 +242,8 @@ type ParkedKqueuePoll =
     }
 
 /// What a sleeping call that waits on one open file description waits on, or
-/// that a close has ended it: the state of a blocking `accept(2)`, pipe
-/// `read(2)` or pipe `write(2)`.
+/// that a close has ended it: the state of a blocking `accept(2)`, or of a
+/// blocking `read(2)` or `write(2)` of a pipe or a connected stream socket.
 ///
 /// `'Object` names the kernel object the call waited on, by the machine's own
 /// identity for it (a `SocketId` or a `PipeId`), for a call that no longer
@@ -263,9 +263,9 @@ type SleepTarget<'Object> =
     /// Under Darwin, a close has ended the call, which waited on `object`. It
     /// holds nothing, and its finishing call answers what the close left it.
     ///
-    /// A pipe transfer is ended by a close of the descriptor it was made
-    /// through; an accept by a close of the descriptor any accept on the same
-    /// listener was made through (see `ListenState.Drained`).
+    /// A pipe or connection transfer is ended by a close of the descriptor it
+    /// was made through; an accept by a close of the descriptor any accept on
+    /// the same listener was made through (see `ListenState.Drained`).
     | EndedByClose of object : 'Object
 
 [<RequireQualifiedAccess>]
@@ -349,6 +349,45 @@ type ParkedPipeWrite =
         ReadsSeen : int64
     }
 
+/// One task's in-flight blocking `read(2)` of a connected stream socket that
+/// had nothing to answer: no bytes, no FIN and no reset.
+type ParkedConnectionRead =
+    {
+        /// The open file description of the socket the call was made through,
+        /// and the descriptor it was made through; or the socket, once a close
+        /// has ended the call.
+        Socket : SleepTarget<SocketId>
+        /// Where the bytes are to be copied out to, as the caller classified it
+        /// when the call was entered. Nothing is copied before the call sleeps.
+        Buffer : UserBuffer
+        /// The most bytes the call takes: its count, after the platform's limit
+        /// on one call's transfer. Never zero, since a read of nothing returns
+        /// at once.
+        Count : int
+    }
+
+/// One task's in-flight blocking `write(2)` to a connected stream socket whose
+/// buffers had no room for all of it.
+///
+/// Holds no bytes, as `ParkedPipeWrite` holds none: the call that finishes the
+/// write asks the caller for the next of them as room appears.
+type ParkedConnectionWrite =
+    {
+        /// The open file description of the socket the call was made through,
+        /// and the descriptor it was made through; or the socket, once a close
+        /// has ended the call.
+        Socket : SleepTarget<SocketId>
+        /// Where the bytes come from, as the caller classified it when the call
+        /// was entered.
+        Buffer : UserBuffer
+        /// How many bytes the call writes in all: its count, after the
+        /// platform's limit on one call's transfer.
+        Count : int
+        /// How many of them, from the start, the connection has taken already:
+        /// less than `Count`.
+        Written : int
+    }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -371,6 +410,8 @@ type ParkedSyscall =
     | Accept of ParkedAccept
     | PipeRead of ParkedPipeRead
     | PipeWrite of ParkedPipeWrite
+    | ConnectionRead of ParkedConnectionRead
+    | ConnectionWrite of ParkedConnectionWrite
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -378,7 +419,7 @@ module ParkedSyscall =
     /// real syscall holds a reference to each file it found: each stays alive
     /// until the call returns, whatever descriptors are closed meanwhile.
     ///
-    /// An accept or pipe transfer a Darwin close has ended
+    /// An accept, or a pipe or connection transfer, a Darwin close has ended
     /// (`SleepTarget.EndedByClose`) holds none: it returned, as far as the
     /// kernel is concerned, before the close did.
     ///
@@ -408,6 +449,8 @@ module ParkedSyscall =
         | ParkedSyscall.Accept accept -> SleepTarget.description accept.Listener |> Option.toList
         | ParkedSyscall.PipeRead read -> SleepTarget.description read.Reader |> Option.toList
         | ParkedSyscall.PipeWrite write -> SleepTarget.description write.Writer |> Option.toList
+        | ParkedSyscall.ConnectionRead read -> SleepTarget.description read.Socket |> Option.toList
+        | ParkedSyscall.ConnectionWrite write -> SleepTarget.description write.Socket |> Option.toList
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -597,6 +640,8 @@ module UnixTaskTable =
             | ParkedSyscall.PipeWrite _ -> 5
             | ParkedSyscall.Kevent _ -> 6
             | ParkedSyscall.KqueuePoll _ -> 7
+            | ParkedSyscall.ConnectionRead _ -> 8
+            | ParkedSyscall.ConnectionWrite _ -> 9
 
         let sameSyscall =
             match existing.Parked with

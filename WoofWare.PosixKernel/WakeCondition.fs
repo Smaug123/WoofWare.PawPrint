@@ -106,12 +106,30 @@ type WakePrimitive =
     /// What a write of at most `PIPE_BUF` bytes waits for besides room for all
     /// of it, which `PipeHasRoom` is.
     | PipeReadWhileNonBlocking of writer : OpenFileDescriptionId * reads : int64
-    /// Under Darwin, a close has ended the blocking `accept`, pipe `read` or
-    /// pipe `write` the waiting task is asleep in (`SleepTarget.EndedByClose`).
+    /// The connected stream socket the open file description `reader` names
+    /// has an answer for a read: bytes, a FIN or a reset
+    /// (`TcpTransfer.readAnswers`).
+    ///
+    /// What a blocking `read(2)` of a connected socket with nothing to answer
+    /// waits for. One primitive, unlike a pipe's two, because every reader
+    /// asleep on a socket wakes for each of them, under either flavour.
+    | ConnectionReadable of reader : OpenFileDescriptionId
+    /// The connected stream socket the open file description `writer` names
+    /// wakes a write asleep with `remaining` of its bytes not yet taken: room,
+    /// by the flavour's rule, or a reset (`TcpTransfer.writeResumes`).
+    ///
+    /// What a blocking `write(2)` to a connected socket with no room for the
+    /// rest of it waits for. Carries what is left because Darwin's rule
+    /// depends on it: room for all of a short remainder wakes the writer, and
+    /// otherwise only room of the send buffer's low-water mark does.
+    | ConnectionWritable of writer : OpenFileDescriptionId * remaining : int
+    /// Under Darwin, a close has ended the blocking `accept`, or the blocking
+    /// `read` or `write` of a pipe or a connected socket, the waiting task is
+    /// asleep in (`SleepTarget.EndedByClose`).
     ///
     /// Names no kernel object, as `SignalDeliverable` names none: the call
     /// holds none any more, and what it answers is in the waiter's own park.
-    /// Every wait of those three calls waits for it, so that a condition handed
+    /// Every wait of those calls waits for it, so that a condition handed
     /// out as the call went to sleep still says when the close ends it. Never
     /// holds under Linux, whose close leaves such a call asleep.
     | EndedByClose
@@ -177,6 +195,38 @@ module WakeCondition =
                 failwith
                     $"WakeCondition.satisfied: a task waits on open file description %O{description} for %A{primitive}, but the description names %A{target} rather than the %A{pipeEnd} end of a pipe (this is a bug in the caller that recorded the park)."
 
+    /// The connection the socket the open file description `description` names
+    /// is an end of, which end, and its transfer; fails loudly, naming the
+    /// waiter's `primitive`, for a description that is gone or names
+    /// something else.
+    let private connectionOfWaiter<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (primitive : WakePrimitive)
+        (description : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ConnectionEnd * TcpTransfer
+        =
+        match OpenFileTable.tryFind description system.Machine.OpenFiles with
+        | None ->
+            failwith
+                $"WakeCondition.satisfied: open file description %O{description} is not in the table, but a task waits on it (%A{primitive}), and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
+        | Some found ->
+            let phase =
+                match found.Target with
+                | OpenFileTarget.Socket socketId -> Some (UnixMachineState.socket socketId system.Machine).Phase
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Pipe _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Epoll _ -> None
+
+            match phase |> Option.bind SocketPhase.connectionEnd with
+            | Some (connectionId, connectionEnd) ->
+                connectionEnd, (UnixMachineState.connection connectionId system.Machine).Transfer
+            | None ->
+                failwith
+                    $"WakeCondition.satisfied: a task waits on open file description %O{description} for %A{primitive}, but the description names %A{found.Target} (%A{phase}) rather than an end of a connection. Nothing takes a socket out of a connection while a descriptor or a call holds it, so the park was recorded on one that was never connected (this is a bug in the caller that recorded it)."
+
     /// Whether a close has ended the call `task` is asleep in.
     let private endedByClose<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
@@ -196,10 +246,18 @@ module WakeCondition =
                                        })
         | Some (ParkedSyscall.PipeWrite {
                                             Writer = SleepTarget.EndedByClose _
-                                        }) -> true
+                                        })
+        | Some (ParkedSyscall.ConnectionRead {
+                                                 Socket = SleepTarget.EndedByClose _
+                                             })
+        | Some (ParkedSyscall.ConnectionWrite {
+                                                  Socket = SleepTarget.EndedByClose _
+                                              }) -> true
         | Some (ParkedSyscall.Accept _)
         | Some (ParkedSyscall.PipeRead _)
         | Some (ParkedSyscall.PipeWrite _)
+        | Some (ParkedSyscall.ConnectionRead _)
+        | Some (ParkedSyscall.ConnectionWrite _)
         | Some (ParkedSyscall.EpollWait _)
         | Some (ParkedSyscall.Kevent _)
         | Some (ParkedSyscall.Flock _)
@@ -293,6 +351,12 @@ module WakeCondition =
             | SimulatedUnixFlavour.Darwin ->
                 pipe.Reads > reads
                 && (OpenFileTable.get "WakeCondition" writer system.Machine.OpenFiles).NonBlocking
+        | WakePrimitive.ConnectionReadable reader ->
+            let connectionEnd, transfer = connectionOfWaiter primitive reader system
+            TcpTransfer.readAnswers connectionEnd transfer
+        | WakePrimitive.ConnectionWritable (writer, remaining) ->
+            let connectionEnd, transfer = connectionOfWaiter primitive writer system
+            TcpTransfer.writeResumes connectionEnd remaining transfer
         | WakePrimitive.DeadlinePassed deadline -> system.Machine.NanosecondsSinceBoot >= deadline
         | WakePrimitive.SignalDeliverable -> SyscallInterruption.wakes task system
         // `satisfied` answers a call a close has ended before it asks any
@@ -378,6 +442,8 @@ module WakeCondition =
         | WakeCondition.Primitive (WakePrimitive.PipeHasRoom _)
         | WakeCondition.Primitive (WakePrimitive.PipeReadEndClosed _)
         | WakeCondition.Primitive (WakePrimitive.PipeReadWhileNonBlocking _)
+        | WakeCondition.Primitive (WakePrimitive.ConnectionReadable _)
+        | WakeCondition.Primitive (WakePrimitive.ConnectionWritable _)
         | WakeCondition.Primitive WakePrimitive.SignalDeliverable
         | WakeCondition.Primitive WakePrimitive.EndedByClose -> []
         | WakeCondition.AnyOf (first, rest) -> deadlines first @ List.collect deadlines rest
@@ -480,6 +546,23 @@ module WakeCondition =
                         WakeCondition.Primitive (WakePrimitive.PipeHasRoom (writer, write.Count, write.Written))
                         WakeCondition.Primitive (WakePrimitive.PipeReadEndClosed writer)
                         WakeCondition.Primitive (WakePrimitive.PipeReadWhileNonBlocking (writer, write.ReadsSeen))
+                        ended
+                    ]
+            | ParkedSyscall.ConnectionRead read ->
+                match read.Socket with
+                | SleepTarget.EndedByClose _ -> [ ended ]
+                | SleepTarget.Waiting (reader, _) ->
+                    // No deadline: `SO_RCVTIMEO`, which would bound the wait, is
+                    // an option `setsockopt` refuses to set.
+                    [ WakeCondition.Primitive (WakePrimitive.ConnectionReadable reader) ; ended ]
+            | ParkedSyscall.ConnectionWrite write ->
+                match write.Socket with
+                | SleepTarget.EndedByClose _ -> [ ended ]
+                | SleepTarget.Waiting (writer, _) ->
+                    // No deadline, as for a read: `setsockopt` refuses to set
+                    // `SO_SNDTIMEO`.
+                    [
+                        WakeCondition.Primitive (WakePrimitive.ConnectionWritable (writer, write.Count - write.Written))
                         ended
                     ]
 

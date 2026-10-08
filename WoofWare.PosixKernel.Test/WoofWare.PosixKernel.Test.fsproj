@@ -201,6 +201,7 @@
     <Compile Include="TestLaunchedStreams.fs" />
     <Compile Include="TestSuppliedPipe.fs" />
     <Compile Include="TestBlockingPipe.fs" />
+    <Compile Include="TestBlockingConnection.fs" />
     <Compile Include="TestStreamReaderGone.fs" />
     <Compile Include="TestPipeAgainstHost.fs" />
     <Compile Include="TestSockaddrField.fs" />

@@ -12,7 +12,7 @@ open WoofWare.PosixKernel
 /// wakes a transfer raises for an edge-triggered waiter, replayed from the E
 /// section of `tcp-transfer.c` (docs/plans/2026-10-07-tcp-byte-transfer), and
 /// what the S section cannot show (`TestConnectedTransferAgainstHost` replays
-/// that): a sleep that is refused, a buffer that faults, a connect whose
+/// that): a sleep, a buffer that faults, a connect whose
 /// completion is unreported, Linux's send-space mark, a reset's wakes, a close
 /// a dropped `accept` makes, the invariants on a connection's bytes, and one
 /// process's transfer waking another's waiter.
@@ -185,16 +185,22 @@ module TestConnectedTransfer =
         assertClean system
 
     // ------------------------------------------------------------------
-    // A sleep, and a fault, refused
+    // A sleep, and a fault refused
     // ------------------------------------------------------------------
 
     [<Test>]
-    let ``a blocking transfer that would sleep is refused, and one that need not is answered`` () : unit =
+    let ``a blocking transfer that would sleep sleeps, and one that need not is answered`` () : unit =
+        let sleeps (outcome : Result<WriteOutcome<WriteAnswer, int, string>, WriteRefusal>) : unit =
+            match outcome with
+            | Ok (WriteOutcome.WouldBlock _) -> ()
+            | other -> failwith $"expected the write to sleep, got %A{other}"
+
         for platform in Machines.platforms do
             let client, server, system = pair false (systemOn small platform)
 
-            ReadOutcomes.read client UserBuffer.Mapped 10UL system
-            |> shouldEqual (Error (ReadRefusal.ConnectionSleep (socketOf client system)))
+            match UnixReadWrite.read system.Leader client UserBuffer.Mapped 10UL system with
+            | Ok (ReadOutcome.WouldBlock _, _) -> ()
+            | other -> failwith $"expected the read to sleep, got %A{other}"
 
             // Bytes waiting answer a blocking read at once.
             let system = sentAll server 5 system
@@ -205,15 +211,13 @@ module TestConnectedTransfer =
             // not, or that finds no room at all, would sleep.
             let system = sentAll client 100 system
 
-            send client payload.Length system
-            |> shouldEqual (Error (WriteRefusal.ConnectionSleep (socketOf client system)))
+            send client payload.Length system |> sleeps
 
             let _, system = UnixDescriptor.setNonBlocking client true system
             let _, system = fill client system
             let _, system = UnixDescriptor.setNonBlocking client false system
 
-            send client 1 system
-            |> shouldEqual (Error (WriteRefusal.ConnectionSleep (socketOf client system)))
+            send client 1 system |> sleeps
 
             // A FIN answers a blocking read at once, with end of file.
             let _, system = UnixDescriptor.setNonBlocking server true system

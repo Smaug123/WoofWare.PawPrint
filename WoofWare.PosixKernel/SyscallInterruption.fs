@@ -84,11 +84,19 @@ module SyscallInterruption =
         // and went on sleeping with it. A write that had put bytes in returns
         // their count either way, which its finishing call answers before it
         // asks this.
+        //
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 (`tcp-blocking.c`,
+        // sections R-eintr, R-restart and W-empty): the same of a `read` of a
+        // connected socket with nothing to answer, and of a `write` to one that
+        // had taken nothing. `SO_RCVTIMEO` and `SO_SNDTIMEO`, under which
+        // Linux's `sock_intr_errno` answers EINTR instead, cannot be set.
         match parked with
         | ParkedSyscall.Flock _
         | ParkedSyscall.Accept _
         | ParkedSyscall.PipeRead _
-        | ParkedSyscall.PipeWrite _ -> SignalRestartRule.RestartsUnderSaRestart
+        | ParkedSyscall.PipeWrite _
+        | ParkedSyscall.ConnectionRead _
+        | ParkedSyscall.ConnectionWrite _ -> SignalRestartRule.RestartsUnderSaRestart
         | ParkedSyscall.EpollWait _
         | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _

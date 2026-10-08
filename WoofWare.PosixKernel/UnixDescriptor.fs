@@ -191,15 +191,16 @@ type CloseRefusal<'Task> =
     /// poll's watched descriptor closes: the close removes the filters
     /// registered through it from the kqueue the poll made, as Darwin does.
     | PolledDescriptor of fd : int * task : 'Task
-    /// The descriptor a pipe `read` or `write` by `task`, asleep on the open
-    /// file description `description`, was made through, under the Darwin
-    /// flavour, when the call has something besides the close to answer: bytes
-    /// to read, room to write into, a signal with a handler to take, or (a
-    /// write whose description has become non-blocking) a read to give up at.
+    /// The descriptor a `read` or `write` of a pipe or a connected socket by
+    /// `task`, asleep on the open file description `description`, was made
+    /// through, under the Darwin flavour, when the call has something besides
+    /// the close to answer: bytes to read, room to write into, a FIN or a
+    /// reset, a signal with a handler to take, or (a pipe write whose
+    /// description has become non-blocking) a read to give up at.
     ///
-    /// Darwin's close ends such a call, a read with end of file and a write
-    /// with `EPIPE`, and which of the close and what had already woken the
-    /// call it answers is unmeasured.
+    /// Darwin's close ends such a call (a pipe read with end of file, a pipe
+    /// write with `EPIPE`, a socket's either with `EBADF`), and which of the
+    /// close and what had already woken the call it answers is unmeasured.
     | DarwinWokenTransfer of description : OpenFileDescriptionId * task : 'Task
     /// The close would end the pipe `write` `task` is asleep in, under the
     /// Darwin flavour, and the `SIGPIPE` that write raises as it returns is one
@@ -218,7 +219,7 @@ module CloseRefusal =
         | CloseRefusal.PolledDescriptor (fd, task) ->
             $"task %O{task} is parked in a poll(2) watching fd %d{fd}. Measured on Linux (poll-timeout.c), the sleeping poll keeps the file it found: the close does not wake it, the closed file can still wake it (a datagram sent to a closed UDP socket's address did), and when it wakes it looks the number up again, answering POLLNVAL if the number is free and the new file's readiness if another open took the number. This kernel keeps the file alive, but a poll woken by that file and finding nothing under the number sleeps again until the file's next wake-up, an edge, where this kernel's wake conditions are levels: the poll would be woken again at once, for ever."
         | CloseRefusal.DarwinWokenTransfer (description, task) ->
-            $"task %O{task} is asleep in a read or write of the pipe end of open file description %O{description}, made through this descriptor, and the call has something besides the close to answer: bytes, room, a signal, or a read to give up at. Measured on Darwin (close-ends-call.c sections P1-P7), closing the descriptor a sleeping read or write was made through ends it, a read with end of file and a write with EPIPE; which of that and what had already woken the call a kernel answers is unmeasured: no probe has held a woken call off the CPU until a close, since Darwin has no SCHED_FIFO, and a woken call in a stopped process finishes in the kernel all the same (pipe-blocking.c section N4)."
+            $"task %O{task} is asleep in a read or write of open file description %O{description}, a pipe end or a connected socket, made through this descriptor, and the call has something besides the close to answer: bytes, room, a FIN or a reset, a signal, or a read to give up at. Measured on Darwin (close-ends-call.c sections P1-P7, tcp-blocking.c sections R-close and W-close), closing the descriptor a sleeping read or write was made through ends it: a pipe read with end of file, a pipe write with EPIPE, and a socket's either with EBADF. Which of that and what had already woken the call a kernel answers is unmeasured: no probe has held a woken call off the CPU until a close, since Darwin has no SCHED_FIFO, and a woken call in a stopped process finishes in the kernel all the same (pipe-blocking.c section N4)."
         | CloseRefusal.DarwinEndedWriteSignal (task, refusal) ->
             let why =
                 match refusal with
@@ -1304,7 +1305,9 @@ module UnixDescriptor =
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in an accept on %O{accept.Listener}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
             | Some (ParkedSyscall.KqueuePoll _ as other)
             | Some (ParkedSyscall.PipeRead _ as other)
-            | Some (ParkedSyscall.PipeWrite _ as other) ->
+            | Some (ParkedSyscall.PipeWrite _ as other)
+            | Some (ParkedSyscall.ConnectionRead _ as other)
+            | Some (ParkedSyscall.ConnectionWrite _ as other) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in %A{other}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
             | None ->
@@ -1594,7 +1597,9 @@ module UnixDescriptor =
     /// Under Darwin a close of the descriptor a sleeping pipe `read` or `write`
     /// was made through ends every such call made through it, and none made
     /// through another descriptor: the read with end of file, the write with
-    /// `EPIPE` and `SIGPIPE`, whatever it had put in. A close of the
+    /// `EPIPE` and `SIGPIPE`, whatever it had put in. A sleeping `read` or
+    /// `write` of a connected socket is ended alike, with `EBADF`, whatever it
+    /// had taken, and no signal. A close of the
     /// descriptor a sleeping `accept` was made through ends every accept asleep
     /// on the listener, through any descriptor, with `ECONNABORTED`, and drains
     /// the listener (`ListenState.Drained`). Darwin's close returns only once
@@ -1603,8 +1608,8 @@ module UnixDescriptor =
     /// descriptor names it, the pipe's timestamps move as the call's return
     /// moves them, an ended write's `SIGPIPE` is generated for the process
     /// (refused where that would end the process, `CloseRefusal.DarwinEndedWriteSignal`),
-    /// and the task, still parked, learns its answer from its finishing call. A pipe transfer that something had already woken is
-    /// refused (`CloseRefusal.DarwinWokenTransfer`).
+    /// and the task, still parked, learns its answer from its finishing call. A pipe or connection transfer that something had
+    /// already woken is refused (`CloseRefusal.DarwinWokenTransfer`).
     ///
     /// `FileDescriptorRegistry.dropDescriptor` cannot do this itself: the
     /// socket table is the machine's rather than the process's, whether an
@@ -1694,11 +1699,28 @@ module UnixDescriptor =
                         with
                         | true -> None
                         | false -> Some (CloseRefusal.DarwinWokenTransfer (closingId, task))
+                    | ParkedSyscall.ConnectionRead read when enteredHere read.Socket ->
+                        // Measured (`tcp-blocking.c` section R-close): the close
+                        // ends the read with EBADF. Nothing else answers a read
+                        // so, so any wake at all is one the close races.
+                        if Set.isEmpty (WakeCondition.satisfied task (WakeCondition.ofPark parked) system) then
+                            None
+                        else
+                            Some (CloseRefusal.DarwinWokenTransfer (closingId, task))
+                    | ParkedSyscall.ConnectionWrite write when enteredHere write.Socket ->
+                        // Measured (`tcp-blocking.c` section W-close): the close
+                        // ends the write with EBADF, as above.
+                        if Set.isEmpty (WakeCondition.satisfied task (WakeCondition.ofPark parked) system) then
+                            None
+                        else
+                            Some (CloseRefusal.DarwinWokenTransfer (closingId, task))
                     | ParkedSyscall.EpollWait _
                     | ParkedSyscall.Kevent _
                     | ParkedSyscall.Accept _
                     | ParkedSyscall.PipeRead _
                     | ParkedSyscall.PipeWrite _
+                    | ParkedSyscall.ConnectionRead _
+                    | ParkedSyscall.ConnectionWrite _
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _
                     // A Darwin poll's filters go with the descriptor (below).
@@ -1735,7 +1757,9 @@ module UnixDescriptor =
                 | ParkedSyscall.KqueuePoll _
                 | ParkedSyscall.Accept _
                 | ParkedSyscall.PipeRead _
-                | ParkedSyscall.PipeWrite _ -> None
+                | ParkedSyscall.PipeWrite _
+                | ParkedSyscall.ConnectionRead _
+                | ParkedSyscall.ConnectionWrite _ -> None
             )
 
         match pollRefusal with
@@ -1765,7 +1789,9 @@ module UnixDescriptor =
                    | ParkedSyscall.Poll _
                    | ParkedSyscall.KqueuePoll _
                    | ParkedSyscall.PipeRead _
-                   | ParkedSyscall.PipeWrite _ -> false
+                   | ParkedSyscall.PipeWrite _
+                   | ParkedSyscall.ConnectionRead _
+                   | ParkedSyscall.ConnectionWrite _ -> false
                )
 
         let pipeOfClosing () : PipeId =
@@ -1774,6 +1800,13 @@ module UnixDescriptor =
             | target ->
                 failwith
                     $"UnixDescriptor.close: a pipe transfer sleeps through fd %d{fd}, which names %A{target} rather than a pipe end (this is a bug in this library, or in a caller that assembled the state by hand)."
+
+        let socketOfClosing () : SocketId =
+            match closing.Target with
+            | OpenFileTarget.Socket socketId -> socketId
+            | target ->
+                failwith
+                    $"UnixDescriptor.close: a connection transfer sleeps through fd %d{fd}, which names %A{target} rather than a socket (this is a bug in this library, or in a caller that assembled the state by hand)."
 
         let ended (parked : ParkedSyscall) : ParkedSyscall option =
             match parked with
@@ -1805,9 +1838,25 @@ module UnixDescriptor =
                             Writer = SleepTarget.EndedByClose (pipeOfClosing ())
                         }
                 )
+            | ParkedSyscall.ConnectionRead read when darwin && enteredHere read.Socket ->
+                Some (
+                    ParkedSyscall.ConnectionRead
+                        { read with
+                            Socket = SleepTarget.EndedByClose (socketOfClosing ())
+                        }
+                )
+            | ParkedSyscall.ConnectionWrite write when darwin && enteredHere write.Socket ->
+                Some (
+                    ParkedSyscall.ConnectionWrite
+                        { write with
+                            Socket = SleepTarget.EndedByClose (socketOfClosing ())
+                        }
+                )
             | ParkedSyscall.Accept _
             | ParkedSyscall.PipeRead _
             | ParkedSyscall.PipeWrite _
+            | ParkedSyscall.ConnectionRead _
+            | ParkedSyscall.ConnectionWrite _
             | ParkedSyscall.EpollWait _
             | ParkedSyscall.Kevent _
             | ParkedSyscall.Flock _
@@ -1938,6 +1987,8 @@ module UnixDescriptor =
                 |> List.exists (fun (_, ended) ->
                     match ended with
                     | ParkedSyscall.PipeWrite write -> write.Written > 0
+                    | ParkedSyscall.ConnectionWrite write -> write.Written > 0
+                    | ParkedSyscall.ConnectionRead _
                     | ParkedSyscall.PipeRead _
                     | ParkedSyscall.Accept _
                     | ParkedSyscall.EpollWait _
@@ -2009,7 +2060,9 @@ module UnixDescriptor =
                         | ParkedSyscall.KqueuePoll _
                         | ParkedSyscall.Accept _
                         | ParkedSyscall.PipeRead _
-                        | ParkedSyscall.PipeWrite _ -> false
+                        | ParkedSyscall.PipeWrite _
+                        | ParkedSyscall.ConnectionRead _
+                        | ParkedSyscall.ConnectionWrite _ -> false
                     )
 
                 if enteredHere then

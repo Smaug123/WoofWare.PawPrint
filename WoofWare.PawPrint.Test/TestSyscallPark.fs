@@ -130,7 +130,9 @@ class LockAndPortWaiters
         | ParkedSyscall.KqueuePoll _
         | ParkedSyscall.Accept _
         | ParkedSyscall.PipeRead _
-        | ParkedSyscall.PipeWrite _ -> false
+        | ParkedSyscall.PipeWrite _
+        | ParkedSyscall.ConnectionRead _
+        | ParkedSyscall.ConnectionWrite _ -> false
 
     /// The exit code a cleanly terminated guest latched.
     let private exitCodeOf (outcome : RunOutcome) : int =
