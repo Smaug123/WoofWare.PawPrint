@@ -169,10 +169,26 @@ module NativeDelegate =
     /// <paramref name="fromHandle" /> be passed where a <paramref name="toHandle" /> is expected,
     /// for the purposes of delegate signature matching?
     /// </summary>
+    /// <param name="loggerFactory">LoggerFactory into which to emit logs.</param>
+    /// <param name="baseClassTypes">
+    /// CoreLib's well-known types, against which enum-ness, element types and casts are decided.
+    /// </param>
+    /// <param name="operation">The QCall being served, which prefixes every failure message.</param>
+    /// <param name="fromHandle">The type of the value being passed.</param>
+    /// <param name="toHandle">The type of the location it is passed to.</param>
+    /// <param name="relaxedMatch">
+    /// Whether a value whose type merely casts to <paramref name="toHandle" /> is admitted
+    /// (<c>DBF_RelaxedSignature</c>). Without it, only an identical type, or one with the same
+    /// underlying element type where either side is an enum, is. A byref is matched strictly
+    /// whatever this says.
+    /// </param>
     /// <param name="fromHandleIsBoxed">
     /// True when the value is known to have arrived boxed — which is the case for the bound first
     /// argument of a closed delegate, since it was handed to `CreateDelegate` as an `object`.
     /// CoreCLR skips the objref-ness check then, because the boxing has already happened.
+    /// </param>
+    /// <param name="state">
+    /// The machine state; the returned state carries whatever the comparison had to load.
     /// </param>
     /// <remarks>
     /// <para>
