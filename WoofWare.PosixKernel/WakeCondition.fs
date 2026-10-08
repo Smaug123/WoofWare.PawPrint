@@ -205,6 +205,7 @@ module WakeCondition =
         | Some (ParkedSyscall.Flock _)
         | Some (ParkedSyscall.Poll _)
         | Some (ParkedSyscall.KqueuePoll _)
+        | Some ParkedSyscall.SigSuspend
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -391,7 +392,7 @@ module WakeCondition =
     /// the event count its finishing call will copy out with, which no condition
     /// mentions — so record to condition is total where condition to record is
     /// not. A parked `poll` that watches no descriptor and has no deadline waits
-    /// for a signal alone.
+    /// for a signal alone, and so does a parked `sigsuspend`.
     ///
     /// Deriving rather than storing the condition beside the record is what stops
     /// the two disagreeing: a client cannot park a task on one object while
@@ -482,6 +483,8 @@ module WakeCondition =
                         WakeCondition.Primitive (WakePrimitive.PipeReadWhileNonBlocking (writer, write.ReadsSeen))
                         ended
                     ]
+            // A signal alone ends it.
+            | ParkedSyscall.SigSuspend -> []
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

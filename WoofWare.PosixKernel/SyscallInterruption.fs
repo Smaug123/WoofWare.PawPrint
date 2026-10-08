@@ -93,6 +93,9 @@ module SyscallInterruption =
         | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _
         | ParkedSyscall.KqueuePoll _ -> SignalRestartRule.FailsWithEintr
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 (`sigsuspend-mask.c`, the
+        // "handler" and "pause-handler" rows): EINTR under SA_RESTART too.
+        | ParkedSyscall.SigSuspend -> SignalRestartRule.FailsWithEintr
 
     /// The handler frames `task` would get, innermost first, were it to return
     /// to user mode now: empty when it would run no handler.

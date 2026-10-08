@@ -1407,6 +1407,9 @@ module TestSignalState =
         | Deliver of coreDumps : CoreDumps * task : TestTask
         /// `sigreturn` of the task's innermost frame, which it has.
         | Sigreturn of task : TestTask
+        /// `suspend`, as `sigsuspend(2)` calls it, by a task with no mask to
+        /// restore already.
+        | Suspend of task : TestTask * temporary : Set<Signal>
         | Spawn of task : TestTask
         | Exit of task : TestTask
 
@@ -1433,6 +1436,8 @@ module TestSignalState =
             Dispositions : Map<Signal, SignalDisposition<TestHandler>>
             /// Each task's mask; may hold an empty one.
             Blocked : Map<TestTask, Set<Signal>>
+            /// The mask each task in `sigsuspend` gets back.
+            Restore : Map<TestTask, Set<Signal>>
             Frames : Map<TestTask, HandlerFrame<TestTask, TestHandler> list>
             NextFrame : int64
             Pending : PendingSignal<TestTask> list
@@ -1442,6 +1447,7 @@ module TestSignalState =
         {
             Dispositions = Map.empty
             Blocked = Map.empty
+            Restore = Map.empty
             Frames = Map.empty
             NextFrame = 0L
             Pending = []
@@ -1789,12 +1795,19 @@ module TestSignalState =
 
             match referenceDisposition r e.Signal with
             | SignalDisposition.Catch action ->
-                let saved = referenceMask r task
+                let current = referenceMask r task
+
+                // The first frame of a return from `sigsuspend` saves the mask
+                // the call replaced.
+                let saved =
+                    match pushed, Map.tryFind task r.Restore with
+                    | [], Some restore -> restore
+                    | _, _ -> current
 
                 let mask =
                     Set.unionMany
                         [
-                            saved
+                            current
                             SignalMask.signals action.Mask
                             (if action.NoDefer then Set.empty else Set.singleton e.Signal)
                         ]
@@ -1839,7 +1852,26 @@ module TestSignalState =
                 | DefaultDisposition.Stop -> alone e (SignalDelivery.DefaultStop e.Signal)
                 | DefaultDisposition.Continue -> failwith "unreachable: handled above"
 
+        // The return gives a task in `sigsuspend` its mask back: through the
+        // outermost frame when one was pushed, and at once otherwise.
         go [] r
+        |> Result.map (fun (delivery, r') ->
+            match Map.tryFind task r'.Restore with
+            | None -> delivery, r'
+            | Some restore ->
+                let cleared =
+                    { r' with
+                        Restore = Map.remove task r'.Restore
+                    }
+
+                if r'.NextFrame > r.NextFrame then
+                    delivery, cleared
+                else
+                    delivery,
+                    { cleared with
+                        Blocked = Map.add task restore cleared.Blocked
+                    }
+        )
 
     /// Advance both implementations by one op, asserting agreement on
     /// `onReturnToUser`'s full returned action (since the next step's
@@ -1892,6 +1924,13 @@ module TestSignalState =
                 },
                 tasks
             | [] -> failwith $"generated a sigreturn for %O{task}, which has no frame"
+        | Op.Suspend (task, temporary) ->
+            SignalState.suspend task (SignalMask.ofSignals numbering temporary) s,
+            { r with
+                Restore = Map.add task (referenceMask r task) r.Restore
+                Blocked = Map.add task (temporary |> Set.filter (referenceUnmaskable numbering >> not)) r.Blocked
+            },
+            tasks
         | Op.Enqueue e -> SignalState.enqueue e s, referenceEnqueue numbering e r, tasks
         | Op.Generate (coreDumps, e) ->
             let actual = SignalState.generate coreDumps referenceLeader tasks e s
@@ -1932,6 +1971,7 @@ module TestSignalState =
             SignalState.forgetTask task s,
             { r with
                 Blocked = Map.remove task r.Blocked
+                Restore = Map.remove task r.Restore
                 Frames = Map.remove task r.Frames
                 Pending = r.Pending |> List.filter (fun e -> e.Target <> ValueSome task)
             },
@@ -1968,6 +2008,10 @@ module TestSignalState =
             |> SignalMask.signals
             |> shouldEqual (referenceMask r tid)
 
+            SignalState.maskToRestore tid s
+            |> Option.map SignalMask.signals
+            |> shouldEqual (Map.tryFind tid r.Restore)
+
         SignalState.tasksWithFrames s
         |> shouldEqual (
             r.Frames
@@ -1975,6 +2019,9 @@ module TestSignalState =
             |> Map.keys
             |> Set.ofSeq
         )
+
+        SignalState.tasksWithMasksToRestore s
+        |> shouldEqual (r.Restore |> Map.keys |> Set.ofSeq)
 
         // Equal as sets, so a stored empty mask on the production side is a
         // failure even though every `maskOf` would agree with it.
@@ -2175,9 +2222,29 @@ module TestSignalState =
                     Target = pickTarget ()
                 }
 
-        let kind = rng.Next 112
+        let kind = rng.Next 120
 
-        if kind >= 100 then
+        if kind >= 112 then
+            match current |> List.filter (fun task -> not (Map.containsKey task r.Restore)) with
+            | [] -> Op.Deliver (pickCoreDumps (), referenceLeader)
+            | free ->
+                // Over-weights what is pending, so that the temporary mask
+                // lets a signal through often, and blocks one often.
+                let pendingSignals = r.Pending |> List.map (fun p -> p.Signal)
+
+                let temporary =
+                    List.init
+                        (rng.Next 4)
+                        (fun _ ->
+                            if not pendingSignals.IsEmpty && rng.Next 2 = 0 then
+                                pick pendingSignals
+                            else
+                                pick (allSignals numbering)
+                        )
+                    |> Set.ofList
+
+                Op.Suspend (pick free, temporary)
+        elif kind >= 100 then
             // A few signals, SIGKILL and SIGSTOP among them sometimes; an
             // unblock over-weights what is pending, so that it delivers.
             let change =
@@ -2255,6 +2322,9 @@ module TestSignalState =
         let mutable observedOutOfGenerationOrder = 0
         let mutable observedExits = 0
         let mutable observedMaskChanges = 0
+        let mutable observedSuspends = 0
+        let mutable observedRestoresThroughFrames = 0
+        let mutable observedRestoresWithoutFrames = 0
 
         let property (seed : int) : unit =
             let rng = System.Random seed
@@ -2286,6 +2356,12 @@ module TestSignalState =
                     match referenceOnReturnToUser numbering coreDumps tasks task r with
                     | Error _ -> observedDeliveryRefusals <- observedDeliveryRefusals + 1
                     | Ok (expected, r') ->
+
+                    if Map.containsKey task r.Restore then
+                        if r'.NextFrame > r.NextFrame then
+                            observedRestoresThroughFrames <- observedRestoresThroughFrames + 1
+                        else
+                            observedRestoresWithoutFrames <- observedRestoresWithoutFrames + 1
 
                     match expected with
                     | Some (SignalDelivery.RunHandlers frames) ->
@@ -2382,6 +2458,7 @@ module TestSignalState =
                 | Op.ChangeMask _ -> observedMaskChanges <- observedMaskChanges + 1
                 | Op.Exit _ -> observedExits <- observedExits + 1
                 | Op.Sigreturn _ -> observedSigreturns <- observedSigreturns + 1
+                | Op.Suspend _ -> observedSuspends <- observedSuspends + 1
                 | Op.Spawn _ -> ()
 
                 match op with
@@ -2456,6 +2533,9 @@ module TestSignalState =
         observedOutOfGenerationOrder |> shouldBeGreaterThan 50
         observedExits |> shouldBeGreaterThan 20
         observedMaskChanges |> shouldBeGreaterThan 100
+        observedSuspends |> shouldBeGreaterThan 100
+        observedRestoresThroughFrames |> shouldBeGreaterThan 20
+        observedRestoresWithoutFrames |> shouldBeGreaterThan 20
 
         // The generation-versus-delivery halves of the ignore rule are
         // flavour-divergent, so their counters are too: only Darwin drops at
