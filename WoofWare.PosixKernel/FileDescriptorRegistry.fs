@@ -399,8 +399,7 @@ type SocketDescription =
         ///
         /// Its effect is on which bindings conflict, which `bind(2)` and Linux's
         /// `listen(2)` decide from the value each socket holds at the time of
-        /// the call rather than when it was bound. See
-        /// `SimulatedUnixPlatform.bindConflict`.
+        /// the call rather than when it was bound. See `UnixSocket.bind`.
         ReuseAddress : bool
         /// The other options this kernel stores for the socket. See
         /// `SocketOptions`.
@@ -666,7 +665,7 @@ type KqueueRegistration =
         /// every event the registration reports carries back verbatim.
         UserData : uint64
         /// When this registration's first `EV_ADD` committed, as an ordinal
-        /// from the kernel's counter (`UnixMachineState.NextEventRegistrationOrdinal`).
+        /// from a counter the machine keeps.
         /// One event can activate several registrations of the same socket
         /// and filter at once, made through different descriptors onto it, and
         /// they are queued newest-registered first.
@@ -734,8 +733,7 @@ type OpenFileTarget =
     ///
     /// A real kernel permits an offset arbitrarily far past the end of the
     /// file (`lseek` beyond EOF is how sparse files are made), so this is not
-    /// bounded by the file's length — only by being non-negative, which
-    /// `VirtualFileSystem.seekTarget` enforces.
+    /// bounded by the file's length — only by being non-negative.
     | File of inode : InodeNumber * offset : int64
     /// A directory, and how far through it this description has read.
     ///
@@ -775,14 +773,14 @@ type OpenFileTarget =
     /// No offset, because neither kernel maintains one: measured, `lseek` on a
     /// socket is ESPIPE on both for every whence in 0..4 and every offset.
     ///
-    /// The socket this names lives in `UnixMachineState.Sockets`, not here: a
+    /// The socket this names lives in the machine's socket table, not here: a
     /// socket outlives, and can precede, any particular description of it.
     /// `UnixConnection.accept` is where one precedes its description: it turns a
     /// completed connection waiting in a listening socket's backlog into a
     /// socket and a descriptor.
     ///
     /// So the description names a socket rather than containing one, and the
-    /// kernel is where a socket's lifetime is decided. `UnixMachineState.socket`
+    /// kernel is where a socket's lifetime is decided. `UnixSystem.socket`
     /// resolves the name.
     | Socket of socket : SocketId
     /// One end of a pipe, handed out by `UnixPipe.pipe2`, or by the launch
@@ -791,7 +789,8 @@ type OpenFileTarget =
     /// No offset: measured, `lseek` on either end of a pipe is ESPIPE on both
     /// flavours.
     ///
-    /// The pipe this names lives in `UnixMachineState.Pipes`, as a socket
+    /// The pipe this names lives in the machine's pipe table
+    /// (`UnixSystem.pipes`), as a socket
     /// lives in the socket table, and for the same reason: a pipe is shared by
     /// the descriptions of both its ends, and outlives either. Whether an end
     /// is still open is whether any description names it.

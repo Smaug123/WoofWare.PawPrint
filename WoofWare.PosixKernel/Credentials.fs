@@ -105,8 +105,8 @@ type Credentials =
         /// The groups `setgroups(2)` was given, in the order it was given
         /// them, duplicates and all.
         ///
-        /// Not necessarily what `getgroups(2)` reports, which is
-        /// `Credentials.reportedGroups`: Linux reports these sorted, and a
+        /// Not necessarily what `getgroups(2)` reports
+        /// (`UnixDescriptor.getgroups`): Linux reports these sorted, and a
         /// Darwin process's list usually starts with its effective group.
         SupplementaryGroups : GroupId list
     }
@@ -183,8 +183,8 @@ module Credentials =
     /// walk and at the inode it reaches.
     ///
     /// Everything else is kept, so privilege and group membership are still
-    /// decided as `Credentials.privilege` and `Standing.toward` decide them,
-    /// from the substituted IDs: a real uid of 0 is privileged here whatever
+    /// decided as for any credentials (see `Credentials.privilege`), from
+    /// the substituted IDs: a real uid of 0 is privileged here whatever
     /// the effective uid, and the supplementary groups count as they always
     /// do.
     let realIdsAsEffective (credentials : Credentials) : Credentials =

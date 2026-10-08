@@ -181,8 +181,9 @@ module UnixClock =
     /// that names a clock this kernel does not model is a `ClockGettimeRefusal`.
     ///
     /// Every answered id reads one of two clocks. `CLOCK_REALTIME`, and Linux's
-    /// `CLOCK_REALTIME_COARSE`, read `UnixMachineState.realtime`, since the Unix
-    /// epoch; every other clock reads `NanosecondsSinceBoot`, since boot. This machine never suspends and has no
+    /// `CLOCK_REALTIME_COARSE`, read the realtime clock (`UnixSystem.realtime`),
+    /// since the Unix epoch; every other clock reads the time since boot
+    /// (`UnixSystem.nanosecondsSinceBoot`). This machine never suspends and has no
     /// NTP correction, so two clocks that differ only by time spent suspended
     /// (Linux's `CLOCK_BOOTTIME` and `CLOCK_MONOTONIC`, Darwin's
     /// `CLOCK_MONOTONIC_RAW` and `CLOCK_UPTIME_RAW`) or only by frequency

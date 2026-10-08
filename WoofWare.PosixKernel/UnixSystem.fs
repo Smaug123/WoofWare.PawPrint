@@ -81,7 +81,7 @@ type Syscall =
     /// `dirfd` and `flags` are raw, as `utimensat(2)` takes them: each flavour
     /// numbers `AT_FDCWD` and the flags its own way, and `times` holds the
     /// fields the caller stored, which each flavour reads its own way (see
-    /// `TimestampChangeRules.decode`). A null `path` means something of its
+    /// `UnixPathResolution.utimensat`). A null `path` means something of its
     /// own on Linux. `futimens(2)` is, on Linux, this with `fd` as `dirfd`, a
     /// null `path` and no flags.
     | UTimensAt of dirfd : int * path : NullablePathArgument * times : TimesArgument * flags : int
@@ -177,8 +177,8 @@ type UnixSystemDefect<'Task> =
     /// The mirror image of `VirtualFileSystemDefect.UnreachableFromRoot`: that
     /// one catches an orphan nothing holds, and this one catches an inode freed
     /// while something still held it. Between them they bracket the reaping
-    /// rule, so a `VirtualFileSystem.forget` that fires too late is caught there
-    /// and one that fires too early is caught here.
+    /// rule, so an inode freed too late is caught there and one freed too
+    /// early is caught here.
     | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
     /// A description names an inode as the wrong kind of object: a
     /// `OpenFileTarget.File` onto a directory or a device, an
@@ -271,8 +271,7 @@ type UnixSystemDefect<'Task> =
     /// so (`CloseRefusal.LingeringCloseDeferredToCall`).
     | LingeringSocketHeldOnlyByCalls of description : OpenFileDescriptionId * socket : SocketId
     /// A task is parked in an `epoll_wait` on a description that is not an
-    /// epoll instance, which no wait could have produced and which
-    /// `EpollReadyList.hasDeliverableEvent` crashes on.
+    /// epoll instance, which no wait could have produced.
     | ParkedEpollWaitOnNonEpoll of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
     /// A task is parked in a `kevent` on a description that is not a kqueue,
     /// which no wait could have produced and on which `WakeCondition.satisfied`
@@ -520,7 +519,7 @@ type UnixSystemDefect<'Task> =
     /// later process could be given it.
     | ProcessIdNotBelowCounter of pid : ProcessId * next : int32
     /// The machine records `recorded` processes standing in the directory
-    /// `inode` (`UnixMachineState.CurrentDirectories`), where `standing`
+    /// `inode`, where `standing`
     /// processes on it have it as their current directory. One too few lets a
     /// removal by another process free a directory a process stands in.
     | CurrentDirectoryHoldMismatch of inode : InodeNumber * recorded : int * standing : int
@@ -562,8 +561,7 @@ type UnixSystemDefect<'Task> =
     | ProtectedFilesNotOfFlavour of protection : ProtectedFiles * flavour : SimulatedUnixFlavour
     /// The symbolic link at `inode` has permission bits no link of the
     /// platform's flavour is created with, under any umask: anything but 0o777
-    /// on Linux, and anything outside 0o777 on Darwin. See
-    /// `SimulatedUnixPlatform.symlinkCreationPermissions`.
+    /// on Linux, and anything outside 0o777 on Darwin.
     | SymlinkPermissionsNotOfFlavour of
         inode : InodeNumber *
         permissions : PermissionBits *
@@ -671,7 +669,7 @@ module UnixSystem =
             filesystem
 
     /// The process's first task, which it started with: its thread-group
-    /// leader. See `UnixSystem.Leader`.
+    /// leader.
     let leader<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : 'Task
@@ -688,23 +686,33 @@ module UnixSystem =
         system.Tasks
 
     /// Every write that has reached a client draining one of the machine's
-    /// pipes, oldest first. See `UnixMachineState.delivered`.
+    /// pipes, oldest first: the bytes the outside world has received from the
+    /// machine's processes. No process can read them back.
+    ///
+    /// A client reads what its own ends received by filtering on
+    /// `Delivery.Endpoint`, which names the process the pipe was launched into
+    /// as well as the descriptor. The log is one for the whole machine, so the
+    /// order of writes across endpoints is kept. It grows without bound.
     let delivered<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : DeliveryLog
         =
         UnixMachineState.delivered system.Machine
 
-    /// The process's signal state, which `SignalState`'s queries read. See
-    /// `UnixProcessState.signals`.
+    /// The process's signal state, which `SignalState`'s queries read.
     let signals<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : SignalState<'Task, 'Handler>
         =
         UnixProcessState.signals system.Process
 
-    /// The environment the process was started with, entry by entry, in order.
-    /// See `UnixProcessState.environment`.
+    /// The environment the process was started with: the `envp` that
+    /// `execve(2)` received, entry by entry, in order. Each entry is held
+    /// exactly as given, whether or not it is `NAME=VALUE`.
+    ///
+    /// This is the exec-time image, not the C library's `environ`:
+    /// `setenv(3)` and `putenv(3)` change the process's own copy in user
+    /// space, which this library does not model.
     let environment<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : UnixByteString list
@@ -712,30 +720,34 @@ module UnixSystem =
         UnixProcessState.environment system.Process
 
     /// The path of the executable that started the process, or `None` if it has
-    /// none. See `UnixProcessState.processPath`.
+    /// none, which both flavours report as a null return with errno `ENOENT`.
+    /// This library models no `exec(2)`, so a process has a path only if its
+    /// launch set one (`ProcessLaunch.withProcessPath`). The path is not
+    /// resolved against the filesystem.
     let processPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : AbsoluteUnixPath option
         =
         UnixProcessState.processPath system.Process
 
-    /// The platform the machine impersonates. See `UnixMachineState.platform`.
+    /// The platform the machine impersonates.
     let platform<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : SimulatedUnixPlatform
         =
         UnixMachineState.platform system.Machine
 
-    /// The number of logical processors the machine reports to the process. See
-    /// `UnixMachineState.processorCount`.
+    /// The number of logical processors the machine reports to the process:
+    /// at least 1, and fixed at boot (`UnixBootImage.withProcessorCount`).
     let processorCount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : int
         =
         UnixMachineState.processorCount system.Machine
 
-    /// How long the machine has been up, to the nanosecond. See
-    /// `UnixMachineState.nanosecondsSinceBoot`.
+    /// How long the machine has been up, to the nanosecond. Only `advanceClock`
+    /// moves it. A process reads the same instant through
+    /// `UnixClock.clockGettime`, at the granularity its flavour reports.
     let nanosecondsSinceBoot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : int64
@@ -743,8 +755,11 @@ module UnixSystem =
         UnixMachineState.nanosecondsSinceBoot system.Machine
 
     /// Let `nanoseconds` pass on the machine: every clock it has moves forward
-    /// by that much. See `UnixMachineState.advanceClock`, which says what it
-    /// refuses.
+    /// by that much. Advancing by zero changes nothing.
+    ///
+    /// Throws for a negative amount, since no clock this kernel models runs
+    /// backwards, and for one that would take the uptime past
+    /// `Int64.MaxValue` nanoseconds (about 292 years).
     let advanceClock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (nanoseconds : int64)
         (system : UnixSystem<'Task, 'Handler>)
@@ -778,9 +793,8 @@ module UnixSystem =
         =
         system.Machine.FileSystem
 
-    /// The inode of the directory the process is standing in. See
-    /// `UnixProcessState.CurrentDirectoryInode`; the path `getcwd(3)` reports is
-    /// `UnixPathResolution.currentDirectoryPath`.
+    /// The inode of the directory the process is standing in. The path
+    /// `getcwd(3)` reports is `UnixPathResolution.currentDirectoryPath`.
     let currentDirectoryInode<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : InodeNumber
@@ -816,15 +830,18 @@ module UnixSystem =
         =
         system.Machine.EphemeralPortRange
 
-    /// The machine's `somaxconn` sysctl. See `UnixMachineState.SoMaxConn`.
+    /// The machine's `somaxconn` sysctl (`net.core.somaxconn` on Linux,
+    /// `kern.ipc.somaxconn` on Darwin): the ceiling `listen(2)` clamps its
+    /// backlog to. See `UnixBootImage.withSoMaxConn`.
     let soMaxConn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : int
         =
         system.Machine.SoMaxConn
 
-    /// The mount the machine's root filesystem claims to be. See
-    /// `UnixMachineState.Mount`.
+    /// The mount the machine's root filesystem claims to be: its type and what
+    /// `statfs(2)` reports about it. Fixed for the run, since this library
+    /// models no `mount(2)`; see `UnixBootImage.withMount`.
     let mount<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : EmulatedMount
@@ -832,22 +849,25 @@ module UnixSystem =
         system.Machine.Mount
 
     /// The machine's `fs.protected_*` sysctls. See
-    /// `UnixMachineState.ProtectedFiles`.
+    /// `UnixBootImage.withProtectedFiles`.
     let protectedFiles<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : ProtectedFiles
         =
         system.Machine.ProtectedFiles
 
-    /// Every pipe with an end open, by identity. See `UnixMachineState.Pipes`.
+    /// Every pipe with an end open, by identity: an end an open file
+    /// description names, or one the client holds (`PipeState.heldByClient`).
     let pipes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : Map<PipeId, PipeState>
         =
         system.Machine.Pipes
 
-    /// The realtime clock's reading, to the nanosecond. See
-    /// `UnixMachineState.realtime`.
+    /// The realtime clock's reading, to the nanosecond: the boot time plus
+    /// `nanosecondsSinceBoot`. This is the instant the kernel stamps on an
+    /// inode it changes. `clock_gettime(CLOCK_REALTIME)` reports the same
+    /// clock, at the granularity its flavour reports it at.
     let realtime<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : UnixTimestamp
@@ -855,7 +875,7 @@ module UnixSystem =
         UnixMachineState.realtime system.Machine
 
     /// Whether, and where, the machine's kernel screens a read or write buffer
-    /// before performing the operation. See `UnixMachineState.userBufferCheck`.
+    /// before performing the operation. See `UnixBootImage.withUserAddressLimit`.
     let userBufferCheck<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : UserBufferCheck
@@ -2678,7 +2698,7 @@ module UnixSystem =
     ///
     /// `127.0.0.0/8` rather than `127.0.0.1/32` because that is what Linux
     /// assigns to `lo`, and the flavours read the list differently — see
-    /// `SimulatedUnixPlatform.isBindableAddress`.
+    /// `UnixBootImage.withLocalAddresses`.
     let defaultLocalAddresses : uint32 list = [ InternetEndpoint.LoopbackAddress ]
 
     /// The prefixes Linux's local routing table holds, which it will `bind(2)`

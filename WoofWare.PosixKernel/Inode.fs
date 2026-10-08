@@ -54,7 +54,7 @@ type InodeTimes =
         /// <remarks>
         /// Moves after creation only where Darwin's <c>utimensat</c> sets a
         /// modification time earlier than it, which pulls it back; see
-        /// <c>TimestampChangeRules.changed</c>.
+        /// <c>UnixPathResolution.utimensat</c>.
         /// </remarks>
         Birth : UnixTimestamp
     }
@@ -176,7 +176,7 @@ type InodeContent =
     /// when it was made.
     ///
     /// The permission bits are what the link was created with, which is a rule of
-    /// the flavour: see <c>SimulatedUnixPlatform.symlinkCreationPermissions</c>. Linux's are
+    /// the flavour. Linux's are
     /// always <c>0o777</c>; Darwin's depend on the creating process's umask.
     /// </remarks>
     | Symlink of target : SymlinkTarget * permissions : PermissionBits

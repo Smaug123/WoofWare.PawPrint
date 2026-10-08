@@ -179,8 +179,7 @@ type PollRegistration =
     }
 
 /// The identity of the kqueue a Darwin `poll(2)` made for its own use
-/// (`PollQueue`). Minted from `UnixMachineState.NextPollQueueId`, and never
-/// reused.
+/// (`PollQueue`). Minted from a counter the machine keeps, and never reused.
 type PollQueueId =
     | PollQueueId of int64
 
@@ -197,11 +196,11 @@ type PollQueueId =
 /// what it reports when it wakes depends on what has been activated in it, and
 /// in which order -- not only on what its descriptors present then.
 ///
-/// Held on the machine (`UnixMachineState.PollQueues`) rather than in the
-/// call's park, because a socket event in any process's call activates its
-/// filters, as one does a kqueue's (`KqueueRegistration.Socket`), and no
-/// process's view holds another's tasks. It lives exactly as long as the park
-/// naming it (`ParkedKqueuePoll.Queue`): the park's end destroys it.
+/// Held on the machine rather than in the call's park, because a socket event
+/// in any process's call activates its filters, as one does a kqueue's
+/// (`KqueueRegistration.Socket`), and no process's view holds another's tasks.
+/// It lives exactly as long as the park naming it (`ParkedKqueuePoll.Queue`):
+/// the park's end destroys it.
 type PollQueue =
     {
         /// The process whose `poll` made the queue, whose descriptor table its
@@ -231,9 +230,8 @@ type ParkedKqueuePoll =
         /// The entries, in the caller's order, which is the order the
         /// finishing call reports `revents` in.
         Entries : PollEntry list
-        /// The kqueue the call made for its own use, on the machine
-        /// (`UnixMachineState.PollQueues`). The park holds it: it is destroyed
-        /// when the park ends (`UnixParkState.unpark`).
+        /// The kqueue the call made for its own use, held on the machine. The
+        /// park holds it: it is destroyed when the park ends.
         Queue : PollQueueId
         /// The instant, in nanoseconds since boot, at which the call stops
         /// waiting and returns 0; or `None` for a call that waits until
@@ -461,8 +459,8 @@ module ParkedSyscall =
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
-/// Minted from `UnixMachineState.NextParkOrdinal` by `UnixWait.park`, so of any
-/// two tasks parked at once, the one parked earlier holds the smaller ordinal.
+/// Minted from a counter the machine keeps as each task parks, so of any two
+/// tasks parked at once, the one parked earlier holds the smaller ordinal.
 /// A kernel that wakes one waiter of several reads this to decide which.
 type ParkOrdinal =
     | ParkOrdinal of int64
@@ -556,7 +554,10 @@ module UnixTaskState =
     let osThreadId (task : UnixTaskState) : OsThreadId = task.OsThreadId
 
     /// The syscall `task` is blocked in, and where that park stands in park
-    /// order, if it is blocked in one. See `UnixTaskState.Parked`.
+    /// order, if it is blocked in one. The park holds kernel objects by
+    /// identity, never by descriptor number: a sleeping task keeps the object
+    /// rather than the number, and descriptor numbers are reused as soon as
+    /// they are free.
     let park (task : UnixTaskState) : TaskPark option = task.Parked
 
     /// The syscall `task` is blocked in, if it is blocked in one: `park`

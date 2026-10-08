@@ -93,7 +93,7 @@ type LaunchDescriptor =
     /// The write end of a pipe, opened `O_WRONLY`. The client holds the read end
     /// and reads every byte the moment it is written, so a blocking write is
     /// never short and never waits. What the client read is in
-    /// `UnixMachineState.Delivered`.
+    /// `UnixSystem.delivered`.
     | Drained
     /// The write end of a pipe, opened `O_WRONLY`, whose read end the client
     /// closed before the process started. Nothing will ever read it, so a write
@@ -173,7 +173,7 @@ type PipeOrigin =
 /// Holds nothing about which of its ends are open. That is derived from the
 /// machine's open file descriptions, which are the only thing that can say it
 /// truthfully: an end is open while some open file description names it, or
-/// while the client holds it (see `UnixMachineState.pipeEndOpen`).
+/// while the client holds it (`PipeState.heldByClient`).
 [<NoComparison>]
 type PipeState =
     {
@@ -370,7 +370,8 @@ type Delivery =
         Bytes : ImmutableArray<byte>
     }
 
-/// Every delivery a machine has made, oldest first: see `UnixMachineState.Delivered`.
+/// Every delivery a machine has made, oldest first, as `UnixSystem.delivered`
+/// answers it.
 ///
 /// Appending a delivery and counting the log each take constant time, so a
 /// process that writes n times costs time linear in n. `DeliveryLog.since` takes

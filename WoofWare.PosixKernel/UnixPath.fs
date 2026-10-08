@@ -207,7 +207,7 @@ type UnixPathError =
 ///
 /// Construct via <c>UnixPath.parse</c> or <c>UnixPath.ofByteString</c>.
 ///
-/// Recover the path's structure on demand with <c>UnixPath.components</c> and <c>PathCursor</c>.
+/// Recover the path's structure on demand with <c>UnixPath.components</c>.
 /// </remarks>
 type UnixPath =
     private
@@ -412,6 +412,9 @@ module UnixPath =
         let bytes = UnixByteString.toBytes path.Raw
         bytes.Length > 0 && bytes.[0] = UnixPathText.separatorByte
 
+    // A resolution walk should use `PathCursor` instead, which is the same
+    // traversal without discarding where in the buffer it is (so it can also
+    // work out how symlinks affect resolution).
     /// <summary>
     /// The path's components in order.
     /// </summary>
@@ -422,9 +425,6 @@ module UnixPath =
     ///
     /// <remarks>
     /// A projection of the stored text, recomputed on demand.
-    /// A resolution walk should use <c>PathCursor</c> instead,
-    /// which is the same traversal without discarding where in the buffer it is
-    /// (so you can also work out how symlinks affect resolution).
     /// </remarks>
     let components (path : UnixPath) : PathComponent list =
         let rec go (cursor : PathCursor) (acc : PathComponent list) : PathComponent list =

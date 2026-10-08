@@ -1596,6 +1596,10 @@ module UnixDescriptor =
 
         TerminalAttributesAnswer.NotATerminal error
 
+    // `FileDescriptorRegistry.dropDescriptor` cannot do this itself: the
+    // socket table is the machine's rather than the process's, whether an
+    // inode is still named is a question about the filesystem, and what a
+    // sleeping call holds is the task table's.
     /// `close(2)`: drop `fd` from the process's table, together with the
     /// description it named if nothing references that any more, and the kernel
     /// objects the description was the last reference to — the socket, the
@@ -1631,11 +1635,6 @@ module UnixDescriptor =
     /// (refused where that would end the process, `CloseRefusal.DarwinEndedWriteSignal`),
     /// and the task, still parked, learns its answer from its finishing call. A pipe or connection transfer that something had
     /// already woken is refused (`CloseRefusal.DarwinWokenTransfer`).
-    ///
-    /// `FileDescriptorRegistry.dropDescriptor` cannot do this itself: the
-    /// socket table is the machine's rather than the process's, whether an
-    /// inode is still named is a question about the filesystem, and what a
-    /// sleeping call holds is the task table's.
     ///
     /// Every kqueue registration made through `fd` goes with it, in each kqueue
     /// the process owns (`KqueueState.Owner`) and in the kqueue of every

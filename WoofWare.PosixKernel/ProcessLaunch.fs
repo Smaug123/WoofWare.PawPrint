@@ -260,8 +260,9 @@ module ProcessLaunch =
                 }
 
     /// Set the environment the process was started with, replacing whatever
-    /// it held. The entries are kept in the order given, duplicates and all;
-    /// see `UnixProcessState.Environment`.
+    /// it held. The entries are kept in the order given, duplicates and all,
+    /// and none is parsed: an entry need not be `NAME=VALUE`. See
+    /// `UnixSystem.environment`.
     ///
     /// `context` prefixes the rejection a forged entry earns, and is the
     /// client's to choose: the host that has to fix one knows it by whatever
@@ -278,7 +279,7 @@ module ProcessLaunch =
 
     /// Set the path to the executable that started the process, or `None` to
     /// report that it has none. `None` is preserved rather than defaulted; see
-    /// `UnixProcessState.ProcessPath`.
+    /// `UnixSystem.processPath`.
     ///
     /// `context` prefixes the rejection a forged path earns; see
     /// `withEnvironment`.
@@ -293,7 +294,8 @@ module ProcessLaunch =
         }
 
     /// Set whether the process writes a core dump when a signal whose default
-    /// action dumps core kills it. See `UnixProcessState.CoreDumps`.
+    /// action dumps core kills it. Fixed for the life of the process: this
+    /// library models no `setrlimit(2)`.
     let withCoreDumps<'Task when 'Task : comparison>
         (coreDumps : CoreDumps)
         (launch : ProcessLaunch<'Task>)

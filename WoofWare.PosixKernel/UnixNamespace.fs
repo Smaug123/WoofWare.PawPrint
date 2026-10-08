@@ -479,7 +479,8 @@ type LinkRefusal =
     /// This kernel will not resolve one of the pathnames.
     | Path of refusal : PathRefusal
     /// The flag word `flags` carries flags the flavour accepts and this library
-    /// does not model; see `LinkScreen.Unmodelled`.
+    /// does not model: Darwin's `AT_SYMLINK_NOFOLLOW_ANY` (0x800),
+    /// `AT_RESOLVE_BENEATH` (0x2000) and `AT_UNIQUE` (0x8000).
     | UnmodelledFlags of flags : int
     /// Linux's `AT_EMPTY_PATH`, from a caller that is not privileged, with a
     /// path (an empty one included) relative to a descriptor. Linux then
@@ -1175,9 +1176,8 @@ module UnixNamespace =
     /// the argument's bytes, copied in: EFAULT if they were unreadable,
     /// ENAMETOOLONG if they run past `PATH_MAX`.
     ///
-    /// Named for the path it takes, `open` being an F# keyword and
-    /// `FileDescriptorRegistry.openFile` already meaning "open this inode". It
-    /// opens directories too, for reading.
+    /// Named for the path it takes, `open` being an F# keyword. It opens
+    /// directories too, for reading.
     ///
     /// `mode` is raw and **unvalidated**, and must stay that way:
     /// callers commonly pass 0666 even for a read-only open of an existing file,
@@ -1209,7 +1209,7 @@ module UnixNamespace =
     /// `dirfd` is raw, in this platform's own numbering. Everything `openPath`
     /// says holds, with one more step: once the path is copied in, and once
     /// Linux has a descriptor to give, a relative path starts where `dirfd`
-    /// says, as every `*at` call's does (`UnixPathResolution.walkStart`). So
+    /// says, as every `*at` call's does. So
     /// with no descriptor left below the bound the call is refused ahead of
     /// a `dirfd` that names nothing or no directory, on both flavours; and on
     /// Linux an unreadable, over-long or empty path is answered ahead of that
@@ -1372,8 +1372,7 @@ module UnixNamespace =
     /// by accident, and would make `readlink` the only syscall obeying them.
     ///
     /// `capacity` is the caller's buffer size. A size that is not positive is
-    /// answered as this system's flavour answers it
-    /// (`SimulatedUnixPlatform.readlinkCapacity`): EINVAL before the path is
+    /// answered as this system's flavour answers it: EINVAL before the path is
     /// copied in on Linux and for a negative size on Darwin, and zero bytes
     /// from a resolved link on Darwin for a size of zero.
     ///
@@ -1445,7 +1444,9 @@ module UnixNamespace =
     /// starts again from the first entry.
     ///
     /// The names come in this library's own order, which matches no real
-    /// filesystem: see `VirtualFileSystem.nextDirectoryEntry`.
+    /// filesystem, followed by `..` and `.`, at the *end*, where ext4 has been
+    /// seen to put them; `readdir(3)` fixes no position for either. A
+    /// directory that `rmdir` has since removed yields nothing more.
     let readDirectoryEntry<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1644,8 +1645,8 @@ module UnixNamespace =
     ///
     /// `dirfd` is raw, in this platform's own numbering. Everything `mkdir`
     /// says holds, with one more step: once the path is copied in, a relative
-    /// path starts where `dirfd` says, as every `*at` call's does
-    /// (`UnixPathResolution.walkStart`). Nothing about `mode` is screened, so
+    /// path starts where `dirfd` says, as every `*at` call's does. Nothing
+    /// about `mode` is screened, so
     /// it never decides an answer ahead of the path or `dirfd`.
     let mkdirat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (dirfd : int)
@@ -1767,13 +1768,13 @@ module UnixNamespace =
     /// from `dirfd` if it is relative; `mknod` is this from `AT_FDCWD`.
     ///
     /// `dirfd`, `mode` and `dev` are raw, in this platform's own numbering.
-    /// The type field of `mode` is read before anything else, as
-    /// `MkNodRules.screen` says for the flavour: Linux answers a directory
+    /// The type field of `mode` is read before anything else, as the flavour
+    /// reads it: Linux answers a directory
     /// EPERM and a field naming no type it makes EINVAL, and Darwin answers
     /// any type but a FIFO EPERM to a caller without privilege, each before
     /// the path is copied in. Then `path` is copied in (EFAULT, ENAMETOOLONG),
-    /// a relative path starts where `dirfd` says, as every `*at` call's does
-    /// (`UnixPathResolution.walkStart`), and the walk never follows a final
+    /// a relative path starts where `dirfd` says, as every `*at` call's does,
+    /// and the walk never follows a final
     /// symbolic link. A regular file (`S_IFREG`, or a type field of 0) is
     /// then decided and made as `open(O_CREAT|O_EXCL)` decides and makes one:
     /// the same errnos in the same order, the same permission bits from
@@ -2004,12 +2005,10 @@ module UnixNamespace =
     /// this from `AT_FDCWD`.
     ///
     /// `dirfd` and `flags` are raw, in this platform's own numbering. The flag
-    /// word is screened first, ahead of the path and `dirfd`
-    /// (`UnlinkAtRules.screen`). Then everything `unlink` or `rmdir` says
-    /// holds, with one more step: once the path is copied in, a relative path
-    /// starts where `dirfd` says, as every `*at` call's does
-    /// (`UnixPathResolution.walkStart`), and nothing else about the call
-    /// changes.
+    /// word is screened first, ahead of the path and `dirfd`. Then everything
+    /// `unlink` or `rmdir` says holds, with one more step: once the path is
+    /// copied in, a relative path starts where `dirfd` says, as every `*at`
+    /// call's does, and nothing else about the call changes.
     ///
     /// Refuses a flag word carrying flags the flavour accepts and this library
     /// does not model, and whatever `unlink` or `rmdir` refuses; see
@@ -2117,9 +2116,10 @@ module UnixNamespace =
 
     /// Everything `renameat(2)` does before it copies its *destination*
     /// pathname in: on Linux the source's pathname and parent walk, on Darwin
-    /// the whole source including `RenameRules.sourceScreen`. A relative
-    /// source starts where `olddirfd` says, as every `*at` call's path does
-    /// (`UnixPathResolution.walkStart`); `newdirfd` is looked up only once the
+    /// the whole source, including the two refusals Darwin's source-side
+    /// lookup makes for itself under rename semantics. A relative source
+    /// starts where `olddirfd` says, as every `*at` call's path does;
+    /// `newdirfd` is looked up only once the
     /// destination has been copied in, by `renameWithDestination`.
     ///
     /// `olddirfd` and `newdirfd` are raw, in this platform's own numbering.
@@ -2755,11 +2755,11 @@ module UnixNamespace =
     ///
     /// A relative `path` starts where the call's `dirfd` says. A final symbolic
     /// link is never followed, and a trailing separator reaches past the final
-    /// name only as the flavour's `SymlinkRules.TrailingSeparator` says;
-    /// `SymlinkRules.verdict` decides the rest. The new link holds the target
-    /// byte for byte, has the bits `SimulatedUnixPlatform.symlinkCreationPermissions`
-    /// gives under the process's umask, and is owned as any new inode in that
-    /// directory is (`InodeOwner.ofNewInode`); the directory's modification and
+    /// name only as the flavour's `SymlinkRules.TrailingSeparator` says. The
+    /// new link holds the target byte for byte, has the permission bits 0o777
+    /// on Linux and 0o777 less the process's umask on Darwin, and is owned as
+    /// any new inode in that directory is (see
+    /// `SimulatedUnixPlatform.newInodeGroupRule`); the directory's modification and
     /// status-change times move.
     ///
     /// Refuses a pathname this kernel will not resolve, and a call that would
@@ -3016,8 +3016,8 @@ module UnixNamespace =
     ///
     /// A relative `newpath` starts where the call's new `dirfd` says; a final
     /// symbolic link is never followed, and a trailing separator reaches past
-    /// the final name only as `LinkRules.TrailingSeparator` says.
-    /// `LinkRules.verdict` decides the rest. On success the source gains a
+    /// the final name only as `LinkRules.TrailingSeparator` says. On success
+    /// the source gains a
     /// name, its status-change time moves, and so do the new name's
     /// directory's modification and status-change times.
     let linkWithDestination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -3084,7 +3084,11 @@ module UnixNamespace =
     /// further name `newpath`, relative to `newdirfd`.
     ///
     /// `olddirfd`, `newdirfd` and `flags` are raw, in this platform's own
-    /// numbering; `LinkRules.screen` says which flags each flavour accepts.
+    /// numbering. The flag word is screened before either pathname is copied
+    /// in: Linux answers EINVAL for any flag beyond `AT_SYMLINK_FOLLOW` (0x400)
+    /// and `AT_EMPTY_PATH` (0x1000), and Darwin for any beyond
+    /// `AT_SYMLINK_FOLLOW` (0x40) and the three it accepts and this library
+    /// does not model, which are refused (`LinkRefusal`).
     /// The pathnames are the arguments' bytes, copied in source first: a client
     /// that has yet to read the second should call `linkatSourcePhase` and
     /// `linkWithDestination` instead.

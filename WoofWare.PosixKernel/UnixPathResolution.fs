@@ -66,9 +66,10 @@ type FileStatus =
         ///
         /// For a regular file or a symbolic link this is how many names it
         /// has, and 0 once the last has gone while a descriptor still holds
-        /// it. A directory's is a rule of the filesystem it is on, which
-        /// `EmulatedFileSystemType.directoryLinkCount` states, and a pipe's is
-        /// the flavour's. Darwin reports no more than 65535; see
+        /// it. A directory's is a rule of the filesystem it is on: tmpfs
+        /// counts "." and each subdirectory's "..", and APFS 2 plus every
+        /// name the directory binds. A pipe's is the flavour's. Darwin
+        /// reports no more than 65535; see
         /// `SimulatedUnixPlatform.linkCountCeiling`.
         LinkCount : int64
         /// `st_rdev`: which device a character or block special file stands
@@ -169,7 +170,7 @@ module FStatRefusal =
 [<RequireQualifiedAccess>]
 type FStatAtRefusal =
     /// The flag word carries flags the flavour accepts and this library does
-    /// not model; see `StatScreen.Unmodelled`. `flags` is the whole word.
+    /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
     /// Linux's `AT_EMPTY_PATH`, with a pathname the caller could not read.
     /// Linux reads a NULL pathname under `AT_EMPTY_PATH` as the empty one, and
@@ -257,8 +258,7 @@ module FChModRefusal =
 [<RequireQualifiedAccess>]
 type FChModAtRefusal =
     /// The flag word carries flags the flavour accepts and this library does
-    /// not model; see `AttributeChangeScreen.Unmodelled`. `flags` is the whole
-    /// word.
+    /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
     /// The call walked its path, and `chmod(2)` refuses what it reached.
     | ChMod of ChModRefusal
@@ -329,8 +329,7 @@ module FChOwnRefusal =
 [<RequireQualifiedAccess>]
 type FChOwnAtRefusal =
     /// The flag word carries flags the flavour accepts and this library does
-    /// not model; see `AttributeChangeScreen.Unmodelled`. `flags` is the whole
-    /// word.
+    /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
     /// The call walked its path, and `chown(2)` or `lchown(2)` refuses what it
     /// reached.
@@ -354,8 +353,7 @@ module FChOwnAtRefusal =
 [<RequireQualifiedAccess>]
 type UTimensAtRefusal =
     /// The flag word carries flags the flavour reads and this library does
-    /// not model; see `TimestampChangeScreen.Unmodelled`. `flags` is the whole
-    /// word.
+    /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
     /// Darwin, with a `times` pointer the caller could not read. Darwin's
     /// `utimensat` is its libc's, which reads the times itself before it
@@ -889,7 +887,7 @@ module UnixPathResolution =
     ///
     /// An end of a pipe the process made reports `S_IFIFO`, and each flavour's
     /// own permission bits, size, timestamps and identity: see `PipeInodes`,
-    /// `PipeTimes` and `UnixMachineState.PipeDevice`.
+    /// `PipeTimes` and `UnixBootImage.withPipeDevice`.
     ///
     /// Refuses for a descriptor this kernel holds no inode for — an event
     /// queue, a socket — and for an end of a pipe the process was launched with,
@@ -996,11 +994,14 @@ module UnixPathResolution =
     /// from `dirfd` if it is relative; `stat(2)` and `lstat(2)` are this from
     /// the current directory.
     ///
-    /// `dirfd` and `flags` are raw, in this platform's own numbering;
-    /// `StatRules.screen` says which flag words each flavour rejects, before
-    /// anything else, and what the rest mean. `path` is the argument's bytes,
-    /// copied in next. A relative path then starts where `dirfd` says, as
-    /// every `*at` call's does, and resolves as `stat`'s does.
+    /// `dirfd` and `flags` are raw, in this platform's own numbering. The flag
+    /// word is screened before anything else: Linux accepts
+    /// `AT_SYMLINK_NOFOLLOW` (0x100) and `AT_EMPTY_PATH` (0x1000), and Darwin
+    /// `AT_SYMLINK_NOFOLLOW` (0x20); each answers EINVAL for any other flag,
+    /// except those it accepts and this library does not model, which are
+    /// refused. `path` is the argument's bytes, copied in next. A relative path
+    /// then starts where `dirfd` says, as every `*at` call's does, and resolves
+    /// as `stat`'s does.
     ///
     /// Under Linux's `AT_EMPTY_PATH` an empty path names what `dirfd` names,
     /// whatever kind of descriptor it is, and the call reports exactly what
@@ -1010,7 +1011,7 @@ module UnixPathResolution =
     ///
     /// Changes nothing and returns no system, as `stat` and `fstat` do not.
     ///
-    /// Refuses the flags `StatRules.screen` does not model, a pathname this
+    /// Refuses the flags this library does not model, a pathname this
     /// kernel cannot read under `AT_EMPTY_PATH`, and whatever `stat` or
     /// `fstat` refuses of what the call reaches; see `FStatAtRefusal`.
     let fstatat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1146,8 +1147,11 @@ module UnixPathResolution =
     /// `chmod(2)`: change the mode of the inode `path` names. This is
     /// `fchmodat` from `AT_FDCWD` with no flags.
     ///
-    /// `mode` is the raw mode word, of which only the low twelve bits are read;
-    /// see `PermissionBits.afterModeChange` for what the caller may set.
+    /// `mode` is the raw mode word, of which only the low twelve bits are read.
+    /// An unprivileged caller that does not own the inode is answered EPERM.
+    /// One that owns it gets every bit it asks for, except that `S_ISGID` is
+    /// silently dropped when it is not in the inode's group. What a privileged
+    /// caller gets is the platform's (`SimulatedUnixPlatform.privilegedModeChange`).
     ///
     /// A symbolic link in the final position is followed, so the link's target
     /// changes and a dangling link is ENOENT. Every other failure but EPERM is
@@ -1362,8 +1366,8 @@ module UnixPathResolution =
     /// is `fchownat` from `AT_FDCWD` with no flags.
     ///
     /// `None` is `(uid_t)-1` or `(gid_t)-1`, which leaves that ID as it is.
-    /// See `OwnerChangeRules.verdict` for who may name which IDs, and which
-    /// set-ID bits a change clears.
+    /// Who may name which IDs, and which set-ID bits a change clears, is the
+    /// platform's `OwnerChangeRule` (`SimulatedUnixPlatform.ownerChangeRule`).
     ///
     /// A symbolic link in the final position is followed, so the link's target
     /// changes and a dangling link is ENOENT. Every other failure but EPERM is
@@ -1507,12 +1511,14 @@ module UnixPathResolution =
     /// from `dirfd` if it is relative; `chmod(2)` is this from the current
     /// directory with no flags.
     ///
-    /// `dirfd` and `flags` are raw, in this platform's own numbering;
-    /// `AttributeChangeRules.screen` says which flag words each flavour
-    /// rejects, before anything else, and what the rest mean. `path` is the
-    /// argument's bytes, copied in next. A relative path then starts where
-    /// `dirfd` says, as every `*at` call's does, and the inode it names
-    /// changes as under `chmod`.
+    /// `dirfd` and `flags` are raw, in this platform's own numbering. The flag
+    /// word is screened before anything else: Linux accepts
+    /// `AT_SYMLINK_NOFOLLOW` (0x100) and `AT_EMPTY_PATH` (0x1000), and Darwin
+    /// `AT_SYMLINK_NOFOLLOW` (0x20) and three flags this library does not
+    /// model, which are refused; each answers EINVAL for a word carrying any
+    /// other bit. `path` is the argument's bytes, copied in next. A relative
+    /// path then starts where `dirfd` says, as every `*at` call's does, and the
+    /// inode it names changes as under `chmod`.
     ///
     /// Under `AT_SYMLINK_NOFOLLOW` a symbolic link in the final position is
     /// itself the inode, and what that does is the flavour's
@@ -1875,20 +1881,28 @@ module UnixPathResolution =
     /// `path` names, starting from `dirfd` if it is relative.
     ///
     /// `dirfd` and `flags` are raw, in this platform's own numbering, and
-    /// `times` holds the fields the caller stored, which
-    /// `TimestampChangeRules.decode` reads as the flavour does: `UTIME_NOW`,
-    /// `UTIME_OMIT`, or a time. A null `times` is both times now.
-    /// `TimestampChangeRules.permission` says who may set what,
-    /// `TimestampChangeRules.changed` which timestamps move, and
-    /// `TimestampChangeRules.rangeOf` what a time beyond a filesystem's
+    /// `times` holds the fields the caller stored, which the flavour reads as
+    /// `UTIME_NOW` (Linux 0x3FFFFFFF, Darwin -1), `UTIME_OMIT` (Linux
+    /// 0x3FFFFFFE, Darwin -2), or a time. A null `times` is both times now.
+    /// `TimestampChangeRules.rangeOf` says what a time beyond a filesystem's
     /// range stores.
+    ///
+    /// On both flavours the owner may set any times, and a caller who may
+    /// write the object may set both to now. Linux lets a privileged caller
+    /// do anything, and answers EACCES where only both times now were asked
+    /// and EPERM otherwise. Darwin answers EACCES, or EPERM for a symbolic
+    /// link. Linux moves the status-change time whatever was asked, and
+    /// never the birth time. Darwin moves the status-change time only with
+    /// the modification time, and a modification time earlier than the birth
+    /// time pulls the birth time back to it, unless it is before the epoch.
     ///
     /// On Linux, in this order: an unreadable `times` is EFAULT; both times
     /// `UTIME_OMIT` is success at once, whatever else the call is given; a
     /// null `path` with a descriptor rather than `AT_FDCWD` sets the times of
     /// what the descriptor names, as `futimens(2)` does, with EINVAL for any
     /// flag and EBADF for a descriptor not held; otherwise the flag word is
-    /// screened (`TimestampChangeRules.screen`), the path copied in (a null
+    /// screened (EINVAL for any bit but `AT_SYMLINK_NOFOLLOW`, 0x100, and
+    /// `AT_EMPTY_PATH`, 0x1000), the path copied in (a null
     /// one is EFAULT), and a relative path started where `dirfd` says, as
     /// every `*at` call's is. Under `AT_EMPTY_PATH` the empty path names what
     /// `dirfd` names, or the current directory for `AT_FDCWD`. Once the
@@ -2418,11 +2432,15 @@ module UnixPathResolution =
     /// the inode <c>path</c> names, starting from <c>dirfd</c> if the path is relative.
     /// </summary>
     /// <remarks>
-    /// <c>dirfd</c>, <c>mode</c> and <c>flags</c> are raw, in this platform's own numbering;
-    /// <c>AccessRules.screen</c> says which words each flavour rejects and what the rest
-    /// mean. <c>path</c> is the argument's bytes, copied in after those screens, as both
-    /// kernels do; a client that has yet to read them should call
-    /// <c>faccessatScreenPhase</c> and <c>accessWithPath</c> instead.
+    /// <c>dirfd</c>, <c>mode</c> and <c>flags</c> are raw, in this platform's own numbering.
+    /// Linux answers <c>EINVAL</c> for any mode bit beyond the low three, and then for any flag
+    /// beyond <c>AT_SYMLINK_NOFOLLOW</c> (0x100), <c>AT_EACCESS</c> (0x200) and
+    /// <c>AT_EMPTY_PATH</c> (0x1000). Darwin answers <c>EINVAL</c> for any flag beyond
+    /// <c>AT_EACCESS</c> (0x10) and <c>AT_SYMLINK_NOFOLLOW</c> (0x20) and the three it accepts
+    /// but this library refuses; it rejects no mode word, ignores bits 3 to 8 and 22 to 31, and
+    /// reads bits 9 to 21 as its extended rights. <c>path</c> is the argument's bytes, copied
+    /// in after those screens, as both kernels do; a client that has yet to read them should
+    /// call <c>faccessatScreenPhase</c> and <c>accessWithPath</c> instead.
     ///
     /// Without <c>AT_EACCESS</c> the path is walked, and the inode judged, with the process's
     /// <i>real</i> user and group (see <c>Credentials.realIdsAsEffective</c>); with it, with
@@ -2431,7 +2449,7 @@ module UnixPathResolution =
     /// and effective IDs differ.
     ///
     /// Answers 0 or the errno, and changes nothing: measured on both, it moves no
-    /// timestamp. EACCES is <c>AccessRules.denied</c>'s; every other failure is the
+    /// timestamp. EACCES is the permission check's; every other failure is the
     /// screens', the copy-in's, the dirfd's or the walk's. This library models one
     /// filesystem, writable and not mounted <c>noexec</c>, so the EROFS a read-only mount
     /// gives <c>W_OK</c> and the EACCES a <c>noexec</c> one gives <c>X_OK</c> on a regular

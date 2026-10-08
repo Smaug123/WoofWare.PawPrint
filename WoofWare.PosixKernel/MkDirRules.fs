@@ -9,16 +9,15 @@ namespace WoofWare.PosixKernel
 /// </remarks>
 type MkDirRules =
     {
+        // This field is why `MkDirRules.verdict` needs no rules: the divergence
+        // is spent inside the walk, and what comes out the other side is
+        // decided identically on both platforms.
         /// The walk `mkdir` resolves its path with. Linux's last component is a
         /// plain dentry lookup (`filename_create`), so a trailing separator buys
         /// nothing there and every existing final name is EEXIST; Darwin
         /// resolves it as a lookup would, which is how `mkdir("dang/")` creates
         /// the dangling link's *target* on that platform and answers ENOTDIR for
         /// "f/" and ELOOP for "cyc/".
-        ///
-        /// This field is why `MkDirRules.verdict` needs no rules: the divergence
-        /// is spent inside the walk, and what comes out the other side is
-        /// decided identically on both platforms.
         TrailingSeparator : TrailingSeparatorPolicy
         /// The bits `mkdir(2)` keeps from its `mode` argument before the umask
         /// is applied — which is *not* `CreatingOpenRules.ModeMask`. Linux keeps

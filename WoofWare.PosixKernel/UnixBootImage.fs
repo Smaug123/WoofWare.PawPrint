@@ -250,8 +250,8 @@ type TcpReceiveSpaceRefusal =
     /// `net.ipv4.tcp_rmem` default. Contradictory.
     | NotPositive of value : int
     /// Darwin would grow a receive buffer of this `net.inet.tcp.recvspace`
-    /// again as data arrives, which this library does not model; `reason` is
-    /// `TcpBufferSizing.darwinReceiveSpaceRefusal`'s account of why.
+    /// again as data arrives, which this library does not model; `reason`
+    /// says why.
     /// Unmodelled.
     | GrowsAfterHandshake of value : int * reason : string
 
@@ -437,7 +437,7 @@ module UnixBootImage =
     /// happened to set the clock before or after the filesystem.
     ///
     /// `defaultOwner` owns the root and every seed entry that states no owner
-    /// of its own; see `VirtualFileSystem.ofFileSystemSeed`.
+    /// of its own.
     ///
     /// Every name in the seed is checked against the machine's platform: its
     /// `NAME_MAX`, then its rule for which names it binds, the order a binding
@@ -634,9 +634,11 @@ module UnixBootImage =
 
     /// Set the IPv4 addresses this machine holds (`addresses`, host order) and
     /// the prefixes of its local routes (`routes`). Together they decide which
-    /// addresses `bind(2)` takes, which the flavours read differently (see
-    /// `SimulatedUnixPlatform.isBindableAddress`), and which destinations
-    /// `connect(2)` treats as this machine's own.
+    /// addresses `bind(2)` takes, and which destinations `connect(2)` treats as
+    /// this machine's own. The wildcard always binds. Beyond that the flavours
+    /// read the lists differently: Linux binds any address inside a route's
+    /// prefix, so `127.9.9.9` binds under `127.0.0.0/8`, while Darwin binds
+    /// only the addresses themselves.
     ///
     /// Admits any lists, stored as given. An empty list is a machine with
     /// nothing in it: with no addresses, only the wildcard binds. Entries may
@@ -774,8 +776,9 @@ module UnixBootImage =
             |> withMachine image
         )
 
-    /// Set the sysctl that gives a new IPv6 socket its `IPV6_V6ONLY`
-    /// (`UnixMachineState.Ipv6OnlyByDefault`).
+    /// Set the sysctl that gives a new IPv6 socket its `IPV6_V6ONLY`: Linux's
+    /// `net.ipv6.bindv6only`, Darwin's `net.inet6.ip6.v6only`. Off by default
+    /// on both.
     let withIpv6OnlyByDefault<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (value : bool)
         (image : UnixBootImage<'Task, 'Handler>)
@@ -828,9 +831,9 @@ module UnixBootImage =
     /// Set the TCP receive buffer sysctl (`TcpReceiveSpace`). `None` takes the
     /// measured default of this machine's flavour.
     ///
-    /// Under Linux a value must be positive. Under Darwin it must be one
-    /// `TcpBufferSizing.darwinReceiveSpaceRefusal` admits: one whose buffer a
-    /// connection's handshake sizes once and for all.
+    /// Under Linux a value must be positive. Under Darwin it must be one whose
+    /// buffer a connection's handshake sizes once and for all (see
+    /// `TcpReceiveSpaceRefusal`).
     let withTcpReceiveSpace<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (value : int option)
         (image : UnixBootImage<'Task, 'Handler>)

@@ -49,7 +49,7 @@ type HardlinkProtection =
     /// 1: a caller that neither owns an inode nor is privileged may link only a
     /// regular file it may both read and write and that is neither
     /// set-user-ID nor set-group-ID and group-executable; `link(2)` answers
-    /// EPERM otherwise. See `ProtectedFiles.refusesToLink`.
+    /// EPERM otherwise.
     ///
     /// Many distributions set this through `sysctl.d`.
     | NonOwnersNeedReadAndWrite

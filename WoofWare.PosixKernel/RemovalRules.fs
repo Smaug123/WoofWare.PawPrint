@@ -82,7 +82,7 @@ type internal UnlinkAtScreen =
 [<RequireQualifiedAccess>]
 type UnlinkAtRefusal =
     /// The flag word carries flags the flavour accepts and this library does
-    /// not model; see `UnlinkAtScreen.Unmodelled`. `flags` is the whole word.
+    /// not model. `flags` is the whole word.
     | UnmodelledFlags of flags : int
     /// The flag word asked for a removal, and this kernel will not answer it.
     | Removal of RemovalRefusal
@@ -485,12 +485,13 @@ module internal UnlinkRules =
         | SimulatedUnixFlavour.Linux -> Ok (linuxVerdict credentials resolution vfs)
         | SimulatedUnixFlavour.Darwin -> darwinVerdict credentials resolution vfs
 
+// The ordering half lives in `RmDirRules.linuxVerdict` and
+// `RmDirRules.darwinVerdict`, for the reason `UnlinkRules.verdict` gives.
 /// Everything a kernel does differently when `rmdir(2)` removes a directory.
 ///
-/// Two fields, and the rest of the divergence — the *order* of the refusals and
-/// the errno vocabulary — lives in `RmDirRules.linuxVerdict` and
-/// `RmDirRules.darwinVerdict` rather than here, for the reason
-/// `UnlinkRules.verdict` gives.
+/// Two fields. The rest of the divergence — the *order* of the refusals and
+/// the errno vocabulary — follows from the platform's flavour alone, so it
+/// is not a field here.
 ///
 /// Measured on macOS 26.6/APFS at uid 501, and Linux 6.x arm64 at uid 1000 and
 /// uid 0, one fresh tree per row.

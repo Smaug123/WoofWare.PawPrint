@@ -21,12 +21,10 @@ type SockaddrCopySyscall =
 /// too short to reach `sa_family`, and Linux's `move_addr_to_kernel` reads at
 /// any positive length.
 ///
-/// Shared by `bind(2)` and `connect(2)`, which judge the length and the copy
-/// alike -- `SimulatedUnixPlatform.bindAddressLength` is named for the first and
-/// used by the second because the two were measured to agree exactly -- but not
-/// always in the same place: Linux's `connect` copies the sockaddr in before it
-/// asks whether the descriptor is a socket, where its `bind` and both of
-/// Darwin's ask first.
+/// Shared by `bind(2)` and `connect(2)`, which were measured to judge the
+/// length and the copy alike, but not always in the same place: Linux's
+/// `connect` copies the sockaddr in before it asks whether the descriptor is a
+/// socket, where its `bind` and both of Darwin's ask first.
 [<RequireQualifiedAccess>]
 type SockaddrCopyAdmission =
     /// Answered without the sockaddr being read at all -- a bad descriptor, a
@@ -100,7 +98,7 @@ type BindRefusal =
     /// Refused rather than recorded: this library models no group membership
     /// and no interface to receive or broadcast on, so nothing downstream could
     /// honour the binding. Every bind of such an address that fails is answered
-    /// with its measured errno; see `SimulatedUnixPlatform.bindGroupAddressRule`.
+    /// with its measured errno.
     | UnmodelledMulticast of socket : SocketId * address : uint32
     /// The bind asked for any free port and every port in the ephemeral range is
     /// taken.
@@ -1201,7 +1199,12 @@ module UnixSocket =
     ///
     /// Which existing bindings the new one conflicts with depends on
     /// `SO_REUSEADDR` as `setsockopt` last left it, on this socket and on the
-    /// others; see `SimulatedUnixPlatform.bindConflict`.
+    /// others. Both flavours answer `EADDRINUSE` for two sockets on one port
+    /// with overlapping addresses (the wildcard overlaps every address), and
+    /// both relax that when both sockets set `SO_REUSEADDR`, in opposite
+    /// directions: Linux only while neither is listening, Darwin only for
+    /// addresses that differ, such as the wildcard and a specific address,
+    /// listening or not. Linux's `listen` is judged by the same rule.
     ///
     /// Answers where the socket ended up, which for a request of port 0 is a
     /// port this kernel chose.

@@ -148,7 +148,7 @@ module UnixPipe =
     /// `Pipe2Refusal.FatalToTheProcess`).
     ///
     /// The read end takes the lowest descriptor not in use and the write end
-    /// the next (see `FileDescriptorRegistry.createPipe`). Both are owned by
+    /// the next. Both are owned by
     /// the process's effective user and group, and stamped with the machine's
     /// realtime clock.
     let pipe2<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
