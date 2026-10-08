@@ -8,7 +8,8 @@ open NUnit.Framework
 open WoofWare.PosixKernel
 
 /// The machine's clock: `advanceClock` and `withBootTime`, which are the only ways
-/// it changes, and `realtime` and `UnixClock.clockGettime`, which are how it is read.
+/// it changes, and `realtime`, `UnixClock.clockGettime` and `UnixClock.gettimeofday`,
+/// which are how it is read.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestClock =
@@ -509,3 +510,12 @@ module TestClock =
             monotonic |> shouldEqual (UnixTimestamp.createOrFail "TestClock" 0L 1_000_000)
             uptime |> shouldEqual (UnixTimestamp.createOrFail "TestClock" 0L 1_000_999)
         | other -> failwith $"expected three readings, got %A{other}"
+
+    [<Test>]
+    let ``gettimeofday reads the realtime clock in whole microseconds, on every flavour`` () : unit =
+        let property (flavour : SimulatedUnixFlavour, bootTime : UnixTimestamp, up : int64) : bool =
+            let realtime = exactNanoseconds bootTime + bigint up
+
+            exactNanoseconds (UnixClock.gettimeofday (systemWith flavour bootTime up)) = realtime - realtime % 1000I
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen reachableGen) property)

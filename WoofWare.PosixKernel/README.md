@@ -152,7 +152,9 @@ Every descriptor lies below `SimulatedUnixPlatform.descriptorBound`, the soft `R
 
 `UnixSystem.checkInvariants` lists every way a system's tables disagree with each other.
 No sequence of syscalls should ever produce one.
-It is two halves: `UnixSystem.checkMachineInvariants`, the rules about the machine, which takes every process on it, and `UnixSystem.checkViewInvariants`, those about one process's view of it.
+It is two halves: the rules about the machine, which read facts every process on it contributes to, and `UnixSystem.checkViewInvariants`, the rules about one process's view of it.
+A process alone on its machine is held to both in full. Of a view a `SimulatedMachine` focused, only the machine's rules that one process can check truthfully are run; `SimulatedMachine.checkInvariants` runs the rest, against every process at once.
+Each table's own rules are checked apart from these: `FileDescriptorRegistry.checkInvariants` of `UnixSystem.fileDescriptors` for the descriptor table and the open file descriptions it names, and `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes system) (UnixSystem.fileSystem system)` for the filesystem.
 A fact a syscall needs about other processes is kept on the machine's object rather than derived from the processes: each open file description counts the descriptors naming it and the holds of calls in flight on it, the thread ID allocator records which IDs live tasks hold, a kqueue records the process that owns it, whose descriptor numbers its registrations name, and each kqueue registration records the socket it is attached to.
 
 ### Answers and refusals

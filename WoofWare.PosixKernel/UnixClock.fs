@@ -168,8 +168,11 @@ module UnixClock =
 
     /// `gettimeofday(2)`: the realtime clock in whole microseconds, on every
     /// flavour, as a timestamp.
-    let gettimeofday (machine : UnixMachineState) : UnixTimestamp =
-        truncate 1000 (UnixMachineState.realtime machine)
+    let gettimeofday<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixTimestamp
+        =
+        truncate 1000 (UnixMachineState.realtime system.Machine)
 
     /// `clock_gettime(2)`: read the clock `clockId` names on this machine's flavour.
     ///
