@@ -250,11 +250,31 @@ So the listener goes back to `SocketPhase.Idle` with its binding.
 
 ### 2.7 `close` with `SO_LINGER` {1, 0} (sections L and Q)
 
-**A connected socket.** On both flavours this is a reset, **whatever the
-state**: idle, bytes unread by the closer, bytes unsent by the closer, bytes
-unread by the peer, after the closer's `SHUT_WR`, after the peer's
-`SHUT_WR`, and with unsent bytes behind a queued FIN. What the peer sees is
-exactly the stack's existing reset rows:
+**A connected socket.** Whether linger {1, 0} resets depends on the two
+FINs. "Made" means by `SHUT_WR` or by the close itself; "arrived" means the
+FIN reached the peer, so that a FIN made behind unsent bytes is made but has
+not arrived. Every row is section L; in the last four, the linger was set
+before either FIN, because **Darwin answers `EINVAL` to setting `SO_LINGER`
+once both directions are shut** (Linux takes it). `.NET` sets the linger at
+close time and ignores `EINVAL` there, so on Darwin its abortive close of
+such a socket is an ordinary close.
+
+| closer's FIN | peer's FIN | Linux | Darwin |
+|---|---|---|---|
+| not made before the close (idle, unread, unsent, peer's unread data) | either | reset | reset |
+| arrived | not made (`afterwr`) | reset | reset |
+| queued behind bytes | not made (`cunsent-afterwr`) | reset | reset |
+| arrived | arrived, either order (`bothfin-*`) | **no reset**: the peer sees only the FINs (0x2015, reads 0, `SO_ERROR` 0) | **no reset** (`EVFILT_READ` EOF, fflags 0) |
+| queued, made after the peer's arrived (`pfin-cqueued`) | arrived | reset | reset |
+| queued, made before the peer's arrived (`cqueued-pfin`) | arrived | reset | **no reset at the close** (poll IN\|HUP, no error); the peer reads what its receive buffer held, and then `ECONNRESET`, once its reads open the window towards a socket that has gone |
+
+The Linux rows are `tcp_disconnect`: it resets in the states of
+`tcp_need_reset`, and in `CLOSING` and `LAST_ACK` only while bytes are
+unsent. So **once the exchange is complete, an abortive close is an ordinary
+close**.
+
+Where it resets, what the peer sees is exactly the stack's existing reset
+rows:
 
 - the peer keeps its receive buffer, reads it, and then reads the error;
 - the closer's unsent bytes are discarded;
@@ -263,34 +283,42 @@ exactly the stack's existing reset rows:
 - on Darwin, every write answers `EPIPE` + `SIGPIPE`, and the error stays
   pending.
 
-The one new row is the closer having called `SHUT_WR` first. There, Linux's
-peer, already in `CLOSE_WAIT`, reads 0, 0 and writes `EPIPE` (the stack's
-`Reset (afterFin = true, _)`). Darwin's peer reads `ECONNRESET`. With the FIN
-still queued behind unsent bytes, Linux's peer takes `ECONNRESET` (`afterFin
-= false`).
+After the closer's `SHUT_WR`, Linux's peer, already in `CLOSE_WAIT`, reads
+0, 0 and writes `EPIPE`, which (D) derives as the closer's FIN `Arrived` and
+the peer's `NotSent`. Darwin's peer reads `ECONNRESET`. With the closer's FIN
+still queued, Linux's peer takes `ECONNRESET`.
 
-**The closer's endpoint is free to a fresh bind at once** on both flavours, in
-every state: no `TIME_WAIT`.
+**The closer's endpoint after linger {1, 0}.** Free to a fresh bind at once
+wherever the close resets, on both flavours: no `TIME_WAIT`. Where it does
+not reset (both FINs arrived), Linux treats the close as ordinary for the
+port too: free if the closer's FIN was passive, `EADDRINUSE` (`TIME_WAIT`)
+if it was made first. Darwin frees it in both orders.
 
-**After an ordinary FIN close, what decides is which FIN was made first**
-(section F, `c` closes while `p` stays open; the bind is of `c`'s endpoint,
-at once and 30 ms later, with the same answer both times, on both flavours):
+**After an ordinary FIN close, what decides is which FIN was made first, and
+whether the closer's own FIN has arrived** (section F, `c` closes while `p`
+stays open; the bind is of `c`'s endpoint, at once and 30 ms later, with the
+same answer both times, on both flavours):
 
 | order | bind |
 |---|---|
 | `p` `SHUT_WR`; `c` closes | free |
 | `p` `SHUT_WR`; `c` `SHUT_WR`; `c` closes | free |
+| `p` `SHUT_WR`; `c` fills; `c` closes (or `SHUT_WR`, then closes), so `c`'s FIN is passive but waits behind its bytes | **`EADDRINUSE` until `p` drains** the bytes; free at once after |
 | `c` closes; `p` `SHUT_WR` | `EADDRINUSE` |
 | `c` `SHUT_WR`; `p` `SHUT_WR`; `c` closes | `EADDRINUSE` |
 | `c` fills; `c` `SHUT_WR` (its FIN queued behind the bytes); `p` `SHUT_WR`; `p` drains, so `c`'s FIN goes out after `p`'s arrived; `c` closes | `EADDRINUSE` |
 
-So an end is a passive closer, which frees its endpoint as soon as its socket
-closes, when the peer's FIN had arrived **at the moment its own FIN was made**
-by `SHUT_WR` or `close`: not when the FIN was sent, and not when the socket
-closed. That is Linux's state machine (`SHUT_WR` moves to `FIN_WAIT1`
-whether or not the FIN can go out, and a FIN received there leads to
-`CLOSING` and `TIME_WAIT`), and Darwin agrees on every row. The stack does
-not model the passive case (see 3.5).
+So a FIN-closed end frees its endpoint exactly when **its socket has closed,
+its own FIN was made after the peer's had arrived (passive), and its own FIN
+has arrived**. The first two are fixed at the close and at the moment the
+FIN is made: not when the FIN is sent, and not when the socket closes. That
+is Linux's state machine (`SHUT_WR` moves to `FIN_WAIT1` whether or not the
+FIN can go out, and a FIN received there leads to `CLOSING` and
+`TIME_WAIT`; a passive end waits in `LAST_ACK` until its FIN is
+acknowledged), and Darwin agrees on every row. The third can become true
+after the close: an orphan whose passive FIN was queued releases its
+endpoint when the peer's reads let the bytes and the FIN through. The stack
+models neither case (see 3.5).
 
 **A listener with queued connections** (Q). Closing it resets every queued
 client: 0x201d on Linux, and READ and WRITE EOF/54 on Darwin. Each client
@@ -376,9 +404,12 @@ flushes, and resets the first arrival.
     anyway (`tcp_done` sets `SHUTDOWN_MASK`), and a closed one has no
     reader.
   - `passive` is recorded when the FIN is made, by `SHUT_WR` or by `close`,
-    whether it then goes out or waits behind bytes. It decides whether the
-    end keeps its endpoint once its socket has closed (2.7: a passive closer
-    frees it at once, an active one is held in `TIME_WAIT`). It cannot be
+    whether it then goes out or waits behind bytes. With the FIN's progress
+    it decides whether the end keeps its endpoint once its socket has closed
+    (2.7): the endpoint is released exactly when the end is `Closed` and
+    its outbound FIN is `Arrived true`. An orphan whose FIN is `Queued true`
+    releases it at the step that moves the FIN to `Arrived true`, which is
+    a peer's read; `Arrived false` is `TIME_WAIT` and holds it. It cannot be
     derived later: once both FINs have arrived, nothing else records which
     was made first. Its invariant is that `passive` implies the opposite FIN
     is `Arrived`, since a FIN never un-arrives.
@@ -469,8 +500,23 @@ The rules, as functions over (D), with each measured row as a test:
     arrived, as (D) derives it;
   - a peer already reset just closes.
 
-  Every row of 2.7 is then an existing rule: what the peer keeps, what is
-  discarded, the take rules, and the port and four-tuple release.
+  Whether `abort` resets at all is a function of the two FINs (2.7), with
+  the closer's outbound FIN `out` and its inbound FIN `in`:
+
+  | `out` | `in` | `abort` |
+  |---|---|---|
+  | `Arrived _` | `Arrived _` | the exchange is complete: an ordinary `close`, no reset. On Darwin the closer's endpoint is released even if `out` is `Arrived false`; on Linux the ordinary rule holds. |
+  | `Queued true` | `Arrived _` | reset |
+  | `Queued false` | `Arrived _` | Linux: reset. Darwin: refused, because its reset waits on the peer's reads |
+  | anything else | | reset |
+
+  The two Darwin-specific facts belong to the flavour's rules, in the Darwin
+  case of `TcpTransferRules`. Darwin's `EINVAL` to setting `SO_LINGER` on a
+  socket shut both ways belongs to `setsockopt`, which already refuses
+  Darwin's options after a reset for the same reason.
+
+  Every resetting row of 2.7 is then an existing rule: what the peer keeps,
+  what is discarded, the take rules, and the port and four-tuple release.
 - **(b) A Linux-shaped `disconnect` operation that resets without closing**
   (`tcp_disconnect`), with an abortive close as "disconnect, then release".
   The same operation would serve Linux's listener `shutdown` and `connect`
@@ -544,13 +590,16 @@ reset, as they do for any reset.
   Darwin's `ofSocket` reports WRITE as EOF once write-shut, with the free space
   as data, however small. Darwin's existing `poll` derivation must give HUP
   alone for that, and a test row pins it.
-- **The passive closer's port.** An end whose own FIN was made after the
-  peer's FIN had arrived frees its endpoint as soon as its socket closes;
-  any other FIN-closed end holds it (2.7, section F). Before `shutdown`, the
-  difference could not be observed: the peer's FIN meant the peer had
-  closed, and once both ends close the connection is gone. With `SHUT_WR`,
-  the active closer stays open. `orphanedConnectionOccupies` releases a
-  closed end whose outbound `TcpFin` is `passive`.
+- **The passive closer's port.** A FIN-closed end frees its endpoint when
+  its socket has closed and its outbound FIN is `Arrived true`: made after
+  the peer's had arrived, and itself arrived. Any other FIN-closed end holds
+  it (2.7, section F). An orphan with a `Queued true` FIN releases its
+  endpoint at the read by the peer that lets the FIN through, so
+  `orphanedConnectionOccupies` reads the FIN's state each time rather than
+  anything fixed at the close. Before `shutdown`, the difference could not
+  be observed: the peer's FIN meant the peer had closed, and once both ends
+  close the connection is gone. With `SHUT_WR`, the active closer stays
+  open.
 
 ### 3.6 What the model deliberately does not reproduce
 
@@ -569,6 +618,11 @@ reset, as they do for any reset.
   its own `SHUT_RDWR` while its peer's bytes wait, and watches the clock,
   can tell.
 - **`SO_LINGER` {1, t > 0} with bytes unsent**: refused (3.4).
+- **Darwin's linger {1, 0} close after its own FIN was made first and is
+  still queued, once the peer's FIN has arrived.** No reset is sent at the
+  close; the peer reads what it holds and then `ECONNRESET`, when its reads
+  open the window towards a socket that has gone. The model has no
+  "reset owed to whoever next reads". Refused.
 - **`TIME_WAIT` after both ends have closed** stays unmodelled, as in the
   stack: the connection goes once nothing refers to it.
 - **`SystemNative_Disconnect`** (Linux `connect` with `AF_UNSPEC`, which is
@@ -598,8 +652,8 @@ been rebased onto main (with #1790).
 3. **Half-close in `TcpTransfer`, as pure functions** (3.1 (D)).
    - First commit: the split of `TcpEndState`, with behaviour unchanged.
    - Then the read, write and arrival rules, `shutdown`'s answer function,
-     `closeWith` over the shut states, and `violations` reduced to the
-     byte-queue invariants.
+     `closeWith` over the shut states, `abort` as 3.2's function of the two
+     FINs, and `violations` reduced to the byte-queue invariants.
    - Tests: a property test against the reference model, extended with
      `shutdown`. S, T, R and P are replayed per flavour from the embedded output,
      as `TestTcpTransferMeasured` replays `tcp-transfer.c`.
@@ -636,7 +690,13 @@ with stage 4 if small.
   case, not bytes in `Sending`.
 - **Scope:** stage 5, `shutdown` on a listener, is deferred. Until it lands,
   that call is refused by name. Neither Kestrel nor `HttpClient` makes it.
-- **The passive closer's port (3.5):** modelled in stage 4, from the
-  `passive` flag recorded on the FIN when it is made. Not modelling it would
-  answer `EADDRINUSE` to a `bind` that the kernel allows.
+- **The passive closer's port (3.5):** modelled in stage 4. A FIN-closed
+  end's endpoint is released when it is `Closed` with its outbound FIN
+  `Arrived true`, including later, when an orphan's queued passive FIN
+  arrives. Not modelling it would answer `EADDRINUSE` to a `bind` that the
+  kernel allows.
+- **Abortive close (3.2):** a function of the two FINs. It is an ordinary
+  close once both have arrived, and otherwise a reset, except that Darwin's
+  close after an active FIN that is still queued and the peer's FIN has
+  arrived is refused.
 - **`SO_LINGER` {1, t > 0} (3.4):** refused when the close would wait.

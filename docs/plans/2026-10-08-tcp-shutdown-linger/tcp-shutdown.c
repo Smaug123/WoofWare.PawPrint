@@ -38,20 +38,34 @@
 //         idle, cunread, cunsent (as in S), pdata (p has 1000 bytes from c it
 //         has not read), afterwr (c called shutdown(WR) first), afterfin (p
 //         had called shutdown(WR) first; p still reads), cunsent-afterwr
-//         (cunsent, then shutdown(c, WR), so c's FIN waits behind its bytes).
-//       Then rdy(p); whether c's endpoint binds; p reads twice, p writes 100
-//       twice, soerr(p), p reads; and the bind again.
+//         (cunsent, then shutdown(c, WR), so c's FIN waits behind its bytes),
+//         bothfin-cfirst (c shutdown(WR), then p shutdown(WR): both FINs
+//         have arrived), bothfin-pfirst (the same, p first), cqueued-pfin
+//         (cunsent-afterwr, then p shutdown(WR): p's FIN has arrived and
+//         c's waits behind c's bytes), pfin-cqueued (p shutdown(WR), then
+//         c fills and shuts writing: the same, with p's FIN first).
+//       The answer of setting the linger (early, before the FINs, in the
+//       last four rows; and just before the close in every row). Then
+//       rdy(p); whether c's endpoint binds; p reads twice, p writes 100
+//       twice, soerr(p), p reads; in the rows with bytes unsent, p drains
+//       everything; and the bind again.
 //       Control: the same with no linger.
 //   F   which FIN went first, and whether c's endpoint binds once c has
 //       closed while p stays open:
 //         p-first-close   p shutdown(WR); c closes (c's FIN after p's);
 //         p-first-wr      p shutdown(WR); c shutdown(WR); c closes;
+//         p-first-queued-close  p shutdown(WR); c fills (as cunsent); c
+//                         closes, so its FIN waits behind its bytes; the
+//                         bind is tried, then p drains everything;
+//         p-first-queued-wr     the same, with c's shutdown(WR) before its
+//                         close;
 //         c-first-close   c closes; p shutdown(WR);
 //         c-first-wr      c shutdown(WR); p shutdown(WR); c closes;
 //         c-queued        c fills (as cunsent); c shutdown(WR), so its FIN
 //                         waits behind its bytes; p shutdown(WR); p drains
 //                         everything; c closes.
-//       The bind is tried at once and 30 ms later, then rdy(p).
+//       The bind is tried at once and 30 ms later, then rdy(p) (in the
+//       queued rows, both before and after p drains).
 //   X   c fills; c shutdown(WR), so its FIN is queued; p shutdown(RDWR);
 //       rdy of both; p drains everything, so c's bytes can arrive at a
 //       socket shut both ways; rdy of both; then soerr(c), c reads, c
@@ -441,6 +455,20 @@ static const char *how_name(int how)
 }
 
 static const int hows[3] = { SHUT_RD, SHUT_WR, SHUT_RDWR };
+
+// setsockopt(SO_LINGER), answering rather than failing: Darwin refuses it
+// (EINVAL) once both directions are shut.
+static const char *try_linger(int fd, int on, int secs)
+{
+    struct linger lg = { .l_onoff = on, .l_linger = secs };
+#ifdef __APPLE__
+    int r = setsockopt(fd, SOL_SOCKET, SO_LINGER_SEC, &lg, sizeof lg);
+#else
+    int r = setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
+#endif
+    int e = errno;
+    return ans(r, e);
+}
 
 static void set_linger(int fd, int on, int secs)
 {
@@ -1131,13 +1159,27 @@ static void section_b(void)
 
 // ---- L ----
 
-enum lstart { L_IDLE, L_CUNREAD, L_CUNSENT, L_PDATA, L_AFTERWR, L_AFTERFIN, L_CUNSENT_AFTERWR };
-static const char *lstart_name[] = { "idle", "cunread", "cunsent", "pdata", "afterwr", "afterfin", "cunsent-afterwr" };
+enum lstart {
+    L_IDLE,
+    L_CUNREAD,
+    L_CUNSENT,
+    L_PDATA,
+    L_AFTERWR,
+    L_AFTERFIN,
+    L_CUNSENT_AFTERWR,
+    L_BOTHFIN_CFIRST,
+    L_BOTHFIN_PFIRST,
+    L_CQUEUED_PFIN,
+    L_PFIN_CQUEUED,
+};
+static const char *lstart_name[] = { "idle",           "cunread",        "cunsent",      "pdata",
+                                     "afterwr",        "afterfin",       "cunsent-afterwr",
+                                     "bothfin-cfirst", "bothfin-pfirst", "cqueued-pfin", "pfin-cqueued" };
 
 static void section_l(void)
 {
     for (int lin = 1; lin >= 0; lin--)
-        for (int s = L_IDLE; s <= L_CUNSENT_AFTERWR; s++) {
+        for (int s = L_IDLE; s <= L_PFIN_CQUEUED; s++) {
             int c, p;
             pair(&c, &p);
             int cport = port_of(c);
@@ -1145,7 +1187,14 @@ static void section_l(void)
                 write(p, buf, 1000);
                 settle();
             }
-            if (s == L_CUNSENT || s == L_CUNSENT_AFTERWR) {
+            // In the rows where both FINs are made before the close, the
+            // linger is set first as well, since Darwin refuses to set it once
+            // both directions are shut; the close below tries again.
+            int late = s >= L_BOTHFIN_CFIRST;
+            const char *early = "-";
+            if (lin && late) early = try_linger(c, 1, 0);
+            if (s == L_PFIN_CQUEUED || s == L_BOTHFIN_PFIRST) do_shutdown(p, SHUT_WR);
+            if (s == L_CUNSENT || s == L_CUNSENT_AFTERWR || s == L_CQUEUED_PFIN || s == L_PFIN_CQUEUED) {
                 long n = fill(c);
                 printf("#\tfilled %ld\n", n);
             }
@@ -1153,15 +1202,20 @@ static void section_l(void)
                 write(c, buf, 1000);
                 settle();
             }
-            if (s == L_AFTERWR || s == L_CUNSENT_AFTERWR) do_shutdown(c, SHUT_WR);
-            if (s == L_AFTERFIN) do_shutdown(p, SHUT_WR);
-            if (lin) set_linger(c, 1, 0);
+            if (s == L_AFTERWR || s == L_CUNSENT_AFTERWR || s == L_BOTHFIN_CFIRST || s == L_BOTHFIN_PFIRST
+                || s == L_CQUEUED_PFIN || s == L_PFIN_CQUEUED)
+                do_shutdown(c, SHUT_WR);
+            if (s == L_AFTERFIN || s == L_BOTHFIN_CFIRST || s == L_CQUEUED_PFIN) do_shutdown(p, SHUT_WR);
+            const char *at_close = "-";
+            if (lin) at_close = try_linger(c, 1, 0);
             const char *tag = lstart_name[s];
             const char *lt = lin ? "linger0" : "nolinger";
-            const char *mark = (s == L_CUNSENT || s == L_CUNSENT_AFTERWR) ? "\t~counts" : "";
+            int queued = s == L_CUNSENT || s == L_CUNSENT_AFTERWR || s == L_CQUEUED_PFIN || s == L_PFIN_CQUEUED;
+            const char *mark = queued ? "\t~counts" : "";
             const char *cl = do_close(c);
             const char *rp = rdy(p);
-            printf("L\t%s\t%s\tclose=%s rdy(p)\t%s%s\n", lt, tag, cl, rp, mark);
+            printf("L\t%s\t%s\tlinger set early=%s at close=%s\tclose=%s rdy(p)\t%s%s\n", lt, tag, early, at_close, cl, rp,
+                   mark);
             const char *b1 = bind_free(cport);
             printf("L\t%s\t%s\tclosers-endpoint at once %s\n", lt, tag, b1);
             const char *r1 = do_read(p);
@@ -1172,7 +1226,7 @@ static void section_l(void)
             const char *r3 = do_read(p);
             printf("L\t%s\t%s\tp-read=%s,%s p-write100=%s p-write100=%s soerr(p)=%s p-read=%s\n", lt, tag, r1, r2, w1, w2,
                    e, r3);
-            if (s == L_CUNSENT || s == L_PDATA || s == L_CUNSENT_AFTERWR) {
+            if (queued || s == L_PDATA) {
                 const char *last = "";
                 long n = drain(p, &last);
                 printf("L\t%s\t%s\tp-drained=%ld last=%s%s\n", lt, tag, n, last, mark);
@@ -1185,8 +1239,17 @@ static void section_l(void)
 
 // ---- F ----
 
-enum forder { F_P_FIRST_CLOSE, F_P_FIRST_WR, F_C_FIRST_CLOSE, F_C_FIRST_WR, F_C_QUEUED };
-static const char *forder_name[] = { "p-first-close", "p-first-wr", "c-first-close", "c-first-wr", "c-queued" };
+enum forder {
+    F_P_FIRST_CLOSE,
+    F_P_FIRST_WR,
+    F_P_FIRST_QUEUED_CLOSE,
+    F_P_FIRST_QUEUED_WR,
+    F_C_FIRST_CLOSE,
+    F_C_FIRST_WR,
+    F_C_QUEUED,
+};
+static const char *forder_name[] = { "p-first-close",    "p-first-wr",    "p-first-queued-close", "p-first-queued-wr",
+                                     "c-first-close",    "c-first-wr",    "c-queued" };
 
 static void section_f(void)
 {
@@ -1205,6 +1268,26 @@ static void section_f(void)
             do_shutdown(c, SHUT_WR);
             do_close(c);
             break;
+        case F_P_FIRST_QUEUED_CLOSE:
+        case F_P_FIRST_QUEUED_WR: {
+            // c's FIN is made after p's has arrived (passive), but waits
+            // behind c's bytes until p drains them, after c has closed.
+            do_shutdown(p, SHUT_WR);
+            long n = fill(c);
+            printf("#\tfilled %ld\n", n);
+            if (o == F_P_FIRST_QUEUED_WR) do_shutdown(c, SHUT_WR);
+            do_close(c);
+            const char *q1 = bind_free(cport);
+            settle();
+            const char *q2 = bind_free(cport);
+            const char *qp = rdy(p);
+            printf("F\t%s\tbefore p drains: closers-endpoint at once %s, 30 ms later %s\trdy(p)\t%s\t~counts\n", tag, q1,
+                   q2, qp);
+            const char *last = "";
+            long d = drain(p, &last);
+            printf("F\t%s\tp-drained=%ld last=%s\t~counts\n", tag, d, last);
+            break;
+        }
         case F_C_FIRST_CLOSE:
             do_close(c);
             do_shutdown(p, SHUT_WR);

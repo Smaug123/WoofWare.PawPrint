@@ -1,72 +1,120 @@
 #	Linux 6.18.5 aarch64
-L	linger0	idle	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
+L	linger0	idle	linger set early=- at close=0	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
 L	linger0	idle	closers-endpoint at once bind-ok
 L	linger0	idle	p-read=-1 ECONNRESET,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	linger0	idle	closers-endpoint after p acted bind-ok
-L	linger0	cunread	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
+L	linger0	cunread	linger set early=- at close=0	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
 L	linger0	cunread	closers-endpoint at once bind-ok
 L	linger0	cunread	p-read=-1 ECONNRESET,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	linger0	cunread	closers-endpoint after p acted bind-ok
 #	filled 4290155
-L	linger0	cunsent	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=127717	~counts
+L	linger0	cunsent	linger set early=- at close=0	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=127717	~counts
 L	linger0	cunsent	closers-endpoint at once bind-ok
 L	linger0	cunsent	p-read=4096,4096 p-write100=-1 ECONNRESET p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=4096
 L	linger0	cunsent	p-drained=115429 last=0	~counts
 L	linger0	cunsent	closers-endpoint after p acted bind-ok
-L	linger0	pdata	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=1000
+L	linger0	pdata	linger set early=- at close=0	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=1000
 L	linger0	pdata	closers-endpoint at once bind-ok
 L	linger0	pdata	p-read=1000,-1 ECONNRESET p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	linger0	pdata	p-drained=0 last=0
 L	linger0	pdata	closers-endpoint after p acted bind-ok
-L	linger0	afterwr	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
+L	linger0	afterwr	linger set early=- at close=0	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
 L	linger0	afterwr	closers-endpoint at once bind-ok
 L	linger0	afterwr	p-read=0,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	linger0	afterwr	closers-endpoint after p acted bind-ok
-L	linger0	afterfin	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
+L	linger0	afterfin	linger set early=- at close=0	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
 L	linger0	afterfin	closers-endpoint at once bind-ok
 L	linger0	afterfin	p-read=-1 ECONNRESET,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	linger0	afterfin	closers-endpoint after p acted bind-ok
 #	filled 4290155
-L	linger0	cunsent-afterwr	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=127717	~counts
+L	linger0	cunsent-afterwr	linger set early=- at close=0	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=127717	~counts
 L	linger0	cunsent-afterwr	closers-endpoint at once bind-ok
 L	linger0	cunsent-afterwr	p-read=4096,4096 p-write100=-1 ECONNRESET p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=4096
 L	linger0	cunsent-afterwr	p-drained=115429 last=0	~counts
 L	linger0	cunsent-afterwr	closers-endpoint after p acted bind-ok
-L	nolinger	idle	close=0 rdy(p)	poll=0x2005 epoll=0x2005 fionread=0
+L	linger0	bothfin-cfirst	linger set early=0 at close=0	close=0 rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
+L	linger0	bothfin-cfirst	closers-endpoint at once bind-EADDRINUSE
+L	linger0	bothfin-cfirst	p-read=0,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
+L	linger0	bothfin-cfirst	closers-endpoint after p acted bind-EADDRINUSE
+L	linger0	bothfin-pfirst	linger set early=0 at close=0	close=0 rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
+L	linger0	bothfin-pfirst	closers-endpoint at once bind-ok
+L	linger0	bothfin-pfirst	p-read=0,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
+L	linger0	bothfin-pfirst	closers-endpoint after p acted bind-ok
+#	filled 4290155
+L	linger0	cqueued-pfin	linger set early=0 at close=0	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=127717	~counts
+L	linger0	cqueued-pfin	closers-endpoint at once bind-ok
+L	linger0	cqueued-pfin	p-read=4096,4096 p-write100=-1 ECONNRESET p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=4096
+L	linger0	cqueued-pfin	p-drained=115429 last=0	~counts
+L	linger0	cqueued-pfin	closers-endpoint after p acted bind-ok
+#	filled 4290560
+L	linger0	pfin-cqueued	linger set early=0 at close=0	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=127744	~counts
+L	linger0	pfin-cqueued	closers-endpoint at once bind-ok
+L	linger0	pfin-cqueued	p-read=4096,4096 p-write100=-1 ECONNRESET p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=4096
+L	linger0	pfin-cqueued	p-drained=115456 last=0	~counts
+L	linger0	pfin-cqueued	closers-endpoint after p acted bind-ok
+L	nolinger	idle	linger set early=- at close=-	close=0 rdy(p)	poll=0x2005 epoll=0x2005 fionread=0
 L	nolinger	idle	closers-endpoint at once bind-EADDRINUSE
 L	nolinger	idle	p-read=0,0 p-write100=100 p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	nolinger	idle	closers-endpoint after p acted bind-ok
-L	nolinger	cunread	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
+L	nolinger	cunread	linger set early=- at close=-	close=0 rdy(p)	poll=0x201d epoll=0x201d fionread=0
 L	nolinger	cunread	closers-endpoint at once bind-ok
 L	nolinger	cunread	p-read=-1 ECONNRESET,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	nolinger	cunread	closers-endpoint after p acted bind-ok
 #	filled 4290155
-L	nolinger	cunsent	close=0 rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
+L	nolinger	cunsent	linger set early=- at close=-	close=0 rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
 L	nolinger	cunsent	closers-endpoint at once bind-EADDRINUSE
 L	nolinger	cunsent	p-read=4096,4096 p-write100=100 p-write100=-1 ECONNRESET soerr(p)=0 p-read=4096
 L	nolinger	cunsent	p-drained=115429 last=0	~counts
 L	nolinger	cunsent	closers-endpoint after p acted bind-ok
-L	nolinger	pdata	close=0 rdy(p)	poll=0x2005 epoll=0x2005 fionread=1000
+L	nolinger	pdata	linger set early=- at close=-	close=0 rdy(p)	poll=0x2005 epoll=0x2005 fionread=1000
 L	nolinger	pdata	closers-endpoint at once bind-EADDRINUSE
 L	nolinger	pdata	p-read=1000,0 p-write100=100 p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	nolinger	pdata	p-drained=0 last=0
 L	nolinger	pdata	closers-endpoint after p acted bind-ok
-L	nolinger	afterwr	close=0 rdy(p)	poll=0x2005 epoll=0x2005 fionread=0
+L	nolinger	afterwr	linger set early=- at close=-	close=0 rdy(p)	poll=0x2005 epoll=0x2005 fionread=0
 L	nolinger	afterwr	closers-endpoint at once bind-EADDRINUSE
 L	nolinger	afterwr	p-read=0,0 p-write100=100 p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	nolinger	afterwr	closers-endpoint after p acted bind-ok
-L	nolinger	afterfin	close=0 rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
+L	nolinger	afterfin	linger set early=- at close=-	close=0 rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
 L	nolinger	afterfin	closers-endpoint at once bind-ok
 L	nolinger	afterfin	p-read=0,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
 L	nolinger	afterfin	closers-endpoint after p acted bind-ok
 #	filled 4290155
-L	nolinger	cunsent-afterwr	close=0 rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
+L	nolinger	cunsent-afterwr	linger set early=- at close=-	close=0 rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
 L	nolinger	cunsent-afterwr	closers-endpoint at once bind-EADDRINUSE
 L	nolinger	cunsent-afterwr	p-read=4096,4096 p-write100=100 p-write100=-1 ECONNRESET soerr(p)=0 p-read=4096
 L	nolinger	cunsent-afterwr	p-drained=115429 last=0	~counts
 L	nolinger	cunsent-afterwr	closers-endpoint after p acted bind-ok
+L	nolinger	bothfin-cfirst	linger set early=- at close=-	close=0 rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
+L	nolinger	bothfin-cfirst	closers-endpoint at once bind-EADDRINUSE
+L	nolinger	bothfin-cfirst	p-read=0,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
+L	nolinger	bothfin-cfirst	closers-endpoint after p acted bind-EADDRINUSE
+L	nolinger	bothfin-pfirst	linger set early=- at close=-	close=0 rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
+L	nolinger	bothfin-pfirst	closers-endpoint at once bind-ok
+L	nolinger	bothfin-pfirst	p-read=0,0 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
+L	nolinger	bothfin-pfirst	closers-endpoint after p acted bind-ok
+#	filled 4290155
+L	nolinger	cqueued-pfin	linger set early=- at close=-	close=0 rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
+L	nolinger	cqueued-pfin	closers-endpoint at once bind-EADDRINUSE
+L	nolinger	cqueued-pfin	p-read=4096,4096 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=4096
+L	nolinger	cqueued-pfin	p-drained=4277867 last=0	~counts
+L	nolinger	cqueued-pfin	closers-endpoint after p acted bind-EADDRINUSE
+#	filled 4290560
+L	nolinger	pfin-cqueued	linger set early=- at close=-	close=0 rdy(p)	poll=0x5 epoll=0x5 fionread=127744	~counts
+L	nolinger	pfin-cqueued	closers-endpoint at once bind-EADDRINUSE
+L	nolinger	pfin-cqueued	p-read=4096,4096 p-write100=-1 EPIPE+SIGPIPE p-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=4096
+L	nolinger	pfin-cqueued	p-drained=4278272 last=0	~counts
+L	nolinger	pfin-cqueued	closers-endpoint after p acted bind-ok
 F	p-first-close	closers-endpoint at once bind-ok, 30 ms later bind-ok	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
 F	p-first-wr	closers-endpoint at once bind-ok, 30 ms later bind-ok	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
+#	filled 4290560
+F	p-first-queued-close	before p drains: closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x5 epoll=0x5 fionread=127744	~counts
+F	p-first-queued-close	p-drained=4290560 last=0	~counts
+F	p-first-queued-close	closers-endpoint at once bind-ok, 30 ms later bind-ok	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
+#	filled 4290560
+F	p-first-queued-wr	before p drains: closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x5 epoll=0x5 fionread=127744	~counts
+F	p-first-queued-wr	p-drained=4290560 last=0	~counts
+F	p-first-queued-wr	closers-endpoint at once bind-ok, 30 ms later bind-ok	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
 F	c-first-close	closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
 F	c-first-wr	closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
 #	filled 4290155
@@ -342,12 +390,12 @@ Q	shutdown-rdwr	q1 rdy	poll=0x201d epoll=0x201d fionread=0
 Q	shutdown-rdwr	q1 read=-1 ECONNRESET write100=-1 EPIPE+SIGPIPE soerr=0 read=0
 Q	shutdown-rdwr	listeners-port bind-ok
 #	filled 4290155
-G	unsent	nonblocking	close=0 after 1007 ms rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
+G	unsent	nonblocking	close=0 after 1013 ms rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
 G	unsent	nonblocking	p-drained=4290155 last=0 soerr(p)=0	~counts
 #	filled 4290155
-G	unsent	blocking	close=0 after 1030 ms rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
+G	unsent	blocking	close=0 after 1024 ms rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
 G	unsent	blocking	p-drained=4290155 last=0 soerr(p)=0	~counts
-G	nothing	nonblocking	close=0 after 1 ms rdy(p)	poll=0x2005 epoll=0x2005 fionread=0	~counts
+G	nothing	nonblocking	close=0 after 3 ms rdy(p)	poll=0x2005 epoll=0x2005 fionread=0	~counts
 G	nothing	nonblocking	p-drained=0 last=0 soerr(p)=0	~counts
-G	nothing	blocking	close=0 after 3 ms rdy(p)	poll=0x2005 epoll=0x2005 fionread=0	~counts
+G	nothing	blocking	close=0 after 2 ms rdy(p)	poll=0x2005 epoll=0x2005 fionread=0	~counts
 G	nothing	blocking	p-drained=0 last=0 soerr(p)=0	~counts
