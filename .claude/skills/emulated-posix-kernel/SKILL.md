@@ -11,7 +11,14 @@ follows.
 
 ## 1. Where does this fact live?
 
-Four homes, and picking the wrong one is the most common mistake in this area
+First ask whether it is the kernel's at all. `WoofWare.PosixKernel/README.md`,
+"What the kernel leaves to the client", lists what the library deliberately does
+not do — user memory and `mmap`, blocks inside the process (`futex`,
+`__psynch`), choosing which task runs, when time passes, the errno slot,
+running a signal handler, `sigaltstack`, process creation — with why each is
+the client's and how the two meet. Change that section when you move the line.
+
+If it is the kernel's, there are four homes, and picking the wrong one is the most common mistake in this area
 because three of them look alike from the call site.
 
 | home | the fact is… | examples |
