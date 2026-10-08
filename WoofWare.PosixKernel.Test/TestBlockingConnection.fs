@@ -1665,6 +1665,24 @@ module TestBlockingConnection =
         UnixSystem.checkInvariants (ForgedPark.onAbsent 1 (read 5 (SleepTarget.EndedByClose socketId)) system)
         |> shouldEqual [ UnixSystemDefect.ParkedCallEndedByCloseUnderLinux 1 ]
 
+        // Under Darwin a close of the descriptor a call was made through ends
+        // it, so while it sleeps the descriptor names its description.
+        let client, server, system = pair (systemOn SimulatedUnixPlatform.macOsArm64 false)
+
+        let description =
+            FileDescriptorRegistry.tryFindId client (UnixSystemState.fileDescriptors system)
+            |> Option.get
+
+        let serverDescription =
+            FileDescriptorRegistry.tryFindId server (UnixSystemState.fileDescriptors system)
+            |> Option.get
+
+        UnixSystem.checkInvariants (ForgedPark.onAbsent 1 (read 5 (SleepTarget.Waiting (description, server))) system)
+        |> shouldEqual
+            [
+                UnixSystemDefect.ParkedCallDescriptorRebound (1, server, description, Some serverDescription)
+            ]
+
     /// A read asleep in one process wakes for bytes another process writes,
     /// and a write asleep in one for room another's read makes, through
     /// `SimulatedMachine.wakes`; each finishes in its own process's view.
@@ -1740,3 +1758,54 @@ module TestBlockingConnection =
                     machine
 
             Machines.assertClean machine
+
+    /// A Linux write that sleeps marks its socket out of space, as
+    /// `sk_stream_wait_memory` sets `SOCK_NOSPACE`, so an edge-triggered
+    /// `EPOLLOUT` registration gets its one edge when the send buffer drains
+    /// to two thirds full, as after a write that met `EAGAIN`.
+    [<Test>]
+    let ``a Linux write that sleeps arms the send-space edge`` () : unit =
+        let client, server, system = pair (systemOn SimulatedUnixPlatform.linuxX64 false)
+
+        let epoll, system =
+            match UnixPoll.epollCreate1 0 system with
+            | Ok (Ok created) -> created
+            | other -> failwith $"epoll_create1: %A{other}"
+
+        let system =
+            match
+                UnixPoll.epollCtl
+                    epoll
+                    1
+                    client
+                    (EpollEventArgument.Readable (EpollEvents.Out ||| EpollEvents.EdgeTriggered, 0UL))
+                    system
+            with
+            | Ok (EpollCtlAnswer.Changed, system) -> system
+            | other -> failwith $"epoll_ctl: %A{other}"
+
+        let edges (system : UnixSystem<int, string>) : uint32 list * UnixSystem<int, string> =
+            match UnixPoll.epollWait 3 epoll 2 UserBuffer.Mapped 0 system with
+            | Ok (EpollWaitOutcome.Answered events, system) -> List.map snd events, system
+            | other -> failwith $"epoll_wait: %A{other}"
+
+        // The ADD's own edge, while the socket is writable.
+        let added, system = edges system
+        added |> shouldEqual [ EpollEvents.Out ]
+
+        let system = asleepWriting 1 client (payload 11 600000) system
+
+        let rec drain (reads : int) (system : UnixSystem<int, string>) =
+            if reads > 100 then
+                failwith "no edge came"
+
+            let system = readNow server 1000 system |> snd
+
+            match edges system with
+            | [], system -> drain (reads + 1) system
+            | events, _ -> events, wokenAmong [ 1 ] system
+
+        let events, woken = drain 0 system
+        events |> shouldEqual [ EpollEvents.Out ]
+        // The edge comes as the sleeping writer is woken.
+        woken |> shouldEqual [ 1 ]

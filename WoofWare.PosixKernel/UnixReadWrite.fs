@@ -3027,17 +3027,16 @@ module UnixReadWrite =
 
         if written = parked.Count then
             Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 parked.Count), UnixParkState.unpark task system))
-        else
+        else if
 
-        // More is left and the room is gone. A signal pending ends the write
-        // with what it has taken, as both kernels' next wait for room finds the
-        // signal (sections W-partial and D-write measure the same of a write
-        // asleep with bytes taken).
-        match SyscallInterruption.interrupts task system with
-        | Error refusal -> Error (WriteRefusal.Interruption refusal)
-        | Ok true -> Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 written), UnixParkState.unpark task system))
-        | Ok false when nonBlockingNow writer system -> Error (WriteRefusal.ConnectionBecameNonBlocking socketId)
-        | Ok false -> Ok (parkConnectionWrite task writer fd parked.Buffer parked.Count written system)
+            // More is left and the room is gone, so the write sleeps again. No
+            // signal is pending to end it: `admitFinishWrite` answers one before it
+            // names any bytes.
+            nonBlockingNow writer system
+        then
+            Error (WriteRefusal.ConnectionBecameNonBlocking socketId)
+        else
+            Ok (parkConnectionWrite task writer fd parked.Buffer parked.Count written system)
 
     let private admitFinishWriteHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
@@ -3295,9 +3294,10 @@ module UnixReadWrite =
     /// Otherwise a signal with a handler pending for the task, or `O_NONBLOCK`
     /// set on the description while the call slept, ends it with the count it
     /// has put in by now, and with neither, it sleeps again for the rest. A
-    /// write to a connected socket is the same, except that one whose
-    /// description has become non-blocking is refused
-    /// (`WriteRefusal.ConnectionBecameNonBlocking`).
+    /// write to a connected socket sleeps again for the rest, or is refused if
+    /// its description has become non-blocking
+    /// (`WriteRefusal.ConnectionBecameNonBlocking`); a signal never reaches
+    /// it here, `admitFinishWrite` having answered one first.
     ///
     /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
     /// the system the one it came with: anything else is the caller's mistake,
