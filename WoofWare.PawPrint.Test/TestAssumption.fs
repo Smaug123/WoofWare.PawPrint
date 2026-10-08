@@ -1,6 +1,9 @@
 namespace WoofWare.PawPrint.Test
 
 open System
+open System.Collections.Generic
+open System.Globalization
+open System.Reflection
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -30,14 +33,13 @@ module TestAssumption =
         summarised.Length |> shouldEqual Assumption.all.Count
 
         for assumption, method in summarised do
+            let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
+            let name = $"%s{declaringType.Namespace}.%s{declaringType.Name}::%s{method.Name}"
+            method.IsStatic |> shouldEqual true
+
             match assumption with
             | Assumption.CoreLibResourceLookup ->
-                let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
-
-                $"%s{declaringType.Namespace}.%s{declaringType.Name}::%s{method.Name}"
-                |> shouldEqual "System.SR::InternalGetResourceString"
-
-                method.IsStatic |> shouldEqual true
+                name |> shouldEqual "System.SR::InternalGetResourceString"
 
                 method.Signature.ParameterTypes
                 |> shouldEqual [ TypeDefn.PrimitiveType PrimitiveType.String ]
@@ -45,9 +47,17 @@ module TestAssumption =
                 method.Signature.ReturnType
                 |> shouldEqual (MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.String))
 
-            match method.Body with
-            | MethodBody.Il _ -> ()
-            | other -> failwith $"%A{assumption} summarises a method whose body is %A{other}, not IL"
+                match method.Body with
+                | MethodBody.Il _ -> ()
+                | other -> failwith $"%A{assumption} summarises a method whose body is %A{other}, not IL"
+            | Assumption.NamedTypesLoad ->
+                name |> shouldEqual "System.RuntimeTypeHandle::GetConstraints"
+
+                match method.Body, method.TryNativeImport with
+                | MethodBody.PInvoke, Some import ->
+                    import.ModuleName |> shouldEqual "QCall"
+                    import.EntryPointName |> shouldEqual "RuntimeTypeHandle_GetConstraints"
+                | other -> failwith $"%A{assumption} summarises a method that is not a QCall: %A{other}"
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``every exception an assumption's contract raises is a CoreLib exception type`` (which : string) : unit =
@@ -64,3 +74,77 @@ module TestAssumption =
 
                 if isNull hostType || not (typeof<Exception>.IsAssignableFrom hostType) then
                     failwith $"%A{assumption} raises %O{name}, which is not an exception type of the host's CoreLib"
+
+    /// What CoreLib's own caller of the QCall `RuntimeTypeHandle_GetConstraints` raises for the type
+    /// `handle` names, on the real runtime: the full name of the exception's type, if it raises one.
+    let private constraintsRaise (handle : RuntimeTypeHandle) : string option =
+        let getConstraints =
+            typeof<RuntimeTypeHandle>
+                .GetMethod ("GetConstraints", BindingFlags.Instance ||| BindingFlags.NonPublic, Type.EmptyTypes)
+
+        // Unwrapped, since wrapping makes a `TargetInvocationException`, whose own constructor
+        // looks up its message.
+        try
+            getConstraints.Invoke (box handle, BindingFlags.DoNotWrapExceptions, null, [||], null)
+            |> ignore
+
+            None
+        with e ->
+            Some (e.GetType().FullName)
+
+    [<Test>]
+    let ``what listing constraints raises on the real runtime is in the contract that assumes named types load``
+        ()
+        : unit
+        =
+        let contract =
+            Assumption.raises Assumption.NamedTypesLoad
+            |> List.map (fun name -> name.FullName)
+            |> Set.ofList
+
+        // A type that is not a generic parameter.
+        let raisedHere = constraintsRaise typeof<int>.TypeHandle
+        raisedHere |> shouldEqual (Some "System.ArgumentException")
+        contract.Contains raisedHere.Value |> shouldEqual true
+
+        // A generic parameter whose constraints are all in CoreLib.
+        let parameter = typedefof<Comparer<int>>.GetGenericArguments().[0]
+        constraintsRaise parameter.TypeHandle |> shouldEqual None
+
+    /// The invariant culture, until its name cannot be read: setting the current UI culture reads
+    /// it once.
+    type private NamelessCulture () =
+        inherit CultureInfo ("")
+        member val Nameless : bool = false with get, set
+
+        override this.Name : string =
+            if this.Nameless then
+                raise (TimeZoneNotFoundException "a culture's name")
+            else
+                base.Name
+
+    [<Test>]
+    let ``listing a type's constraints on the real runtime can raise what the resource lookup raises`` () : unit =
+        // The runtime makes the ArgumentException it raises with its parameterless constructor,
+        // which looks up its message under the current UI culture. So the contract alone does not
+        // say what escapes; following that constructor (`Assumption.constructs`) does.
+        let previous = CultureInfo.CurrentUICulture
+
+        let raised =
+            try
+                let culture = new NamelessCulture ()
+                CultureInfo.CurrentUICulture <- culture
+                culture.Nameless <- true
+
+                try
+                    constraintsRaise typeof<int>.TypeHandle
+                finally
+                    culture.Nameless <- false
+            finally
+                CultureInfo.CurrentUICulture <- previous
+
+        raised |> shouldEqual (Some "System.TimeZoneNotFoundException")
+
+        Assumption.constructs Assumption.NamedTypesLoad
+        |> List.map (fun name -> name.FullName)
+        |> shouldEqual [ "System.ArgumentException" ]

@@ -1436,10 +1436,13 @@ public static class SR
         | _, failures -> failures |> String.concat Environment.NewLine |> failwith
 
     [<Test>]
-    let ``CoreLib's resource lookup raises exactly its contract when assumed, and is unknown otherwise`` () : unit =
+    let ``each method an assumption summarises raises exactly its contract when assumed, and is unknown otherwise``
+        ()
+        : unit
+        =
         let corelib = hostCoreLib ()
 
-        let lookup =
+        let summarised =
             [
                 for KeyValue (handle, _) in corelib.Methods do
                     match Assumption.summarises corelib handle with
@@ -1447,22 +1450,8 @@ public static class SR
                     | None -> ()
             ]
 
-        let key, assumption =
-            match lookup with
-            | [ only ] -> only
-            | other -> failwith $"Expected one method of CoreLib's that an assumption summarises, found %A{other}"
-
-        assumption |> shouldEqual Assumption.CoreLibResourceLookup
-
-        // Running out of memory or stack is something no assumption rules out.
-        let contract =
-            Assumption.raises assumption
-            |> List.map (fun name -> name.FullName)
-            |> Set.ofList
-
-        for exhaustion in [ "System.OutOfMemoryException" ; "System.StackOverflowException" ] do
-            if not (contract.Contains exhaustion) then
-                failwith $"%A{assumption}'s contract leaves out %s{exhaustion}"
+        summarised |> List.map snd |> Set.ofList |> shouldEqual Assumption.all
+        summarised.Length |> shouldEqual Assumption.all.Count
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf
@@ -1474,21 +1463,72 @@ public static class SR
                 []
                 id
 
-        let assuming, escapes = EscapeAnalysis.escapes (analysis Assumption.all) key
+        for key, assumption in summarised do
+            // Running out of memory or stack is something no assumption rules out.
+            let contract =
+                Assumption.raises assumption
+                |> List.map (fun name -> name.FullName)
+                |> Set.ofList
 
-        render assuming escapes
-        |> shouldEqual (
-            Assumption.raises assumption
-            |> List.map (fun name -> "=" + name.FullName)
-            |> Set.ofList
-        )
+            for exhaustion in [ "System.OutOfMemoryException" ; "System.StackOverflowException" ] do
+                if not (contract.Contains exhaustion) then
+                    failwith $"%A{assumption}'s contract leaves out %s{exhaustion}"
 
-        escapes.Unknown |> shouldEqual false
-        escapes.Assumes |> shouldEqual (Set.singleton assumption)
+            // The parameterless constructors of the exceptions it makes before raising them.
+            let constructors =
+                Assumption.constructs assumption
+                |> List.map (fun name ->
+                    let ty =
+                        match corelib.TryGetTopLevelTypeDef name.Namespace name.Name with
+                        | Some ty -> ty
+                        | None -> failwith $"CoreLib defines no %O{name}"
 
-        let _, escapes = EscapeAnalysis.escapes (analysis Set.empty) key
-        escapes.Unknown |> shouldEqual true
-        escapes.Assumes |> shouldEqual Set.empty
+                    ty.Methods
+                    |> Seq.filter (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Signature.ParameterTypes.IsEmpty)
+                    |> Seq.exactlyOne
+                    |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
+                )
+
+            let constructed (allowed : Set<Assumption>) : EscapeAnalysisState * Escapes list =
+                ((analysis allowed, []), constructors)
+                ||> List.fold (fun (state, answers) constructor ->
+                    let state, answer = EscapeAnalysis.escapes state constructor
+                    state, answer :: answers
+                )
+
+            // Allowed everything, it raises its contract and what those constructors raise.
+            let assuming, made = constructed Assumption.all
+            let assuming, escapes = EscapeAnalysis.escapes assuming key
+
+            render assuming escapes
+            |> shouldEqual (
+                made
+                |> List.map (render assuming)
+                |> Set.unionMany
+                |> Set.union (contract |> Set.map (fun name -> "=" + name))
+            )
+
+            escapes.Unknown |> shouldEqual false
+
+            escapes.Assumes
+            |> shouldEqual (made |> List.map _.Assumes |> Set.unionMany |> Set.add assumption)
+
+            // Allowed alone, it is unknown exactly where one of those constructors is: constructing a
+            // CoreLib exception looks up its message, which without the resource lookup is unknown.
+            let alone, made = constructed (Set.singleton assumption)
+            let _, escapes = EscapeAnalysis.escapes alone key
+
+            made |> List.exists _.Unknown |> shouldEqual (not constructors.IsEmpty)
+            escapes.Unknown |> shouldEqual (not constructors.IsEmpty)
+            escapes.Assumes |> shouldEqual (Set.singleton assumption)
+
+            // Every other assumption allowed does not stand in for this one, though the method's own
+            // code may rely on another.
+            let _, escapes =
+                EscapeAnalysis.escapes (analysis (Set.remove assumption Assumption.all)) key
+
+            escapes.Unknown |> shouldEqual true
+            escapes.Assumes.Contains assumption |> shouldEqual false
 
     [<Test>]
     let ``a native method the contract table describes raises exactly what its row says`` () : unit =
