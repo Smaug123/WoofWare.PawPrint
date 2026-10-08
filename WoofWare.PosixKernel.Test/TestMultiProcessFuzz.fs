@@ -54,6 +54,10 @@ module TestMultiProcessFuzz =
         | KeventAdd of kqueue : int * fd : int
         | KeventWait of kqueue : int * timeout : int
         | Poll of fds : int list * timeout : int
+        /// `poll` for readability on the process's listener at
+        /// `ports.[port]`, if it holds one, which `Poll`'s index into every
+        /// socket the process holds seldom picks out.
+        | PollListener of port : int * timeout : int
         | Exit of status : int
 
     /// A step of the machine's own, or a call made by a task of a process.
@@ -150,6 +154,72 @@ module TestMultiProcessFuzz =
             Steps : Step list
         }
 
+    /// Calls by two processes that independent draws rarely line up: a call of
+    /// the first sets something up that only a later call of the second acts
+    /// on. The steps are in the order they run; each is an ordinary call, made
+    /// and checked as any other.
+    let private crossProcessScenario (platform : SimulatedUnixPlatform) (processes : int) : Gen<Step list> =
+        gen {
+            let! first = Gen.choose (0, processes - 1)
+            let! offset = Gen.choose (1, processes - 1)
+            let second = (first + offset) % processes
+            let! firstTask = Gen.choose (0, tasks - 1)
+            let! secondTask = Gen.choose (0, tasks - 1)
+            let! dir = small
+
+            let byFirst (op : Op) : Step = Step.Call (first, firstTask, op)
+            let bySecond (op : Op) : Step = Step.Call (second, secondTask, op)
+
+            return!
+                Gen.frequency
+                    [
+                        // The first makes a directory and stands in it; the
+                        // second removes it.
+                        1,
+                        Gen.constant
+                            [
+                                byFirst (Op.MkDir dir)
+                                byFirst (Op.ChDir (1 + dir % dirs.Length))
+                                bySecond (Op.RmDir dir)
+                            ]
+                        // The first sleeps on its event queue, which a prepared
+                        // process has watching its listener at `ports.[first]`;
+                        // the second connects to that port. Only a prepared case
+                        // has the queue, so this is drawn twice as often.
+                        2,
+                        Gen.constant
+                            [
+                                match SimulatedUnixPlatform.flavour platform with
+                                | SimulatedUnixFlavour.Linux -> byFirst (Op.EpollWait (0, -1))
+                                | SimulatedUnixFlavour.Darwin -> byFirst (Op.KeventWait (0, -1))
+                                bySecond (Op.Socket true)
+                                bySecond (Op.Connect (0, first))
+                            ]
+                        // The first listens at a port, unless it already does,
+                        // and sleeps in `poll` on that listener; the second
+                        // connects to that port.
+                        1,
+                        Gen.constant
+                            [
+                                byFirst (Op.Socket false)
+                                byFirst (Op.Bind (0, first))
+                                byFirst (Op.Listen 0)
+                                byFirst (Op.PollListener (first, -1))
+                                bySecond (Op.Socket true)
+                                bySecond (Op.Connect (0, first))
+                            ]
+                        // The first locks the file a prepared process has open,
+                        // the second sleeps waiting for it, and the first lets go.
+                        1,
+                        Gen.constant
+                            [
+                                byFirst (Op.Flock (0, lockExclusive))
+                                bySecond (Op.Flock (0, lockExclusive))
+                                byFirst (Op.Flock (0, unlock))
+                            ]
+                    ]
+        }
+
     let private caseGen : Gen<Case> =
         gen {
             let! platform = Gen.elements [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
@@ -166,13 +236,16 @@ module TestMultiProcessFuzz =
                     Gen.constant (List.rev acc)
                 else
                     gen {
-                        let! kind = Gen.choose (0, 19)
+                        let! kind = Gen.choose (0, 99)
 
                         match kind with
-                        | k when k < 2 ->
+                        | k when k < 3 ->
+                            let! scenario = crossProcessScenario platform processes
+                            return! steps (n - 1) current (List.rev scenario @ acc)
+                        | k when k < 13 ->
                             let! finishing = Gen.choose (1, 4)
                             return! steps (n - 1) current (Step.WakePass finishing :: acc)
-                        | 2 ->
+                        | k when k < 18 ->
                             let! milliseconds = Gen.elements [ 1 ; 5 ; 10 ]
                             return! steps (n - 1) current (Step.Advance milliseconds :: acc)
                         | _ ->
@@ -381,6 +454,17 @@ module TestMultiProcessFuzz =
 
         let answered (result : Result<'a * UnixSystem<int, string>, 'r>) : Made =
             match result with
+            | Ok (_, after) -> Made.Answered after
+            | Error _ -> Made.Refused
+
+        let poll (entries : PollEntry list) (milliseconds : int) : Made =
+            match UnixPoll.poll task entries milliseconds view with
+            | Ok (PollOutcome.WouldBlock _, after) ->
+                match SimulatedUnixPlatform.flavour view.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Darwin -> coverage.DarwinPollParks <- coverage.DarwinPollParks + 1
+                | SimulatedUnixFlavour.Linux -> ()
+
+                Made.Sleeps after
             | Ok (_, after) -> Made.Answered after
             | Error _ -> Made.Refused
 
@@ -604,15 +688,25 @@ module TestMultiProcessFuzz =
                     }
                 )
 
-            match UnixPoll.poll task entries milliseconds view with
-            | Ok (PollOutcome.WouldBlock _, after) ->
-                match SimulatedUnixPlatform.flavour view.Machine.UnixPlatform with
-                | SimulatedUnixFlavour.Darwin -> coverage.DarwinPollParks <- coverage.DarwinPollParks + 1
-                | SimulatedUnixFlavour.Linux -> ()
+            poll entries milliseconds
+        | Op.PollListener (port, milliseconds) ->
+            let port = ports.[port % ports.Length]
 
-                Made.Sleeps after
-            | Ok (_, after) -> Made.Answered after
-            | Error _ -> Made.Refused
+            let listeningAt (socket : SocketDescription) : bool =
+                listening socket
+                && socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port = port)
+
+            match socketsWhere listeningAt view with
+            | [] -> Made.Answered view
+            | listener :: _ ->
+                poll
+                    [
+                        {
+                            Fd = listener
+                            Events = 0x0001s
+                        }
+                    ]
+                    milliseconds
         | Op.Exit status -> Made.Ended (UnixTaskLifecycle.exitGroup task status view)
 
     /// The call `task` of the view `view` is asleep in, finished.
@@ -1013,27 +1107,27 @@ module TestMultiProcessFuzz =
         // The paths the property exists for, each reached often enough that a
         // generator regression shows here rather than as a silently weaker
         // test: about a third of what 1000 cases reached when this was written.
-        coverage.CrossConnects |> shouldBeGreaterThan 150
-        coverage.CrossAddressInUse |> shouldBeGreaterThan 150
-        coverage.Accepts |> shouldBeGreaterThan 100
-        coverage.CrossRmDirOfStanding |> shouldBeGreaterThan 4
+        coverage.CrossConnects |> shouldBeGreaterThan 350
+        coverage.CrossAddressInUse |> shouldBeGreaterThan 165
+        coverage.Accepts |> shouldBeGreaterThan 170
+        coverage.CrossRmDirOfStanding |> shouldBeGreaterThan 85
         coverage.EpollAdds |> shouldBeGreaterThan 90
         coverage.KeventAdds |> shouldBeGreaterThan 180
-        coverage.Parks |> shouldBeGreaterThan 1000
-        coverage.DarwinPollParks |> shouldBeGreaterThan 80
-        coverage.KeventParks |> shouldBeGreaterThan 120
-        coverage.Finishes |> shouldBeGreaterThan 200
-        coverage.Exits |> shouldBeGreaterThan 60
-        coverage.CrossWakes |> shouldBeGreaterThan 100
+        coverage.Parks |> shouldBeGreaterThan 1200
+        coverage.DarwinPollParks |> shouldBeGreaterThan 145
+        coverage.KeventParks |> shouldBeGreaterThan 150
+        coverage.Finishes |> shouldBeGreaterThan 330
+        coverage.Exits |> shouldBeGreaterThan 48
+        coverage.CrossWakes |> shouldBeGreaterThan 245
 
         let crossWakes (kind : string) : int =
             Map.tryFind kind coverage.CrossWakeKinds |> Option.defaultValue 0
 
-        crossWakes "AcceptQueueNonEmpty" |> shouldBeGreaterThan 80
-        crossWakes "EpollEventDeliverable" |> shouldBeGreaterThan 10
-        crossWakes "KqueueEventDeliverable" |> shouldBeGreaterThan 10
-        crossWakes "KqueuePollReportable" |> shouldBeGreaterThan 4
-        crossWakes "FlockGrantable" |> shouldBeGreaterThan 6
-        crossWakes "DescriptorReady" |> shouldBeGreaterThan 2
+        crossWakes "AcceptQueueNonEmpty" |> shouldBeGreaterThan 100
+        crossWakes "EpollEventDeliverable" |> shouldBeGreaterThan 37
+        crossWakes "KqueueEventDeliverable" |> shouldBeGreaterThan 42
+        crossWakes "KqueuePollReportable" |> shouldBeGreaterThan 44
+        crossWakes "FlockGrantable" |> shouldBeGreaterThan 33
+        crossWakes "DescriptorReady" |> shouldBeGreaterThan 41
         // Refusals are steps that tested nothing; they must stay rare.
         coverage.Refusals * 10 |> shouldBeSmallerThan coverage.Calls
