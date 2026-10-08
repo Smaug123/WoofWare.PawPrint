@@ -105,7 +105,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `mknod` and `mknodat` (regular files only), `unlink`, `rmdir`, `unlinkat`, `rename`, `renameat`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
 | `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
-| `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt` |
+| `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `getpeername`, `setsockopt`, `getsockopt` |
 | `UnixConnection` | `connect`, `accept` |
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
 | `UnixKqueue` | `kqueue`, `kevent` |
