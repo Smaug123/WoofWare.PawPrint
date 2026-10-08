@@ -812,7 +812,7 @@ module TestConnectedTransfer =
 
                 let soError, system =
                     match KeventWorld.readSocketError keep system with
-                    | GetSockOptAnswer.Reported (value, _), system -> value, system
+                    | GetSockOptAnswer.Reported (OptionValue.Int value), system -> value, system
                     | other -> failwith $"SO_ERROR: %A{other}"
 
                 let level = SimulatedUnixPlatform.socketOptionLevel platform
@@ -822,10 +822,21 @@ module TestConnectedTransfer =
                     match UnixSocket.admitSetSockOpt keep level reuse UserBuffer.Mapped 4u system with
                     | Ok (SetSockOptAdmission.Answered error) -> Some error, system
                     | Ok (SetSockOptAdmission.Transfer _) ->
-                        match UnixSocket.setsockopt keep level reuse UserBuffer.Mapped 4u (Some 1) system with
+                        match
+                            UnixSocket.setsockopt
+                                keep
+                                level
+                                reuse
+                                UserBuffer.Mapped
+                                4u
+                                (Some (OptionValue.ofInt 1))
+                                system
+                        with
                         | Ok (SetSockOptAnswer.Set, system) -> None, system
                         | Ok (SetSockOptAnswer.Failed error, system) -> Some error, system
                         | Error refusal -> failwith $"setsockopt: %A{refusal}"
+                    | Ok SetSockOptAdmission.NoCopy ->
+                        failwith "setsockopt: SO_REUSEADDR through a mapped value is copied"
                     | Error refusal -> failwith $"setsockopt: %A{refusal}"
 
                 let bindFresh (withReuse : bool) (system : UnixSystem<int, string>) =

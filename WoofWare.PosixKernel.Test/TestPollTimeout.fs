@@ -71,6 +71,7 @@ module TestPollTimeout =
                             LockedPort = true
                         }
                 ReuseAddress = false
+                Options = SocketOptions.initial
                 Phase =
                     SocketPhase.Listening
                         {
