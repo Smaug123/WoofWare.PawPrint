@@ -123,8 +123,8 @@ type SetGroupIdOnWrite =
     ///
     /// Only a writer who owns the file has been measured, and only a writer in the file's
     /// group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID file
-    /// on behalf of any other writer, privileged or not, <c>PermissionBits.afterContentChangingWrite</c>
-    /// answers <c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c> rather than guess.
+    /// on behalf of any other writer, privileged or not, the write is refused
+    /// (<c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c>) rather than guessed at.
     /// </remarks>
     /// <example>
     /// This is the case on Darwin.
@@ -158,8 +158,8 @@ type SetIdBitsOnTruncation =
     /// <remarks>
     /// Only a truncating process that owns the file has been measured, and only one in the
     /// file's group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID
-    /// file on behalf of any other process, privileged or not, <c>PermissionBits.afterTruncation</c>
-    /// answers <c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c> rather than guess.
+    /// file on behalf of any other process, privileged or not, the truncation is refused
+    /// (<c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c>) rather than guessed at.
     /// </remarks>
     /// <example>
     /// Darwin behaves this way.

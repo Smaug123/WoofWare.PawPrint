@@ -720,10 +720,10 @@ module UnixSystem =
         UnixProcessState.environment system.Process
 
     /// The path of the executable that started the process, or `None` if it has
-    /// none, which both flavours report as a null return with errno `ENOENT`.
-    /// This library models no `exec(2)`, so a process has a path only if its
-    /// launch set one (`ProcessLaunch.withProcessPath`). The path is not
-    /// resolved against the filesystem.
+    /// none. `None` is an answer rather than a missing value: this library
+    /// models no `exec(2)`, so a process has a path only if its launch set one
+    /// (`ProcessLaunch.withProcessPath`). The path is not resolved against the
+    /// filesystem, so a client that wants it to name a file seeds the file.
     let processPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : AbsoluteUnixPath option

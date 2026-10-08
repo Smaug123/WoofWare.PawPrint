@@ -142,9 +142,7 @@ module TestXmlDocumentation =
             | -1 -> docId.Substring 2
             | i -> docId.Substring (2, i - 2)
 
-        match docId.[0] with
-        | 'T' -> Map.tryFind path types |> Option.map reachable
-        | _ ->
+        let asMember () : bool option =
             let split = path.LastIndexOf '.'
             let declaring = path.Substring (0, split)
 
@@ -162,8 +160,10 @@ module TestXmlDocumentation =
                     else
                         Array.concat
                             [
+                                // A union case with fields, where the union is a struct or has one
+                                // case, is documented as a type but compiled as its maker `New<Case>`.
                                 t.GetMethods allMembers
-                                |> Array.filter (fun m -> m.Name = name)
+                                |> Array.filter (fun m -> m.Name = name || m.Name = $"New%s{name}")
                                 |> Array.map (fun m -> m.IsPublic)
                                 t.GetProperties allMembers
                                 |> Array.filter (fun p -> p.Name = name)
@@ -180,6 +180,15 @@ module TestXmlDocumentation =
                     None
                 else
                     Some (reachable t && Array.contains true candidates)
+
+        match docId.[0] with
+        | 'T' ->
+            match Map.tryFind path types with
+            | Some t -> Some (reachable t)
+            // A union case without its own class is documented as a type that does
+            // not exist: see `asMember`.
+            | None -> asMember ()
+        | _ -> asMember ()
 
     let private codeSpan : Regex = Regex "`([^`]+)`"
 
@@ -223,11 +232,26 @@ module TestXmlDocumentation =
         Map.tryFind "UnixSystem.processorCount" names |> shouldEqual (Some true)
         Map.tryFind "UnixMachineState.processorCount" names |> shouldEqual (Some false)
 
+        // A union case without its own class is documented as a type that does not exist.
+        documentedMemberReachable types "T:WoofWare.PosixKernel.WakePrimitive.SignalDeliverable"
+        |> shouldEqual (Some true)
+
+        let documented =
+            doc.Descendants (XName.Get "member")
+            |> Seq.map (fun (memberElement : XElement) ->
+                memberElement.Attribute(XName.Get "name").Value, memberElement
+            )
+            |> List.ofSeq
+
+        // A member this cannot place would be skipped silently, so every one must be placed.
+        documented
+        |> List.filter (fun (id : string, _) -> documentedMemberReachable types id = None)
+        |> List.map fst
+        |> shouldEqual []
+
         let offences =
             [
-                for memberElement in doc.Descendants (XName.Get "member") do
-                    let id = memberElement.Attribute(XName.Get "name").Value
-
+                for id, memberElement in documented do
                     if documentedMemberReachable types id = Some true then
                         let mentions =
                             [
