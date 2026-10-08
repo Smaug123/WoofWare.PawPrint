@@ -98,8 +98,8 @@ module TestSocketErrorOption =
         | Error refusal -> failwith $"listen refused: %s{ListenRefusal.describe refusal}"
 
     let private fresh (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// A stream socket whose non-blocking connect to `nobody` was refused, with
     /// the refusal still pending; `prepare` runs on the socket first.

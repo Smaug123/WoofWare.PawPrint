@@ -161,19 +161,17 @@ module TestAttributeChangeAt =
             |> List.map (fun (n, e) -> name n, e)
             |> Map.ofList
 
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial caller.Platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context Owners.root
+        let image : UnixBootImage<int, string> = UnixSystem.initial caller.Platform
 
-        match
-            UnixBootImage.withFileSystemAndCurrentDirectory
-                epoch
-                (ownedBy 0u 0u)
-                seed
-                (AbsoluteUnixPath.parseOrFail context "/c/w")
+        match UnixBootImage.withFileSystem epoch (ownedBy 0u 0u) seed image with
+        | Ok image ->
+            Launched.bootWith
+                (Launched.credentials Owners.root
+                 >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/c/w"))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0)
                 image
-        with
-        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"%s{context}: could not build the probe's cell: %A{fault}"
 
     /// `system` with the caller's credentials, as the probe's child had once it

@@ -30,9 +30,9 @@ module TestCopyOutMeasured =
         ]
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial platform
         |> UnixBootImage.withLocalAddresses UnixSystem.defaultLocalAddresses []
-        |> UnixBootImage.boot
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private stream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system

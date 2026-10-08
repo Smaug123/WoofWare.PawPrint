@@ -61,15 +61,18 @@ module TestCredentialChange =
     let private requestedGroup (raw : int64) : GroupId option =
         if raw = -1L then None else Some (gid (uint32 raw))
 
-    let private imageWith
+    let private systemOn
         (platform : SimulatedUnixPlatform)
         (coreDumps : CoreDumps)
         (credentials : Credentials)
-        : UnixBootImage<int, string>
+        : UnixSystem<int, string>
         =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.withCredentials context credentials
-        |> UnixBootImage.withCoreDumps coreDumps
+        UnixSystem.initial platform
+        |> Launched.bootWith
+            (Launched.credentials credentials >> ProcessLaunch.withCoreDumps coreDumps)
+            UnixSystem.pipedStandardStreams
+            0
+            (CpuId 0)
 
     let private systemWith
         (platform : SimulatedUnixPlatform)
@@ -77,7 +80,7 @@ module TestCredentialChange =
         (credentials : Credentials)
         : UnixSystem<int, string>
         =
-        imageWith platform coreDumps credentials |> UnixBootImage.boot
+        systemOn platform coreDumps credentials
 
     let private answerText (answer : SyscallAnswer) : string =
         match answer with
@@ -583,16 +586,16 @@ module TestCredentialChange =
                 ]
 
         let system =
-            match
-                imageWith linux CoreDumps.Suppressed (Credentials.ofIds UserId.root (gid 0u) [])
-                |> UnixBootImage.withFileSystemAndCurrentDirectory
-                    UnixTimestamp.epoch
-                    (InodeOwner.ofProcess (Credentials.ofIds UserId.root (gid 0u) []))
-                    seed
-                    AbsoluteUnixPath.root
-            with
-            | Ok image -> UnixBootImage.boot image
-            | Error fault -> failwith $"%A{fault}"
+            UnixSystem.initial<int, string> linux
+            |> Launched.fileSystem
+                UnixTimestamp.epoch
+                (InodeOwner.ofProcess (Credentials.ofIds UserId.root (gid 0u) []))
+                seed
+            |> Launched.bootWith
+                (Launched.credentials (Credentials.ofIds UserId.root (gid 0u) []))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0)
 
         let _, system =
             UnixCredentials.setresgid (Some (gid 1000u)) (Some (gid 1001u)) (Some (gid 1002u)) system

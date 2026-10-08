@@ -206,8 +206,8 @@ module TestSockOptAgainstHost =
         | Buffer.Faulting -> UserBuffer.Unmapped faultingPage.Value
 
     let private fresh (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// A host descriptor for `target`, and a matching model descriptor on
     /// `system`. The model's pipe is standard input, which it models as one.

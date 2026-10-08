@@ -26,9 +26,8 @@ module TestGetGroups =
     let private gid (raw : uint32) : GroupId = GroupId.parseOrFail context raw
 
     let private systemWith (platform : SimulatedUnixPlatform) (credentials : Credentials) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.withCredentials context credentials
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private linuxWithGroups (groups : uint32 list) : UnixSystem<int, string> =
         Credentials.ofIds (uid 1000u) (gid 1000u) (groups |> List.map gid)
@@ -344,14 +343,17 @@ module TestGetGroupsAgainstHost =
                 // so handing the model the reported list is handing it the
                 // installed one.
                 let system : UnixSystem<int, string> =
-                    UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                    |> UnixBootImage.withCredentials
-                        context
-                        (Credentials.ofIds
-                            (UserId.parseOrFail context (geteuid ()))
-                            (GroupId.parseOrFail context (getegid ()))
-                            listed)
-                    |> UnixBootImage.boot
+                    UnixSystem.initial platform
+                    |> (Launched.bootWith
+                            (Launched.credentials (
+                                Credentials.ofIds
+                                    (UserId.parseOrFail context (geteuid ()))
+                                    (GroupId.parseOrFail context (getegid ()))
+                                    listed
+                            ))
+                            UnixSystem.pipedStandardStreams
+                            0
+                            (CpuId 0))
 
                 let sizes =
                     [ Int32.MinValue ; -1 ; 0 ; count - 1 ; count ; count + 1 ; capacity ]

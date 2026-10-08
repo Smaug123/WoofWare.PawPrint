@@ -34,8 +34,8 @@ module TestUnixWait =
     /// anonymous inode, with an exclusive lock held through `locker`; and tasks 1 to 4.
     let private world : UnixSystem<int, string> * int * OpenFileDescriptionId * OpenFileDescriptionId =
         let system =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let lockerFd, registry =
             FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)

@@ -350,14 +350,14 @@ module TestKeventWriteData =
     let ``each flavour starts with its measured send space`` () : unit =
         KeventWorld.darwin.Machine.TcpSendSpace |> shouldEqual 131072
 
-        let linux =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
+        let linux = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
 
-        (UnixBootImage.boot linux).Machine.TcpSendSpace |> shouldEqual 16384
+        (Launched.boot Map.empty 0 (CpuId 0) linux).Machine.TcpSendSpace
+        |> shouldEqual 16384
 
         (UnixBootImage.withTcpSendSpace None linux
          |> Configured.expectOk TcpSendSpaceRefusal.describe
-         |> UnixBootImage.boot)
+         |> Launched.boot Map.empty 0 (CpuId 0))
             .Machine.TcpSendSpace
         |> shouldEqual 16384
 
@@ -365,8 +365,7 @@ module TestKeventWriteData =
 
     [<Test>]
     let ``a Darwin send space outside the admissible range is refused, naming the bound it is past`` () : unit =
-        let darwin =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 Map.empty 0 (CpuId 0)
+        let darwin = UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
 
         let anywhere =
             Gen.oneof
@@ -398,7 +397,9 @@ module TestKeventWriteData =
             match UnixBootImage.withTcpSendSpace (Some size) darwin with
             | Ok image ->
                 expected |> shouldEqual (Ok ())
-                (UnixBootImage.boot image).Machine.TcpSendSpace |> shouldEqual size
+
+                (Launched.boot Map.empty 0 (CpuId 0) image).Machine.TcpSendSpace
+                |> shouldEqual size
             | Error refusal -> Error refusal |> shouldEqual expected
 
         Check.One (config, Prop.forAll (Arb.fromGen anywhere) property)
@@ -411,8 +412,7 @@ module TestKeventWriteData =
 
     [<Test>]
     let ``a Linux send space is refused, since nothing reads it`` () : unit =
-        let linux =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
+        let linux = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
 
         for size in [ Int32.MinValue ; 0 ; 16384 ; 131072 ; Int32.MaxValue ] do
             UnixBootImage.withTcpSendSpace (Some size) linux
@@ -425,8 +425,8 @@ module TestKeventWriteData =
             socketIn SocketDomain.Inet (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client))
 
         let linux =
-            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 Map.empty 0 (CpuId 0)
-             |> UnixBootImage.boot)
+            (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+             |> (Launched.boot Map.empty 0 (CpuId 0)))
                 .Machine
 
         let refusals =

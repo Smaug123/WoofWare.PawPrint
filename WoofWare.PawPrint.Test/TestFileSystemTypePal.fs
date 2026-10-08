@@ -135,10 +135,10 @@ module TestFileSystemTypePal =
         : FileSystemStatisticsAnswer
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial (HostPlatform.platformOf flavour)
             |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
             |> Result.defaultWith (fun refusal -> failwith $"test bug: %s{MountRefusal.describe refusal}")
-            |> UnixBootImage.boot
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         match target with
         | None -> system |> UnixPathResolution.fstatfs 4242

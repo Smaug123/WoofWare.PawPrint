@@ -167,13 +167,14 @@ module TestCredentials =
     [<Test>]
     let ``Linux takes any credentials it can hold, and stores exactly them`` () : unit =
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64
 
-        let initial = UnixBootImage.boot image
+        let initial = Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image
 
         let property (credentials : Credentials) : unit =
             let after =
-                image |> UnixBootImage.withCredentials context credentials |> UnixBootImage.boot
+                image
+                |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             after.Process.Credentials |> shouldEqual credentials
 
@@ -193,24 +194,21 @@ module TestCredentials =
         // Which of them a Darwin kernel consults is unmeasured, because changing
         // a user ID there needs root.
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.macOsArm64
 
-        let initial = UnixBootImage.boot image
+        let initial = Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image
 
         let property (credentials : Credentials) : unit =
             if agreeing credentials then
-                (image |> UnixBootImage.withCredentials context credentials |> UnixBootImage.boot).Process.Credentials
+                (image
+                 |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0))
+                    .Process.Credentials
                 |> shouldEqual credentials
             else
-                let refusal =
-                    Assert.Throws<Exception> (fun () ->
-                        image
-                        |> UnixBootImage.withCredentials "ctx" credentials
-                        |> ignore<UnixBootImage<int, string>>
-                    )
-
-                refusal.Message.StartsWith ("ctx: ", StringComparison.Ordinal)
-                |> shouldEqual true
+                Launched.launch SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                |> ProcessLaunch.withCredentials credentials
+                |> Result.map ignore
+                |> shouldEqual (Error (CredentialsRefusal.IdsDifferOnDarwin credentials))
 
         Check.One (config, Prop.forAll (Arb.fromGen eitherKind) property)
 
@@ -219,9 +217,9 @@ module TestCredentials =
         // One ID at a time, so a check that compared only some of the six fails
         // here even if a random draw never happened to isolate it.
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial SimulatedUnixPlatform.macOsArm64
 
-        let initial = UnixBootImage.boot image
+        let initial = Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image
 
         let base' = Credentials.ofIds (uid 501u) (gid 20u) []
 
@@ -248,12 +246,10 @@ module TestCredentials =
             ]
 
         for variant in variants do
-            Assert.Throws<Exception> (fun () ->
-                image
-                |> UnixBootImage.withCredentials context variant
-                |> ignore<UnixBootImage<int, string>>
-            )
-            |> ignore<Exception>
+            Launched.launch SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> ProcessLaunch.withCredentials variant
+            |> Result.map ignore
+            |> shouldEqual (Error (CredentialsRefusal.IdsDifferOnDarwin variant))
 
     [<TestCase("linux", 65536)>]
     [<TestCase("darwin", 16)>]
@@ -268,10 +264,9 @@ module TestCredentials =
 
         SimulatedUnixPlatform.supplementaryGroupLimit platform |> shouldEqual limit
 
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let image : UnixBootImage<int, string> = UnixSystem.initial platform
 
-        let initial = UnixBootImage.boot image
+        let initial = Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image
 
         let groups (count : int) : GroupId list =
             List.init count (fun i -> gid (uint32 (2000 + i)))
@@ -279,19 +274,22 @@ module TestCredentials =
         let atLimit = Credentials.ofIds (uid 1000u) (gid 1000u) (groups limit)
 
         let held =
-            image |> UnixBootImage.withCredentials context atLimit |> UnixBootImage.boot
+            image
+            |> Launched.bootWith (Launched.credentials atLimit) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         held.Process.Credentials |> shouldEqual atLimit
         UnixSystem.checkInvariants held |> shouldEqual []
 
         let aboveLimit = Credentials.ofIds (uid 1000u) (gid 1000u) (groups (limit + 1))
 
-        Assert.Throws<Exception> (fun () ->
-            image
-            |> UnixBootImage.withCredentials context aboveLimit
-            |> ignore<UnixBootImage<int, string>>
+        Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> ProcessLaunch.withCredentials aboveLimit
+        |> Result.map ignore
+        |> shouldEqual (
+            Error (
+                CredentialsRefusal.TooManySupplementaryGroups (limit + 1, limit, SimulatedUnixPlatform.flavour platform)
+            )
         )
-        |> ignore<Exception>
 
         // A state assembled without the setter is caught by the invariants.
         { initial with

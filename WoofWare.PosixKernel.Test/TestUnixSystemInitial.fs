@@ -39,8 +39,8 @@ module TestUnixSystemInitial =
             | other -> failwith $"unknown flavour %s{other}"
 
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         system.Machine.SoMaxConn |> shouldEqual expected
 
@@ -54,8 +54,8 @@ module TestUnixSystemInitial =
             | other -> failwith $"unknown flavour %s{other}"
 
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         system.Machine.Mount |> shouldEqual expected
 
@@ -72,8 +72,7 @@ module TestUnixSystemInitial =
     /// is carried as given.
     [<TestCaseSource(nameof platforms)>]
     let ``withSoMaxConn None takes the machine's own flavour's default`` (platform : SimulatedUnixPlatform) : unit =
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let image : UnixBootImage<int, string> = UnixSystem.initial platform
 
         let flavour = SimulatedUnixPlatform.flavour platform
 
@@ -82,13 +81,14 @@ module TestUnixSystemInitial =
             |> UnixBootImage.withSoMaxConn (Some 7)
             |> Configured.expectOk SoMaxConnRefusal.describe
 
-        (UnixBootImage.boot configured).Machine.SoMaxConn |> shouldEqual 7
+        (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) configured).Machine.SoMaxConn
+        |> shouldEqual 7
 
         // Back to the default, from an image that no longer carries it.
         (configured
          |> UnixBootImage.withSoMaxConn None
          |> Configured.expectOk SoMaxConnRefusal.describe
-         |> UnixBootImage.boot)
+         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine.SoMaxConn
         |> shouldEqual (UnixMachineState.defaultSoMaxConn flavour)
 
@@ -98,13 +98,8 @@ module TestUnixSystemInitial =
     let ``a forged platform is refused by the constructor`` () : unit =
         let exn =
             Assert.Throws<System.Exception> (fun () ->
-                UnixSystem.initial<int, string>
-                    Unchecked.defaultof<SimulatedUnixPlatform>
-                    UnixSystem.pipedStandardStreams
-                    0
-                    (CpuId 0)
-                |> UnixBootImage.boot
-                |> ignore<UnixSystem<int, string>>
+                UnixSystem.initial<int, string> Unchecked.defaultof<SimulatedUnixPlatform>
+                |> ignore<UnixBootImage<int, string>>
             )
 
         exn.Message |> shouldContainText "UnixSystem.initial"
@@ -112,8 +107,8 @@ module TestUnixSystemInitial =
     [<TestCaseSource(nameof platforms)>]
     let ``the platform asked for is the platform reported`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         system.Machine.UnixPlatform |> shouldEqual platform
 
@@ -128,8 +123,8 @@ module TestUnixSystemInitial =
     [<Test>]
     let ``the buffer check follows the platform's architecture`` () : unit =
         let checkOn (platform : SimulatedUnixPlatform) : UserBufferCheck =
-            (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-             |> UnixBootImage.boot)
+            (UnixSystem.initial<int, string> platform
+             |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
                 .Machine.UserBufferCheck
 
         checkOn SimulatedUnixPlatform.linuxX64
@@ -159,8 +154,8 @@ module TestUnixSystemInitial =
             | other -> failwith $"unknown flavour %s{other}"
 
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         system.Machine.EphemeralPortRange |> shouldEqual (uint16 low, uint16 high)
         system.Machine.NextEphemeralPort |> shouldEqual (uint16 low)
@@ -180,8 +175,8 @@ module TestUnixSystemInitial =
     [<TestCaseSource(nameof platforms)>]
     let ``both clocks boot at zero on every flavour`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         system.Machine.NanosecondsSinceBoot |> shouldEqual 0L
         system.Machine.BootTime |> shouldEqual UnixTimestamp.epoch
@@ -196,8 +191,8 @@ module TestUnixSystemInitial =
     [<TestCaseSource(nameof platforms)>]
     let ``the first ephemeral port drawn is the bottom of the range`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let socket : SocketDescription =
             {
@@ -246,8 +241,8 @@ module TestUnixSystemInitial =
         : unit
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         system.Process.CurrentDirectoryInode
         |> shouldEqual (VirtualFileSystem.root system.Machine.FileSystem)
@@ -260,8 +255,8 @@ module TestUnixSystemInitial =
     [<TestCaseSource(nameof platforms)>]
     let ``a fresh system is sound`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         UnixSystem.checkInvariants system |> shouldEqual []
 
@@ -271,8 +266,8 @@ module TestUnixSystemInitial =
     [<TestCaseSource(nameof platforms)>]
     let ``only the standard streams are open`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         for fd, pipeEnd, client in
             [
@@ -322,7 +317,7 @@ module TestUnixSystemInitial =
 
         let property (launch : Map<int, LaunchDescriptor>, platform : SimulatedUnixPlatform) : unit =
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform launch 0 (CpuId 0) |> UnixBootImage.boot
+                UnixSystem.initial platform |> (Launched.boot launch 0 (CpuId 0))
 
             let registry = UnixSystemState.fileDescriptors system
 
@@ -399,12 +394,8 @@ module TestUnixSystemInitial =
     let ``a launch table naming a negative descriptor is refused`` () : unit =
         let exn =
             Assert.Throws (fun () ->
-                UnixSystem.initial<int, string>
-                    SimulatedUnixPlatform.linuxX64
-                    (Map.ofList [ -1, LaunchDescriptor.Drained ])
-                    0
-                    (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+                |> Launched.boot (Map.ofList [ -1, LaunchDescriptor.Drained ]) 0 (CpuId 0)
                 |> ignore
             )
 

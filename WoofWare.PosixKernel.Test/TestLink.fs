@@ -107,23 +107,22 @@ module TestLink =
         : UnixSystem<int, string>
         =
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context credentials
+            UnixSystem.initial platform
             |> UnixBootImage.withProtectedFiles
                 { ProtectedFiles.off with
                     Hardlinks = protection
                 }
             |> Configured.expectOk ProtectedFilesRefusal.describe
 
-        match
-            UnixBootImage.withFileSystemAndCurrentDirectory
-                epoch
-                (InodeOwner.ofProcess credentials)
-                seed
-                (AbsoluteUnixPath.parseOrFail context "/c")
+        match UnixBootImage.withFileSystem epoch (InodeOwner.ofProcess credentials) seed image with
+        | Ok image ->
+            (Launched.bootWith
+                (Launched.credentials credentials
+                 >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/c"))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0))
                 image
-        with
-        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"%s{context}: could not build the cell: %A{fault}"
 
     let private rendered (result : Result<SyscallAnswer * UnixSystem<int, string>, LinkRefusal>) : string =
@@ -932,7 +931,7 @@ module TestLink =
     [<Test>]
     let ``a link on NFS is refused`` () : unit =
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial linux
             |> UnixBootImage.withMount (Some EmulatedMount.Nfs)
             |> Configured.expectOk MountRefusal.describe
 
@@ -940,14 +939,19 @@ module TestLink =
 
         let system =
             match
-                UnixBootImage.withFileSystemAndCurrentDirectory
+                UnixBootImage.withFileSystem
                     epoch
                     (InodeOwner.ofProcess credentials)
                     (seedOf None [ "f", File (0o644, None) ])
-                    (AbsoluteUnixPath.parseOrFail context "/c")
                     image
             with
-            | Ok image -> UnixBootImage.boot image
+            | Ok image ->
+                (Launched.bootWith
+                    (ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/c"))
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0))
+                    image
             | Error fault -> failwith $"%A{fault}"
 
         UnixNamespace.link (text "f") (text "n") system

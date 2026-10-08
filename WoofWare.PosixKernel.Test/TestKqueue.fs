@@ -27,13 +27,13 @@ module TestKqueue =
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 300
 
     let private darwin : UnixSystem<int, string> =
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> fun system -> ([ 1..4 ], system) ||> List.foldBack Tasks.ensure
 
     let private linux : UnixSystem<int, string> =
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> Tasks.ensure 1
 
     let private withRegistry

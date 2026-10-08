@@ -245,12 +245,11 @@ module TestAbsoluteUnixPath =
 
         let exn =
             Assert.Throws<Exception> (fun () ->
-                AbsoluteUnixPath.assertValid "UnixBootImage.withFileSystemAndCurrentDirectory" forged
+                AbsoluteUnixPath.assertValid "ProcessLaunch.withCurrentDirectory" forged
                 |> ignore<AbsoluteUnixPath>
             )
 
-        exn.Message
-        |> shouldContainText "UnixBootImage.withFileSystemAndCurrentDirectory"
+        exn.Message |> shouldContainText "ProcessLaunch.withCurrentDirectory"
 
         exn.Message |> shouldContainText "Unchecked.defaultof"
 
@@ -258,11 +257,10 @@ module TestAbsoluteUnixPath =
     let ``parseOrFail names the offending knob`` () : unit =
         let exn =
             Assert.Throws<Exception> (fun () ->
-                AbsoluteUnixPath.parseOrFail "UnixBootImage.withFileSystemAndCurrentDirectory" "relative"
+                AbsoluteUnixPath.parseOrFail "ProcessLaunch.withCurrentDirectory" "relative"
                 |> ignore<AbsoluteUnixPath>
             )
 
-        exn.Message
-        |> shouldContainText "UnixBootImage.withFileSystemAndCurrentDirectory"
+        exn.Message |> shouldContainText "ProcessLaunch.withCurrentDirectory"
 
         exn.Message |> shouldContainText "relative"

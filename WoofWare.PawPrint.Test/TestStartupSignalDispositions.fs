@@ -112,8 +112,8 @@ class Program
                 | ValueNone -> failwith $"%d{signo} is not a signal under %O{numbering}"
 
             let startup : Map<Signal, SignalDisposition<NativeSignalHandler>> =
-                UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial (HostPlatform.platformOf flavour)
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> StartupSignalDispositions.install "test" numbering Set.empty
                 |> KernelSignals.dispositions
 

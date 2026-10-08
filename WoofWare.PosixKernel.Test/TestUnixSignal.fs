@@ -21,9 +21,17 @@ module TestUnixSignal =
         (flavour : SimulatedUnixFlavour)
         : UnixSystem<int, string>
         =
-        UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial (HostPlatform.platformOf flavour)
         |> configure
-        |> UnixBootImage.boot
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+    let private systemLaunchedWith
+        (configure : ProcessLaunch<int> -> ProcessLaunch<int>)
+        (flavour : SimulatedUnixFlavour)
+        : UnixSystem<int, string>
+        =
+        UnixSystem.initial (HostPlatform.platformOf flavour)
+        |> Launched.bootWith configure UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private systemOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> = systemOnWith id flavour
 
@@ -31,7 +39,7 @@ module TestUnixSignal =
 
     /// A Linux process booted with `pid`.
     let private linuxWithPid (pid : int32) : UnixSystem<int, string> =
-        systemOnWith (UnixBootImage.withProcessId "test" (ProcessId.parseOrFail "test" pid)) SimulatedUnixFlavour.Linux
+        systemOnWith (Launched.processId (ProcessId.parseOrFail "test" pid)) SimulatedUnixFlavour.Linux
 
     let private self : int32 = ProcessId.toInt32 (UnixSystem.processId linux)
 
@@ -77,7 +85,7 @@ module TestUnixSignal =
         // SIGQUIT dumps core on both flavours; SIGTERM on neither.
         for flavour in flavours do
             for coreDumps in [ CoreDumps.Suppressed ; CoreDumps.Written ] do
-                let system = systemOnWith (UnixBootImage.withCoreDumps coreDumps) flavour
+                let system = systemLaunchedWith (ProcessLaunch.withCoreDumps coreDumps) flavour
 
                 let death (signo : int) : ProcessTermination =
                     match UnixSignal.kill self signo system with
@@ -178,7 +186,7 @@ module TestUnixSignal =
             }
 
         let property (flavour : SimulatedUnixFlavour, signo : int, coreDumps : CoreDumps) : unit =
-            let system = systemOnWith (UnixBootImage.withCoreDumps coreDumps) flavour
+            let system = systemLaunchedWith (ProcessLaunch.withCoreDumps coreDumps) flavour
 
             let valid = signo >= 0 && signo <= highestSigno flavour
 

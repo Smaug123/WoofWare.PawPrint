@@ -61,27 +61,16 @@ module TestDeviceDescriptors =
                     )
                 ]
 
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let image : UnixBootImage<int, string> = UnixSystem.initial linux
 
-        let image =
+        let configure =
             if root then
-                UnixBootImage.withCredentials
-                    context
-                    (Credentials.ofIds UserId.root (GroupId.parseOrFail context 0u) [])
-                    image
+                Launched.credentials (Credentials.ofIds UserId.root (GroupId.parseOrFail context 0u) [])
             else
-                image
+                id
 
-        match
-            UnixBootImage.withFileSystemAndCurrentDirectory
-                (UnixTimestamp.ofSeconds 1_700_000_000L)
-                rootOwner
-                seed
-                AbsoluteUnixPath.root
-                image
-        with
-        | Ok image -> UnixBootImage.boot image
+        match UnixBootImage.withFileSystem (UnixTimestamp.ofSeconds 1_700_000_000L) rootOwner seed image with
+        | Ok image -> Launched.bootWith configure UnixSystem.pipedStandardStreams 0 (CpuId 0) image
         | Error fault -> failwith $"booting failed: %A{fault}"
 
     let private booted : UnixSystem<int, string> = bootedAs false

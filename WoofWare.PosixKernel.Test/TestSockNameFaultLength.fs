@@ -124,8 +124,8 @@ module TestSockNameFaultLength =
     /// A socket bound to loopback on `platform`, and its descriptor.
     let private boundSocket (platform : SimulatedUnixPlatform) : int * UnixSystem<int, string> =
         let system =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let fd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
@@ -412,8 +412,8 @@ module TestSockNameFaultLengthAgainstHost =
                     failwith $"bind failed with errno %d{Marshal.GetLastPInvokeError ()}"
 
                 let system =
-                    UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                    |> UnixBootImage.boot
+                    UnixSystem.initial platform
+                    |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                 let modelFd, system =
                     NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system

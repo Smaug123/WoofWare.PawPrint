@@ -31,12 +31,8 @@ module TestSuppliedPipe =
         ImmutableArray.Create<byte> (Array.init length (fun i -> pattern (int64 i)))
 
     let private launch (platform : SimulatedUnixPlatform) (bytes : ImmutableArray<byte>) : UnixSystem<int, string> =
-        UnixSystem.initial
-            platform
-            (Map.add 0 (LaunchDescriptor.Supplied bytes) UnixSystem.pipedStandardStreams)
-            0
-            (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot (Map.add 0 (LaunchDescriptor.Supplied bytes) UnixSystem.pipedStandardStreams) 0 (CpuId 0)
 
     /// A read of `count` from descriptor 0, which must be answered.
     let private read (count : int) (system : UnixSystem<int, string>) : ReadAnswer * UnixSystem<int, string> =

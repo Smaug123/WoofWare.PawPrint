@@ -284,7 +284,7 @@ module TestImpureCases =
     /// echoes the directory it observed to stdout, so the assertion is
     /// that the bytes it printed are the UTF-8 of the path we configured —
     /// which pins the whole chain (`KernelConfig.CurrentDirectory` ->
-    /// `withFileSystemAndCurrentDirectory` -> `SystemNative_GetCwd` -> CoreLib's
+    /// `EmulatedKernel.withFileSystemAndCurrentDirectory` -> `SystemNative_GetCwd` -> CoreLib's
     /// buffer dance -> `Marshal.PtrToStringUTF8`) to an exact value, not a shape.
     let private currentDirectoryCase (dir : string) : EndToEndTestCase =
         {

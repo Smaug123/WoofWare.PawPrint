@@ -150,15 +150,14 @@ module TestBindingAgainstHost =
                 []
 
         match
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials "TestBindingAgainstHost" credentials
-            |> UnixBootImage.withFileSystemAndCurrentDirectory
+            UnixSystem.initial platform
+            |> UnixBootImage.withFileSystem
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess credentials)
                 BindingProbes.tree
-                AbsoluteUnixPath.root
         with
-        | Ok image -> UnixBootImage.boot image
+        | Ok image ->
+            (Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)) image
         | Error fault -> failwith $"seeding failed: %A{fault}"
 
     let private onModel (platform : SimulatedUnixPlatform) (call : BindingProbeCall) : int option =

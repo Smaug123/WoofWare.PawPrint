@@ -320,9 +320,9 @@ module TestConnectDestinationMeasured =
                 failwith $"unparsed probe line: %s{line}"
 
             let system =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                UnixSystem.initial<int, string> platform
                 |> UnixBootImage.withLocalAddresses [ InternetEndpoint.LoopbackAddress ; iface ] []
-                |> UnixBootImage.boot
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let create (kind : SocketKind) (system : UnixSystem<int, string>) =
                 let protocol =

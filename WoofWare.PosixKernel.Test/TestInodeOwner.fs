@@ -168,11 +168,10 @@ module TestInodeOwner =
         let seed =
             Map.ofList [ name "p", SeedEntry.Directory (Map.empty, mode parentMode, Some parentOwner) ]
 
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.withFileSystemAndCurrentDirectory epoch (owner 0u 0u) seed AbsoluteUnixPath.root
+        UnixSystem.initial platform
+        |> UnixBootImage.withFileSystem epoch (owner 0u 0u) seed
         |> ok
-        |> UnixBootImage.withCredentials context credentials
-        |> UnixBootImage.boot
+        |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private ownerAt (path : string) (system : UnixSystem<int, string>) : InodeOwner =
         match
@@ -297,10 +296,10 @@ module TestInodeOwner =
             VirtualFileSystem.ofFileSystemSeed epoch defaultOwner SymlinkModes.linux seed
 
         let system =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withFileSystemAndCurrentDirectory epoch defaultOwner seed AbsoluteUnixPath.root
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withFileSystem epoch defaultOwner seed
             |> ok
-            |> UnixBootImage.boot
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let expected =
             [

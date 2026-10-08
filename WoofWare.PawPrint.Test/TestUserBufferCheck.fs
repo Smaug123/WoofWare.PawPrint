@@ -147,9 +147,15 @@ module TestUserBufferCheck =
         (limit : uint64)
         : Result<EmulatedKernel, UserAddressLimitRefusal>
         =
-        EmulatedKernel.image platform StandardStreamsConfig.piped
-        |> UnixBootImage.withUserAddressLimit limit
-        |> Result.map EmulatedKernel.boot
+        let image = EmulatedKernel.image platform StandardStreamsConfig.piped
+
+        UnixBootImage.withUserAddressLimit limit image.Machine
+        |> Result.map (fun machine ->
+            EmulatedKernel.boot
+                { image with
+                    Machine = machine
+                }
+        )
 
     let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
         configuredOn platform limit

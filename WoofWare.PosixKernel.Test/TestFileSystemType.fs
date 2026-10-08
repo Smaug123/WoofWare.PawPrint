@@ -65,10 +65,10 @@ module TestFileSystemType =
     /// The machine a simulated process boots with on `flavour`'s platform,
     /// configured with the mount `mount`.
     let private machineMounting (flavour : SimulatedUnixFlavour) (mount : EmulatedMount option) : UnixMachineState =
-        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
          |> UnixBootImage.withMount mount
          |> Configured.expectOk MountRefusal.describe
-         |> UnixBootImage.boot)
+         |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
             .Machine
 
     let private everyFlavour : SimulatedUnixFlavour list =
@@ -253,19 +253,18 @@ module TestFileSystemType =
 
     let private systemWith (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : UnixSystem<int, string> =
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial platform
             |> UnixBootImage.withMount (Some mount)
             |> Configured.expectOk MountRefusal.describe
 
         match
-            UnixBootImage.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystem
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess (UnixSystem.defaultCredentials (SimulatedUnixPlatform.flavour platform)))
                 tree
-                AbsoluteUnixPath.root
                 image
         with
-        | Ok image -> UnixBootImage.boot image
+        | Ok image -> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image
         | Error fault -> failwith $"test bug: the tree does not seed: %A{fault}"
 
     let private reading : OpenFlags =
@@ -408,11 +407,7 @@ module TestFileSystemType =
         // Both directions, because a guard that only ever refused one of them
         // would leave the other pair silently constructible.
         for flavour, fsType in everyIncoherentPair do
-            UnixSystem.initial<int, string>
-                (HostPlatform.platformOf flavour)
-                UnixSystem.pipedStandardStreams
-                0
-                (CpuId 0)
+            UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)
             |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fsType))
             |> Result.map ignore<UnixBootImage<int, string>>
             |> shouldEqual (Error (MountRefusal.NotReportableUnder (fsType, flavour)))

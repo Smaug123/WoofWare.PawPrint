@@ -56,10 +56,16 @@ module TestInodeLifetime =
     /// A system on the tree above, standing at `dir`.
     let private standingAt (dir : string) : UnixSystem<int, string> =
         match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault seed (absolute dir)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault seed
         with
-        | Ok image -> UnixBootImage.boot image
+        | Ok image ->
+            (Launched.bootWith
+                (ProcessLaunch.withCurrentDirectory (absolute dir))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0))
+                image
         | Error fault -> failwith $"the fixture's own seed did not boot at %s{dir}: %O{fault}."
 
     let private kernel () : UnixSystem<int, string> = standingAt "/outer/inner"
@@ -134,27 +140,23 @@ module TestInodeLifetime =
     // -------------------------------------------------------------- heldInodes
 
     [<Test>]
-    let ``the process holds its current directory and the machine every open file`` () : unit =
+    let ``the machine holds the process's current directory and every open file`` () : unit =
         let kernel = kernel ()
         let a = inodeOf kernel "/outer/inner/a"
         let b = inodeOf kernel "/outer/inner/b"
+        let cwd = kernel.Process.CurrentDirectoryInode
 
         // Before anything is opened, the current directory is the only
         // reference. A `heldInodes` that enumerated only the open file
         // descriptions would answer the empty set here — and then reap the
         // directory the process is standing in, the moment `rmdir` can orphan
         // one.
-        UnixProcessState.heldInodes kernel.Process
-        |> shouldEqual (Set.singleton kernel.Process.CurrentDirectoryInode)
-
-        UnixMachineState.heldInodes kernel.Machine |> shouldEqual Set.empty
+        UnixMachineState.heldInodes kernel.Machine |> shouldEqual (Set.singleton cwd)
 
         let _, withA = opened a kernel
 
-        UnixProcessState.heldInodes withA.Process
-        |> shouldEqual (Set.singleton kernel.Process.CurrentDirectoryInode)
-
-        UnixMachineState.heldInodes withA.Machine |> shouldEqual (Set.singleton a)
+        UnixMachineState.heldInodes withA.Machine
+        |> shouldEqual (Set.ofList [ cwd ; a ])
 
         // ...and not merely "some file is open": `b` is not held.
         ObjectLifetime.pinnedInodes withA |> Set.contains b |> shouldEqual false
@@ -166,7 +168,8 @@ module TestInodeLifetime =
         // whatever `InodeNumber` it invented for them.
         let kernel = kernel ()
 
-        UnixMachineState.heldInodes kernel.Machine |> shouldEqual Set.empty
+        UnixMachineState.heldInodes kernel.Machine
+        |> shouldEqual (Set.singleton kernel.Process.CurrentDirectoryInode)
 
         OpenFileTable.descriptions kernel.Machine.OpenFiles
         |> Map.isEmpty
@@ -184,7 +187,7 @@ module TestInodeLifetime =
         let outer = inodeOf kernel "/outer"
         let inner = inodeOf kernel "/outer/inner"
 
-        UnixProcessState.heldInodes kernel.Process |> shouldEqual (Set.singleton inner)
+        UnixMachineState.heldInodes kernel.Machine |> shouldEqual (Set.singleton inner)
 
         ObjectLifetime.pinnedInodes kernel
         |> shouldEqual (Set.ofList [ inner ; outer ; root ])
@@ -371,10 +374,6 @@ module TestInodeLifetime =
         contains outer kernel |> shouldEqual true
 
         UnixMachineState.heldInodes kernel.Machine
-        |> Set.contains outer
-        |> shouldEqual false
-
-        UnixProcessState.heldInodes kernel.Process
         |> Set.contains outer
         |> shouldEqual false
 

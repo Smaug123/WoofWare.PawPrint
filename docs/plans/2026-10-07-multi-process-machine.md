@@ -120,6 +120,15 @@ Each stage is a PR, green alone.
    - B's connect wakes A's epoll instance and A's kqueue.
    - A exits, and B sees the FIN.
    - A file unlinked by A survives while B has it open.
+
+   Stage 3's fuzzer (`TestMultiProcessFuzz`) excludes what this stage must
+   lift, and its docstring says so: no call blocks (sockets are non-blocking,
+   `epoll_wait` and `kevent` are polled with a zero timeout), since a view
+   wakes only its own parked tasks; on Darwin, kqueues are made only where no
+   other process touches a socket, since `KqueueQueue.activate` fails loudly
+   on any socket event while another process's kqueue registers anything;
+   Darwin `poll` is not called; and no process ends, since
+   `SimulatedMachine` has no way to record an `EndedProcess`.
 5. **PawPrint driver.** An N-program driver in `Program` owns the machine, and
    deadline jumps and deadlock detection move into it. The one-program path
    becomes the N = 1 case, and the old loop is deleted.

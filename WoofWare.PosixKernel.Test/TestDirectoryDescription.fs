@@ -138,8 +138,8 @@ module TestDirectoryDescription =
     /// files, and a descriptor open on `/d`.
     let private withDirectory (platform : SimulatedUnixPlatform) (names : string list) : int * UnixSystem<int, string> =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> makeDirectory "d"
 
         let system =
@@ -205,8 +205,8 @@ module TestDirectoryDescription =
     let ``a subdirectory is reported as a directory`` () : unit =
         for platform in platforms do
             let system =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> makeDirectory "d"
                 |> makeDirectory "d/sub"
 
@@ -535,8 +535,8 @@ module TestDirectoryDescription =
             let flavour = SimulatedUnixPlatform.flavour platform
 
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> createFile "f"
 
             let readable, system = openAt reading "f" system
@@ -592,8 +592,8 @@ module TestDirectoryDescription =
     let ``an open without O_DIRECTORY on a directory is readable as one`` () : unit =
         for platform in platforms do
             let system =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> makeDirectory "d"
                 |> createFile "d/a"
 
@@ -605,8 +605,8 @@ module TestDirectoryDescription =
     let ``O_DIRECTORY on a regular file is ENOTDIR`` () : unit =
         for platform in platforms do
             let system =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> createFile "f"
 
             match Answered.openPath directoryReading (rooted "f") 0 system with
@@ -633,8 +633,8 @@ module TestDirectoryDescription =
 
         for platform in platforms do
             let system =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> makeDirectory "d"
 
             for flags in unmodelled do
@@ -650,8 +650,8 @@ module TestDirectoryDescription =
         // the word is screened before the path is copied in.
         for platform in platforms do
             let system =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> makeDirectory "d"
 
             let word =
@@ -698,8 +698,8 @@ module TestDirectoryDescription =
     [<Test>]
     let ``a description's kind must match the inode it names`` () : unit =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> makeDirectory "d"
             |> createFile "f"
 

@@ -29,8 +29,8 @@ module TestDeviceFileSystemAgainstHost =
     extern int private hostClose(int fd)
 
     let private booted (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
-        UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial (HostPlatform.platformOf flavour)
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private modelStatus (system : UnixSystem<int, string>) (path : string) : Result<FileStatusAnswer, StatRefusal> =
         UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (PathArg.ofText path) system

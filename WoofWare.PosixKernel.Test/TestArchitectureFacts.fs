@@ -242,8 +242,8 @@ module TestArchitectureFacts =
     let ``no machine mixes one architecture's address limit with another's`` () : unit =
         for platform, expected in presetChecks do
             let system =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial<int, string> platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             UnixMachineState.userBufferCheck system.Machine |> shouldEqual expected
             UnixSystem.checkInvariants system |> shouldEqual []
@@ -257,8 +257,7 @@ module TestArchitectureFacts =
                 ]
 
         let property (platform : SimulatedUnixPlatform, limit : uint64) : unit =
-            let image =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            let image = UnixSystem.initial<int, string> platform
 
             let flavour = SimulatedUnixPlatform.flavour platform
             let architecture = SimulatedUnixPlatform.architecture platform
@@ -283,7 +282,8 @@ module TestArchitectureFacts =
             | Ok image ->
                 expected |> shouldEqual (Ok ())
 
-                UnixMachineState.userBufferCheck (UnixBootImage.boot image).Machine
+                UnixMachineState.userBufferCheck
+                    (image |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)).Machine
                 |> shouldEqual (UserBufferCheck.BeforeOperation limit)
             | Error refusal -> Error refusal |> shouldEqual expected
 
@@ -307,8 +307,8 @@ module TestArchitectureFacts =
 
         let property (platform : SimulatedUnixPlatform, check : UserBufferCheck) : unit =
             let system =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial<int, string> platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let forged =
                 { system with

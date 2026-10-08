@@ -75,8 +75,8 @@ module TestTcpBufferSizing =
         )
 
     let private machine (platform : SimulatedUnixPlatform) : UnixMachineState =
-        (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-         |> UnixBootImage.boot)
+        (UnixSystem.initial<int, string> platform
+         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine
 
     [<Test>]
@@ -158,13 +158,14 @@ module TestTcpBufferSizing =
 
     [<Test>]
     let ``withTcpReceiveSpace admits on Darwin exactly the sizes whose buffer the handshake settles`` () =
-        let darwin =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let darwin = UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
 
         let admitted (value : int) : bool =
             match darwin |> UnixBootImage.withTcpReceiveSpace (Some value) with
             | Ok image ->
-                (UnixBootImage.boot image).Machine.TcpReceiveSpace |> shouldEqual value
+                (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine.TcpReceiveSpace
+                |> shouldEqual value
+
                 true
             | Error (TcpReceiveSpaceRefusal.GrowsAfterHandshake (refused, _)) ->
                 refused |> shouldEqual value
@@ -188,26 +189,31 @@ module TestTcpBufferSizing =
     [<Test>]
     let ``the TCP buffer sysctls default per flavour and refuse what nothing reads`` () =
         let image (platform : SimulatedUnixPlatform) =
-            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial<int, string> platform
 
         let linux = image SimulatedUnixPlatform.linuxX64
         let darwin = image SimulatedUnixPlatform.macOsArm64
 
-        (UnixBootImage.boot linux).Machine.TcpReceiveSpace |> shouldEqual 131072
-        (UnixBootImage.boot linux).Machine.TcpSendSpaceMax |> shouldEqual 4194304
-        (UnixBootImage.boot darwin).Machine.TcpReceiveSpace |> shouldEqual 131072
+        (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) linux).Machine.TcpReceiveSpace
+        |> shouldEqual 131072
+
+        (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) linux).Machine.TcpSendSpaceMax
+        |> shouldEqual 4194304
+
+        (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) darwin).Machine.TcpReceiveSpace
+        |> shouldEqual 131072
 
         (linux
          |> UnixBootImage.withTcpReceiveSpace (Some 1)
          |> Configured.expectOk TcpReceiveSpaceRefusal.describe
-         |> UnixBootImage.boot)
+         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine.TcpReceiveSpace
         |> shouldEqual 1
 
         (linux
          |> UnixBootImage.withTcpSendSpaceMax (Some 65536)
          |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
-         |> UnixBootImage.boot)
+         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine.TcpSendSpaceMax
         |> shouldEqual 65536
 
@@ -216,7 +222,7 @@ module TestTcpBufferSizing =
          |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
          |> UnixBootImage.withTcpSendSpaceMax None
          |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
-         |> UnixBootImage.boot)
+         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
             .Machine.TcpSendSpaceMax
         |> shouldEqual 4194304
 

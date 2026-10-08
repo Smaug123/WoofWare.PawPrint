@@ -42,8 +42,8 @@ module TestPeerName =
     let private minus1 : uint32 = System.UInt32.MaxValue
 
     let private fresh (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private endpointOf (fd : int) (system : UnixSystem<int, string>) : InternetEndpoint =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with

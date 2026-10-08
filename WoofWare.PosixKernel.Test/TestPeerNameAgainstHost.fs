@@ -382,8 +382,8 @@ module TestPeerNameAgainstHost =
         : int * Roles * UnixSystem<int, string>
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let create (domain : SocketDomain) (kind : SocketKind) (protocol : SocketProtocol) system =
             NewSocket.create domain kind protocol system

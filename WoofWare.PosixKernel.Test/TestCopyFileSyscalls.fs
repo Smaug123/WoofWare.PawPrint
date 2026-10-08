@@ -84,10 +84,9 @@ module TestCopyFileSyscalls =
         : UnixSystem<int, string>
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context credentials
+            UnixSystem.initial platform
             |> configure
-            |> UnixBootImage.boot
+            |> Launched.bootWith (Launched.credentials credentials) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Machine =
@@ -99,6 +98,7 @@ module TestCopyFileSyscalls =
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
                 }
         }
+        |> Launched.restand
 
     let private systemOn
         (platform : SimulatedUnixPlatform)

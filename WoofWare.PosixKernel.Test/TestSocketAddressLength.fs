@@ -64,8 +64,8 @@ module TestSocketAddressLength =
     /// A fresh process on `platform` whose leader is task 0, as every call here
     /// is made by.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private streamSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system

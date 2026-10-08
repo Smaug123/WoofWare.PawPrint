@@ -23,8 +23,8 @@ module TestSigaction =
     let private leader : int = 0
 
     let private systemOn (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
-        UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams leader (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial (HostPlatform.platformOf flavour)
+        |> Launched.boot UnixSystem.pipedStandardStreams leader (CpuId 0)
 
     let private numberingOf (flavour : SimulatedUnixFlavour) : SignalNumbering =
         SimulatedUnixPlatform.signalNumbering (HostPlatform.platformOf flavour)

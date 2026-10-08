@@ -36,8 +36,8 @@ module TestUmask =
         ]
 
     let private fresh (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// The bits the probe found each flavour keeps: `stored = argument & width`,
     /// with 0 mismatches over every 12-bit argument by both routes, and every
@@ -217,22 +217,24 @@ module TestUmask =
 
                 if storable then
                     let system =
-                        UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                        |> UnixBootImage.withUmask context (mode bits)
-                        |> UnixBootImage.boot
+                        UnixSystem.initial<int, string> platform
+                        |> Launched.bootWith (Launched.umask (mode bits)) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                     system.Process.Umask |> shouldEqual (mode bits)
                     UnixSystem.checkInvariants system |> shouldEqual []
                 else
-                    let exn =
-                        Assert.Throws<exn> (fun () ->
-                            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                            |> UnixBootImage.withUmask "the client's name for it" (mode bits)
-                            |> ignore<UnixBootImage<int, string>>
+                    Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                    |> ProcessLaunch.withUmask (mode bits)
+                    |> Result.map ignore
+                    |> shouldEqual (
+                        Error (
+                            UmaskRefusal.BitsNotStored (
+                                mode bits,
+                                mode (measuredWidth platform),
+                                SimulatedUnixPlatform.flavour platform
+                            )
                         )
-
-                    exn.Message.StartsWith ("the client's name for it: ", System.StringComparison.Ordinal)
-                    |> shouldEqual true
+                    )
 
     [<Test>]
     let ``checkInvariants reports a mask the flavour never stores`` () : unit =

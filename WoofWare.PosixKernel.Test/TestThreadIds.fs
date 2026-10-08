@@ -17,14 +17,16 @@ open WoofWare.PosixKernel
 module TestThreadIds =
 
     let private linuxImage : UnixBootImage<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
 
     let private darwinImage : UnixBootImage<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.macOsArm64
 
-    let private linux : UnixSystem<int, string> = UnixBootImage.boot linuxImage
+    let private linux : UnixSystem<int, string> =
+        Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) linuxImage
 
-    let private darwin : UnixSystem<int, string> = UnixBootImage.boot darwinImage
+    let private darwin : UnixSystem<int, string> =
+        Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) darwinImage
 
     let private pid (value : int32) : ProcessId = ProcessId.parseOrFail "test" value
 
@@ -63,8 +65,8 @@ module TestThreadIds =
     [<Test>]
     let ``the leader is on the processor it was given`` () : unit =
         let system : UnixSystem<string, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxArm64 UnixSystem.pipedStandardStreams "main" (CpuId 3)
-            |> UnixBootImage.boot
+            UnixSystem.initial SimulatedUnixPlatform.linuxArm64
+            |> Launched.boot UnixSystem.pipedStandardStreams "main" (CpuId 3)
 
         system.Leader |> shouldEqual "main"
         UnixTaskTable.cpuOf "main" system.Tasks |> shouldEqual (CpuId 3)
@@ -74,7 +76,8 @@ module TestThreadIds =
         // Row 1 and 2 of `thread-ids.c` on Linux: pid 8, leader tid 8; eight
         // concurrent threads 9..16; eight created and joined one at a time, 17..24.
         let system =
-            UnixBootImage.withProcessId "test" (pid 8) linuxImage |> UnixBootImage.boot
+            Launched.processId (pid 8) linuxImage
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         idOf 0 system |> shouldEqual 8UL
 
@@ -102,9 +105,9 @@ module TestThreadIds =
         // thread's. Ids were consecutive between threads created one at a time.
         let system =
             darwinImage
-            |> UnixBootImage.withProcessId "test" (pid 58948)
-            |> UnixBootImage.withLeaderThreadId "test" 2897490UL
-            |> UnixBootImage.boot
+            |> Launched.processId (pid 58948)
+            |> Launched.leaderThreadId 2897490UL
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         UnixSystem.processId system |> shouldEqual (pid 58948)
         idOf 0 system |> shouldEqual 2897490UL
@@ -127,15 +130,15 @@ module TestThreadIds =
 
     [<Test>]
     let ``Darwin: the process ID does not move the thread IDs, and the counter crosses 32 bits`` () : unit =
-        let image = darwinImage |> UnixBootImage.withProcessId "test" (pid 100)
+        let image = darwinImage |> Launched.processId (pid 100)
 
-        idOf 0 (UnixBootImage.boot image)
+        idOf 0 (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image)
         |> shouldEqual (uint64 (ProcessId.toInt32 UnixSystem.defaultProcessId))
 
         let system =
             image
-            |> UnixBootImage.withLeaderThreadId "test" 0xFFFF_FFFFUL
-            |> UnixBootImage.boot
+            |> Launched.leaderThreadId 0xFFFF_FFFFUL
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let id, system = spawnOrFail 1 system
         id |> shouldEqual 0x1_0000_0000UL
@@ -161,8 +164,8 @@ module TestThreadIds =
         // `pid-allocation.c` on Linux 6.18.5 aarch64, with pid 9 and pid_max 1000.
         let system =
             linuxImage
-            |> UnixBootImage.withProcessId "test" (pid 9)
-            |> UnixBootImage.boot
+            |> Launched.processId (pid 9)
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> UnixSystem.writePidMaxSysctl "test" 1000
 
         // "skip first_wrap from=999 to=300"
@@ -224,8 +227,8 @@ module TestThreadIds =
         // their ids, and `kill(pid, 0)` still finds the process.
         let system =
             linuxImage
-            |> UnixBootImage.withProcessId "test" (pid 5000)
-            |> UnixBootImage.boot
+            |> Launched.processId (pid 5000)
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         // "child held_tid 5001"
         let held, system = spawnOrFail 1 system
@@ -286,8 +289,8 @@ module TestThreadIds =
         let accepts (value : int32) : bool =
             try
                 linuxImage
-                |> UnixBootImage.withProcessId "test" (pid 8)
-                |> UnixBootImage.boot
+                |> Launched.processId (pid 8)
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> UnixSystem.writePidMaxSysctl "test" value
                 |> ignore<UnixSystem<int, string>>
 
@@ -343,33 +346,47 @@ module TestThreadIds =
         // A Linux pid is a thread ID, so it is below the pid_max the machine
         // boots with, which is the largest Linux has.
         refuses
-            (fun () -> UnixBootImage.withProcessId "ctx" (pid 4194304) linuxImage |> UnixBootImage.boot)
+            (fun () ->
+                Launched.processId (pid 4194304) linuxImage
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            )
             "not below pid_max"
 
-        UnixBootImage.withProcessId "ctx" (pid 4194303) linuxImage
-        |> UnixBootImage.boot
+        Launched.processId (pid 4194303) linuxImage
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> idOf 0
         |> shouldEqual 4194303UL
 
         // Each flavour's own setting.
-        refuses (fun () -> UnixBootImage.withLeaderThreadId "ctx" 7UL linuxImage |> UnixBootImage.boot) "the process ID"
+        refuses
+            (fun () ->
+                Launched.leaderThreadId 7UL linuxImage
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            )
+            "the process ID"
+
         refuses (fun () -> UnixSystem.writePidMaxSysctl "ctx" 1000 darwin) "no pid_max"
 
         refuses
-            (fun () -> UnixBootImage.withLeaderThreadId "ctx" 0UL darwinImage |> UnixBootImage.boot)
+            (fun () ->
+                Launched.leaderThreadId 0UL darwinImage
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            )
             "Darwin counter"
 
         refuses
             (fun () ->
-                UnixBootImage.withLeaderThreadId "ctx" System.UInt64.MaxValue darwinImage
-                |> UnixBootImage.boot
+                Launched.leaderThreadId System.UInt64.MaxValue darwinImage
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             )
             "Darwin counter"
 
     [<Test>]
     let ``Linux: moving the pid moves the leader's tid and the counter with it`` () : unit =
         let system =
-            linuxImage |> UnixBootImage.withProcessId "test" (pid 500) |> UnixBootImage.boot
+            linuxImage
+            |> Launched.processId (pid 500)
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         idOf 0 system |> shouldEqual 500UL
         spawnOrFail 1 system |> fst |> shouldEqual 501UL
@@ -507,8 +524,8 @@ module TestThreadIds =
         // UInt64.MaxValue, beyond which what Darwin does is unmeasured.
         let system =
             darwinImage
-            |> UnixBootImage.withLeaderThreadId "test" (System.UInt64.MaxValue - 1UL)
-            |> UnixBootImage.boot
+            |> Launched.leaderThreadId (System.UInt64.MaxValue - 1UL)
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         UnixTaskLifecycle.spawn 0 1 (CpuId 0) system
         |> shouldEqual (Error SpawnRefusal.ThreadIdCounterExhausted)
@@ -525,8 +542,8 @@ module TestThreadIds =
         // One below, the counter hands out its last ID.
         let system =
             darwinImage
-            |> UnixBootImage.withLeaderThreadId "test" (System.UInt64.MaxValue - 2UL)
-            |> UnixBootImage.boot
+            |> Launched.leaderThreadId (System.UInt64.MaxValue - 2UL)
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let id, system = spawnOrFail 1 system
         id |> shouldEqual (System.UInt64.MaxValue - 1UL)
@@ -669,14 +686,14 @@ module TestThreadIds =
                     coverage.BootedAbove <- coverage.BootedAbove + 1
 
                 linuxImage
-                |> UnixBootImage.withProcessId "test" (pid pidValue)
-                |> UnixBootImage.boot
+                |> Launched.processId (pid pidValue)
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 |> UnixSystem.writePidMaxSysctl "test" pidMax,
                 Model.Linux (pidValue + 1, pidMax)
             | Setup.Darwin first ->
                 darwinImage
-                |> UnixBootImage.withLeaderThreadId "test" first
-                |> UnixBootImage.boot,
+                |> Launched.leaderThreadId first
+                |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)),
                 Model.Darwin (first + 1UL)
 
         // The leader's id: the pid on Linux, the configured start on Darwin.
@@ -770,12 +787,15 @@ module TestThreadIds =
                 let task = live.[index % live.Length]
                 let ended = UnixTaskLifecycle.exitGroup task 0 system
 
-                // Every task's ID is freed with it, and nothing else on the
-                // machine moves.
+                // Every task's ID is freed with it, the process leaves the
+                // machine, and nothing else on the machine moves.
                 ThreadIdAllocator.live ended.Machine.ThreadIds |> shouldEqual Set.empty
+                ProcessIdTable.live ended.Machine.ProcessIds |> shouldEqual Set.empty
 
                 { ended.Machine with
                     ThreadIds = system.Machine.ThreadIds
+                    ProcessIds = system.Machine.ProcessIds
+                    CurrentDirectories = system.Machine.CurrentDirectories
                 }
                 |> shouldEqual system.Machine
 

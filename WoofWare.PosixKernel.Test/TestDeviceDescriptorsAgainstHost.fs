@@ -131,8 +131,8 @@ module TestDeviceDescriptorsAgainstHost =
         }
 
     let private booted (flavour : SimulatedUnixFlavour) : UnixSystem<int, string> =
-        UnixSystem.initial (HostPlatform.platformOf flavour) UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial (HostPlatform.platformOf flavour)
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private modelOpen (access : FileAccessMode) (path : string) (system : UnixSystem<int, string>) =
         match

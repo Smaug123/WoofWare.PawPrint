@@ -140,12 +140,8 @@ module TestNonCryptoRandom =
         // boots, rather than restating the seed.
         (UnixSystem.entropyPool EmulatedKernel.initial.System)
         |> shouldEqual (
-            UnixSystem.initial<ThreadId, NativeSignalHandler>
-                UnixSystem.defaultUnixPlatform
-                UnixSystem.pipedStandardStreams
-                (ThreadId 0)
-                (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<ThreadId, NativeSignalHandler> UnixSystem.defaultUnixPlatform
+            |> Launched.boot UnixSystem.pipedStandardStreams (ThreadId 0) (CpuId 0)
             |> UnixSystem.entropyPool
         )
 
@@ -162,7 +158,7 @@ module TestNonCryptoRandom =
         let property (seed : uint64) (count : byte) : bool =
             let kernel =
                 EmulatedKernel.initialImage
-                |> UnixBootImage.withEntropySeed seed
+                |> KernelImage.mapMachine (UnixBootImage.withEntropySeed seed)
                 |> EmulatedKernel.boot
 
             let pool, _ =
