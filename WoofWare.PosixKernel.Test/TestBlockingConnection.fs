@@ -599,48 +599,232 @@ module TestBlockingConnection =
                 8, Gen.map BlockingConnectionOp.Finish task
             ]
 
-    /// Two tasks read one end and sleep; then `between` makes that end
-    /// readable, a wake wakes both, and the client finishes them in turn.
-    /// Each op names a task and a descriptor by index, as `opGen`'s do: the
-    /// first idle task, and the first descriptor or the second.
-    let private twoReaders (between : BlockingConnectionOp) : BlockingConnectionOp list =
-        [
-            BlockingConnectionOp.Read (0, 0, 100000)
-            BlockingConnectionOp.Read (0, 0, 100000)
-            between
-            BlockingConnectionOp.Wake
-            BlockingConnectionOp.Finish 0
-            BlockingConnectionOp.Finish 0
-        ]
+    /// The call with which a `ScenarioEnding.RefilledWriter` fills the buffers.
+    [<RequireQualifiedAccess>]
+    type private FillingCall =
+        | Write
+        | Send
+        /// `send(2)` with `MSG_DONTWAIT`: Darwin's sleeps, and Linux's returns
+        /// what fits.
+        | SendDontWait
 
-    /// Two tasks write enough to one end that both sleep, the second having
-    /// taken nothing; the other end closes over the bytes it has not read,
-    /// which resets the connection; a third task reads the reset's error, and
-    /// the client wakes and finishes the writers.
-    let private resetUnderWriters : BlockingConnectionOp list =
-        [
-            BlockingConnectionOp.Write (0, 0, 200000)
-            BlockingConnectionOp.Write (0, 0, 200000)
-            BlockingConnectionOp.Close 1
-            BlockingConnectionOp.Read (0, 0, 100)
-            BlockingConnectionOp.Wake
-            BlockingConnectionOp.Finish 0
-            BlockingConnectionOp.Finish 0
-        ]
+    /// How a `Scenario` ends, from the connection its read episodes leave
+    /// open and quiet: nothing buffered, and every task idle. "The calls'
+    /// end" is descriptor `ReadEnd`, and "the peer" the other.
+    [<RequireQualifiedAccess>]
+    type private ScenarioEnding =
+        /// No further steps.
+        | Open
+        /// Tasks 0, 1 and 2 sleep in a read, a `recv` and a peek through the
+        /// calls' end, and the peer's only descriptor closes with nothing
+        /// unread, which wakes all three to end of file.
+        | PeerClose
+        /// Task 0 writes `count` bytes through the calls' end, and the peer
+        /// closes with them unread, which resets the calls' end: a read
+        /// through it then fails with `ECONNRESET`.
+        | ResetRead of count : int
+        /// As `ResetRead`, but a write through the calls' end comes first,
+        /// which on Linux takes the `ECONNRESET`.
+        | ResetWrite of count : int
+        /// Task 0 sleeps reading through the calls' end, whose only
+        /// descriptor then closes: Darwin's close ends the read with `EBADF`;
+        /// Linux's leaves it asleep, holding the socket, and the peer's write
+        /// of `count` bytes wakes it, so that its return closes the socket.
+        | CloseUnderRead of count : int
+        /// Task 0 fills the buffers through the calls' end with the call
+        /// given, and sleeps; reads through the peer make room, which wakes
+        /// it; task 1 takes that room before task 0 is finished, so its woken
+        /// write finds none and sleeps again.
+        | RefilledWriter of FillingCall
+        /// As `RefilledWriter`, but the calls' end becomes non-blocking
+        /// instead, and task 1 writes until `EAGAIN`, so that task 0's woken
+        /// write finds no room through a non-blocking description, which
+        /// the library refuses, ending the case.
+        | NonBlockingWriter
+        /// Task 0 fills the buffers through the calls' end, taking some; task
+        /// 1 sleeps in a `send` and task 2 in a write, having taken nothing;
+        /// task 3's `send` with `MSG_DONTWAIT` sleeps on Darwin and answers
+        /// `EAGAIN` on Linux. The peer closes with bytes unread, which resets
+        /// the calls' end and wakes every sleeper. On Linux the first returns
+        /// its count, the second takes the `ECONNRESET` and the third answers
+        /// `EPIPE`.
+        | ResetWriters
 
-    /// Openings that reach what a random run reaches only now and then: seven
-    /// bytes for two readers, so that the second finds nothing and sleeps
-    /// again; the other end's close under two readers, so that both read end
-    /// of file; and a reset under two writers, whose read is `ECONNRESET` and
-    /// whose second writer's finish, the error taken, is `EPIPE`.
-    let private openingGen : Gen<BlockingConnectionOp list> =
-        Gen.frequency
+    /// A prefix of the property's steps that, from the connected pair the
+    /// property starts on, reaches paths random steps reach too rarely to
+    /// rely on. A task is named by its index among the eligible and a
+    /// descriptor by its index among the open, so each step names the same
+    /// thing on every run, under either flavour.
+    ///
+    /// First, through descriptor `ReadEnd` (0 or 1), a `recv` with
+    /// `MSG_DONTWAIT` of nothing buffered, and a `recv` of nothing, which
+    /// sleeps on Linux until `Count` bytes written through the other end wake
+    /// it; the bytes are then read. Then, for each of a read, a `recv` and a
+    /// peek through `ReadEnd`, in turn: task 0 sleeps in the call, is
+    /// signalled, and is woken and finished (`EINTR`, or a restart under
+    /// `SA_RESTART`); task 0
+    /// sleeps in the call again; task 1 writes `Count` bytes through the other
+    /// end, which wakes it; task 1 reads them before task 0 is finished, so
+    /// the woken call finds nothing and sleeps again; task 1 writes `Count`
+    /// bytes once more, and task 0's call is woken and finished, answering
+    /// them (a peek's are then read, to leave nothing buffered). `Count` is
+    /// from 1 to 2047, which every buffer takes at once. Then `Ending`.
+    type private Scenario =
+        {
+            ReadEnd : int
+            Count : int
+            Ending : ScenarioEnding
+        }
+
+    let private scenarioOps (scenario : Scenario) : BlockingConnectionOp list =
+        let readEnd = scenario.ReadEnd
+        let writeEnd = 1 - readEnd
+
+        // Room for everything a write of the scenario's sends, so that a
+        // finish leaves nothing buffered.
+        let sleeper (task : int) (call : TcpReceiveCall) : BlockingConnectionOp =
+            match call with
+            | TcpReceiveCall.Read -> BlockingConnectionOp.Read (task, readEnd, 2048)
+            | TcpReceiveCall.Receive -> BlockingConnectionOp.Receive (task, readEnd, 2048, false, false)
+            | TcpReceiveCall.Peek -> BlockingConnectionOp.Receive (task, readEnd, 2048, true, false)
+
+        // Enough that a write of it fills the buffers and sleeps under either
+        // flavour: Darwin's take a write of 200000 whole.
+        let filling = 600000
+
+        // Reads through the peer, by the lowest idle task, until a writer
+        // asleep through the calls' end has room to wake for under either
+        // flavour's rule.
+        let drain =
             [
-                6, Gen.constant []
-                1, Gen.constant (twoReaders (BlockingConnectionOp.Write (0, 1, 7)))
-                1, Gen.constant (twoReaders (BlockingConnectionOp.Close 1))
-                1, Gen.constant resetUnderWriters
+                BlockingConnectionOp.Read (0, writeEnd, filling)
+                BlockingConnectionOp.Read (0, writeEnd, filling)
             ]
+
+        [
+            // Nothing is buffered yet.
+            BlockingConnectionOp.Receive (0, readEnd, 100, false, true)
+            // Linux's sleeps until bytes arrive, then answers 0, leaving them;
+            // Darwin's answers 0 at once.
+            BlockingConnectionOp.Receive (0, readEnd, 0, false, false)
+            BlockingConnectionOp.Write (0, writeEnd, scenario.Count)
+            BlockingConnectionOp.Wake
+            BlockingConnectionOp.Finish 0
+            BlockingConnectionOp.Read (0, readEnd, filling)
+
+            for call in [ TcpReceiveCall.Read ; TcpReceiveCall.Receive ; TcpReceiveCall.Peek ] do
+                sleeper 0 call
+                BlockingConnectionOp.Signal 0
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.Finish 0
+
+                sleeper 0 call
+                // Task 0 is in a call from here until its finish, so index 0
+                // among the idle is task 1.
+                BlockingConnectionOp.Write (0, writeEnd, scenario.Count)
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.Read (0, readEnd, filling)
+                BlockingConnectionOp.Finish 0
+                BlockingConnectionOp.Write (0, writeEnd, scenario.Count)
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.Finish 0
+
+                match call with
+                | TcpReceiveCall.Peek -> BlockingConnectionOp.Read (0, readEnd, filling)
+                | TcpReceiveCall.Read
+                | TcpReceiveCall.Receive -> ()
+
+            match scenario.Ending with
+            | ScenarioEnding.Open -> ()
+            | ScenarioEnding.PeerClose ->
+                // Each sleeper is index 0 among the idle when it calls, and
+                // among the woken when it is finished.
+                sleeper 0 TcpReceiveCall.Read
+                sleeper 0 TcpReceiveCall.Receive
+                sleeper 0 TcpReceiveCall.Peek
+                BlockingConnectionOp.Close writeEnd
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.Finish 0
+                BlockingConnectionOp.Finish 0
+                BlockingConnectionOp.Finish 0
+            | ScenarioEnding.ResetRead count ->
+                BlockingConnectionOp.Write (0, readEnd, count)
+                BlockingConnectionOp.Close writeEnd
+                // One descriptor is left.
+                BlockingConnectionOp.Read (0, 0, 100)
+            | ScenarioEnding.ResetWrite count ->
+                BlockingConnectionOp.Write (0, readEnd, count)
+                BlockingConnectionOp.Close writeEnd
+                // One descriptor is left.
+                BlockingConnectionOp.Write (0, 0, count)
+                BlockingConnectionOp.Read (0, 0, 100)
+            | ScenarioEnding.CloseUnderRead count ->
+                sleeper 0 TcpReceiveCall.Read
+                BlockingConnectionOp.Close readEnd
+                BlockingConnectionOp.Wake
+                // One descriptor is left, and task 1 is the lowest idle.
+                BlockingConnectionOp.Write (0, 0, count)
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.Finish 0
+            | ScenarioEnding.RefilledWriter call ->
+                match call with
+                | FillingCall.Write -> BlockingConnectionOp.Write (0, readEnd, filling)
+                | FillingCall.Send -> BlockingConnectionOp.Send (0, readEnd, filling, false, false)
+                | FillingCall.SendDontWait -> BlockingConnectionOp.Send (0, readEnd, filling, false, true)
+
+                yield! drain
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.Write (0, readEnd, filling)
+                BlockingConnectionOp.Finish 0
+            | ScenarioEnding.NonBlockingWriter ->
+                BlockingConnectionOp.Write (0, readEnd, filling)
+                yield! drain
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.SetNonBlocking (readEnd, true)
+                BlockingConnectionOp.Write (0, readEnd, filling)
+                BlockingConnectionOp.Write (0, readEnd, filling)
+                BlockingConnectionOp.Finish 0
+            | ScenarioEnding.ResetWriters ->
+                BlockingConnectionOp.Write (0, readEnd, filling)
+                BlockingConnectionOp.Send (0, readEnd, 1000, false, false)
+                BlockingConnectionOp.Write (0, readEnd, 1000)
+                BlockingConnectionOp.Send (0, readEnd, 1000, false, true)
+                BlockingConnectionOp.Close writeEnd
+                BlockingConnectionOp.Wake
+                // The last finds nothing woken on Linux, and is skipped.
+                BlockingConnectionOp.Finish 0
+                BlockingConnectionOp.Finish 0
+                BlockingConnectionOp.Finish 0
+                BlockingConnectionOp.Finish 0
+        ]
+
+    let private scenarioGen : Gen<Scenario> =
+        gen {
+            let! readEnd = Gen.elements [ 0 ; 1 ]
+            let! count = Gen.choose (1, 2047)
+            let small = Gen.choose (1, 2047)
+
+            let! ending =
+                Gen.oneof
+                    [
+                        Gen.constant ScenarioEnding.Open
+                        Gen.constant ScenarioEnding.PeerClose
+                        Gen.map ScenarioEnding.ResetRead small
+                        Gen.map ScenarioEnding.ResetWrite small
+                        Gen.map ScenarioEnding.CloseUnderRead small
+                        Gen.elements [ FillingCall.Write ; FillingCall.Send ; FillingCall.SendDontWait ]
+                        |> Gen.map ScenarioEnding.RefilledWriter
+                        Gen.constant ScenarioEnding.NonBlockingWriter
+                        Gen.constant ScenarioEnding.ResetWriters
+                    ]
+
+            return
+                {
+                    ReadEnd = readEnd
+                    Count = count
+                    Ending = ending
+                }
+        }
 
     /// TCP buffers as small as each flavour admits.
     let private small (image : UnixBootImage<int, string>) : UnixBootImage<int, string> =
@@ -1355,9 +1539,11 @@ module TestBlockingConnection =
                 let! platform = Gen.elements Machines.platforms
                 let! restart = Gen.elements [ true ; false ]
                 let! closes = Gen.elements [ 0 ; 1 ; 2 ]
-                let! opening = openingGen
+                // Half the cases start with the scenario.
+                let! scenario = Gen.oneof [ Gen.constant None ; Gen.map Some scenarioGen ]
                 let! ops = Gen.listOfLength 80 (opGen closes)
-                return platform, restart, opening @ ops
+                let prefix = scenario |> Option.map scenarioOps |> Option.defaultValue []
+                return platform, restart, prefix @ ops
             }
 
         // The floors below are a claim about the generator, so they are
@@ -1366,14 +1552,12 @@ module TestBlockingConnection =
             CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 400) (Arb.fromGen gen) property
 
         // Each reached by the fixed sample, whose counts `CoverageSample.check`
-        // prints; a change that loses one fails on every run, and wants
-        // an opening in `openingGen` rather than another seed. The recv and
-        // send rows' rarer finishes are `tcp-recv-send.c`'s rows, held one at
-        // a time below. Darwin's buffers are the larger, so its writers sleep
-        // less often, and those of its paths, like a finish's ECONNRESET and
-        // the non-blocking refusals, are reached only now and then: the rows
-        // below hold each of them, and the property checks every one it
-        // reaches.
+        // prints; a change that loses one fails on every run, and wants a
+        // `Scenario` that takes its path rather than another seed. Random
+        // steps alone reach a dozen of them only now and then, and "Linux
+        // finish read: sleeps" hardly at all, so the scenario takes each of
+        // those paths, and the property checks every one it reaches; the
+        // tests below hold each measured row on its own.
         for flavour in [ "Linux" ; "Darwin" ] do
             for what in
                 [
