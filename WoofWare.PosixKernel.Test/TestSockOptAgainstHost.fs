@@ -1,23 +1,27 @@
 namespace WoofWare.PosixKernel.Test
 
 open System
+open System.Collections.Immutable
 open System.Runtime.InteropServices
 open FsCheck
 open FsCheck.FSharp
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `setsockopt(2)` and `getsockopt(2)` of `SO_REUSEADDR`, put to the kernel
-/// running the suite and to the model of the same flavour, on the same random
-/// inputs.
+/// `setsockopt(2)` and `getsockopt(2)` of every option the model holds --
+/// `SO_REUSEADDR`, `TCP_NODELAY`, `IPV6_V6ONLY`, `SO_LINGER` and Darwin's
+/// `SO_LINGER_SEC` -- put to the kernel running the suite and to the model of
+/// the same flavour, on the same random inputs.
 ///
 /// Each host falsifies its own column: macOS locally, Linux in CI. The inputs
 /// cover the descriptor kinds, value buffers and lengths the model
-/// distinguishes -- a closed descriptor, a pipe, both socket kinds; real
-/// storage, a null pointer, and a reserved `PROT_NONE` page; every length at
-/// the boundaries of `sizeof(int)` and of the signed and unsigned readings of a
-/// `socklen_t`. Only a fresh socket's phases are reachable from here, which is
-/// why `TestSockOpt` carries the others as measured literals.
+/// distinguishes -- a closed descriptor, a pipe, a fresh socket of every
+/// domain and kind the flavour creates; real storage, a null pointer, and a
+/// reserved `PROT_NONE` page; every length at the boundaries of `sizeof(int)`,
+/// of `sizeof(struct linger)`, and of the signed and unsigned readings of a
+/// `socklen_t`; and values at the edges of what each kernel stores. Only a
+/// fresh socket's phases are reachable from here, which is why `TestSockOpt`
+/// and `TestSocketOptions` carry the others as measured literals.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSockOptAgainstHost =
@@ -46,15 +50,6 @@ module TestSockOptAgainstHost =
         int fd,
         int64 offset
     )
-
-    [<Literal>]
-    let private AF_INET = 2
-
-    [<Literal>]
-    let private SOCK_STREAM = 1
-
-    [<Literal>]
-    let private SOCK_DGRAM = 2
 
     [<Literal>]
     let private PROT_NONE = 0
@@ -87,14 +82,63 @@ module TestSockOptAgainstHost =
     type private Target =
         | Closed
         | Pipe
-        | Stream
-        | Datagram
+        | Socket of SocketDomain * SocketKind
+
+    [<RequireQualifiedAccess>]
+    type private Option =
+        | ReuseAddress
+        | NoDelay
+        | Ipv6Only
+        | Linger
+        | LingerSeconds
 
     [<RequireQualifiedAccess>]
     type private Buffer =
         | Real
         | Null
         | Faulting
+
+    let private numbered (platform : SimulatedUnixPlatform) (option : Option) : int * int =
+        match option with
+        | Option.ReuseAddress ->
+            SimulatedUnixPlatform.socketOptionLevel platform, SimulatedUnixPlatform.reuseAddressOption platform
+        | Option.NoDelay -> SimulatedUnixPlatform.tcpOptionLevel platform, SimulatedUnixPlatform.noDelayOption platform
+        | Option.Ipv6Only ->
+            SimulatedUnixPlatform.ipv6OptionLevel platform, SimulatedUnixPlatform.ipv6OnlyOption platform
+        | Option.Linger -> SimulatedUnixPlatform.socketOptionLevel platform, SimulatedUnixPlatform.lingerOption platform
+        | Option.LingerSeconds ->
+            match SimulatedUnixPlatform.lingerSecondsOption platform with
+            | Some name -> SimulatedUnixPlatform.socketOptionLevel platform, name
+            | None -> failwith $"%O{platform} has no SO_LINGER_SEC"
+
+    let private valueSize (option : Option) : int =
+        match option with
+        | Option.Linger
+        | Option.LingerSeconds -> 8
+        | Option.ReuseAddress
+        | Option.NoDelay
+        | Option.Ipv6Only -> 4
+
+    let private options (platform : SimulatedUnixPlatform) : Option list =
+        [
+            yield Option.ReuseAddress
+            yield Option.NoDelay
+            yield Option.Ipv6Only
+            yield Option.Linger
+            if (SimulatedUnixPlatform.lingerSecondsOption platform).IsSome then
+                yield Option.LingerSeconds
+        ]
+
+    let private targets (platform : SimulatedUnixPlatform) : Target list =
+        [
+            yield Target.Closed
+            yield Target.Pipe
+            for domain in [ SocketDomain.Inet ; SocketDomain.Inet6 ; SocketDomain.Unix ] do
+                for kind in [ SocketKind.Stream ; SocketKind.Datagram ] do
+                    yield Target.Socket (domain, kind)
+            if SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux then
+                yield Target.Socket (SocketDomain.Unix, SocketKind.SeqPacket)
+        ]
 
     let private lengths : uint32 list =
         [
@@ -104,7 +148,9 @@ module TestSockOptAgainstHost =
             3u
             4u
             5u
+            7u
             8u
+            9u
             16u
             0x7fff_ffffu
             0x8000_0000u
@@ -112,27 +158,56 @@ module TestSockOptAgainstHost =
             UInt32.MaxValue
         ]
 
-    let private targetGen : Gen<Target> =
-        Gen.elements [ Target.Closed ; Target.Pipe ; Target.Stream ; Target.Datagram ]
-
     let private bufferGen : Gen<Buffer> =
         Gen.elements [ Buffer.Real ; Buffer.Null ; Buffer.Faulting ]
 
     let private lengthGen : Gen<uint32> =
         Gen.oneof [ Gen.elements lengths ; ArbMap.defaults |> ArbMap.generate<uint32> ]
 
-    let private valueGen : Gen<int> =
+    let private intGen : Gen<int> =
         Gen.oneof
             [
-                Gen.elements [ 0 ; 1 ; 2 ; 4 ; -1 ; 0x100 ]
+                Gen.elements
+                    [
+                        0
+                        1
+                        2
+                        4
+                        -1
+                        0x100
+                        5
+                        327
+                        328
+                        32767
+                        32768
+                        65535
+                        65536
+                        21474836
+                        21474837
+                        42949673
+                        Int32.MaxValue
+                        Int32.MinValue
+                    ]
                 ArbMap.defaults |> ArbMap.generate<int>
             ]
+
+    /// The bytes a caller's value buffer holds: two `int`s, of which an
+    /// `int`-sized option reads the first.
+    let private valueGen : Gen<byte[]> =
+        Gen.map2
+            (fun (a : int) (b : int) -> Array.append (BitConverter.GetBytes a) (BitConverter.GetBytes b))
+            intGen
+            intGen
 
     let private userBuffer (buffer : Buffer) : UserBuffer =
         match buffer with
         | Buffer.Real -> UserBuffer.Mapped
         | Buffer.Null -> UserBuffer.Unmapped 0UL
         | Buffer.Faulting -> UserBuffer.Unmapped faultingPage.Value
+
+    let private fresh (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        UnixSystem.initial platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     /// A host descriptor for `target`, and a matching model descriptor on
     /// `system`. The model's pipe is standard input, which it models as one.
@@ -155,27 +230,23 @@ module TestSockOptAgainstHost =
             finally
                 hostClose fds.[0] |> ignore<int>
                 hostClose fds.[1] |> ignore<int>
-        | Target.Stream
-        | Target.Datagram ->
-            let kind, modelKind, protocol =
-                match target with
-                | Target.Stream -> SOCK_STREAM, SocketKind.Stream, SocketProtocol.Tcp
-                | _ -> SOCK_DGRAM, SocketKind.Datagram, SocketProtocol.Udp
+        | Target.Socket (domain, kind) ->
+            let rawDomain, rawKind, _ =
+                NewSocket.arguments system.Machine.UnixPlatform domain kind SocketProtocol.Default
 
-            let fd = hostSocket (AF_INET, kind, 0)
+            let fd = hostSocket (rawDomain, rawKind, 0)
 
             if fd < 0 then
                 failwith $"socket failed with errno %d{Marshal.GetLastPInvokeError ()}"
 
             try
-                let modelFd, system = NewSocket.create SocketDomain.Inet modelKind protocol system
-
+                let modelFd, system = NewSocket.create domain kind SocketProtocol.Default system
                 action fd modelFd system
             finally
                 hostClose fd |> ignore<int>
 
-    /// Four bytes of real storage holding `value`, or the address `buffer`
-    /// names, for the duration of `action`.
+    /// Real storage holding `bytes`, or the address `buffer` names, for the
+    /// duration of `action`.
     let private withBuffer (buffer : Buffer) (bytes : byte[]) (action : nativeint -> 'a) : 'a =
         match buffer with
         | Buffer.Null -> action 0n
@@ -192,24 +263,73 @@ module TestSockOptAgainstHost =
     let private errnoOf (platform : SimulatedUnixPlatform) (error : UnixError) : int =
         UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
 
-    /// The host's `SO_REUSEADDR` on `fd` read through real storage, which is
-    /// the one read both kernels answer without condition.
-    let private hostReadBack (platform : SimulatedUnixPlatform) (fd : int) : int =
-        let storage = Marshal.AllocHGlobal 8
+    let private hostSet (fd : int) (level : int) (name : int) (buffer : Buffer) (length : uint32) (value : byte[]) =
+        withBuffer
+            buffer
+            value
+            (fun address ->
+                Marshal.SetLastPInvokeError 0
+
+                if hostSetSockOpt (fd, level, name, address, length) = 0 then
+                    0
+                else
+                    Marshal.GetLastPInvokeError ()
+            )
+
+    /// The model's set, as a client makes it: the admission, then the bytes the
+    /// copy takes.
+    let private modelSet
+        (fd : int)
+        (level : int)
+        (name : int)
+        (buffer : Buffer)
+        (length : uint32)
+        (value : byte[])
+        (system : UnixSystem<int, string>)
+        =
+        let supplied =
+            match UnixSocket.admitSetSockOpt fd level name (userBuffer buffer) length system with
+            | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
+            | Ok SetSockOptAdmission.NoCopy
+            | Ok (SetSockOptAdmission.Answered _)
+            | Error _ -> None
+
+        UnixSocket.setsockopt fd level name (userBuffer buffer) length supplied system
+
+    /// What a read through real buffers of the option's size answers, on the
+    /// host: the errno, and the bytes and length on success.
+    let private hostReadBack (fd : int) (level : int) (name : int) : int * byte[] =
+        let storage = Marshal.AllocHGlobal 12
 
         try
-            Marshal.WriteInt32 (storage, 0, 0x5a5a5a5a)
-            Marshal.WriteInt32 (storage, 4, 4)
+            for i in 0..7 do
+                Marshal.WriteByte (storage, i, 0x5auy)
 
-            let level = SimulatedUnixPlatform.socketOptionLevel platform
-            let optionName = SimulatedUnixPlatform.reuseAddressOption platform
+            Marshal.WriteInt32 (storage, 8, 8)
+            Marshal.SetLastPInvokeError 0
 
-            if hostGetSockOpt (fd, level, optionName, storage, storage + 4n) <> 0 then
-                failwith $"reading SO_REUSEADDR back failed with errno %d{Marshal.GetLastPInvokeError ()}"
-
-            Marshal.ReadInt32 storage
+            if hostGetSockOpt (fd, level, name, storage, storage + 8n) <> 0 then
+                Marshal.GetLastPInvokeError (), [||]
+            else
+                let length = Marshal.ReadInt32 (storage, 8)
+                let bytes = Array.zeroCreate<byte> length
+                Marshal.Copy (storage, bytes, 0, length)
+                0, bytes
         finally
             Marshal.FreeHGlobal storage
+
+    let private modelReadBack (fd : int) (level : int) (name : int) (system : UnixSystem<int, string>) : int * byte[] =
+        let platform = system.Machine.UnixPlatform
+
+        let read =
+            match UnixSocket.admitGetSockOpt fd level name UserBuffer.Mapped UserBuffer.Mapped system with
+            | Ok GetSockOptAdmission.ReadLength -> Some 8u
+            | _ -> None
+
+        match UnixSocket.getsockopt fd level name UserBuffer.Mapped UserBuffer.Mapped read system with
+        | Ok (GetSockOptAnswer.Reported copied, _) -> 0, Seq.toArray copied
+        | Ok (GetSockOptAnswer.Failed (error, _), _) -> errnoOf platform error, [||]
+        | Error refusal -> failwith $"reading the model back was refused: %s{SocketOptionRefusal.describe refusal}"
 
     let private onHost (test : SimulatedUnixPlatform -> unit) : unit =
         HostPlatform.onUnixHost (fun flavour ->
@@ -219,130 +339,118 @@ module TestSockOptAgainstHost =
             test (HostPlatform.platformOf flavour)
         )
 
+    /// Whether the model's refusal is one it states for this input, rather than
+    /// a disagreement: Linux's negative linger time, which this library will
+    /// not answer.
+    let private isStatedRefusal (refusal : SocketOptionRefusal) : bool =
+        match refusal with
+        | SocketOptionRefusal.NegativeLingerTime _ -> true
+        | SocketOptionRefusal.UnmodelledOption _
+        | SocketOptionRefusal.Buffer _
+        | SocketOptionRefusal.ListenerWithQueuedConnections _ -> false
+
     [<Test>]
-    let ``setsockopt of SO_REUSEADDR answers as this kernel does`` () : unit =
+    let ``a sequence of setsockopt calls answers and reads back as this kernel does`` () : unit =
         onHost (fun platform ->
-            let level = SimulatedUnixPlatform.socketOptionLevel platform
-            let optionName = SimulatedUnixPlatform.reuseAddressOption platform
+            let step = Gen.zip (Gen.zip bufferGen lengthGen) valueGen
 
-            let gen = Gen.zip (Gen.zip targetGen bufferGen) (Gen.zip lengthGen valueGen)
+            let gen =
+                Gen.zip
+                    (Gen.zip (Gen.elements (targets platform)) (Gen.elements (options platform)))
+                    (Gen.listOf step |> Gen.resize 4)
 
-            let property ((target : Target, buffer : Buffer), (optionLength : uint32, value : int)) : unit =
+            let property ((target : Target, option : Option), steps : ((Buffer * uint32) * byte[]) list) : unit =
+                let level, name = numbered platform option
+
                 withTarget
                     target
-                    (UnixSystem.initial platform
-                     |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
+                    (fresh platform)
                     (fun hostFd modelFd system ->
-                        let hostErrno =
-                            withBuffer
-                                buffer
-                                (BitConverter.GetBytes value)
-                                (fun address ->
-                                    Marshal.SetLastPInvokeError 0
+                        let rec go (index : int) steps system =
+                            match steps with
+                            | [] -> ()
+                            | ((buffer, length), value) :: rest ->
 
-                                    if hostSetSockOpt (hostFd, level, optionName, address, optionLength) = 0 then
-                                        0
-                                    else
-                                        Marshal.GetLastPInvokeError ()
-                                )
+                            let describe =
+                                $"%A{target} %A{option}, step %d{index} of %A{steps}: %A{buffer} length %d{length} value %A{value}"
 
-                        let modelValue = userBuffer buffer
-
-                        let supplied =
-                            match
-                                UnixSocket.admitSetSockOpt modelFd level optionName modelValue optionLength system
-                            with
-                            | Ok (SetSockOptAdmission.Transfer _) -> Some value
-                            | _ -> None
-
-                        match
-                            UnixSocket.setsockopt modelFd level optionName modelValue optionLength supplied system
-                        with
-                        | Error refusal ->
-                            failwith
-                                $"%A{target} %A{buffer} length %d{optionLength}: the model refused (%s{SocketOptionRefusal.describe refusal}) where this kernel answered errno %d{hostErrno}"
-                        | Ok (SetSockOptAnswer.Failed error, _) ->
-                            if errnoOf platform error <> hostErrno then
+                            match modelSet modelFd level name buffer length value system with
+                            | Error refusal when isStatedRefusal refusal -> ()
+                            | Error refusal ->
                                 failwith
-                                    $"%A{target} %A{buffer} length %d{optionLength}: the model answered %O{error}, this kernel errno %d{hostErrno}"
-                        | Ok (SetSockOptAnswer.Set, system) ->
-                            if hostErrno <> 0 then
-                                failwith
-                                    $"%A{target} %A{buffer} length %d{optionLength}: the model succeeded, this kernel answered errno %d{hostErrno}"
+                                    $"%s{describe}: the model refused (%s{SocketOptionRefusal.describe refusal}) where this kernel answered errno %d{hostSet hostFd level name buffer length value}"
+                            | Ok (answer, system) ->
 
-                            let modelReadBack =
-                                match
-                                    UnixSocket.getsockopt
-                                        modelFd
-                                        level
-                                        optionName
-                                        UserBuffer.Mapped
-                                        UserBuffer.Mapped
-                                        (Some 4u)
-                                        system
-                                with
-                                | Ok (GetSockOptAnswer.Reported (read, 4u), _) -> read
-                                | other -> failwith $"reading the model back answered %A{other}"
+                            let hostErrno = hostSet hostFd level name buffer length value
 
-                            let hostRead = hostReadBack platform hostFd
+                            let modelErrno =
+                                match answer with
+                                | SetSockOptAnswer.Set -> 0
+                                | SetSockOptAnswer.Failed error -> errnoOf platform error
 
-                            if modelReadBack <> hostRead then
-                                failwith
-                                    $"%A{target} set to %d{value}: the model reads back %d{modelReadBack}, this kernel %d{hostRead}"
+                            if modelErrno <> hostErrno then
+                                failwith $"%s{describe}: the model answered %d{modelErrno}, this kernel %d{hostErrno}"
+
+                            let modelRead = modelReadBack modelFd level name system
+                            let hostRead = hostReadBack hostFd level name
+
+                            if modelRead <> hostRead then
+                                failwith $"%s{describe}: the model reads back %A{modelRead}, this kernel %A{hostRead}"
+
+                            go (index + 1) rest system
+
+                        go 0 steps system
                     )
 
-            Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen gen) property)
+            Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen gen) property)
         )
 
     [<Test>]
-    let ``getsockopt of SO_REUSEADDR answers as this kernel does`` () : unit =
+    let ``getsockopt answers as this kernel does`` () : unit =
         onHost (fun platform ->
-            let level = SimulatedUnixPlatform.socketOptionLevel platform
-            let optionName = SimulatedUnixPlatform.reuseAddressOption platform
             let sentinel = 0x5auy
 
             let gen =
                 Gen.zip
-                    (Gen.zip targetGen (Gen.zip bufferGen bufferGen))
-                    (Gen.zip lengthGen (Gen.elements [ false ; true ]))
+                    (Gen.zip (Gen.elements (targets platform)) (Gen.elements (options platform)))
+                    (Gen.zip (Gen.zip bufferGen bufferGen) (Gen.zip lengthGen (Gen.optionOf valueGen)))
 
             let property
                 (
-                    (target : Target, (valueBuffer : Buffer, lengthBuffer : Buffer)),
-                    (declaredLength : uint32, isSet : bool)
+                    (target : Target, option : Option),
+                    ((valueBuffer : Buffer, lengthBuffer : Buffer), (declaredLength : uint32, prior : byte[] option))
                 )
                 : unit
                 =
+                let level, name = numbered platform option
+
                 withTarget
                     target
-                    (UnixSystem.initial platform
-                     |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
+                    (fresh platform)
                     (fun hostFd modelFd system ->
-                        let isSocket =
-                            match target with
-                            | Target.Stream
-                            | Target.Datagram -> true
-                            | Target.Closed
-                            | Target.Pipe -> false
-
+                        // Set the option first through real storage at its size,
+                        // where both sides take it, so the read has something
+                        // other than the default to report.
                         let system =
-                            if isSet && isSocket then
-                                let setValue = BitConverter.GetBytes 1
+                            match prior with
+                            | None -> Some system
+                            | Some value ->
+                                let size = uint32 (valueSize option)
 
-                                withBuffer
-                                    Buffer.Real
-                                    setValue
-                                    (fun address ->
-                                        if hostSetSockOpt (hostFd, level, optionName, address, 4u) <> 0 then
-                                            failwith
-                                                $"setting the host's flag failed: %d{Marshal.GetLastPInvokeError ()}"
-                                    )
+                                match modelSet modelFd level name Buffer.Real size value system with
+                                | Ok (SetSockOptAnswer.Set, system) ->
+                                    if hostSet hostFd level name Buffer.Real size value <> 0 then
+                                        failwith
+                                            $"%A{target} %A{option}: the model took %A{value}, this kernel did not"
 
-                                ReuseAddress.set true modelFd system
-                            else
-                                system
+                                    Some system
+                                | Ok (SetSockOptAnswer.Failed _, _)
+                                | Error _ -> None
 
-                        // What the host leaves in each buffer, where it is real.
+                        match system with
+                        | None -> ()
+                        | Some system ->
+
                         let hostErrno, hostValue, hostLength =
                             withBuffer
                                 valueBuffer
@@ -359,7 +467,7 @@ module TestSockOptAgainstHost =
                                                     hostGetSockOpt (
                                                         hostFd,
                                                         level,
-                                                        optionName,
+                                                        name,
                                                         valueAddress,
                                                         lengthAddress
                                                     ) = 0
@@ -394,7 +502,7 @@ module TestSockOptAgainstHost =
                                 UnixSocket.admitGetSockOpt
                                     modelFd
                                     level
-                                    optionName
+                                    name
                                     (userBuffer valueBuffer)
                                     modelLength
                                     system
@@ -403,58 +511,42 @@ module TestSockOptAgainstHost =
                             | _ -> None
 
                         let describe =
-                            $"%A{target} set=%b{isSet} value %A{valueBuffer} length %A{lengthBuffer} = %d{declaredLength}"
+                            $"%A{target} %A{option} prior %A{prior} value %A{valueBuffer} length %A{lengthBuffer} = %d{declaredLength}"
 
-                        match
-                            UnixSocket.getsockopt
-                                modelFd
-                                level
-                                optionName
-                                (userBuffer valueBuffer)
-                                modelLength
-                                read
-                                system
-                        with
-                        | Error refusal ->
-                            failwith
-                                $"%s{describe}: the model refused (%s{SocketOptionRefusal.describe refusal}) where this kernel answered errno %d{hostErrno}"
-                        | Ok (GetSockOptAnswer.Failed error, _) ->
-                            if errnoOf platform error <> hostErrno then
+                        let untouched (buffer : Buffer) (contents : 'a) : 'a option =
+                            match buffer with
+                            | Buffer.Real -> Some contents
+                            | Buffer.Null
+                            | Buffer.Faulting -> None
+
+                        let model =
+                            match
+                                UnixSocket.getsockopt
+                                    modelFd
+                                    level
+                                    name
+                                    (userBuffer valueBuffer)
+                                    modelLength
+                                    read
+                                    system
+                            with
+                            | Error refusal ->
                                 failwith
-                                    $"%s{describe}: the model answered %O{error}, this kernel errno %d{hostErrno}"
+                                    $"%s{describe}: the model refused (%s{SocketOptionRefusal.describe refusal}) where this kernel answered errno %d{hostErrno}"
+                            | Ok (GetSockOptAnswer.Failed (error, overwritten), _) ->
+                                errnoOf platform error,
+                                untouched valueBuffer (Array.create 16 sentinel),
+                                untouched lengthBuffer (Option.defaultValue declaredLength overwritten)
+                            | Ok (GetSockOptAnswer.Reported copied, _) ->
+                                let bytes = Array.create 16 sentinel
+                                copied.CopyTo bytes
+                                0, untouched valueBuffer bytes, untouched lengthBuffer (uint32 copied.Length)
 
-                            // Neither buffer is written on a failure.
-                            match hostValue with
-                            | Some bytes when bytes <> Array.create 16 sentinel ->
-                                failwith $"%s{describe}: this kernel failed yet wrote %A{bytes}"
-                            | _ -> ()
+                        let host = hostErrno, hostValue, hostLength
 
-                            match hostLength with
-                            | Some length when length <> declaredLength ->
-                                failwith $"%s{describe}: this kernel failed yet left %d{length} in the length cell"
-                            | _ -> ()
-                        | Ok (GetSockOptAnswer.Reported (value, length), _) ->
-                            if hostErrno <> 0 then
-                                failwith
-                                    $"%s{describe}: the model succeeded, this kernel answered errno %d{hostErrno}"
-
-                            match hostLength with
-                            | Some hostLength when hostLength <> length ->
-                                failwith
-                                    $"%s{describe}: the model reports length %d{length}, this kernel %d{hostLength}"
-                            | _ -> ()
-
-                            match hostValue with
-                            | Some bytes ->
-                                let expected = Array.create 16 sentinel
-                                let encoded = BitConverter.GetBytes value
-                                Array.blit encoded 0 expected 0 (int length)
-
-                                if bytes <> expected then
-                                    failwith
-                                        $"%s{describe}: the model predicts %A{expected}, this kernel wrote %A{bytes}"
-                            | None -> ()
+                        if model <> host then
+                            failwith $"%s{describe}: the model predicts %A{model}, this kernel did %A{host}"
                     )
 
-            Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen gen) property)
+            Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen gen) property)
         )

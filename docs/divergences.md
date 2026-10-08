@@ -1576,8 +1576,8 @@ destination in it — a `BufferPointer.Storage` names storage that is wholly the
 `BufferPointer.RawAddress` names none at all — so the state these rows measure is not one a guest can
 put PawPrint in, and the residue has no representable case to land in.
 
-*Contrast the length cell*, which **is** modelled: on a fault Linux has already stored the
-untruncated length where Darwin has stored nothing, and `GetSockNameAnswer.Failed` carries that as
+*Contrast the length cell*, which **is** modelled: on a fault Linux 6.18 and later has already
+stored the untruncated length where Darwin and earlier Linux have stored nothing, and `GetSockNameAnswer.Failed` carries that as
 `lengthOverwritten`. The difference is that the length is one value a kernel decides, where the
 residue above is a partial copy's leftovers. This is the distinction `getcwd`'s entry above draws
 between what a kernel decides and what an algorithm leaves behind, and `getsockname` is the syscall
@@ -1588,8 +1588,9 @@ blob only on success, so no BCL caller reads either. The length store is unreach
 hand-rolled P/Invoke: the shim passes `getsockname(2)` a local `socklen_t` and copies it back to the
 caller only when the call succeeded.
 
-**Where this lives in code**: `UnixSocket.getsockname` in `WoofWare.PosixKernel/UnixSystem.fs`; the
-length divergence is recorded on `GetSockNameFaultLength` in `SimulatedUnixPlatform.fs`.
+**Where this lives in code**: `UnixSocket.getsockname` in `WoofWare.PosixKernel/UnixSocket.fs`; the
+length divergence is recorded on `GetSockNameFaultLength` in `SimulatedUnixPlatform.fs`, and is
+Linux's only from 6.18: before that Linux, like Darwin, leaves the cell as the caller declared it.
 
 ## A guest buffer is taken to fit the address space for any count that could fit it
 

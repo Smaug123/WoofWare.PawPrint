@@ -157,7 +157,7 @@ module TestKeventMeasured =
 
             s.Step (fun system ->
                 match KeventWorld.readSocketError socket system with
-                | GetSockOptAnswer.Reported (61, 4u), system -> system
+                | GetSockOptAnswer.Reported (OptionValue.Int 61), system -> system
                 | other, _ -> failwith $"expected ECONNREFUSED from SO_ERROR, got %A{other}"
             )
 
@@ -181,7 +181,7 @@ module TestKeventMeasured =
 
             s.Step (fun system ->
                 match KeventWorld.readSocketError socket system with
-                | GetSockOptAnswer.Reported (0, 4u), system -> system
+                | GetSockOptAnswer.Reported (OptionValue.Int 0), system -> system
                 | other, _ -> failwith $"expected no pending error, got %A{other}"
             )
 

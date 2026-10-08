@@ -1,0 +1,565 @@
+numbers: IPPROTO_TCP=6 TCP_NODELAY=1 IPPROTO_IPV6=41 IPV6_V6ONLY=27 SOL_SOCKET=65535 SO_LINGER=128 SO_LINGER_SEC=4224 sizeof(struct linger)=8 sysconf(_SC_CLK_TCK)=100
+D. defaults, wrong domain or kind (get at the option's size, set 1 / {1,5})
+  inet stream                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  inet stream                                  TCP_NODELAY    set 1 -> OK
+  inet stream                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  inet stream                                  IPV6_V6ONLY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet stream                                  IPV6_V6ONLY    set 1 -> EINVAL
+  inet stream                                  IPV6_V6ONLY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet stream                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  inet stream                                  SO_LINGER      set {1,5} -> OK
+  inet stream                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  inet stream                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  inet stream                                  SO_LINGER_SEC  set {1,5} -> OK
+  inet stream                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  inet dgram                                   TCP_NODELAY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet dgram                                   TCP_NODELAY    set 1 -> EINVAL
+  inet dgram                                   TCP_NODELAY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet dgram                                   IPV6_V6ONLY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet dgram                                   IPV6_V6ONLY    set 1 -> EINVAL
+  inet dgram                                   IPV6_V6ONLY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet dgram                                   SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  inet dgram                                   SO_LINGER      set {1,5} -> OK
+  inet dgram                                   SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  inet dgram                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  inet dgram                                   SO_LINGER_SEC  set {1,5} -> OK
+  inet dgram                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  inet6 stream                                 TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  inet6 stream                                 TCP_NODELAY    set 1 -> OK
+  inet6 stream                                 TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  inet6 stream                                 IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  inet6 stream                                 IPV6_V6ONLY    set 1 -> OK
+  inet6 stream                                 IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  inet6 stream                                 SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  inet6 stream                                 SO_LINGER      set {1,5} -> OK
+  inet6 stream                                 SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  inet6 stream                                 SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  inet6 stream                                 SO_LINGER_SEC  set {1,5} -> OK
+  inet6 stream                                 SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  inet6 dgram                                  TCP_NODELAY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet6 dgram                                  TCP_NODELAY    set 1 -> EINVAL
+  inet6 dgram                                  TCP_NODELAY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet6 dgram                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  inet6 dgram                                  IPV6_V6ONLY    set 1 -> OK
+  inet6 dgram                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  inet6 dgram                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  inet6 dgram                                  SO_LINGER      set {1,5} -> OK
+  inet6 dgram                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  inet6 dgram                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  inet6 dgram                                  SO_LINGER_SEC  set {1,5} -> OK
+  inet6 dgram                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  unix stream                                  TCP_NODELAY    len 4          -> errno57      cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  unix stream                                  TCP_NODELAY    set 1 -> EOPNOTSUPP
+  unix stream                                  TCP_NODELAY    len 4          -> errno57      cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  unix stream                                  IPV6_V6ONLY    len 4          -> EOPNOTSUPP   cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  unix stream                                  IPV6_V6ONLY    set 1 -> EOPNOTSUPP
+  unix stream                                  IPV6_V6ONLY    len 4          -> EOPNOTSUPP   cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  unix stream                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  unix stream                                  SO_LINGER      set {1,5} -> OK
+  unix stream                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  unix stream                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  unix stream                                  SO_LINGER_SEC  set {1,5} -> OK
+  unix stream                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  unix dgram                                   TCP_NODELAY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  unix dgram                                   TCP_NODELAY    set 1 -> EOPNOTSUPP
+  unix dgram                                   TCP_NODELAY    len 4          -> EINVAL       cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  unix dgram                                   IPV6_V6ONLY    len 4          -> EOPNOTSUPP   cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  unix dgram                                   IPV6_V6ONLY    set 1 -> EOPNOTSUPP
+  unix dgram                                   IPV6_V6ONLY    len 4          -> EOPNOTSUPP   cell=4 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  unix dgram                                   SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  unix dgram                                   SO_LINGER      set {1,5} -> OK
+  unix dgram                                   SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  unix dgram                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  unix dgram                                   SO_LINGER_SEC  set {1,5} -> OK
+  unix dgram                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+V. int values set then read back
+  set 0 (0x0)                                  TCP_NODELAY    -> OK
+  set 0 (0x0)                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  then set 0                                   TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 1 (0x1)                                  TCP_NODELAY    -> OK
+  set 1 (0x1)                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  then set 0                                   TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 2 (0x2)                                  TCP_NODELAY    -> OK
+  set 2 (0x2)                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  then set 0                                   TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 4 (0x4)                                  TCP_NODELAY    -> OK
+  set 4 (0x4)                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  then set 0                                   TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set -1 (0xffffffff)                          TCP_NODELAY    -> OK
+  set -1 (0xffffffff)                          TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  then set 0                                   TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 256 (0x100)                              TCP_NODELAY    -> OK
+  set 256 (0x100)                              TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  then set 0                                   TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 65536 (0x10000)                          TCP_NODELAY    -> OK
+  set 65536 (0x10000)                          TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  then set 0                                   TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set -2147483648 (0x80000000)                 TCP_NODELAY    -> OK
+  set -2147483648 (0x80000000)                 TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  then set 0                                   TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 0 (0x0)                                  IPV6_V6ONLY    -> OK
+  set 0 (0x0)                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  then set 0                                   IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 1 (0x1)                                  IPV6_V6ONLY    -> OK
+  set 1 (0x1)                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  then set 0                                   IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 2 (0x2)                                  IPV6_V6ONLY    -> OK
+  set 2 (0x2)                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  then set 0                                   IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 4 (0x4)                                  IPV6_V6ONLY    -> OK
+  set 4 (0x4)                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  then set 0                                   IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set -1 (0xffffffff)                          IPV6_V6ONLY    -> OK
+  set -1 (0xffffffff)                          IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  then set 0                                   IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 256 (0x100)                              IPV6_V6ONLY    -> OK
+  set 256 (0x100)                              IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  then set 0                                   IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set 65536 (0x10000)                          IPV6_V6ONLY    -> OK
+  set 65536 (0x10000)                          IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  then set 0                                   IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  set -2147483648 (0x80000000)                 IPV6_V6ONLY    -> OK
+  set -2147483648 (0x80000000)                 IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  then set 0                                   IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+L. linger values set then read back, through each name
+  set {0,0}                                    SO_LINGER      -> OK
+  set {0,0}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {0,0}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,0}                                    SO_LINGER      -> OK
+  set {1,0}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=01000000000000005a5a5a5a
+  set {1,0}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000000000005a5a5a5a
+  set {1,1}                                    SO_LINGER      -> OK
+  set {1,1}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=01000000010000005a5a5a5a
+  set {1,1}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000000000005a5a5a5a
+  set {1,5}                                    SO_LINGER      -> OK
+  set {1,5}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  set {1,5}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000000000005a5a5a5a
+  set {2,7}                                    SO_LINGER      -> OK
+  set {2,7}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=01000000070000005a5a5a5a
+  set {2,7}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000000000005a5a5a5a
+  set {-1,3}                                   SO_LINGER      -> OK
+  set {-1,3}                                   SO_LINGER      len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  set {-1,3}                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000000000005a5a5a5a
+  set {0,5}                                    SO_LINGER      -> OK
+  set {0,5}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=00000000050000005a5a5a5a
+  set {0,5}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,-1}                                   SO_LINGER      -> errno33
+  set {1,-1}                                   SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,-1}                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,327}                                  SO_LINGER      -> OK
+  set {1,327}                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000470100005a5a5a5a
+  set {1,327}                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  set {1,328}                                  SO_LINGER      -> OK
+  set {1,328}                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000480100005a5a5a5a
+  set {1,328}                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  set {1,32767}                                SO_LINGER      -> OK
+  set {1,32767}                                SO_LINGER      len 8          -> OK           cell=8 bytes=01000000ff7f00005a5a5a5a
+  set {1,32767}                                SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000470100005a5a5a5a
+  set {1,32768}                                SO_LINGER      -> errno33
+  set {1,32768}                                SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,32768}                                SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,65535}                                SO_LINGER      -> errno33
+  set {1,65535}                                SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,65535}                                SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,65536}                                SO_LINGER      -> errno33
+  set {1,65536}                                SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,65536}                                SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,2147483647}                           SO_LINGER      -> errno33
+  set {1,2147483647}                           SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,2147483647}                           SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {0,-1}                                   SO_LINGER      -> OK
+  set {0,-1}                                   SO_LINGER      len 8          -> OK           cell=8 bytes=00000000ffffffff5a5a5a5a
+  set {0,-1}                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {0,0}                                    SO_LINGER_SEC  -> OK
+  set {0,0}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {0,0}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,0}                                    SO_LINGER_SEC  -> OK
+  set {1,0}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=01000000000000005a5a5a5a
+  set {1,0}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000000000005a5a5a5a
+  set {1,1}                                    SO_LINGER_SEC  -> OK
+  set {1,1}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=01000000640000005a5a5a5a
+  set {1,1}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000010000005a5a5a5a
+  set {1,5}                                    SO_LINGER_SEC  -> OK
+  set {1,5}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=01000000f40100005a5a5a5a
+  set {1,5}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  set {2,7}                                    SO_LINGER_SEC  -> OK
+  set {2,7}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=01000000bc0200005a5a5a5a
+  set {2,7}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000070000005a5a5a5a
+  set {-1,3}                                   SO_LINGER_SEC  -> OK
+  set {-1,3}                                   SO_LINGER      len 8          -> OK           cell=8 bytes=010000002c0100005a5a5a5a
+  set {-1,3}                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  set {0,5}                                    SO_LINGER_SEC  -> OK
+  set {0,5}                                    SO_LINGER      len 8          -> OK           cell=8 bytes=00000000f40100005a5a5a5a
+  set {0,5}                                    SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000050000005a5a5a5a
+  set {1,-1}                                   SO_LINGER_SEC  -> errno33
+  set {1,-1}                                   SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,-1}                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,327}                                  SO_LINGER_SEC  -> OK
+  set {1,327}                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000bc7f00005a5a5a5a
+  set {1,327}                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000470100005a5a5a5a
+  set {1,328}                                  SO_LINGER_SEC  -> errno33
+  set {1,328}                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,328}                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,32767}                                SO_LINGER_SEC  -> errno33
+  set {1,32767}                                SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,32767}                                SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,32768}                                SO_LINGER_SEC  -> errno33
+  set {1,32768}                                SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,32768}                                SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,65535}                                SO_LINGER_SEC  -> errno33
+  set {1,65535}                                SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,65535}                                SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,65536}                                SO_LINGER_SEC  -> errno33
+  set {1,65536}                                SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,65536}                                SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,2147483647}                           SO_LINGER_SEC  -> errno33
+  set {1,2147483647}                           SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {1,2147483647}                           SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  set {0,-1}                                   SO_LINGER_SEC  -> OK
+  set {0,-1}                                   SO_LINGER      len 8          -> OK           cell=8 bytes=000000009cffffff5a5a5a5a
+  set {0,-1}                                   SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000ffffffff5a5a5a5a
+  set {1,9} then {0,4}                         SO_LINGER      len 8          -> OK           cell=8 bytes=00000000040000005a5a5a5a
+S. set lengths (value buffer of 16 bytes: 1, then zeros)
+  len 0                                        TCP_NODELAY    set -> EINVAL
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 1                                        TCP_NODELAY    set -> EINVAL
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 2                                        TCP_NODELAY    set -> EINVAL
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 3                                        TCP_NODELAY    set -> EINVAL
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 4                                        TCP_NODELAY    set -> OK
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  len 5                                        TCP_NODELAY    set -> OK
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  len 7                                        TCP_NODELAY    set -> OK
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  len 8                                        TCP_NODELAY    set -> OK
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  len 9                                        TCP_NODELAY    set -> OK
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  len 16                                       TCP_NODELAY    set -> OK
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  len 2147483647                               TCP_NODELAY    set -> OK
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  len 2147483648                               TCP_NODELAY    set -> OK
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  len 4294967295                               TCP_NODELAY    set -> OK
+    read back                                  TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  len 0                                        IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 1                                        IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 2                                        IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 3                                        IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 4                                        IPV6_V6ONLY    set -> OK
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  len 5                                        IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 7                                        IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 8                                        IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 9                                        IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 16                                       IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 2147483647                               IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 2147483648                               IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 4294967295                               IPV6_V6ONLY    set -> EINVAL
+    read back                                  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  len 0                                        SO_LINGER      set -> EINVAL
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 1                                        SO_LINGER      set -> EINVAL
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 2                                        SO_LINGER      set -> EINVAL
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 3                                        SO_LINGER      set -> EINVAL
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 4                                        SO_LINGER      set -> EINVAL
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 5                                        SO_LINGER      set -> EINVAL
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 7                                        SO_LINGER      set -> EINVAL
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 8                                        SO_LINGER      set -> OK
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 9                                        SO_LINGER      set -> OK
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 16                                       SO_LINGER      set -> OK
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 2147483647                               SO_LINGER      set -> OK
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 2147483648                               SO_LINGER      set -> OK
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 4294967295                               SO_LINGER      set -> OK
+    read back                                  SO_LINGER      len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 0                                        SO_LINGER_SEC  set -> EINVAL
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 1                                        SO_LINGER_SEC  set -> EINVAL
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 2                                        SO_LINGER_SEC  set -> EINVAL
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 3                                        SO_LINGER_SEC  set -> EINVAL
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 4                                        SO_LINGER_SEC  set -> EINVAL
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 5                                        SO_LINGER_SEC  set -> EINVAL
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 7                                        SO_LINGER_SEC  set -> EINVAL
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  len 8                                        SO_LINGER_SEC  set -> OK
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 9                                        SO_LINGER_SEC  set -> OK
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 16                                       SO_LINGER_SEC  set -> OK
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 2147483647                               SO_LINGER_SEC  set -> OK
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 2147483648                               SO_LINGER_SEC  set -> OK
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+  len 4294967295                               SO_LINGER_SEC  set -> OK
+    read back                                  SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000030000005a5a5a5a
+N. null and faulting value buffers on set
+  null, len 0                                  TCP_NODELAY    -> EINVAL
+  null, len size                               TCP_NODELAY    -> EFAULT
+  null, len 1                                  TCP_NODELAY    -> EFAULT
+  unmapped, len size                           TCP_NODELAY    -> EFAULT
+  unmapped, len 1                              TCP_NODELAY    -> EINVAL
+  unmapped, len 0                              TCP_NODELAY    -> EINVAL
+  closed fd, null, len size                    TCP_NODELAY    -> EFAULT
+  closed fd, len size                          TCP_NODELAY    -> EBADF
+  pipe, len size                               TCP_NODELAY    -> ENOTSOCK
+  pipe, len 1                                  TCP_NODELAY    -> ENOTSOCK
+  unix stream, len 1                           TCP_NODELAY    -> EOPNOTSUPP
+  unix stream, unmapped                        TCP_NODELAY    -> EOPNOTSUPP
+  inet dgram, len 1                            TCP_NODELAY    -> EINVAL
+  inet dgram, unmapped                         TCP_NODELAY    -> EINVAL
+  inet stream, len 1                           TCP_NODELAY    -> EINVAL
+  inet stream, unmapped                        TCP_NODELAY    -> EFAULT
+  null, len 0                                  IPV6_V6ONLY    -> EINVAL
+  null, len size                               IPV6_V6ONLY    -> EFAULT
+  null, len 1                                  IPV6_V6ONLY    -> EFAULT
+  unmapped, len size                           IPV6_V6ONLY    -> EFAULT
+  unmapped, len 1                              IPV6_V6ONLY    -> EINVAL
+  unmapped, len 0                              IPV6_V6ONLY    -> EINVAL
+  closed fd, null, len size                    IPV6_V6ONLY    -> EFAULT
+  closed fd, len size                          IPV6_V6ONLY    -> EBADF
+  pipe, len size                               IPV6_V6ONLY    -> ENOTSOCK
+  pipe, len 1                                  IPV6_V6ONLY    -> ENOTSOCK
+  unix stream, len 1                           IPV6_V6ONLY    -> EOPNOTSUPP
+  unix stream, unmapped                        IPV6_V6ONLY    -> EOPNOTSUPP
+  inet dgram, len 1                            IPV6_V6ONLY    -> EINVAL
+  inet dgram, unmapped                         IPV6_V6ONLY    -> EINVAL
+  inet stream, len 1                           IPV6_V6ONLY    -> EINVAL
+  inet stream, unmapped                        IPV6_V6ONLY    -> EINVAL
+  null, len 0                                  SO_LINGER      -> EINVAL
+  null, len size                               SO_LINGER      -> EFAULT
+  null, len 1                                  SO_LINGER      -> EFAULT
+  unmapped, len size                           SO_LINGER      -> EFAULT
+  unmapped, len 1                              SO_LINGER      -> EINVAL
+  unmapped, len 0                              SO_LINGER      -> EINVAL
+  closed fd, null, len size                    SO_LINGER      -> EFAULT
+  closed fd, len size                          SO_LINGER      -> EBADF
+  pipe, len size                               SO_LINGER      -> ENOTSOCK
+  pipe, len 1                                  SO_LINGER      -> ENOTSOCK
+  unix stream, len 1                           SO_LINGER      -> EINVAL
+  unix stream, unmapped                        SO_LINGER      -> EFAULT
+  inet dgram, len 1                            SO_LINGER      -> EINVAL
+  inet dgram, unmapped                         SO_LINGER      -> EFAULT
+  inet stream, len 1                           SO_LINGER      -> EINVAL
+  inet stream, unmapped                        SO_LINGER      -> EFAULT
+  null, len 0                                  SO_LINGER_SEC  -> EINVAL
+  null, len size                               SO_LINGER_SEC  -> EFAULT
+  null, len 1                                  SO_LINGER_SEC  -> EFAULT
+  unmapped, len size                           SO_LINGER_SEC  -> EFAULT
+  unmapped, len 1                              SO_LINGER_SEC  -> EINVAL
+  unmapped, len 0                              SO_LINGER_SEC  -> EINVAL
+  closed fd, null, len size                    SO_LINGER_SEC  -> EFAULT
+  closed fd, len size                          SO_LINGER_SEC  -> EBADF
+  pipe, len size                               SO_LINGER_SEC  -> ENOTSOCK
+  pipe, len 1                                  SO_LINGER_SEC  -> ENOTSOCK
+  unix stream, len 1                           SO_LINGER_SEC  -> EINVAL
+  unix stream, unmapped                        SO_LINGER_SEC  -> EFAULT
+  inet dgram, len 1                            SO_LINGER_SEC  -> EINVAL
+  inet dgram, unmapped                         SO_LINGER_SEC  -> EFAULT
+  inet stream, len 1                           SO_LINGER_SEC  -> EINVAL
+  inet stream, unmapped                        SO_LINGER_SEC  -> EFAULT
+G. get lengths (option set first: 1 / {1,5})
+                                               TCP_NODELAY    len 0          -> OK           cell=0 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 1          -> OK           cell=1 bytes=045a5a5a5a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 2          -> OK           cell=2 bytes=04005a5a5a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 3          -> OK           cell=3 bytes=0400005a5a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 5          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 7          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 8          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 9          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 16         -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 2147483647 -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 2147483648 -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+                                               TCP_NODELAY    len 4294967295 -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  unmapped value                               TCP_NODELAY    len 0          -> OK           cell=0
+  null value                                   TCP_NODELAY    len 0          -> OK           cell=0
+  unmapped value                               TCP_NODELAY    len 1          -> EFAULT       cell=1
+  null value                                   TCP_NODELAY    len 1          -> OK           cell=0
+  unmapped value                               TCP_NODELAY    len 4          -> EFAULT       cell=4
+  null value                                   TCP_NODELAY    len 4          -> OK           cell=0
+  unmapped value                               TCP_NODELAY    len 8          -> EFAULT       cell=8
+  null value                                   TCP_NODELAY    len 8          -> OK           cell=0
+  unmapped value                               TCP_NODELAY    len 16         -> EFAULT       cell=16
+  null value                                   TCP_NODELAY    len 16         -> OK           cell=0
+  null cell                                    TCP_NODELAY    -> EFAULT
+  unmapped cell                                TCP_NODELAY    -> EFAULT
+  null value, null cell                        TCP_NODELAY    -> EFAULT
+  closed fd, null cell                         TCP_NODELAY    -> EBADF
+  unix stream, null cell                       TCP_NODELAY    -> EFAULT
+  unix stream, len 1                           TCP_NODELAY    len 1          -> errno57      cell=1 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet dgram, null cell                        TCP_NODELAY    -> EFAULT
+  inet dgram, len 1                            TCP_NODELAY    len 1          -> EINVAL       cell=1 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 0          -> OK           cell=0 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 1          -> OK           cell=1 bytes=015a5a5a5a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 2          -> OK           cell=2 bytes=01005a5a5a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 3          -> OK           cell=3 bytes=0100005a5a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 5          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 7          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 8          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 9          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 16         -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 2147483647 -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 2147483648 -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               IPV6_V6ONLY    len 4294967295 -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  unmapped value                               IPV6_V6ONLY    len 0          -> OK           cell=0
+  null value                                   IPV6_V6ONLY    len 0          -> OK           cell=0
+  unmapped value                               IPV6_V6ONLY    len 1          -> EFAULT       cell=1
+  null value                                   IPV6_V6ONLY    len 1          -> OK           cell=0
+  unmapped value                               IPV6_V6ONLY    len 4          -> EFAULT       cell=4
+  null value                                   IPV6_V6ONLY    len 4          -> OK           cell=0
+  unmapped value                               IPV6_V6ONLY    len 8          -> EFAULT       cell=8
+  null value                                   IPV6_V6ONLY    len 8          -> OK           cell=0
+  unmapped value                               IPV6_V6ONLY    len 16         -> EFAULT       cell=16
+  null value                                   IPV6_V6ONLY    len 16         -> OK           cell=0
+  null cell                                    IPV6_V6ONLY    -> EFAULT
+  unmapped cell                                IPV6_V6ONLY    -> EFAULT
+  null value, null cell                        IPV6_V6ONLY    -> EFAULT
+  closed fd, null cell                         IPV6_V6ONLY    -> EBADF
+  unix stream, null cell                       IPV6_V6ONLY    -> EFAULT
+  unix stream, len 1                           IPV6_V6ONLY    len 1          -> EOPNOTSUPP   cell=1 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+  inet dgram, null cell                        IPV6_V6ONLY    -> EFAULT
+  inet dgram, len 1                            IPV6_V6ONLY    len 1          -> EINVAL       cell=1 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+                                               SO_LINGER      len 0          -> OK           cell=0 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+                                               SO_LINGER      len 1          -> OK           cell=1 bytes=015a5a5a5a5a5a5a5a5a5a5a
+                                               SO_LINGER      len 2          -> OK           cell=2 bytes=01005a5a5a5a5a5a5a5a5a5a
+                                               SO_LINGER      len 3          -> OK           cell=3 bytes=0100005a5a5a5a5a5a5a5a5a
+                                               SO_LINGER      len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               SO_LINGER      len 5          -> OK           cell=5 bytes=01000000055a5a5a5a5a5a5a
+                                               SO_LINGER      len 7          -> OK           cell=7 bytes=010000000500005a5a5a5a5a
+                                               SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER      len 9          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER      len 16         -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER      len 2147483647 -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER      len 2147483648 -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER      len 4294967295 -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  unmapped value                               SO_LINGER      len 0          -> OK           cell=0
+  null value                                   SO_LINGER      len 0          -> OK           cell=0
+  unmapped value                               SO_LINGER      len 1          -> EFAULT       cell=1
+  null value                                   SO_LINGER      len 1          -> OK           cell=0
+  unmapped value                               SO_LINGER      len 4          -> EFAULT       cell=4
+  null value                                   SO_LINGER      len 4          -> OK           cell=0
+  unmapped value                               SO_LINGER      len 8          -> EFAULT       cell=8
+  null value                                   SO_LINGER      len 8          -> OK           cell=0
+  unmapped value                               SO_LINGER      len 16         -> EFAULT       cell=16
+  null value                                   SO_LINGER      len 16         -> OK           cell=0
+  null cell                                    SO_LINGER      -> EFAULT
+  unmapped cell                                SO_LINGER      -> EFAULT
+  null value, null cell                        SO_LINGER      -> EFAULT
+  closed fd, null cell                         SO_LINGER      -> EBADF
+  unix stream, null cell                       SO_LINGER      -> EFAULT
+  unix stream, len 1                           SO_LINGER      len 1          -> OK           cell=1 bytes=005a5a5a5a5a5a5a5a5a5a5a
+  inet dgram, null cell                        SO_LINGER      -> EFAULT
+  inet dgram, len 1                            SO_LINGER      len 1          -> OK           cell=1 bytes=005a5a5a5a5a5a5a5a5a5a5a
+                                               SO_LINGER_SEC  len 0          -> OK           cell=0 bytes=5a5a5a5a5a5a5a5a5a5a5a5a
+                                               SO_LINGER_SEC  len 1          -> OK           cell=1 bytes=015a5a5a5a5a5a5a5a5a5a5a
+                                               SO_LINGER_SEC  len 2          -> OK           cell=2 bytes=01005a5a5a5a5a5a5a5a5a5a
+                                               SO_LINGER_SEC  len 3          -> OK           cell=3 bytes=0100005a5a5a5a5a5a5a5a5a
+                                               SO_LINGER_SEC  len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+                                               SO_LINGER_SEC  len 5          -> OK           cell=5 bytes=01000000055a5a5a5a5a5a5a
+                                               SO_LINGER_SEC  len 7          -> OK           cell=7 bytes=010000000500005a5a5a5a5a
+                                               SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER_SEC  len 9          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER_SEC  len 16         -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER_SEC  len 2147483647 -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER_SEC  len 2147483648 -> OK           cell=8 bytes=01000000050000005a5a5a5a
+                                               SO_LINGER_SEC  len 4294967295 -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  unmapped value                               SO_LINGER_SEC  len 0          -> OK           cell=0
+  null value                                   SO_LINGER_SEC  len 0          -> OK           cell=0
+  unmapped value                               SO_LINGER_SEC  len 1          -> EFAULT       cell=1
+  null value                                   SO_LINGER_SEC  len 1          -> OK           cell=0
+  unmapped value                               SO_LINGER_SEC  len 4          -> EFAULT       cell=4
+  null value                                   SO_LINGER_SEC  len 4          -> OK           cell=0
+  unmapped value                               SO_LINGER_SEC  len 8          -> EFAULT       cell=8
+  null value                                   SO_LINGER_SEC  len 8          -> OK           cell=0
+  unmapped value                               SO_LINGER_SEC  len 16         -> EFAULT       cell=16
+  null value                                   SO_LINGER_SEC  len 16         -> OK           cell=0
+  null cell                                    SO_LINGER_SEC  -> EFAULT
+  unmapped cell                                SO_LINGER_SEC  -> EFAULT
+  null value, null cell                        SO_LINGER_SEC  -> EFAULT
+  closed fd, null cell                         SO_LINGER_SEC  -> EBADF
+  unix stream, null cell                       SO_LINGER_SEC  -> EFAULT
+  unix stream, len 1                           SO_LINGER_SEC  len 1          -> OK           cell=1 bytes=005a5a5a5a5a5a5a5a5a5a5a
+  inet dgram, null cell                        SO_LINGER_SEC  -> EFAULT
+  inet dgram, len 1                            SO_LINGER_SEC  len 1          -> OK           cell=1 bytes=005a5a5a5a5a5a5a5a5a5a5a
+P. phases: listener, connected client, accepted, refused (set 1 / {1,5} then read)
+  listener                                     TCP_NODELAY    set len 4      -> OK
+  listener                                     TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  listener                                     SO_LINGER      set len 8      -> OK
+  listener                                     SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  listener                                     SO_LINGER_SEC  set len 8      -> OK
+  listener                                     SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  accepted, listener had it set                TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  accepted, listener had it set                SO_LINGER      len 8          -> OK           cell=8 bytes=01000000f40100005a5a5a5a
+  accepted, listener had it set                SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  client                                       TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  client                                       SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  client                                       SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  client                                       TCP_NODELAY    set len 4      -> OK
+  client                                       TCP_NODELAY    len 4          -> OK           cell=4 bytes=040000005a5a5a5a5a5a5a5a
+  client                                       SO_LINGER      set len 8      -> OK
+  client                                       SO_LINGER      len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  client                                       SO_LINGER_SEC  set len 8      -> OK
+  client                                       SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=01000000050000005a5a5a5a
+  refused (blocking)                           TCP_NODELAY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  refused (blocking)                           TCP_NODELAY    set len 4      -> EINVAL
+  refused (blocking)                           SO_LINGER      len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  refused (blocking)                           SO_LINGER      set len 8      -> EINVAL
+  refused (blocking)                           SO_LINGER_SEC  len 8          -> OK           cell=8 bytes=00000000000000005a5a5a5a
+  refused (blocking)                           SO_LINGER_SEC  set len 8      -> EINVAL
+6. IPV6_V6ONLY across an AF_INET6 socket's life
+  bind ::1 -> OK
+  bound: set 1 -> EINVAL
+  bound                                        IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  bound: set 0 -> EINVAL
+  bound                                        IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  listen -> OK
+  listening: set 1 -> EINVAL
+  listening                                    IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  client: set 1 -> OK
+  connect [::1] -> OK
+  connected: set 0 -> EINVAL
+  connected                                    IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=010000005a5a5a5a5a5a5a5a
+  accepted (listener 0 after the failed set?)  IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  bind [::]:0 -> OK
+  wildcard-bound: set 1 -> EINVAL
+  wildcard-bound                               IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  dgram connect [::1]:9 -> OK
+  dgram connected: set 1 -> EINVAL
+  dgram connected                              IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  dual-mode connect ::ffff:127.0.0.1 -> OK
+  dual-mode connected: set 1 -> EINVAL
+  dual-mode connected                          IPV6_V6ONLY    len 4          -> OK           cell=4 bytes=000000005a5a5a5a5a5a5a5a
+  v6only connect ::ffff:127.0.0.1 -> errno47

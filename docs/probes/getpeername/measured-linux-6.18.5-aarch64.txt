@@ -1,0 +1,67 @@
+6.18.5
+ports are printed as found; the listener's is L, a client's ephemeral one varies
+T1 tcp fresh                                               cell=16   -> ENOTCONN cell-after=16
+T1 tcp fresh                                               cell=-1   -> ENOTCONN cell-after=-1
+T1 tcp fresh                                               cell=0    -> ENOTCONN cell-after=0
+T2 tcp bound                                               cell=16   -> ENOTCONN cell-after=16
+L=51379
+T3 tcp listening                                           cell=16   -> ENOTCONN cell-after=16
+T3 tcp listening                                           cell=-1   -> ENOTCONN cell-after=-1
+L=40107
+T4 connect -> OK; client port 45936
+T4 client, connection queued                               cell=16   -> OK family=2 127.0.0.1:40107 len=16
+T4 client, connection queued, cell 8                       cell=8    -> OK family=2 127.0.0.1:40107 len=16
+T4 client, connection queued, cell -1                      cell=-1   -> EINVAL cell-after=-1
+T4 client, connection queued, cell 0                       cell=0    -> OK family=43690 170.170.170.170:43690 len=16
+T4 client, connection queued, cell 128                     cell=128  -> OK family=2 127.0.0.1:40107 len=16
+T5 accepted server end                                     cell=16   -> OK family=2 127.0.0.1:45936 len=16
+T5 client after accept                                     cell=16   -> OK family=2 127.0.0.1:40107 len=16
+T6 client, peer closed (FIN)                               cell=16   -> OK family=2 127.0.0.1:40107 len=16
+T6 client read -> 0 
+T6 client, peer closed, EOF read                           cell=16   -> OK family=2 127.0.0.1:40107 len=16
+T7 server end, client closed (FIN)                         cell=16   -> OK family=2 127.0.0.1:40478 len=16
+T8 client, peer reset (linger 0)                           cell=16   -> ENOTCONN cell-after=16
+T8 client SO_ERROR -> ECONNRESET
+T8 client, peer reset, error taken                         cell=16   -> ENOTCONN cell-after=16
+T9 client, peer closed over unread data                    cell=16   -> ENOTCONN cell-after=16
+T10 client, listener closed with it queued                 cell=16   -> ENOTCONN cell-after=16
+T11 client, after shutdown(SHUT_WR)                        cell=16   -> OK family=2 127.0.0.1:42205 len=16
+T11 client, after shutdown(SHUT_RD) too                    cell=16   -> OK family=2 127.0.0.1:42205 len=16
+T12 connect 0.0.0.0 -> OK
+T12 client, connected to the wildcard                      cell=16   -> OK family=2 127.0.0.1:56195 len=16
+N1 nonblocking connect -> EINPROGRESS
+N1 immediately after                                       cell=16   -> OK family=2 127.0.0.1:32993 len=16
+N1 50ms later                                              cell=16   -> OK family=2 127.0.0.1:32993 len=16
+N1 connect again -> OK
+N1 after the second connect                                cell=16   -> OK family=2 127.0.0.1:32993 len=16
+N2 nonblocking connect to a dead port -> EINPROGRESS
+N2 immediately after                                       cell=16   -> ENOTCONN cell-after=16
+N2 refusal pending                                         cell=16   -> ENOTCONN cell-after=16
+N2 SO_ERROR -> ECONNREFUSED
+N2 refusal taken                                           cell=16   -> ENOTCONN cell-after=16
+N3 blocking connect to a dead port -> ECONNREFUSED
+N3 after a blocking refusal                                cell=16   -> ENOTCONN cell-after=16
+N4 filler 0 connect -> EINPROGRESS, SO_ERROR OK, getpeername OK
+N4 filler 1 connect -> EINPROGRESS, SO_ERROR OK, getpeername ENOTCONN
+N4 filler 2 connect -> EINPROGRESS, SO_ERROR OK, getpeername ENOTCONN
+N4 filler 3 connect -> EINPROGRESS, SO_ERROR OK, getpeername ENOTCONN
+N4 filler 4 connect -> EINPROGRESS, SO_ERROR OK, getpeername ENOTCONN
+N4 filler 5 connect -> EINPROGRESS, SO_ERROR OK, getpeername ENOTCONN
+N4 filler 6 connect -> EINPROGRESS, SO_ERROR OK, getpeername ENOTCONN
+N4 filler 7 connect -> EINPROGRESS, SO_ERROR OK, getpeername ENOTCONN
+U1 udp fresh                                               cell=16   -> ENOTCONN cell-after=16
+U2 connect -> OK, R=33020
+U2 udp connected                                           cell=16   -> OK family=2 127.0.0.1:33020 len=16
+U3 connect 0.0.0.0 -> OK
+U3 udp connected to the wildcard                           cell=16   -> OK family=2 127.0.0.1:33020 len=16
+U4 connect port 0 -> OK
+U4 udp connected to port 0                                 cell=16   -> ENOTCONN cell-after=16
+U5 connect AF_UNSPEC -> OK
+U5 udp after AF_UNSPEC                                     cell=16   -> ENOTCONN cell-after=16
+U6 wildcard-bound udp connected to the wildcard            cell=16   -> OK family=2 127.0.0.1:52825 len=16
+F1 inet6 stream fresh                                      cell=16   -> ENOTCONN cell-after=16
+F1 inet6 stream fresh                                      cell=-1   -> ENOTCONN cell-after=-1
+F2 inet6 dgram fresh                                       cell=16   -> ENOTCONN cell-after=16
+F3 unix stream fresh                                       cell=16   -> ENOTCONN cell-after=16
+F3 unix stream fresh                                       cell=-1   -> ENOTCONN cell-after=-1
+F4 unix dgram fresh                                        cell=16   -> ENOTCONN cell-after=16

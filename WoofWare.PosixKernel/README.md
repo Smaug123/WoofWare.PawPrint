@@ -132,7 +132,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `mknod` and `mknodat` (regular files only), `unlink`, `rmdir`, `unlinkat`, `rename`, `renameat`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
 | `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
-| `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt` |
+| `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `getpeername`, `setsockopt`, `getsockopt` |
 | `UnixConnection` | `connect`, `accept` |
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
 | `UnixKqueue` | `kqueue`, `kevent` |
@@ -186,7 +186,8 @@ WoofWare.PosixKernel's behaviour does not depend on the host platform; indeed, i
 However, POSIX is extremely underspecified (and implementations frequently diverge from their documentation!),
 and I only have easy access to a few flavours.
 
-A `SimulatedUnixPlatform` names the kernel being simulated: its flavour (Linux or Darwin), its architecture, its page size and its release.
+A `SimulatedUnixPlatform` names the kernel being simulated: its flavour (Linux or Darwin) and, for Linux, the version of the source it was built from (`LinuxKernelVersion`), its architecture, its page size and its release.
+The release is only what `uname` reports; where Linux's behaviour changed between versions, the platform's version decides which answer applies.
 Only the combinations that have been measured can be built: Linux on x86-64 and on aarch64 with 4 KiB pages, and Darwin on arm64 with 16 KiB pages.
 `SimulatedUnixPlatform.linuxX64`, `linuxArm64` and `macOsArm64` are the presets.
 Where the flavours disagree, the platform says which answer applies, down to whose numbering an errno or a signal is reported in.
