@@ -27,13 +27,13 @@ module TestUnixTaskTable =
         | Error refusal -> failwith $"spawning %d{name} was refused: %s{SpawnRefusal.describe refusal}"
 
     let private idOf (name : int) (tasks : Map<int, UnixTaskState>) : uint64 =
-        OsThreadId.toUInt64 (UnixTaskTable.osThreadIdOf name tasks)
+        OsThreadId.toUInt64 (UnixTaskState.osThreadId (UnixTaskTable.get name tasks))
 
     [<Test>]
     let ``a spawned task is readable`` () : unit =
         let tasks = (initial |> withTask 7 3).Tasks
 
-        UnixTaskTable.cpuOf 7 tasks |> shouldEqual (CpuId 3)
+        UnixTaskState.cpu (UnixTaskTable.get 7 tasks) |> shouldEqual (CpuId 3)
         idOf 7 tasks |> shouldEqual 4243UL
         UnixTaskTable.parkedFor 7 tasks |> shouldEqual None
 
@@ -85,12 +85,12 @@ module TestUnixTaskTable =
         UnixTaskTable.parkedFor 7 parked
         |> shouldEqual (Some (ParkedSyscall.EpollWait wait))
 
-        UnixTaskTable.cpuOf 7 parked |> shouldEqual (CpuId 3)
+        UnixTaskState.cpu (UnixTaskTable.get 7 parked) |> shouldEqual (CpuId 3)
         idOf 7 parked |> shouldEqual 4243UL
 
         let released = UnixTaskTable.unpark 7 parked
         UnixTaskTable.parkedFor 7 released |> shouldEqual None
-        UnixTaskTable.cpuOf 7 released |> shouldEqual (CpuId 3)
+        UnixTaskState.cpu (UnixTaskTable.get 7 released) |> shouldEqual (CpuId 3)
 
     [<Test>]
     let ``reconcile is silent when the table matches`` () : unit =

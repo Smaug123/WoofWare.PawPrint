@@ -113,7 +113,7 @@ class Program
             if ts.Status <> ThreadStatus.BlockedInSyscall then
                 None
             else
-                match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
+                match UnixTaskState.parkedIn (EmulatedKernel.taskOf tid state.Kernel.Tasks) with
                 | Some (ParkedSyscall.Flock parked) -> Some parked
                 | Some (ParkedSyscall.EpollWait _)
                 | Some (ParkedSyscall.Kevent _)

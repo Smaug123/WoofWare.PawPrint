@@ -387,7 +387,7 @@ module IlMachineThreadState =
         // Guest-visible, so it takes the first slot in the CPU rotation, which is
         // the processor the kernel put the leader on.
         let cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
-        let leaderCpu = UnixTaskTable.cpuOf thread state.Kernel.Tasks
+        let leaderCpu = UnixTaskState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
 
         if cpu <> leaderCpu then
             failwith

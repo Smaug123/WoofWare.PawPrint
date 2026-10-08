@@ -117,7 +117,8 @@ class LockAndPortWaiters
         |> List.choose (fun (tid, ts) ->
             match ts.Status with
             | ThreadStatus.BlockedInSyscall ->
-                UnixTaskTable.parkedFor tid state.Kernel.Tasks |> Option.map (fun p -> tid, p)
+                UnixTaskState.parkedIn (EmulatedKernel.taskOf tid state.Kernel.Tasks)
+                |> Option.map (fun p -> tid, p)
             | _ -> None
         )
 

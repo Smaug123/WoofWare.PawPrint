@@ -278,7 +278,7 @@ module SignalDispatch =
     /// the leader is not asleep in a syscall. Read from the process's own state alone.
     let private leaderMayTake (state : IlMachineState) : bool =
         not (List.isEmpty (SignalState.pending state.Kernel.Signals))
-        && (UnixTaskTable.parkedFor state.Kernel.Leader state.Kernel.Tasks).IsNone
+        && (UnixTaskState.parkedIn (EmulatedKernel.taskOf state.Kernel.Leader state.Kernel.Tasks)).IsNone
 
     /// The leader's return to user mode: whatever the kernel delivers to it now,
     /// each through its disposition. A handler frame's handler runs, innermost
@@ -314,7 +314,7 @@ module SignalDispatch =
             // call replaced; nothing runs between the call's answer and this
             // poll to take the signal away.
             match SignalState.maskToRestore leader state.Kernel.Signals with
-            | Some mask when (UnixTaskTable.parkedFor leader state.Kernel.Tasks).IsNone ->
+            | Some mask when (UnixTaskState.parkedIn (EmulatedKernel.taskOf leader state.Kernel.Tasks)).IsNone ->
                 failwith
                     $"SignalDispatch.poll: the leader %O{leader} returns from sigsuspend with nothing pending to take, so it would run on with the call's temporary mask rather than %O{mask} (this is an interpreter bug)."
             | Some _
@@ -540,7 +540,7 @@ module SignalDispatch =
         let system = state.Kernel.System
 
         let read =
-            match UnixTaskTable.parkedFor dispatcher state.Kernel.Tasks with
+            match UnixTaskState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
             // The loop reads the number it was given, whatever the guest has
             // since put there.
             | None -> Some (UnixReadWrite.read dispatcher pipe.ReadEnd UserBuffer.Mapped 1UL system)
@@ -556,9 +556,10 @@ module SignalDispatch =
             // one reader the pipe wakes across every process: the process's own
             // shim made the pipe, and nothing passes a descriptor to another
             // process, so no other process can be asleep reading it.
-            | Some (ParkedSyscall.PipeRead _ as parked) ->
+            | Some (ParkedSyscall.PipeRead _) ->
                 if
-                    not (Set.isEmpty (WakeCondition.satisfied dispatcher (WakeCondition.ofPark parked) system))
+                    UnixWait.satisfied dispatcher system
+                    |> Option.exists (fun fired -> not (Set.isEmpty fired))
                     && UnixWait.wakes (Scheduler.asleepInSyscall state) system
                        |> List.exists (fun (task, _) -> task = dispatcher)
                 then
@@ -642,7 +643,7 @@ module SignalDispatch =
         || match idleDispatcher state with
            | None -> false
            | Some (dispatcher, _) ->
-               match UnixTaskTable.parkedFor dispatcher state.Kernel.Tasks with
+               match UnixTaskState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
                | Some (ParkedSyscall.PipeRead _) -> false
                | Some _
                | None -> true

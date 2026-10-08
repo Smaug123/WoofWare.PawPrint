@@ -43,7 +43,7 @@ The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three pa
 
 * the machine (`UnixMachineState`): the filesystem, the open file descriptions (with the state of each epoll instance and kqueue, and how many descriptors and calls in flight reference each), sockets, connections and pipes, the thread IDs live tasks hold, the processes on it and the directories they stand in, the clock, the entropy pool, and the platform being simulated;
 * the process (`UnixProcessState`): the descriptor table, which says only which open file description each descriptor names, and the process's credentials, umask, current directory, environment and signal state;
-* the tasks (`UnixTaskState`): the process's tasks, and what each is blocked in, if anything.
+* the tasks (`UnixTaskState`): the process's tasks, and what each is blocked in, if anything. A client looks a task up in `UnixSystem.tasks` by its own name for it, which has no entry for a task that was never created or has exited, and reads what it finds with `UnixTaskState`'s readers.
 
 Those records are opaque outside the library.
 A client reads a system through `UnixSystem`'s queries, such as `leader`, `tasks`, `signals`, `fileDescriptors`, `openFiles`, `delivered` and `descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described below.
@@ -183,6 +183,7 @@ That is the state the kernel sleeps in, which can differ from the one the call a
 
 The library has no scheduler, and does not want one.
 Waking is pulled rather than pushed: after each step, the client asks `UnixWait.wakes` which of the tasks it holds asleep may wake now, and with nothing runnable, `UnixWait.deadlines` says how far it may advance the clock.
+`UnixWait.satisfied` asks of one task whether its call could get any further, which is cheaper, and does not decide which of several waiters on one queue wakes.
 A woken task finishes its call through the family's finishing function (`UnixDescriptor.flockAcquire`, `UnixPoll.finishPoll`, `UnixReadWrite.finishRead`, `UnixSignal.finishSigsuspend`, and so on), which may answer, park again, or say the call restarts because a signal handler interrupted it.
 
 A parked call holds the open file descriptions it waits on (`ParkedSyscall.descriptions`), as a real one holds a reference to each file: a description goes when no descriptor names it and no call holds it, so one closed under a sleeping call goes when the call returns.

@@ -70,7 +70,7 @@ module TestTaskState =
         state.Kernel.Leader |> shouldEqual (ThreadId 0)
         state.Kernel.Tasks |> Map.keys |> List.ofSeq |> shouldEqual [ ThreadId 0 ]
 
-        UnixTaskTable.osThreadIdOf (ThreadId 0) state.Kernel.Tasks
+        UnixTaskState.osThreadId (EmulatedKernel.taskOf (ThreadId 0) state.Kernel.Tasks)
         |> OsThreadId.toUInt64
         |> shouldEqual (uint64 (ProcessId.toInt32 (UnixSystem.processId state.Kernel.System)))
 
@@ -95,11 +95,12 @@ module TestTaskState =
         agrees state
 
         // The id after the leader's, which is the process ID.
-        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
+        UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks)
         |> OsThreadId.toUInt64
         |> shouldEqual 4243UL
 
-        UnixTaskTable.parkedFor thread state.Kernel.Tasks |> shouldEqual None
+        UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        |> shouldEqual None
 
     [<Test>]
     let ``a task for a thread that has not been started is refused`` () : unit =
@@ -148,9 +149,11 @@ module TestTaskState =
         let state, thread = machine () |> IlMachineState.allocateParkedThread (ThreadId 0)
 
         agrees state
-        UnixTaskTable.cpuOf thread state.Kernel.Tasks |> shouldEqual (CpuId 0)
 
-        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
+        UnixTaskState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        |> shouldEqual (CpuId 0)
+
+        UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks)
         |> OsThreadId.toUInt64
         |> shouldEqual 4243UL
 
@@ -174,12 +177,12 @@ module TestTaskState =
         let ids =
             threads state
             |> Map.toList
-            |> List.map (fun (t, _) -> UnixTaskTable.osThreadIdOf t state.Kernel.Tasks)
+            |> List.map (fun (t, _) -> UnixTaskState.osThreadId (EmulatedKernel.taskOf t state.Kernel.Tasks))
 
         ids |> List.distinct |> List.length |> shouldEqual ids.Length
 
         ids
-        |> List.contains (UnixTaskTable.osThreadIdOf parked state.Kernel.Tasks)
+        |> List.contains (UnixTaskState.osThreadId (EmulatedKernel.taskOf parked state.Kernel.Tasks))
         |> shouldEqual true
 
     [<Test>]
@@ -200,8 +203,11 @@ module TestTaskState =
             |> ThreadFixtures.start (ThreadId 0) first
 
         // The entry thread took the rotation's first slot.
-        UnixTaskTable.cpuOf first state.Kernel.Tasks |> shouldEqual (CpuId 1)
-        UnixTaskTable.cpuOf second state.Kernel.Tasks |> shouldEqual (CpuId 2)
+        UnixTaskState.cpu (EmulatedKernel.taskOf first state.Kernel.Tasks)
+        |> shouldEqual (CpuId 1)
+
+        UnixTaskState.cpu (EmulatedKernel.taskOf second state.Kernel.Tasks)
+        |> shouldEqual (CpuId 2)
 
     [<Test>]
     let ``addThread gives the leader its thread once, on the rotation's first slot`` () : unit =
@@ -211,7 +217,10 @@ module TestTaskState =
         let state, first = IlMachineState.addThread frame state
 
         first |> shouldEqual state.Kernel.Leader
-        UnixTaskTable.cpuOf first state.Kernel.Tasks |> shouldEqual (CpuId 0)
+
+        UnixTaskState.cpu (EmulatedKernel.taskOf first state.Kernel.Tasks)
+        |> shouldEqual (CpuId 0)
+
         state.NextCpuRotation |> shouldEqual 1
         agrees state
 
@@ -232,9 +241,9 @@ module TestTaskState =
         |> shouldEqual [ EmulatedKernelDefect.ThreadWithoutTask thread ]
 
         let exn =
-            Assert.Throws<exn> (fun () -> UnixTaskTable.cpuOf thread state.Kernel.Tasks |> ignore<CpuId>)
+            Assert.Throws<exn> (fun () -> EmulatedKernel.taskOf thread state.Kernel.Tasks |> ignore<UnixTaskState>)
 
-        exn.Message |> shouldContainText "names no task"
+        exn.Message |> shouldContainText "has no task"
 
     [<Test>]
     let ``a task with no thread is refused`` () : unit =
@@ -353,8 +362,8 @@ module TestTaskState =
         state.ThreadState.[first].Status |> shouldEqual ThreadStatus.Terminated
         state.Kernel.Tasks |> shouldEqual (Map.remove first before)
 
-        UnixTaskTable.cpuOf second state.Kernel.Tasks
-        |> shouldEqual (UnixTaskTable.cpuOf second before)
+        UnixTaskState.cpu (EmulatedKernel.taskOf second state.Kernel.Tasks)
+        |> shouldEqual (UnixTaskState.cpu (EmulatedKernel.taskOf second before))
 
         agrees state
         EmulatedKernel.checkInvariants state.Kernel |> shouldBeEmpty
@@ -461,7 +470,8 @@ module TestTaskState =
         let state, thread =
             ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1) state
 
-        UnixTaskTable.cpuOf thread state.Kernel.Tasks |> shouldEqual (CpuId 1)
+        UnixTaskState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
+        |> shouldEqual (CpuId 1)
 
         // An `epoll_wait` of 10 ms on a port nothing can make ready, which the
         // deadline alone ends.
@@ -479,7 +489,7 @@ module TestTaskState =
             | other -> failwith $"expected the epoll_wait to park, got %A{other}"
             |> Scheduler.parkInSyscall thread
 
-        match UnixTaskTable.parkedFor thread parked.Kernel.Tasks with
+        match UnixTaskState.parkedIn (EmulatedKernel.taskOf thread parked.Kernel.Tasks) with
         | Some (ParkedSyscall.EpollWait wait) ->
             wait.MaxEvents |> shouldEqual 8
 
@@ -505,13 +515,14 @@ module TestTaskState =
             | Ok (EpollWaitOutcome.Answered [], system) -> expired.MapKernel (EmulatedKernel.withUnix system)
             | other -> failwith $"expected the wait to time out, got %A{other}"
 
-        UnixTaskTable.parkedFor thread released.Kernel.Tasks |> shouldEqual None
+        UnixTaskState.parkedIn (EmulatedKernel.taskOf thread released.Kernel.Tasks)
+        |> shouldEqual None
 
         agrees released
 
         // Parking must not disturb the rest of the task.
-        UnixTaskTable.cpuOf thread released.Kernel.Tasks
-        |> shouldEqual (UnixTaskTable.cpuOf thread state.Kernel.Tasks)
+        UnixTaskState.cpu (EmulatedKernel.taskOf thread released.Kernel.Tasks)
+        |> shouldEqual (UnixTaskState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks))
 
-        UnixTaskTable.osThreadIdOf thread released.Kernel.Tasks
-        |> shouldEqual (UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks)
+        UnixTaskState.osThreadId (EmulatedKernel.taskOf thread released.Kernel.Tasks)
+        |> shouldEqual (UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks))

@@ -367,7 +367,7 @@ module TestCallHolds =
         let model =
             {
                 Holds = Map.empty
-                Tids = Map.ofList [ 0, UnixTaskTable.osThreadIdOf 0 initial.Tasks ]
+                Tids = Map.ofList [ 0, UnixTaskState.osThreadId (UnixTaskTable.get 0 initial.Tasks) ]
             }
 
         agree "initial" model initial
@@ -659,7 +659,7 @@ module TestCallHolds =
         =
         for platform in platforms do
             let system = world platform |> Tasks.spawn 1 |> Tasks.spawn 2
-            let one = UnixTaskTable.osThreadIdOf 1 system.Tasks
+            let one = UnixTaskState.osThreadId (UnixTaskTable.get 1 system.Tasks)
 
             // Task 1's ID freed behind its back: the allocator could hand it out again.
             let freed =

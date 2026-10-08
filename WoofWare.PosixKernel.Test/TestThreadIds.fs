@@ -31,7 +31,7 @@ module TestThreadIds =
     let private pid (value : int32) : ProcessId = ProcessId.parseOrFail "test" value
 
     let private idOf (task : int) (system : UnixSystem<int, string>) : uint64 =
-        OsThreadId.toUInt64 (UnixTaskTable.osThreadIdOf task system.Tasks)
+        OsThreadId.toUInt64 (UnixTaskState.osThreadId (UnixTaskTable.get task system.Tasks))
 
     let private spawnOrFail (child : int) (system : UnixSystem<int, string>) : uint64 * UnixSystem<int, string> =
         match UnixTaskLifecycle.spawn system.Leader child (CpuId 0) system with
@@ -59,7 +59,7 @@ module TestThreadIds =
             idOf 0 system
             |> shouldEqual (uint64 (ProcessId.toInt32 UnixSystem.defaultProcessId))
 
-            UnixTaskTable.cpuOf 0 system.Tasks |> shouldEqual (CpuId 0)
+            UnixTaskState.cpu (UnixTaskTable.get 0 system.Tasks) |> shouldEqual (CpuId 0)
             UnixSystem.checkInvariants system |> shouldEqual []
 
     [<Test>]
@@ -69,7 +69,9 @@ module TestThreadIds =
             |> Launched.boot UnixSystem.pipedStandardStreams "main" (CpuId 3)
 
         system.Leader |> shouldEqual "main"
-        UnixTaskTable.cpuOf "main" system.Tasks |> shouldEqual (CpuId 3)
+
+        UnixTaskState.cpu (UnixTaskTable.get "main" system.Tasks)
+        |> shouldEqual (CpuId 3)
 
     [<Test>]
     let ``Linux: the leader's tid is the pid, and threads count up from it, never reusing an exited one's`` () : unit =

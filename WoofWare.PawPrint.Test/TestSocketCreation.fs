@@ -326,7 +326,10 @@ module TestSocketCreation =
         | Ok (Ok (fd, system)) ->
             let socket =
                 match FileDescriptorRegistry.tryFindTarget fd (UnixSystem.fileDescriptors system) with
-                | Some (OpenFileTarget.Socket socketId) -> UnixSystem.socket socketId system
+                | Some (OpenFileTarget.Socket socketId) ->
+                    match UnixSystem.socket socketId system with
+                    | Some socket -> socket
+                    | None -> failwith $"descriptor %d{fd} names socket %O{socketId}, which the machine does not hold"
                 | other -> failwith $"descriptor %d{fd} names %A{other}"
 
             sprintf "%O" socket.Domain |> shouldEqual expectedDomain

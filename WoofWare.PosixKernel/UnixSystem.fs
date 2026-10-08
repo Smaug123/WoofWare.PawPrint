@@ -673,8 +673,9 @@ module UnixSystem =
         =
         system.Leader
 
-    /// Every task the process has, and what each is blocked in, which
-    /// `UnixTaskTable`'s queries read.
+    /// Every task the process has, by the client's name for it, which
+    /// `UnixTaskState`'s readers read. A name the process has no task by,
+    /// because the task was never created or has exited, has no entry.
     let tasks<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : Map<'Task, UnixTaskState>
@@ -856,14 +857,16 @@ module UnixSystem =
         =
         UnixMachineState.userBufferCheck system.Machine
 
-    /// The socket `socketId` names. Loudly partial, as
-    /// `UnixMachineState.socket` is.
+    /// The socket `socketId` names, or `None` if the machine holds none by
+    /// that identity: a socket goes when its last open file description does,
+    /// so an identity read from a descriptor that has since closed names
+    /// nothing.
     let socket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (system : UnixSystem<'Task, 'Handler>)
-        : SocketDescription
+        : SocketDescription option
         =
-        UnixMachineState.socket socketId system.Machine
+        Map.tryFind socketId system.Machine.Sockets
 
     /// The kqueue of the sleeping Darwin `poll` whose park names `queue`
     /// (`ParkedKqueuePoll.Queue`), or `None` if the machine holds none by that

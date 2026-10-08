@@ -865,6 +865,20 @@ module EmulatedKernel =
     let currentDirectoryPath (kernel : EmulatedKernel) : AbsoluteUnixPath option =
         UnixPathResolution.currentDirectoryPath kernel.System
 
+    /// The task that is `thread`, out of `tasks` (`EmulatedKernel.Tasks`),
+    /// for `UnixTaskState`'s readers to read.
+    ///
+    /// Fails loudly for a thread with no task. Every thread that has an OS
+    /// thread has one (`checkTaskInvariants`), and a thread runs, makes a
+    /// syscall or is asked about only while it has one, so a missing task is
+    /// an interpreter bug rather than anything the guest did.
+    let taskOf (thread : ThreadId) (tasks : Map<ThreadId, UnixTaskState>) : UnixTaskState =
+        match Map.tryFind thread tasks with
+        | Some task -> task
+        | None ->
+            failwith
+                $"EmulatedKernel.taskOf: thread %O{thread} has no task in the kernel. A task is created with its thread and leaves the kernel when the thread exits, so this thread was never created or has already exited (this is an interpreter bug)."
+
     /// Put back the POSIX system a syscall answered from: a syscall's answer
     /// is lost if a caller forgets this, and gained twice if a caller writes
     /// back a system it did not step.
@@ -1609,17 +1623,6 @@ module EmulatedKernel =
             DirectoryStreamFds = Map.remove block kernel.DirectoryStreamFds
         }
 
-
-    /// `UnixConnection.acceptConnection` — dequeue the oldest completed connection
-    /// from `socketId`'s accept queue and materialise the server-side socket
-    /// onto it — through this kernel rather than through its POSIX half.
-    ///
-    /// Here rather than at the call sites because there are ten of them, all in
-    /// fixtures that hold an `EmulatedKernel`: writing `unix` in and `withUnix`
-    /// back out at each would be this function, copied.
-    let acceptConnection (socketId : SocketId) (kernel : EmulatedKernel) : int * TcpConnection * EmulatedKernel =
-        let fd, connection, system = UnixConnection.acceptConnection socketId kernel.System
-        fd, connection, withUnix system kernel
 
     /// `UnixTaskLifecycle.exitThread` through this kernel: `thread` has finished,
     /// so its task leaves the kernel, taking its signal mask and the signals

@@ -1021,7 +1021,11 @@ module PathWalk =
 
     /// The inode a path names, which is what `stat` and a non-creating `open`
     /// want: `resolve` followed by `existingOf`.
-    let resolveExisting
+    ///
+    /// Internal because `startDirectory` must be a directory `vfs` holds, and
+    /// the walk fails loudly when it is not. A client resolves from the root
+    /// with `resolveExistingFromRoot`.
+    let internal resolveExisting
         (limits : PathLimits)
         (credentials : Credentials)
         (symlinkProtection : SymlinkProtection)
@@ -1033,5 +1037,22 @@ module PathWalk =
         =
         resolve limits credentials symlinkProtection startDirectory policy path vfs
         |> Result.bind (existingOf >> Result.mapError PathFailure.Errno)
+
+    /// The inode `path` names in `vfs`, walked from its root as a process with
+    /// `credentials` would walk it: the inode `stat` would describe, or why
+    /// the walk fails. A relative `path` is taken relative to the root.
+    ///
+    /// Answers for every input: the root is a directory of `vfs`, which is
+    /// where every walk starts.
+    let resolveExistingFromRoot
+        (limits : PathLimits)
+        (credentials : Credentials)
+        (symlinkProtection : SymlinkProtection)
+        (policy : SymlinkPolicy)
+        (path : UnixPath)
+        (vfs : VirtualFileSystem)
+        : Result<InodeNumber, PathFailure>
+        =
+        resolveExisting limits credentials symlinkProtection (VirtualFileSystem.root vfs) policy path vfs
 
 // ------------------------------------------------------------ inspection

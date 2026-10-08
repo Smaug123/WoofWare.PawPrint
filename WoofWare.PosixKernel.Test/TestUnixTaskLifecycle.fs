@@ -661,7 +661,7 @@ module TestUnixTaskLifecycle =
                         ThreadIdAllocator.live after.Machine.ThreadIds
                         |> shouldEqual (
                             Set.remove
-                                (UnixTaskTable.osThreadIdOf task system.Tasks)
+                                (UnixTaskState.osThreadId (UnixTaskTable.get task system.Tasks))
                                 (ThreadIdAllocator.live system.Machine.ThreadIds)
                         )
 

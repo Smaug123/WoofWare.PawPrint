@@ -49,6 +49,29 @@ module UnixWait =
         }
         |> UnixParkState.setPark task taskPark
 
+    /// The primitives of the wake condition of the call `task` is parked in
+    /// (`WakeCondition.ofPark`) which hold of `system`, or `None` if `task` is
+    /// not parked in a call, including when the process has no task by that
+    /// name.
+    ///
+    /// An empty set means the call would get no further now. A non-empty one
+    /// is what lets `wakes` name the task, and is not enough on its own: a
+    /// queue whose waiters a kernel wakes one at a time wakes only one of
+    /// them, so a client that holds several tasks asleep asks `wakes`. This
+    /// asks about one task alone, which is cheaper.
+    ///
+    /// The condition is read from the park, which holds every open file
+    /// description it names until the call returns, so it is never asked
+    /// about a description that has gone.
+    let satisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Set<WakePrimitive> option
+        =
+        Map.tryFind task system.Tasks
+        |> Option.bind UnixTaskState.parkedIn
+        |> Option.map (fun parked -> WakeCondition.satisfied task (WakeCondition.ofPark parked) system)
+
     /// The tasks of `asleep` that `system` wakes now, in the order they parked,
     /// each with the primitives of its wake condition which hold.
     ///

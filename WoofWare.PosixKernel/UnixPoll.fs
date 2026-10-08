@@ -74,7 +74,7 @@ type PollOutcome =
     /// signal with a handler interrupts it.
     | Failed of error : UnixError
     /// `poll` did not return. The calling task is parked, and sleeps until
-    /// `WakeCondition.satisfied` of this condition is non-empty; then
+    /// `UnixWait.satisfied` of the task is non-empty; then
     /// `UnixPoll.finishPoll` finishes the call.
     | WouldBlock of WakeCondition
 
@@ -144,7 +144,7 @@ type EpollWaitOutcome =
     /// out, or had a timeout of 0 and found nothing.
     | Answered of events : (uint64 * uint32) list
     /// `epoll_wait` did not return. The calling task is parked, and sleeps
-    /// until `WakeCondition.satisfied` of this condition is non-empty and
+    /// until `UnixWait.satisfied` of the task is non-empty and
     /// `UnixWait.wakes` wakes it; then `UnixPoll.finishEpollWait` finishes the
     /// call.
     | WouldBlock of WakeCondition

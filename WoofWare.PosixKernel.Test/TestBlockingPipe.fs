@@ -1926,6 +1926,75 @@ module TestBlockingPipe =
         WakeCondition.satisfied sleeper condition system
         |> shouldEqual (Set.singleton WakePrimitive.EndedByClose)
 
+    /// `UnixWait.satisfied` asks about a task rather than a condition, reading
+    /// the condition from the task's park: `None` for a task that is not
+    /// parked, or is not a task at all, and the primitives that hold otherwise,
+    /// however the descriptors the call was made through have been closed
+    /// since. A condition kept from a park that has ended is what the internal
+    /// `WakeCondition.satisfied` cannot answer, once the description it names
+    /// has gone.
+    [<Test>]
+    let ``UnixWait.satisfied answers for any task, from the task's own park`` () : unit =
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let darwin =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Darwin -> true
+                | SimulatedUnixFlavour.Linux -> false
+
+            let system = pipeHolding platform false 0
+            UnixWait.satisfied sleeper system |> shouldEqual None
+            UnixWait.satisfied 99 system |> shouldEqual None
+
+            let condition, asleep =
+                match UnixReadWrite.read sleeper 3 UserBuffer.Mapped 16UL system with
+                | Ok (ReadOutcome.WouldBlock condition, system) -> condition, system
+                | other -> failwith $"expected the read to sleep, got %A{other}"
+
+            let reader =
+                FileDescriptorRegistry.tryFindId 3 (UnixSystemState.fileDescriptors asleep)
+                |> Option.get
+
+            UnixWait.satisfied sleeper asleep |> shouldEqual (Some Set.empty)
+            UnixWait.satisfied 99 asleep |> shouldEqual None
+
+            let written = leaderWrites 1 asleep
+
+            UnixWait.satisfied sleeper written
+            |> shouldEqual (Some (Set.singleton (WakePrimitive.PipeHasBytes reader)))
+
+            UnixWait.satisfied sleeper written
+            |> shouldEqual (Some (WakeCondition.satisfied sleeper condition written))
+
+            // The descriptor the call was made through closes under it: the
+            // park holds the description on Linux, and on Darwin the close
+            // ends the call.
+            let closedUnder = closed 3 asleep
+
+            UnixWait.satisfied sleeper closedUnder
+            |> shouldEqual (
+                Some (
+                    if darwin then
+                        Set.singleton WakePrimitive.EndedByClose
+                    else
+                        Set.empty
+                )
+            )
+
+            // The call finishes, and then its descriptor closes: the task is not
+            // parked, and the condition it slept on names a description that
+            // has gone.
+            let finished =
+                match UnixReadWrite.finishRead sleeper written with
+                | Ok (ReadOutcome.Answered (ReadAnswer.Completed _), system) -> system
+                | other -> failwith $"expected the read to finish, got %A{other}"
+
+            let gone = closed 3 finished
+            descriptionExists reader gone |> shouldEqual false
+            UnixWait.satisfied sleeper gone |> shouldEqual None
+
+            Assert.Throws<exn> (fun () -> WakeCondition.satisfied sleeper condition gone |> ignore<Set<WakePrimitive>>)
+            |> ignore<exn>
+
     /// Measured (`close-ends-call.c`, sections P6 and P7, and `pipe-blocking.c`
     /// section K): a transfer asleep through a `dup` of the descriptor closed
     /// sleeps on, and finishes normally.

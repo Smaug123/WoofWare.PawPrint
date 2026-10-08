@@ -47,12 +47,11 @@ module TestKernelConfig =
         let vfs = (UnixSystem.fileSystem kernel.System)
 
         match
-            PathWalk.resolveExisting
+            PathWalk.resolveExistingFromRoot
                 (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
                 // Root, whom no directory's search bit refuses.
                 (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
                 SymlinkProtection.Off
-                (VirtualFileSystem.root vfs)
                 SymlinkPolicy.Follow
                 (UnixPath.parseOrFail "test" path)
                 vfs
@@ -368,11 +367,10 @@ module TestKernelConfig =
         let vfs = (UnixSystem.fileSystem kernel.System)
 
         match
-            PathWalk.resolveExisting
+            PathWalk.resolveExistingFromRoot
                 (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
                 (Credentials.ofIds UserId.root (GroupId.parseOrFail "test" 0u) [])
                 SymlinkProtection.Off
-                (VirtualFileSystem.root vfs)
                 SymlinkPolicy.NoFollowFinal
                 (UnixPath.parseOrFail "test" path)
                 vfs

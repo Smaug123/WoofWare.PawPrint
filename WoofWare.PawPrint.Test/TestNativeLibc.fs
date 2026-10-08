@@ -649,7 +649,7 @@ module TestNativeLibc =
                         ProcessId = ProcessId.parseOrFail "test" pid
                     }
 
-            UnixTaskTable.osThreadIdOf kernel.Leader kernel.Tasks
+            UnixTaskState.osThreadId (EmulatedKernel.taskOf kernel.Leader kernel.Tasks)
 
         let darwinId (id : uint64) : OsThreadId =
             let kernel =
@@ -659,7 +659,7 @@ module TestNativeLibc =
                         LeaderThreadId = Some id
                     }
 
-            UnixTaskTable.osThreadIdOf kernel.Leader kernel.Tasks
+            UnixTaskState.osThreadId (EmulatedKernel.taskOf kernel.Leader kernel.Tasks)
 
         let linux (pid : int32) : bool =
             NativeLibc.gettid SimulatedUnixFlavour.Linux (linuxId pid) = Some pid
