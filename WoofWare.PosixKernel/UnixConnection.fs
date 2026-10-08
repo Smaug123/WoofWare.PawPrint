@@ -557,6 +557,7 @@ module UnixConnection =
                     {
                         ClientAddress = clientBinding.Endpoint
                         ServerAddress = dest
+                        Transfer = TcpBufferSizing.newTransfer sock.Domain system.Machine
                     }
 
                 let clientPhase =
