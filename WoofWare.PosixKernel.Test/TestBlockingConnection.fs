@@ -21,6 +21,8 @@ type BlockingConnectionOp =
     | Close of fd : int
     | Dup of fd : int
     | SetNonBlocking of fd : int * value : bool
+    /// `SO_LINGER` on `fd`: on or off, with a time of `seconds`.
+    | Linger of fd : int * on : bool * seconds : int
     /// A caught `SIGUSR1` is sent to a task in a call.
     | Signal of task : int
     /// The client asks which sleepers the system wakes.
@@ -41,8 +43,11 @@ type BlockingConnectionOp =
 /// Darwin once a write of what is left would take something (W-resume); a
 /// signal ends a sleep as R-eintr, R-restart, W-partial and W-empty measured,
 /// beats room on Linux and loses to bytes there (D-read, D-write); a reset
-/// ends a write as W-reset measured; and a Darwin close of the descriptor a
-/// call was made through ends it with `EBADF` (R-close, W-close).
+/// ends a write as W-reset measured; a Darwin close of the descriptor a
+/// call was made through ends it with `EBADF` (R-close, W-close); and under
+/// `SO_LINGER`, the close of a socket's last descriptor is refused while a
+/// call the close does not end holds it, and otherwise where the socket's own
+/// close would reset the connection or wait.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestBlockingConnection =
@@ -99,6 +104,8 @@ module TestBlockingConnection =
             Writes : int
             /// The ends whose description has gone, closing their socket.
             Gone : Set<ConnectionEnd>
+            /// Each end's `SO_LINGER` time, while it is on.
+            Linger : Map<ConnectionEnd, int>
         }
 
     let private endOf (call : Call) : ConnectionEnd =
@@ -486,6 +493,12 @@ module TestBlockingConnection =
                 closes, Gen.map BlockingConnectionOp.Close fd
                 1, Gen.map BlockingConnectionOp.Dup fd
                 2, Gen.map2 (fun f v -> BlockingConnectionOp.SetNonBlocking (f, v)) fd (Gen.elements [ true ; false ])
+                1,
+                Gen.map3
+                    (fun f on seconds -> BlockingConnectionOp.Linger (f, on, seconds))
+                    fd
+                    (Gen.elements [ true ; false ])
+                    (Gen.elements [ 0 ; 1 ])
                 2, Gen.map BlockingConnectionOp.Signal task
                 6, Gen.constant BlockingConnectionOp.Wake
                 8, Gen.map BlockingConnectionOp.Finish task
@@ -556,6 +569,50 @@ module TestBlockingConnection =
             | None -> failwith $"fd %d{fd} is not connected"
         | other -> failwith $"fd %d{fd} names %A{other}"
 
+    let private socketOf (fd : int) (system : UnixSystem<int, string>) : SocketId =
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+        | Some (OpenFileTarget.Socket socketId) -> socketId
+        | other -> failwith $"fd %d{fd} names %A{other}"
+
+    /// `SO_LINGER` on `fd`: `l_onoff` of `onOff` and a time of `seconds`,
+    /// through `SO_LINGER_SEC` where the flavour has it and `SO_LINGER`
+    /// otherwise. `None` if the call fails with an errno, which changes
+    /// nothing (Darwin's `EINVAL` once the connection has gone, for one).
+    let private tryLinger
+        (fd : int)
+        (onOff : int)
+        (seconds : int)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string> option
+        =
+        let platform = system.Machine.UnixPlatform
+        let level = SimulatedUnixPlatform.socketOptionLevel platform
+
+        let name =
+            match SimulatedUnixPlatform.lingerSecondsOption platform with
+            | Some name -> name
+            | None -> SimulatedUnixPlatform.lingerOption platform
+
+        let value = OptionValue.ofLinger onOff seconds
+        let length = uint32 value.Length
+
+        match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped length system with
+        | Ok (SetSockOptAdmission.Answered _) -> None
+        | Ok (SetSockOptAdmission.Transfer count) ->
+            let supplied = Some (ImmutableArray.Create (value, 0, count))
+
+            match UnixSocket.setsockopt fd level name UserBuffer.Mapped length supplied system with
+            | Ok (SetSockOptAnswer.Set, system) -> Some system
+            | Ok (SetSockOptAnswer.Failed _, _) -> None
+            | other -> failwith $"setting SO_LINGER on fd %d{fd}: %A{other}"
+        | other -> failwith $"admitting SO_LINGER on fd %d{fd}: %A{other}"
+
+    /// `tryLinger`, which must succeed.
+    let private lingerFor (fd : int) (onOff : int) (seconds : int) (system : UnixSystem<int, string>) =
+        match tryLinger fd onOff seconds system with
+        | Some system -> system
+        | None -> failwith $"setting SO_LINGER on fd %d{fd} failed"
+
     let private label (flavour : string) (what : string) (seen : Seen) : string =
         let kind =
             match seen with
@@ -602,6 +659,7 @@ module TestBlockingConnection =
                     Signalled = Set.empty
                     Writes = 0
                     Gone = Set.empty
+                    Linger = Map.empty
                 }
 
             // Both ends' capacities are the same, so one pair describes both.
@@ -653,6 +711,8 @@ module TestBlockingConnection =
                     | BlockingConnectionOp.SetNonBlocking (fd, value) ->
                         fdAt fd
                         |> Option.map (fun fd -> BlockingConnectionOp.SetNonBlocking (fd, value))
+                    | BlockingConnectionOp.Linger (fd, on, seconds) ->
+                        fdAt fd |> Option.map (fun fd -> BlockingConnectionOp.Linger (fd, on, seconds))
                     | BlockingConnectionOp.Signal index -> pick inCall index |> Option.map BlockingConnectionOp.Signal
                     | BlockingConnectionOp.Finish index -> pick woken index |> Option.map BlockingConnectionOp.Finish
                     | BlockingConnectionOp.Wake -> Some op
@@ -717,11 +777,67 @@ module TestBlockingConnection =
 
                     let refusedFor = through |> List.tryFind (fun task -> wakesNow task reference)
 
-                    match refusedFor, UnixDescriptor.close fd system with
-                    | Some task, Error (CloseRefusal.DarwinWokenTransfer (_, refused)) ->
+                    // Under `SO_LINGER`, the last descriptor's close: refused
+                    // while a call the close does not end holds the socket,
+                    // and otherwise refused where the socket's own close would
+                    // reset the connection or wait.
+                    let closing = reference.Fds.[fd]
+                    let socket = socketOf fd system
+
+                    let lingerRefusal =
+                        match Map.tryFind closing reference.Linger with
+                        | Some seconds when reference.Fds |> Map.filter (fun _ e -> e = closing) |> Map.count = 1 ->
+                            let holder =
+                                reference.Parks
+                                |> Map.tryFindKey (fun task park ->
+                                    endOf park.Call = closing
+                                    && park.Through.IsSome
+                                    && not (List.contains task through)
+                                )
+
+                            let unsent = List.length reference.Model.Flows.[other closing].InFlight
+
+                            match holder with
+                            | Some task -> Some (CloseRefusal.LingeringCloseDeferredToCall (socket, task))
+                            | None when seconds = 0 && not (Set.contains (other closing) reference.Gone) ->
+                                Some (
+                                    CloseRefusal.Release (
+                                        DescriptionReleaseRefusal.AbortiveClose (socket, connectionOf fd system)
+                                    )
+                                )
+                            | None when seconds > 0 && unsent > 0 && (linux || not reference.NonBlocking.[closing]) ->
+                                Some (
+                                    CloseRefusal.Release (
+                                        DescriptionReleaseRefusal.LingeringClose (
+                                            socket,
+                                            connectionOf fd system,
+                                            unsent
+                                        )
+                                    )
+                                )
+                            | None -> None
+                        | Some _
+                        | None -> None
+
+                    match refusedFor, lingerRefusal, UnixDescriptor.close fd system with
+                    | Some task, _, Error (CloseRefusal.DarwinWokenTransfer (_, refused)) ->
                         refused |> shouldEqual task
                         cover (label flavourName "close" Seen.RefusedClose)
-                    | None, Ok (answer, after) ->
+                    | None, Some expected, Error refusal ->
+                        refusal |> shouldEqual expected
+
+                        match refusal with
+                        | CloseRefusal.LingeringCloseDeferredToCall _ ->
+                            cover $"%s{flavourName} close: refused, deferred to a call under SO_LINGER"
+                        | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
+                            cover $"%s{flavourName} close: refused, abortive"
+                        | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
+                            cover $"%s{flavourName} close: refused, lingering"
+                        | _ -> ()
+
+                        // A refusal: the client goes no further.
+                        stopped <- true
+                    | None, None, Ok (answer, after) ->
                         answer |> shouldEqual (SyscallAnswer.Completed 0L)
 
                         for task in through do
@@ -736,8 +852,6 @@ module TestBlockingConnection =
                             && reference.Fds |> Map.filter (fun _ e -> e = reference.Fds.[fd]) |> Map.count = 1
                         then
                             cover "Linux close: the last descriptor onto a sleeping call's socket"
-
-                        let closing = reference.Fds.[fd]
 
                         if
                             not (
@@ -768,7 +882,8 @@ module TestBlockingConnection =
                                     )
                             }
                             |> releaseUnreferenced
-                    | expected, other -> failwith $"%s{where}: close expected refusal for %A{expected}, got %A{other}"
+                    | expected, lingering, other ->
+                        failwith $"%s{where}: close expected refusal for %A{expected}, or %A{lingering}, got %A{other}"
                 | BlockingConnectionOp.Dup fd ->
                     let copy, after = KeventWorld.dup fd system
                     system <- after
@@ -776,6 +891,21 @@ module TestBlockingConnection =
                     reference <-
                         { reference with
                             Fds = Map.add copy reference.Fds.[fd] reference.Fds
+                        }
+                | BlockingConnectionOp.Linger (fd, on, seconds) ->
+                    match tryLinger fd (if on then 1 else 0) seconds system with
+                    | None -> cover $"%s{flavourName} SO_LINGER: fails"
+                    | Some after ->
+
+                    system <- after
+
+                    reference <-
+                        { reference with
+                            Linger =
+                                if on then
+                                    Map.add reference.Fds.[fd] seconds reference.Linger
+                                else
+                                    Map.remove reference.Fds.[fd] reference.Linger
                         }
                 | BlockingConnectionOp.SetNonBlocking (fd, value) ->
                     let _, after = UnixDescriptor.setNonBlocking fd value system
@@ -1016,6 +1146,9 @@ module TestBlockingConnection =
                 // hold nothing, so only a Linux call's return can close.
                 "Linux finish: the call's return closes the socket"
                 "Linux close: the last descriptor onto a sleeping call's socket"
+                // The other refusals under SO_LINGER are reached only now
+                // and then; `TestConnectedTransfer` holds their rows.
+                "Linux close: refused, deferred to a call under SO_LINGER"
                 "Darwin finish read: sleeps"
                 "Darwin finish read: refused beside a signal"
                 "Darwin close: ends a read"
@@ -1535,6 +1668,209 @@ module TestBlockingConnection =
         match UnixDescriptor.close client system with
         | Error (CloseRefusal.DarwinWokenTransfer (_, task)) -> task |> shouldEqual 1
         | other -> failwith $"%A{other}"
+
+    // ------------------------------------------------------------------
+    // A close deferred to a sleeping call, under SO_LINGER
+    // ------------------------------------------------------------------
+
+    /// A sleeping transfer on `fd`, one of each kind: a read with nothing to
+    /// read, and a write with its send buffer full behind a full peer, so that
+    /// bytes are unsent.
+    let private asleepIn (kind : string) (task : int) (fd : int) (system : UnixSystem<int, string>) =
+        match kind with
+        | "read" -> asleepReading task fd 4096 system
+        | "write" -> asleepWriting task fd (payload 7 600000) system
+        | other -> failwith $"no such transfer: %s{other}"
+
+    /// Under Linux a close of the last descriptor onto a socket a call sleeps
+    /// on leaves the call holding it (R-close, W-close), so the socket's own
+    /// close happens when the call returns. Under `SO_LINGER`, whose either
+    /// time this kernel refuses a close under in some state the call can
+    /// change, that close is refused at the descriptor's close, through
+    /// `close`, `dup2` and `dup3` alike, naming the socket and the call.
+    [<Test>]
+    let ``Linux: the last close of a socket a call sleeps on under SO_LINGER is refused`` () : unit =
+        let platform = SimulatedUnixPlatform.linuxX64
+
+        for kind in [ "read" ; "write" ] do
+            for seconds in [ 0 ; 1 ] do
+                for how in [ "close" ; "dup2" ; "dup3" ] do
+                    let row = $"%s{kind}, linger {{1, %d{seconds}}}, %s{how}"
+                    let client, _, system = pair (systemOn platform false)
+                    let system = lingerFor client 1 seconds system
+                    let system = asleepIn kind 1 client system
+                    let socket = socketOf client system
+
+                    let refusal =
+                        match how with
+                        | "close" ->
+                            match UnixDescriptor.close client system with
+                            | Error refusal -> Some refusal
+                            | Ok other -> failwith $"%s{row}: the close answered %A{other}"
+                        | "dup2" ->
+                            match UnixDescriptor.dup2 0 client system with
+                            | Error (Dup2Refusal.ClosingTarget refusal) -> Some refusal
+                            | other -> failwith $"%s{row}: %A{other}"
+                        | _ ->
+                            match UnixDescriptor.dup3 0 client 0 system with
+                            | Error (Dup3Refusal.ClosingTarget refusal) -> Some refusal
+                            | other -> failwith $"%s{row}: %A{other}"
+
+                    refusal
+                    |> shouldEqual (Some (CloseRefusal.LingeringCloseDeferredToCall (socket, 1)))
+
+    /// The refusal is of the last descriptor's close, whichever descriptor the
+    /// call was made through: a `dup` keeps the description, and its close
+    /// is the one refused.
+    [<Test>]
+    let ``Linux: under SO_LINGER a close that leaves a descriptor onto the sleeping call's socket is served``
+        ()
+        : unit
+        =
+        let client, _, system = pair (systemOn SimulatedUnixPlatform.linuxX64 false)
+        let system = lingerFor client 1 0 system
+        let copy, system = KeventWorld.dup client system
+        let system = asleepReading 1 client 4096 system
+
+        let system =
+            match UnixDescriptor.close client system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"%A{other}"
+
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        UnixDescriptor.close copy system
+        |> shouldEqual (Error (CloseRefusal.LingeringCloseDeferredToCall (socketOf copy system, 1)))
+
+    /// Darwin's close ends the call made through the descriptor, so nothing
+    /// holds the socket past it, and the close is refused, if at all, as the
+    /// ordinary close of the socket is.
+    [<Test>]
+    let ``Darwin: the last close of a socket a call sleeps on under SO_LINGER is the socket's own close`` () : unit =
+        let platform = SimulatedUnixPlatform.macOsArm64
+
+        // {1, 0}: the abortive close, refused while the peer is open.
+        let client, _, system = pair (systemOn platform false)
+        let system = lingerFor client 1 0 system
+        let system = asleepReading 1 client 4096 system
+        let socket = socketOf client system
+
+        match UnixDescriptor.close client system with
+        | Error (CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose (refused, _))) ->
+            refused |> shouldEqual socket
+        | other -> failwith $"{{1, 0}}: %A{other}"
+
+        // {1, 1 s} with bytes unsent, through a blocking description: the
+        // close that waits.
+        let client, _, system = pair (systemOn platform false)
+        let system = lingerFor client 1 1 system
+        let system = asleepWriting 1 client (payload 7 600000) system
+        let socket = socketOf client system
+
+        match UnixDescriptor.close client system with
+        | Error (CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose (refused, _, unsent))) ->
+            refused |> shouldEqual socket
+            unsent |> shouldBeGreaterThan 0
+        | other -> failwith $"{{1, 1}}: %A{other}"
+
+    /// With `SO_LINGER` off, whatever its time, the close is the ordinary one
+    /// whenever it happens: Linux's call keeps the socket past the close of its
+    /// last descriptor, answers what arrives, and releases it as it returns.
+    [<Test>]
+    let ``Linux: with SO_LINGER off, the last close of a socket a call sleeps on is deferred to the call`` () : unit =
+        let platform = SimulatedUnixPlatform.linuxX64
+
+        for seconds in [ 0 ; 1 ] do
+            // The read.
+            let client, server, system = pair (systemOn platform false)
+            let system = lingerFor client 1 seconds system |> lingerFor client 0 seconds
+            let system = asleepReading 1 client 4096 system
+
+            let system =
+                match UnixDescriptor.close client system with
+                | Ok (SyscallAnswer.Completed 0L, system) -> system
+                | other -> failwith $"read, time %d{seconds}: %A{other}"
+
+            UnixSystem.checkInvariants system |> shouldEqual []
+            let system = wrote server 100 system |> snd
+            wokenAmong [ 1 ] system |> shouldEqual [ 1 ]
+
+            match UnixReadWrite.finishRead 1 system with
+            | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
+                bytes.Length |> shouldEqual 100
+                after.Machine.Sockets.Count |> shouldEqual (system.Machine.Sockets.Count - 1)
+                UnixSystem.checkInvariants after |> shouldEqual []
+            | other -> failwith $"read, time %d{seconds}: %A{other}"
+
+            // The write, with bytes unsent: the peer drains until it wakes.
+            let client, server, system = pair (systemOn platform false)
+            let system = lingerFor client 1 seconds system |> lingerFor client 0 seconds
+            let bytes = payload 7 600000
+            let system = asleepWriting 1 client bytes system
+
+            let system =
+                match UnixDescriptor.close client system with
+                | Ok (SyscallAnswer.Completed 0L, system) -> system
+                | other -> failwith $"write, time %d{seconds}: %A{other}"
+
+            UnixSystem.checkInvariants system |> shouldEqual []
+
+            let rec untilWoken (system : UnixSystem<int, string>) =
+                if List.isEmpty (wokenAmong [ 1 ] system) then
+                    untilWoken (readNow server 65536 system |> snd)
+                else
+                    system
+
+            match finishedWrite 1 bytes (untilWoken system) with
+            | Ok (WriteOutcome.WouldBlock (_, after))
+            | Ok (WriteOutcome.Returns (_, after)) -> UnixSystem.checkInvariants after |> shouldEqual []
+            | other -> failwith $"write, time %d{seconds}: %A{other}"
+
+    /// The state the refusal keeps out: a connected socket under `SO_LINGER`
+    /// that only calls in flight hold.
+    [<Test>]
+    let ``checkInvariants reports a socket under SO_LINGER that only calls hold`` () : unit =
+        let client, _, system = pair (systemOn SimulatedUnixPlatform.linuxX64 false)
+        let system = asleepReading 1 client 4096 system
+        let socket = socketOf client system
+
+        let description =
+            FileDescriptorRegistry.tryFindId client (UnixSystemState.fileDescriptors system)
+            |> Option.get
+
+        let system =
+            match UnixDescriptor.close client system with
+            | Ok (_, system) -> system
+            | other -> failwith $"%A{other}"
+
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        for seconds in [ 0L ; 100L ] do
+            let lingering =
+                let held = UnixMachineState.socket socket system.Machine
+
+                { system with
+                    Machine =
+                        { system.Machine with
+                            Sockets =
+                                Map.add
+                                    socket
+                                    { held with
+                                        Options =
+                                            { held.Options with
+                                                Linger =
+                                                    {
+                                                        Enabled = true
+                                                        Hundredths = seconds
+                                                    }
+                                            }
+                                    }
+                                    system.Machine.Sockets
+                        }
+                }
+
+            UnixSystem.checkInvariants lingering
+            |> shouldEqual [ UnixSystemDefect.LingeringSocketHeldOnlyByCalls (description, socket) ]
 
     /// A woken call that finds nothing, through a description made
     /// non-blocking while it slept, is refused: whether it answers or sleeps

@@ -259,6 +259,14 @@ type UnixSystemDefect<'Task> =
     /// alive once no descriptor names it, so one too few lets a close destroy
     /// what a sleeping call still waits on, and one too many leaks it.
     | HoldCountMismatch of description : OpenFileDescriptionId * recorded : int * parks : int
+    /// No descriptor names the open file description of the connected stream
+    /// socket `socket`, whose `SO_LINGER` is on, and only syscalls in flight
+    /// hold it. The socket is closed when the last of those calls returns, and
+    /// that close is one this kernel may refuse (`DescriptionReleaseRefusal.AbortiveClose`,
+    /// `DescriptionReleaseRefusal.LingeringClose`), which a call's return has
+    /// no way to answer. `close` refuses the close that would leave the socket
+    /// so (`CloseRefusal.LingeringCloseDeferredToCall`).
+    | LingeringSocketHeldOnlyByCalls of description : OpenFileDescriptionId * socket : SocketId
     /// A task is parked in an `epoll_wait` on a description that is not an
     /// epoll instance, which no wait could have produced and which
     /// `EpollReadyList.hasDeliverableEvent` crashes on.
@@ -1480,6 +1488,33 @@ module UnixSystem =
             )
             |> List.map UnixSystemDefect.UnreferencedDescription
 
+        // A socket whose release `SO_LINGER` could have refused is never left
+        // for a call's return to release, which could not refuse it.
+        let lingeringHeldOnlyByCalls =
+            OpenFileTable.descriptions machine.OpenFiles
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.Socket socketId when
+                    OpenFileTable.descriptorCount id machine.OpenFiles = Some 0
+                    && OpenFileTable.holdCount id machine.OpenFiles
+                       |> Option.exists (fun holds -> holds > 0)
+                    ->
+                    // A description onto an absent socket is `DanglingSocket`'s.
+                    match Map.tryFind socketId machine.Sockets with
+                    | Some socket when ObjectLifetime.lingerCanRefuseRelease socket ->
+                        Some (UnixSystemDefect.LingeringSocketHeldOnlyByCalls (id, socketId))
+                    | Some _
+                    | None -> None
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Epoll _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Pipe _ -> None
+            )
+
         // Each description's holds against the parks of every process's tasks:
         // one for each time a park names it. A park naming a description the
         // table does not hold is `ParkedOnAbsentDescription`'s.
@@ -1939,6 +1974,7 @@ module UnixSystem =
         @ unpairedUnderLinux
         @ statusOfFlavour
         @ unreferencedDescriptions
+        @ lingeringHeldOnlyByCalls
         @ holdCounts
         @ pollQueueParks
         @ pollQueueFreshness

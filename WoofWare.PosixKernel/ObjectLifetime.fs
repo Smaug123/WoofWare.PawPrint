@@ -160,6 +160,17 @@ module ObjectLifetime =
         | None -> freed
         | Some parent -> forgetIfUnheld parent freed
 
+    /// Whether `SO_LINGER` could make this kernel refuse to release the last
+    /// reference to `socket` (`DescriptionReleaseRefusal.AbortiveClose`,
+    /// `DescriptionReleaseRefusal.LingeringClose`) in some state it can reach
+    /// with no descriptor naming it: its `SO_LINGER` is on, whatever the time,
+    /// and it is an end of a connection. Whether either refusal is made turns
+    /// on the peer and the bytes unsent, which can change while a call holds
+    /// the socket; nothing can turn the linger on, or make the socket a
+    /// connection's end, without a descriptor onto it.
+    let internal lingerCanRefuseRelease (socket : SocketDescription) : bool =
+        socket.Options.Linger.Enabled && (SocketPhase.connectionEnd socket.Phase).IsSome
+
     /// Release what the open file description `destroyed` was the last
     /// reference to — its socket and the connections nothing else references,
     /// its pipe once neither end is open, its inode once nothing names or holds
@@ -419,8 +430,15 @@ module ObjectLifetime =
         )
 
     /// `releaseUnreferenced`, for the return of a call none of whose
-    /// descriptions can be the last reference to a socket, whose release alone
-    /// can be refused: failing loudly, naming `caller`, if one is.
+    /// descriptions can be the last reference to a socket whose release can be
+    /// refused: failing loudly, naming `caller`, if one is.
+    ///
+    /// A socket's release is refused only for a listener, which of the calls
+    /// that hold a description only `accept` can leave as its last reference
+    /// (a Linux `poll` watching one keeps a descriptor onto it,
+    /// `CloseRefusal.PolledDescriptor`), and under `SO_LINGER`, which no
+    /// description only calls hold has (`UnixSystemDefect.LingeringSocketHeldOnlyByCalls`).
+    /// `accept` calls `releaseUnreferenced` instead.
     let internal releaseUnreferencedUnrefusable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (caller : string)
         (descriptions : OpenFileDescriptionId list)
@@ -431,4 +449,4 @@ module ObjectLifetime =
         | Ok released -> released
         | Error refusal ->
             failwith
-                $"%s{caller}: releasing the open file descriptions %A{descriptions} as the call returned was refused, but this call holds none that can be the last reference to a socket (this is a bug in this library): %s{DescriptionReleaseRefusal.describe refusal}"
+                $"%s{caller}: releasing the open file descriptions %A{descriptions} as the call returned was refused, but this call holds none that can be the last reference to a socket whose release can be refused (this is a bug in this library): %s{DescriptionReleaseRefusal.describe refusal}"

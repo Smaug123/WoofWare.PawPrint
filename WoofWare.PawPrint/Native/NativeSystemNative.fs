@@ -525,6 +525,8 @@ module NativeSystemNative =
                 "The runtime ignores SIGPIPE, so a guest reaches this only by setting its disposition itself; model a close that can end the process before closing a pipe end under a sleeping write then."
             | CloseRefusal.DarwinWokenTransfer _ ->
                 "Measure which of the close and what had woken it a Darwin read or write answers when the descriptor it was made through closes before it runs, or configure a Linux platform."
+            | CloseRefusal.LingeringCloseDeferredToCall _ ->
+                "Model the abortive and the waiting close SO_LINGER makes, so that a call's return can close the socket whatever state it is in, or end the call before closing the socket's last descriptor."
 
         $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal} %s{remedy}"
 

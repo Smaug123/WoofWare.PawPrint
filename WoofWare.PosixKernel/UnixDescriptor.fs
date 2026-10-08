@@ -206,6 +206,21 @@ type CloseRefusal<'Task> =
     /// Darwin flavour, and the `SIGPIPE` that write raises as it returns is one
     /// this kernel cannot answer (`refusal`).
     | DarwinEndedWriteSignal of task : 'Task * refusal : EndedWriteSignalRefusal
+    /// The descriptor is the last one onto the open file description of the
+    /// connected stream socket `socket`, whose `SO_LINGER` is on, and `task`'s
+    /// call in flight still holds that description, so the close would leave
+    /// the socket to be closed when that call returns.
+    ///
+    /// Under Linux a close of the last descriptor onto a socket a `read` or
+    /// `write` sleeps on answers 0 and leaves the call holding the socket
+    /// (measured, `tcp-blocking.c` sections R-close and W-close). This kernel
+    /// refuses some closes under `SO_LINGER` (`DescriptionReleaseRefusal.AbortiveClose`,
+    /// `DescriptionReleaseRefusal.LingeringClose`), and whether such a close
+    /// would be refused depends on state that changes before the call returns:
+    /// the peer, and the bytes still unsent. A call's return has no refusal to
+    /// answer with, so the close is refused here instead, whatever the linger
+    /// time.
+    | LingeringCloseDeferredToCall of socket : SocketId * task : 'Task
 
 [<RequireQualifiedAccess>]
 module CloseRefusal =
@@ -231,6 +246,8 @@ module CloseRefusal =
                     $"which task would take the signal is not modelled (%A{refusal})"
 
             $"the close ends the pipe write task %O{task} is asleep in through this descriptor. Measured on Darwin (close-ends-call.c sections P2-P4), that write answers EPIPE and raises SIGPIPE for the process as it returns, which it does before the close does; but %s{why}."
+        | CloseRefusal.LingeringCloseDeferredToCall (socket, task) ->
+            $"the descriptor is the last one onto connected socket %O{socket}, whose SO_LINGER is on, and task %O{task} is in a call that still holds it. Measured on Linux (tcp-blocking.c sections R-close and W-close), the close answers 0 and the socket is closed when that call returns. Under SO_LINGER that close would be abortive (a time of zero) or would wait for unsent bytes (a positive time), which this kernel refuses in some states, and the call can change the state before it returns; this kernel models no refusal at a call's return, nor a close deferred to one under SO_LINGER."
         | CloseRefusal.Release refusal -> DescriptionReleaseRefusal.describe refusal
 
 /// A status flag the flavour's `fcntl(F_SETFL)` would set, and this kernel
@@ -1589,10 +1606,13 @@ module UnixDescriptor =
     /// real kernel holds a file for a call that sleeps on it. So under Linux a
     /// close under a sleeping call is served, and the call sleeps on: the
     /// description goes when the call returns, which is when its finishing call
-    /// releases it. Under Darwin a close of the descriptor a `kevent` sleeps
-    /// through is served too, and drains the kqueue (`KqueueState.Drained`),
-    /// which ends that wait and every other on the kqueue; the kqueue goes as
-    /// the last of them returns, if no descriptor names it by then.
+    /// releases it. That is refused for a connected socket whose `SO_LINGER`
+    /// is on (`CloseRefusal.LingeringCloseDeferredToCall`), whose close this
+    /// kernel may refuse when the call returns. Under Darwin a close of the
+    /// descriptor a `kevent` sleeps through is served too, and drains the
+    /// kqueue (`KqueueState.Drained`), which ends that wait and every other on
+    /// the kqueue; the kqueue goes as the last of them returns, if no
+    /// descriptor names it by then.
     ///
     /// Under Darwin a close of the descriptor a sleeping pipe `read` or `write`
     /// was made through ends every such call made through it, and none made
@@ -2034,6 +2054,39 @@ module UnixDescriptor =
             | Error FileDescriptorCloseError.BadFd ->
                 failwith
                     $"UnixDescriptor.close: fd %d{fd} named open file description %O{closingId} (%A{closing.Target}) a moment ago, and the registry now calls it a bad descriptor (this is a bug in this library)."
+
+        // The description outlives its last descriptor only while calls hold
+        // it (under Darwin, those the close has not ended), and the socket's
+        // close then happens as the last of them returns, which has no refusal
+        // to answer with. Under `SO_LINGER` that close may be one this kernel
+        // refuses, so it is refused now instead.
+        let deferredUnderLinger : CloseRefusal<'Task> option =
+            match destroyed, closing.Target with
+            | None, OpenFileTarget.Socket socketId when
+                OpenFileTable.descriptorCount closingId (FileDescriptorRegistry.openFiles registry) = Some 0
+                && ObjectLifetime.lingerCanRefuseRelease (UnixMachineState.socket socketId system.Machine)
+                ->
+                let holder =
+                    tasks
+                    |> Map.toSeq
+                    |> Seq.tryPick (fun (task, state) ->
+                        match state.Parked with
+                        | Some park when List.contains closingId (ParkedSyscall.descriptions park.Syscall) -> Some task
+                        | Some _
+                        | None -> None
+                    )
+
+                match holder with
+                | Some task -> Some (CloseRefusal.LingeringCloseDeferredToCall (socketId, task))
+                | None ->
+                    failwith
+                        $"UnixDescriptor.close: closing fd %d{fd} left open file description %O{closingId} with no descriptor and undestroyed, but no task of this process is parked in a call that holds it (this is a bug in this library)."
+            | None, _
+            | Some _, _ -> None
+
+        match deferredUnderLinger with
+        | Some refusal -> Error refusal
+        | None ->
 
         // Measured on Darwin 27.0.0 (`kqueue-kevent.c`, sections E and F):
         // closing a descriptor a task is asleep in `kevent` through drains the
