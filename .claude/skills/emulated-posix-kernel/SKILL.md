@@ -201,6 +201,15 @@ guest reads from `uname`; it is **not** evidence about the kernel a test runs on
 Reading `access_ok` at the preset's version gave a sign-bit split where CI
 measured `TASK_SIZE_MAX`, because x86 changed the rule between 6.9 and 6.12.
 
+No fact follows from the release string. A fact that changed between Linux
+versions follows the platform's `LinuxKernelVersion` (`SimulatedUnixKernel.Linux`),
+which each preset states for itself (`linuxX64` 6.17.0, `linuxArm64` 6.18.5):
+`getSockNameFaultLength` is the first, after Linux 6.18 moved the length's store
+ahead of the copy, which CI's 6.17 caught where 6.18.5 had been measured. A
+host-equality test of such a fact models the host's *own* version
+(`HostPlatform.onUnixHostKernel`), so it holds on whichever kernel runs it, and
+its rows should come from kernels on both sides of the change.
+
 See `reference/probing.md` for the probe technique, including the two ways a
 set-ID measurement reads as "unsupported" when it is not.
 

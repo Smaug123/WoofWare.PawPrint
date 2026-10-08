@@ -5011,17 +5011,25 @@ module TestUnixSystemStep =
             |> shouldEqual (Error (GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
 
     [<Test>]
-    let ``a faulting getsockname has already reported the length on one flavour`` () : unit =
-        // The two kernels order the two stores differently. Measured against a
-        // wholly unmapped destination with sentinel lengths of 7, 13, 100 and
-        // 4096, so a cell that came back reading 16 can only have been written:
-        // Linux 6.18.5 writes the untruncated length before attempting the copy
-        // that then faults, macOS 26.6 reports it only once the copy succeeded.
+    let ``a faulting getsockname has already reported the length on Linux from 6.18`` () : unit =
+        // The kernels order the two stores differently. Measured against a
+        // wholly unmapped destination with declared lengths of 1, 7, 13, 16, 100
+        // and 4096, so a cell that came back reading 16 can only have been
+        // written (`docs/probes/sockname-fault-length`): Linux 6.18.5 writes the
+        // untruncated length before attempting the copy that then faults, while
+        // Linux 6.17 and Darwin 27.0.0 report it only once the copy succeeded.
+        let since618Fd, since618System =
+            withBoundSocket (systemOn SimulatedUnixPlatform.linuxArm64)
+
+        UnixSocket.getsockname since618Fd (UserBuffer.Unmapped 8UL) 13u since618System
+        |> sockNameFailed
+        |> shouldEqual (UnixError.EFAULT, Some 16)
+
         let linuxFd, linuxSystem = withBoundSocket linux
 
         UnixSocket.getsockname linuxFd (UserBuffer.Unmapped 8UL) 13u linuxSystem
         |> sockNameFailed
-        |> shouldEqual (UnixError.EFAULT, Some 16)
+        |> shouldEqual (UnixError.EFAULT, None)
 
         let darwinFd, darwinSystem = withBoundSocket darwin
 
