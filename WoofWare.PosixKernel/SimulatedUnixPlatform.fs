@@ -1305,6 +1305,40 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> 4
         | SimulatedUnixFlavour.Darwin -> 0x1007
 
+    /// `IPPROTO_TCP`, the `level` at which `setsockopt(2)` and `getsockopt(2)`
+    /// name TCP's own options: 6 on both. Measured.
+    let tcpOptionLevel (_ : SimulatedUnixPlatform) : int = 6
+
+    /// `TCP_NODELAY`, at `tcpOptionLevel`: 1 on both. Measured.
+    let noDelayOption (_ : SimulatedUnixPlatform) : int = 1
+
+    /// `IPPROTO_IPV6`, the `level` at which `setsockopt(2)` and `getsockopt(2)`
+    /// name IPv6's options: 41 on both. Measured.
+    let ipv6OptionLevel (_ : SimulatedUnixPlatform) : int = 41
+
+    /// `IPV6_V6ONLY`, at `ipv6OptionLevel`, in the platform's own numbering: 26
+    /// on Linux, 27 on Darwin. Measured.
+    let ipv6OnlyOption (platform : SimulatedUnixPlatform) : int =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> 26
+        | SimulatedUnixFlavour.Darwin -> 27
+
+    /// `SO_LINGER`, at `socketOptionLevel`, in the platform's own numbering: 13
+    /// on Linux, `0x80` on Darwin. Measured. Its `l_linger` is in seconds on
+    /// Linux and in hundredths of a second on Darwin; see `lingerSecondsOption`.
+    let lingerOption (platform : SimulatedUnixPlatform) : int =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> 13
+        | SimulatedUnixFlavour.Darwin -> 0x80
+
+    /// Darwin's `SO_LINGER_SEC`, at `socketOptionLevel`: `SO_LINGER` with its
+    /// `l_linger` in seconds rather than in hundredths of one. `0x1080`.
+    /// Measured. Linux has no such option.
+    let lingerSecondsOption (platform : SimulatedUnixPlatform) : int option =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> None
+        | SimulatedUnixFlavour.Darwin -> Some 0x1080
+
     /// Whether a multi-byte integer the process stores — `sa_family` in a
     /// `struct sockaddr`, a socket option's `int` — has its least significant
     /// byte first.
@@ -1352,6 +1386,33 @@ module SimulatedUnixPlatform =
                 BinaryPrimitives.WriteUInt16BigEndian (System.Span<byte> bytes, uint16 family)
 
             bytes
+
+    /// A C `int` as the process stores it: four bytes in the machine's own
+    /// byte order. A socket option's value is one, or two side by side for
+    /// `struct linger`.
+    let encodeCInt (platform : SimulatedUnixPlatform) (value : int) : byte[] =
+        let bytes = Array.zeroCreate<byte> 4
+
+        if machineIsLittleEndian platform then
+            BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> bytes, value)
+        else
+            BinaryPrimitives.WriteInt32BigEndian (System.Span<byte> bytes, value)
+
+        bytes
+
+    /// The C `int` in the four bytes of `bytes` from `offset`, as `encodeCInt`
+    /// lays one out.
+    let decodeCInt (platform : SimulatedUnixPlatform) (bytes : ImmutableArray<byte>) (offset : int) : int =
+        if bytes.IsDefault || offset < 0 || bytes.Length < offset + 4 then
+            failwith
+                $"SimulatedUnixPlatform.decodeCInt: no four bytes at offset %d{offset} of %d{(if bytes.IsDefault then 0 else bytes.Length)} (this is a bug in the caller)."
+
+        let span = bytes.AsSpan().Slice (offset, 4)
+
+        if machineIsLittleEndian platform then
+            BinaryPrimitives.ReadInt32LittleEndian span
+        else
+            BinaryPrimitives.ReadInt32BigEndian span
 
     /// What `copied`, every byte a `bind(2)` or `connect(2)` copied in, says
     /// when read as this platform's `struct sockaddr_in`.

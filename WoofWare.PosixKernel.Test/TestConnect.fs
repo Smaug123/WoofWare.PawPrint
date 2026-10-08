@@ -78,6 +78,7 @@ module TestConnect =
             Protocol = SocketProtocol.Tcp
             Binding = binding
             ReuseAddress = false
+            Options = SocketOptions.initial
             Phase = phase
         }
 
@@ -549,7 +550,7 @@ module TestConnect =
             let level = SimulatedUnixPlatform.socketOptionLevel platform
             let option = SimulatedUnixPlatform.reuseAddressOption platform
 
-            match UnixSocket.setsockopt fd level option UserBuffer.Mapped 4u (Some 1) system with
+            match UnixSocket.setsockopt fd level option UserBuffer.Mapped 4u (Some (OptionValue.ofInt 1)) system with
             | Ok (SetSockOptAnswer.Set, system) -> fd, system
             | other -> failwith $"setsockopt answered %A{other}"
 

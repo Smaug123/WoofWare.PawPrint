@@ -206,6 +206,7 @@ module TestUnixSystemInitial =
                 Protocol = SocketProtocol.Tcp
                 Binding = None
                 ReuseAddress = false
+                Options = SocketOptions.initial
                 Phase = SocketPhase.Idle
             }
 

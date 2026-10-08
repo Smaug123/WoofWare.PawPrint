@@ -281,6 +281,7 @@ module TestUnixSystemStep =
             Binding = None
             Phase = SocketPhase.Idle
             ReuseAddress = false
+            Options = SocketOptions.initial
         }
 
     let private socketZero : SocketId = SocketId 0L
@@ -648,6 +649,7 @@ module TestUnixSystemStep =
                 Binding = None
                 Phase = established
                 ReuseAddress = false
+                Options = SocketOptions.initial
             }
 
         let fd, registry =
@@ -753,6 +755,7 @@ module TestUnixSystemStep =
                 Binding = None
                 Phase = SocketPhase.Idle
                 ReuseAddress = false
+                Options = SocketOptions.initial
             }
 
         let withSocket (flavour : UnixSystem<int, string>) : int * UnixSystem<int, string> =
