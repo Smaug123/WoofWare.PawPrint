@@ -735,10 +735,14 @@ module UnixPathResolution =
     /// only in how they reach the inode. `fstat` is this plus a descriptor
     /// lookup, and `stat`/`lstat` are this plus a path resolution.
     ///
-    /// Refuses for a directory on an NFS mount, and for the root of the device
-    /// filesystem, whose size and link count this kernel cannot state; see
+    /// Refuses for a directory on an NFS mount, and for the root of a
+    /// devtmpfs, whose size and link count this kernel cannot state; see
     /// `StatRefusal`.
-    let statOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    ///
+    /// Throws for an inode on Darwin's devfs, which this kernel does not model.
+    /// No path or descriptor reaches one: a walk refuses at the mount. Internal
+    /// for that reason, since a client given a bare inode could name one.
+    let internal statOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<FileStatus, StatRefusal> option
@@ -859,11 +863,11 @@ module UnixPathResolution =
     /// a `stat` records no access.
     ///
     /// Refuses for a directory on an NFS mount and for the device filesystem's
-    /// root, as `statOf` does, and for a path this kernel will not resolve; see
-    /// `StatRefusal`. The three descriptor kinds `fstat` also refuses for are
-    /// unreachable from here: every inode a path resolves to is one this
-    /// filesystem holds, since a name for an inode-free object cannot be
-    /// created in it.
+    /// root, whose size and link count this kernel cannot state, and for a
+    /// path this kernel will not resolve; see `StatRefusal`. The three
+    /// descriptor kinds `fstat` also refuses for are unreachable from here:
+    /// every inode a path resolves to is one this filesystem holds, since a
+    /// name for an inode-free object cannot be created in it.
     ///
     /// `path` is the argument's bytes, copied in before anything else: EFAULT
     /// if they were unreadable, ENAMETOOLONG if they run past `PATH_MAX`.
@@ -891,7 +895,8 @@ module UnixPathResolution =
     /// queue, a socket — and for an end of a pipe the process was launched with,
     /// whose owner and timestamps are the launcher's. That is a limit of the
     /// model rather than an absent kernel answer; see `FStatRefusal`. Also
-    /// refuses for a directory on an NFS mount, as `statOf` does.
+    /// refuses for a directory on an NFS mount and for the device filesystem's
+    /// root, as `stat` does.
     let fstat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
