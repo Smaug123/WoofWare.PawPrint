@@ -245,7 +245,7 @@ module ObjectLifetime =
         // could.
         let establishedSurvivors : Result<SocketId list, DescriptionReleaseRefusal> =
             match dying.Phase with
-            | SocketPhase.Established connection
+            | SocketPhase.Established (connection, _)
             | SocketPhase.EstablishedPendingReport connection when
                 dying.Options.Linger.Enabled
                 && dying.Options.Linger.Hundredths = 0L

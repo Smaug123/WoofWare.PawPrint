@@ -1548,7 +1548,7 @@ module UnixConnection =
                 system.Machine.Sockets
                 |> Map.exists (fun _ socket ->
                     match socket.Phase with
-                    | SocketPhase.Established c
+                    | SocketPhase.Established (c, _)
                     | SocketPhase.EstablishedPendingReport c -> c = head
                     | _ -> false
                 )
