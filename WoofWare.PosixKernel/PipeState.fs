@@ -19,17 +19,20 @@ type PipeInodes =
 
 /// The timestamps `fstat(2)` reports for a pipe's ends, and what moves them.
 ///
-/// On Linux none of them ever moves: measured on 6.18.5, reads, writes, short
-/// writes, `EAGAIN` and `EFAULT` in either direction all leave every timestamp
-/// of both ends at the pipe's creation. On Darwin they move per end, as
-/// `UnixPipe` describes.
+/// On Linux the two ends are one inode with one set of times, which no
+/// transfer moves: measured on 6.18.5, reads, writes, short writes, `EAGAIN`
+/// and `EFAULT` in either direction all leave every timestamp of both ends at
+/// the pipe's creation. Changing the inode itself does move them, as for a
+/// file: `fchmod(2)` and `fchown(2)` the status-change time, `utimensat(2)`
+/// whichever it is asked to. On Darwin they move per end, as `UnixPipe`
+/// describes.
 type PipeTimes =
     {
         /// When the pipe was created: every timestamp of both ends starts here.
-        /// It is also the write end's `st_atime` for the pipe's whole life, since
-        /// nothing reads through the write end.
+        /// On Darwin it is also the write end's `st_atime` for the pipe's whole
+        /// life, since nothing reads through the write end.
         Created : UnixTimestamp
-        /// The read end's `st_atime`.
+        /// The read end's `st_atime`, and on Linux the write end's too.
         ReadEndAccess : UnixTimestamp
         /// `st_mtime` of both ends.
         Modification : UnixTimestamp
@@ -54,20 +57,21 @@ type PipeStatus =
         Times : PipeTimes
     }
 
-/// The end of a launched pipe that the client kept, named by the descriptor
-/// the process was given onto the pipe's other end in the launch table that
-/// `UnixSystem.initial` took.
+/// The end of a launched pipe that the client kept, named by the process it
+/// launched the pipe into and the descriptor that process was given onto the
+/// pipe's other end in the launch table that `UnixSystem.initial` took.
 ///
-/// So the client that launched a process with its output on descriptor 1 finds
-/// what the process wrote there under `ExternalEndpoint 1`, whatever the
-/// process has since done with descriptor 1.
+/// So the client that launched process `pid` with its output on descriptor 1
+/// finds what the process wrote there under `ExternalEndpoint (pid, 1)`,
+/// whatever the process has since done with descriptor 1, and apart from what
+/// any other process wrote on its own descriptor 1.
 [<Struct>]
 type ExternalEndpoint =
-    | ExternalEndpoint of launchedOn : int
+    | ExternalEndpoint of launchedInto : ProcessId * launchedOn : int
 
     override this.ToString () : string =
         match this with
-        | ExternalEndpoint fd -> $"the client's end of launch descriptor %d{fd}"
+        | ExternalEndpoint (pid, fd) -> $"the client's end of process %O{pid}'s launch descriptor %d{fd}"
 
 /// What one descriptor of a launch table is: a pipe end the launcher made
 /// before the process started, whose other end is the client's.
@@ -166,10 +170,10 @@ type PipeOrigin =
 /// A pipe, as the kernel's pipe table holds it: the bytes in flight between its
 /// ends, and where it came from.
 ///
-/// Holds nothing about which of its ends the process has open. That is derived
-/// from the descriptor table, which is the only thing that can say it
+/// Holds nothing about which of its ends are open. That is derived from the
+/// machine's open file descriptions, which are the only thing that can say it
 /// truthfully: an end is open while some open file description names it, or
-/// while the client holds it (see `PipeState.heldByClient`).
+/// while the client holds it (see `UnixMachineState.pipeEndOpen`).
 [<NoComparison>]
 type PipeState =
     {
@@ -223,19 +227,20 @@ module PipeState =
         | PipeOrigin.Launched (_, ClientEnd.ReadEndClosed)
         | PipeOrigin.Made _ -> None
 
-    /// The pipe `descriptor` makes for launch descriptor `fd` on a machine of
-    /// `platform`, as it stands when the process starts, and which of its ends
-    /// the process is given.
+    /// The pipe `descriptor` makes for launch descriptor `fd` of process `pid`
+    /// on a machine of `platform`, as it stands when the process starts, and
+    /// which of its ends the process is given.
     ///
     /// A pipe the client supplies holds what the client's write put in before
     /// it slept: the whole of it if it fits.
     let internal launch
         (platform : SimulatedUnixPlatform)
+        (pid : ProcessId)
         (fd : int)
         (descriptor : LaunchDescriptor)
         : PipeState * PipeEnd
         =
-        let endpoint = ExternalEndpoint fd
+        let endpoint = ExternalEndpoint (pid, fd)
         let empty = PipeBuffer.empty platform
 
         match descriptor with

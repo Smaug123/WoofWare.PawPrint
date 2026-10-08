@@ -256,7 +256,7 @@ module SocketFuzz =
                 $"FUZZ-DRIVER BUG: op names slot %d{slot}, which holds no fd — the generator is supposed to be constructive."
 
     let private socketIdOfSlot (slot : int) (state : ExecState) : SocketId =
-        match FileDescriptorRegistry.tryFind (slotFd slot state) state.Kernel.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFind (slotFd slot state) (UnixSystemState.fileDescriptors state.Kernel) with
         | Some description ->
             match description.Target with
             | OpenFileTarget.Socket socketId -> socketId
@@ -471,38 +471,26 @@ module SocketFuzz =
                 // shrink towards.
                 failwith $"close of fd %d{fd} answered %O{error}, which is not EBADF"
         | FuzzOp.Dup (slot, newSlot) ->
-            match FileDescriptorRegistry.dup (slotFd slot state) state.Kernel.Process.FileDescriptors with
+            match FileDescriptorRegistry.dup (slotFd slot state) (UnixSystemState.fileDescriptors state.Kernel) with
             | Ok (fd, registry) ->
                 "ok",
                 assignSlot
                     newSlot
                     fd
                     { state with
-                        Kernel =
-                            { state.Kernel with
-                                Process =
-                                    { state.Kernel.Process with
-                                        FileDescriptors = registry
-                                    }
-                            }
+                        Kernel = (UnixSystemState.withFileDescriptors registry state.Kernel)
                     }
             | Error FileDescriptorDupError.BadFd -> "EBADF", state
         | FuzzOp.NewEpoll slot ->
             let fd, registry =
-                FileDescriptorRegistry.createEpoll state.Kernel.Process.FileDescriptors
+                FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors state.Kernel)
 
             "ok",
             assignSlot
                 slot
                 fd
                 { state with
-                    Kernel =
-                        { state.Kernel with
-                            Process =
-                                { state.Kernel.Process with
-                                    FileDescriptors = registry
-                                }
-                        }
+                    Kernel = (UnixSystemState.withFileDescriptors registry state.Kernel)
                 }
         | FuzzOp.Add (epoll, target, mask) -> epollCtl false epoll 1 target (eventsOfMask mask) state
         | FuzzOp.Mod (epoll, target, mask) -> epollCtl false epoll 3 target (eventsOfMask mask) state
@@ -511,7 +499,9 @@ module SocketFuzz =
         | FuzzOp.Del (epoll, target) -> epollCtl false epoll 2 target 0u state
         | FuzzOp.Wait (epoll, maxEvents) ->
             let queueId =
-                match FileDescriptorRegistry.tryFindId (slotFd epoll state) state.Kernel.Process.FileDescriptors with
+                match
+                    FileDescriptorRegistry.tryFindId (slotFd epoll state) (UnixSystemState.fileDescriptors state.Kernel)
+                with
                 | Some id -> id
                 | None -> failwith $"FUZZ-DRIVER BUG: wait's epoll slot %d{epoll} is not live."
 
@@ -550,7 +540,7 @@ module SocketFuzz =
             let fd = slotFd slot state
 
             if
-                FileDescriptorRegistry.tryFindId fd state.Kernel.Process.FileDescriptors
+                FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors state.Kernel)
                 |> Option.isNone
             then
                 failwith $"FUZZ-DRIVER BUG: poll's slot %d{slot} is not live."
@@ -611,7 +601,7 @@ module SocketFuzz =
                 | Ok (token, next) ->
                     let defects =
                         (UnixSystem.checkInvariants next.Kernel |> List.map (sprintf "%A"))
-                        @ (FileDescriptorRegistry.checkInvariants next.Kernel.Process.FileDescriptors
+                        @ (FileDescriptorRegistry.checkInvariants (UnixSystemState.fileDescriptors next.Kernel)
                            |> List.map (sprintf "%A"))
 
                     match defects with

@@ -18,6 +18,15 @@ type PollRefusal =
     /// this kernel does not model (see `DarwinReadiness.modelsSocket`) for a
     /// bit that registers one.
     | UnmodelledSocket of fd : int * domain : SocketDomain * kind : SocketKind
+    /// Under Linux, the entry names a socket of a kind whose readiness this
+    /// kernel does not model (see `LinuxReadiness.modelsSocket`), whatever was
+    /// asked: `HUP` is reported unasked, so even `events = 0` reads the level.
+    ///
+    /// That is an `AF_UNIX` `SOCK_SEQPACKET` socket. Its `poll` row is
+    /// measured but its epoll one is not, and the two waiters read one level,
+    /// so answering `poll` alone would make epoll delivery answer from an
+    /// inference.
+    | UnmeasuredSocketKind of fd : int * domain : SocketDomain * kind : SocketKind
     /// Under Darwin, nothing is ready and the call would sleep with an
     /// `EVFILT_VNODE` filter registered on the regular file or directory `fd`
     /// names: such a filter reports only when the file changes, which this
@@ -79,6 +88,8 @@ module PollRefusal =
             $"fd %d{fd} names an event queue (an epoll instance, or a kqueue asked for a read bit), which this kernel does not answer `poll(2)` for. An event queue's own readiness depends on re-reading what it has queued, and what that leaves queued is unmeasured; model that before answering."
         | PollRefusal.UnmodelledSocket (fd, domain, kind) ->
             $"fd %d{fd} is a %O{kind} socket in %O{domain}, and the entry asks for a bit that registers a kqueue filter on it. This kernel models those filters for IPv4 and IPv6 stream sockets only: what activates a datagram socket's filters is not modelled, and a Unix-domain socket's are not measured."
+        | PollRefusal.UnmeasuredSocketKind (fd, domain, kind) ->
+            $"fd %d{fd} is a %O{kind} socket in %O{domain}, whose readiness level this kernel does not model. poll(2) and epoll read one level, and only poll's has been measured for this kind (OUT|HUP|WRNORM|WRBAND when fresh); measure what an epoll wait reports for one before answering either."
         | PollRefusal.UnmodelledVnodeWait fd ->
             $"nothing is ready, and the poll would sleep with an EVFILT_VNODE filter registered on fd %d{fd} for a vnode bit (POLLEXTEND, POLLATTRIB, POLLNLINK or POLLWRITE). That filter reports when the file changes, which this kernel does not model."
         | PollRefusal.UnmeasuredNegativeTimeout milliseconds ->
@@ -298,6 +309,11 @@ type EpollCtlRefusal =
     /// signal, and which transfers and closes signal a pipe's waiters, and with
     /// which events, is not measured.
     | PipeTarget of targetFd : int
+    /// An `EPOLL_CTL_ADD` whose target is a socket of a kind whose readiness
+    /// this kernel does not model (see `LinuxReadiness.modelsSocket`): an
+    /// `AF_UNIX` `SOCK_SEQPACKET` socket, which Linux registers. What a wait
+    /// reports for one is unmeasured.
+    | UnmeasuredSocketKind of targetFd : int * domain : SocketDomain * kind : SocketKind
 
 [<RequireQualifiedAccess>]
 module EpollCtlRefusal =
@@ -318,6 +334,8 @@ module EpollCtlRefusal =
             "the event carries EPOLLWAKEUP, and the registration would succeed. The kernel keeps the bit only for a caller with CAP_BLOCK_SUSPEND on a kernel built with power management, clearing it silently otherwise, and this library models neither capabilities nor wakeup sources."
         | EpollCtlRefusal.PipeTarget targetFd ->
             $"fd %d{targetFd} is an end of a pipe the process made, and the registration would succeed. An edge-triggered registration is made pending by the wakes its target signals, and which reads, writes and closes signal a pipe's waiters, with which events, is unmeasured: Linux's pipe_write, for one, wakes readers on every write once a waiter has polled the pipe, not only on the write that makes it non-empty. poll(2) on a pipe is answered; measure the pipe's wakes before registering one."
+        | EpollCtlRefusal.UnmeasuredSocketKind (targetFd, domain, kind) ->
+            $"fd %d{targetFd} is a %O{kind} socket in %O{domain}, and the registration would succeed. What an epoll wait reports for this kind is unmeasured: only poll(2)'s level is (OUT|HUP|WRNORM|WRBAND when fresh), and the two waiters read one level, which this kernel will not infer from one of them. Measure an epoll wait on one before registering it."
         | EpollCtlRefusal.LevelTriggered ->
             "the event lacks EPOLLET, asking to be level-triggered, and the registration would succeed. This library's epoll models edge-triggered registrations only: the ready list is consumed as it is drained and a still-ready entry is never re-armed, so a wait after a partly drained level would sleep where a real epoll_wait returns again. Register with EPOLLET, or model level-triggering before answering."
 
@@ -343,7 +361,7 @@ module UnixPoll =
         // Measured on 6.18.5, each adjacent pair separated by an input that
         // provokes exactly one of the two: descriptor, then `maxevents`, then
         // the buffer, then is-it-an-epoll-instance.
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (Error UnixError.EBADF)
         | Some (epoll, description) ->
 
@@ -456,7 +474,7 @@ module UnixPoll =
         | Error () -> failed EpollCtlError.EventUnreadable
         | Ok (events, data) ->
 
-        let registry = system.Process.FileDescriptors
+        let registry = UnixSystemState.fileDescriptors system
 
         match FileDescriptorRegistry.tryFindWithId epfd registry with
         | None -> failed EpollCtlError.BadEpollFd
@@ -557,14 +575,6 @@ module UnixPoll =
         // `/proc/self/fdinfo`, `fdinfo.c`).
         let stored = events ||| EpollEvents.Err ||| EpollEvents.Hup
 
-        let withRegistry (registry : FileDescriptorRegistry) (system : UnixSystem<'Task, 'Handler>) =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
-
         // An ADD or MOD whose target is ready under the new mask makes the
         // registration pending at that moment (measured rows E, I and K), and
         // a MOD of an entry already pending leaves its place alone (row L).
@@ -575,7 +585,7 @@ module UnixPoll =
                 not alreadyPending
                 && LinuxReadiness.ofDescription targetId system &&& stored <> 0u
             then
-                withRegistry (FileDescriptorRegistry.appendEpollReady epollId key system.Process.FileDescriptors) system
+                UnixSystemState.mapOpenFiles (OpenFileTable.appendEpollReady epollId key) system
             else
                 system
 
@@ -605,6 +615,24 @@ module UnixPoll =
             | OpenFileTarget.Kqueue _
             | OpenFileTarget.Epoll _ -> false
 
+        // A socket whose readiness this kernel does not model is refused at
+        // the commit, as a made pipe is.
+        let unmodelledSocket : EpollCtlRefusal option =
+            match targetDescription.Target with
+            | OpenFileTarget.Socket socketId ->
+                let socket = UnixMachineState.socket socketId system.Machine
+
+                if LinuxReadiness.modelsSocket socket then
+                    None
+                else
+                    Some (EpollCtlRefusal.UnmeasuredSocketKind (fd, socket.Domain, socket.Kind))
+            | OpenFileTarget.File _
+            | OpenFileTarget.Directory _
+            | OpenFileTarget.Pipe _
+            | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Kqueue _
+            | OpenFileTarget.Epoll _ -> None
+
         if op = add then
             if registered then
                 failed EpollCtlError.AlreadyRegistered
@@ -618,6 +646,10 @@ module UnixPoll =
                 Error (EpollCtlRefusal.PipeTarget fd)
             else
 
+            match unmodelledSocket with
+            | Some refusal -> Error refusal
+            | None ->
+
             let ordinal = system.Machine.NextEventRegistrationOrdinal
 
             let registration =
@@ -628,19 +660,20 @@ module UnixPoll =
                 }
 
             let system =
-                { withRegistry (FileDescriptorRegistry.addEpollRegistration epollId key registration registry) system with
+                { system with
                     Machine =
                         { system.Machine with
                             NextEventRegistrationOrdinal = ordinal + 1L
                         }
                 }
+                |> UnixSystemState.mapOpenFiles (OpenFileTable.addEpollRegistration epollId key registration)
 
             Ok (EpollCtlAnswer.Changed, pendIfReady system)
         elif op = del then
             if registered then
                 Ok (
                     EpollCtlAnswer.Changed,
-                    withRegistry (FileDescriptorRegistry.removeEpollRegistration epollId key registry) system
+                    UnixSystemState.mapOpenFiles (OpenFileTable.removeEpollRegistration epollId key) system
                 )
             else
                 failed EpollCtlError.NotRegistered
@@ -656,7 +689,7 @@ module UnixPoll =
             // No stored mask here carries EPOLLEXCLUSIVE, whose MOD the kernel
             // would answer EINVAL, because an exclusive ADD is refused.
             let system =
-                withRegistry (FileDescriptorRegistry.modifyEpollRegistration epollId key stored data registry) system
+                UnixSystemState.mapOpenFiles (OpenFileTable.modifyEpollRegistration epollId key stored data) system
 
             Ok (EpollCtlAnswer.Changed, pendIfReady system)
         else
@@ -700,13 +733,21 @@ module UnixPoll =
             Ok 0s
         else
 
-        match FileDescriptorRegistry.tryFindWithId entry.Fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId entry.Fd (UnixSystemState.fileDescriptors system) with
         | None ->
             // POLLNVAL is a statement about the entry, not a readiness
             // level: measured, it is reported alone, whatever was asked
             // for, `events = 0` included.
             Ok linuxPollNval
         | Some (descriptionId, description) ->
+
+        // `do_pollfd`'s own shape: the level, filtered by the request with
+        // POLLERR and POLLHUP added whatever was asked. The level's bits all
+        // lie below 0x10000, where `<poll.h>` and `<sys/epoll.h>` share their
+        // numbering.
+        let answer () : int16 =
+            int16 (LinuxReadiness.ofDescription descriptionId system)
+            &&& (entry.Events ||| linuxPollErr ||| linuxPollHup)
 
         match description.Target with
         // Measured on Linux (`poll-alphabet.c`): POLLIN|POLLRDNORM when an
@@ -717,18 +758,19 @@ module UnixPoll =
         // is unmeasured.
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Error (PollRefusal.UnmodelledTarget entry.Fd)
-        | OpenFileTarget.Socket _
+        | OpenFileTarget.Socket socketId ->
+            let socket = UnixMachineState.socket socketId system.Machine
+
+            if LinuxReadiness.modelsSocket socket then
+                Ok (answer ())
+            else
+                // Refused whatever was asked: `HUP` is reported unasked, so
+                // even `events = 0` reads the level.
+                Error (PollRefusal.UnmeasuredSocketKind (entry.Fd, socket.Domain, socket.Kind))
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
-        | OpenFileTarget.Pipe _ ->
-            // `do_pollfd`'s own shape: the level, filtered by the request
-            // with POLLERR and POLLHUP added whatever was asked.
-            // The level's bits all lie below 0x10000, where `<poll.h>`
-            // and `<sys/epoll.h>` share their numbering.
-            int16 (LinuxReadiness.ofDescription descriptionId system)
-            &&& (entry.Events ||| linuxPollErr ||| linuxPollHup)
-            |> Ok
+        | OpenFileTarget.Pipe _ -> Ok (answer ())
 
     /// Every entry's report, in list order, stopping at the first entry that
     /// cannot be answered: a real `poll` inspects its entries in order, so that
@@ -810,7 +852,7 @@ module UnixPoll =
                 if entry.Fd < 0 then
                     ParkedPollEntry.Ignored entry.Fd
                 else
-                    match FileDescriptorRegistry.tryFindId entry.Fd system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFindId entry.Fd (UnixSystemState.fileDescriptors system) with
                     | Some description -> ParkedPollEntry.Watched (entry.Fd, description, entry.Events)
                     | None ->
                         failwith
@@ -839,9 +881,6 @@ module UnixPoll =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
-        let descriptions =
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-
         let entries =
             parked.Entries
             |> List.map (fun entry ->
@@ -852,11 +891,11 @@ module UnixPoll =
                         Events = 0s
                     }
                 | ParkedPollEntry.Watched (fd, description, events) ->
-                    if not (Map.containsKey description descriptions) then
+                    if (OpenFileTable.tryFind description system.Machine.OpenFiles).IsNone then
                         failwith
                             $"UnixPoll.finishPoll: task %O{task}'s poll watches open file description %O{description}, which is not in the table, but a park holds its descriptions until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
 
-                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
                     | Some current when current = description ->
                         {
                             PollEntry.Fd = fd
@@ -876,10 +915,7 @@ module UnixPoll =
             | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
             | None -> false
 
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        let finished = (UnixParkState.unpark task system)
 
         // Measured on Linux 6.18.5 (`signal-interrupt-requeue.c`, sections D
         // and E), with the sleeper held off the CPU until both held: a ready
@@ -949,7 +985,7 @@ module UnixPoll =
         // alone, so on a regular file or a directory, and fails (EINVAL) on a
         // socket, a pipe and a kqueue; read and write filters fail on a
         // directory, and a kqueue takes a read filter but not a write one.
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors, group with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system), group with
         | None, _ -> Ok DarwinRegistration.Fails
         | Some (OpenFileTarget.Socket _), None
         | Some (OpenFileTarget.Pipe _), None
@@ -1154,10 +1190,7 @@ module UnixPoll =
             | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
             | None -> false
 
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        let finished = (UnixParkState.unpark task system)
 
         // A woken Darwin wait answers whichever of its wake-ups reached it
         // first -- a report, its deadline or a signal -- and this library does
@@ -1339,12 +1372,13 @@ module UnixPoll =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (EpollCreateRefusal.DescriptorLimit refusal)
         | Ok () ->
 
-        let fd, registry = FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+        let fd, registry =
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
         let registry =
             FileDescriptorRegistry.setFlags
@@ -1354,17 +1388,7 @@ module UnixPoll =
                 }
                 registry
 
-        Ok (
-            Ok (
-                fd,
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
-            )
-        )
+        Ok (Ok (fd, UnixSystemState.withFileDescriptors registry system))
 
     /// Whether the events `delivered` can be copied out to `buffer`: a call
     /// that delivers nothing copies nothing, and so never looks at the buffer.
@@ -1499,10 +1523,7 @@ module UnixPoll =
             | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
             | None -> false
 
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        let finished = (UnixParkState.unpark task system)
 
         // Measured on Linux 6.18.5 (`signal-interrupt-requeue.c`, sections D
         // and E), with the sleeper held off the CPU until both held: an event

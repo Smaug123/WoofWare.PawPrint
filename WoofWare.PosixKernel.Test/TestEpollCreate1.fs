@@ -77,20 +77,16 @@ module TestEpollCreate1 =
     let ``an epoll instance is created exactly for 0 and EPOLL_CLOEXEC, on the lowest free descriptor`` () : unit =
         // A descriptor table with holes, so "lowest free" is not "next".
         let epoll, queueSystem =
-            FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors linux)
 
         let _, withTwo = FileDescriptorRegistry.createEpoll queueSystem
 
         let holed =
-            { linux with
-                Process =
-                    { linux.Process with
-                        FileDescriptors =
-                            match FileDescriptorRegistry.dropDescriptor epoll Set.empty withTwo with
-                            | Ok (registry, _) -> registry
-                            | Error error -> failwith $"expected the close to succeed, got %O{error}"
-                    }
-            }
+            UnixSystemState.withFileDescriptors
+                (match FileDescriptorRegistry.dropDescriptor linux.Process.ProcessId epoll withTwo with
+                 | Ok (registry, _) -> registry
+                 | Error error -> failwith $"expected the close to succeed, got %O{error}")
+                linux
 
         let property (flags : int) : unit =
             match UnixPoll.epollCreate1 flags holed with
@@ -99,7 +95,7 @@ module TestEpollCreate1 =
                 fd |> shouldEqual epoll
 
                 let expectedFd, expectedRegistry =
-                    FileDescriptorRegistry.createEpoll holed.Process.FileDescriptors
+                    FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors holed)
 
                 fd |> shouldEqual expectedFd
 
@@ -114,13 +110,7 @@ module TestEpollCreate1 =
                         expectedRegistry
 
                 after
-                |> shouldEqual
-                    { holed with
-                        Process =
-                            { holed.Process with
-                                FileDescriptors = expectedRegistry
-                            }
-                    }
+                |> shouldEqual (UnixSystemState.withFileDescriptors expectedRegistry holed)
             | Ok (Error error) ->
                 error |> shouldEqual UnixError.EINVAL
                 (flags = 0 || flags = cloExec) |> shouldEqual false

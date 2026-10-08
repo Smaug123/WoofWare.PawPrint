@@ -497,12 +497,7 @@ module TestModeChange =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let private opened
         (p : string)
@@ -511,13 +506,18 @@ module TestModeChange =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.openFile (inodeAt system.Machine.FileSystem p) access system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile
+                (inodeAt system.Machine.FileSystem p)
+                access
+                (UnixSystemState.fileDescriptors system)
 
         fd, withDescriptors registry system
 
     let private openedDirectory (p : string) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry =
-            FileDescriptorRegistry.openDirectory (inodeAt system.Machine.FileSystem p) system.Process.FileDescriptors
+            FileDescriptorRegistry.openDirectory
+                (inodeAt system.Machine.FileSystem p)
+                (UnixSystemState.fileDescriptors system)
 
         fd, withDescriptors registry system
 
@@ -620,9 +620,9 @@ module TestModeChange =
             let create =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
                 | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
-                | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
+                | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue system.Process.ProcessId
 
-            let fd, registry = create system.Process.FileDescriptors
+            let fd, registry = create (UnixSystemState.fileDescriptors system)
 
             fd, withDescriptors registry system
 
@@ -658,7 +658,7 @@ module TestModeChange =
             let fd, withSocket = NewSocket.create domain kind protocol linux
 
             let socket =
-                match FileDescriptorRegistry.tryFindObject fd withSocket.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindObject fd (UnixSystemState.fileDescriptors withSocket) with
                 | Some (OpenFileObject.Socket socket) -> socket
                 | other -> failwith $"fd %d{fd} is not a socket: %A{other}"
 
@@ -818,11 +818,11 @@ module TestModeChange =
 
         // A success, so the comparison covers the state the call moves, and a
         // failure.
-        UnixSystem.step 1 (Syscall.ChMod (PathArg.ofPath (path "/p/lf"), 0o640)) system
+        UnixSystem.step 1 (Syscall.FChModAt (-100, PathArg.ofPath (path "/p/lf"), 0o640, 0)) system
         |> answered
         |> shouldEqual (chmodAnswer "/p/lf" 0o640 system)
 
-        UnixSystem.step 1 (Syscall.ChMod (PathArg.ofPath (path "/p/dang"), 0o640)) system
+        UnixSystem.step 1 (Syscall.FChModAt (-100, PathArg.ofPath (path "/p/dang"), 0o640, 0)) system
         |> answered
         |> shouldEqual (chmodAnswer "/p/dang" 0o640 system)
 
@@ -836,12 +836,13 @@ module TestModeChange =
 
         let fd, withFd = opened "/t/f" FileAccessMode.ReadOnly darwin
 
-        match UnixSystem.step 1 (Syscall.ChMod (PathArg.ofPath (path "/t/f"), 0o644)) darwin with
-        | Error (SyscallRefusal.ChMod refusal) ->
+        match UnixSystem.step 1 (Syscall.FChModAt (-2, PathArg.ofPath (path "/t/f"), 0o644, 0)) darwin with
+        | Error (SyscallRefusal.FChModAt refusal) ->
             Error refusal
             |> shouldEqual (
                 UnixPathResolution.chmod (PathArg.ofPath (path "/t/f")) 0o644 darwin
                 |> Result.map ignore
+                |> Result.mapError FChModAtRefusal.ChMod
             )
         | other -> failwith $"step chmod as Darwin root: %A{other}"
 

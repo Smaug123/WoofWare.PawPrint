@@ -97,7 +97,7 @@ module KqueuePoll =
         (system : UnixSystem<'Task, 'Handler>)
         : (KqueueFilterReport * bool) option
         =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         // A socket's filter clears `EV_OOBAND` when it attaches (XNU's
         // `filt_sockattach`), so its report never carries the flag: no socket
         // here holds out-of-band data.
@@ -176,7 +176,7 @@ module KqueuePoll =
         (system : UnixSystem<'Task, 'Handler>)
         : bool
         =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket _) -> true
         | Some _
         | None -> false
@@ -277,13 +277,15 @@ module KqueuePoll =
     /// What closing the descriptor `fd` does to the kqueue of every Darwin
     /// `poll` asleep in `tasks`: each filter registered through `fd` goes, as
     /// `FileDescriptorRegistry.dropDescriptor` removes those of every kqueue the
-    /// process holds (XNU's `knote_fdclose`). The poll sleeps on, and the entry
+    /// process owns (XNU's `knote_fdclose`). The poll sleeps on, and the entry
     /// reports nothing more, whatever a new descriptor at the number does.
     let dropRegistrationsThrough<'Task when 'Task : comparison>
         (fd : int)
         (tasks : Map<'Task, UnixTaskState>)
         : Map<'Task, UnixTaskState>
         =
+        // A Darwin poll holds no description (`ParkedSyscall.descriptions`), so
+        // rewriting its park moves no hold.
         tasks
         |> Map.map (fun _ task ->
             match task.Parked with

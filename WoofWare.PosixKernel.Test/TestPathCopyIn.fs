@@ -518,8 +518,8 @@ module TestPathCopyIn =
 
     [<Test>]
     let ``removing calls copy their path in and then answer as before`` () : unit =
-        holds (changing "unlink" UnixNamespace.unlink UnixNamespace.unlinkParsed)
-        holds (changing "rmdir" UnixNamespace.rmdir UnixNamespace.rmdirParsed)
+        holds (changing "unlink" UnixNamespace.unlink (UnixNamespace.unlinkParsed AtDirectory.CurrentDirectory))
+        holds (changing "rmdir" UnixNamespace.rmdir (UnixNamespace.rmdirParsed AtDirectory.CurrentDirectory))
 
     [<Test>]
     let ``attribute-changing calls copy their path in and then answer as before`` () : unit =
@@ -528,7 +528,9 @@ module TestPathCopyIn =
                 changing
                     $"chmod 0o%o{mode}"
                     (fun path -> UnixPathResolution.chmod path mode)
-                    (fun path -> UnixPathResolution.chmodParsed path mode)
+                    (fun path ->
+                        UnixPathResolution.chmodParsed AtDirectory.CurrentDirectory SymlinkPolicy.Follow path mode
+                    )
             )
 
         for user, group in [ None, None ; Some UserId.root, None ; Some (uid 4242u), None ] do
@@ -536,14 +538,28 @@ module TestPathCopyIn =
                 changing
                     $"chown %A{user}"
                     (fun path -> UnixPathResolution.chown path user group)
-                    (fun path -> UnixPathResolution.chownParsed path user group)
+                    (fun path ->
+                        UnixPathResolution.chownParsed
+                            AtDirectory.CurrentDirectory
+                            SymlinkPolicy.Follow
+                            path
+                            user
+                            group
+                    )
             )
 
             holds (
                 changing
                     $"lchown %A{user}"
                     (fun path -> UnixPathResolution.lchown path user group)
-                    (fun path -> UnixPathResolution.lchownParsed path user group)
+                    (fun path ->
+                        UnixPathResolution.chownParsed
+                            AtDirectory.CurrentDirectory
+                            SymlinkPolicy.NoFollowFinal
+                            path
+                            user
+                            group
+                    )
             )
 
         holds (changing "chdir" UnixPathResolution.chdir UnixPathResolution.chdirParsed)
@@ -591,12 +607,14 @@ module TestPathCopyIn =
             [
                 // AT_FDCWD on Linux, as for `FAccessAt` below.
                 Syscall.MkDirAt (-100, path, 0o777)
-                Syscall.Unlink path
-                Syscall.RmDir path
+                // AT_FDCWD on Linux, and Linux's AT_REMOVEDIR.
+                Syscall.UnlinkAt (-100, path, 0)
+                Syscall.UnlinkAt (-100, path, 0x200)
                 Syscall.ChDir path
-                Syscall.ChMod (path, 0o644)
-                Syscall.ChOwn (path, None, None)
-                Syscall.LChOwn (path, None, None)
+                // AT_FDCWD on Linux, and AT_SYMLINK_NOFOLLOW for lchown.
+                Syscall.FChModAt (-100, path, 0o644, 0)
+                Syscall.FChOwnAt (-100, path, None, None, 0)
+                Syscall.FChOwnAt (-100, path, None, None, 0x100)
                 // AT_FDCWD on Linux.
                 Syscall.FAccessAt (-100, path, 0, 0)
                 Syscall.CloneFile (path, path, 0)

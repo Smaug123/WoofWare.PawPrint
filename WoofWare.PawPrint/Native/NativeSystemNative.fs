@@ -188,6 +188,17 @@ module NativeSystemNative =
     let private unmeasuredDarwinRow : string =
         "Only a Darwin kernel refuses this, and only for an inode whose owner or group is not the caller's, which a guest meets when `KernelConfig.FileSystem` or `KernelConfig.FileSystemRootOwner` states another owner. Measuring the row needs root, or a second user, on Darwin; the flavour-divergence table in the emulated-posix-kernel skill lists what has been measured."
 
+    /// Why the kernel will not answer an `unlinkat(2)`, with what would lift a
+    /// refusal of an unmeasured Darwin sticky row.
+    let private describeUnlinkAtRefusal (refusal : UnlinkAtRefusal) : string =
+        match refusal with
+        | UnlinkAtRefusal.Removal (RemovalRefusal.Sticky refusal) ->
+            $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
+        | UnlinkAtRefusal.Removal (RemovalRefusal.Path _)
+        | UnlinkAtRefusal.Removal (RemovalRefusal.MountPoint _)
+        | UnlinkAtRefusal.Removal (RemovalRefusal.DeviceFileSystem _)
+        | UnlinkAtRefusal.UnmodelledFlags _ -> UnlinkAtRefusal.describe refusal
+
     /// The failure a handler raises when the kernel library will not hand out a
     /// descriptor at or above its bound.
     let private descriptorLimitMessage (operation : string) (refusal : DescriptorLimitRefusal) : string =
@@ -1314,7 +1325,14 @@ module NativeSystemNative =
         let source =
             pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
 
-        match UnixNamespace.renameSourcePhase source state.Kernel.System with
+        // `rename(2)` is `renameat(2)` from `AT_FDCWD` on both sides, in the
+        // flavour's numbering: Linux's own `rename` syscall runs exactly that.
+        let system = state.Kernel.System
+
+        let atFdCwd =
+            AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour (UnixSystem.platform system))
+
+        match UnixNamespace.renameatSourcePhase atFdCwd source atFdCwd system with
         | Error refusal -> answer (Error refusal)
         | Ok (RenameProgress.Answered (syscallAnswer, system)) -> answer (Ok (syscallAnswer, system))
         | Ok (RenameProgress.NeedsDestination paused) ->
@@ -1661,9 +1679,19 @@ module NativeSystemNative =
             returning -1 (withErrnoOnly ctx error state)
         | Ok (FileStatusAnswer.Reported status) ->
 
+        // The shim's futimens, which glibc makes utimensat(fd, NULL, times, 0).
+        let fieldsOf (time : UnixTimestamp) : TimespecFields =
+            {
+                Seconds = UnixTimestamp.seconds time
+                Nanoseconds = int64 (UnixTimestamp.nanoseconds time)
+            }
+
+        let times =
+            TimesArgument.Fields (fieldsOf status.AccessTime, fieldsOf status.ModificationTime)
+
         let timesFailed, state =
-            match UnixPathResolution.futimens destination status.AccessTime status.ModificationTime (system state) with
-            | Error refusal -> failwith $"%s{operation}: futimens: %s{FUTimensRefusal.describe refusal}"
+            match UnixPathResolution.utimensat destination NullablePathArgument.Null times 0 (system state) with
+            | Error refusal -> failwith $"%s{operation}: futimens: %s{UTimensAtRefusal.describe refusal}"
             | Ok (SyscallAnswer.Failed error, system) -> Some error, withErrno ctx error system state
             | Ok (SyscallAnswer.Completed _, system) -> None, withAnswered system state
 
@@ -3246,10 +3274,11 @@ module NativeSystemNative =
                 )
                 state
         // `int32_t SystemNative_Unlink(const char* path)` (pal_io.c:368), an
-        // EINTR-retrying `unlink(2)` and nothing else. CoreLib declares it as
-        // `int Unlink(string)` under UTF-8 marshalling, so the argument that
-        // arrives here is the same NUL-terminated byte pointer
-        // `SystemNative_MkDir` takes.
+        // EINTR-retrying `unlink(2)` and nothing else, which is `unlinkat(2)`
+        // from `AT_FDCWD` with no flags (on Linux, glibc's `unlink` is that
+        // very syscall). CoreLib declares it as `int Unlink(string)` under
+        // UTF-8 marshalling, so the argument that arrives here is the same
+        // NUL-terminated byte pointer `SystemNative_MkDir` takes.
         | Some "SystemNative_Unlink",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
@@ -3257,15 +3286,11 @@ module NativeSystemNative =
                 ctx
                 "SystemNative_Unlink"
                 (fun path system ->
-                    UnixNamespace.unlink path system
-                    |> Result.mapError (fun refusal ->
-                        match refusal with
-                        | RemovalRefusal.Sticky refusal ->
-                            $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
-                        | RemovalRefusal.Path _
-                        | RemovalRefusal.MountPoint _
-                        | RemovalRefusal.DeviceFileSystem _ -> RemovalRefusal.describe refusal
-                    )
+                    let atFdCwd =
+                        AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour (UnixSystem.platform system))
+
+                    UnixNamespace.unlinkat atFdCwd path 0 system
+                    |> Result.mapError describeUnlinkAtRefusal
                 )
                 state
         // `int32_t SystemNative_ChDir(const char* path)` (pal_io.c): `chdir(2)`
@@ -3281,8 +3306,9 @@ module NativeSystemNative =
                 (fun path system -> UnixPathResolution.chdir path system |> Result.mapError PathRefusal.describe)
                 state
         // `int32_t SystemNative_RmDir(const char* path)` (pal_io.c): an
-        // EINTR-retrying `rmdir(2)` and nothing else, taking a UTF-8 path
-        // exactly as `SystemNative_Unlink` does.
+        // EINTR-retrying `rmdir(2)` and nothing else, which is `unlinkat(2)`
+        // from `AT_FDCWD` with `AT_REMOVEDIR`, taking a UTF-8 path exactly as
+        // `SystemNative_Unlink` does.
         | Some "SystemNative_RmDir",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
@@ -3290,19 +3316,19 @@ module NativeSystemNative =
                 ctx
                 "SystemNative_RmDir"
                 (fun path system ->
-                    UnixNamespace.rmdir path system
-                    |> Result.mapError (fun refusal ->
-                        match refusal with
-                        | RemovalRefusal.Sticky refusal ->
-                            $"StickyRefusal: %s{StickyRefusal.describe refusal} %s{unmeasuredDarwinRow}"
-                        | RemovalRefusal.Path _
-                        | RemovalRefusal.MountPoint _
-                        | RemovalRefusal.DeviceFileSystem _ -> RemovalRefusal.describe refusal
-                    )
+                    let flavour = SimulatedUnixPlatform.flavour (UnixSystem.platform system)
+
+                    UnixNamespace.unlinkat
+                        (AtDirectory.atFdCwd flavour)
+                        path
+                        (UnlinkAtRules.atRemoveDir flavour)
+                        system
+                    |> Result.mapError describeUnlinkAtRefusal
                 )
                 state
         // `int32_t SystemNative_ChMod(const char* path, int32_t mode)`
-        // (pal_io.c): an EINTR-retrying `chmod(2)` and nothing else. The mode is
+        // (pal_io.c): an EINTR-retrying `chmod(2)` and nothing else, which is
+        // `fchmodat` from the flavour's `AT_FDCWD` with no flags. The mode is
         // raw, cast to `mode_t`: 16 bits on Darwin and 32 on Linux, which makes
         // no difference, since both kernels read only the low twelve. CoreLib
         // reaches it from `File.SetUnixFileMode`, `FileSystemInfo.UnixFileMode`'s
@@ -3314,13 +3340,26 @@ module NativeSystemNative =
             // Read before the path, harmlessly, as `SystemNative_MkDir`'s is.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
 
+            let atFdCwd =
+                AtDirectory.atFdCwd (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
+
             pathSyscall
                 ctx
                 operation
                 (fun path system ->
-                    UnixPathResolution.chmod path mode system
+                    UnixPathResolution.fchmodat atFdCwd path mode 0 system
                     |> Result.mapError (fun refusal ->
-                        $"ChModRefusal: %s{ChModRefusal.describe refusal} Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
+                        let advice =
+                            match refusal with
+                            | FChModAtRefusal.ChMod (ChModRefusal.UnmeasuredModeChange _) ->
+                                "Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
+                            | FChModAtRefusal.ChMod (ChModRefusal.Path _) -> ""
+                            | FChModAtRefusal.ChMod (ChModRefusal.SymlinkMode _)
+                            | FChModAtRefusal.UnmodelledFlags _
+                            | FChModAtRefusal.Descriptor _ ->
+                                "chmod(2) takes no flags and follows a final symbolic link, so this is a bug in the kernel library."
+
+                        $"FChModAtRefusal: %s{FChModAtRefusal.describe refusal} %s{advice}"
                     )
                 )
                 state
@@ -6652,6 +6691,7 @@ module NativeSystemNative =
                         // through it.
                         | PollRefusal.UnmeasuredNegativeTimeout _ -> " This is a hand-rolled P/Invoke."
                         | PollRefusal.UnmodelledSocket _
+                        | PollRefusal.UnmeasuredSocketKind _
                         | PollRefusal.UnmodelledVnodeWait _
                         | PollRefusal.UnmodelledEntryCount _
                         | PollRefusal.EventsBesideDeadline
@@ -7063,7 +7103,11 @@ module NativeSystemNative =
 
                 match DeliveryLog.since before (UnixSystem.delivered system) with
                 | [] -> StepEffect.NoEffect
-                | [ delivery ] -> StepEffect.WroteToFd (StandardStreams.roleOf delivery.Endpoint, delivery.Bytes)
+                | [ delivery ] ->
+                    StepEffect.WroteToFd (
+                        StandardStreams.roleOf (UnixSystem.processId system) delivery.Endpoint,
+                        delivery.Bytes
+                    )
                 | delivered ->
                     failwith
                         $"%s{operation}: fd %d{fd}: one write delivered %d{delivered.Length} times to the pipes PawPrint drains; a write delivers once or not at all (this is an interpreter bug)."

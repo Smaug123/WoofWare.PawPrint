@@ -35,15 +35,10 @@ module TestPollTimeout =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let private idOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | Some (id, _) -> id
         | None -> failwith $"fd %d{fd} names no description"
 
@@ -86,16 +81,17 @@ module TestPollTimeout =
             }
 
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         fd,
-        { withRegistry registry system with
+        { system with
             Machine =
                 { system.Machine with
                     Sockets = Map.add socketId socket system.Machine.Sockets
                     NextSocketId = SocketId (raw + 1L)
                 }
         }
+        |> withRegistry registry
 
     let private listener : int = fst world
     let private idle : UnixSystem<int, string> = snd world
@@ -103,7 +99,7 @@ module TestPollTimeout =
     /// `system` with the listener's accept queue holding `queue`.
     let private withQueue (queue : ConnectionId list) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         let socketId =
-            match FileDescriptorRegistry.tryFindTarget listener system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget listener (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other -> failwith $"expected the listener, got %O{other}"
 
@@ -266,7 +262,7 @@ module TestPollTimeout =
 
         let refused =
             let socketId =
-                match FileDescriptorRegistry.tryFindTarget listener parked.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindTarget listener (UnixSystemState.fileDescriptors parked) with
                 | Some (OpenFileTarget.Socket socketId) -> socketId
                 | other -> failwith $"expected the listener, got %O{other}"
 
@@ -399,7 +395,7 @@ module TestPollTimeout =
     [<Test>]
     let ``closing a descriptor a parked poll watches is refused, and closing a dup of it is not`` () : unit =
         let dupFd, registry =
-            match FileDescriptorRegistry.dup listener idle.Process.FileDescriptors with
+            match FileDescriptorRegistry.dup listener (UnixSystemState.fileDescriptors idle) with
             | Ok (fd, registry) -> fd, registry
             | Error error -> failwith $"dup failed: %O{error}"
 
@@ -425,7 +421,7 @@ module TestPollTimeout =
         // A directory presents IN|OUT|RDNORM|WRNORM, so only a request for none of
         // them, such as PRI alone, leaves it waiting.
         let directory, registry =
-            FileDescriptorRegistry.openDirectory (InodeNumber 1L) idle.Process.FileDescriptors
+            FileDescriptorRegistry.openDirectory (InodeNumber 1L) (UnixSystemState.fileDescriptors idle)
 
         let _, parked = parks [ entry directory 0x0002s ] 10 (withRegistry registry idle)
         UnixSystem.checkInvariants parked |> shouldEqual []
@@ -441,10 +437,25 @@ module TestPollTimeout =
         count |> shouldEqual 0
 
     /// `system` with `fd` closed and a file opened in its place, as only a caller
-    /// going around `UnixDescriptor.close` could.
+    /// going around `UnixDescriptor.close` could, and every hold a call had on
+    /// what `fd` named let go of behind the calls' backs, so that the close
+    /// destroys it if no other descriptor names it.
     let private forgeRebind (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let registry = UnixSystemState.fileDescriptors system
+        let id = FileDescriptorRegistry.tryFindId fd registry |> Option.get
+
+        let holds =
+            OpenFileTable.holdCount id (FileDescriptorRegistry.openFiles registry)
+            |> Option.defaultValue 0
+
         let registry =
-            match FileDescriptorRegistry.dropDescriptor fd Set.empty system.Process.FileDescriptors with
+            (registry, [ 1..holds ])
+            ||> List.fold (fun registry _ ->
+                FileDescriptorRegistry.mapOpenFiles (OpenFileTable.releaseHold id) registry
+            )
+
+        let registry =
+            match FileDescriptorRegistry.dropDescriptor system.Process.ProcessId fd registry with
             | Ok (registry, _) -> registry
             | Error error -> failwith $"drop failed: %O{error}"
 
@@ -472,7 +483,7 @@ module TestPollTimeout =
 
         // With a dup keeping the description alive, the number is rebound.
         let _, registry =
-            match FileDescriptorRegistry.dup listener idle.Process.FileDescriptors with
+            match FileDescriptorRegistry.dup listener (UnixSystemState.fileDescriptors idle) with
             | Ok dup -> dup
             | Error error -> failwith $"dup failed: %O{error}"
 

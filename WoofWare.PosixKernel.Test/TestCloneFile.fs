@@ -366,13 +366,7 @@ module TestCloneFile =
                 |> ok
                 |> snd
 
-            let vfs =
-                VirtualFileSystem.setTimes
-                    (inodeAt vfs "/src")
-                    sourceTimes.Access
-                    sourceTimes.Modification
-                    sourceTimes.StatusChange
-                    vfs
+            let vfs = VirtualFileSystem.setTimes (inodeAt vfs "/src") sourceTimes vfs
 
             let system =
                 systemOnWith (UnixBootImage.withUmask context (mode 0o777)) SimulatedUnixPlatform.macOsArm64 u501 vfs
@@ -432,7 +426,12 @@ module TestCloneFile =
         |> shouldEqual (Error (CloneFileRefusal.UnmodelledFlavour SimulatedUnixFlavour.Linux))
 
         let nfs =
-            systemOnWith (UnixBootImage.withMount (Some EmulatedMount.Nfs)) SimulatedUnixPlatform.macOsArm64 u501 tree
+            systemOnWith
+                (UnixBootImage.withMount (Some EmulatedMount.Nfs)
+                 >> Configured.expectOk MountRefusal.describe)
+                SimulatedUnixPlatform.macOsArm64
+                u501
+                tree
 
         clone "f" "new" 0x4 nfs
         |> Result.map fst

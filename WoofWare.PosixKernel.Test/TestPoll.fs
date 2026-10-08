@@ -118,7 +118,7 @@ module TestPoll =
             }
 
         let fd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         fd,
         { system with
@@ -127,11 +127,8 @@ module TestPoll =
                     Sockets = Map.add socketId socket system.Machine.Sockets
                     NextSocketId = SocketId (raw + 1L)
                 }
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
         }
+        |> UnixSystemState.withFileDescriptors registry
 
     /// An idle IPv4 stream socket.
     let private idleSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
@@ -143,15 +140,9 @@ module TestPoll =
         : int * UnixSystem<int, string>
         =
         let fd, registry =
-            FileDescriptorRegistry.openFile (InodeNumber 1L) accessMode system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile (InodeNumber 1L) accessMode (UnixSystemState.fileDescriptors system)
 
-        fd,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        fd, UnixSystemState.withFileDescriptors registry system
 
     let private peer : InternetEndpoint =
         {
@@ -214,13 +205,16 @@ module TestPoll =
                         }),
                 0x0041s
                 "IPv4 TCP, established, peer alive",
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection),
+                withSocket
+                    SocketDomain.Inet
+                    SocketKind.Stream
+                    (SocketPhase.Established (connection, ConnectionEnd.Client)),
                 0x0104s
                 "IPv4 TCP, established pending report, peer alive",
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.EstablishedPendingReport connection),
                 0x0104s
                 "IPv4 TCP, established, peer closed",
-                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established orphan),
+                withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (orphan, ConnectionEnd.Client)),
                 0x2145s
                 "IPv4 TCP, refused, pending delivery",
                 withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Refused RefusalError.Pending),
@@ -249,7 +243,11 @@ module TestPoll =
         // The peer of the "peer alive" rows: a second end on the same
         // connection. Not itself a row, because it duplicates one.
         let _, system =
-            withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established connection) system
+            withSocket
+                SocketDomain.Inet
+                SocketKind.Stream
+                (SocketPhase.Established (connection, ConnectionEnd.Server))
+                system
 
         List.rev rows, system
 
@@ -362,7 +360,11 @@ module TestPoll =
     [<Test>]
     let ``RDHUP is reported when asked for`` () : unit =
         let fd, system =
-            withSocket SocketDomain.Inet SocketKind.Stream (SocketPhase.Established (ConnectionId 3L)) linux
+            withSocket
+                SocketDomain.Inet
+                SocketKind.Stream
+                (SocketPhase.Established (ConnectionId 3L, ConnectionEnd.Client))
+                linux
 
         pollOrFail [ entry fd pollRdHup ] 0 system |> shouldEqual ([ pollRdHup ], 1)
         pollOrFail [ entry fd pollIn ] 0 system |> shouldEqual ([ pollIn ], 1)
@@ -462,21 +464,52 @@ module TestPoll =
     // Refusals
     // ------------------------------------------------------------------
 
+    /// Linux makes an `AF_UNIX` `SOCK_SEQPACKET` socket, and its `poll` row is
+    /// measured, but what epoll reports for one is not, and the two waiters
+    /// share one level. So `poll` refuses it whatever was asked, `events = 0`
+    /// included, which still reports the unasked `HUP`.
+    [<Test>]
+    let ``an entry naming a Unix-domain seqpacket socket is refused, whatever was asked`` () : unit =
+        let fd, system =
+            NewSocket.create SocketDomain.Unix SocketKind.SeqPacket SocketProtocol.Default linux
+
+        let expected =
+            Error (PollRefusal.UnmeasuredSocketKind (fd, SocketDomain.Unix, SocketKind.SeqPacket))
+
+        for events in [ 0s ; pollIn ; pollOut ; pollHup ; everything ] do
+            pollNow [ entry fd events ] 0 system |> shouldEqual expected
+
+            pollNow [ entry 1 everything ; entry fd events ] 0 system
+            |> shouldEqual expected
+
+    /// Every socket `socket(2)` makes, on either flavour, is answered or
+    /// refused by `poll`, under each single bit, no bit and every bit: never
+    /// an exception, which is what a legal call must not provoke.
+    [<Test>]
+    let ``every socket the kernel makes is answered or refused`` () : unit =
+        let masks = [ 0s ; everything ] @ [ for bit in 0..15 -> int16 (1 <<< bit) ]
+
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            for domain, kind, protocol in NewSocket.requests do
+                match NewSocket.tryCreate domain kind protocol (systemOn platform) with
+                | None -> ()
+                | Some (fd, system) ->
+                    let system = Tasks.ensure poller system
+
+                    for events in masks do
+                        match UnixPoll.poll poller [ entry fd events ] 0 system with
+                        | Ok _
+                        | Error _ -> ()
+
     /// A process can reach this where it cannot reach epoll's equivalent:
     /// `epoll_ctl` screens the targets it accepts, and `poll(2)` accepts any
     /// descriptor.
     [<Test>]
     let ``an entry naming an epoll instance is refused`` () : unit =
         let queueFd, registry =
-            FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors linux)
 
-        let system =
-            { linux with
-                Process =
-                    { linux.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry linux
 
         pollNow [ entry queueFd everything ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmodelledTarget queueFd))
@@ -493,17 +526,11 @@ module TestPoll =
     [<Test>]
     let ``the refusal names the first unmeasured entry in list order`` () : unit =
         let firstEpoll, registry =
-            FileDescriptorRegistry.createEpoll linux.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors linux)
 
         let secondEpoll, registry = FileDescriptorRegistry.createEpoll registry
 
-        let system =
-            { linux with
-                Process =
-                    { linux.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        let system = UnixSystemState.withFileDescriptors registry linux
 
         pollNow [ entry firstEpoll everything ; entry secondEpoll everything ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmodelledTarget firstEpoll))

@@ -95,12 +95,7 @@ module TestSyscallInterruption =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     /// A system on `platform` with tasks 1 to 3, a blocking listener at
     /// loopback port 5000, on Linux an epoll instance holding it edge-triggered,
@@ -169,18 +164,19 @@ module TestSyscallInterruption =
             | Error error -> failwith $"could not seed the file: %O{error}"
 
         let lockedThrough, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite (UnixSystemState.fileDescriptors system)
 
         let waitingThrough, registry =
             FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite registry
 
         let system =
-            { withRegistry registry system with
+            { system with
                 Machine =
                     { system.Machine with
                         FileSystem = filesystem
                     }
             }
+            |> withRegistry registry
 
         let system =
             match UnixDescriptor.flock holder lockedThrough 2 system with
@@ -531,7 +527,7 @@ module TestSyscallInterruption =
             let held =
                 enteredThrough world sleep
                 |> Option.map (fun fd ->
-                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
                     | Some id -> id
                     | None -> failwith $"fd %d{fd} names no description"
                 )
@@ -584,7 +580,7 @@ module TestSyscallInterruption =
                 if closedUnder then
                     seen <- Set.add $"closed under, then %A{ending}" seen
 
-                FileDescriptorRegistry.descriptions after.Process.FileDescriptors
+                OpenFileTable.descriptions after.Machine.OpenFiles
                 |> Map.containsKey held
                 |> shouldEqual survives
 

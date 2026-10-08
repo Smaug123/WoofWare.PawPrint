@@ -221,9 +221,10 @@ module KeventRefusal =
 [<RequireQualifiedAccess>]
 module UnixKqueue =
 
-    /// `kqueue(2)`: create a kqueue, and a descriptor onto it, the lowest one
-    /// not in use. The description is blocking, and the descriptor has
-    /// `FD_CLOEXEC` and `FD_CLOFORK`.
+    /// `kqueue(2)`: create a kqueue, owned by the calling process
+    /// (`KqueueState.Owner`), and a descriptor onto it, the lowest one not in
+    /// use. The description is blocking, and the descriptor has `FD_CLOEXEC`
+    /// and `FD_CLOFORK`.
     ///
     /// Under the Linux flavour every call is refused: Linux has no kqueue.
     let kqueue<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -239,7 +240,7 @@ module UnixKqueue =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (KqueueRefusal.DescriptorLimit refusal)
         | Ok () ->
@@ -248,7 +249,7 @@ module UnixKqueue =
         // descriptor, O_RDWR, not O_NONBLOCK; and (`fcntl-dup.c`, KIND rows)
         // F_GETFD reports FD_CLOEXEC|FD_CLOFORK.
         let fd, registry =
-            FileDescriptorRegistry.createKqueue system.Process.FileDescriptors
+            FileDescriptorRegistry.createKqueue system.Process.ProcessId (UnixSystemState.fileDescriptors system)
             |> fun (fd, registry) ->
                 fd,
                 FileDescriptorRegistry.setFlags
@@ -259,15 +260,7 @@ module UnixKqueue =
                     }
                     registry
 
-        Ok (
-            fd,
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
-            }
-        )
+        Ok (fd, UnixSystemState.withFileDescriptors registry system)
 
     let private nanosecondsPerSecond : int64 = 1_000_000_000L
 
@@ -288,7 +281,7 @@ module UnixKqueue =
         (system : UnixSystem<'Task, 'Handler>)
         : KqueueState
         =
-        match Map.tryFind kqueue (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        match OpenFileTable.tryFind kqueue system.Machine.OpenFiles with
         | Some {
                    Target = OpenFileTarget.Kqueue state
                } -> state
@@ -302,12 +295,7 @@ module UnixKqueue =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = FileDescriptorRegistry.setKqueueState kqueue state system.Process.FileDescriptors
-                }
-        }
+        UnixSystemState.mapOpenFiles (OpenFileTable.setKqueueState kqueue state) system
 
     let private filterNumber (filter : KqueueFilter) : int16 =
         match filter with
@@ -436,7 +424,7 @@ module UnixKqueue =
         // EBADF; an open one with any high bit set is EINVAL.
         let fd = int (uint32 (change.Ident &&& 0xFFFF_FFFFUL))
 
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (Some UnixError.EBADF, system)
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId system.Machine
@@ -659,7 +647,7 @@ module UnixKqueue =
 
         // "Not a kqueue" is EBADF, as "not open" is.
         let kqueue =
-            match FileDescriptorRegistry.tryFindWithId kq system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindWithId kq (UnixSystemState.fileDescriptors system) with
             | Some (id,
                     {
                         Target = OpenFileTarget.Kqueue _
@@ -752,12 +740,7 @@ module UnixKqueue =
         let completing (outcome : KeventOutcome) (answered : UnixSystem<'Task, 'Handler>) =
             SyscallInterruption.beforeCompleting task system
             |> Result.mapError KeventRefusal.Interruption
-            |> Result.map (fun () ->
-                outcome,
-                { answered with
-                    Tasks = UnixTaskTable.unpark task answered.Tasks
-                }
-            )
+            |> Result.map (fun () -> outcome, (UnixParkState.unpark task answered))
 
         if isDrained && timedOut then
             Error (KeventRefusal.DrainBesideDeadline parked.Kqueue)
@@ -786,12 +769,7 @@ module UnixKqueue =
         match SyscallInterruption.ofPark task system with
         | Error refusal -> Error (KeventRefusal.Interruption refusal)
         | Ok (Some SyscallInterruption.Eintr) ->
-            Ok (
-                KeventOutcome.Failed UnixError.EINTR,
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
-            )
+            Ok (KeventOutcome.Failed UnixError.EINTR, (UnixParkState.unpark task system))
         | Ok (Some SyscallInterruption.Restart) ->
             failwith
                 "UnixKqueue.finishKevent: a kevent restarted after a signal, where `SyscallInterruption.ruleOf` says one never restarts (this is a bug in this library)."

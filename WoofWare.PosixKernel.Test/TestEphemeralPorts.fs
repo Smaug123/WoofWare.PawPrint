@@ -50,7 +50,10 @@ module TestEphemeralPorts =
             UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
 
-        system |> UnixBootImage.withEphemeralPortRange (low, high) |> UnixBootImage.boot
+        system
+        |> UnixBootImage.withEphemeralPortRange (low, high)
+        |> Configured.expectOk EphemeralPortRangeRefusal.describe
+        |> UnixBootImage.boot
 
     let private newStream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
@@ -137,7 +140,7 @@ module TestEphemeralPorts =
 
     /// The local port the socket behind `fd` holds.
     let private localPort (fd : int) (system : UnixSystem<int, string>) : uint16 =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
             match (UnixMachineState.socket socketId system.Machine).Binding with
             | Some binding -> binding.Endpoint.Port
@@ -379,7 +382,7 @@ module TestEphemeralPorts =
     /// the generator is constructive, so an op that the model refuses
     /// outright (rather than answering an errno) is never generated.
     let private phaseOf (fd : int) (run : Run) : SocketPhase * bool =
-        match FileDescriptorRegistry.tryFindTarget fd run.System.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors run.System) with
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId run.System.Machine
             socket.Phase, socket.Binding.IsSome
@@ -388,7 +391,7 @@ module TestEphemeralPorts =
     /// Whether `connect` from the unbound socket behind `fd` towards
     /// `destination` would find a port to take.
     let private implicitBindHasAPort (fd : int) (destination : InternetEndpoint) (run : Run) : bool =
-        match FileDescriptorRegistry.tryFindTarget fd run.System.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors run.System) with
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId run.System.Machine
 

@@ -8,7 +8,13 @@ type EndedProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equalit
     {
         /// How the process ended, which is what its parent's `wait` reads.
         Termination : ProcessTermination
-        /// The machine the process ran on, as the process's end left it.
+        /// The machine the process ran on, as the process's end left it: its
+        /// tasks' thread IDs are no longer live, and the holds its tasks' calls
+        /// in flight had on open file descriptions are let go of.
+        ///
+        /// Its descriptors are not closed, so every description they name is
+        /// still counted as named, and a description no descriptor named,
+        /// which only a call held, is still in the table.
         Machine : UnixMachineState
         /// The process's own state as it stood when it ended. It holds nothing for
         /// any task: no signal mask, and no signal pending on one task alone.
@@ -56,7 +62,9 @@ module ThreadExitRefusal =
 module UnixTaskLifecycle =
 
     /// End the process `system` is, as `termination` says: every task goes, and
-    /// with each everything the process held for that task alone.
+    /// with each everything the process and the machine held for that task
+    /// alone: its signal mask and the signals pending on it alone, its thread
+    /// ID, and the holds its call in flight, if any, had.
     let internal endProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (termination : ProcessTermination)
         (system : UnixSystem<'Task, 'Handler>)
@@ -66,9 +74,20 @@ module UnixTaskLifecycle =
             (system.Process.Signals, Map.keys system.Tasks)
             ||> Seq.fold (fun signals task -> SignalState.forgetTask task signals)
 
+        let unparked =
+            (system, Map.keys system.Tasks)
+            ||> Seq.fold (fun system task -> UnixParkState.unpark task system)
+
+        let threadIds =
+            (unparked.Machine.ThreadIds, unparked.Tasks)
+            ||> Map.fold (fun threadIds _ state -> ThreadIdAllocator.release state.OsThreadId threadIds)
+
         {
             Termination = termination
-            Machine = system.Machine
+            Machine =
+                { unparked.Machine with
+                    ThreadIds = threadIds
+                }
             FinalProcess =
                 { system.Process with
                     Signals = signals
@@ -81,7 +100,8 @@ module UnixTaskLifecycle =
     ///
     /// Removes `task` from the table, and with it everything the process holds for
     /// that task alone: its signal mask, and the signals pending on it alone, which
-    /// are discarded rather than passed on to another task. The process carries on
+    /// are discarded rather than passed on to another task. Its thread ID is no
+    /// longer live, so the machine may hand it out again. The process carries on
     /// unless `task` was its last, in which case the process ends, on Linux, having
     /// exited with `status`. `status` is otherwise ignored.
     ///
@@ -125,6 +145,10 @@ module UnixTaskLifecycle =
         Ok (
             TaskOutcome.Continues
                 { system with
+                    Machine =
+                        { system.Machine with
+                            ThreadIds = ThreadIdAllocator.release state.OsThreadId system.Machine.ThreadIds
+                        }
                     Process =
                         { system.Process with
                             Signals = SignalState.forgetTask task system.Process.Signals
@@ -137,10 +161,11 @@ module UnixTaskLifecycle =
     /// the task `child`, running on the logical processor `cpu`. This is what
     /// `pthread_create(3)` ends in.
     ///
-    /// Answers the thread ID the machine's counter hands the new task, which
-    /// starts with a copy of `parent`'s signal mask and with no signal pending on
-    /// it alone. On Linux, answers EAGAIN instead once every thread ID from 300 up
-    /// to the machine's `pid_max` is in use.
+    /// Answers the thread ID the machine's allocator hands the new task, one no
+    /// live task on the machine holds, which starts with a copy of `parent`'s
+    /// signal mask and with no signal pending on it alone. On Linux, answers
+    /// EAGAIN instead once every thread ID from 300 up to the machine's
+    /// `pid_max` is in use.
     ///
     /// Fails loudly if `parent` names no task or is parked in a syscall, or if
     /// `child` already names a task: each is a bug in the client.
@@ -157,11 +182,7 @@ module UnixTaskLifecycle =
                 $"UnixTaskLifecycle.spawn: task %O{parent} is parked in %A{park.Syscall}, so it cannot be making the clone syscall"
         | None ->
 
-        let held =
-            system.Tasks
-            |> Map.fold (fun held _ state -> Set.add state.OsThreadId held) Set.empty
-
-        match ThreadIdAllocator.allocate held system.Machine.ThreadIds with
+        match ThreadIdAllocator.allocate system.Machine.ThreadIds with
         | Error error -> Error error
         | Ok (id, threadIds) ->
 

@@ -12,7 +12,7 @@ This library models what a Unix kernel tells a process about the world.
 It includes:
 
 * the filesystem, including permissions, with every name a string of bytes exactly as the kernel stores it, never decoded as text
-* the file-descriptor table, and pipes
+* file descriptors, the open file descriptions they name, and pipes
 * sockets and connections, `poll`, Linux's epoll, and Darwin's kqueue
 * signals: sending them, their dispositions, delivery to a handler, and a process ended by one
 * the process's tasks (its threads), and the syscalls they block in
@@ -41,18 +41,19 @@ Converting those to and from a client's own encoding is the client's business.
 
 The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three parts:
 
-* the machine (`UnixMachineState`): the filesystem, sockets, connections and pipes, the clock, the entropy pool, and the platform being simulated;
-* the process (`UnixProcessState`): the descriptor table, credentials, umask, current directory, environment and signal state;
+* the machine (`UnixMachineState`): the filesystem, the open file descriptions (with the state of each epoll instance and kqueue, and how many descriptors and calls in flight reference each), sockets, connections and pipes, the thread IDs live tasks hold, the clock, the entropy pool, and the platform being simulated;
+* the process (`UnixProcessState`): the descriptor table, which says only which open file description each descriptor names, and the process's credentials, umask, current directory, environment and signal state;
 * the tasks (`UnixTaskState`): the process's tasks, and what each is blocked in, if anything.
 
 Those records are opaque outside the library.
-A client reads a system through `UnixSystem`'s queries, such as `leader`, `tasks`, `signals`, `fileDescriptors`, `delivered` and `descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described below.
+A client reads a system through `UnixSystem`'s queries, such as `leader`, `tasks`, `signals`, `fileDescriptors`, `openFiles`, `delivered` and `descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described below.
 
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
 
 `UnixSystem.initial` builds the *boot image* of a process that has not done anything yet: a `UnixBootImage`, which no syscall takes.
 Configure it with the setters in the `UnixBootImage` module, such as `withCredentials`, `withFileSystemAndCurrentDirectory`, `withBootTime` and `withEnvironment`, then `UnixBootImage.boot` it to get the `UnixSystem` its first syscall takes.
+A machine setter that can refuse a value, such as `withBootTime` or `withMount`, returns a `Result` whose `Error` says why (see "Answers and refusals" below).
 Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
 What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixSystem.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
 
@@ -100,8 +101,8 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | Module | Syscalls |
 | --- | --- |
 | `UnixDescriptor` | `dup`, `dup2`, `dup3`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `lseek`, `flock`, `ftruncate`, `posix_fadvise`, `close`, `ioctl` (`FICLONE` and `FIONREAD`), `tcgetattr`, `geteuid`, `getegid`, `getgroups` |
-| `UnixPathResolution` | `stat`, `fstat`, `fstatat`, `chmod`, `fchmod`, `chown`, `lchown`, `fchown`, `futimens`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
-| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `unlink`, `rmdir`, `rename`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
+| `UnixPathResolution` | `stat`, `fstat`, `fstatat`, `chmod`, `fchmod`, `fchmodat`, `chown`, `lchown`, `fchown`, `fchownat`, `utimensat`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
+| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `mknod` and `mknodat` (regular files only), `unlink`, `rmdir`, `unlinkat`, `rename`, `renameat`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
 | `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
 | `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `getpeername`, `setsockopt`, `getsockopt` |
@@ -109,7 +110,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
 | `UnixKqueue` | `kqueue`, `kevent` |
 | `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigreturn`, and the signals a task takes as it returns to user mode |
-| `UnixClock` | `clock_gettime` |
+| `UnixClock` | `clock_gettime`, `gettimeofday` |
 | `UnixEntropy` | `getrandom`, `getentropy` |
 | `UnixCredentials` | `getresuid`, `getresgid`, `setresuid`, `setresgid`, `setgroups` |
 | `UnixTaskLifecycle` | starting a thread, a thread exiting, `exit_group` |
@@ -122,6 +123,8 @@ Every descriptor lies below `SimulatedUnixPlatform.descriptorBound`, the soft `R
 
 `UnixSystem.checkInvariants` lists every way a system's tables disagree with each other.
 No sequence of syscalls should ever produce one.
+It is two halves: `UnixSystem.checkMachineInvariants`, the rules about the machine, which takes every process on it, and `UnixSystem.checkViewInvariants`, those about one process's view of it.
+A fact a syscall needs about other processes is kept on the machine's object rather than derived from the processes: each open file description counts the descriptors naming it and the holds of calls in flight on it, the thread ID allocator records which IDs live tasks hold, and a kqueue records the process that owns it, whose descriptor numbers its registrations name.
 
 ### Answers and refusals
 
@@ -132,6 +135,13 @@ A syscall's result has two levels.
 
 A call that a real kernel would not let happen at all, such as a task making a syscall while it is blocked in another, is a bug in the client, and throws.
 
+A setter of the machine's boot configuration refuses the same way.
+Each one that can refuse a value returns `Result<UnixBootImage<_, _>, _>`, with a refusal type of its own (`BootTimeRefusal`, `MountRefusal`, `TcpSendSpaceRefusal` and so on) whose cases state the facts: a value this library has not measured or does not model, or one no machine of the flavour could have.
+Each refusal type has a `describe`.
+The library does not know what the client called the value, so it names no knob; the client does that, as `withFileSystemAndCurrentDirectory`'s `CurrentDirectoryFault` already leaves it to.
+A value no `parse` could have produced, such as one built with `Unchecked.defaultof`, is still a bug in the client, and throws.
+The process's setters that can reject a value (`withCredentials`, `withUmask`, `withProcessId` and `withLeaderThreadId`) still throw, prefixed with the `context` their caller passes.
+
 ### Blocking
 
 A call that would block does not block.
@@ -141,6 +151,8 @@ That is the state the kernel sleeps in, which can differ from the one the call a
 The library has no scheduler, and does not want one.
 Waking is pulled rather than pushed: after each step, the client asks `UnixWait.wakes` which of the tasks it holds asleep may wake now, and with nothing runnable, `UnixWait.deadlines` says how far it may advance the clock.
 A woken task finishes its call through the family's finishing function (`UnixDescriptor.flockAcquire`, `UnixPoll.finishPoll`, `UnixReadWrite.finishRead`, and so on), which may answer, park again, or say the call restarts because a signal handler interrupted it.
+
+A parked call holds the open file descriptions it waits on (`ParkedSyscall.descriptions`), as a real one holds a reference to each file: a description goes when no descriptor names it and no call holds it, so one closed under a sleeping call goes when the call returns.
 
 ## Flavours and divergence from host platforms
 

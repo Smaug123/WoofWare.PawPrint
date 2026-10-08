@@ -36,15 +36,10 @@ module TestEpollWait =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let private idOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | Some (id, _) -> id
         | None -> failwith $"fd %d{fd} names no description"
 
@@ -97,16 +92,17 @@ module TestEpollWait =
             }
 
         let listenerFd, registry =
-            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+            FileDescriptorRegistry.createSocket socketId (UnixSystemState.fileDescriptors system)
 
         let system =
-            { withRegistry registry system with
+            { system with
                 Machine =
                     { system.Machine with
                         Sockets = Map.add socketId socket system.Machine.Sockets
                         NextSocketId = SocketId (raw + 1L)
                     }
             }
+            |> withRegistry registry
 
         let queueFd, system = createEpoll system
 
@@ -141,7 +137,7 @@ module TestEpollWait =
     /// `system` with the listener's accept queue holding `queue`.
     let private withQueue (queue : ConnectionId list) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         let socketId =
-            match FileDescriptorRegistry.tryFindTarget listener system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget listener (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other -> failwith $"expected the listener, got %O{other}"
 
@@ -174,14 +170,14 @@ module TestEpollWait =
         let system = withQueue [ ConnectionId 99L ] system
 
         let alreadyReady =
-            match FileDescriptorRegistry.tryFindTarget epoll system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget epoll (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Epoll state) -> List.contains key state.Ready
             | other -> failwith $"expected the epoll instance, got %O{other}"
 
         if alreadyReady then
             system
         else
-            withRegistry (FileDescriptorRegistry.appendEpollReady queueId key system.Process.FileDescriptors) system
+            UnixSystemState.mapOpenFiles (OpenFileTable.appendEpollReady queueId key) system
 
     /// The connection is taken by someone else: the listener's level drops, and
     /// the pending entry goes stale.
@@ -189,7 +185,7 @@ module TestEpollWait =
         withQueue []
 
     let private pendingEntries (system : UnixSystem<int, string>) : int =
-        match FileDescriptorRegistry.tryFindTarget epoll system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget epoll (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Epoll state) -> List.length state.Ready
         | other -> failwith $"expected the epoll instance, got %O{other}"
 
@@ -661,8 +657,8 @@ module TestEpollWait =
                     let fd, system = createEpoll system
                     let id = idOf fd system
 
-                    let registry =
-                        FileDescriptorRegistry.addEpollRegistration
+                    let openFiles =
+                        OpenFileTable.addEpollRegistration
                             id
                             stdinKey
                             {
@@ -670,15 +666,15 @@ module TestEpollWait =
                                 Data = uint64 fd
                                 RegisteredAt = 0L
                             }
-                            system.Process.FileDescriptors
+                            system.Machine.OpenFiles
 
-                    let registry =
+                    let openFiles =
                         if isPending then
-                            FileDescriptorRegistry.appendEpollReady id stdinKey registry
+                            OpenFileTable.appendEpollReady id stdinKey openFiles
                         else
-                            registry
+                            openFiles
 
-                    withRegistry registry system, epolls @ [ id ]
+                    UnixSystemState.mapOpenFiles (fun _ -> openFiles) system, epolls @ [ id ]
                 )
                 |> fun (system, epolls) -> epolls, system
 

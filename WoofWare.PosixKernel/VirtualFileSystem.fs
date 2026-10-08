@@ -1207,7 +1207,7 @@ module VirtualFileSystem =
     /// Removing the last name an inode has does **not** remove the inode, and
     /// this function deliberately cannot: a real kernel keeps an unlinked inode
     /// alive for as long as any process holds it open, and whether one does is a
-    /// fact about the descriptor table rather than about this graph. The caller
+    /// fact about the open file descriptions rather than about this graph. The caller
     /// that can see both decides, and calls `forget`. Until it does, the inode
     /// is unreachable from the root, and the caller owes it to
     /// `checkInvariants` as a pinned inode.
@@ -2169,23 +2169,15 @@ module VirtualFileSystem =
                     vfs.Inodes
         }
 
-    /// Set the `atime` and `mtime` of the inode at `inode` to `access` and
-    /// `modification`, and move its `ctime` to `now`. Its birth time stays
-    /// where it was.
+    /// Give the inode at `inode` exactly the timestamps `times`, birth time
+    /// included. The caller decides which of them a change moves.
     ///
     /// Partial in the inode, which must be one this filesystem contains.
-    let setTimes
-        (inode : InodeNumber)
-        (access : UnixTimestamp)
-        (modification : UnixTimestamp)
-        (now : UnixTimestamp)
-        (vfs : VirtualFileSystem)
-        : VirtualFileSystem
-        =
+    let setTimes (inode : InodeNumber) (times : InodeTimes) (vfs : VirtualFileSystem) : VirtualFileSystem =
         match Map.tryFind inode vfs.Inodes with
         | None ->
             failwith
-                $"VirtualFileSystem.setTimes: inode %O{inode} is not in this filesystem. The caller resolved a descriptor to it, and a descriptor outliving its inode means an unlink removed a still-open file (this is a bug in the caller)."
+                $"VirtualFileSystem.setTimes: inode %O{inode} is not in this filesystem. The caller resolved a path or a descriptor to it, and a descriptor outliving its inode means an unlink removed a still-open file (this is a bug in the caller)."
         | Some entry ->
 
         { vfs with
@@ -2193,12 +2185,7 @@ module VirtualFileSystem =
                 Map.add
                     inode
                     { entry with
-                        Times =
-                            { entry.Times with
-                                Access = access
-                                Modification = modification
-                                StatusChange = now
-                            }
+                        Times = times
                     }
                     vfs.Inodes
         }
@@ -2345,8 +2332,8 @@ module VirtualFileSystem =
     /// `pinned` names the inodes some process holds open. Deletion makes an
     /// inode with no remaining name legitimate — a real kernel keeps one alive
     /// for as long as a descriptor refers to it — but *only* while something
-    /// holds it, and whether anything does is a fact about a descriptor table
-    /// rather than about this graph. So the caller that can see both supplies
+    /// holds it, and whether anything does is a fact about the open file
+    /// descriptions rather than about this graph. So the caller that can see both supplies
     /// it, and every unreachable inode outside the set is still a defect. Pass
     /// `Set.empty` for a graph no process has opened anything in.
     ///
@@ -2356,7 +2343,7 @@ module VirtualFileSystem =
     ///
     /// Nothing here checks that a pinned inode is *in* the graph. That is the
     /// mirror-image defect — a descriptor naming an inode the filesystem has
-    /// forgotten — and it belongs to the layer holding the descriptor table:
+    /// forgotten — and it belongs to the layer holding the open file descriptions:
     /// `UnixSystemDefect.DanglingOpenInode`.
     ///
     /// Together, the link-count and reachability rules make tree-ness a

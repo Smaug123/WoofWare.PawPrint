@@ -26,21 +26,8 @@ module DescriptionReleaseRefusal =
 [<RequireQualifiedAccess>]
 module ObjectLifetime =
 
-    /// The open file descriptions some task's syscall in flight holds
-    /// (`ParkedSyscall.descriptions`): those a description stays alive for after
-    /// its last descriptor has closed.
-    let heldByCalls<'Task when 'Task : comparison> (tasks : Map<'Task, UnixTaskState>) : Set<OpenFileDescriptionId> =
-        tasks
-        |> Map.toSeq
-        |> Seq.collect (fun (_, state) ->
-            match state.Parked with
-            | None -> []
-            | Some park -> ParkedSyscall.descriptions park.Syscall
-        )
-        |> Set.ofSeq
-
-    /// Every inode that must not be freed: `UnixProcessState.heldInodes`, closed under
-    /// `DirectoryContent.Parent`.
+    /// Every inode that must not be freed: `UnixMachineState.heldInodes` and
+    /// `UnixProcessState.heldInodes`, closed under `DirectoryContent.Parent`.
     ///
     /// The closure is not caution — it is measured. `rmdir` can remove a
     /// directory something still holds, and that orphan keeps its "..": probed
@@ -80,7 +67,10 @@ module ObjectLifetime =
                 | Some (InodeContent.Symlink _)
                 | None -> climb rest seen
 
-        climb (UnixProcessState.heldInodes system.Process |> Set.toList) Set.empty
+        let held =
+            Set.union (UnixMachineState.heldInodes system.Machine) (UnixProcessState.heldInodes system.Process)
+
+        climb (Set.toList held) Set.empty
 
     /// Free `inode` if the filesystem no longer names it and this system holds
     /// no reference to it — what a real kernel does once the last link and the
@@ -148,7 +138,7 @@ module ObjectLifetime =
     /// Release what the open file description `destroyed` was the last
     /// reference to — its socket and the connections nothing else references,
     /// its pipe once neither end is open, its inode once nothing names or holds
-    /// it — in `system`, whose descriptor table no longer holds the description.
+    /// it — in `system`, whose open file table no longer holds the description.
     ///
     /// Destroying a stream socket's description sends its established peer the
     /// FIN, raising that peer's state-change edge.
@@ -177,13 +167,13 @@ module ObjectLifetime =
             // reference to it. A client asleep in a write does not: once no
             // reader is left its write fails, and it closes its end.
             let pipe = UnixMachineState.pipe pipeId system.Machine
-            let readable = UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process
+            let readable = UnixMachineState.pipeEndOpen pipeId pipe PipeEnd.Read system.Machine
 
             let pipe = if readable then pipe else PipeState.readEndClosed pipe
 
             if
                 readable
-                || UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write system.Process
+                || UnixMachineState.pipeEndOpen pipeId pipe PipeEnd.Write system.Machine
             then
                 Ok system
             else
@@ -212,7 +202,7 @@ module ObjectLifetime =
         // inet_csk_listen_stop discards a closed listener's accept queue).
         let candidates =
             match dying.Phase with
-            | SocketPhase.Established connection
+            | SocketPhase.Established (connection, _)
             | SocketPhase.EstablishedPendingReport connection -> [ connection ]
             | SocketPhase.Listening listenState -> listenState.Queue
             | SocketPhase.Idle
@@ -223,7 +213,7 @@ module ObjectLifetime =
             sockets
             |> Map.exists (fun _ survivor ->
                 match survivor.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c -> c = connection
                 | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
                 | SocketPhase.Idle
@@ -250,7 +240,7 @@ module ObjectLifetime =
                 |> Map.toList
                 |> List.choose (fun (survivorId, survivor) ->
                     match survivor.Phase with
-                    | SocketPhase.Established c
+                    | SocketPhase.Established (c, _)
                     | SocketPhase.EstablishedPendingReport c when List.contains c candidates -> Some survivorId
                     | _ -> None
                 )
@@ -264,7 +254,7 @@ module ObjectLifetime =
                         |> Map.toSeq
                         |> Seq.filter (fun (_, survivor) ->
                             match survivor.Phase with
-                            | SocketPhase.Established c
+                            | SocketPhase.Established (c, _)
                             | SocketPhase.EstablishedPendingReport c -> c = candidate
                             | SocketPhase.Listening _
                             | SocketPhase.Idle
@@ -321,14 +311,15 @@ module ObjectLifetime =
         |> Ok
 
     /// Destroy each of `descriptions` that nothing references any more — no
-    /// descriptor names it, and no syscall in flight holds it — releasing what
-    /// it was the last reference to (`releaseDestroyed`). A description still
-    /// referenced, or already gone, is left as it is.
+    /// descriptor names it, and no syscall in flight holds it
+    /// (`OpenFileTable.holdCount`) — releasing what it was the last reference
+    /// to (`releaseDestroyed`). A description still referenced, or already
+    /// gone, is left as it is.
     ///
     /// What a syscall that held `descriptions` while it slept calls once it has
-    /// returned, so that a description whose last descriptor closed while it
-    /// slept goes now, as a real kernel releases the file when the call drops
-    /// its reference.
+    /// returned, and its park has let go of the holds it took, so that a
+    /// description whose last descriptor closed while it slept goes now, as a
+    /// real kernel releases the file when the call drops its reference.
     let releaseUnreferenced<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (descriptions : OpenFileDescriptionId list)
         (system : UnixSystem<'Task, 'Handler>)
@@ -340,20 +331,10 @@ module ObjectLifetime =
             | Error refusal -> Error refusal
             | Ok system ->
 
-            match
-                FileDescriptorRegistry.destroyIfUnreferenced
-                    id
-                    (heldByCalls system.Tasks)
-                    system.Process.FileDescriptors
-            with
+            match OpenFileTable.destroyIfUnreferenced id system.Machine.OpenFiles with
             | _, None -> Ok system
-            | registry, Some destroyed ->
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors = registry
-                        }
-                }
+            | openFiles, Some destroyed ->
+                UnixSystemState.mapOpenFiles (fun _ -> openFiles) system
                 |> releaseDestroyed destroyed
         )
 

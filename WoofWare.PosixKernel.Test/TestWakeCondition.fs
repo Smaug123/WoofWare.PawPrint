@@ -28,15 +28,10 @@ module TestWakeCondition =
         (system : UnixSystem<int, string>)
         : UnixSystem<int, string>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = registry
-                }
-        }
+        UnixSystemState.withFileDescriptors registry system
 
     let private idOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | Some (id, _) -> id
         | None -> failwith $"fd %d{fd} names no description"
 
@@ -48,18 +43,21 @@ module TestWakeCondition =
             |> UnixBootImage.boot
 
         let lockerFd, registry =
-            FileDescriptorRegistry.createEpoll system.Process.FileDescriptors
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)
 
         let blockedFd, registry = FileDescriptorRegistry.createEpoll registry
 
         // Two kqueues, for `KqueueDrained`'s two live answers: fds 5 and 6. The world is
         // Linux's, which has no kqueue; the primitive asks only of the description.
-        let _, registry = FileDescriptorRegistry.createKqueue registry
-        let drainedFd, registry = FileDescriptorRegistry.createKqueue registry
+        let _, registry =
+            FileDescriptorRegistry.createKqueue system.Process.ProcessId registry
+
+        let drainedFd, registry =
+            FileDescriptorRegistry.createKqueue system.Process.ProcessId registry
 
         let registry =
             match FileDescriptorRegistry.tryFindId drainedFd registry with
-            | Some id -> FileDescriptorRegistry.drainKqueue id registry
+            | Some id -> FileDescriptorRegistry.mapOpenFiles (OpenFileTable.drainKqueue id) registry
             | None -> failwith "expected the kqueue's description"
 
         let registry =
@@ -103,10 +101,11 @@ module TestWakeCondition =
         let system =
             let key = listenerFd, KqueueFilter.Read
 
-            withRegistry
-                (FileDescriptorRegistry.setKqueueState
+            UnixSystemState.mapOpenFiles
+                (OpenFileTable.setKqueueState
                     (idOf 5 system)
                     {
+                        Owner = system.Process.ProcessId
                         Drained = false
                         Registrations =
                             Map.ofList
@@ -120,8 +119,7 @@ module TestWakeCondition =
                                     }
                                 ]
                         Active = [ key ]
-                    }
-                    system.Process.FileDescriptors)
+                    })
                 system
 
         let system =

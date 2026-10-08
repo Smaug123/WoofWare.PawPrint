@@ -557,11 +557,12 @@ module UnixConnection =
                     {
                         ClientAddress = clientBinding.Endpoint
                         ServerAddress = dest
+                        Transfer = TcpBufferSizing.newTransfer sock.Domain system.Machine
                     }
 
                 let clientPhase =
                     if not nonBlocking then
-                        SocketPhase.Established connectionId
+                        SocketPhase.Established (connectionId, ConnectionEnd.Client)
                     else
                         match flavour with
                         | SimulatedUnixFlavour.Linux ->
@@ -572,7 +573,7 @@ module UnixConnection =
                         | SimulatedUnixFlavour.Darwin ->
                             // Darwin's retry answers EISCONN directly
                             // (measured), so nothing is deferred.
-                            SocketPhase.Established connectionId
+                            SocketPhase.Established (connectionId, ConnectionEnd.Client)
 
                 let system =
                     { system with
@@ -764,7 +765,7 @@ module UnixConnection =
                 | SocketPhase.EstablishedPendingReport connectionId ->
                     // The one completion-reporting SUCCESS (measured). The
                     // destination is ignored, as the state transition is.
-                    completed (withPhase (SocketPhase.Established connectionId) system)
+                    completed (withPhase (SocketPhase.Established (connectionId, ConnectionEnd.Client)) system)
                 | SocketPhase.Refused error ->
                     // Deliver the latched refusal once, then reset: the next
                     // connect is a fresh attempt, and the source address the
@@ -1281,7 +1282,7 @@ module UnixConnection =
         // `admitSockaddrCopy` reached the copy, so the descriptor is a live IPv4
         // socket; nothing between there and here could have changed that.
         let socketId =
-            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
             | Some (OpenFileTarget.Socket socketId) -> socketId
             | other ->
                 failwith
@@ -1291,7 +1292,7 @@ module UnixConnection =
         // through, not about the socket, so a connect through a `dup` of a
         // non-blocking socket pends too.
         let nonBlocking =
-            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors system) with
             | Some description -> description.NonBlocking
             | None ->
                 failwith
@@ -1335,7 +1336,7 @@ module UnixConnection =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal ->
             failwith
@@ -1353,7 +1354,7 @@ module UnixConnection =
             let (SocketId rawAcceptedId) = acceptedId
 
             let fd, registry =
-                FileDescriptorRegistry.createSocket acceptedId system.Process.FileDescriptors
+                FileDescriptorRegistry.createSocket acceptedId (UnixSystemState.fileDescriptors system)
 
             let accepted =
                 {
@@ -1377,7 +1378,7 @@ module UnixConnection =
                     // `UnixSocket.setsockopt` refuses to change it while
                     // connections are queued.
                     ReuseAddress = listener.ReuseAddress
-                    Phase = SocketPhase.Established connectionId
+                    Phase = SocketPhase.Established (connectionId, ConnectionEnd.Server)
                 }
 
             fd,
@@ -1399,11 +1400,8 @@ module UnixConnection =
                                 }
                         NextSocketId = SocketId (rawAcceptedId + 1L)
                     }
-                Process =
-                    { system.Process with
-                        FileDescriptors = registry
-                    }
             }
+            |> UnixSystemState.withFileDescriptors registry
         | SocketPhase.Listening {
                                     Queue = []
                                 } ->
@@ -1454,7 +1452,7 @@ module UnixConnection =
             |> Map.toList
             |> List.choose (fun (survivorId, survivor) ->
                 match survivor.Phase with
-                | SocketPhase.Established c
+                | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c when c = connectionId -> Some survivorId
                 | _ -> None
             )
@@ -1505,7 +1503,7 @@ module UnixConnection =
                 (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                 0
                 1
-                system.Process.FileDescriptors
+                (UnixSystemState.fileDescriptors system)
         with
         | Error refusal -> Error (AcceptRefusal.DescriptorLimit refusal)
         | Ok () ->
@@ -1565,13 +1563,9 @@ module UnixConnection =
                 nonBlocking
                 && SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking system.Machine.UnixPlatform
             then
-                { system with
-                    Process =
-                        { system.Process with
-                            FileDescriptors =
-                                FileDescriptorRegistry.setNonBlocking acceptedFd true system.Process.FileDescriptors
-                        }
-                }
+                UnixSystemState.withFileDescriptors
+                    (FileDescriptorRegistry.setNonBlocking acceptedFd true (UnixSystemState.fileDescriptors system))
+                    system
             else
                 system
 
@@ -1645,7 +1639,7 @@ module UnixConnection =
         // before the accept queue is: measured on both flavours, a closed
         // descriptor answers EBADF and a non-socket ENOTSOCK whatever the
         // destination and whatever the listener would have said.
-        match FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindWithId fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (AcceptOutcome.Failed UnixError.EBADF, system)
         | Some (descriptionId, description) ->
 
@@ -1661,7 +1655,7 @@ module UnixConnection =
                     (SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform)
                     0
                     1
-                    system.Process.FileDescriptors
+                    (UnixSystemState.fileDescriptors system)
 
         match linuxRoom with
         | Error refusal -> Error (AcceptRefusal.DescriptorLimit refusal)
@@ -1753,19 +1747,11 @@ module UnixConnection =
             // ECONNABORTED, whatever is queued and whatever signal is pending,
             // since a woken accept on a drained listener answers it whatever
             // woke it (section A7).
-            Ok (
-                AcceptOutcome.Failed UnixError.ECONNABORTED,
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
-            )
+            Ok (AcceptOutcome.Failed UnixError.ECONNABORTED, (UnixParkState.unpark task system))
         | SleepTarget.Waiting (listenerId, _) ->
 
         let description =
-            match
-                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-                |> Map.tryFind listenerId
-            with
+            match OpenFileTable.tryFind listenerId system.Machine.OpenFiles with
             | Some description -> description
             | None ->
                 failwith
@@ -1783,10 +1769,7 @@ module UnixConnection =
                 failwith
                     $"UnixConnection.finishAccept: task %O{task}'s accept waits on open file description %O{listenerId}, which names %A{description.Target} rather than a socket. `accept` parks only on a listening socket (this is a bug in the caller that recorded the park)."
 
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        let finished = (UnixParkState.unpark task system)
 
         match (UnixMachineState.socket socketId system.Machine).Phase with
         | SocketPhase.Listening {

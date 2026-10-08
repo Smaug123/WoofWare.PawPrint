@@ -716,7 +716,7 @@ module TestBlockingPipe =
                 | other -> failwith $"pipe2: %A{other}"
 
             let pipeId =
-                match FileDescriptorRegistry.tryFindTarget 0 system.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindTarget 0 (UnixSystemState.fileDescriptors system) with
                 | Some (OpenFileTarget.Pipe (pipeId, PipeEnd.Read)) -> pipeId
                 | other -> failwith $"fd 0 is %A{other}"
 
@@ -724,7 +724,7 @@ module TestBlockingPipe =
             let libraryDescription : Map<int, OpenFileDescriptionId> =
                 [ 0 ; 1 ]
                 |> List.map (fun fd ->
-                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
                     | Some id -> fd, id
                     | None -> failwith $"fd %d{fd} names no description"
                 )
@@ -1176,7 +1176,7 @@ module TestBlockingPipe =
                         |> Set.ofSeq
 
                     let actualDescriptions =
-                        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+                        OpenFileTable.descriptions system.Machine.OpenFiles
                         |> Map.filter (fun _ description ->
                             match description.Target with
                             | OpenFileTarget.Pipe (p, _) -> p = pipeId
@@ -1188,6 +1188,22 @@ module TestBlockingPipe =
                     if expectedDescriptions <> actualDescriptions then
                         failwith
                             $"%s{where}: descriptions %A{actualDescriptions} exist, expected %A{expectedDescriptions}"
+
+                    // A description's holds are its calls': one for each call,
+                    // asleep or woken, that has not returned and that no Darwin
+                    // close has ended.
+                    for KeyValue (description, id) in libraryDescription do
+                        let expected =
+                            reference.Parks
+                            |> Map.filter (fun _ park -> park.Through.IsSome && descriptionOf park.Call = description)
+                            |> Map.count
+
+                        let recorded =
+                            OpenFileTable.holdCount id system.Machine.OpenFiles |> Option.defaultValue 0
+
+                        if recorded <> expected then
+                            failwith
+                                $"%s{where}: description %d{description} records %d{recorded} holds, expected %d{expected}"
 
                     // Gone once nothing references either end.
                     match Map.tryFind pipeId system.Machine.Pipes with
@@ -1658,7 +1674,7 @@ module TestBlockingPipe =
         | other -> failwith $"expected the write to return, got %A{other}"
 
     let private descriptionExists (description : OpenFileDescriptionId) (system : UnixSystem<int, string>) : bool =
-        FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+        OpenFileTable.descriptions system.Machine.OpenFiles
         |> Map.containsKey description
 
     /// `open-file-references.c` section B on Linux: the last close of the read
@@ -1671,7 +1687,8 @@ module TestBlockingPipe =
             let system = pipeHolding SimulatedUnixPlatform.linuxX64 false 0 |> readerAsleep
 
             let reader =
-                FileDescriptorRegistry.tryFindId 3 system.Process.FileDescriptors |> Option.get
+                FileDescriptorRegistry.tryFindId 3 (UnixSystemState.fileDescriptors system)
+                |> Option.get
 
             let system =
                 if dupKept then
@@ -1723,7 +1740,8 @@ module TestBlockingPipe =
                 pipeHolding SimulatedUnixPlatform.linuxX64 false 65536 |> writerAsleep 1
 
             let writer =
-                FileDescriptorRegistry.tryFindId 4 system.Process.FileDescriptors |> Option.get
+                FileDescriptorRegistry.tryFindId 4 (UnixSystemState.fileDescriptors system)
+                |> Option.get
 
             let system =
                 if dupKept then
@@ -1797,7 +1815,8 @@ module TestBlockingPipe =
                 |> readerAsleepThrough 2 3
 
             let reader =
-                FileDescriptorRegistry.tryFindId 3 system.Process.FileDescriptors |> Option.get
+                FileDescriptorRegistry.tryFindId 3 (UnixSystemState.fileDescriptors system)
+                |> Option.get
 
             let duplicate, system = if keepDup then dupped 3 system else -1, system
             let system = closed 3 system
@@ -1833,7 +1852,8 @@ module TestBlockingPipe =
                 let system = pipeHolding platform false prefill |> writerAsleep count
 
                 let writer =
-                    FileDescriptorRegistry.tryFindId 4 system.Process.FileDescriptors |> Option.get
+                    FileDescriptorRegistry.tryFindId 4 (UnixSystemState.fileDescriptors system)
+                    |> Option.get
 
                 let duplicate, system = if keepDup then dupped 4 system else -1, system
                 let system = closed 4 system
@@ -1862,7 +1882,7 @@ module TestBlockingPipe =
                 UnixSystem.checkInvariants system |> shouldEqual []
 
                 let pipe =
-                    match FileDescriptorRegistry.tryFindTarget 3 system.Process.FileDescriptors with
+                    match FileDescriptorRegistry.tryFindTarget 3 (UnixSystemState.fileDescriptors system) with
                     | Some (OpenFileTarget.Pipe (pipeId, _)) -> UnixMachineState.pipe pipeId system.Machine
                     | other -> failwith $"%A{other}"
 
@@ -1895,7 +1915,8 @@ module TestBlockingPipe =
             | other -> failwith $"expected the read to sleep, got %A{other}"
 
         let reader =
-            FileDescriptorRegistry.tryFindId 3 system.Process.FileDescriptors |> Option.get
+            FileDescriptorRegistry.tryFindId 3 (UnixSystemState.fileDescriptors system)
+            |> Option.get
 
         WakeCondition.satisfied sleeper condition system |> shouldEqual Set.empty
 
@@ -1954,7 +1975,8 @@ module TestBlockingPipe =
 
         let refused (fd : int) (system : UnixSystem<int, string>) =
             let description =
-                FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors |> Option.get
+                FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
+                |> Option.get
 
             match UnixDescriptor.close fd system with
             | Error (CloseRefusal.DarwinWokenTransfer (refusedOn, task)) ->

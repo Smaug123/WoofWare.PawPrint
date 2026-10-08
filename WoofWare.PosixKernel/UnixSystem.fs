@@ -34,19 +34,27 @@ type Syscall =
     /// behaviour this kernel models, and models per flavour. `mkdir(2)` is
     /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`).
     | MkDirAt of dirfd : int * path : PathArgumentBytes * mode : int
-    | Unlink of path : PathArgumentBytes
-    | RmDir of path : PathArgumentBytes
+    /// `dirfd` and `flags` are raw, as `unlinkat(2)` takes them: each flavour
+    /// numbers `AT_FDCWD` and `AT_REMOVEDIR` its own way, and which other bits
+    /// it rejects is behaviour this kernel models per flavour. `unlink(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no
+    /// flags, and `rmdir(2)` with `AT_REMOVEDIR` (`UnlinkAtRules.atRemoveDir`).
+    | UnlinkAt of dirfd : int * path : PathArgumentBytes * flags : int
     | ChDir of path : PathArgumentBytes
-    /// `mode` is raw, as `chmod(2)` takes it: which of its bits the inode gets
-    /// is behaviour this kernel models.
-    | ChMod of path : PathArgumentBytes * mode : int
+    /// `dirfd`, `mode` and `flags` are raw, as `fchmodat(2)` takes them: each
+    /// flavour numbers `AT_FDCWD` and the flags its own way, and which bits of
+    /// `mode` the inode gets is behaviour this kernel models. `chmod(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no
+    /// flags.
+    | FChModAt of dirfd : int * path : PathArgumentBytes * mode : int * flags : int
     /// `mode` is raw, as `fchmod(2)` takes it.
     | FChMod of fd : int * mode : int
-    /// `None` is `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is.
-    | ChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
-    /// As `ChOwn`, without following a symbolic link in the final position.
-    | LChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
-    /// As `ChOwn`, of the inode `fd` names.
+    /// `dirfd` and `flags` are raw, as `fchownat(2)` takes them. `None` is
+    /// `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is. `chown(2)` is this
+    /// with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no flags, and
+    /// `lchown(2)` with `AT_SYMLINK_NOFOLLOW` (0x100 on Linux, 0x20 on Darwin).
+    | FChOwnAt of dirfd : int * path : PathArgumentBytes * user : UserId option * group : GroupId option * flags : int
+    /// As `FChOwnAt`'s `chown(2)`, of the inode `fd` names.
     | FChOwn of fd : int * user : UserId option * group : GroupId option
     /// `mask` is raw, as `umask(2)` takes it: which of its bits the process
     /// keeps is behaviour this kernel models, and models per flavour. Answers
@@ -70,8 +78,13 @@ type Syscall =
         newdirfd : int *
         newpath : PathArgumentBytes *
         flags : int
-    /// `futimens(2)` with two explicit times; see `UnixPathResolution.futimens`.
-    | FUTimens of fd : int * access : UnixTimestamp * modification : UnixTimestamp
+    /// `dirfd` and `flags` are raw, as `utimensat(2)` takes them: each flavour
+    /// numbers `AT_FDCWD` and the flags its own way, and `times` holds the
+    /// fields the caller stored, which each flavour reads its own way (see
+    /// `TimestampChangeRules.decode`). A null `path` means something of its
+    /// own on Linux. `futimens(2)` is, on Linux, this with `fd` as `dirfd`, a
+    /// null `path` and no flags.
+    | UTimensAt of dirfd : int * path : NullablePathArgument * times : TimesArgument * flags : int
     /// `copy_file_range(2)` at both descriptions' own offsets. `length` is the
     /// `size_t` asked for and `flags` is raw, since any flag is refused.
     | CopyFileRange of inFd : int * outFd : int * length : uint64 * flags : int
@@ -100,19 +113,17 @@ type SyscallRefusal<'Task> =
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
     | MkDir of PathRefusal
-    | Unlink of RemovalRefusal
-    | RmDir of RemovalRefusal
+    | UnlinkAt of UnlinkAtRefusal
     | ChDir of PathRefusal
-    | ChMod of ChModRefusal
+    | FChModAt of FChModAtRefusal
     | FChMod of FChModRefusal
-    /// `chown(2)` and `lchown(2)` alike.
-    | ChOwn of ChOwnRefusal
+    | FChOwnAt of FChOwnAtRefusal
     | FChOwn of FChOwnRefusal
     | Access of AccessRefusal
     | Symlink of SymlinkRefusal
     | Link of LinkRefusal
     | Close of CloseRefusal<'Task>
-    | FUTimens of FUTimensRefusal
+    | UTimensAt of UTimensAtRefusal
     | CopyFileRange of CopyFileRangeRefusal
     | FileClone of FileCloneRefusal
     | CloneFile of CloneFileRefusal
@@ -128,6 +139,10 @@ type SyscallRefusal<'Task> =
 /// because every case here is a claim about *two* tables at once, and neither
 /// of those modules can see the other's: each is defined in a file that
 /// compiles before this one.
+///
+/// `UnixSystem.checkMachineInvariants` reports the cases that concern the
+/// machine, and `UnixSystem.checkViewInvariants` those that concern one
+/// process's view of it.
 [<RequireQualifiedAccess>]
 type UnixSystemDefect<'Task> =
     /// A live open file description names a socket the socket table does not
@@ -183,6 +198,12 @@ type UnixSystemDefect<'Task> =
     /// so accepting it twice would materialise two sockets onto one
     /// connection.
     | DuplicateQueuedConnection of connection : ConnectionId
+    /// More than one socket holds one end of a connection: two established as
+    /// its client, or as its server, or an accepted server end while a
+    /// listener still queues the connection (where its server end is before
+    /// `accept(2)`). `holders` names each, in socket-table order, and a
+    /// listener once however often it queues the connection.
+    | ConnectionEndHeldTwice of connection : ConnectionId * connectionEnd : ConnectionEnd * holders : SocketId list
     /// A socket's phase is one its kind cannot enter: a datagram socket
     /// listening or holding a stream connection, or a non-datagram socket
     /// holding a datagram peer.
@@ -212,6 +233,12 @@ type UnixSystemDefect<'Task> =
     /// frees a file when its last reference goes, so this is a leak: a close,
     /// or the return of a call that held it, failed to release it.
     | UnreferencedDescription of description : OpenFileDescriptionId
+    /// A description records `recorded` holds by syscalls in flight, where the
+    /// parks of every process's tasks name it `parks` times
+    /// (`ParkedSyscall.descriptions`). The holds are what keep a description
+    /// alive once no descriptor names it, so one too few lets a close destroy
+    /// what a sleeping call still waits on, and one too many leaks it.
+    | HoldCountMismatch of description : OpenFileDescriptionId * recorded : int * parks : int
     /// A task is parked in an `epoll_wait` on a description that is not an
     /// epoll instance, which no wait could have produced and which
     /// `EpollReadyList.hasDeliverableEvent` crashes on.
@@ -233,6 +260,13 @@ type UnixSystemDefect<'Task> =
     /// A task is parked in a `kevent` for `maxEvents` events, which is not
     /// positive: such a call returns at once.
     | ParkedKeventCountNotPositive of task : 'Task * maxEvents : int
+    /// The process's descriptor `fd` names, or a `kevent` wait of one of its
+    /// tasks made through `fd` sleeps on, the kqueue `kqueue`, which the
+    /// process `owner` owns (`KqueueState.Owner`). A kqueue's registrations
+    /// name descriptors in its owner's table, so this process's view would
+    /// read them against the wrong one; and only the process that created a
+    /// kqueue has a descriptor onto it.
+    | KqueueOfAnotherProcess of fd : int * kqueue : OpenFileDescriptionId * owner : ProcessId
     /// An open file description names an object this flavour's kernel does
     /// not have: an epoll instance or a device under Darwin, or a kqueue under
     /// Linux.
@@ -382,6 +416,12 @@ type UnixSystemDefect<'Task> =
     /// The machine's thread ID counter is not its flavour's: a Linux counter on a
     /// Darwin machine, or the other way about.
     | ThreadIdAllocatorNotOfFlavour of flavour : SimulatedUnixFlavour * allocator : ThreadIdAllocator
+    /// The machine's thread ID allocator records as live the IDs in
+    /// `withoutTask`, which no task holds, and does not record those in
+    /// `notRecorded`, which tasks hold. The allocator hands out only IDs it
+    /// does not record as live, so one it fails to record could be handed to a
+    /// second task, and one it records for no task is never handed out again.
+    | LiveThreadIdsMismatch of withoutTask : Set<OsThreadId> * notRecorded : Set<OsThreadId>
     /// A live open file description names a pipe the pipe table does not hold.
     | DanglingPipe of description : OpenFileDescriptionId * pipe : PipeId
     /// The pipe table holds a pipe neither of whose ends is open: no live
@@ -609,7 +649,15 @@ module UnixSystem =
         (system : UnixSystem<'Task, 'Handler>)
         : FileDescriptorRegistry
         =
-        system.Process.FileDescriptors
+        UnixSystemState.fileDescriptors system
+
+    /// The machine's open file descriptions, which `OpenFileTable`'s queries
+    /// read: every one any descriptor names, and any a call in flight holds.
+    let openFiles<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : OpenFileTable
+        =
+        system.Machine.OpenFiles
 
     /// The machine's filesystem, which `VirtualFileSystem`'s queries read.
     let fileSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -735,7 +783,7 @@ module UnixSystem =
         (system : UnixSystem<'Task, 'Handler>)
         : OpenFileTarget option
         =
-        FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors
+        FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system)
 
     /// The process ID, as `getpid(2)` reports it.
     ///
@@ -863,34 +911,26 @@ module UnixSystem =
             UnixNamespace.mkdirat dirfd path mode system
             |> answered
             |> Result.mapError SyscallRefusal.MkDir
-        | Syscall.Unlink path ->
-            UnixNamespace.unlink path system
+        | Syscall.UnlinkAt (dirfd, path, flags) ->
+            UnixNamespace.unlinkat dirfd path flags system
             |> answered
-            |> Result.mapError SyscallRefusal.Unlink
-        | Syscall.RmDir path ->
-            UnixNamespace.rmdir path system
-            |> answered
-            |> Result.mapError SyscallRefusal.RmDir
+            |> Result.mapError SyscallRefusal.UnlinkAt
         | Syscall.ChDir path ->
             UnixPathResolution.chdir path system
             |> answered
             |> Result.mapError SyscallRefusal.ChDir
-        | Syscall.ChMod (path, mode) ->
-            UnixPathResolution.chmod path mode system
+        | Syscall.FChModAt (dirfd, path, mode, flags) ->
+            UnixPathResolution.fchmodat dirfd path mode flags system
             |> answered
-            |> Result.mapError SyscallRefusal.ChMod
+            |> Result.mapError SyscallRefusal.FChModAt
         | Syscall.FChMod (fd, mode) ->
             UnixPathResolution.fchmod fd mode system
             |> answered
             |> Result.mapError SyscallRefusal.FChMod
-        | Syscall.ChOwn (path, user, group) ->
-            UnixPathResolution.chown path user group system
+        | Syscall.FChOwnAt (dirfd, path, user, group, flags) ->
+            UnixPathResolution.fchownat dirfd path user group flags system
             |> answered
-            |> Result.mapError SyscallRefusal.ChOwn
-        | Syscall.LChOwn (path, user, group) ->
-            UnixPathResolution.lchown path user group system
-            |> answered
-            |> Result.mapError SyscallRefusal.ChOwn
+            |> Result.mapError SyscallRefusal.FChOwnAt
         | Syscall.FChOwn (fd, user, group) ->
             UnixPathResolution.fchown fd user group system
             |> answered
@@ -911,10 +951,10 @@ module UnixSystem =
             UnixNamespace.linkat olddirfd oldpath newdirfd newpath flags system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Link
-        | Syscall.FUTimens (fd, access, modification) ->
-            UnixPathResolution.futimens fd access modification system
+        | Syscall.UTimensAt (dirfd, path, times, flags) ->
+            UnixPathResolution.utimensat dirfd path times flags system
             |> answered
-            |> Result.mapError SyscallRefusal.FUTimens
+            |> Result.mapError SyscallRefusal.UTimensAt
         | Syscall.CopyFileRange (inFd, outFd, length, flags) ->
             UnixReadWrite.copyFileRange inFd outFd length flags system
             |> answered
@@ -940,31 +980,32 @@ module UnixSystem =
             |> answered
             |> Result.mapError SyscallRefusal.SetGroups
 
-    /// Every way this system's tables disagree with each other: the socket table
-    /// and the pipe table against the descriptor table, each pipe and the pipe
-    /// device against the platform, the connection table against the sockets
-    /// that reference it, the descriptor table against the filesystem, the
-    /// current directory against both, each task's park against the descriptor
-    /// table and each description against the descriptors and parks that
-    /// reference it, the signal state against the task table, and the machine's
-    /// filesystem type and buffer check and the process's supplementary groups
-    /// and file-mode creation mask against its platform.
+    /// Every way the machine's tables disagree with each other or with the
+    /// processes on it: the clauses of `checkInvariants` that concern the
+    /// machine, each of which reads facts that every process on it contributes
+    /// to, so that no one process's view can check it.
     ///
-    /// Each table's own rules are elsewhere and are not repeated here:
-    /// `FileDescriptorRegistry.checkInvariants` for the descriptor table, and
-    /// `VirtualFileSystem.checkInvariants` for the filesystem. The latter takes
-    /// a `pinned` argument, which is what `pinnedInodes` computes, so a caller
-    /// wanting the whole picture pairs this with
-    /// `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes system) system.Machine.FileSystem`.
-    ///
-    /// A client that holds its own references into these tables owes its own
-    /// rules about them on top of these.
-    let checkInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (system : UnixSystem<'Task, 'Handler>)
+    /// `processes` is every process on the machine, each with its tasks. The
+    /// socket table and the pipe table against the open file descriptions,
+    /// each pipe and the pipe device against the platform, the connection
+    /// table against the sockets that reference it, the open file descriptions
+    /// against the filesystem and the platform, each description against the
+    /// descriptors and calls that reference it and its holds against every
+    /// process's parks, the park and event registration ordinals against the
+    /// machine's counters, the thread ID allocator against every process's
+    /// tasks, and the machine's filesystem type, buffer check and symbolic
+    /// links against its platform.
+    let checkMachineInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (processes : (UnixProcessState<'Task, 'Handler> * Map<'Task, UnixTaskState>) list)
+        (machine : UnixMachineState)
         : UnixSystemDefect<'Task> list
         =
+        let allTasks : ('Task * UnixTaskState) list =
+            processes |> List.collect (fun (_, tasks) -> Map.toList tasks)
+
+
         let named =
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            OpenFileTable.descriptions machine.OpenFiles
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
@@ -979,13 +1020,13 @@ module UnixSystem =
 
         let dangling =
             named
-            |> List.filter (fun (_, socketId) -> not (Map.containsKey socketId system.Machine.Sockets))
+            |> List.filter (fun (_, socketId) -> not (Map.containsKey socketId machine.Sockets))
             |> List.map UnixSystemDefect.DanglingSocket
 
         let namedIds = named |> List.map snd |> Set.ofList
 
         let unreferenced =
-            system.Machine.Sockets
+            machine.Sockets
             |> Map.toList
             |> List.map fst
             |> List.filter (fun socketId -> not (Set.contains socketId namedIds))
@@ -995,16 +1036,16 @@ module UnixSystem =
         // where a socket lives, so it is the table that must stay below the
         // counter even once a socket can outlive every descriptor of it.
         let freshness =
-            system.Machine.Sockets
+            machine.Sockets
             |> Map.toList
             |> List.map fst
-            |> List.filter (fun socketId -> socketId >= system.Machine.NextSocketId)
-            |> List.map (fun socketId -> UnixSystemDefect.NextSocketIdNotFresh (system.Machine.NextSocketId, socketId))
+            |> List.filter (fun socketId -> socketId >= machine.NextSocketId)
+            |> List.map (fun socketId -> UnixSystemDefect.NextSocketIdNotFresh (machine.NextSocketId, socketId))
 
         let foreignObjects =
-            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+            let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            OpenFileTable.descriptions machine.OpenFiles
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target, flavour with
@@ -1023,13 +1064,13 @@ module UnixSystem =
             )
 
         let danglingInodes =
-            system.Process.FileDescriptors
-            |> FileDescriptorRegistry.descriptions
+            machine.OpenFiles
+            |> OpenFileTable.descriptions
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
                 | OpenFileTarget.File (inode, _) ->
-                    match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                    match VirtualFileSystem.tryGetContent inode machine.FileSystem with
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.Directory _)
                     | Some (InodeContent.CharacterDevice _) ->
@@ -1037,14 +1078,14 @@ module UnixSystem =
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> None
                 | OpenFileTarget.Directory (inode, _) ->
-                    match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                    match VirtualFileSystem.tryGetContent inode machine.FileSystem with
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.Directory _) -> None
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.CharacterDevice _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.CharacterDevice (inode, device) ->
-                    match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                    match VirtualFileSystem.tryGetContent inode machine.FileSystem with
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.CharacterDevice (node, _)) when node = device -> None
                     | Some (InodeContent.CharacterDevice _)
@@ -1057,29 +1098,19 @@ module UnixSystem =
                 | OpenFileTarget.Pipe _ -> None
             )
 
-        let currentDirectory =
-            match VirtualFileSystem.tryGetContent system.Process.CurrentDirectoryInode system.Machine.FileSystem with
-            | Some (InodeContent.Directory _) -> []
-            | Some (InodeContent.RegularFile _)
-            | Some (InodeContent.CharacterDevice _)
-            | Some (InodeContent.Symlink _)
-            | None ->
-                [
-                    UnixSystemDefect.CurrentDirectoryIsNotADirectory system.Process.CurrentDirectoryInode
-                ]
-
-        // Every reference any socket makes to a connection, with whether it
-        // came through an accept queue (which has its own defect case and its
-        // own no-duplicates rule).
+        // Every reference any socket makes to a connection: as the end it is
+        // (`Some`), or through an accept queue (`None`), which has its own
+        // defect case and its own no-duplicates rule.
         let connectionReferences =
-            system.Machine.Sockets
+            machine.Sockets
             |> Map.toList
             |> List.collect (fun (socketId, socket) ->
                 match socket.Phase with
-                | SocketPhase.Established connection
-                | SocketPhase.EstablishedPendingReport connection -> [ socketId, connection, false ]
+                | SocketPhase.Established (connection, connectionEnd) -> [ socketId, connection, Some connectionEnd ]
+                | SocketPhase.EstablishedPendingReport connection ->
+                    [ socketId, connection, Some ConnectionEnd.Client ]
                 | SocketPhase.Listening listenState ->
-                    listenState.Queue |> List.map (fun connection -> socketId, connection, true)
+                    listenState.Queue |> List.map (fun connection -> socketId, connection, None)
                 | SocketPhase.Idle
                 | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> []
@@ -1087,12 +1118,11 @@ module UnixSystem =
 
         let danglingConnections =
             connectionReferences
-            |> List.filter (fun (_, connection, _) -> not (Map.containsKey connection system.Machine.Connections))
-            |> List.map (fun (socketId, connection, queued) ->
-                if queued then
-                    UnixSystemDefect.DanglingQueuedConnection (socketId, connection)
-                else
-                    UnixSystemDefect.DanglingConnection (socketId, connection)
+            |> List.filter (fun (_, connection, _) -> not (Map.containsKey connection machine.Connections))
+            |> List.map (fun (socketId, connection, heldAs) ->
+                match heldAs with
+                | None -> UnixSystemDefect.DanglingQueuedConnection (socketId, connection)
+                | Some _ -> UnixSystemDefect.DanglingConnection (socketId, connection)
             )
 
         let referencedConnections =
@@ -1101,7 +1131,7 @@ module UnixSystem =
             |> Set.ofList
 
         let orphanConnections =
-            system.Machine.Connections
+            machine.Connections
             |> Map.toList
             |> List.map fst
             |> List.filter (fun connection -> not (Set.contains connection referencedConnections))
@@ -1109,13 +1139,46 @@ module UnixSystem =
 
         let duplicateQueued =
             connectionReferences
-            |> List.choose (fun (_, connection, queued) -> if queued then Some connection else None)
+            |> List.choose (fun (_, connection, heldAs) ->
+                match heldAs with
+                | None -> Some connection
+                | Some _ -> None
+            )
             |> List.countBy id
             |> List.filter (fun (_, count) -> count > 1)
             |> List.map (fun (connection, _) -> UnixSystemDefect.DuplicateQueuedConnection connection)
 
+        // A connection has one client and one server. Until `accept(2)` the
+        // server end is the listener's queue entry, so the server end is held
+        // once in all, queued or accepted. A listener counts once however
+        // often it queues the connection: that is `DuplicateQueuedConnection`.
+        let connectionEndsHeldTwice =
+            connectionReferences
+            |> List.groupBy (fun (_, connection, _) -> connection)
+            |> List.collect (fun (connection, references) ->
+                [ ConnectionEnd.Client ; ConnectionEnd.Server ]
+                |> List.choose (fun connectionEnd ->
+                    let holders =
+                        references
+                        |> List.choose (fun (socketId, _, heldAs) ->
+                            let holdsThisEnd =
+                                match heldAs with
+                                | Some held -> held = connectionEnd
+                                | None -> connectionEnd = ConnectionEnd.Server
+
+                            if holdsThisEnd then Some socketId else None
+                        )
+                        |> List.distinct
+
+                    if List.length holders > 1 then
+                        Some (UnixSystemDefect.ConnectionEndHeldTwice (connection, connectionEnd, holders))
+                    else
+                        None
+                )
+            )
+
         let phaseKindMismatches =
-            system.Machine.Sockets
+            machine.Sockets
             |> Map.toList
             |> List.choose (fun (socketId, socket) ->
                 let mismatched =
@@ -1133,10 +1196,10 @@ module UnixSystem =
             )
 
         let drainedUnderLinux =
-            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            match SimulatedUnixPlatform.flavour machine.UnixPlatform with
             | SimulatedUnixFlavour.Darwin -> []
             | SimulatedUnixFlavour.Linux ->
-                system.Machine.Sockets
+                machine.Sockets
                 |> Map.toList
                 |> List.choose (fun (socketId, socket) ->
                     match socket.Phase with
@@ -1147,17 +1210,17 @@ module UnixSystem =
                 )
 
         let connectionFreshness =
-            system.Machine.Connections
+            machine.Connections
             |> Map.toList
             |> List.map fst
-            |> List.filter (fun connection -> connection >= system.Machine.NextConnectionId)
+            |> List.filter (fun connection -> connection >= machine.NextConnectionId)
             |> List.map (fun connection ->
-                UnixSystemDefect.NextConnectionIdNotFresh (system.Machine.NextConnectionId, connection)
+                UnixSystemDefect.NextConnectionIdNotFresh (machine.NextConnectionId, connection)
             )
 
         let registrationOrdinals =
-            system.Process.FileDescriptors
-            |> FileDescriptorRegistry.descriptions
+            machine.OpenFiles
+            |> OpenFileTable.descriptions
             |> Map.toList
             |> List.collect (fun (queueId, description) ->
                 match description.Target with
@@ -1178,10 +1241,10 @@ module UnixSystem =
 
         let ordinalFreshness =
             registrationOrdinals
-            |> List.filter (fun (_, registeredAt) -> registeredAt >= system.Machine.NextEventRegistrationOrdinal)
+            |> List.filter (fun (_, registeredAt) -> registeredAt >= machine.NextEventRegistrationOrdinal)
             |> List.map (fun (queueId, registeredAt) ->
                 UnixSystemDefect.EventRegistrationOrdinalNotFresh (
-                    system.Machine.NextEventRegistrationOrdinal,
+                    machine.NextEventRegistrationOrdinal,
                     queueId,
                     registeredAt
                 )
@@ -1193,14 +1256,10 @@ module UnixSystem =
             |> List.filter (fun (_, count) -> count > 1)
             |> List.map (fun (registeredAt, _) -> UnixSystemDefect.DuplicateEventRegistrationOrdinal registeredAt)
 
-        // Each task's park against the descriptor table. A park names what the
-        // task waits on, and the wake reads the description back; the park
-        // holds it until the call returns, so an absent one was parked on
-        // without going through the syscall or destroyed around it.
         let statusOfFlavour =
-            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+            let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            OpenFileTable.descriptions machine.OpenFiles
             |> Map.toList
             |> List.collect (fun (id, description) ->
                 let status = description.Status
@@ -1223,43 +1282,437 @@ module UnixSystem =
                 ]
             )
 
+
+        let unpairedUnderLinux =
+            match SimulatedUnixPlatform.flavour machine.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> []
+            | SimulatedUnixFlavour.Linux ->
+                OpenFileTable.descriptions machine.OpenFiles
+                |> Map.toList
+                |> List.filter (fun (_, description) ->
+                    description.Status.Synchronous <> description.Status.DataSynchronous
+                )
+                |> List.map (fun (id, _) -> UnixSystemDefect.UnpairedSynchronisationUnderLinux id)
+
+        // Every description is referenced: by a descriptor, or by a call in
+        // flight that holds it. Both counts are the description's own: the
+        // descriptors', which `OpenFileTable.checkInvariants` holds to the
+        // descriptor tables, and the holds, which `holdCounts` holds to the
+        // parks.
+        let unreferencedDescriptions =
+            OpenFileTable.descriptions machine.OpenFiles
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun id ->
+                OpenFileTable.descriptorCount id machine.OpenFiles = Some 0
+                && OpenFileTable.holdCount id machine.OpenFiles = Some 0
+            )
+            |> List.map UnixSystemDefect.UnreferencedDescription
+
+        // Each description's holds against the parks of every process's tasks:
+        // one for each time a park names it. A park naming a description the
+        // table does not hold is `ParkedOnAbsentDescription`'s.
+        let holdCounts =
+            let implied =
+                allTasks
+                |> List.collect (fun (_, state) ->
+                    match state.Parked with
+                    | None -> []
+                    | Some park -> ParkedSyscall.descriptions park.Syscall
+                )
+                |> List.countBy id
+                |> Map.ofList
+
+            OpenFileTable.descriptions machine.OpenFiles
+            |> Map.toList
+            |> List.choose (fun (id, _) ->
+                let recorded = OpenFileTable.holdCount id machine.OpenFiles |> Option.defaultValue 0
+                let parks = Map.tryFind id implied |> Option.defaultValue 0
+
+                if recorded = parks then
+                    None
+                else
+                    Some (UnixSystemDefect.HoldCountMismatch (id, recorded, parks))
+            )
+
+
+        let parkOrdinals =
+            allTasks
+            |> List.choose (fun (task, state) -> state.Parked |> Option.map (fun park -> task, park.Ordinal))
+
+        let parkOrdinalFreshness =
+            parkOrdinals
+            |> List.filter (fun (_, ordinal) -> ordinal >= machine.NextParkOrdinal)
+            |> List.map (fun (task, ordinal) ->
+                UnixSystemDefect.ParkOrdinalNotFresh (machine.NextParkOrdinal, task, ordinal)
+            )
+
+        let parkOrdinalDuplicates =
+            parkOrdinals
+            |> List.countBy snd
+            |> List.filter (fun (_, count) -> count > 1)
+            |> List.map (fun (ordinal, _) -> UnixSystemDefect.DuplicateParkOrdinal ordinal)
+
+        // Bindings no bind or listen could have produced.
+        let bindings =
+            machine.Sockets
+            |> Map.toList
+            |> List.collect (fun (socketId, socket) ->
+                let unboundListener =
+                    match socket.Phase, socket.Binding with
+                    | SocketPhase.Listening _, None -> [ UnixSystemDefect.ListenerWithoutBinding socketId ]
+                    | _ -> []
+
+                let portZero =
+                    match socket.Binding with
+                    | Some binding when binding.Endpoint.Port = 0us ->
+                        let halfBound =
+                            // Only Linux's `connect(AF_UNSPEC)` produces this,
+                            // and it always leaves the socket idle.
+                            SimulatedUnixPlatform.flavour machine.UnixPlatform = SimulatedUnixFlavour.Linux
+                            && socket.Kind = SocketKind.Datagram
+                            && socket.Phase = SocketPhase.Idle
+                            && not binding.LockedPort
+                            && (
+                                match binding.LockedAddress with
+                                | Some locked ->
+                                    locked <> InternetEndpoint.WildcardAddress && locked = binding.Endpoint.Address
+                                | None -> false
+                            )
+
+                        if halfBound then
+                            []
+                        else
+                            [ UnixSystemDefect.BoundToPortZero socketId ]
+                    | _ -> []
+
+                unboundListener @ portZero
+            )
+
+        let fileSystemType =
+            let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+            let fsType = EmulatedMount.fileSystemType machine.Mount
+
+            if EmulatedFileSystemType.isReportableUnder flavour fsType then
+                []
+            else
+                [ UnixSystemDefect.FileSystemTypeNotReportable (flavour, fsType) ]
+
+        let protectedFiles =
+            let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+            if UnixMachineState.isProtectedFilesOf flavour machine.ProtectedFiles then
+                []
+            else
+                [
+                    UnixSystemDefect.ProtectedFilesNotOfFlavour (machine.ProtectedFiles, flavour)
+                ]
+
+        let userBufferCheck =
+            if UnixMachineState.isUserBufferCheckOf machine.UnixPlatform machine.UserBufferCheck then
+                []
+            else
+                [
+                    UnixSystemDefect.UserBufferCheckNotOfPlatform (machine.UnixPlatform, machine.UserBufferCheck)
+                ]
+
+        // Every symbolic link's bits are ones its flavour creates a link with,
+        // under the umask that would leave exactly those bits.
+        let symlinkPermissions =
+            let platform = machine.UnixPlatform
+
+            VirtualFileSystem.inodes machine.FileSystem
+            |> Map.toList
+            |> List.choose (fun (inode, entry) ->
+                match entry.Content with
+                | InodeContent.Symlink (_, bits) ->
+                    let umask =
+                        PermissionBits.parseOrFail
+                            "UnixSystem.checkInvariants"
+                            (0o777 &&& ~~~(PermissionBits.toInt bits))
+
+                    if SimulatedUnixPlatform.symlinkCreationPermissions platform umask = bits then
+                        None
+                    else
+                        Some (
+                            UnixSystemDefect.SymlinkPermissionsNotOfFlavour (
+                                inode,
+                                bits,
+                                SimulatedUnixPlatform.flavour platform
+                            )
+                        )
+                | InodeContent.RegularFile _
+                | InodeContent.Directory _
+                | InodeContent.CharacterDevice _ -> None
+            )
+
+        // The machine's thread ID allocator against the tasks of every process
+        // on it: the allocator is its flavour's, no two tasks share an ID, every
+        // ID is one the counter could have handed out, and the IDs the
+        // allocator records as live are exactly the tasks', so none can be
+        // handed out again while its task lives.
+        let threadIds =
+            let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+            let allocator = machine.ThreadIds
+
+            let allocatorFlavour =
+                match flavour, allocator.Counter with
+                | SimulatedUnixFlavour.Linux, ThreadIdCounter.Linux _
+                | SimulatedUnixFlavour.Darwin, ThreadIdCounter.Darwin _ -> []
+                | SimulatedUnixFlavour.Linux, ThreadIdCounter.Darwin _
+                | SimulatedUnixFlavour.Darwin, ThreadIdCounter.Linux _ ->
+                    [ UnixSystemDefect.ThreadIdAllocatorNotOfFlavour (flavour, allocator) ]
+
+            let duplicates =
+                allTasks
+                |> List.groupBy (fun (_, state) -> state.OsThreadId)
+                |> List.choose (fun (id, holders) ->
+                    match holders with
+                    | []
+                    | [ _ ] -> None
+                    | _ -> Some (UnixSystemDefect.DuplicateOsThreadId (id, List.map fst holders))
+                )
+
+            let unmintable =
+                allTasks
+                |> List.filter (fun (_, state) -> not (ThreadIdAllocator.couldHaveMinted state.OsThreadId allocator))
+                |> List.map (fun (task, state) ->
+                    UnixSystemDefect.OsThreadIdNotMintable (task, state.OsThreadId, allocator)
+                )
+
+            let live =
+                let held = allTasks |> List.map (fun (_, state) -> state.OsThreadId) |> Set.ofList
+                let recorded = ThreadIdAllocator.live allocator
+
+                if held = recorded then
+                    []
+                else
+                    [
+                        UnixSystemDefect.LiveThreadIdsMismatch (
+                            Set.difference recorded held,
+                            Set.difference held recorded
+                        )
+                    ]
+
+            allocatorFlavour @ duplicates @ unmintable @ live
+
+
+        // The pipe table against the descriptions naming its pipes, and each
+        // pipe against its machine, as for sockets above.
+        let pipes =
+            let platform = machine.UnixPlatform
+            let flavour = SimulatedUnixPlatform.flavour platform
+
+            let named =
+                OpenFileTable.descriptions machine.OpenFiles
+                |> Map.toList
+                |> List.choose (fun (id, description) ->
+                    match description.Target with
+                    | OpenFileTarget.Pipe (pipeId, _) -> Some (id, pipeId)
+                    | OpenFileTarget.Kqueue _
+                    | OpenFileTarget.Epoll _
+                    | OpenFileTarget.File _
+                    | OpenFileTarget.Directory _
+                    | OpenFileTarget.CharacterDevice _
+                    | OpenFileTarget.Socket _ -> None
+                )
+
+            let dangling =
+                named
+                |> List.filter (fun (_, pipeId) -> not (Map.containsKey pipeId machine.Pipes))
+                |> List.map UnixSystemDefect.DanglingPipe
+
+            let namedIds = named |> List.map snd |> Set.ofList
+
+            let unreferenced =
+                machine.Pipes
+                |> Map.toList
+                |> List.filter (fun (pipeId, pipe) ->
+                    not (Set.contains pipeId namedIds)
+                    && not (PipeState.heldByClient PipeEnd.Read pipe)
+                    && not (PipeState.heldByClient PipeEnd.Write pipe)
+                )
+                |> List.map (fst >> UnixSystemDefect.UnreferencedPipe)
+
+            let undrained =
+                machine.Pipes
+                |> Map.toList
+                |> List.choose (fun (pipeId, pipe) ->
+                    let held = PipeBuffer.held pipe.Buffer
+
+                    match PipeState.drainedBy pipe with
+                    | Some _ when held > 0 -> Some (UnixSystemDefect.DrainedPipeHoldsBytes (pipeId, held))
+                    | Some _
+                    | None -> None
+                )
+
+            let unsupplied =
+                machine.Pipes
+                |> Map.toList
+                |> List.filter (fun (_, pipe) -> PipeState.clientWriteCouldProceed pipe)
+                |> List.map (fst >> UnixSystemDefect.SuppliedPipeHasRoom)
+
+            let freshness =
+                machine.Pipes
+                |> Map.toList
+                |> List.map fst
+                |> List.filter (fun pipeId -> pipeId >= machine.NextPipeId)
+                |> List.map (fun pipeId -> UnixSystemDefect.NextPipeIdNotFresh (machine.NextPipeId, pipeId))
+
+            let inodes =
+                machine.Pipes
+                |> Map.toList
+                |> List.collect (fun (pipeId, pipe) ->
+                    match pipe.Origin with
+                    | PipeOrigin.Launched _ -> []
+                    | PipeOrigin.Made status ->
+                        match status.Inodes with
+                        | PipeInodes.Shared inode -> [ pipeId, inode ]
+                        | PipeInodes.PerEnd (readEnd, writeEnd) -> [ pipeId, readEnd ; pipeId, writeEnd ]
+                )
+
+            let inodeFreshness =
+                inodes
+                |> List.filter (fun (_, inode) -> inode >= machine.NextPipeInode)
+                |> List.map (fun (pipeId, inode) ->
+                    UnixSystemDefect.PipeInodeNotFresh (machine.NextPipeInode, pipeId, inode)
+                )
+
+            let inodeDuplicates =
+                inodes
+                |> List.countBy snd
+                |> List.filter (fun (_, count) -> count > 1)
+                |> List.map (fun (inode, _) -> UnixSystemDefect.DuplicatePipeInode inode)
+
+            let shapes =
+                machine.Pipes
+                |> Map.toList
+                |> List.choose (fun (pipeId, pipe) ->
+                    let inodesOfFlavour =
+                        match pipe.Origin with
+                        | PipeOrigin.Launched _ -> true
+                        | PipeOrigin.Made status ->
+                            match status.Inodes, flavour with
+                            | PipeInodes.Shared _, SimulatedUnixFlavour.Linux
+                            | PipeInodes.PerEnd _, SimulatedUnixFlavour.Darwin -> true
+                            | PipeInodes.Shared _, SimulatedUnixFlavour.Darwin
+                            | PipeInodes.PerEnd _, SimulatedUnixFlavour.Linux -> false
+
+                    if inodesOfFlavour && PipeBuffer.isOf platform pipe.Buffer then
+                        None
+                    else
+                        Some (UnixSystemDefect.PipeNotOfPlatform (pipeId, platform))
+                )
+
+            let device =
+                let device = machine.PipeDevice
+
+                let ofFlavour =
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux -> device >= 0L
+                    | SimulatedUnixFlavour.Darwin -> device = 0L
+
+                if ofFlavour then
+                    []
+                else
+                    [ UnixSystemDefect.PipeDeviceNotOfFlavour (device, flavour) ]
+
+            dangling
+            @ unreferenced
+            @ undrained
+            @ unsupplied
+            @ freshness
+            @ inodeFreshness
+            @ inodeDuplicates
+            @ shapes
+            @ device
+
+
+        dangling
+        @ unreferenced
+        @ freshness
+        @ foreignObjects
+        @ danglingInodes
+        @ danglingConnections
+        @ orphanConnections
+        @ duplicateQueued
+        @ connectionEndsHeldTwice
+        @ phaseKindMismatches
+        @ drainedUnderLinux
+        @ connectionFreshness
+        @ ordinalFreshness
+        @ ordinalDuplicates
+        @ unpairedUnderLinux
+        @ statusOfFlavour
+        @ unreferencedDescriptions
+        @ holdCounts
+        @ parkOrdinalFreshness
+        @ parkOrdinalDuplicates
+        @ bindings
+        @ fileSystemType
+        @ protectedFiles
+        @ symlinkPermissions
+        @ userBufferCheck
+        @ threadIds
+        @ pipes
+
+
+    /// Every way one process's view of the machine disagrees with itself: the
+    /// clauses of `checkInvariants` that concern the process `system` is, read
+    /// against the machine. The current directory against the filesystem, each
+    /// descriptor against the bound and the flavour's descriptor flags, each
+    /// task's park against the descriptor table and the machine, each kqueue
+    /// a descriptor or a `kevent` wait names against its owner, the signal
+    /// state against the task table, the leader against the tasks, and the
+    /// process's supplementary groups and file-mode creation mask against its
+    /// platform.
+    let checkViewInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystemDefect<'Task> list
+        =
+
+        let currentDirectory =
+            match VirtualFileSystem.tryGetContent system.Process.CurrentDirectoryInode system.Machine.FileSystem with
+            | Some (InodeContent.Directory _) -> []
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.CharacterDevice _)
+            | Some (InodeContent.Symlink _)
+            | None ->
+                [
+                    UnixSystemDefect.CurrentDirectoryIsNotADirectory system.Process.CurrentDirectoryInode
+                ]
+
         let beyondBound =
             let bound = SimulatedUnixPlatform.descriptorBound system.Machine.UnixPlatform
 
-            FileDescriptorRegistry.fds system.Process.FileDescriptors
+            FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors system)
             |> Map.toList
             |> List.filter (fun (fd, _) -> fd >= bound)
             |> List.map (fun (fd, _) -> UnixSystemDefect.DescriptorAtOrAboveBound (fd, bound))
 
-        let linuxDescriptorFlags =
+        let closeOnForkUnderLinux =
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Darwin -> []
             | SimulatedUnixFlavour.Linux ->
-                let registry = system.Process.FileDescriptors
+                let registry = UnixSystemState.fileDescriptors system
 
-                let closeOnFork =
-                    FileDescriptorRegistry.fds registry
-                    |> Map.toList
-                    |> List.filter (fun (fd, _) ->
-                        match FileDescriptorRegistry.tryFindFlags fd registry with
-                        | Some flags -> flags.CloseOnFork
-                        | None -> false
-                    )
-                    |> List.map (fun (fd, _) -> UnixSystemDefect.CloseOnForkUnderLinux fd)
+                FileDescriptorRegistry.fds registry
+                |> Map.toList
+                |> List.filter (fun (fd, _) ->
+                    match FileDescriptorRegistry.tryFindFlags fd registry with
+                    | Some flags -> flags.CloseOnFork
+                    | None -> false
+                )
+                |> List.map (fun (fd, _) -> UnixSystemDefect.CloseOnForkUnderLinux fd)
 
-                let unpaired =
-                    FileDescriptorRegistry.descriptions registry
-                    |> Map.toList
-                    |> List.filter (fun (_, description) ->
-                        description.Status.Synchronous <> description.Status.DataSynchronous
-                    )
-                    |> List.map (fun (id, _) -> UnixSystemDefect.UnpairedSynchronisationUnderLinux id)
 
-                closeOnFork @ unpaired
-
+        // Each task's park against the descriptor table. A park names what the
+        // task waits on, and the wake reads the description back; the park
+        // holds it until the call returns, so an absent one was parked on
+        // without going through the syscall or destroyed around it.
         let parks =
-            let descriptions =
-                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            let descriptions = OpenFileTable.descriptions system.Machine.OpenFiles
 
             let darwin =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
@@ -1271,7 +1724,7 @@ module UnixSystem =
             // descriptor still names what it sleeps on. Under Linux the close
             // leaves it asleep, and the number is not consulted.
             let enteredThrough (task : 'Task) (fd : int) (description : OpenFileDescriptionId) =
-                match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
                 | Some current when current = description -> []
                 | _ when not darwin -> []
                 | current ->
@@ -1323,7 +1776,9 @@ module UnixSystem =
                         | Some description ->
                             match description.Target with
                             | OpenFileTarget.Kqueue state ->
-                                match FileDescriptorRegistry.tryFindId wait.Fd system.Process.FileDescriptors with
+                                match
+                                    FileDescriptorRegistry.tryFindId wait.Fd (UnixSystemState.fileDescriptors system)
+                                with
                                 | Some current when current = wait.Kqueue -> []
                                 | _ when state.Drained -> []
                                 | current ->
@@ -1367,7 +1822,9 @@ module UnixSystem =
                                     | OpenFileTarget.Pipe _ -> []
 
                                 let rebound =
-                                    match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                                    match
+                                        FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system)
+                                    with
                                     | Some current when current = watched -> []
                                     | current ->
                                         [ UnixSystemDefect.ParkedPollDescriptorRebound (task, fd, watched, current) ]
@@ -1378,7 +1835,7 @@ module UnixSystem =
                     let entries = List.length poll.Entries
 
                     let socketOf (fd : int) : SocketId option =
-                        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
                         | Some (OpenFileTarget.Socket socketId) -> Some socketId
                         | Some _
                         | None -> None
@@ -1388,7 +1845,9 @@ module UnixSystem =
                         |> Map.toList
                         |> List.collect (fun ((fd, filter as key), registration) ->
                             let target =
-                                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                                match
+                                    FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system)
+                                with
                                 | Some (OpenFileTarget.Socket socketId) as target ->
                                     match Map.tryFind socketId system.Machine.Sockets with
                                     | Some socket when DarwinReadiness.modelsSocket socket ->
@@ -1509,76 +1968,45 @@ module UnixSystem =
                     progress @ target
             )
 
-        // Every description is referenced: by a descriptor, or by a call in
-        // flight that holds it.
-        let unreferencedDescriptions =
+
+        // Every kqueue a descriptor of this process names, or a `kevent` wait of
+        // one of its tasks sleeps on, is one this process owns, since its
+        // registrations' descriptor numbers are read in its owner's table.
+        let kqueueOwners =
+            let ownedElsewhere (kqueue : OpenFileDescriptionId) : ProcessId option =
+                match OpenFileTable.tryFind kqueue system.Machine.OpenFiles with
+                | Some {
+                           Target = OpenFileTarget.Kqueue state
+                       } when state.Owner <> system.Process.ProcessId -> Some state.Owner
+                | Some _
+                | None -> None
+
             let named =
-                FileDescriptorRegistry.fds system.Process.FileDescriptors
-                |> Map.toSeq
-                |> Seq.map snd
-                |> Set.ofSeq
+                FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors system)
+                |> Map.toList
+                |> List.choose (fun (fd, kqueue) ->
+                    ownedElsewhere kqueue
+                    |> Option.map (fun owner -> UnixSystemDefect.KqueueOfAnotherProcess (fd, kqueue, owner))
+                )
 
-            let held = ObjectLifetime.heldByCalls system.Tasks
+            let waited =
+                system.Tasks
+                |> Map.toList
+                |> List.choose (fun (_, state) ->
+                    match state.Parked with
+                    | Some {
+                               Syscall = ParkedSyscall.Kevent wait
+                           } ->
+                        ownedElsewhere wait.Kqueue
+                        |> Option.map (fun owner ->
+                            UnixSystemDefect.KqueueOfAnotherProcess (wait.Fd, wait.Kqueue, owner)
+                        )
+                    | Some _
+                    | None -> None
+                )
 
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-            |> Map.toList
-            |> List.map fst
-            |> List.filter (fun id -> not (Set.contains id named) && not (Set.contains id held))
-            |> List.map UnixSystemDefect.UnreferencedDescription
+            List.distinct (named @ waited)
 
-        let parkOrdinals =
-            system.Tasks
-            |> Map.toList
-            |> List.choose (fun (task, state) -> state.Parked |> Option.map (fun park -> task, park.Ordinal))
-
-        let parkOrdinalFreshness =
-            parkOrdinals
-            |> List.filter (fun (_, ordinal) -> ordinal >= system.Machine.NextParkOrdinal)
-            |> List.map (fun (task, ordinal) ->
-                UnixSystemDefect.ParkOrdinalNotFresh (system.Machine.NextParkOrdinal, task, ordinal)
-            )
-
-        let parkOrdinalDuplicates =
-            parkOrdinals
-            |> List.countBy snd
-            |> List.filter (fun (_, count) -> count > 1)
-            |> List.map (fun (ordinal, _) -> UnixSystemDefect.DuplicateParkOrdinal ordinal)
-
-        // Bindings no bind or listen could have produced.
-        let bindings =
-            system.Machine.Sockets
-            |> Map.toList
-            |> List.collect (fun (socketId, socket) ->
-                let unboundListener =
-                    match socket.Phase, socket.Binding with
-                    | SocketPhase.Listening _, None -> [ UnixSystemDefect.ListenerWithoutBinding socketId ]
-                    | _ -> []
-
-                let portZero =
-                    match socket.Binding with
-                    | Some binding when binding.Endpoint.Port = 0us ->
-                        let halfBound =
-                            // Only Linux's `connect(AF_UNSPEC)` produces this,
-                            // and it always leaves the socket idle.
-                            SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
-                            && socket.Kind = SocketKind.Datagram
-                            && socket.Phase = SocketPhase.Idle
-                            && not binding.LockedPort
-                            && (
-                                match binding.LockedAddress with
-                                | Some locked ->
-                                    locked <> InternetEndpoint.WildcardAddress && locked = binding.Endpoint.Address
-                                | None -> false
-                            )
-
-                        if halfBound then
-                            []
-                        else
-                            [ UnixSystemDefect.BoundToPortZero socketId ]
-                    | _ -> []
-
-                unboundListener @ portZero
-            )
 
         // The signal state against the task table: every task it names must
         // be one, or the delivery that reads it has nowhere to go. And against
@@ -1617,37 +2045,6 @@ module UnixSystem =
 
             numberings @ frames @ targets
 
-        let fileSystemType =
-            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
-
-            let fsType = EmulatedMount.fileSystemType system.Machine.Mount
-
-            if EmulatedFileSystemType.isReportableUnder flavour fsType then
-                []
-            else
-                [ UnixSystemDefect.FileSystemTypeNotReportable (flavour, fsType) ]
-
-        let protectedFiles =
-            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
-
-            if UnixMachineState.isProtectedFilesOf flavour system.Machine.ProtectedFiles then
-                []
-            else
-                [
-                    UnixSystemDefect.ProtectedFilesNotOfFlavour (system.Machine.ProtectedFiles, flavour)
-                ]
-
-        let userBufferCheck =
-            if UnixMachineState.isUserBufferCheckOf system.Machine.UnixPlatform system.Machine.UserBufferCheck then
-                []
-            else
-                [
-                    UnixSystemDefect.UserBufferCheckNotOfPlatform (
-                        system.Machine.UnixPlatform,
-                        system.Machine.UserBufferCheck
-                    )
-                ]
-
         let supplementaryGroups =
             let count = List.length system.Process.Credentials.SupplementaryGroups
 
@@ -1659,36 +2056,6 @@ module UnixSystem =
             else
                 []
 
-        // Every symbolic link's bits are ones its flavour creates a link with,
-        // under the umask that would leave exactly those bits.
-        let symlinkPermissions =
-            let platform = system.Machine.UnixPlatform
-
-            VirtualFileSystem.inodes system.Machine.FileSystem
-            |> Map.toList
-            |> List.choose (fun (inode, entry) ->
-                match entry.Content with
-                | InodeContent.Symlink (_, bits) ->
-                    let umask =
-                        PermissionBits.parseOrFail
-                            "UnixSystem.checkInvariants"
-                            (0o777 &&& ~~~(PermissionBits.toInt bits))
-
-                    if SimulatedUnixPlatform.symlinkCreationPermissions platform umask = bits then
-                        None
-                    else
-                        Some (
-                            UnixSystemDefect.SymlinkPermissionsNotOfFlavour (
-                                inode,
-                                bits,
-                                SimulatedUnixPlatform.flavour platform
-                            )
-                        )
-                | InodeContent.RegularFile _
-                | InodeContent.Directory _
-                | InodeContent.CharacterDevice _ -> None
-            )
-
         let umask =
             let platform = system.Machine.UnixPlatform
             let stored = PermissionBits.toInt (SimulatedUnixPlatform.umaskStoredBits platform)
@@ -1698,223 +2065,59 @@ module UnixSystem =
             else
                 []
 
-        // The task table against the process and the machine's thread ID
-        // counter: the leader is a task, no two tasks share an ID, and every ID is
-        // one the counter could have handed out, so none can be handed out again
-        // while its task lives.
-        let threadIds =
-            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
-            let allocator = system.Machine.ThreadIds
+        // The process's leader against its tasks: it is one, and on Linux its
+        // thread ID is the process ID.
+        let leader =
+            match Map.tryFind system.Leader system.Tasks with
+            | None -> [ UnixSystemDefect.LeaderWithoutTask system.Leader ]
+            | Some state ->
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux when
+                    OsThreadId.toUInt64 state.OsThreadId
+                    <> uint64 (ProcessId.toInt32 system.Process.ProcessId)
+                    ->
+                    [
+                        UnixSystemDefect.LeaderThreadIdNotProcessId (
+                            system.Leader,
+                            state.OsThreadId,
+                            system.Process.ProcessId
+                        )
+                    ]
+                | SimulatedUnixFlavour.Linux
+                | SimulatedUnixFlavour.Darwin -> []
 
-            let allocatorFlavour =
-                match flavour, allocator with
-                | SimulatedUnixFlavour.Linux, ThreadIdAllocator.Linux _
-                | SimulatedUnixFlavour.Darwin, ThreadIdAllocator.Darwin _ -> []
-                | SimulatedUnixFlavour.Linux, ThreadIdAllocator.Darwin _
-                | SimulatedUnixFlavour.Darwin, ThreadIdAllocator.Linux _ ->
-                    [ UnixSystemDefect.ThreadIdAllocatorNotOfFlavour (flavour, allocator) ]
 
-            let leader =
-                match Map.tryFind system.Leader system.Tasks with
-                | None -> [ UnixSystemDefect.LeaderWithoutTask system.Leader ]
-                | Some state ->
-                    match flavour with
-                    | SimulatedUnixFlavour.Linux when
-                        OsThreadId.toUInt64 state.OsThreadId
-                        <> uint64 (ProcessId.toInt32 system.Process.ProcessId)
-                        ->
-                        [
-                            UnixSystemDefect.LeaderThreadIdNotProcessId (
-                                system.Leader,
-                                state.OsThreadId,
-                                system.Process.ProcessId
-                            )
-                        ]
-                    | SimulatedUnixFlavour.Linux
-                    | SimulatedUnixFlavour.Darwin -> []
-
-            let duplicates =
-                system.Tasks
-                |> Map.toList
-                |> List.groupBy (fun (_, state) -> state.OsThreadId)
-                |> List.choose (fun (id, holders) ->
-                    match holders with
-                    | []
-                    | [ _ ] -> None
-                    | _ -> Some (UnixSystemDefect.DuplicateOsThreadId (id, List.map fst holders))
-                )
-
-            let unmintable =
-                system.Tasks
-                |> Map.toList
-                |> List.filter (fun (_, state) -> not (ThreadIdAllocator.couldHaveMinted state.OsThreadId allocator))
-                |> List.map (fun (task, state) ->
-                    UnixSystemDefect.OsThreadIdNotMintable (task, state.OsThreadId, allocator)
-                )
-
-            allocatorFlavour @ leader @ duplicates @ unmintable
-
-        // The pipe table against the descriptions naming its pipes, and each
-        // pipe against its machine, as for sockets above.
-        let pipes =
-            let platform = system.Machine.UnixPlatform
-            let flavour = SimulatedUnixPlatform.flavour platform
-
-            let named =
-                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-                |> Map.toList
-                |> List.choose (fun (id, description) ->
-                    match description.Target with
-                    | OpenFileTarget.Pipe (pipeId, _) -> Some (id, pipeId)
-                    | OpenFileTarget.Kqueue _
-                    | OpenFileTarget.Epoll _
-                    | OpenFileTarget.File _
-                    | OpenFileTarget.Directory _
-                    | OpenFileTarget.CharacterDevice _
-                    | OpenFileTarget.Socket _ -> None
-                )
-
-            let dangling =
-                named
-                |> List.filter (fun (_, pipeId) -> not (Map.containsKey pipeId system.Machine.Pipes))
-                |> List.map UnixSystemDefect.DanglingPipe
-
-            let namedIds = named |> List.map snd |> Set.ofList
-
-            let unreferenced =
-                system.Machine.Pipes
-                |> Map.toList
-                |> List.filter (fun (pipeId, pipe) ->
-                    not (Set.contains pipeId namedIds)
-                    && not (PipeState.heldByClient PipeEnd.Read pipe)
-                    && not (PipeState.heldByClient PipeEnd.Write pipe)
-                )
-                |> List.map (fst >> UnixSystemDefect.UnreferencedPipe)
-
-            let undrained =
-                system.Machine.Pipes
-                |> Map.toList
-                |> List.choose (fun (pipeId, pipe) ->
-                    let held = PipeBuffer.held pipe.Buffer
-
-                    match PipeState.drainedBy pipe with
-                    | Some _ when held > 0 -> Some (UnixSystemDefect.DrainedPipeHoldsBytes (pipeId, held))
-                    | Some _
-                    | None -> None
-                )
-
-            let unsupplied =
-                system.Machine.Pipes
-                |> Map.toList
-                |> List.filter (fun (_, pipe) -> PipeState.clientWriteCouldProceed pipe)
-                |> List.map (fst >> UnixSystemDefect.SuppliedPipeHasRoom)
-
-            let freshness =
-                system.Machine.Pipes
-                |> Map.toList
-                |> List.map fst
-                |> List.filter (fun pipeId -> pipeId >= system.Machine.NextPipeId)
-                |> List.map (fun pipeId -> UnixSystemDefect.NextPipeIdNotFresh (system.Machine.NextPipeId, pipeId))
-
-            let inodes =
-                system.Machine.Pipes
-                |> Map.toList
-                |> List.collect (fun (pipeId, pipe) ->
-                    match pipe.Origin with
-                    | PipeOrigin.Launched _ -> []
-                    | PipeOrigin.Made status ->
-                        match status.Inodes with
-                        | PipeInodes.Shared inode -> [ pipeId, inode ]
-                        | PipeInodes.PerEnd (readEnd, writeEnd) -> [ pipeId, readEnd ; pipeId, writeEnd ]
-                )
-
-            let inodeFreshness =
-                inodes
-                |> List.filter (fun (_, inode) -> inode >= system.Machine.NextPipeInode)
-                |> List.map (fun (pipeId, inode) ->
-                    UnixSystemDefect.PipeInodeNotFresh (system.Machine.NextPipeInode, pipeId, inode)
-                )
-
-            let inodeDuplicates =
-                inodes
-                |> List.countBy snd
-                |> List.filter (fun (_, count) -> count > 1)
-                |> List.map (fun (inode, _) -> UnixSystemDefect.DuplicatePipeInode inode)
-
-            let shapes =
-                system.Machine.Pipes
-                |> Map.toList
-                |> List.choose (fun (pipeId, pipe) ->
-                    let inodesOfFlavour =
-                        match pipe.Origin with
-                        | PipeOrigin.Launched _ -> true
-                        | PipeOrigin.Made status ->
-                            match status.Inodes, flavour with
-                            | PipeInodes.Shared _, SimulatedUnixFlavour.Linux
-                            | PipeInodes.PerEnd _, SimulatedUnixFlavour.Darwin -> true
-                            | PipeInodes.Shared _, SimulatedUnixFlavour.Darwin
-                            | PipeInodes.PerEnd _, SimulatedUnixFlavour.Linux -> false
-
-                    if inodesOfFlavour && PipeBuffer.isOf platform pipe.Buffer then
-                        None
-                    else
-                        Some (UnixSystemDefect.PipeNotOfPlatform (pipeId, platform))
-                )
-
-            let device =
-                let device = system.Machine.PipeDevice
-
-                let ofFlavour =
-                    match flavour with
-                    | SimulatedUnixFlavour.Linux -> device >= 0L
-                    | SimulatedUnixFlavour.Darwin -> device = 0L
-
-                if ofFlavour then
-                    []
-                else
-                    [ UnixSystemDefect.PipeDeviceNotOfFlavour (device, flavour) ]
-
-            dangling
-            @ unreferenced
-            @ undrained
-            @ unsupplied
-            @ freshness
-            @ inodeFreshness
-            @ inodeDuplicates
-            @ shapes
-            @ device
-
-        dangling
-        @ unreferenced
-        @ freshness
-        @ foreignObjects
-        @ danglingInodes
-        @ currentDirectory
-        @ danglingConnections
-        @ orphanConnections
-        @ duplicateQueued
-        @ phaseKindMismatches
-        @ drainedUnderLinux
-        @ connectionFreshness
-        @ ordinalFreshness
-        @ ordinalDuplicates
+        currentDirectory
         @ beyondBound
-        @ linuxDescriptorFlags
-        @ statusOfFlavour
+        @ closeOnForkUnderLinux
         @ parks
-        @ unreferencedDescriptions
-        @ parkOrdinalFreshness
-        @ parkOrdinalDuplicates
-        @ bindings
+        @ kqueueOwners
         @ signals
-        @ fileSystemType
-        @ protectedFiles
-        @ symlinkPermissions
-        @ userBufferCheck
         @ supplementaryGroups
         @ umask
-        @ threadIds
-        @ pipes
+        @ leader
+
+
+    /// Every way this system's tables disagree with each other: the machine's
+    /// clauses (`checkMachineInvariants`), with this process as the only one on
+    /// the machine, and this process's view's (`checkViewInvariants`).
+    ///
+    /// Each table's own rules are elsewhere and are not repeated here:
+    /// `FileDescriptorRegistry.checkInvariants` for the descriptor table and the
+    /// open file descriptions it names, and
+    /// `VirtualFileSystem.checkInvariants` for the filesystem. The latter takes
+    /// a `pinned` argument, which is what `pinnedInodes` computes, so a caller
+    /// wanting the whole picture pairs this with
+    /// `VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes system) system.Machine.FileSystem`.
+    ///
+    /// A client that holds its own references into these tables owes its own
+    /// rules about them on top of these.
+    let checkInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystemDefect<'Task> list
+        =
+        checkMachineInvariants [ system.Process, system.Tasks ] system.Machine
+        @ checkViewInvariants system
 
     /// Logical-processor count a freshly-minted simulated process reports.
     /// One, because only single-processor behaviour has been exercised
@@ -1996,7 +2199,7 @@ module UnixSystem =
     /// The prefixes Linux's local routing table holds, which it will `bind(2)`
     /// any address inside. Loopback's `127.0.0.0/8` is the one every Linux has,
     /// and is why `127.9.9.9` binds there and not on Darwin.
-    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
+    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.loopbackNetwork ]
 
     /// Effective user ID a freshly-minted simulated process runs as.
     ///
@@ -2119,7 +2322,7 @@ module UnixSystem =
     /// which a client moves with `UnixBootImage.withLeaderThreadId`.
     ///
     /// The fields the platform *fixes* are derived from it rather than
-    /// taken as arguments — `SoMaxConn`, `TcpSendSpace`, `Mount`, and the platform
+    /// taken as arguments — `SoMaxConn`, the TCP buffer sysctls, `Mount`, and the platform
     /// itself — because a machine whose flavour and those disagree is one no
     /// real system could be: `EmulatedFileSystemType.isReportableUnder` says
     /// outright that a Darwin kernel never reports tmpfs. Building the record
@@ -2186,15 +2389,23 @@ module UnixSystem =
                         $"UnixSystem.initial: the launch table names descriptor %d{fd}, at or above the bound %d{SimulatedUnixPlatform.descriptorBound platform} this kernel assumes the process's RLIMIT_NOFILE reaches; it hands out no descriptor there."
 
                 let pipeId = PipeId (int64 index)
-                let pipe, pipeEnd = PipeState.launch platform fd descriptor
+                let pipe, pipeEnd = PipeState.launch platform defaultProcessId fd descriptor
                 fd, pipeId, pipeEnd, pipe
             )
+
+        let launchedDescriptors =
+            FileDescriptorRegistry.ofLaunchedPipes
+                (launched
+                 |> List.map (fun (fd, pipeId, pipeEnd, _) -> fd, (pipeId, pipeEnd))
+                 |> Map.ofList)
+                OpenFileTable.empty
 
         {
             System =
                 {
                     Machine =
                         {
+                            OpenFiles = FileDescriptorRegistry.openFiles launchedDescriptors
                             Sockets = Map.empty
                             Pipes = launched |> List.map (fun (_, pipeId, _, pipe) -> pipeId, pipe) |> Map.ofList
                             NextPipeId = PipeId (int64 (List.length launched))
@@ -2213,6 +2424,8 @@ module UnixSystem =
                             EphemeralPortRange = defaultEphemeralPortRange flavour
                             SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
                             TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
+                            TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace flavour
+                            TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax flavour
                             LocalAddresses = defaultLocalAddresses
                             LocalRoutes = defaultLocalRoutes
                             NanosecondsSinceBoot = 0L
@@ -2228,11 +2441,7 @@ module UnixSystem =
                         }
                     Process =
                         {
-                            FileDescriptors =
-                                launched
-                                |> List.map (fun (fd, pipeId, pipeEnd, _) -> fd, (pipeId, pipeEnd))
-                                |> Map.ofList
-                                |> FileDescriptorRegistry.ofLaunchedPipes
+                            FileDescriptors = FileDescriptorRegistry.descriptorTable launchedDescriptors
                             Environment = []
                             // The default current directory is the root, which every filesystem
                             // has and no operation can remove, so the pair starts consistent

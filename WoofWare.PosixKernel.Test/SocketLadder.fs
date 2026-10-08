@@ -120,7 +120,7 @@ module SocketLadder =
         fd, system
 
     let socketOf (fd : int) (system : UnixSystem<int, string>) : SocketDescription =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) -> UnixMachineState.socket socketId system.Machine
         | other -> failwith $"fd %d{fd} names %A{other}"
 

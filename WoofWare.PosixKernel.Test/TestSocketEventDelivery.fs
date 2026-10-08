@@ -86,28 +86,22 @@ module TestSocketEventDelivery =
         EpollReadyList.hasDeliverableEvent queueId kernel
 
     let private addEpoll (kernel : UnixSystem<int, string>) : int * OpenFileDescriptionId * UnixSystem<int, string> =
-        let fd, registry = FileDescriptorRegistry.createEpoll kernel.Process.FileDescriptors
+        let fd, registry =
+            FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors kernel)
 
         let queueId =
             match FileDescriptorRegistry.tryFindId fd registry with
             | Some id -> id
             | None -> failwith "epoll fd not live"
 
-        fd,
-        queueId,
-        { kernel with
-            Process =
-                { kernel.Process with
-                    FileDescriptors = registry
-                }
-        }
+        fd, queueId, UnixSystemState.withFileDescriptors registry kernel
 
     let private addStream (kernel : UnixSystem<int, string>) : int * SocketId * UnixSystem<int, string> =
         let fd, kernel =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp kernel
 
         let socketId =
-            match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
+            match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors kernel) with
             | Some description ->
                 match description.Target with
                 | OpenFileTarget.Socket socketId -> socketId
@@ -192,7 +186,7 @@ module TestSocketEventDelivery =
         (kernel : UnixSystem<int, string>)
         : (int * OpenFileDescriptionId) list
         =
-        match Map.tryFind queueId (FileDescriptorRegistry.descriptions kernel.Process.FileDescriptors) with
+        match Map.tryFind queueId (OpenFileTable.descriptions kernel.Machine.OpenFiles) with
         | Some description ->
             match description.Target with
             | OpenFileTarget.Epoll queueState -> queueState.Ready
@@ -202,7 +196,7 @@ module TestSocketEventDelivery =
     let private assertSound (kernel : UnixSystem<int, string>) : unit =
         UnixSystem.checkInvariants kernel |> shouldEqual []
 
-        FileDescriptorRegistry.checkInvariants kernel.Process.FileDescriptors
+        FileDescriptorRegistry.checkInvariants (UnixSystemState.fileDescriptors kernel)
         |> shouldEqual []
 
     // --- rows A-E: what an edge is ---
@@ -408,15 +402,8 @@ module TestSocketEventDelivery =
             let _, c1, kernel = addStream kernel
 
             let dupFd, kernel =
-                match FileDescriptorRegistry.dup listenerFd kernel.Process.FileDescriptors with
-                | Ok (fd, registry) ->
-                    fd,
-                    { kernel with
-                        Process =
-                            { kernel.Process with
-                                FileDescriptors = registry
-                            }
-                    }
+                match FileDescriptorRegistry.dup listenerFd (UnixSystemState.fileDescriptors kernel) with
+                | Ok (fd, registry) -> fd, UnixSystemState.withFileDescriptors registry kernel
                 | Error error -> failwith $"dup failed: %O{error}"
 
             let kernel =
@@ -969,15 +956,8 @@ module TestSocketEventDelivery =
         let _, c1, kernel = addStream kernel
 
         let dupFd, kernel =
-            match FileDescriptorRegistry.dup listenerFd kernel.Process.FileDescriptors with
-            | Ok (fd, registry) ->
-                fd,
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            FileDescriptors = registry
-                        }
-                }
+            match FileDescriptorRegistry.dup listenerFd (UnixSystemState.fileDescriptors kernel) with
+            | Ok (fd, registry) -> fd, UnixSystemState.withFileDescriptors registry kernel
             | Error error -> failwith $"dup failed: %O{error}"
 
         let kernel = kernel |> register queueFd listenerFd 1UL |> register queueFd dupFd 2UL
@@ -1006,15 +986,8 @@ module TestSocketEventDelivery =
             let queueFd, queueId, kernel = addEpoll initialSystem
 
             let dupFd, kernel =
-                match FileDescriptorRegistry.dup queueFd kernel.Process.FileDescriptors with
-                | Ok (fd, registry) ->
-                    fd,
-                    { kernel with
-                        Process =
-                            { kernel.Process with
-                                FileDescriptors = registry
-                            }
-                    }
+                match FileDescriptorRegistry.dup queueFd (UnixSystemState.fileDescriptors kernel) with
+                | Ok (fd, registry) -> fd, UnixSystemState.withFileDescriptors registry kernel
                 | Error error -> failwith $"dup failed: %O{error}"
 
             let kernel =
@@ -1043,7 +1016,7 @@ module TestSocketEventDelivery =
         // ...and so does the last one, leaving the epoll instance to the wait.
         match UnixDescriptor.close queueFd kernel with
         | Ok (SyscallAnswer.Completed 0L, closed) ->
-            FileDescriptorRegistry.descriptions closed.Process.FileDescriptors
+            OpenFileTable.descriptions closed.Machine.OpenFiles
             |> Map.containsKey (
                 match UnixTaskTable.parkedFor 1 closed.Tasks with
                 | Some (ParkedSyscall.EpollWait wait) -> wait.Epoll
@@ -1068,8 +1041,7 @@ module TestSocketEventDelivery =
         assertSound kernel
 
         let withOrdinals (first : int64) (second : int64) (counter : int64) : UnixSystem<int, string> =
-            let descriptions =
-                FileDescriptorRegistry.descriptions kernel.Process.FileDescriptors
+            let descriptions = OpenFileTable.descriptions kernel.Machine.OpenFiles
 
             let queueState =
                 match (Map.find queueId descriptions).Target with
@@ -1090,28 +1062,25 @@ module TestSocketEventDelivery =
                 )
                 |> Map.ofList
 
-            { kernel with
-                Machine =
-                    { kernel.Machine with
-                        NextEventRegistrationOrdinal = counter
-                    }
-                Process =
-                    { kernel.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.Unchecked.mapDescription
-                                queueId
-                                (fun description ->
-                                    { description with
-                                        Target =
-                                            OpenFileTarget.Epoll
-                                                { queueState with
-                                                    Registrations = rewritten
-                                                }
+            (UnixSystemState.withFileDescriptors
+                (FileDescriptorRegistry.Unchecked.mapDescription
+                    queueId
+                    (fun description ->
+                        { description with
+                            Target =
+                                OpenFileTarget.Epoll
+                                    { queueState with
+                                        Registrations = rewritten
                                     }
-                                )
-                                kernel.Process.FileDescriptors
-                    }
-            }
+                        }
+                    )
+                    (UnixSystemState.fileDescriptors kernel))
+                { kernel with
+                    Machine =
+                        { kernel.Machine with
+                            NextEventRegistrationOrdinal = counter
+                        }
+                })
 
         UnixSystem.checkInvariants (withOrdinals 0L 5L 2L)
         |> shouldEqual [ UnixSystemDefect.EventRegistrationOrdinalNotFresh (2L, queueId, 5L) ]

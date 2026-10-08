@@ -14,6 +14,7 @@
     <Compile Include="TestJitSwitchLowering.fs" />
     <Compile Include="TestNoMissedInterpolation.fs" />
     <Compile Include="TestFixturesDeclareParallelism.fs" />
+    <Compile Include="TestPublishedXmlDocumentation.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="FrameworkUnderTest.fs" />
     <Compile Include="TestFrameworkLocatorRatchet.fs" />

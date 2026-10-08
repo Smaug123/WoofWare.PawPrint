@@ -21,13 +21,29 @@ namespace WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 module LinuxReadiness =
 
+    /// Whether this kernel models the readiness `socket` presents to a
+    /// Linux-flavoured waiter: any socket but a `SOCK_SEQPACKET` one.
+    ///
+    /// An `AF_UNIX` `SOCK_SEQPACKET` socket's `poll(2)` level is measured, but
+    /// what an epoll wait reports for one is not, and the two waiters read one
+    /// level; so `UnixPoll.poll` and `UnixPoll.epollCtl` refuse such a socket
+    /// rather than ask `ofDescription` for it.
+    let modelsSocket (socket : SocketDescription) : bool =
+        match socket.Kind with
+        | SocketKind.Stream
+        | SocketKind.Datagram -> true
+        | SocketKind.SeqPacket -> false
+
     /// The mask the descriptor `targetId` names presents right now.
+    ///
+    /// Defined for a socket only when `modelsSocket` accepts it, and failing
+    /// otherwise.
     let ofDescription<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (targetId : OpenFileDescriptionId)
         (system : UnixSystem<'Task, 'Handler>)
         : uint32
         =
-        match Map.tryFind targetId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        match OpenFileTable.tryFind targetId system.Machine.OpenFiles with
         | None ->
             failwith
                 $"LinuxReadiness.ofDescription: %O{targetId} names no live open file description. Both waiters resolve their descriptor first, and FileDescriptorRegistry.dropDescriptor sweeps destroyed descriptions out of every interest table, so this is a bug in this library."
@@ -107,7 +123,7 @@ module LinuxReadiness =
                  EpollEvents.In ||| EpollEvents.RdNorm
              else
                  0u)
-            ||| (if UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Write system.Process then
+            ||| (if UnixMachineState.pipeEndOpen pipeId pipe PipeEnd.Write system.Machine then
                      0u
                  else
                      EpollEvents.Hup)
@@ -121,7 +137,7 @@ module LinuxReadiness =
                  EpollEvents.Out ||| EpollEvents.WrNorm
              else
                  0u)
-            ||| (if UnixProcessState.pipeEndOpen pipeId pipe PipeEnd.Read system.Process then
+            ||| (if UnixMachineState.pipeEndOpen pipeId pipe PipeEnd.Read system.Machine then
                      0u
                  else
                      EpollEvents.Err)
@@ -181,7 +197,7 @@ module EpollReadyList =
         (system : UnixSystem<'Task, 'Handler>)
         : bool
         =
-        match Map.tryFind epollId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        match OpenFileTable.tryFind epollId system.Machine.OpenFiles with
         | None ->
             failwith
                 $"EpollReadyList.hasDeliverableEvent: %O{epollId} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
@@ -224,7 +240,7 @@ module EpollReadyList =
             failwith
                 $"EpollReadyList.drain: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is a bug in the caller of EpollReadyList.drain."
 
-        match Map.tryFind epollId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        match OpenFileTable.tryFind epollId system.Machine.OpenFiles with
         | None ->
             failwith
                 $"EpollReadyList.drain: %O{epollId} names no live open file description (this is a bug in the caller of EpollReadyList.drain)."
@@ -258,14 +274,7 @@ module EpollReadyList =
 
         let delivered, surviving = walk [] (annotatedReady epollState system)
 
-        delivered,
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors =
-                        FileDescriptorRegistry.setEpollReady epollId surviving system.Process.FileDescriptors
-                }
-        }
+        delivered, UnixSystemState.mapOpenFiles (OpenFileTable.setEpollReady epollId surviving) system
 
 /// What a kqueue filter reports of a descriptor on which it is ready. `data`
 /// is what the event's `data` field holds: for `EVFILT_READ` of a listener
@@ -309,17 +318,6 @@ module DarwinReadiness =
     // completed connect clears it.
     let private preconnectSendSpace : int64 = 2048L
 
-    // A TCP segment's payload over Darwin's loopback, in bytes: the interface's
-    // MTU of 16384, less the IP and TCP headers and the 12-byte timestamp
-    // option both ends use. Measured as `TCP_MAXSEG` (`kevent-write-data.c`).
-    let private loopbackSegment (domain : SocketDomain) : int64 =
-        match domain with
-        | SocketDomain.Inet -> 16384L - 40L - 12L
-        | SocketDomain.Inet6 -> 16384L - 60L - 12L
-        | SocketDomain.Unix ->
-            failwith
-                "DarwinReadiness.loopbackSegment: a Unix-domain socket has no TCP segments (this is a bug in this library: modelsSocket admits no Unix-domain socket)."
-
     /// The free space in the send buffer of the TCP socket `socket`, in bytes:
     /// what `EVFILT_WRITE` reports as its event's `data`.
     ///
@@ -358,13 +356,7 @@ module DarwinReadiness =
                 $"DarwinReadiness.sendBufferSpace: the socket is %O{socket.Kind} in %O{socket.Domain}, whose send buffer this kernel does not model (this is a bug in the caller)."
 
         match socket.Phase with
-        | SocketPhase.Established _ ->
-            // The handshake rounds the buffer up to whole segments. The route to
-            // 127.0.0.1 would first raise it to its send pipe, but
-            // `withTcpSendSpace` admits nothing below that.
-            let segment = loopbackSegment socket.Domain
-            let rounded = (int64 sendSpace + segment - 1L) / segment * segment
-            min rounded (int64 UnixMachineState.darwinSocketBufferMax)
+        | SocketPhase.Established _ -> int64 (TcpBufferSizing.darwinSendBuffer sendSpace socket.Domain)
         // Darwin's rule is the lesser of the two, though the cap always wins
         // while `withTcpSendSpace` admits nothing below 49152.
         | SocketPhase.Refused _ -> min (int64 sendSpace) preconnectSendSpace
@@ -414,7 +406,7 @@ module DarwinReadiness =
         // Bound or not: a socket that is not connected can neither be read nor
         // written.
         | SocketPhase.Idle, _ -> None
-        | SocketPhase.Established connectionId, KqueueFilter.Read ->
+        | SocketPhase.Established (connectionId, _), KqueueFilter.Read ->
             if UnixMachineState.peerOpen socketId connectionId machine then
                 None
             else
@@ -463,7 +455,7 @@ module DarwinReadiness =
             | PipeEnd.Read -> PipeEnd.Write
             | PipeEnd.Write -> PipeEnd.Read
 
-        let ended = not (UnixProcessState.pipeEndOpen pipeId pipe otherEnd system.Process)
+        let ended = not (UnixMachineState.pipeEndOpen pipeId pipe otherEnd system.Machine)
 
         let held = int64 (PipeBuffer.held pipe.Buffer)
 
@@ -521,7 +513,7 @@ module KqueueQueue =
         (system : UnixSystem<'Task, 'Handler>)
         : KqueueState
         =
-        match Map.tryFind kqueue (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        match OpenFileTable.tryFind kqueue system.Machine.OpenFiles with
         | Some {
                    Target = OpenFileTarget.Kqueue state
                } -> state
@@ -535,12 +527,7 @@ module KqueueQueue =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
-        { system with
-            Process =
-                { system.Process with
-                    FileDescriptors = FileDescriptorRegistry.setKqueueState kqueue state system.Process.FileDescriptors
-                }
-        }
+        UnixSystemState.mapOpenFiles (OpenFileTable.setKqueueState kqueue state) system
 
     /// The socket the descriptor `fd` names, or `None` when it names anything
     /// else or nothing.
@@ -549,7 +536,7 @@ module KqueueQueue =
         (system : UnixSystem<'Task, 'Handler>)
         : SocketId option
         =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) -> Some socketId
         | Some _
         | None -> None
@@ -622,24 +609,35 @@ module KqueueQueue =
         )
 
     /// Something happened to the socket `socketId` that wakes each filter of
-    /// `filters`, in that order: in every kqueue, and in the kqueue of every
-    /// Darwin `poll` asleep (`ParkedKqueuePoll`), queue each registration of
-    /// the socket for that filter whose filter is ready now and which is not
-    /// queued already. Of several registrations of the socket for one filter,
-    /// made through different descriptors onto it, the newest-registered is
-    /// queued first.
+    /// `filters`, in that order: in every kqueue `system`'s process owns
+    /// (`KqueueState.Owner`), and in the kqueue of every Darwin `poll` asleep in
+    /// it (`ParkedKqueuePoll`), queue each registration of the socket for that
+    /// filter whose filter is ready now and which is not queued already. Of
+    /// several registrations of the socket for one filter, made through
+    /// different descriptors onto it, the newest-registered is queued first.
+    ///
+    /// Fails loudly if a kqueue another process owns registers anything: its
+    /// registrations name descriptors in that process's table, which this
+    /// process's view cannot read, so whether the event reaches them is not
+    /// known here.
     let activate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (filters : KqueueFilter list)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
+        let owner = system.Process.ProcessId
+
         let kqueues =
-            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
-            |> Map.toList
+            OpenFileTable.toSeq system.Machine.OpenFiles
+            |> Seq.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.Kqueue state -> Some (id, state)
+                | OpenFileTarget.Kqueue state when state.Owner = owner -> Some (id, state)
+                | OpenFileTarget.Kqueue state when state.Registrations.IsEmpty -> None
+                | OpenFileTarget.Kqueue state ->
+                    failwith
+                        $"KqueueQueue.activate: an event on socket %O{socketId} in process %O{owner} may reach kqueue %O{id}, which process %O{state.Owner} owns and which registers %A{Map.keys state.Registrations |> Seq.toList}. Those registrations name descriptors in process %O{state.Owner}'s table, which this process's view cannot read, so which of them name the socket is not known here."
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
@@ -667,6 +665,8 @@ module KqueueQueue =
                         system
             )
 
+        // A Darwin poll holds no description (`ParkedSyscall.descriptions`), so
+        // rewriting its park moves no hold.
         let tasks =
             system.Tasks
             |> Map.map (fun _ task ->
@@ -713,7 +713,7 @@ module KqueueQueue =
         (system : UnixSystem<'Task, 'Handler>)
         : bool
         =
-        match Map.tryFind kqueue (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        match OpenFileTable.tryFind kqueue system.Machine.OpenFiles with
         | None ->
             failwith
                 $"KqueueQueue.hasDeliverableEvent: %O{kqueue} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
@@ -819,7 +819,7 @@ module SocketWake =
 
     /// The key an epoll wake for `wake` carries, in Linux's `<sys/epoll.h>`
     /// numbering, or `None` for an unkeyed wake (see
-    /// `FileDescriptorRegistry.signalEpollInstances`).
+    /// `OpenFileTable.signalEpollInstances`).
     let epollKey (wake : SocketWake) : uint32 option =
         match wake with
         // A data-ready wake, keyed with what `sock_def_readable` passes its
@@ -853,8 +853,15 @@ module SocketWake =
         | SocketWake.RefusalReset -> []
 
     /// `wake` happened to the socket `socketId`: signal every epoll
-    /// registration of it, and activate every kqueue registration of it,
-    /// including those of a sleeping Darwin `poll`.
+    /// registration of it on the machine, whichever process made it, and
+    /// activate every kqueue registration of it in a kqueue `system`'s process
+    /// owns, including those of a Darwin `poll` asleep in it (see
+    /// `KqueueQueue.activate`).
+    ///
+    /// An epoll registration is reached through the description it names,
+    /// as Linux reaches an epitem through the file's wait queue, so no
+    /// descriptor table is read. A kqueue registration names a descriptor in
+    /// its owner's table, so only the owner's view can resolve it.
     ///
     /// Called with the socket already in the state the event left it in,
     /// since a kqueue registration is activated only if its filter is then
@@ -866,15 +873,10 @@ module SocketWake =
         : UnixSystem<'Task, 'Handler>
         =
         let system =
-            { system with
-                Process =
-                    { system.Process with
-                        FileDescriptors =
-                            FileDescriptorRegistry.signalEpollInstances
-                                (UnixProcessState.descriptionsNamingSocket socketId system.Process)
-                                (epollKey wake)
-                                system.Process.FileDescriptors
-                    }
-            }
+            UnixSystemState.mapOpenFiles
+                (OpenFileTable.signalEpollInstances
+                    (UnixMachineState.descriptionsNamingSocket socketId system.Machine)
+                    (epollKey wake))
+                system
 
         KqueueQueue.activate socketId (kqueueFilters wake) system
