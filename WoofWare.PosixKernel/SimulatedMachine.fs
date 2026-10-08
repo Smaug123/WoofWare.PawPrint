@@ -2,7 +2,7 @@ namespace WoofWare.PosixKernel
 
 /// One process on a `SimulatedMachine`: everything a view of the machine from
 /// that process (`UnixSystem`) holds besides the machine itself.
-type ProcessSlot<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+type internal ProcessSlot<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     internal
         {
             Process : UnixProcessState<'Task, 'Handler>

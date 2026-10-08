@@ -27,7 +27,7 @@ type LinkRules =
     }
 
 /// The arguments of `linkat(2)` its flag word decides, once screened.
-type LinkArguments =
+type internal LinkArguments =
     {
         /// Whether a symbolic link in the source's final position is followed:
         /// `AT_SYMLINK_FOLLOW` says so.
@@ -39,7 +39,7 @@ type LinkArguments =
 
 /// What screening `linkat(2)`'s flag word came to.
 [<RequireQualifiedAccess>]
-type LinkScreen =
+type internal LinkScreen =
     /// A word this kernel accepts, and what it says.
     | Screened of LinkArguments
     /// The call fails with this errno before either pathname is copied in.
@@ -51,14 +51,14 @@ type LinkScreen =
 
 /// What `link(2)` should do, now that both pathnames have resolved.
 [<RequireQualifiedAccess>]
-type LinkVerdict =
+type internal LinkVerdict =
     /// Answer the caller with this errno.
     | Refuse of error : UnixError
     /// Bind the source under `name` in `directory`.
     | Create of directory : InodeNumber * name : DirectoryEntryName
 
 [<RequireQualifiedAccess>]
-module LinkRules =
+module internal LinkRules =
 
     // `<fcntl.h>`'s numbering, measured by `at-dirfd.c` (CONST and FLAGS) on
     // Linux 6.18.5 and Darwin 27.0.

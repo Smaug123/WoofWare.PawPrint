@@ -47,7 +47,7 @@ type MkDirRules =
 /// What <c>mkdir(2)</c> should do, now that its path has been resolved.
 /// </summary>
 [<RequireQualifiedAccess>]
-type MkDirVerdict =
+type internal MkDirVerdict =
     /// <summary>
     /// Answer the caller with this errno.
     /// </summary>
@@ -62,7 +62,7 @@ type MkDirVerdict =
     | Create of directory : InodeNumber * name : DirectoryEntryName * parentPermissions : PermissionBits
 
 [<RequireQualifiedAccess>]
-module MkDirRules =
+module internal MkDirRules =
     /// Decide what a `mkdir(2)` owes, given how its path resolved.
     ///
     /// Takes no `MkDirRules`, and that is the point: every rule below except the

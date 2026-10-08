@@ -886,7 +886,7 @@ module UnixDescriptor =
     ///
     /// Not short-circuited when the file is already that length: unlike a write
     /// of no bytes, a truncation that moves no bytes still stamps the inode.
-    let truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (length : int64)
         (system : UnixSystem<'Task, 'Handler>)

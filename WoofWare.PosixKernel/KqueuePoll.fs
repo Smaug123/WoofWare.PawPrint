@@ -83,7 +83,7 @@ module DarwinPollEvents =
 /// The registration half, which decides which filters an entry registers, is
 /// `UnixPoll.poll`'s.
 [<RequireQualifiedAccess>]
-module KqueuePoll =
+module internal KqueuePoll =
 
     /// What the registration of `filter` through the descriptor `fd` reports
     /// now, and whether the report carries `EV_OOBAND`; or `None` when its

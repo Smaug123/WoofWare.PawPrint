@@ -473,7 +473,7 @@ module UnixTaskTable =
     /// Total, and loudly partial rather than an option: every task is added
     /// when it is created and removed only when it exits, so a name that
     /// resolves to nothing is a client bug rather than anything a process did.
-    let get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
+    let internal get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
         match Map.tryFind name tasks with
         | Some task -> task
         | None ->
@@ -521,7 +521,11 @@ module UnixTaskTable =
         (get name tasks).Parked |> Option.map (fun park -> park.Syscall)
 
     /// The park `name` is in, with its place in park order, if it is parked.
-    let parkOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : TaskPark option =
+    let internal parkOf<'Task when 'Task : comparison>
+        (name : 'Task)
+        (tasks : Map<'Task, UnixTaskState>)
+        : TaskPark option
+        =
         (get name tasks).Parked
 
     /// Record that `name` is in `park`.

@@ -392,7 +392,7 @@ module FileSystemStatistics =
     ///
     /// `UnixSystem.initial` and `UnixBootImage.withMount` keep the pair
     /// coherent, but a machine record assembled field by field bypasses both.
-    let assertCoherent (context : string) (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : unit =
+    let internal assertCoherent (context : string) (platform : SimulatedUnixPlatform) (mount : EmulatedMount) : unit =
         let flavour = SimulatedUnixPlatform.flavour platform
         let fsType = EmulatedMount.fileSystemType mount
 

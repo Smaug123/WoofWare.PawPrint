@@ -786,7 +786,7 @@ module UnixSystem =
         UnixMachineState.socket socketId system.Machine
 
     /// The pipe `pipeId` names. Loudly partial, as `UnixMachineState.pipe` is.
-    let pipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal pipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
         (system : UnixSystem<'Task, 'Handler>)
         : PipeState
@@ -795,7 +795,7 @@ module UnixSystem =
 
     /// How ready the socket `socketId` is. See
     /// `UnixMachineState.socketReadinessLevel`.
-    let socketReadinessLevel<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal socketReadinessLevel<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (system : UnixSystem<'Task, 'Handler>)
         : ReadinessLevel

@@ -27,7 +27,7 @@ module AtDirectory =
     /// What a `*at` syscall's raw `dirfd` names under `flavour`: its own
     /// `AT_FDCWD`, or a descriptor. Each flavour's `AT_FDCWD` is merely a
     /// descriptor number nothing holds under the other.
-    let decode (flavour : SimulatedUnixFlavour) (dirfd : int) : AtDirectory =
+    let internal decode (flavour : SimulatedUnixFlavour) (dirfd : int) : AtDirectory =
         if dirfd = atFdCwd flavour then
             AtDirectory.CurrentDirectory
         else
@@ -81,7 +81,7 @@ type StartingPointRules =
     }
 
 [<RequireQualifiedAccess>]
-module StartingPointRules =
+module internal StartingPointRules =
 
     /// What a `*at` syscall answers under `rules` for a `dirfd` open on
     /// `target`, which names no directory.
