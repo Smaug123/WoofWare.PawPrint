@@ -24,12 +24,21 @@ type Assumption =
     ///   escapes the exception's constructor, and a name the lookup rejects raises
     ///   `ArgumentException`.
     | CoreLibResourceLookup
+    /// Every type that the metadata of a loaded type names loads: the assembly that defines it is
+    /// found without running the program's `AssemblyResolve` or `Resolving` handlers, is intact,
+    /// and defines the type as the name says. So CoreCLR's native code for listing a generic
+    /// parameter's constraints, the QCall `RuntimeTypeHandle_GetConstraints`, which loads each
+    /// constraint's type, raises only what `Assumption.raises` lists, besides what constructing the
+    /// exceptions it makes raises (`Assumption.constructs`). Were an assembly missing, the runtime
+    /// would run those handlers, which could throw anything.
+    | NamedTypesLoad
 
 [<RequireQualifiedAccess>]
 module Assumption =
 
     /// Every assumption.
-    let all : Set<Assumption> = Set.ofList [ Assumption.CoreLibResourceLookup ]
+    let all : Set<Assumption> =
+        Set.ofList [ Assumption.CoreLibResourceLookup ; Assumption.NamedTypesLoad ]
 
     let private corelib : string = "System.Private.CoreLib"
 
@@ -55,9 +64,31 @@ module Assumption =
                 // It makes calls, any of which can run out of stack.
                 exceptionName "System.StackOverflowException"
             ]
+        | Assumption.NamedTypesLoad ->
+            [
+                // The runtime raises it for a type that is not a generic parameter
+                // (`Assumption.constructs`).
+                exceptionName "System.ArgumentException"
+                // It allocates the list of constraints, and each constraint's `RuntimeType` on
+                // first use.
+                exceptionName "System.OutOfMemoryException"
+                // Loading a type loads those it names, which can run out of stack.
+                exceptionName "System.StackOverflowException"
+            ]
+
+    /// The exceptions the method an assumption summarises makes in native code before raising them,
+    /// by running each one's parameterless constructor, which is CoreLib's managed code: what that
+    /// constructor raises, it raises too. CoreCLR's `EEException::CreateThrowable` makes an
+    /// exception this way, then looks up its message through `SR.GetResourceString`, as CoreLib's
+    /// exception constructors themselves do, so following the constructor accounts for both.
+    let constructs (assumption : Assumption) : ExceptionName list =
+        match assumption with
+        | Assumption.CoreLibResourceLookup -> []
+        | Assumption.NamedTypesLoad -> [ exceptionName "System.ArgumentException" ]
 
     /// The assumption that summarises `method` of `assembly`, when `assembly` is a CoreLib and the
-    /// method is the one some assumption names, by class, name and signature.
+    /// method is the one some assumption names: by class, name and signature, or, for a QCall, by
+    /// class, name and entry point.
     let summarises (assembly : DumpedAssembly) (method : MethodDefinitionHandle) : Assumption option =
         let definition = assembly.Methods.[method]
 
@@ -66,18 +97,32 @@ module Assumption =
 
         let string = TypeDefn.PrimitiveType PrimitiveType.String
 
-        if
+        let inCoreLib (ns : string) (name : string) : bool =
             assembly.ThisAssemblyDefinition.Name.Name = corelib
             && not declaringType.IsNested
             && declaringType.Generics.IsEmpty
-            && declaringType.Namespace = "System"
-            && declaringType.Name = "SR"
-            && definition.Name = "InternalGetResourceString"
+            && declaringType.Namespace = ns
+            && declaringType.Name = name
             && definition.IsStatic
             && definition.Signature.GenericParameterCount = 0
+
+        let qcall (entryPoint : string) : bool =
+            match definition.Body, definition.TryNativeImport with
+            | MethodBody.PInvoke, Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
+            | _ -> false
+
+        if
+            inCoreLib "System" "SR"
+            && definition.Name = "InternalGetResourceString"
             && definition.Signature.ParameterTypes = [ string ]
             && definition.Signature.ReturnType = MethodReturnType.Returns string
         then
             Some Assumption.CoreLibResourceLookup
+        elif
+            inCoreLib "System" "RuntimeTypeHandle"
+            && definition.Name = "GetConstraints"
+            && qcall "RuntimeTypeHandle_GetConstraints"
+        then
+            Some Assumption.NamedTypesLoad
         else
             None
