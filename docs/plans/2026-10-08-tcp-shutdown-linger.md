@@ -96,13 +96,24 @@ flavour's output beside it:
 - `tcp-shutdown.darwin-27.0.txt`: Darwin 27.0.0 arm64 (macOS 27.0.1), uid 501.
 
 The probe's header lists every section and what each line reports. `c` is the
-connecting socket and `p` the accepted one. The probe sleeps 30 ms after every
-action so that Darwin's loopback, which delivers on another thread, has
-settled. The full probe ran twice on each flavour, and L's "at once" binds
-ran in two more runs of L alone. Every answer, readiness bit and error agreed
-between runs. Only byte
-counts differed, along with the free space a Darwin `EVFILT_WRITE` reports
-after `SHUT_WR` with bytes unsent (0, 52 or 320).
+connecting socket and `p` the accepted one. Two rules keep the recorded order
+of events the order in the source:
+
+- every call that touches a socket is a statement of its own, never an
+  argument to another call, so that (say) a read that takes a pending error
+  and an `SO_ERROR` that would otherwise take it run in a fixed order;
+- every call that can put a segment on the wire (read, write, shutdown,
+  close, connect) is followed by a 30 ms sleep, because Darwin's loopback
+  delivers on another thread, and a reset its kernel sends in answer arrives
+  after the call returns. Without the sleep, a Darwin write after the peer's
+  ordinary close answers 100, then 100, with `SO_ERROR` 0; with it, 100,
+  then `EPIPE` + `SIGPIPE`, with `ECONNRESET` pending.
+
+A line ending `~counts` has byte counts or durations that depend on timing,
+so only its answers and readiness bits are to be compared. A line ending
+`~timing` has an outcome that waits on a TCP timer, and is not for replay.
+The full probe ran twice on each flavour, and sections L, F and X three more
+times each. Every line not marked `~` agreed between runs.
 
 Poll and epoll were asked for IN|OUT|PRI|RDHUP, so the tables below never show
 RDNORM or WRNORM. Darwin's kqueue is shown as `data/EOF/fflags`, and "-" means
@@ -141,7 +152,7 @@ on the Kestrel path.** When the client's FIN arrives first, Kestrel's
 `Shutdown(Both)` answers `ENOTCONN` on Darwin and sends nothing. `.NET`
 ignores the error, and the FIN goes out at `close`.
 
-### 2.2 What each end sees afterwards (sections S, T, P)
+### 2.2 What each end sees afterwards (sections S, T, P, R, X)
 
 | | Linux | Darwin |
 |---|---|---|
@@ -153,15 +164,9 @@ ignores the error, and the FIN goes out at `close`.
 | peer writes to a socket shut for reading | taken; the bytes queue and are readable; the peer can fill the buffers as before (4280576 bytes) | **reset at the first arrival**: the bytes are discarded, the peer reads `ECONNRESET`, and the shutter sees no error (reads 0, `SO_ERROR` 0, `EVFILT_WRITE` EOF) |
 | peer writes to a socket shut both ways | **reset at the first arrival**: the shutter takes `ECONNRESET`; the peer, in `CLOSE_WAIT`, reads 0 and has `EPIPE` pending | reset at the first arrival, as for `RD` alone |
 | shutter closes after `RD`/`RDWR` with bytes unread | reset (the bytes are still queued): after `RDWR` the peer reads 0 and writes `EPIPE`, since the FIN came first; after `RD` alone the peer reads `ECONNRESET` | FIN only (the flush left nothing unread) |
-| `RD` while bytes wait in the peer's send buffer (`R`, p-unsent) | kept; the peer stays full | **nothing within 60 ms**: no reset, and the peer stays unwritable with nothing delivered |
-| `RDWR` while bytes wait in the peer's send buffer | the peer sees the FIN; the bytes stay waiting | the peer is reset at once; its in-flight bytes stay counted in its send buffer (`EVFILT_WRITE` data 0) |
-
-One Darwin row, S `idle RD`, disagrees with R. There, `c` wrote 100 bytes just
-before `p` wrote 100 bytes, `p` was not reset, and `c`'s `EVFILT_WRITE` showed
-EOF. R, which has no write from `c`, resets `p` at the first arrival in every
-trial. A plausible reading is that the two writes crossed, and `p` dropped
-`c`'s reset because its sequence number was stale. A model with no latency
-cannot produce crossing segments, so R is the row to follow.
+| `RD` while bytes wait in the peer's send buffer (R, p-unsent) | kept; the peer stays full, still after 5 s | **a timer decides**: no reset within 60 ms, and the peer reset (`ECONNRESET`) by 5 s; in one of four runs the peer took one more write first |
+| `RDWR` while bytes wait in the peer's send buffer | the peer sees the FIN; the bytes stay waiting while the shutter reads 8192 bytes | the peer is reset at once; its in-flight bytes stay counted in its send buffer (`EVFILT_WRITE` data 0) |
+| X: the sender shut writing with bytes waiting (its FIN queued), then the receiver shuts both ways and reads everything | nothing at once; **within 250 ms** a zero-window probe carries the waiting bytes in, and **both ends are reset with `ECONNRESET`**: the sender's own FIN had been made, so not `EPIPE` | the receiver's `SHUT_RD` had flushed what it held, nothing more arrives, and **nothing is reset for at least 15 s**; the sender's `EVFILT_WRITE` stays 0/EOF |
 
 ### 2.3 Readiness (sections S and T)
 
@@ -265,10 +270,27 @@ still queued behind unsent bytes, Linux's peer takes `ECONNRESET` (`afterFin
 = false`).
 
 **The closer's endpoint is free to a fresh bind at once** on both flavours, in
-every state: no `TIME_WAIT`. After an ordinary FIN close it is
-`EADDRINUSE`, except when the closer closed **after** the peer's FIN had
-arrived (the passive close), where it is free at once on both. The stack does
-not model that exception (see 3.5).
+every state: no `TIME_WAIT`.
+
+**After an ordinary FIN close, what decides is which FIN was made first**
+(section F, `c` closes while `p` stays open; the bind is of `c`'s endpoint,
+at once and 30 ms later, with the same answer both times, on both flavours):
+
+| order | bind |
+|---|---|
+| `p` `SHUT_WR`; `c` closes | free |
+| `p` `SHUT_WR`; `c` `SHUT_WR`; `c` closes | free |
+| `c` closes; `p` `SHUT_WR` | `EADDRINUSE` |
+| `c` `SHUT_WR`; `p` `SHUT_WR`; `c` closes | `EADDRINUSE` |
+| `c` fills; `c` `SHUT_WR` (its FIN queued behind the bytes); `p` `SHUT_WR`; `p` drains, so `c`'s FIN goes out after `p`'s arrived; `c` closes | `EADDRINUSE` |
+
+So an end is a passive closer, which frees its endpoint as soon as its socket
+closes, when the peer's FIN had arrived **at the moment its own FIN was made**
+by `SHUT_WR` or `close`: not when the FIN was sent, and not when the socket
+closed. That is Linux's state machine (`SHUT_WR` moves to `FIN_WAIT1`
+whether or not the FIN can go out, and a FIN received there leads to
+`CLOSING` and `TIME_WAIT`), and Darwin agrees on every row. The stack does
+not model the passive case (see 3.5).
 
 **A listener with queued connections** (Q). Closing it resets every queued
 client: 0x201d on Linux, and READ and WRITE EOF/54 on Darwin. Each client
@@ -333,12 +355,16 @@ flushes, and resets the first arrival.
   needs its `Write` bit. So separate them:
 
   ```fsharp
-  /// The FIN in one direction: the sender's SHUT_WR or close.
-  type TcpFin = NotSent | Queued | Arrived            // on TcpDirection
+  /// The FIN in one direction: the sender's SHUT_WR or close. `passive`:
+  /// the opposite FIN had already arrived when this one was made.
+  type TcpFin =                                        // on TcpDirection
+      | NotSent
+      | Queued of passive : bool
+      | Arrived of passive : bool
   type TcpEndState =                                   // per end
       | Open of receiveShut : bool
       | Reset of errorPending : bool
-      | Closed of afterPeerFin : bool
+      | Closed
   ```
 
   - An end is write-shut exactly when its outbound direction's `Fin` is not
@@ -349,12 +375,17 @@ flushes, and resets the first arrival.
   - `receiveShut` exists only on `Open`. A reset end is shut both ways
     anyway (`tcp_done` sets `SHUTDOWN_MASK`), and a closed one has no
     reader.
-  - `afterPeerFin` is stored rather than derived. The inbound FIN can still
-    change after the end closes (the peer's later `SHUT_WR` reaches an
-    orphan), and a derived value would change with it.
+  - `passive` is recorded when the FIN is made, by `SHUT_WR` or by `close`,
+    whether it then goes out or waits behind bytes. It decides whether the
+    end keeps its endpoint once its socket has closed (2.7: a passive closer
+    frees it at once, an active one is held in `TIME_WAIT`). It cannot be
+    derived later: once both FINs have arrived, nothing else records which
+    was made first. Its invariant is that `passive` implies the opposite FIN
+    is `Arrived`, since a FIN never un-arrives.
   - Only the byte-queue invariants stay in `violations`: `Queued` implies
     `Sending` is not empty while the receiver is `Open`; `Arrived` implies
-    `Sending` is empty; `Reset` implies `Sending` is empty.
+    `Sending` is empty; `Reset` and `Closed` imply `Sending` is empty, on
+    both flavours (see the next paragraph for what Darwin keeps instead).
 
   (A) admits a `Write` bit with no FIN opposite, a FIN opposite an end that
   has not shut writing (a check that must be weakened in exactly the case
@@ -366,9 +397,41 @@ flushes, and resets the first arrival.
 
 **Chosen: (D).** It replaces `TcpEndState` like (B), but each old case maps to
 one new one (`Open` to `Open false`, `FinQueued` and `FinReceived` to the
-direction's `Fin`, `Reset (a, e)` to `Reset e`, `Closed` to `Closed _`). The
+direction's `Fin`, `Reset (a, e)` to `Reset e`, `Closed` to `Closed`). The
 type is `internal`. It is stage 3's first commit, once #1793 and #1795 have
 merged.
+
+**What Darwin keeps of a dead direction's send buffer.** When a reset ends a
+direction whose sender still has bytes waiting, Linux discards them and
+Darwin keeps counting them in the sender's send buffer: R's `RDWR p-unsent`
+row resets both ends and still reports `p`'s `EVFILT_WRITE` data as 0, and
+the stack's "FIN, then written" row keeps the 100 bytes written (146888).
+The stack holds those bytes in `Sending`, which contradicts "`Reset` implies
+`Sending` is empty". Two ways out:
+
+- **(i) A flavour-aware invariant.** On Darwin, `Sending` may be non-empty
+  towards a reset or closed end. Every function that moves or counts bytes
+  (`deliver`, `readable`, `readAnswers`, the arrival rules, `violations`)
+  must then ask whether the direction is dead before treating `Sending` as
+  bytes that will arrive.
+- **(ii) Keep the count explicitly, as a Darwin-only fact.** `Sending` means
+  bytes that can still be delivered, on both flavours. The bytes a reset
+  strands are only a count against the sender's send space (they are never
+  read), so they move out of `Sending` into the Darwin case of
+  `TcpTransferRules`, `Darwin of stranded : Map<ConnectionEnd, int>`, keyed
+  by the sender. That mirrors `Linux of spaceWakeArmed`, which already keeps
+  Linux-only state where Darwin cannot construct it. An entry is removed when
+  its sender closes, so equal states compare equal. `sendSpace` subtracts it,
+  and `violations` checks that only a sender whose outbound direction is dead
+  has an entry, and that it fits the send buffer.
+
+**Chosen: (ii).** It keeps every invariant about `Sending` flavour-free and
+every reader of `Sending` honest, it makes the Linux state unable to strand
+anything, and it stores exactly what the measurements show is observable
+(a count in `EVFILT_WRITE`'s data), not bytes nobody can read. The stack's
+two Darwin paths that keep bytes in `Sending` (a reset by a close over unread
+bytes, and a write after the peer's clean close) move to the count in the
+same first commit.
 
 Both kernels fold the peer's FIN into receive-shut (`tcp_fin` sets
 `RCV_SHUTDOWN`; XNU calls `socantrcvmore`). The rules compute "receive-shut" once, as
@@ -387,8 +450,8 @@ The rules, as functions over (D), with each measured row as a test:
 - **Arrival** at a read-shut end: on Darwin, and on Linux once write-shut too,
   the arrival resets. The sender gets `Reset true`; whether its error reads
   as `EPIPE` or `ECONNRESET` follows from the FINs, as (D) derives it, so a
-  sender that had itself shut writing gets `ECONNRESET` (the row section 5
-  asks to measure). The receiver gets `Reset true` on Linux, and
+  sender that had itself shut writing gets `ECONNRESET` (measured on Linux,
+  2.2's X row). The receiver gets `Reset true` on Linux, and
   `Reset false` on Darwin, whose shutter sees no error. Otherwise the
   arrival queues as now.
 - **`shutdown` itself**: the 2.1 table as a pure function from (shut state,
@@ -401,8 +464,9 @@ The rules, as functions over (D), with each measured row as a test:
   of `close` when linger is {1, 0}, and so does the accept that drops a
   connection. `AbortiveClose` and `AbortiveDrop` are deleted. `closeWith`
   learns the new states:
-  - a closer that shut writing first gives `Reset (afterFin, true)`, where
-    `afterFin` is whether its outbound direction was `FinReceived`;
+  - a closer that shut writing first leaves the peer `Reset true`, whose
+    error reads as `EPIPE` on Linux exactly when the closer's FIN had
+    arrived, as (D) derives it;
   - a peer already reset just closes.
 
   Every row of 2.7 is then an existing rule: what the peer keeps, what is
@@ -480,26 +544,30 @@ reset, as they do for any reset.
   Darwin's `ofSocket` reports WRITE as EOF once write-shut, with the free space
   as data, however small. Darwin's existing `poll` derivation must give HUP
   alone for that, and a test row pins it.
-- **The passive closer's port.** An end that closes after the peer's FIN has
-  arrived frees its endpoint at once (2.7). Before `shutdown`, that state
-  could not be observed: the peer's FIN meant the peer had closed, and once
-  both ends close the connection is gone. With `SHUT_WR`, the active closer
-  stays open. So `Closed` becomes `Closed of afterPeerFin : bool`, and
-  `orphanedConnectionOccupies` releases such an end.
+- **The passive closer's port.** An end whose own FIN was made after the
+  peer's FIN had arrived frees its endpoint as soon as its socket closes;
+  any other FIN-closed end holds it (2.7, section F). Before `shutdown`, the
+  difference could not be observed: the peer's FIN meant the peer had
+  closed, and once both ends close the connection is gone. With `SHUT_WR`,
+  the active closer stays open. `orphanedConnectionOccupies` releases a
+  closed end whose outbound `TcpFin` is `passive`.
 
 ### 3.6 What the model deliberately does not reproduce
 
-- **Darwin's `SHUT_RD` while the peer has bytes waiting** in its send buffer.
-  Measured, nothing happens within 60 ms: the window stays shut and no reset
-  is sent. What happens later depends on TCP's persist timer. Refused.
-  `SHUT_RDWR` in the same state resets at once, as measured, and is modelled.
-- **Linux's window-update threshold.** The model moves waiting bytes as soon as
-  there is room. So a Linux end shut both ways, which reads while bytes wait
-  for it, is reset at that read, where the kernel waits until enough is read
-  to advertise a window. Only a guest that reads after its own `SHUT_RDWR`
+- **Darwin's `SHUT_RD`, or a `SHUT_RDWR` whose peer has shut writing, while
+  the peer has bytes waiting** in its send buffer. Measured, `SHUT_RD` alone
+  resets the peer only when a TCP timer fires (within 5 s, at a time that
+  varied between runs; R `RD p-unsent`), and after `SHUT_RDWR` against a
+  peer that had shut writing nothing happened for 15 s (X). Refused. `SHUT_RDWR` whose peer has not shut
+  writing resets that peer at once, as measured (R `RDWR p-unsent`), and is
+  modelled.
+- **Linux's delay before a waiting byte reaches an end shut both ways.** The
+  model moves waiting bytes as soon as there is room, so the reset comes at
+  the read that makes room. The kernel advertises no window then, and the
+  bytes arrive on a zero-window probe within about 250 ms (X), with the same
+  outcome: both ends reset with `ECONNRESET`. Only a guest that reads after
+  its own `SHUT_RDWR` while its peer's bytes wait, and watches the clock,
   can tell.
-- **Crossing segments** (2.2, Darwin's S `idle RD` row). There is no latency
-  to cross in.
 - **`SO_LINGER` {1, t > 0} with bytes unsent**: refused (3.4).
 - **`TIME_WAIT` after both ends have closed** stays unmodelled, as in the
   stack: the connection goes once nothing refers to it.
@@ -561,13 +629,14 @@ with stage 4 if small.
 
 - **3.1: (D)**, the split of `TcpEndState` into a FIN per direction and an
   end state per end.
-- **One row to measure before stage 3.** X shuts writing with bytes still
-  waiting, so its FIN is queued. Y then shuts both ways and reads, and that
-  arrival resets the connection. `tcp_reset` says X gets `ECONNRESET`, not
-  `EPIPE`, because X's own FIN had been sent. 2.2's last row stops before Y
-  reads. Add the row to the probe and run it on both flavours.
+- **The X row** (2.2's last row): measured. On Linux X gets `ECONNRESET`,
+  not `EPIPE`, as (D) derives. Darwin never delivers the bytes and never
+  resets, so the model refuses that state (3.6).
+- **Darwin's stranded send buffer (3.1):** (ii), a count in the Darwin rules
+  case, not bytes in `Sending`.
 - **Scope:** stage 5, `shutdown` on a listener, is deferred. Until it lands,
   that call is refused by name. Neither Kestrel nor `HttpClient` makes it.
-- **The passive closer's port (3.5):** modelled in stage 4. Not modelling it
-  would answer `EADDRINUSE` to a `bind` that the kernel allows.
+- **The passive closer's port (3.5):** modelled in stage 4, from the
+  `passive` flag recorded on the FIN when it is made. Not modelling it would
+  answer `EADDRINUSE` to a `bind` that the kernel allows.
 - **`SO_LINGER` {1, t > 0} (3.4):** refused when the close would wait.
