@@ -105,7 +105,9 @@ module TestBootImage =
                     "withProcessorCount"
                     "withProtectedFiles"
                     "withSoMaxConn"
+                    "withTcpReceiveSpace"
                     "withTcpSendSpace"
+                    "withTcpSendSpaceMax"
                     "withUserAddressLimit"
                 ]
         )
