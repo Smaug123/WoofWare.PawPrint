@@ -577,6 +577,22 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> PrivilegedModeChange.SetsRequestedBits
         | SimulatedUnixFlavour.Darwin -> PrivilegedModeChange.Unmeasured
 
+    /// What this platform's `fchmodat(2)` does with `AT_SYMLINK_NOFOLLOW` when
+    /// the path names a symbolic link.
+    let symlinkModeChange (platform : SimulatedUnixPlatform) : SymlinkModeChange =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/chmod-chown-at.c`
+        // (NOFOLLOW, LINKMODE, LINKTIMES). Linux 6.18.5, through glibc and
+        // through the fchmodat2 syscall alike: EOPNOTSUPP for a link to a
+        // file, to a directory, dangling and to itself, as root and as uid
+        // 1000, for all 4096 modes, on the caller's own link and on another
+        // user's, the mode and every timestamp left as they were. Darwin 27.0
+        // at uid 501: all 4096 modes set on its own link as `chmod` would set
+        // them on a file, in the link's group and out of it; EPERM on root's;
+        // the link's ctime moves and its target's timestamps do not.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> SymlinkModeChange.NotSupported
+        | SimulatedUnixFlavour.Darwin -> SymlinkModeChange.ChangesLink
+
     /// What a privileged caller is granted when it asks to execute something
     /// that is not a directory. See `PermissionBits.executionDenied`.
     let privilegedExecution (platform : SimulatedUnixPlatform) : PrivilegedExecution =
@@ -684,6 +700,18 @@ module SimulatedUnixPlatform =
                 TrailingSeparator = TrailingSeparatorPolicy.Demand
                 EmptyTarget = EmptySymlinkTarget.Accepted
             }
+
+    /// How this platform's `mknod(2)` treats the type of node it is asked
+    /// for; see `MkNodRules`.
+    let mkNodRules (platform : SimulatedUnixPlatform) : MkNodRules =
+        // Measured by `mknodat-rules.c` (TYPE, ORDER, PATH, PATHTYPE) on
+        // Linux 6.18.5, root and uid 1000, ext4 and tmpfs, and Darwin 27.0,
+        // uid 501. Linux's walk is its `mkdir`'s and `symlink`'s
+        // (`filename_create`): "f/", "dang/", "cyc/", "lf/" and "ld/" are
+        // EEXIST and a free "nx/" is ENOENT.
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> MkNodRules.TypeBeforePath TrailingSeparatorPolicy.Ignore
+        | SimulatedUnixFlavour.Darwin -> MkNodRules.PrivilegeBeforePath
 
     /// How this platform's `open(2)` behaves when asked to create; see
     /// `CreatingOpenRules` for what each field means and how it was measured.

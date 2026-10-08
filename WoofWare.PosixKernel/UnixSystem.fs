@@ -41,16 +41,20 @@ type Syscall =
     /// flags, and `rmdir(2)` with `AT_REMOVEDIR` (`UnlinkAtRules.atRemoveDir`).
     | UnlinkAt of dirfd : int * path : PathArgumentBytes * flags : int
     | ChDir of path : PathArgumentBytes
-    /// `mode` is raw, as `chmod(2)` takes it: which of its bits the inode gets
-    /// is behaviour this kernel models.
-    | ChMod of path : PathArgumentBytes * mode : int
+    /// `dirfd`, `mode` and `flags` are raw, as `fchmodat(2)` takes them: each
+    /// flavour numbers `AT_FDCWD` and the flags its own way, and which bits of
+    /// `mode` the inode gets is behaviour this kernel models. `chmod(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no
+    /// flags.
+    | FChModAt of dirfd : int * path : PathArgumentBytes * mode : int * flags : int
     /// `mode` is raw, as `fchmod(2)` takes it.
     | FChMod of fd : int * mode : int
-    /// `None` is `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is.
-    | ChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
-    /// As `ChOwn`, without following a symbolic link in the final position.
-    | LChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
-    /// As `ChOwn`, of the inode `fd` names.
+    /// `dirfd` and `flags` are raw, as `fchownat(2)` takes them. `None` is
+    /// `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is. `chown(2)` is this
+    /// with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no flags, and
+    /// `lchown(2)` with `AT_SYMLINK_NOFOLLOW` (0x100 on Linux, 0x20 on Darwin).
+    | FChOwnAt of dirfd : int * path : PathArgumentBytes * user : UserId option * group : GroupId option * flags : int
+    /// As `FChOwnAt`'s `chown(2)`, of the inode `fd` names.
     | FChOwn of fd : int * user : UserId option * group : GroupId option
     /// `mask` is raw, as `umask(2)` takes it: which of its bits the process
     /// keeps is behaviour this kernel models, and models per flavour. Answers
@@ -74,8 +78,13 @@ type Syscall =
         newdirfd : int *
         newpath : PathArgumentBytes *
         flags : int
-    /// `futimens(2)` with two explicit times; see `UnixPathResolution.futimens`.
-    | FUTimens of fd : int * access : UnixTimestamp * modification : UnixTimestamp
+    /// `dirfd` and `flags` are raw, as `utimensat(2)` takes them: each flavour
+    /// numbers `AT_FDCWD` and the flags its own way, and `times` holds the
+    /// fields the caller stored, which each flavour reads its own way (see
+    /// `TimestampChangeRules.decode`). A null `path` means something of its
+    /// own on Linux. `futimens(2)` is, on Linux, this with `fd` as `dirfd`, a
+    /// null `path` and no flags.
+    | UTimensAt of dirfd : int * path : NullablePathArgument * times : TimesArgument * flags : int
     /// `copy_file_range(2)` at both descriptions' own offsets. `length` is the
     /// `size_t` asked for and `flags` is raw, since any flag is refused.
     | CopyFileRange of inFd : int * outFd : int * length : uint64 * flags : int
@@ -106,16 +115,15 @@ type SyscallRefusal<'Task> =
     | MkDir of PathRefusal
     | UnlinkAt of UnlinkAtRefusal
     | ChDir of PathRefusal
-    | ChMod of ChModRefusal
+    | FChModAt of FChModAtRefusal
     | FChMod of FChModRefusal
-    /// `chown(2)` and `lchown(2)` alike.
-    | ChOwn of ChOwnRefusal
+    | FChOwnAt of FChOwnAtRefusal
     | FChOwn of FChOwnRefusal
     | Access of AccessRefusal
     | Symlink of SymlinkRefusal
     | Link of LinkRefusal
     | Close of CloseRefusal<'Task>
-    | FUTimens of FUTimensRefusal
+    | UTimensAt of UTimensAtRefusal
     | CopyFileRange of CopyFileRangeRefusal
     | FileClone of FileCloneRefusal
     | CloneFile of CloneFileRefusal
@@ -937,22 +945,18 @@ module UnixSystem =
             UnixPathResolution.chdir path system
             |> answered
             |> Result.mapError SyscallRefusal.ChDir
-        | Syscall.ChMod (path, mode) ->
-            UnixPathResolution.chmod path mode system
+        | Syscall.FChModAt (dirfd, path, mode, flags) ->
+            UnixPathResolution.fchmodat dirfd path mode flags system
             |> answered
-            |> Result.mapError SyscallRefusal.ChMod
+            |> Result.mapError SyscallRefusal.FChModAt
         | Syscall.FChMod (fd, mode) ->
             UnixPathResolution.fchmod fd mode system
             |> answered
             |> Result.mapError SyscallRefusal.FChMod
-        | Syscall.ChOwn (path, user, group) ->
-            UnixPathResolution.chown path user group system
+        | Syscall.FChOwnAt (dirfd, path, user, group, flags) ->
+            UnixPathResolution.fchownat dirfd path user group flags system
             |> answered
-            |> Result.mapError SyscallRefusal.ChOwn
-        | Syscall.LChOwn (path, user, group) ->
-            UnixPathResolution.lchown path user group system
-            |> answered
-            |> Result.mapError SyscallRefusal.ChOwn
+            |> Result.mapError SyscallRefusal.FChOwnAt
         | Syscall.FChOwn (fd, user, group) ->
             UnixPathResolution.fchown fd user group system
             |> answered
@@ -973,10 +977,10 @@ module UnixSystem =
             UnixNamespace.linkat olddirfd oldpath newdirfd newpath flags system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Link
-        | Syscall.FUTimens (fd, access, modification) ->
-            UnixPathResolution.futimens fd access modification system
+        | Syscall.UTimensAt (dirfd, path, times, flags) ->
+            UnixPathResolution.utimensat dirfd path times flags system
             |> answered
-            |> Result.mapError SyscallRefusal.FUTimens
+            |> Result.mapError SyscallRefusal.UTimensAt
         | Syscall.CopyFileRange (inFd, outFd, length, flags) ->
             UnixReadWrite.copyFileRange inFd outFd length flags system
             |> answered
@@ -2452,7 +2456,7 @@ module UnixSystem =
     /// `UnixBootImage.withProcessId` and `UnixBootImage.withLeaderThreadId`.
     ///
     /// The fields the platform *fixes* are derived from it rather than
-    /// taken as arguments — `SoMaxConn`, `TcpSendSpace`, `Mount`, and the platform
+    /// taken as arguments — `SoMaxConn`, the TCP buffer sysctls, `Mount`, and the platform
     /// itself — because a machine whose flavour and those disagree is one no
     /// real system could be: `EmulatedFileSystemType.isReportableUnder` says
     /// outright that a Darwin kernel never reports tmpfs. Building the record
@@ -2526,6 +2530,8 @@ module UnixSystem =
                     EphemeralPortRange = defaultEphemeralPortRange flavour
                     SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
                     TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
+                    TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace flavour
+                    TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax flavour
                     LocalAddresses = defaultLocalAddresses
                     LocalRoutes = defaultLocalRoutes
                     NanosecondsSinceBoot = 0L

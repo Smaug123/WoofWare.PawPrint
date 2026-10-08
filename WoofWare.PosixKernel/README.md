@@ -124,8 +124,8 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | Module | Syscalls |
 | --- | --- |
 | `UnixDescriptor` | `dup`, `dup2`, `dup3`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `lseek`, `flock`, `ftruncate`, `posix_fadvise`, `close`, `ioctl` (`FICLONE` and `FIONREAD`), `tcgetattr`, `geteuid`, `getegid`, `getgroups` |
-| `UnixPathResolution` | `stat`, `fstat`, `fstatat`, `chmod`, `fchmod`, `chown`, `lchown`, `fchown`, `futimens`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
-| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `unlink`, `rmdir`, `unlinkat`, `rename`, `renameat`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
+| `UnixPathResolution` | `stat`, `fstat`, `fstatat`, `chmod`, `fchmod`, `fchmodat`, `chown`, `lchown`, `fchown`, `fchownat`, `utimensat`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
+| `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `mknod` and `mknodat` (regular files only), `unlink`, `rmdir`, `unlinkat`, `rename`, `renameat`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
 | `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
 | `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt` |
@@ -133,7 +133,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
 | `UnixKqueue` | `kqueue`, `kevent` |
 | `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigreturn`, and the signals a task takes as it returns to user mode |
-| `UnixClock` | `clock_gettime` |
+| `UnixClock` | `clock_gettime`, `gettimeofday` |
 | `UnixEntropy` | `getrandom`, `getentropy` |
 | `UnixCredentials` | `getresuid`, `getresgid`, `setresuid`, `setresgid`, `setgroups` |
 | `UnixTaskLifecycle` | starting a thread, a thread exiting, `exit_group` |

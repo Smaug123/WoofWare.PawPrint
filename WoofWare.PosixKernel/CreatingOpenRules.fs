@@ -102,6 +102,10 @@ module CreatingOpenRules =
     ///    by `darwin-eilseq-is-last.c` in `docs/plans/2026-09-20-unix-path-bytes/`:
     ///    each refusal above beats it.
     ///
+    /// Linux's `mknod(2)` of a regular file is decided by this verdict too,
+    /// with `creating` and `exclusive` both set, after a walk of its own
+    /// (`MkNodRules.verdict`).
+    ///
     /// A freshly created inode is deliberately *not* screened against the mode
     /// it was just given — measured unanimously, `open(free, O_CREAT|O_RDWR, 0)`
     /// succeeds and stores mode 0, while re-opening that same file `O_RDONLY` is

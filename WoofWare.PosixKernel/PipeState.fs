@@ -19,17 +19,20 @@ type PipeInodes =
 
 /// The timestamps `fstat(2)` reports for a pipe's ends, and what moves them.
 ///
-/// On Linux none of them ever moves: measured on 6.18.5, reads, writes, short
-/// writes, `EAGAIN` and `EFAULT` in either direction all leave every timestamp
-/// of both ends at the pipe's creation. On Darwin they move per end, as
-/// `UnixPipe` describes.
+/// On Linux the two ends are one inode with one set of times, which no
+/// transfer moves: measured on 6.18.5, reads, writes, short writes, `EAGAIN`
+/// and `EFAULT` in either direction all leave every timestamp of both ends at
+/// the pipe's creation. Changing the inode itself does move them, as for a
+/// file: `fchmod(2)` and `fchown(2)` the status-change time, `utimensat(2)`
+/// whichever it is asked to. On Darwin they move per end, as `UnixPipe`
+/// describes.
 type PipeTimes =
     {
         /// When the pipe was created: every timestamp of both ends starts here.
-        /// It is also the write end's `st_atime` for the pipe's whole life, since
-        /// nothing reads through the write end.
+        /// On Darwin it is also the write end's `st_atime` for the pipe's whole
+        /// life, since nothing reads through the write end.
         Created : UnixTimestamp
-        /// The read end's `st_atime`.
+        /// The read end's `st_atime`, and on Linux the write end's too.
         ReadEndAccess : UnixTimestamp
         /// `st_mtime` of both ends.
         Modification : UnixTimestamp

@@ -166,6 +166,11 @@ module UnixClock =
             (UnixTimestamp.seconds reading)
             (nanoseconds - nanoseconds % granularity)
 
+    /// `gettimeofday(2)`: the realtime clock in whole microseconds, on every
+    /// flavour, as a timestamp.
+    let gettimeofday (machine : UnixMachineState) : UnixTimestamp =
+        truncate 1000 (UnixMachineState.realtime machine)
+
     /// `clock_gettime(2)`: read the clock `clockId` names on this machine's flavour.
     ///
     /// The numbering is the flavour's own: `CLOCK_MONOTONIC` is 1 on Linux and 6
