@@ -111,7 +111,22 @@ of events the order in the source:
 
 A line ending `~counts` has byte counts or durations that depend on timing,
 so only its answers and readiness bits are to be compared. A line ending
-`~timing` has an outcome that waits on a TCP timer, and is not for replay.
+`~timing` is excluded from every replay. These are the lines whose outcome
+waits on a TCP timer or on when the kernel advertises a window, where the
+model's zero-latency delivery (3.6) gives a different but deliberate answer,
+or whose state the model refuses:
+
+| rows | flavour | why excluded |
+|---|---|---|
+| R `RD p-unsent`, R `RDWR p-unsent` | Linux | `c`'s reads make room the kernel does not advertise, so `p`'s bytes stay waiting (`EAGAIN`, no error); the model moves them at the first read, which on `RDWR` resets both ends (3.6) |
+| R `RD p-unsent` | Darwin | the peer's reset waits on a timer, and the model refuses the state (3.6) |
+| X, from the drain on | Linux | the bytes arrive on a zero-window probe within 250 ms; the model resets at the drain (3.6) |
+| X, every line | Darwin | the model refuses the state (3.6) |
+| S `cunsent`, the write line | both | whether `c`'s write finds room depends on how far the room `p`'s read made has been advertised (Linux) or drained (Darwin) |
+| P `rd-then-fill`, the failed write | Darwin | the write races the reset its first bytes provoked |
+| L `linger0 cqueued-pfin` | Darwin | the model refuses the close (3.2) |
+| G `unsent` | both | the model refuses a close that would wait (3.4) |
+
 The full probe ran twice on each flavour, and sections L, F and X three more
 times each. Every line not marked `~` agreed between runs.
 
@@ -656,13 +671,15 @@ been rebased onto main (with #1790).
      FINs, and `violations` reduced to the byte-queue invariants.
    - Tests: a property test against the reference model, extended with
      `shutdown`. S, T, R and P are replayed per flavour from the embedded output,
-     as `TestTcpTransferMeasured` replays `tcp-transfer.c`.
+     as `TestTcpTransferMeasured` replays `tcp-transfer.c`, skipping every
+     `~timing` line (section 2's table says why each is skipped) and
+     comparing only answers and readiness bits on `~counts` lines.
    - No syscall uses any of it yet.
 4. **`shutdown(2)` on connected sockets.**
    - The syscall and its screens, readiness, `TcpWake.ShutDown`, parked
      calls, and the passive closer's port.
    - Tests: a `TestShutdownAgainstHost` replays S, T, U (connected rows), R,
-     P and E against the host's kernel, as `TestConnectedTransferAgainstHost`
+     P and E against the host's kernel, with the same exclusions, as `TestConnectedTransferAgainstHost`
      does, so that CI's x86-64 Linux checks the Linux column. B's rows go in
      kernel fixtures.
 5. **`shutdown(2)` on a listener.** Linux returns the socket to `Idle`

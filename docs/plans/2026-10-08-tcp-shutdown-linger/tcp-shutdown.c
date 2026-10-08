@@ -19,7 +19,9 @@
 // A line ending in `~counts` carries byte counts (FIONREAD, kqueue data, a
 // fill's or a drain's total, a duration) that depend on timing: compare its
 // answers and readiness bits, not its numbers. A line ending in `~timing`
-// has an outcome that depends on a TCP timer, and is not to be replayed.
+// has an outcome that waits on a TCP timer or on when the kernel advertises
+// a window, or comes from a state the model refuses; it is not to be
+// replayed.
 //
 // What a line reports:
 //   rdy(x)  x's readiness, consuming nothing: poll's revents for
@@ -835,8 +837,10 @@ static void section_r(void)
         const char *mark = h == 0 ? "\t~timing" : "\t~counts";
         const char *last_mark = h == 0 ? "\t~timing" : "";
 #else
-        const char *mark = "\t~counts";
-        const char *last_mark = "";
+        // Linux advertises no window for the room c's reads make here, so
+        // p's bytes wait for a zero-window probe.
+        const char *mark = "\t~timing";
+        const char *last_mark = "\t~timing";
 #endif
         int c, p;
         pair(&c, &p);
@@ -1212,27 +1216,36 @@ static void section_l(void)
             const char *lt = lin ? "linger0" : "nolinger";
             int queued = s == L_CUNSENT || s == L_CUNSENT_AFTERWR || s == L_CQUEUED_PFIN || s == L_PFIN_CQUEUED;
             const char *mark = queued ? "\t~counts" : "";
+            // Darwin's reset here waits on the peer's reads; the model refuses
+            // the close.
+            const char *row = "";
+#ifdef __APPLE__
+            if (lin && s == L_CQUEUED_PFIN) {
+                mark = "\t~timing";
+                row = "\t~timing";
+            }
+#endif
             const char *cl = do_close(c);
             const char *rp = rdy(p);
             printf("L\t%s\t%s\tlinger set early=%s at close=%s\tclose=%s rdy(p)\t%s%s\n", lt, tag, early, at_close, cl, rp,
                    mark);
             const char *b1 = bind_free(cport);
-            printf("L\t%s\t%s\tclosers-endpoint at once %s\n", lt, tag, b1);
+            printf("L\t%s\t%s\tclosers-endpoint at once %s%s\n", lt, tag, b1, row);
             const char *r1 = do_read(p);
             const char *r2 = do_read(p);
             const char *w1 = do_write(p, 100);
             const char *w2 = do_write(p, 100);
             const char *e = do_soerr(p);
             const char *r3 = do_read(p);
-            printf("L\t%s\t%s\tp-read=%s,%s p-write100=%s p-write100=%s soerr(p)=%s p-read=%s\n", lt, tag, r1, r2, w1, w2,
-                   e, r3);
+            printf("L\t%s\t%s\tp-read=%s,%s p-write100=%s p-write100=%s soerr(p)=%s p-read=%s%s\n", lt, tag, r1, r2, w1,
+                   w2, e, r3, row);
             if (queued || s == L_PDATA) {
                 const char *last = "";
                 long n = drain(p, &last);
                 printf("L\t%s\t%s\tp-drained=%ld last=%s%s\n", lt, tag, n, last, mark);
             }
             const char *b2 = bind_free(cport);
-            printf("L\t%s\t%s\tclosers-endpoint after p acted %s\n", lt, tag, b2);
+            printf("L\t%s\t%s\tclosers-endpoint after p acted %s%s\n", lt, tag, b2, row);
             discard(p);
         }
 }
@@ -1330,18 +1343,25 @@ static void section_x(void)
     const char *s2 = do_shutdown(p, SHUT_RDWR);
     const char *rc = rdy(c);
     const char *rp = rdy(p);
-    printf("X\tc-shut-wr=%s p-shut-rdwr=%s\trdy(c)\t%s\trdy(p)\t%s\t~counts\n", s1, s2, rc, rp);
+    // Linux delivers c's bytes on a zero-window probe after p's drain, and
+    // Darwin never does; the model refuses Darwin's state outright.
+#ifdef __APPLE__
+    const char *first = "\t~timing";
+#else
+    const char *first = "\t~counts";
+#endif
+    printf("X\tc-shut-wr=%s p-shut-rdwr=%s\trdy(c)\t%s\trdy(p)\t%s%s\n", s1, s2, rc, rp, first);
     const char *last = "";
     long d = drain(p, &last);
     rc = rdy(c);
     rp = rdy(p);
-    printf("X\tp-drained=%ld last=%s\trdy(c)\t%s\trdy(p)\t%s\t~counts\n", d, last, rc, rp);
+    printf("X\tp-drained=%ld last=%s\trdy(c)\t%s\trdy(p)\t%s\t~timing\n", d, last, rc, rp);
     const char *e1 = do_soerr(c);
     const char *r1 = do_read(c);
     const char *w1 = do_write(c, 100);
     const char *e2 = do_soerr(p);
     const char *r2 = do_read(p);
-    printf("X\tsoerr(c)=%s c-read=%s c-write100=%s soerr(p)=%s p-read=%s\n", e1, r1, w1, e2, r2);
+    printf("X\tsoerr(c)=%s c-read=%s c-write100=%s soerr(p)=%s p-read=%s\t~timing\n", e1, r1, w1, e2, r2);
     // Then whether a TCP timer changes anything: readiness, which consumes
     // nothing, at intervals, and the errors at the end.
     const int at_ms[] = { 250, 500, 1000, 2000, 5000, 15000 };
@@ -1422,11 +1442,13 @@ static void section_g(void)
             settle();
             const char *rs = ans(r, e);
             const char *rp = rdy(p);
-            printf("G\t%s\t%s\tclose=%s after %ld ms rdy(p)\t%s\t~counts\n", u, bl, rs, dt, rp);
+            // A close that waits for unsent bytes is refused by the model.
+            const char *gm = unsent ? "\t~timing" : "\t~counts";
+            printf("G\t%s\t%s\tclose=%s after %ld ms rdy(p)\t%s%s\n", u, bl, rs, dt, rp, gm);
             const char *last = "";
             long n = drain(p, &last);
             const char *pe = do_soerr(p);
-            printf("G\t%s\t%s\tp-drained=%ld last=%s soerr(p)=%s\t~counts\n", u, bl, n, last, pe);
+            printf("G\t%s\t%s\tp-drained=%ld last=%s soerr(p)=%s%s\n", u, bl, n, last, pe, gm);
             discard(p);
         }
 }

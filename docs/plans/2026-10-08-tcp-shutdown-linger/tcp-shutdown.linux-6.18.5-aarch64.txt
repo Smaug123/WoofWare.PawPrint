@@ -122,8 +122,8 @@ F	c-queued	p-drained=4290155 last=0	~counts
 F	c-queued	closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
 #	filled 4290155
 X	c-shut-wr=0 p-shut-rdwr=0	rdy(c)	poll=0x2015 epoll=0x2015 fionread=0	rdy(p)	poll=0x2015 epoll=0x2015 fionread=127717	~counts
-X	p-drained=127717 last=0	rdy(c)	poll=0x2015 epoll=0x2015 fionread=0	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0	~counts
-X	soerr(c)=0 c-read=0 c-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0
+X	p-drained=127717 last=0	rdy(c)	poll=0x2015 epoll=0x2015 fionread=0	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0	~timing
+X	soerr(c)=0 c-read=0 c-write100=-1 EPIPE+SIGPIPE soerr(p)=0 p-read=0	~timing
 X	250 ms later	rdy(c)	poll=0x201d epoll=0x201d fionread=0	rdy(p)	poll=0x201d epoll=0x201d fionread=0	~timing
 X	500 ms later	rdy(c)	poll=0x201d epoll=0x201d fionread=0	rdy(p)	poll=0x201d epoll=0x201d fionread=0	~timing
 X	1000 ms later	rdy(c)	poll=0x201d epoll=0x201d fionread=0	rdy(p)	poll=0x201d epoll=0x201d fionread=0	~timing
@@ -300,13 +300,13 @@ R	RDWR	c-sent-first=1	p-write#2=-1 EPIPE+SIGPIPE	rdy(c)	poll=0x201d epoll=0x201d
 R	RDWR	c-sent-first=1	p-write#3=-1 EPIPE+SIGPIPE	rdy(c)	poll=0x201d epoll=0x201d fionread=0	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
 R	RDWR	c-sent-first=1	p-write#4=-1 EPIPE+SIGPIPE	rdy(c)	poll=0x201d epoll=0x201d fionread=0	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
 R	RDWR	c-sent-first=1	c-read=-1 ECONNRESET p-read=0 soerr(c)=0 soerr(p)=0
-R	RD	p-unsent(4290560)	shutdown=0	rdy(c)	poll=0x2005 epoll=0x2005 fionread=127744	rdy(p)	poll=0x0 epoll=0x0 fionread=0	~counts
-R	RD	p-unsent	c-read=4096	rdy(c)	poll=0x2005 epoll=0x2005 fionread=123648	rdy(p)	poll=0x0 epoll=0x0 fionread=0	~counts
-R	RD	p-unsent	c-read=4096 p-write100=-1 EAGAIN soerr(c)=0 soerr(p)=0
-R	RD	p-unsent	5 s later	rdy(c)	poll=0x2005 epoll=0x2005 fionread=119552	rdy(p)	poll=0x0 epoll=0x0 fionread=0	soerr(c)=0 soerr(p)=0	~counts
-R	RDWR	p-unsent(4290560)	shutdown=0	rdy(c)	poll=0x2015 epoll=0x2015 fionread=127744	rdy(p)	poll=0x2001 epoll=0x2001 fionread=0	~counts
-R	RDWR	p-unsent	c-read=4096	rdy(c)	poll=0x2015 epoll=0x2015 fionread=123648	rdy(p)	poll=0x2001 epoll=0x2001 fionread=0	~counts
-R	RDWR	p-unsent	c-read=4096 p-write100=-1 EAGAIN soerr(c)=0 soerr(p)=0
+R	RD	p-unsent(4290560)	shutdown=0	rdy(c)	poll=0x2005 epoll=0x2005 fionread=127744	rdy(p)	poll=0x0 epoll=0x0 fionread=0	~timing
+R	RD	p-unsent	c-read=4096	rdy(c)	poll=0x2005 epoll=0x2005 fionread=123648	rdy(p)	poll=0x0 epoll=0x0 fionread=0	~timing
+R	RD	p-unsent	c-read=4096 p-write100=-1 EAGAIN soerr(c)=0 soerr(p)=0	~timing
+R	RD	p-unsent	5 s later	rdy(c)	poll=0x2005 epoll=0x2005 fionread=119552	rdy(p)	poll=0x0 epoll=0x0 fionread=0	soerr(c)=0 soerr(p)=0	~timing
+R	RDWR	p-unsent(4290560)	shutdown=0	rdy(c)	poll=0x2015 epoll=0x2015 fionread=127744	rdy(p)	poll=0x2001 epoll=0x2001 fionread=0	~timing
+R	RDWR	p-unsent	c-read=4096	rdy(c)	poll=0x2015 epoll=0x2015 fionread=123648	rdy(p)	poll=0x2001 epoll=0x2001 fionread=0	~timing
+R	RDWR	p-unsent	c-read=4096 p-write100=-1 EAGAIN soerr(c)=0 soerr(p)=0	~timing
 E	idle	RD	drain	c=0x4 p=0x4
 E	idle	RD	again	c=- p=-
 E	idle	RD	after	c=0x2005 p=-
@@ -390,12 +390,12 @@ Q	shutdown-rdwr	q1 rdy	poll=0x201d epoll=0x201d fionread=0
 Q	shutdown-rdwr	q1 read=-1 ECONNRESET write100=-1 EPIPE+SIGPIPE soerr=0 read=0
 Q	shutdown-rdwr	listeners-port bind-ok
 #	filled 4290155
-G	unsent	nonblocking	close=0 after 1013 ms rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
-G	unsent	nonblocking	p-drained=4290155 last=0 soerr(p)=0	~counts
+G	unsent	nonblocking	close=0 after 1025 ms rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~timing
+G	unsent	nonblocking	p-drained=4290155 last=0 soerr(p)=0	~timing
 #	filled 4290155
-G	unsent	blocking	close=0 after 1024 ms rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~counts
-G	unsent	blocking	p-drained=4290155 last=0 soerr(p)=0	~counts
-G	nothing	nonblocking	close=0 after 3 ms rdy(p)	poll=0x2005 epoll=0x2005 fionread=0	~counts
+G	unsent	blocking	close=0 after 1023 ms rdy(p)	poll=0x5 epoll=0x5 fionread=127717	~timing
+G	unsent	blocking	p-drained=4290155 last=0 soerr(p)=0	~timing
+G	nothing	nonblocking	close=0 after 1 ms rdy(p)	poll=0x2005 epoll=0x2005 fionread=0	~counts
 G	nothing	nonblocking	p-drained=0 last=0 soerr(p)=0	~counts
-G	nothing	blocking	close=0 after 2 ms rdy(p)	poll=0x2005 epoll=0x2005 fionread=0	~counts
+G	nothing	blocking	close=0 after 1 ms rdy(p)	poll=0x2005 epoll=0x2005 fionread=0	~counts
 G	nothing	blocking	p-drained=0 last=0 soerr(p)=0	~counts
