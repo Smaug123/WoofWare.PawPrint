@@ -712,6 +712,13 @@ with stage 4 if small.
   `Arrived true`, including later, when an orphan's queued passive FIN
   arrives. Not modelling it would answer `EADDRINUSE` to a `bind` that the
   kernel allows.
+  **Still to measure, in stage 4:** Codex found on Darwin 27 that after
+  `shutdown(p, SHUT_WR)` and then `shutdown(c, SHUT_WR)`, a fresh socket may
+  bind `c`'s endpoint while both descriptors are still open. So the release
+  may not need `Closed` at all, and may apply to a live socket's binding as
+  well as to an orphan's. Stage 4 adds that ordering to section F, before
+  either descriptor closes, measures it on both flavours, and states the rule
+  from what it finds.
 - **Abortive close (3.2):** a function of the two FINs. It is an ordinary
   close once both have arrived, and otherwise a reset, except that Darwin's
   close after an active FIN that is still queued and the peer's FIN has
