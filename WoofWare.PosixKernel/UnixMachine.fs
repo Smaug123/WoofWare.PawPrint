@@ -106,6 +106,11 @@ type UnixMachineState =
             /// `UnixBootImage.withTcpSendSpace`. Only the Darwin flavour reads
             /// it, through `TcpBufferSizing`.
             TcpSendSpace : int
+            /// The `IPV6_V6ONLY` a new IPv6 socket starts with: Linux's
+            /// `net.ipv6.bindv6only` sysctl, Darwin's `net.inet6.ip6.v6only`.
+            /// Host configuration, off by default on both (measured); see
+            /// `UnixBootImage.withIpv6OnlyByDefault`.
+            Ipv6OnlyByDefault : bool
             /// The receive buffer a new TCP socket starts with, in bytes:
             /// Darwin's `net.inet.tcp.recvspace` sysctl, and Linux's
             /// `net.ipv4.tcp_rmem` default (its second value). Host

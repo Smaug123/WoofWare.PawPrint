@@ -1425,6 +1425,27 @@ module TestImpureCases =
             AssertTerminalState = None
         }
 
+    /// `SocketOptions.cs` under `platform`: TCP_NODELAY, IPV6_V6ONLY and
+    /// SO_LINGER through the managed `Socket` API, which exits 0 for Linux's
+    /// answers where the flavours disagree and 100 for Darwin's
+    /// (`docs/probes/sockopt-options/`).
+    let private socketOptionsCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketOptions.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1589,6 +1610,8 @@ module TestImpureCases =
             socketConnectPortZeroCase SimulatedUnixPlatform.macOsArm64
             socketConnectDestinationsCase SimulatedUnixPlatform.linuxX64
             socketConnectDestinationsCase SimulatedUnixPlatform.macOsArm64
+            socketOptionsCase SimulatedUnixPlatform.linuxX64
+            socketOptionsCase SimulatedUnixPlatform.macOsArm64
             {
                 // A managed bind of a multicast and of the broadcast address under
                 // Darwin: EAFNOSUPPORT on a stream socket, EADDRNOTAVAIL for the
@@ -4879,7 +4902,7 @@ module TestImpureCases =
             let platform =
                 SimulatedUnixPlatform.createOrFail
                     "test"
-                    SimulatedUnixFlavour.Linux
+                    (SimulatedUnixPlatform.kernel SimulatedUnixPlatform.linuxX64)
                     SimulatedUnixArchitecture.X64
                     SimulatedPageSize.FourKiB
                     release

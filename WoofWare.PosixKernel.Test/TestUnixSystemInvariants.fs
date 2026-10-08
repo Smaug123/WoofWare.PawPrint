@@ -103,6 +103,7 @@ module TestUnixSystemInvariants =
                                             Protocol = SocketProtocol.Tcp
                                             Binding = None
                                             ReuseAddress = false
+                                            Options = SocketOptions.initial
                                             Phase = phase
                                         }
                                     ]
@@ -154,6 +155,7 @@ module TestUnixSystemInvariants =
                                             Protocol = SocketProtocol.Tcp
                                             Binding = None
                                             ReuseAddress = false
+                                            Options = SocketOptions.initial
                                             Phase = SocketPhase.Established (connection, ConnectionEnd.Client)
                                         }
                                     ]
@@ -551,6 +553,7 @@ module TestUnixSystemInvariants =
             Protocol = SocketProtocol.Tcp
             Binding = binding
             ReuseAddress = false
+            Options = SocketOptions.initial
             Phase = phase
         }
 

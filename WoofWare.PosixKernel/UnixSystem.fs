@@ -2530,6 +2530,7 @@ module UnixSystem =
                     EphemeralPortRange = defaultEphemeralPortRange flavour
                     SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
                     TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
+                    Ipv6OnlyByDefault = false
                     TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace flavour
                     TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax flavour
                     LocalAddresses = defaultLocalAddresses
