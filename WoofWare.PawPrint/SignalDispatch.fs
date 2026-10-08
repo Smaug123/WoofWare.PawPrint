@@ -56,11 +56,17 @@ type SignalPoll =
 /// `NativeLibc.raiseSignal` and `SystemNative_Write` when the signal would
 /// stay pending on a thread other than the leader.
 ///
+/// A thread's mask can now hold a signal back (`NativeLibcSignalMask`), and
+/// the leader is still the only task asked. A signal sent to the process that
+/// the leader blocks and another thread does not is refused by the kernel
+/// (`SignalReceiverRefusal.LeaderBlocks`), when it is sent or at this poll,
+/// and the refusal fails the run.
+///
 /// The `SignalDelivery.Default*` cases are refused loudly: a default that
 /// terminates or stops is applied when the signal is generated (see
 /// `NativeLibc.kill` and `NativeLibc.raiseSignal`), so one reaches this poll
-/// only by becoming receivable later, as a handler frame's mask is popped, and
-/// no frame survives a poll.
+/// only by becoming receivable later, as a handler frame's mask is popped or a
+/// mask call unblocks it, and applying a default at delivery is not modelled.
 [<RequireQualifiedAccess>]
 module SignalDispatch =
 
@@ -371,10 +377,11 @@ module SignalDispatch =
                 // default is to terminate, stop or continue the process.
                 // `SignalState.generate` applies a terminating or stopping
                 // default at generation whenever some thread can receive the
-                // signal, so it is pending here only if none could then, which
-                // a mask held only by handler frames never arranges between
-                // instructions. Reaching this is therefore a test driving the
-                // queue by hand, and it is refused rather than half-modelled.
+                // signal, so it is pending here only if none could then: every
+                // thread blocked it, through a mask call, and one has since
+                // unblocked it. Applying a default at delivery is refused
+                // rather than half-modelled, SIGCONT's included, though the
+                // kernel discards that one as it is taken.
                 failwith
                     $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
 

@@ -28,7 +28,8 @@
 // Run on Darwin 27.0.0 (arm64, uid 501) and Linux 6.18.5 (aarch64, glibc
 // 2.41, root in the container), 2026-10-08; the output is beside this file
 // as sigpending-scope.darwin-27.0-uid501.txt and
-// sigpending-scope.linux-6.18.5-aarch64.txt.
+// sigpending-scope.linux-6.18.5-aarch64.txt. The rows are transcribed in
+// WoofWare.PosixKernel.Test/TestSigprocmask.fs.
 #include "signal-probe-common.h"
 #include <stdarg.h>
 #include <sys/utsname.h>

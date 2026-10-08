@@ -427,73 +427,72 @@ module TestThreadIds =
         fails (spawn 7 2 masked) "names no task"
 
     [<Test>]
-    let ``a new thread starts with nothing pending on it, and is refused from inside a handler that blocks`` () : unit =
+    let ``a new thread starts with its creator's mask and nothing pending on it`` () : unit =
         // Measured on Linux 6.18.5 (aarch64 and x86-64) and Darwin 27.0.0 by
-        // `docs/plans/2026-08-23-posix-kernel-extraction/thread-spawn-mask.c`: a
-        // new thread's mask is its creator's, and nothing pending on the creator
-        // alone is pending on it. A mask is held only as handler frames, which a
-        // new thread cannot inherit, so a creator that blocks anything is refused.
+        // `docs/plans/2026-08-23-posix-kernel-extraction/thread-spawn-mask.c`,
+        // whose cases are these: the creator blocking nothing, SIGUSR1, and
+        // SIGUSR1 and SIGTERM, and blocking SIGUSR2 with one pending on itself
+        // alone. The new thread's mask was exactly its creator's, and the
+        // creator's own pending signal was not pending on it.
         for system in [ linux ; darwin ] do
-            let signals (f : SignalState<int, string> -> SignalState<int, string>) (system : UnixSystem<int, string>) =
-                { system with
-                    Process =
-                        { system.Process with
-                            Signals = f system.Process.Signals
-                        }
-                }
+            let numbering = SignalState.numbering system.Process.Signals
 
-            let pendingOnLeader =
-                system
-                |> signals (
-                    SignalState.enqueue
-                        {
-                            Signal = Signal.SIGUSR2
-                            Target = ValueSome 0
-                        }
-                )
+            let blocking (signals : Signal list) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+                match
+                    UnixSignal.pthreadSigmask
+                        0
+                        (match numbering with
+                         | SignalNumbering.Linux -> 2
+                         | SignalNumbering.Darwin -> 3)
+                        (Some (SignalMask.ofSignals numbering (Set.ofList signals)))
+                        system
+                with
+                | Ok (_, system) -> system
+                | Error errno -> failwith $"pthread_sigmask failed with %O{errno}"
 
-            let _, spawned = spawnOrFail 1 pendingOnLeader
-
-            SignalState.maskOf 1 spawned.Process.Signals |> shouldEqual SignalMask.empty
-
-            SignalState.pending spawned.Process.Signals
-            |> shouldEqual
+            let cases =
                 [
-                    {
-                        Signal = Signal.SIGUSR2
-                        Target = ValueSome 0
-                    }
+                    [], false
+                    [ Signal.SIGUSR1 ], false
+                    [ Signal.SIGUSR1 ; Signal.SIGTERM ], false
+                    [ Signal.SIGUSR2 ], true
                 ]
 
-            let masked =
-                system
-                |> HandlerFrames.enterIn "h" 0 (Set.ofList [ Signal.SIGUSR1 ; Signal.SIGTERM ])
+            for blocked, pendOnCreator in cases do
+                let creator = blocking blocked system
 
-            UnixTaskLifecycle.spawn 0 1 (CpuId 0) masked
-            |> shouldEqual (
-                Error (
-                    SpawnRefusal.InheritedHandlerMask (
-                        0,
-                        SignalMask.ofSignals
-                            (SignalState.numbering system.Process.Signals)
-                            (Set.ofList [ Signal.SIGUSR1 ; Signal.SIGTERM ])
-                    )
+                let creator =
+                    if pendOnCreator then
+                        match UnixSignal.pthreadKill 0 (Signal.toRawSignoUnder numbering Signal.SIGUSR2) creator with
+                        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                        | other -> failwith $"pthread_kill answered %A{other}"
+                    else
+                        creator
+
+                let _, spawned = spawnOrFail 1 creator
+
+                SignalState.maskOf 1 spawned.Process.Signals
+                |> SignalMask.signals
+                |> shouldEqual (Set.ofList blocked)
+
+                UnixSignal.sigpending 1 spawned |> shouldEqual SignalMask.empty
+
+                UnixSignal.sigpending 0 spawned
+                |> SignalMask.signals
+                |> shouldEqual (
+                    if pendOnCreator then
+                        Set.singleton Signal.SIGUSR2
+                    else
+                        Set.empty
                 )
-            )
 
-            // A handler that blocks nothing is no reason to refuse.
-            let unmasked = system |> HandlerFrames.enterIn "h" 0 Set.empty
-            let _, spawned = spawnOrFail 1 unmasked
-            SignalState.maskOf 1 spawned.Process.Signals |> shouldEqual SignalMask.empty
+                UnixSystem.checkInvariants spawned |> shouldEqual []
 
     [<Test>]
-    let ``a thread created from inside a caught signal's handler is refused, and created once the handler returns``
-        ()
-        : unit
-        =
-        // The handler blocks its own signal while it runs (no SA_NODEFER), so
-        // the new thread would inherit a mask of SIGUSR1, which this library
-        // cannot give it.
+    let ``a thread created inside a handler starts with the mask the handler runs under`` () : unit =
+        // A new thread's mask is its creator's current one; inside a handler
+        // for SIGUSR1 without SA_NODEFER, that holds SIGUSR1. The handler's
+        // return restores its own task's mask alone.
         for system in [ linux ; darwin ] do
             let usr1 =
                 Signal.toRawSignoUnder (SignalState.numbering system.Process.Signals) Signal.SIGUSR1
@@ -513,23 +512,20 @@ module TestThreadIds =
                 | Ok (Some (SignalDelivery.RunHandlers [ frame ]), system) -> frame, system
                 | other -> failwith $"onReturnToUser answered %A{other}"
 
-            UnixTaskLifecycle.spawn 0 1 (CpuId 0) inHandler
-            |> shouldEqual (
-                Error (
-                    SpawnRefusal.InheritedHandlerMask (
-                        0,
-                        SignalMask.ofSignals
-                            (SignalState.numbering system.Process.Signals)
-                            (Set.singleton Signal.SIGUSR1)
-                    )
-                )
-            )
+            let _, spawned = spawnOrFail 1 inHandler
 
-            // Once the handler has returned, the leader blocks nothing again.
-            let returned = UnixSignal.sigreturn 0 frame.Id inHandler
-            let id, spawned = spawnOrFail 1 returned
-            idOf 1 spawned |> shouldEqual id
-            UnixSystem.checkInvariants spawned |> shouldEqual []
+            SignalState.maskOf 1 spawned.Process.Signals
+            |> SignalMask.signals
+            |> shouldEqual (Set.singleton Signal.SIGUSR1)
+
+            let returned = UnixSignal.sigreturn 0 frame.Id spawned
+            SignalState.maskOf 0 returned.Process.Signals |> shouldEqual SignalMask.empty
+
+            SignalState.maskOf 1 returned.Process.Signals
+            |> SignalMask.signals
+            |> shouldEqual (Set.singleton Signal.SIGUSR1)
+
+            UnixSystem.checkInvariants returned |> shouldEqual []
 
     [<Test>]
     let ``Darwin: a thread created once the counter has reached the top is refused, and no ID is handed out``

@@ -288,7 +288,11 @@ module SignalFuzz =
                     | SignalDisposition.Ignore -> "i"
                     | SignalDisposition.Catch _ -> "c"
 
-                events.Add $"e%d{signo frame.Entry.Signal}.%x{SignalMask.toWord frame.Mask}.%s{disposition}"
+                // The mask the handler starts under: the task's mask as it
+                // begins to run, which the frames inside it have restored.
+                let mask = SignalState.maskOf leader (signals ())
+
+                events.Add $"e%d{signo frame.Entry.Signal}.%x{SignalMask.toWord mask}.%s{disposition}"
 
                 match bodies with
                 | body :: rest ->

@@ -142,6 +142,13 @@ module ProcessLaunch =
     /// is the client's, as the entry says (see `LaunchDescriptor`). The pipes
     /// are made, in descriptor order, when the process is launched.
     ///
+    /// The leader starts blocking no signal. A real process starts with the
+    /// mask its parent's thread had when it called `execve(2)`, which keeps the
+    /// mask; a client launching a process that inherits one sets it with
+    /// `UnixSignal.pthreadSigmask` and `SIG_SETMASK` before the leader runs its
+    /// first instruction, as inherited ignores are installed with
+    /// `UnixSignal.sigaction`.
+    ///
     /// Refuses a table naming a negative descriptor, or one at or above the
     /// bound (`SimulatedUnixPlatform.descriptorBound`).
     let create<'Task when 'Task : comparison>

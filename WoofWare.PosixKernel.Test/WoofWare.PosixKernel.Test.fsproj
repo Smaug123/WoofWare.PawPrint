@@ -124,6 +124,7 @@
     <Compile Include="TestUnixSignal.fs" />
     <Compile Include="TestPthreadKill.fs" />
     <Compile Include="TestSigaction.fs" />
+    <Compile Include="TestSigprocmask.fs" />
     <Compile Include="TestSignalPickOrder.fs" />
     <Compile Include="TestSignalReceiver.fs" />
     <Compile Include="SignalFuzz.fs" />

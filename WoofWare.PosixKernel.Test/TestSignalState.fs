@@ -702,25 +702,38 @@ module TestSignalState =
         |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
 
     [<Test>]
-    let ``a Continue default bypasses masks`` () : unit =
-        // Resumption happens at generation on a real kernel, whatever any
-        // mask says: measured on Linux 6.18.5 and Darwin 25.6.0 (two runs
-        // each), a child that blocks SIGCONT and stops itself is resumed by
-        // SIGCONT anyway — the mask defers only handler delivery. So the
-        // event must surface even when every task blocks SIGCONT.
-        let s =
-            empty
-            |> block t0 Signal.SIGCONT
-            |> SignalState.enqueue
+    let ``a blocked default SIGCONT stays pending, and is discarded once unblocked`` () : unit =
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 by `sigpending-scope.c`:
+        // SIGCONT at its default, blocked and sent with kill, was pending
+        // after the kill had returned. This library has no stopped process
+        // for it to resume, so what is left is the pending signal, gated by
+        // the mask like any other.
+        for numbering in everyNumbering do
+            let cont = SignalMask.ofSignals numbering (Set.singleton Signal.SIGCONT)
+
+            let entry =
                 {
                     Signal = Signal.SIGCONT
                     Target = ValueNone
                 }
 
-        let delivery, s' = leaderDelivery [ t0 ] s
+            let s =
+                initial numbering
+                |> SignalState.changeMask SignalMaskChange.Block cont t0
+                |> SignalState.enqueue entry
 
-        delivery |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
-        SignalState.pending s' |> shouldEqual []
+            let delivery, s = leaderDelivery [ t0 ] s
+            delivery |> shouldEqual None
+            SignalState.pending s |> shouldEqual [ entry ]
+            SignalState.pendingBlocked t0 t0 s |> shouldEqual cont
+
+            let delivery, s =
+                s
+                |> SignalState.changeMask SignalMaskChange.Unblock cont t0
+                |> leaderDelivery [ t0 ]
+
+            delivery |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
+            SignalState.pending s |> shouldEqual []
 
     [<Test>]
     let ``generating an unclaimed fatal signal terminates the process at once`` () : unit =
@@ -1028,19 +1041,33 @@ module TestSignalState =
         |> shouldEqual (Ok [ entry ])
 
     [<Test>]
-    let ``a default SIGCONT pending on the process is no reason to refuse, whoever blocks it`` () : unit =
-        // Resuming the process needs no receiver, so it is answered even while
-        // only a non-leader could have received it.
+    let ``a default SIGCONT sent to the process that only a task but the leader could take is refused`` () : unit =
+        // Whichever task takes it discards it as it returns to user mode, and
+        // only the leader is asked.
         let entry =
             {
                 Signal = Signal.SIGCONT
                 Target = ValueNone
             }
 
-        let s = empty |> block t0 Signal.SIGCONT |> SignalState.enqueue entry
+        let s =
+            empty
+            |> SignalState.changeMask
+                SignalMaskChange.Block
+                (SignalMask.ofSignals SignalNumbering.Linux (Set.singleton Signal.SIGCONT))
+                t0
 
-        SignalState.onReturnToUser CoreDumps.Suppressed t0 (Set.ofList [ t0 ; t1 ]) t0 s
-        |> shouldEqual (Ok (Some (SignalDelivery.DefaultContinue Signal.SIGCONT), empty |> block t0 Signal.SIGCONT))
+        SignalState.generate CoreDumps.Suppressed t0 (Set.ofList [ t0 ; t1 ]) entry s
+        |> shouldEqual (Error (SignalReceiverRefusal.LeaderBlocks Signal.SIGCONT))
+
+        SignalState.onReturnToUser CoreDumps.Suppressed t0 (Set.ofList [ t0 ; t1 ]) t0 (SignalState.enqueue entry s)
+        |> shouldEqual (Error (SignalReceiverRefusal.LeaderBlocks Signal.SIGCONT))
+
+        // With every task blocking it, it is simply pending.
+        SignalState.generate CoreDumps.Suppressed t0 (Set.singleton t0) entry s
+        |> Result.map continuesWith
+        |> Result.map SignalState.pending
+        |> shouldEqual (Ok [ entry ])
 
     [<Test>]
     let ``onReturnToUser holds a signal every task blocks`` () : unit =
@@ -1193,14 +1220,20 @@ module TestSignalState =
 
             match leaderDelivery [ t0 ] s with
             | Some (SignalDelivery.RunHandlers frames), s' ->
+                // Each frame saves the mask before it, which its sigreturn
+                // restores: the mask each outer handler then runs under.
                 frames
-                |> List.map (fun frame -> frame.Entry.Signal, SignalMask.signals frame.Mask)
+                |> List.map (fun frame -> frame.Entry.Signal, SignalMask.signals frame.SavedMask)
                 |> shouldEqual
                     [
-                        Signal.SIGTERM, Set.ofList [ Signal.SIGHUP ; Signal.SIGINT ; Signal.SIGTERM ]
-                        Signal.SIGINT, Set.ofList [ Signal.SIGHUP ; Signal.SIGINT ]
-                        Signal.SIGHUP, Set.singleton Signal.SIGHUP
+                        Signal.SIGTERM, Set.ofList [ Signal.SIGHUP ; Signal.SIGINT ]
+                        Signal.SIGINT, Set.singleton Signal.SIGHUP
+                        Signal.SIGHUP, Set.empty
                     ]
+
+                SignalState.maskOf t0 s'
+                |> SignalMask.signals
+                |> shouldEqual (Set.ofList [ Signal.SIGHUP ; Signal.SIGINT ; Signal.SIGTERM ])
 
                 SignalState.framesOf t0 s' |> shouldEqual frames
                 SignalState.pending s' |> shouldEqual []
@@ -1263,8 +1296,10 @@ module TestSignalState =
             frames |> List.map (fun frame -> frame.Entry) |> shouldEqual [ rt ; rt ; rt ]
 
             frames
-            |> List.map (fun frame -> frame.Mask)
+            |> List.map (fun frame -> frame.SavedMask)
             |> shouldEqual [ SignalMask.empty ; SignalMask.empty ; SignalMask.empty ]
+
+            SignalState.maskOf t0 s' |> shouldEqual SignalMask.empty
 
             SignalState.pending s' |> shouldEqual []
         | other, _ -> failwith $"expected three nested frames, got %A{other}"
@@ -1365,6 +1400,8 @@ module TestSignalState =
     /// the operations are given changes.
     type private Op =
         | SetDisposition of signal : Signal * disposition : SignalDisposition<TestHandler>
+        /// `changeMask`, as `sigprocmask(2)` calls it, with a set of signals.
+        | ChangeMask of task : TestTask * change : SignalMaskChange * set : Set<Signal>
         | Enqueue of entry : PendingSignal<TestTask>
         | Generate of coreDumps : CoreDumps * entry : PendingSignal<TestTask>
         | Deliver of coreDumps : CoreDumps * task : TestTask
@@ -1394,6 +1431,8 @@ module TestSignalState =
     type private ReferenceState =
         {
             Dispositions : Map<Signal, SignalDisposition<TestHandler>>
+            /// Each task's mask; may hold an empty one.
+            Blocked : Map<TestTask, Set<Signal>>
             Frames : Map<TestTask, HandlerFrame<TestTask, TestHandler> list>
             NextFrame : int64
             Pending : PendingSignal<TestTask> list
@@ -1402,6 +1441,7 @@ module TestSignalState =
     let private referenceEmpty : ReferenceState =
         {
             Dispositions = Map.empty
+            Blocked = Map.empty
             Frames = Map.empty
             NextFrame = 0L
             Pending = []
@@ -1415,9 +1455,7 @@ module TestSignalState =
         Map.tryFind task r.Frames |> Option.defaultValue []
 
     let private referenceMask (r : ReferenceState) (task : TestTask) : Set<Signal> =
-        match referenceFrames r task with
-        | [] -> Set.empty
-        | innermost :: _ -> SignalMask.signals innermost.Mask
+        Map.tryFind task r.Blocked |> Option.defaultValue Set.empty
 
     let private referenceBlocks (r : ReferenceState) (task : TestTask) (signal : Signal) : bool =
         Set.contains signal (referenceMask r task)
@@ -1698,6 +1736,8 @@ module TestSignalState =
                 ReferenceGeneration.Terminated (entry.Signal, referenceCore numbering coreDumps entry.Signal)
             | _, SignalDisposition.Default, DefaultDisposition.Stop -> ReferenceGeneration.Stopped (entry.Signal, r)
             | _, SignalDisposition.Default, DefaultDisposition.Ignore -> ReferenceGeneration.Continues r
+            | ReferenceReceiver.BeyondLeader, SignalDisposition.Default, DefaultDisposition.Continue ->
+                ReferenceGeneration.Refused entry.Signal
             | _, SignalDisposition.Default, DefaultDisposition.Continue -> pend ()
 
     /// The reference's return to user mode: after every action, start again
@@ -1714,10 +1754,7 @@ module TestSignalState =
         =
         let refused =
             referencePendingView numbering r
-            |> List.tryFind (fun e ->
-                referenceReceiver tasks r e = ReferenceReceiver.BeyondLeader
-                && not (referenceContinuesAtDefault numbering r e.Signal)
-            )
+            |> List.tryFind (fun e -> referenceReceiver tasks r e = ReferenceReceiver.BeyondLeader)
 
         match refused with
         | Some e -> Error (SignalReceiverRefusal.LeaderBlocks e.Signal)
@@ -1730,10 +1767,7 @@ module TestSignalState =
             =
             let next =
                 referenceCandidates numbering task r
-                |> List.tryFind (fun e ->
-                    referenceContinuesAtDefault numbering r e.Signal
-                    || not (referenceBlocks r task e.Signal)
-                )
+                |> List.tryFind (fun e -> not (referenceBlocks r task e.Signal))
 
             let removed (e : PendingSignal<TestTask>) : ReferenceState =
                 { r with
@@ -1755,10 +1789,12 @@ module TestSignalState =
 
             match referenceDisposition r e.Signal with
             | SignalDisposition.Catch action ->
+                let saved = referenceMask r task
+
                 let mask =
                     Set.unionMany
                         [
-                            referenceMask r task
+                            saved
                             SignalMask.signals action.Mask
                             (if action.NoDefer then Set.empty else Set.singleton e.Signal)
                         ]
@@ -1769,7 +1805,7 @@ module TestSignalState =
                         Id = HandlerFrameId r.NextFrame
                         Entry = e
                         Action = action
-                        Mask = SignalMask.ofSignals numbering mask
+                        SavedMask = SignalMask.ofSignals numbering saved
                     }
 
                 let signo = Signal.toRawSignoUnder numbering e.Signal
@@ -1785,6 +1821,7 @@ module TestSignalState =
                                 Map.add e.Signal SignalDisposition.Default r.Dispositions
                             else
                                 r.Dispositions
+                        Blocked = Map.add task mask r.Blocked
                         Frames = Map.add task (frame :: referenceFrames r task) r.Frames
                         NextFrame = r.NextFrame + 1L
                     }
@@ -1830,12 +1867,28 @@ module TestSignalState =
                 Pending = pending
             },
             tasks
+        | Op.ChangeMask (task, change, set) ->
+            let set = set |> Set.filter (referenceUnmaskable numbering >> not)
+            let current = referenceMask r task
+
+            let changed =
+                match change with
+                | SignalMaskChange.Block -> Set.union current set
+                | SignalMaskChange.Unblock -> Set.difference current set
+                | SignalMaskChange.SetMask -> set
+
+            SignalState.changeMask change (SignalMask.ofSignals numbering set) task s,
+            { r with
+                Blocked = Map.add task changed r.Blocked
+            },
+            tasks
         | Op.Sigreturn task ->
             match referenceFrames r task with
             | innermost :: outer ->
                 SignalState.sigreturn task innermost.Id s,
                 { r with
                     Frames = Map.add task outer r.Frames
+                    Blocked = Map.add task (SignalMask.signals innermost.SavedMask) r.Blocked
                 },
                 tasks
             | [] -> failwith $"generated a sigreturn for %O{task}, which has no frame"
@@ -1878,6 +1931,7 @@ module TestSignalState =
         | Op.Exit task ->
             SignalState.forgetTask task s,
             { r with
+                Blocked = Map.remove task r.Blocked
                 Frames = Map.remove task r.Frames
                 Pending = r.Pending |> List.filter (fun e -> e.Target <> ValueSome task)
             },
@@ -1921,6 +1975,31 @@ module TestSignalState =
             |> Map.keys
             |> Set.ofSeq
         )
+
+        // Equal as sets, so a stored empty mask on the production side is a
+        // failure even though every `maskOf` would agree with it.
+        SignalState.tasksWithMasks s
+        |> shouldEqual (
+            r.Blocked
+            |> Map.filter (fun _ mask -> not mask.IsEmpty)
+            |> Map.keys
+            |> Set.ofSeq
+        )
+
+        for tid in tasks do
+            let seen (e : PendingSignal<TestTask>) : bool =
+                match e.Target with
+                | ValueSome target -> target = tid
+                | ValueNone -> numbering = SignalNumbering.Linux || tid = referenceLeader
+
+            SignalState.pendingBlocked referenceLeader tid s
+            |> SignalMask.signals
+            |> shouldEqual (
+                r.Pending
+                |> List.filter (fun e -> seen e && referenceBlocks r tid e.Signal)
+                |> List.map (fun e -> e.Signal)
+                |> Set.ofList
+            )
 
     /// Every signal `setDisposition` accepts: everything but SIGKILL and
     /// SIGSTOP, glibc's reserved pair included.
@@ -2096,9 +2175,29 @@ module TestSignalState =
                     Target = pickTarget ()
                 }
 
-        let kind = rng.Next 100
+        let kind = rng.Next 112
 
-        if kind < 25 then
+        if kind >= 100 then
+            // A few signals, SIGKILL and SIGSTOP among them sometimes; an
+            // unblock over-weights what is pending, so that it delivers.
+            let change =
+                pick [ SignalMaskChange.Block ; SignalMaskChange.Unblock ; SignalMaskChange.SetMask ]
+
+            let pendingSignals = r.Pending |> List.map (fun p -> p.Signal)
+
+            let set =
+                List.init
+                    (rng.Next 4)
+                    (fun _ ->
+                        if not pendingSignals.IsEmpty && rng.Next 2 = 0 then
+                            pick pendingSignals
+                        else
+                            pick (allSignals numbering)
+                    )
+                |> Set.ofList
+
+            Op.ChangeMask (pick current, change, set)
+        elif kind < 25 then
             // Only what the kernel accepts: `setDisposition` fails loud on
             // SIGKILL and SIGSTOP, and the refusal has its own unit test.
             Op.SetDisposition (pick (settableSignals numbering), pickDisposition ())
@@ -2155,6 +2254,7 @@ module TestSignalState =
         let mutable observedOwnAndSharedCandidates = 0
         let mutable observedOutOfGenerationOrder = 0
         let mutable observedExits = 0
+        let mutable observedMaskChanges = 0
 
         let property (seed : int) : unit =
             let rng = System.Random seed
@@ -2279,6 +2379,7 @@ module TestSignalState =
                     then
                         observedDiscardsWhenSet <- observedDiscardsWhenSet + 1
                 | Op.Enqueue _ -> ()
+                | Op.ChangeMask _ -> observedMaskChanges <- observedMaskChanges + 1
                 | Op.Exit _ -> observedExits <- observedExits + 1
                 | Op.Sigreturn _ -> observedSigreturns <- observedSigreturns + 1
                 | Op.Spawn _ -> ()
@@ -2354,6 +2455,7 @@ module TestSignalState =
         observedOwnAndSharedCandidates |> shouldBeGreaterThan 20
         observedOutOfGenerationOrder |> shouldBeGreaterThan 50
         observedExits |> shouldBeGreaterThan 20
+        observedMaskChanges |> shouldBeGreaterThan 100
 
         // The generation-versus-delivery halves of the ignore rule are
         // flavour-divergent, so their counters are too: only Darwin drops at
