@@ -765,8 +765,8 @@ module TestProtectedFiles =
         | Ok (SyscallOutcome.Answered answer, _) -> ofSyscallAnswer answer
         | Ok (outcome, _) -> WalkOutcome.Unexpected $"%A{outcome}"
         | Error (SyscallRefusal.ChDir refusal)
-        | Error (SyscallRefusal.ChMod (ChModRefusal.Path refusal))
-        | Error (SyscallRefusal.ChOwn (ChOwnRefusal.Path refusal))
+        | Error (SyscallRefusal.FChModAt (FChModAtRefusal.ChMod (ChModRefusal.Path refusal)))
+        | Error (SyscallRefusal.FChOwnAt (FChOwnAtRefusal.ChOwn (ChOwnRefusal.Path refusal)))
         | Error (SyscallRefusal.Access (AccessRefusal.Path refusal))
         | Error (SyscallRefusal.Link (LinkRefusal.Path refusal)) -> WalkOutcome.Refused refusal
         | Error refusal -> WalkOutcome.Unexpected $"%A{refusal}"
@@ -802,6 +802,7 @@ module TestProtectedFiles =
         let flavour = SimulatedUnixFlavour.Linux
         let atFdCwd = AtDirectory.atFdCwd flavour
         let linuxAtSymlinkFollow = 0x400
+        let linuxAtSymlinkNoFollow = 0x100
         let linuxAtEAccess = 0x200
 
         let step (call : Syscall) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
@@ -826,9 +827,9 @@ module TestProtectedFiles =
             let setUp =
                 booted
                 |> step (Syscall.MkDirAt (atFdCwd, bytes "/t", 0o777))
-                |> step (Syscall.ChMod (bytes "/t", 0o1777))
+                |> step (Syscall.FChModAt (atFdCwd, bytes "/t", 0o1777, 0))
                 |> step (Syscall.SymlinkAt (bytes "/t", atFdCwd, bytes "/t/p"))
-                |> step (Syscall.LChOwn (bytes "/t/p", Some (uid 1000u), None))
+                |> step (Syscall.FChOwnAt (atFdCwd, bytes "/t/p", Some (uid 1000u), None, linuxAtSymlinkNoFollow))
                 |> step (Syscall.MkDirAt (atFdCwd, bytes "/a", 0o755))
 
             (setUp, [ 1..longest ])
@@ -867,8 +868,16 @@ module TestProtectedFiles =
                 "open", (fun p -> UnixNamespace.openPath 0 (bytes p) 0 system |> ofOpen)
                 "openat", (fun p -> UnixNamespace.openat atFdCwd (bytes p) 0 0 system |> ofOpen)
                 "chdir", (fun p -> UnixSystem.step 0 (Syscall.ChDir (bytes p)) system |> ofStep)
-                "chmod", (fun p -> UnixSystem.step 0 (Syscall.ChMod (bytes p, 0o755)) system |> ofStep)
-                "chown", (fun p -> UnixSystem.step 0 (Syscall.ChOwn (bytes p, None, None)) system |> ofStep)
+                "chmod",
+                (fun p ->
+                    UnixSystem.step 0 (Syscall.FChModAt (atFdCwd, bytes p, 0o755, 0)) system
+                    |> ofStep
+                )
+                "chown",
+                (fun p ->
+                    UnixSystem.step 0 (Syscall.FChOwnAt (atFdCwd, bytes p, None, None, 0)) system
+                    |> ofStep
+                )
                 "access", (fun p -> UnixSystem.step 0 (Syscall.FAccessAt (atFdCwd, bytes p, 0, 0)) system |> ofStep)
                 "faccessat(AT_EACCESS)",
                 (fun p ->
