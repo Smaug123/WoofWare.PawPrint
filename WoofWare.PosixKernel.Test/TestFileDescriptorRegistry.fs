@@ -29,6 +29,9 @@ module TestFileDescriptorRegistry =
             Status = OpenFileStatus.none
         }
 
+    /// The process whose table every registry here is.
+    let private owner : ProcessId = ProcessId.parseOrFail "test" 1
+
     /// `close`, for tests whose subject is the descriptor table rather than the
     /// kernel object a close may have destroyed. That second half is
     /// `UnixDescriptor.close`'s business, and is asserted in
@@ -38,7 +41,7 @@ module TestFileDescriptorRegistry =
         (registry : FileDescriptorRegistry)
         : Result<FileDescriptorRegistry, FileDescriptorCloseError>
         =
-        FileDescriptorRegistry.dropDescriptor fd Set.empty registry |> Result.map fst
+        FileDescriptorRegistry.dropDescriptor owner fd registry |> Result.map fst
 
     let private someInode : InodeNumber = InodeNumber 42L
     let private otherInode : InodeNumber = InodeNumber 43L
@@ -603,12 +606,15 @@ module TestFileDescriptorRegistry =
         |> Map.ofList
 
     /// Walk the table through a random sequence of every operation that makes,
-    /// shares or drops a reference to a description, together with a set of
-    /// holds standing for calls in flight, and after every step compare the
+    /// shares or drops a reference to a description, together with holds
+    /// standing for calls in flight, and after every step compare the
     /// description table against a reference computed from the descriptors and
     /// the holds alone.
     [<Test>]
-    let ``every description counts exactly the descriptors naming it, and lives exactly while referenced`` () : unit =
+    let ``every description counts exactly the descriptors naming it and the holds on it, and lives exactly while referenced``
+        ()
+        : unit
+        =
         let mutable sharedCounts = 0
         let mutable destroyedWhileHeldElsewhere = 0
         let mutable survivedByHold = 0
@@ -644,8 +650,6 @@ module TestFileDescriptorRegistry =
                     | 10 when not held.IsEmpty -> CountStep.LetGo (rng.Next held.Length)
                     | _ -> CountStep.Open
 
-                let heldSet () = Set.ofList held
-
                 match step with
                 | CountStep.Open ->
                     registry <- snd (FileDescriptorRegistry.openFile someInode FileAccessMode.ReadOnly registry)
@@ -669,7 +673,7 @@ module TestFileDescriptorRegistry =
                     if source <> target then
                         // `dup2`'s close of a live target, then its install.
                         if List.contains target fds then
-                            match FileDescriptorRegistry.dropDescriptor target (heldSet ()) registry with
+                            match FileDescriptorRegistry.dropDescriptor owner target registry with
                             | Ok (after, _) -> registry <- after
                             | Error error -> failwith $"close of live fd %d{target} answered %O{error}"
 
@@ -678,7 +682,7 @@ module TestFileDescriptorRegistry =
                     let id = FileDescriptorRegistry.tryFindId fd registry |> Option.get
                     let namedElsewhere = (namingCounts registry).[id] > 1
 
-                    match FileDescriptorRegistry.dropDescriptor fd (heldSet ()) registry with
+                    match FileDescriptorRegistry.dropDescriptor owner fd registry with
                     | Ok (after, destroyed) ->
                         registry <- after
 
@@ -690,13 +694,18 @@ module TestFileDescriptorRegistry =
                         | None when namedElsewhere -> sharedCounts <- sharedCounts + 1
                         | None -> failwith $"close of the last reference to %O{id} destroyed nothing"
                     | Error error -> failwith $"close of live fd %d{fd} answered %O{error}"
-                | CountStep.Hold fd -> held <- (FileDescriptorRegistry.tryFindId fd registry |> Option.get) :: held
+                | CountStep.Hold fd ->
+                    let id = FileDescriptorRegistry.tryFindId fd registry |> Option.get
+                    held <- id :: held
+                    registry <- FileDescriptorRegistry.mapOpenFiles (OpenFileTable.hold id) registry
                 | CountStep.LetGo index ->
                     let id = held.[index]
                     held <- List.removeAt index held
 
                     let openFiles, destroyed =
-                        OpenFileTable.destroyIfUnreferenced id (heldSet ()) (FileDescriptorRegistry.openFiles registry)
+                        FileDescriptorRegistry.openFiles registry
+                        |> OpenFileTable.releaseHold id
+                        |> OpenFileTable.destroyIfUnreferenced id
 
                     registry <- FileDescriptorRegistry.mapOpenFiles (fun _ -> openFiles) registry
 
@@ -720,9 +729,14 @@ module TestFileDescriptorRegistry =
                 |> Set.ofSeq
                 |> shouldEqual expectedLive
 
+                let holds = held |> List.countBy id |> Map.ofList
+
                 for id in expectedLive do
                     OpenFileTable.descriptorCount id openFiles
                     |> shouldEqual (Some (Map.tryFind id naming |> Option.defaultValue 0))
+
+                    OpenFileTable.holdCount id openFiles
+                    |> shouldEqual (Some (Map.tryFind id holds |> Option.defaultValue 0))
 
                 FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
 
@@ -959,7 +973,7 @@ module TestFileDescriptorRegistry =
         FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
 
     [<Test>]
-    let ``dropDescriptor keeps a description held outside the table, and destroyIfUnreferenced takes it once it is not``
+    let ``dropDescriptor keeps a description a call holds, and destroyIfUnreferenced takes it once it is not``
         ()
         : unit
         =
@@ -967,7 +981,12 @@ module TestFileDescriptorRegistry =
         let id = FileDescriptorRegistry.tryFindId 0 registry |> Option.get
 
         let registry =
-            match FileDescriptorRegistry.dropDescriptor 0 (Set.singleton id) registry with
+            match
+                FileDescriptorRegistry.dropDescriptor
+                    owner
+                    0
+                    (FileDescriptorRegistry.mapOpenFiles (OpenFileTable.hold id) registry)
+            with
             | Ok (registry, None) -> registry
             | other -> failwith $"expected the description to survive, got %A{other}"
 
@@ -977,21 +996,20 @@ module TestFileDescriptorRegistry =
 
         let openFiles = FileDescriptorRegistry.openFiles registry
 
-        let stillHeld, destroyed =
-            OpenFileTable.destroyIfUnreferenced id (Set.singleton id) openFiles
+        let stillHeld, destroyed = OpenFileTable.destroyIfUnreferenced id openFiles
 
         destroyed |> shouldEqual None
         stillHeld |> shouldEqual openFiles
 
-        let released, destroyed = OpenFileTable.destroyIfUnreferenced id Set.empty openFiles
+        let openFiles = OpenFileTable.releaseHold id openFiles
+        let released, destroyed = OpenFileTable.destroyIfUnreferenced id openFiles
 
         destroyed |> Option.isSome |> shouldEqual true
 
         OpenFileTable.descriptions released |> Map.containsKey id |> shouldEqual false
 
         // Idempotent once gone.
-        OpenFileTable.destroyIfUnreferenced id Set.empty released
-        |> shouldEqual (released, None)
+        OpenFileTable.destroyIfUnreferenced id released |> shouldEqual (released, None)
 
     [<Test>]
     let ``assertInvariants passes a sound table and fails an unsound one`` () : unit =
@@ -1921,7 +1939,7 @@ module TestFileDescriptorRegistry =
         let registry = FileDescriptorRegistry.setNonBlocking fd true registry
 
         let registry =
-            match FileDescriptorRegistry.dropDescriptor duplicated Set.empty registry with
+            match FileDescriptorRegistry.dropDescriptor owner duplicated registry with
             | Ok (registry, destroyed) ->
                 // The original still names the description, so nothing died.
                 destroyed |> shouldEqual None

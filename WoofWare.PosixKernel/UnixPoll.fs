@@ -915,10 +915,7 @@ module UnixPoll =
             | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
             | None -> false
 
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        let finished = (UnixParkState.unpark task system)
 
         // Measured on Linux 6.18.5 (`signal-interrupt-requeue.c`, sections D
         // and E), with the sleeper held off the CPU until both held: a ready
@@ -1193,10 +1190,7 @@ module UnixPoll =
             | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
             | None -> false
 
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        let finished = (UnixParkState.unpark task system)
 
         // A woken Darwin wait answers whichever of its wake-ups reached it
         // first -- a report, its deadline or a signal -- and this library does
@@ -1529,10 +1523,7 @@ module UnixPoll =
             | Some deadline -> system.Machine.NanosecondsSinceBoot >= deadline
             | None -> false
 
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
+        let finished = (UnixParkState.unpark task system)
 
         // Measured on Linux 6.18.5 (`signal-interrupt-requeue.c`, sections D
         // and E), with the sleeper held off the CPU until both held: an event

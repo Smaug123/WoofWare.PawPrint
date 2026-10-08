@@ -83,7 +83,7 @@ module TestEpollCreate1 =
 
         let holed =
             UnixSystemState.withFileDescriptors
-                (match FileDescriptorRegistry.dropDescriptor epoll Set.empty withTwo with
+                (match FileDescriptorRegistry.dropDescriptor linux.Process.ProcessId epoll withTwo with
                  | Ok (registry, _) -> registry
                  | Error error -> failwith $"expected the close to succeed, got %O{error}")
                 linux

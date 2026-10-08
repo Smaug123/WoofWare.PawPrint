@@ -221,9 +221,10 @@ module KeventRefusal =
 [<RequireQualifiedAccess>]
 module UnixKqueue =
 
-    /// `kqueue(2)`: create a kqueue, and a descriptor onto it, the lowest one
-    /// not in use. The description is blocking, and the descriptor has
-    /// `FD_CLOEXEC` and `FD_CLOFORK`.
+    /// `kqueue(2)`: create a kqueue, owned by the calling process
+    /// (`KqueueState.Owner`), and a descriptor onto it, the lowest one not in
+    /// use. The description is blocking, and the descriptor has `FD_CLOEXEC`
+    /// and `FD_CLOFORK`.
     ///
     /// Under the Linux flavour every call is refused: Linux has no kqueue.
     let kqueue<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -248,7 +249,7 @@ module UnixKqueue =
         // descriptor, O_RDWR, not O_NONBLOCK; and (`fcntl-dup.c`, KIND rows)
         // F_GETFD reports FD_CLOEXEC|FD_CLOFORK.
         let fd, registry =
-            FileDescriptorRegistry.createKqueue (UnixSystemState.fileDescriptors system)
+            FileDescriptorRegistry.createKqueue system.Process.ProcessId (UnixSystemState.fileDescriptors system)
             |> fun (fd, registry) ->
                 fd,
                 FileDescriptorRegistry.setFlags
@@ -739,12 +740,7 @@ module UnixKqueue =
         let completing (outcome : KeventOutcome) (answered : UnixSystem<'Task, 'Handler>) =
             SyscallInterruption.beforeCompleting task system
             |> Result.mapError KeventRefusal.Interruption
-            |> Result.map (fun () ->
-                outcome,
-                { answered with
-                    Tasks = UnixTaskTable.unpark task answered.Tasks
-                }
-            )
+            |> Result.map (fun () -> outcome, (UnixParkState.unpark task answered))
 
         if isDrained && timedOut then
             Error (KeventRefusal.DrainBesideDeadline parked.Kqueue)
@@ -773,12 +769,7 @@ module UnixKqueue =
         match SyscallInterruption.ofPark task system with
         | Error refusal -> Error (KeventRefusal.Interruption refusal)
         | Ok (Some SyscallInterruption.Eintr) ->
-            Ok (
-                KeventOutcome.Failed UnixError.EINTR,
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
-            )
+            Ok (KeventOutcome.Failed UnixError.EINTR, (UnixParkState.unpark task system))
         | Ok (Some SyscallInterruption.Restart) ->
             failwith
                 "UnixKqueue.finishKevent: a kevent restarted after a signal, where `SyscallInterruption.ruleOf` says one never restarts (this is a bug in this library)."

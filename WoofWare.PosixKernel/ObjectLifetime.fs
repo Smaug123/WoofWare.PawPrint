@@ -26,19 +26,6 @@ module DescriptionReleaseRefusal =
 [<RequireQualifiedAccess>]
 module ObjectLifetime =
 
-    /// The open file descriptions some task's syscall in flight holds
-    /// (`ParkedSyscall.descriptions`): those a description stays alive for after
-    /// its last descriptor has closed.
-    let heldByCalls<'Task when 'Task : comparison> (tasks : Map<'Task, UnixTaskState>) : Set<OpenFileDescriptionId> =
-        tasks
-        |> Map.toSeq
-        |> Seq.collect (fun (_, state) ->
-            match state.Parked with
-            | None -> []
-            | Some park -> ParkedSyscall.descriptions park.Syscall
-        )
-        |> Set.ofSeq
-
     /// Every inode that must not be freed: `UnixMachineState.heldInodes` and
     /// `UnixProcessState.heldInodes`, closed under `DirectoryContent.Parent`.
     ///
@@ -324,14 +311,15 @@ module ObjectLifetime =
         |> Ok
 
     /// Destroy each of `descriptions` that nothing references any more — no
-    /// descriptor names it, and no syscall in flight holds it — releasing what
-    /// it was the last reference to (`releaseDestroyed`). A description still
-    /// referenced, or already gone, is left as it is.
+    /// descriptor names it, and no syscall in flight holds it
+    /// (`OpenFileTable.holdCount`) — releasing what it was the last reference
+    /// to (`releaseDestroyed`). A description still referenced, or already
+    /// gone, is left as it is.
     ///
     /// What a syscall that held `descriptions` while it slept calls once it has
-    /// returned, so that a description whose last descriptor closed while it
-    /// slept goes now, as a real kernel releases the file when the call drops
-    /// its reference.
+    /// returned, and its park has let go of the holds it took, so that a
+    /// description whose last descriptor closed while it slept goes now, as a
+    /// real kernel releases the file when the call drops its reference.
     let releaseUnreferenced<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (descriptions : OpenFileDescriptionId list)
         (system : UnixSystem<'Task, 'Handler>)
@@ -343,7 +331,7 @@ module ObjectLifetime =
             | Error refusal -> Error refusal
             | Ok system ->
 
-            match OpenFileTable.destroyIfUnreferenced id (heldByCalls system.Tasks) system.Machine.OpenFiles with
+            match OpenFileTable.destroyIfUnreferenced id system.Machine.OpenFiles with
             | _, None -> Ok system
             | openFiles, Some destroyed ->
                 UnixSystemState.mapOpenFiles (fun _ -> openFiles) system

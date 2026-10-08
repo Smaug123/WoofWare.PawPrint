@@ -1582,12 +1582,7 @@ module UnixReadWrite =
             // and P6): end of file. The close moved the read end's atime as it
             // ended the call (section P8), and whatever has happened since
             // happened after the call returned.
-            Ok (
-                ReadOutcome.Answered (ReadAnswer.Completed ImmutableArray.Empty),
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
-            )
+            Ok (ReadOutcome.Answered (ReadAnswer.Completed ImmutableArray.Empty), (UnixParkState.unpark task system))
         | SleepTarget.Waiting (reader, _) ->
 
         let pipeId = parkedPipe "finishRead" task reader PipeEnd.Read system
@@ -1596,11 +1591,7 @@ module UnixReadWrite =
         // Measured on Darwin (pipe-blocking.c section L): the read end's atime
         // moves when the sleeping call ends, however it ends (bytes, end of
         // file, EINTR, or a restart), and not while it sleeps.
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
-            |> touchedByRead pipeId
+        let finished = (UnixParkState.unpark task system) |> touchedByRead pipeId
 
         let held = PipeBuffer.held pipe.Buffer
 
@@ -2420,11 +2411,7 @@ module UnixReadWrite =
         match SyscallInterruption.interrupts task system with
         | Error refusal -> Error (WriteRefusal.Interruption refusal)
         | Ok interrupted when interrupted || givesUp ->
-            let finished =
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
-                |> touchedByWrite pipeId
+            let finished = (UnixParkState.unpark task system) |> touchedByWrite pipeId
 
             Ok (WriteOutcome.Returns (answered (WriteAnswer.Completed (int64 parked.Written)), finished))
         | Ok _ -> Ok (parkWrite task writer fd parked.Buffer parked.Count parked.Written system)
@@ -2451,9 +2438,7 @@ module UnixReadWrite =
                         Signal = Signal.SIGPIPE
                         Target = ValueNone
                     },
-                    { system with
-                        Tasks = UnixTaskTable.unpark task system.Tasks
-                    }
+                    (UnixParkState.unpark task system)
                 )
             )
         | SleepTarget.Waiting (writer, fd) ->
@@ -2466,11 +2451,7 @@ module UnixReadWrite =
         // (bytes in, EINTR, a count, EPIPE once the reader has gone, a
         // restart), and not while it sleeps. A write that answers EPIPE
         // without sleeping moves none (pipe-epipe-sweep.c).
-        let finished =
-            { system with
-                Tasks = UnixTaskTable.unpark task system.Tasks
-            }
-            |> touchedByWrite pipeId
+        let finished = (UnixParkState.unpark task system) |> touchedByWrite pipeId
 
         let answered (answer : WriteAnswer) (system : UnixSystem<'Task, 'Handler>) =
             Ok (WriteOutcome.Returns (WriteResumption.Answered answer, system))
@@ -2641,11 +2622,7 @@ module UnixReadWrite =
             }
 
         if parked.Written = parked.Count then
-            let finished =
-                { system with
-                    Tasks = UnixTaskTable.unpark task system.Tasks
-                }
-                |> touchedByWrite pipeId
+            let finished = (UnixParkState.unpark task system) |> touchedByWrite pipeId
 
             Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 parked.Count), finished))
         else

@@ -72,7 +72,14 @@ module TestUnixTaskTable =
                 Deadline = None
             }
 
-        let parked = (UnixWait.park 7 (ParkedSyscall.EpollWait wait) system).Tasks
+        let parked =
+            UnixTaskTable.withPark
+                7
+                {
+                    Syscall = ParkedSyscall.EpollWait wait
+                    Ordinal = ParkOrdinal 0L
+                }
+                system.Tasks
 
         UnixTaskTable.parkedFor 7 parked
         |> shouldEqual (Some (ParkedSyscall.EpollWait wait))

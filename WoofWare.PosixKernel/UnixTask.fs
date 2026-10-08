@@ -442,9 +442,10 @@ type UnixTaskState =
             /// why there is one of it: the re-entry consults it rather than the
             /// caller's argument cells, which the process may have written since;
             /// whatever a client polls to decide the call can be finished reads it
-            /// to learn what the call is waiting for; and whatever destroys an open
-            /// file description reads it, because a description a park names
-            /// (`ParkedSyscall.descriptions`) lives until the call returns.
+            /// to learn what the call is waiting for; and the machine's open file
+            /// table counts a hold on each description it names
+            /// (`ParkedSyscall.descriptions`, `OpenFileTable.holdCount`), so the
+            /// description lives until the call returns.
             ///
             /// Every payload holds kernel objects by *identity*, never by descriptor
             /// number: a sleeping task keeps the object rather than the number, and
@@ -538,8 +539,9 @@ module UnixTaskTable =
     /// with less of itself left to run is the obvious future instance — and that
     /// is the syscall's business rather than this table's.
     ///
-    /// Internal so that `UnixWait.park`, which mints the ordinal, is the one way a
-    /// park is written.
+    /// The table alone: it moves no hold on an open file description. Internal
+    /// so that `UnixWait.park`, which mints the ordinal, and `UnixParkState`,
+    /// which moves the holds, are the ways a park is written.
     let internal withPark<'Task when 'Task : comparison>
         (name : 'Task)
         (park : TaskPark)
@@ -578,10 +580,10 @@ module UnixTaskTable =
 
     /// Record that `name` is no longer parked: its syscall has finished.
     ///
-    /// The table alone: a description only this park held is left in the
-    /// open file table, where `UnixSystem.checkInvariants` reports it as a
-    /// leak. The syscalls' own finishing calls end a park and release what it
-    /// held.
+    /// The table alone: the holds the park took stay recorded in the open file
+    /// table, where `UnixSystem.checkInvariants` reports them
+    /// (`HoldCountMismatch`). `UnixParkState.unpark` ends a park and lets go of
+    /// its holds.
     let internal unpark<'Task when 'Task : comparison>
         (name : 'Task)
         (tasks : Map<'Task, UnixTaskState>)

@@ -62,7 +62,7 @@ module TestUnixSignal =
             ended.Termination
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGKILL, false))
 
-            ended.Machine |> shouldEqual system.Machine
+            EndedMachine.assertTasksGone system ended
             // The process's end takes its tasks' per-task entries with them.
             SignalState.tasksWithFrames ended.FinalProcess.Signals |> shouldBeEmpty
 
@@ -233,7 +233,7 @@ module TestUnixSignal =
                     ended.Termination
                     |> shouldEqual (ProcessTermination.Signaled (signal, coreDumped))
 
-                    ended.Machine |> shouldEqual system.Machine
+                    EndedMachine.assertTasksGone system ended
                     ended.FinalProcess |> shouldEqual system.Process
                 | _ ->
                     failwith
