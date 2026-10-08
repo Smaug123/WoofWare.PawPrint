@@ -593,6 +593,14 @@ type KqueueRegistration =
         /// and filter at once, made through different descriptors onto it, and
         /// they are queued newest-registered first.
         RegisteredAt : int64
+        /// The socket the descriptor named when this registration was first
+        /// added: what the filter is attached to, as XNU attaches a knote to
+        /// the socket's own list at registration. An event on the socket
+        /// reaches the registration through this, whichever process's call
+        /// caused it, without reading any descriptor table. The descriptor
+        /// names this socket for as long as the registration lasts, since
+        /// closing the descriptor removes the registration.
+        Socket : SocketId
     }
 
 /// Everything one Darwin kqueue holds.
@@ -971,6 +979,19 @@ type OpenFileTable =
             NextId : OpenFileDescriptionId
         }
 
+/// Which of the machine's descriptors a `FileDescriptorRegistry`'s table
+/// holds, which decides what its own invariants can say about the open file
+/// descriptions: a table that is not every descriptor on the machine cannot
+/// count a description's descriptors, nor read another process's kqueue
+/// registrations.
+[<RequireQualifiedAccess>]
+type internal DescriptorCensus =
+    /// Every descriptor on the machine: the table of the only process on it.
+    | Complete
+    /// The descriptors of the process `owner` alone, on a machine whose other
+    /// processes hold descriptors of their own.
+    | OneProcessOf of owner : ProcessId
+
 /// One process's descriptor table together with the machine's open file
 /// descriptions those descriptors point at: the two halves of a Unix file
 /// descriptor as one process sees them. `UnixSystem.fileDescriptors` reads it.
@@ -998,6 +1019,8 @@ type FileDescriptorRegistry =
             /// The machine's open file descriptions, every one the descriptors
             /// name and any others the machine holds.
             OpenFiles : OpenFileTable
+            /// Whether `Descriptors` is every descriptor on the machine.
+            Census : DescriptorCensus
         }
 
 
@@ -1132,6 +1155,16 @@ type FileDescriptorRegistryDefect =
         fd : int *
         filter : KqueueFilter *
         target : OpenFileTarget
+    /// A kqueue holds a registration attached to the socket `registered`,
+    /// made through a descriptor that now names the socket `named` instead.
+    /// Closing the descriptor removes the registration, so the number cannot
+    /// have come to name another socket while it lasts.
+    | KqueueRegistrationOnAnotherSocket of
+        kqueue : OpenFileDescriptionId *
+        fd : int *
+        filter : KqueueFilter *
+        registered : SocketId *
+        named : SocketId
     /// A kqueue's queue of activated registrations holds an entry it does not
     /// register. Every path that removes a registration removes its queue entry
     /// in the same step.
@@ -1807,14 +1840,12 @@ module OpenFileTable =
             Entries = entries
         }
 
-    /// Every way in which `table` fails to be the open file descriptions of a
-    /// machine whose descriptor tables are `descriptorTables`, all of them:
-    /// its own rules, and each description's count of the descriptors naming
-    /// it against those tables.
-    ///
-    /// The rules that relate a descriptor *number* to a description are one
-    /// process's, so they are `FileDescriptorRegistry.checkInvariants`'s.
-    let checkInvariants
+    /// `checkInvariants`, with each description's count of the descriptors
+    /// naming it held to `descriptorTables` exactly when `complete` (they are
+    /// every table on the machine), and otherwise only to be at least what
+    /// they name, since other tables may name it too.
+    let internal defects
+        (complete : bool)
         (descriptorTables : DescriptorTable list)
         (table : OpenFileTable)
         : FileDescriptorRegistryDefect list
@@ -1835,7 +1866,7 @@ module OpenFileTable =
             |> List.choose (fun (id, entry) ->
                 let actual = Map.tryFind id naming |> Option.defaultValue 0
 
-                if actual = entry.Descriptors then
+                if actual = entry.Descriptors || (not complete && actual < entry.Descriptors) then
                     None
                 else
                     Some (FileDescriptorRegistryDefect.DescriptorCountMismatch (id, entry.Descriptors, actual))
@@ -2044,6 +2075,20 @@ module OpenFileTable =
         @ readyEntries
         @ kqueueEntries
 
+    /// Every way in which `table` fails to be the open file descriptions of a
+    /// machine whose descriptor tables are `descriptorTables`, all of them:
+    /// its own rules, and each description's count of the descriptors naming
+    /// it against those tables.
+    ///
+    /// The rules that relate a descriptor *number* to a description are one
+    /// process's, so they are `FileDescriptorRegistry.checkInvariants`'s.
+    let checkInvariants
+        (descriptorTables : DescriptorTable list)
+        (table : OpenFileTable)
+        : FileDescriptorRegistryDefect list
+        =
+        defects true descriptorTables table
+
 [<RequireQualifiedAccess>]
 module FileDescriptorRegistry =
     /// A table entry naming `id`, with neither descriptor flag.
@@ -2058,11 +2103,18 @@ module FileDescriptorRegistry =
         Map.tryFind fd fds |> Option.map (fun entry -> entry.Description)
 
     /// The process's descriptor table `descriptors`, read against the machine's
-    /// open file descriptions `openFiles`.
-    let internal ofTables (descriptors : DescriptorTable) (openFiles : OpenFileTable) : FileDescriptorRegistry =
+    /// open file descriptions `openFiles`; `census` says whether it is every
+    /// descriptor on the machine.
+    let internal ofTables
+        (census : DescriptorCensus)
+        (descriptors : DescriptorTable)
+        (openFiles : OpenFileTable)
+        : FileDescriptorRegistry
+        =
         {
             Descriptors = descriptors
             OpenFiles = openFiles
+            Census = census
         }
 
     /// The process's descriptor table.
@@ -2251,10 +2303,12 @@ module FileDescriptorRegistry =
     /// `O_WRONLY`, as `pipe(2)` opens them, and neither `O_NONBLOCK`.
     ///
     /// This is the table a process inherits from a launcher that gave it each
-    /// of those descriptors onto a pipe of its own; `UnixSystem.initial` is the
+    /// of those descriptors onto a pipe of its own; `ProcessLaunch` is the
     /// caller, and mints the pipes. It is the only way to build a table with
-    /// descriptors at chosen numbers, which no syscall can do.
+    /// descriptors at chosen numbers, which no syscall can do. `census` says
+    /// whether the process is alone on the machine.
     let internal ofLaunchedPipes
+        (census : DescriptorCensus)
         (ends : Map<int, PipeId * PipeEnd>)
         (openFiles : OpenFileTable)
         : FileDescriptorRegistry
@@ -2266,6 +2320,7 @@ module FileDescriptorRegistry =
                         Fds = Map.empty
                     }
                 OpenFiles = openFiles
+                Census = census
             }
 
         ends
@@ -2467,7 +2522,7 @@ module FileDescriptorRegistry =
                 OpenFileTable.release id openFiles |> OpenFileTable.destroyIfUnreferenced id
 
             Ok (
-                {
+                { registry with
                     Descriptors =
                         {
                             Fds = Map.remove fd registry.Descriptors.Fds
@@ -2915,7 +2970,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Kqueue state ->
                     state.Registrations
                     |> Map.toList
-                    |> List.choose (fun ((fd, filter), _) ->
+                    |> List.choose (fun ((fd, filter), registration) ->
                         match named fd registry.Descriptors.Fds with
                         | None ->
                             Some (
@@ -2928,8 +2983,20 @@ module FileDescriptorRegistry =
                         | Some id ->
                             match Map.tryFind id descriptions with
                             | Some {
-                                       Target = OpenFileTarget.Socket _
-                                   }
+                                       Target = OpenFileTarget.Socket socket
+                                   } when socket = registration.Socket -> None
+                            | Some {
+                                       Target = OpenFileTarget.Socket socket
+                                   } ->
+                                Some (
+                                    FileDescriptorRegistryDefect.KqueueRegistrationOnAnotherSocket (
+                                        kqueue,
+                                        fd,
+                                        filter,
+                                        registration.Socket,
+                                        socket
+                                    )
+                                )
                             // A dangling descriptor is `DanglingFd`'s to report.
                             | None -> None
                             | Some other ->
@@ -2952,18 +3019,30 @@ module FileDescriptorRegistry =
     /// tests assert exactly that.
     ///
     /// Includes `OpenFileTable.checkInvariants` of the machine's descriptions
-    /// against this process's descriptor table alone, which holds every
-    /// descriptor on a machine running this one process.
+    /// against this process's descriptor table. On a machine running this one
+    /// process the table holds every descriptor, and each description's count
+    /// of the descriptors naming it must be exactly what the table names. On a
+    /// machine holding other processes besides (a registry of a view a
+    /// `SimulatedMachine` focused), only what one table can tell is checked:
+    /// that no description counts fewer descriptors than this table alone
+    /// names, and that every registration of a kqueue this process owns is made
+    /// through one of its descriptors onto a socket. The rest is
+    /// `SimulatedMachine.checkInvariants`'s, which sees every table.
     ///
     /// Whether a description is still referenced, and whether its holds are
     /// those the parks name, are not among them: the parks are the tasks',
     /// which a registry does not hold, so those are `UnixSystem.checkInvariants`'s
     /// `UnreferencedDescription` and `HoldCountMismatch`.
     let checkInvariants (registry : FileDescriptorRegistry) : FileDescriptorRegistryDefect list =
-        let dangling, kqueueRegistrations = tableDefects (fun _ -> true) registry
+        let complete, ownsKqueue =
+            match registry.Census with
+            | DescriptorCensus.Complete -> true, (fun (_ : KqueueState) -> true)
+            | DescriptorCensus.OneProcessOf owner -> false, (fun (state : KqueueState) -> state.Owner = owner)
+
+        let dangling, kqueueRegistrations = tableDefects ownsKqueue registry
 
         dangling
-        @ OpenFileTable.checkInvariants [ registry.Descriptors ] registry.OpenFiles
+        @ OpenFileTable.defects complete [ registry.Descriptors ] registry.OpenFiles
         @ kqueueRegistrations
 
     /// Every way in which `registry`'s descriptor table, the table of the
@@ -2972,10 +3051,9 @@ module FileDescriptorRegistry =
     /// and a registration of a kqueue `owner` owns made through a descriptor of
     /// its table that is closed or names no socket.
     ///
-    /// For a machine holding several processes, where `checkInvariants` would
-    /// count only this table's descriptors against each description: the
-    /// counts, and the rest of `OpenFileTable.checkInvariants`, are the
-    /// machine's, read against every process's table.
+    /// `checkInvariants` without the open file table's own rules, for a caller
+    /// that checks those once against every process's table, as
+    /// `SimulatedMachine.checkInvariants` does.
     let checkDescriptorTableInvariants
         (owner : ProcessId)
         (registry : FileDescriptorRegistry)
@@ -3031,6 +3109,7 @@ module FileDescriptorRegistry =
                             )
                         NextId = nextId
                     }
+                Census = DescriptorCensus.Complete
             }
 
         /// Rewrite one description in place, however unsoundly. Partial: the

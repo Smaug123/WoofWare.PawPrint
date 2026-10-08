@@ -360,10 +360,13 @@ module GuestLocation =
                                 Some $"in a write into pipe %O{pipe}, which a close has ended with EPIPE"
                         | Some (ParkedSyscall.KqueuePoll parked) ->
                             let watched =
-                                parked.Registrations
-                                |> Map.toList
-                                |> List.map (fun ((fd, filter), _) -> $"fd %d{fd} (%O{filter})")
-                                |> String.concat ", "
+                                match UnixSystem.pollQueue parked.Queue state.Kernel.System with
+                                | Some queue ->
+                                    queue.Registrations
+                                    |> Map.toList
+                                    |> List.map (fun ((fd, filter), _) -> $"fd %d{fd} (%O{filter})")
+                                    |> String.concat ", "
+                                | None -> $"nothing: its kqueue, %O{parked.Queue}, is not on the machine"
 
                             let until =
                                 match parked.Deadline with

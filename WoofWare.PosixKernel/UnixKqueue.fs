@@ -462,6 +462,7 @@ module UnixKqueue =
                             Receipt = change.Flags &&& KeventFlags.Receipt <> 0us
                             UserData = change.UserData
                             RegisteredAt = ordinal
+                            Socket = socketId
                         }
 
                     { state with

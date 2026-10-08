@@ -951,8 +951,9 @@ module UnixPoll =
     type private DarwinRegistration =
         /// The registration fails, and the entry answers `POLLNVAL`.
         | Fails
-        /// The filter registers.
-        | Registers of KqueueFilter
+        /// The filter registers, attached to `socket` when the descriptor names
+        /// one.
+        | Registers of filter : KqueueFilter * socket : SocketId option
         /// An `EVFILT_VNODE` registers on a regular file or a directory. It
         /// reports only when the file changes, which nothing here does while
         /// a call runs, so it reports nothing to a call that does not sleep.
@@ -994,12 +995,12 @@ module UnixPoll =
         | Some (OpenFileTarget.Directory _), None -> Ok DarwinRegistration.RegistersVnode
         | Some (OpenFileTarget.Directory _), Some _ -> Ok DarwinRegistration.Fails
         | Some (OpenFileTarget.File _), Some filter
-        | Some (OpenFileTarget.Pipe _), Some filter -> Ok (DarwinRegistration.Registers filter)
+        | Some (OpenFileTarget.Pipe _), Some filter -> Ok (DarwinRegistration.Registers (filter, None))
         | Some (OpenFileTarget.Socket socketId), Some filter ->
             let socket = UnixMachineState.socket socketId system.Machine
 
             if DarwinReadiness.modelsSocket socket then
-                Ok (DarwinRegistration.Registers filter)
+                Ok (DarwinRegistration.Registers (filter, Some socketId))
             else
                 Error (PollRefusal.UnmodelledSocket (fd, socket.Domain, socket.Kind))
         | Some (OpenFileTarget.Kqueue _), Some KqueueFilter.Write -> Ok DarwinRegistration.Fails
@@ -1040,7 +1041,7 @@ module UnixPoll =
             // beside another entry).
             | Ok DarwinRegistration.Fails -> Ok (true, registrations, vnodes)
             | Ok DarwinRegistration.RegistersVnode -> registerGroups index entry rest registrations (entry.Fd :: vnodes)
-            | Ok (DarwinRegistration.Registers filter) ->
+            | Ok (DarwinRegistration.Registers (filter, socket)) ->
                 let outOfBand =
                     match group with
                     | Some (_, outOfBand) -> outOfBand
@@ -1062,6 +1063,7 @@ module UnixPoll =
                             Entry = index
                             OutOfBand = outOfBand
                             RegisteredAt = Map.count registrations
+                            Socket = socket
                         }
 
                 registerGroups index entry rest (Map.add key registration registrations) vnodes
@@ -1160,14 +1162,27 @@ module UnixPoll =
         | Error () -> Error (PollRefusal.DeadlineBeyondClock (now, milliseconds))
         | Ok deadline ->
 
+        let queue, machine =
+            UnixMachineState.addPollQueue
+                {
+                    Owner = system.Process.ProcessId
+                    Registrations = registrations
+                    Active = active
+                }
+                system.Machine
+
         let parked =
             ParkedSyscall.KqueuePoll
                 {
                     Entries = entries
-                    Registrations = registrations
-                    Active = active
+                    Queue = queue
                     Deadline = deadline
                 }
+
+        let system =
+            { system with
+                Machine = machine
+            }
 
         Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked system)
 
@@ -1179,9 +1194,10 @@ module UnixPoll =
         : Result<PollOutcome * UnixSystem<'Task, 'Handler>, PollRefusal>
         =
         let zero = parked.Entries |> List.map (fun _ -> 0s)
+        let queue = UnixMachineState.pollQueue parked.Queue system.Machine
 
         let revents, registrations, active =
-            KqueuePoll.scan parked.Entries zero parked.Registrations parked.Active system
+            KqueuePoll.scan parked.Entries zero queue.Registrations queue.Active system
 
         let reported = triggered revents
 
@@ -1217,13 +1233,21 @@ module UnixPoll =
         | Ok None ->
             // Whatever woke the task has gone again. Its scan consumed what
             // reported without adding anything, and dropped what is no longer
-            // ready, as a woken real poll's does, and it sleeps on.
-            let parkedAgain =
-                ParkedSyscall.KqueuePoll
-                    { parked with
-                        Registrations = registrations
-                        Active = active
-                    }
+            // ready, as a woken real poll's does, and it sleeps on, keeping its
+            // kqueue.
+            let parkedAgain = ParkedSyscall.KqueuePoll parked
+
+            let system =
+                { system with
+                    Machine =
+                        UnixMachineState.setPollQueue
+                            parked.Queue
+                            { queue with
+                                Registrations = registrations
+                                Active = active
+                            }
+                            system.Machine
+                }
 
             Ok (PollOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
 

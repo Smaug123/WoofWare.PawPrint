@@ -101,6 +101,11 @@ module TestWakeCondition =
         let system =
             let key = listenerFd, KqueueFilter.Read
 
+            let listenerSocket =
+                match FileDescriptorRegistry.tryFindTarget listenerFd (UnixSystemState.fileDescriptors system) with
+                | Some (OpenFileTarget.Socket socket) -> socket
+                | other -> failwith $"the listener's descriptor names %A{other}"
+
             UnixSystemState.mapOpenFiles
                 (OpenFileTable.setKqueueState
                     (idOf 5 system)
@@ -116,6 +121,7 @@ module TestWakeCondition =
                                         Receipt = false
                                         UserData = 0UL
                                         RegisteredAt = 0L
+                                        Socket = listenerSocket
                                     }
                                 ]
                         Active = [ key ]

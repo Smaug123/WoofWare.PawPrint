@@ -407,8 +407,15 @@ module ProcessLaunch =
                 fd, pipeId, pipeEnd, pipe
             )
 
+        let census =
+            if Set.isEmpty (ProcessIdTable.live machine.ProcessIds) then
+                DescriptorCensus.Complete
+            else
+                DescriptorCensus.OneProcessOf pid
+
         let registry =
             FileDescriptorRegistry.ofLaunchedPipes
+                census
                 (launched
                  |> List.map (fun (fd, pipeId, pipeEnd, _) -> fd, (pipeId, pipeEnd))
                  |> Map.ofList)

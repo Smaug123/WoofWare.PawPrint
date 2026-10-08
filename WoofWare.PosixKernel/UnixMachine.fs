@@ -46,6 +46,14 @@ type UnixMachineState =
             /// `EV_ADD` of a kqueue registration commits, so a failed `epoll_ctl`
             /// leaves the kernel exactly as it found it.
             NextEventRegistrationOrdinal : int64
+            /// The kqueue of every Darwin `poll(2)` asleep on the machine, in
+            /// whichever process: see `PollQueue`. Made as the call goes to
+            /// sleep, and destroyed with the park that names it.
+            PollQueues : Map<PollQueueId, PollQueue>
+            /// The identity the next sleeping Darwin `poll` gives its kqueue.
+            /// Monotonic and never reused, for the replay-trace reason
+            /// `NextSocketId` gives.
+            NextPollQueueId : PollQueueId
             /// The ordinal the next park of any task records as its
             /// `TaskPark.Ordinal`. Monotonic, and bumped only by `UnixWait.park`.
             ///
@@ -406,6 +414,42 @@ module UnixMachineState =
         | None ->
             failwith
                 $"UnixMachineState.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and UnixSystemDefect.DanglingSocket exists to make that unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand, rather than anything the simulated process did."
+
+    /// A new kqueue for a Darwin `poll` about to sleep, holding `queue`: its
+    /// identity, and the machine holding it.
+    let internal addPollQueue (queue : PollQueue) (machine : UnixMachineState) : PollQueueId * UnixMachineState =
+        let (PollQueueId next) = machine.NextPollQueueId
+        let id = PollQueueId next
+
+        id,
+        { machine with
+            PollQueues = Map.add id queue machine.PollQueues
+            NextPollQueueId = PollQueueId (next + 1L)
+        }
+
+    /// The kqueue `queue` of a sleeping Darwin `poll`. Loudly partial: the
+    /// caller read the identity from a park, which holds it.
+    let pollQueue (queue : PollQueueId) (machine : UnixMachineState) : PollQueue =
+        match Map.tryFind queue machine.PollQueues with
+        | Some found -> found
+        | None ->
+            failwith
+                $"UnixMachineState.pollQueue: %O{queue} is not on the machine, but a park names it, and a park holds its poll's kqueue until it ends (this is a bug in this library, or in a caller that assembled the state by hand)."
+
+    /// The machine with the sleeping Darwin poll's kqueue `queue` replaced by
+    /// `state`. Loudly partial, as `pollQueue` is.
+    let internal setPollQueue
+        (queue : PollQueueId)
+        (state : PollQueue)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
+        if not (Map.containsKey queue machine.PollQueues) then
+            failwith $"UnixMachineState.setPollQueue: %O{queue} is not on the machine (this is a bug in this library)."
+
+        { machine with
+            PollQueues = Map.add queue state machine.PollQueues
+        }
 
     /// Every live open file description on the machine naming `socketId`.
     let internal descriptionsNamingSocket
