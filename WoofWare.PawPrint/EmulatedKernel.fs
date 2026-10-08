@@ -1713,16 +1713,31 @@ module EmulatedKernel =
         // replaced (`SEHCleanupSignals`), and `abort` unblocks SIGABRT and raises
         // it, then resets it to the default and raises it again if the process
         // survived the first; either way the process meets SIGABRT at its default
-        // disposition, which is where this starts. The unblocking has nothing to
-        // do here: a thread's mask is its handler frames', and a PawPrint thread
-        // has none between instructions (`EmulatedKernel.checkInvariants`).
-        let signo =
-            Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform) Signal.SIGABRT
+        // disposition, unblocked, which is where this starts.
+        let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
+        let signo = Signal.toRawSignoUnder numbering Signal.SIGABRT
 
         let system =
             match UnixSignal.sigaction signo (Some SignalDisposition.Default) system with
             | Ok (_, system) -> system
             | Error errno -> failwith $"EmulatedKernel.abort: restoring SIGABRT's default was refused (%O{errno})"
+
+        // `SIG_UNBLOCK`, as each `<signal.h>` numbers it.
+        let unblock =
+            match numbering with
+            | SignalNumbering.Linux -> 1
+            | SignalNumbering.Darwin -> 2
+
+        let system =
+            match
+                UnixSignal.pthreadSigmask
+                    thread
+                    unblock
+                    (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
+                    system
+            with
+            | Ok (_, system) -> system
+            | Error errno -> failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
 
         match UnixSignal.pthreadKill thread signo system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->

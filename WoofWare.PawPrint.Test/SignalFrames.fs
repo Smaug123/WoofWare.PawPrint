@@ -4,9 +4,8 @@ open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// A thread inside a signal handler, for a test that needs a thread to block
-/// signals: a thread's mask is its innermost handler frame's, and nothing else
-/// sets one. PawPrint itself never leaves a frame pushed between instructions,
-/// so this is a state only a test builds.
+/// signals the way a handler's mask blocks them. PawPrint itself never leaves
+/// a frame pushed between instructions, so this is a state only a test builds.
 [<RequireQualifiedAccess>]
 module SignalFrames =
 
