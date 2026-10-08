@@ -224,6 +224,43 @@ module TestPeerName =
         |> shouldEqual (reported platform clientAddress)
 
     [<TestCaseSource(nameof platforms)>]
+    let ``a reset leaves no peer: ENOTCONN on Linux and EINVAL on Darwin, before and after its error is taken``
+        (platform : SimulatedUnixPlatform)
+        =
+        let listener, client, system = queued platform
+        let server, system = accept listener system
+
+        let system =
+            match
+                WriteOutcomes.admitThenWrite
+                    system.Leader
+                    client
+                    UserBuffer.Mapped
+                    (ImmutableArray.Create<byte> (Array.zeroCreate 10))
+                    system
+            with
+            | Ok (WriteOutcome.Returns (WriteAnswer.Completed 10L, system)) -> system
+            | other -> failwith $"the client's write answered %A{other}"
+
+        // Measured on both (T9): the server closes over the ten bytes it has
+        // not read, which resets the client.
+        let system = close server system
+        let expected = failed (flavourColumn platform UnixError.ENOTCONN UnixError.EINVAL)
+        ask client 16u system |> shouldEqual expected
+
+        let level = SimulatedUnixPlatform.socketOptionLevel platform
+        let optionName = SimulatedUnixPlatform.socketErrorOption platform
+
+        let system =
+            match
+                UnixSocket.getsockopt client level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system
+            with
+            | Ok (GetSockOptAnswer.Reported (OptionValue.Int error), system) when error <> 0 -> system
+            | other -> failwith $"SO_ERROR on the reset client answered %A{other}"
+
+        ask client 16u system |> shouldEqual expected
+
+    [<TestCaseSource(nameof platforms)>]
     let ``a non-blocking connect reports its peer at once`` (platform : SimulatedUnixPlatform) =
         // Real Darwin answers ENOTCONN until the loopback handshake lands, just
         // after the EINPROGRESS; this kernel completes it inside the connect.

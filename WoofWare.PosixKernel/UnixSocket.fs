@@ -1464,17 +1464,18 @@ module UnixSocket =
     /// connected to.
     ///
     /// A connected stream socket reports the other end of its connection, and
-    /// keeps reporting it after that end closes; a connected datagram socket
-    /// reports its default peer. The answer and its length rules are exactly
-    /// `getsockname`'s, including that `declaredLength` does not bound what is
-    /// reported.
+    /// keeps reporting it after that end closes with a FIN; a connected
+    /// datagram socket reports its default peer. The answer and its length
+    /// rules are exactly `getsockname`'s, including that `declaredLength` does
+    /// not bound what is reported.
     ///
     /// A socket with no peer answers `ENOTCONN` -- one never connected, a
     /// listener, and a datagram socket connected to port 0, which Linux allows
     /// -- in every address family, and before the declared length is judged.
-    /// A refused connect leaves no peer either: `ENOTCONN` on Linux, and
-    /// `EINVAL` on Darwin, which answers that for any socket that can neither
-    /// send nor receive.
+    /// A refused connect leaves no peer either, nor does a reset that reached
+    /// a connected socket, whether or not its error has been taken: `ENOTCONN`
+    /// on Linux, and `EINVAL` on Darwin, which answers that for any socket
+    /// that can neither send nor receive.
     ///
     /// A connect this kernel answered `EINPROGRESS` has already completed, so
     /// the peer is reported at once. Darwin answers `ENOTCONN` there until the
@@ -1524,15 +1525,33 @@ module UnixSocket =
         // never connects a datagram socket to one.
         | SocketPhase.DatagramPeer peer when peer.Port = 0us -> notConnected
         | SocketPhase.DatagramPeer peer -> reportPeer peer
-        // Only `connect` enters the pending report, so its socket is the client.
-        | SocketPhase.EstablishedPendingReport connectionId ->
-            reportPeer (UnixMachineState.connection connectionId system.Machine).ServerAddress
-        | SocketPhase.Established (connectionId, connectionEnd) ->
+        | SocketPhase.EstablishedPendingReport _
+        | SocketPhase.Established _ ->
+            let connectionId, connectionEnd =
+                match SocketPhase.connectionEnd socket.Phase with
+                | Some held -> held
+                | None ->
+                    failwith
+                        $"UnixSocket.getpeername: socket %O{socketId} is in %A{socket.Phase}, which holds no connection end (this is a bug in this library)."
+
             let connection = UnixMachineState.connection connectionId system.Machine
 
-            match connectionEnd with
-            | ConnectionEnd.Client -> reportPeer connection.ServerAddress
-            | ConnectionEnd.Server -> reportPeer connection.ClientAddress
+            // A reset leaves no peer, whether or not its error has been taken:
+            // the measured rows T8 and T9. A FIN leaves the peer (T6, T7).
+            match (TcpTransfer.towards connectionEnd connection.Transfer).Receiver with
+            | TcpEndState.Reset _ ->
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> notConnected
+                | SimulatedUnixFlavour.Darwin -> Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
+            | TcpEndState.Open
+            | TcpEndState.FinQueued
+            | TcpEndState.FinReceived ->
+                match connectionEnd with
+                | ConnectionEnd.Client -> reportPeer connection.ServerAddress
+                | ConnectionEnd.Server -> reportPeer connection.ClientAddress
+            | TcpEndState.Closed ->
+                failwith
+                    $"UnixSocket.getpeername: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
 
     /// `sizeof(int)`: the size of every option's value here but `SO_LINGER`'s.
     let private optionIntSize : int = 4
