@@ -462,14 +462,15 @@ type ExecutionResult =
     /// CoreCLR's fatal errors this is, and a runtime-raised one carries a different HRESULT,
     /// banner and Windows exit code.
     | Aborted of IlMachineState * abortingThread : ThreadId * fatal : FatalError
-    /// The simulated process was killed by `signal`, whose disposition was the
+    /// The simulated process was killed by a signal whose disposition was the
     /// kernel default of terminating the process: a guest's own `kill(2)`, or
     /// System.Native's handling of a signal its registered handlers did not
     /// cancel. A parent's `wait` would report the process as killed by the
-    /// signal, with the core flag set iff `coreDumped`. Carries no `ThreadId`
-    /// because the whole process dies, not one thread. `signal` and
-    /// `coreDumped` are the kernel's answer to the `kill` that killed it.
-    | SignalTerminated of IlMachineState * signal : Signal * coreDumped : bool
+    /// signal, with the core flag set iff the signal dumped core. Carries no
+    /// `ThreadId` because the whole process dies, not one thread. `ended` is
+    /// the kernel's answer to the `kill` that killed it: its `Termination` is
+    /// `ProcessTermination.Signaled`.
+    | SignalTerminated of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
     | Stepped of IlMachineState * WhatWeDid * StepEffect
     | UnhandledException of
         IlMachineState *
@@ -775,8 +776,7 @@ module ExecutionResult =
         | ExecutionResult.ProcessExit (state, exitingThread) -> ExecutionResult.ProcessExit (f state, exitingThread)
         | ExecutionResult.Aborted (state, abortingThread, fatal) ->
             ExecutionResult.Aborted (f state, abortingThread, fatal)
-        | ExecutionResult.SignalTerminated (state, signal, coreDumped) ->
-            ExecutionResult.SignalTerminated (f state, signal, coreDumped)
+        | ExecutionResult.SignalTerminated (state, ended) -> ExecutionResult.SignalTerminated (f state, ended)
         | ExecutionResult.Stepped (state, whatWeDid, effect) -> ExecutionResult.Stepped (f state, whatWeDid, effect)
         | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
             ExecutionResult.UnhandledException (f state, terminatingThread, exn)

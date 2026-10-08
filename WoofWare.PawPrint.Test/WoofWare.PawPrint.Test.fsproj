@@ -400,6 +400,7 @@
     <Compile Include="TestKernelDeadlineTicks.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
     <Compile Include="TestKernelConfig.fs" />
+    <Compile Include="TestKernelConfigSplit.fs" />
     <Compile Include="TestClockJitter.fs" />
     <Compile Include="TestClockJitterFindsBugs.fs" />
     <Compile Include="TestScheduleFork.fs" />
