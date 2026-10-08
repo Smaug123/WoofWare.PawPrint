@@ -4902,7 +4902,7 @@ module TestImpureCases =
             let platform =
                 SimulatedUnixPlatform.createOrFail
                     "test"
-                    SimulatedUnixFlavour.Linux
+                    (SimulatedUnixPlatform.kernel SimulatedUnixPlatform.linuxX64)
                     SimulatedUnixArchitecture.X64
                     SimulatedPageSize.FourKiB
                     release

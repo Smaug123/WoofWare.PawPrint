@@ -15,7 +15,48 @@ type SimulatedUnixReleaseError =
     /// silently truncate what the process sees.
     | NotPrintableAscii of index : int * character : char
 
-/// Why a combination of flavour, architecture, page size and release is not a
+/// A Linux kernel's version: the `VERSION`, `PATCHLEVEL` and `SUBLEVEL` of the
+/// source tree it was built from, which a real `uname -r` begins with.
+///
+/// The facts this library derives from Linux's source that changed between
+/// versions follow this, never the platform's release string: the release is
+/// what a process reads back, which a client may set to anything a `uname`
+/// could print, while this says which source's behaviour the kernel has.
+///
+/// Ordered by `Major`, then `Minor`, then `Patch`, which is the order of the
+/// fields, so the structural comparison F# derives is the version order.
+type LinuxKernelVersion =
+    {
+        /// The source tree's `VERSION`: 6 in 6.17.0.
+        Major : uint32
+        /// The source tree's `PATCHLEVEL`: 17 in 6.17.0.
+        Minor : uint32
+        /// The source tree's `SUBLEVEL`, the stable release: 0 in 6.17.0.
+        Patch : uint32
+    }
+
+    override this.ToString () : string =
+        $"%d{this.Major}.%d{this.Minor}.%d{this.Patch}"
+
+/// Which kernel a `SimulatedUnixPlatform` runs, with whatever the facts this
+/// library derives from that kernel's source vary over.
+[<RequireQualifiedAccess>]
+type SimulatedUnixKernel =
+    /// Linux, built from this version's source.
+    | Linux of LinuxKernelVersion
+    /// Darwin. No fact this library derives from Darwin's source varies between
+    /// its versions yet, so none is recorded.
+    | Darwin
+
+[<RequireQualifiedAccess>]
+module SimulatedUnixKernel =
+    /// Which Unix this kernel is.
+    let flavour (kernel : SimulatedUnixKernel) : SimulatedUnixFlavour =
+        match kernel with
+        | SimulatedUnixKernel.Linux _ -> SimulatedUnixFlavour.Linux
+        | SimulatedUnixKernel.Darwin -> SimulatedUnixFlavour.Darwin
+
+/// Why a combination of kernel, architecture, page size and release is not a
 /// `SimulatedUnixPlatform`.
 [<RequireQualifiedAccess>]
 type SimulatedUnixPlatformError =
@@ -40,8 +81,9 @@ type SimulatedUnixPlatformError =
 /// letting the host leak in here would change their *control flow* between
 /// runs.
 ///
-/// Modelled as a flavour, an architecture, a page size and a release string,
-/// each of which a kernel image is built with, rather than as a bag of loose
+/// Modelled as a kernel (a flavour, and for Linux the version of the source it
+/// was built from), an architecture, a page size and a release string, each of
+/// which a kernel image is built with, rather than as a bag of loose
 /// `utsname` fields, so that the facts we report stay mutually consistent as
 /// more of `utsname` gets modelled: its machine field would be a total
 /// *function* of the flavour and the architecture, not an independently-settable
@@ -51,32 +93,40 @@ type SimulatedUnixPlatformError =
 /// failure arms for an unclassifiable platform, because `create` admits only
 /// combinations whose facts have been measured.
 ///
+/// The release string is identity alone: no fact follows from it. A fact that
+/// changed between Linux versions follows the kernel's `LinuxKernelVersion`.
+///
 /// Construct with `SimulatedUnixPlatform.linuxX64`, `linuxArm64`, `macOsArm64`,
-/// or `create` for a specific release string.
+/// or `create` for a specific kernel and release string.
 [<CustomEquality ; NoComparison>]
 type SimulatedUnixPlatform =
     private
         {
-            Flavour : SimulatedUnixFlavour
+            Kernel : SimulatedUnixKernel
             Architecture : SimulatedUnixArchitecture
             PageSize : SimulatedPageSize
             Release : string
         }
 
     override this.ToString () : string =
-        $"%O{this.Flavour} %O{this.Architecture} %O{this.PageSize} %s{this.Release}"
+        let kernel =
+            match this.Kernel with
+            | SimulatedUnixKernel.Linux version -> $"Linux %O{version}"
+            | SimulatedUnixKernel.Darwin -> "Darwin"
+
+        $"%s{kernel} %O{this.Architecture} %O{this.PageSize} %s{this.Release}"
 
     override this.Equals (other : obj) : bool =
         match other with
         | :? SimulatedUnixPlatform as other ->
-            this.Flavour = other.Flavour
+            this.Kernel = other.Kernel
             && this.Architecture = other.Architecture
             && this.PageSize = other.PageSize
             && this.Release = other.Release
         | _ -> false
 
     override this.GetHashCode () : int =
-        System.HashCode.Combine (this.Flavour, this.Architecture, this.PageSize, this.Release)
+        System.HashCode.Combine (this.Kernel, this.Architecture, this.PageSize, this.Release)
 
 /// What `getcwd(3)` answers when the current directory has been *removed* — so
 /// there is no path to report — and how small a buffer can still change that
@@ -155,19 +205,22 @@ type GetCwdDestinationFault =
 /// What a `getsockname(2)` that faults copying the address out has already put
 /// in the caller's length cell.
 ///
-/// The two kernels order the two stores differently, so a call that fails
-/// leaves the caller's `socklen_t` reading different things. Measured against a
-/// wholly unmapped destination and against one writable for its first few bytes
-/// only, with sentinel lengths of 7, 13, 100 and 4096 so that a value that came
-/// back changed can only have been written: on Linux 6.18.5 every one of them
-/// reads 16 afterwards, and on macOS 26.6 every one still reads what it went in
-/// with. A descriptor that fails earlier -- EBADF, ENOTSOCK -- touches the cell
-/// on neither, so this is the fault path's property rather than the failure
-/// path's in general.
+/// The kernels order the two stores differently, so a call that fails leaves
+/// the caller's `socklen_t` reading different things. Darwin, and Linux before
+/// 6.18, store the length only once the copy has succeeded; Linux from 6.18
+/// stores it first. Measured through a null destination and an unmapped page,
+/// with declared lengths of 1, 7, 13, 16, 100 and 4096, so that a value that
+/// came back changed can only have been written
+/// (`docs/probes/sockname-fault-length`): every one reads 16 afterwards on
+/// Linux 6.18.5 (x86-64 and aarch64), and every one still reads what it went in
+/// with on Linux 6.12.111 and 6.17.13 (x86-64) and Darwin 27.0.0. A descriptor
+/// that fails earlier -- EBADF, ENOTSOCK -- touched the cell on neither Linux
+/// 6.18.5 nor macOS 26.6, so this is the fault path's property rather than the
+/// failure path's in general.
 [<RequireQualifiedAccess>]
 type GetSockNameFaultLength =
-    /// The cell still holds what the caller put there. Darwin copies the address
-    /// out first and reports the length only once that has succeeded.
+    /// The cell still holds what the caller put there: the kernel copies the
+    /// address out first and reports the length only once that has succeeded.
     | Untouched
     /// The cell holds the address's *untruncated* length -- what a successful
     /// call would have reported -- because the kernel stored that before
@@ -265,15 +318,18 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin, SimulatedUnixArchitecture.Arm64, SimulatedPageSize.SixteenKiB -> true
         | _ -> false
 
-    /// A platform of the given flavour, built for `architecture` with pages of
+    /// A platform running `kernel`, built for `architecture` with pages of
     /// `pageSize`, reporting `release` from `uname -r`.
+    ///
+    /// `release` need not agree with a Linux kernel's version: it is what a
+    /// process reads, and nothing else follows from it.
     ///
     /// Validated here rather than when a fact is read, which is what makes
     /// every accessor below total: a value of this type is a platform some Unix
     /// could actually be, and one whose facts are known. A combination nobody has
     /// measured is refused rather than answered from a neighbouring one.
     let create
-        (flavour : SimulatedUnixFlavour)
+        (kernel : SimulatedUnixKernel)
         (architecture : SimulatedUnixArchitecture)
         (pageSize : SimulatedPageSize)
         (release : string)
@@ -294,13 +350,15 @@ module SimulatedUnixPlatform =
             Error (SimulatedUnixPlatformError.Release (SimulatedUnixReleaseError.NotPrintableAscii (i, release.[i])))
         | None ->
 
+        let flavour = SimulatedUnixKernel.flavour kernel
+
         if not (isMeasured flavour architecture pageSize) then
             Error (SimulatedUnixPlatformError.UnmeasuredKernel (flavour, architecture, pageSize))
         else
 
         Ok
             {
-                Flavour = flavour
+                Kernel = kernel
                 Architecture = architecture
                 PageSize = pageSize
                 Release = release
@@ -308,20 +366,21 @@ module SimulatedUnixPlatform =
 
     let createOrFail
         (context : string)
-        (flavour : SimulatedUnixFlavour)
+        (kernel : SimulatedUnixKernel)
         (architecture : SimulatedUnixArchitecture)
         (pageSize : SimulatedPageSize)
         (release : string)
         : SimulatedUnixPlatform
         =
-        match create flavour architecture pageSize release with
+        match create kernel architecture pageSize release with
         | Ok platform -> platform
         | Error error -> failwith $"%s{context}: %s{describeError error}"
 
     /// 64-bit x86 Linux with 4 KiB pages, at a kernel release a real machine was running (a
-    /// GitHub Actions Ubuntu runner's): the release this reports and the
-    /// behaviour derived from it below therefore describe one real machine
-    /// rather than a plausible composite. `UnixSystem.defaultUnixPlatform`.
+    /// GitHub Actions Ubuntu runner's): the release this reports, and the
+    /// kernel version 6.17.0 that release names and the behaviour below follows,
+    /// therefore describe one real machine rather than a plausible composite.
+    /// `UnixSystem.defaultUnixPlatform`.
     ///
     /// Naming a real kernel rather than a plausible one matters because facts
     /// derived from a platform are claims about a machine somebody could be
@@ -333,7 +392,12 @@ module SimulatedUnixPlatform =
     let linuxX64 : SimulatedUnixPlatform =
         createOrFail
             "SimulatedUnixPlatform.linuxX64"
-            SimulatedUnixFlavour.Linux
+            (SimulatedUnixKernel.Linux
+                {
+                    Major = 6u
+                    Minor = 17u
+                    Patch = 0u
+                })
             SimulatedUnixArchitecture.X64
             SimulatedPageSize.FourKiB
             "6.17.0-1022-azure"
@@ -344,7 +408,12 @@ module SimulatedUnixPlatform =
     let linuxArm64 : SimulatedUnixPlatform =
         createOrFail
             "SimulatedUnixPlatform.linuxArm64"
-            SimulatedUnixFlavour.Linux
+            (SimulatedUnixKernel.Linux
+                {
+                    Major = 6u
+                    Minor = 18u
+                    Patch = 5u
+                })
             SimulatedUnixArchitecture.Arm64
             SimulatedPageSize.FourKiB
             "6.18.5"
@@ -355,13 +424,18 @@ module SimulatedUnixPlatform =
     let macOsArm64 : SimulatedUnixPlatform =
         createOrFail
             "SimulatedUnixPlatform.macOsArm64"
-            SimulatedUnixFlavour.Darwin
+            SimulatedUnixKernel.Darwin
             SimulatedUnixArchitecture.Arm64
             SimulatedPageSize.SixteenKiB
             "27.0.0"
 
     /// Which Unix this platform is.
-    let flavour (platform : SimulatedUnixPlatform) : SimulatedUnixFlavour = platform.Flavour
+    let flavour (platform : SimulatedUnixPlatform) : SimulatedUnixFlavour =
+        SimulatedUnixKernel.flavour platform.Kernel
+
+    /// Which kernel this platform runs, and for Linux the version of the source
+    /// it was built from.
+    let kernel (platform : SimulatedUnixPlatform) : SimulatedUnixKernel = platform.Kernel
 
     /// The instruction set this platform's processes run as.
     let architecture (platform : SimulatedUnixPlatform) : SimulatedUnixArchitecture = platform.Architecture
@@ -389,7 +463,7 @@ module SimulatedUnixPlatform =
                 $"%s{context}: the platform is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; construct one with SimulatedUnixPlatform.create, or use the linuxX64 / linuxArm64 / macOsArm64 presets."
         | _ ->
 
-        match create platform.Flavour platform.Architecture platform.PageSize platform.Release with
+        match create platform.Kernel platform.Architecture platform.PageSize platform.Release with
         | Ok _ -> platform
         | Error error ->
             failwith
@@ -438,9 +512,23 @@ module SimulatedUnixPlatform =
     /// What this platform's `getsockname(2)` has already stored in the caller's
     /// length cell when the address copy faults. See `GetSockNameFaultLength`.
     let getSockNameFaultLength (platform : SimulatedUnixPlatform) : GetSockNameFaultLength =
-        match flavour platform with
-        | SimulatedUnixFlavour.Linux -> GetSockNameFaultLength.AlreadyReported
-        | SimulatedUnixFlavour.Darwin -> GetSockNameFaultLength.Untouched
+        match kernel platform with
+        | SimulatedUnixKernel.Linux version ->
+            // Commit 1fb0e471611d ("net: remove one stac/clac pair from
+            // move_addr_to_user()"), first released in 6.18, moved the length's
+            // store ahead of the address's copy.
+            let storesLengthFirst =
+                {
+                    Major = 6u
+                    Minor = 18u
+                    Patch = 0u
+                }
+
+            if version >= storesLengthFirst then
+                GetSockNameFaultLength.AlreadyReported
+            else
+                GetSockNameFaultLength.Untouched
+        | SimulatedUnixKernel.Darwin -> GetSockNameFaultLength.Untouched
 
     /// The number every descriptor this kernel hands out lies below: the soft
     /// `RLIMIT_NOFILE` it assumes the process has at least. A call that would
