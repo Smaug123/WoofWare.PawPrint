@@ -1855,12 +1855,15 @@ module UnixSocket =
     ///   sixteen bits, whatever `l_onoff` is.
     ///
     /// `TCP_NODELAY` has no observable effect, since a loopback transfer is
-    /// delivered at once whatever its size. `SO_LINGER`'s effect on `close` --
-    /// a reset rather than an orderly shutdown when the time is zero -- belongs
-    /// with `close` and `shutdown`, which do not model it yet: such a close of
-    /// a connected socket is refused
-    /// (`DescriptionReleaseRefusal.AbortiveClose`), and every other close is
-    /// the one it would be anyway: a FIN, or a reset if bytes were left unread.
+    /// delivered at once whatever its size. `SO_LINGER`'s effect on `close`
+    /// belongs with `close` and `shutdown`, which do not model it yet. A close
+    /// of a connected socket that it changes is refused: with a time of zero,
+    /// a reset rather than an orderly shutdown
+    /// (`DescriptionReleaseRefusal.AbortiveClose`); with a positive time, a
+    /// wait for bytes still in the send buffer, on Linux whatever `O_NONBLOCK`
+    /// is and on Darwin through a blocking description
+    /// (`DescriptionReleaseRefusal.LingeringClose`). Every other close is the
+    /// one it would be anyway: a FIN, or a reset if bytes were left unread.
     ///
     /// An option persists until the next `setsockopt` of it, and no later
     /// failure of another call undoes it. A change on a listener with

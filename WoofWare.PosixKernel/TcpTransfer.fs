@@ -343,6 +343,11 @@ module internal TcpTransfer =
         let outbound = towards (otherEnd sender) transfer
         outbound.SendCapacity - ByteQueue.length outbound.Sending
 
+    /// How many bytes `sender` has written that are still in its send buffer,
+    /// because the peer's receive buffer has had no room for them yet.
+    let unsent (sender : ConnectionEnd) (transfer : TcpTransfer) : int =
+        ByteQueue.length (towards (otherEnd sender) transfer).Sending
+
     /// Whether Linux's `tcp_poll` finds `sender` writable: its send buffer at
     /// most two thirds full (`sk_stream_is_writeable`). Says nothing of an end
     /// that was reset, which is writable whatever its buffer holds, since the

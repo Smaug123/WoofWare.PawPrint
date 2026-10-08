@@ -517,6 +517,8 @@ module NativeSystemNative =
                 "Accept the connection or close the client before closing the listener."
             | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
                 "Model the reset a zero-linger close sends, or close the peer first."
+            | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
+                "Model a close that waits, on the virtual clock, for its unsent bytes to reach the peer, or let the peer read them before the close."
             | CloseRefusal.PolledDescriptor _ ->
                 "Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
             | CloseRefusal.DarwinEndedWriteSignal _ ->
