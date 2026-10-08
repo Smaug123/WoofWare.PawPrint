@@ -166,7 +166,7 @@ module TestSignalState =
 
     /// Whether `task`'s mask holds `signal`.
     let private isBlocked (task : TestTask) (signal : Signal) (s : SignalState<TestTask, TestHandler>) : bool =
-        Set.contains signal (SignalState.maskOf task s)
+        SignalMask.contains signal (SignalState.maskOf task s)
 
     /// Install `handler` for `signal`, as `sigaction` with a handler does.
     let private enable (signal : Signal) (s : SignalState<TestTask, TestHandler>) : SignalState<TestTask, TestHandler> =
@@ -188,7 +188,7 @@ module TestSignalState =
             let s = initial numbering
             SignalState.numbering s |> shouldEqual numbering
             SignalState.disposition Signal.SIGINT s |> shouldEqual SignalDisposition.Default
-            SignalState.maskOf t0 s |> shouldEqual Set.empty
+            SignalState.maskOf t0 s |> shouldEqual SignalMask.empty
             SignalState.framesOf t0 s |> shouldEqual []
             SignalState.tasksWithFrames s |> shouldEqual Set.empty
             SignalState.pending s |> Seq.toList |> shouldEqual []
@@ -316,6 +316,7 @@ module TestSignalState =
         let two = one |> block t0 Signal.SIGHUP
 
         SignalState.maskOf t0 two
+        |> SignalMask.signals
         |> shouldEqual (Set.ofList [ Signal.SIGINT ; Signal.SIGHUP ])
 
         let back = two |> HandlerFrames.leave t0
@@ -323,7 +324,7 @@ module TestSignalState =
         SignalState.framesOf t0 back |> shouldEqual (SignalState.framesOf t0 one)
 
         let none = back |> HandlerFrames.leave t0
-        SignalState.maskOf t0 none |> shouldEqual Set.empty
+        SignalState.maskOf t0 none |> shouldEqual SignalMask.empty
         SignalState.framesOf t0 none |> shouldEqual []
         // No empty stack is stored.
         SignalState.tasksWithFrames none |> shouldEqual Set.empty
@@ -366,16 +367,18 @@ module TestSignalState =
             initial numbering
             |> block t0 Signal.SIGSTOP
             |> SignalState.maskOf t0
-            |> shouldEqual Set.empty
+            |> shouldEqual SignalMask.empty
 
             initial numbering
             |> block t0 Signal.SIGCHLD
             |> SignalState.maskOf t0
+            |> SignalMask.signals
             |> shouldEqual (Set.singleton Signal.SIGCHLD)
 
             initial numbering
             |> block t0 Signal.SIGCONT
             |> SignalState.maskOf t0
+            |> SignalMask.signals
             |> shouldEqual (Set.singleton Signal.SIGCONT)
 
     [<Test>]
@@ -391,7 +394,7 @@ module TestSignalState =
                     Signal.SIGHUP
                     (SignalDisposition.Catch
                         { SignalCatch.ofHandler handler with
-                            Mask = Set.ofList (allSignals numbering)
+                            Mask = SignalMask.ofSignals numbering (Set.ofList (allSignals numbering))
                         })
 
             let expected =
@@ -400,7 +403,7 @@ module TestSignalState =
                 |> Set.ofList
 
             match SignalState.disposition Signal.SIGHUP caught with
-            | SignalDisposition.Catch action -> action.Mask |> shouldEqual expected
+            | SignalDisposition.Catch action -> SignalMask.signals action.Mask |> shouldEqual expected
             | other -> failwith $"expected a handler, got %A{other}"
 
             // And a frame for it blocks exactly that, and SIGHUP.
@@ -414,7 +417,9 @@ module TestSignalState =
                 |> leaderDelivery [ t0 ]
                 |> snd
 
-            SignalState.maskOf t0 delivered |> shouldEqual (Set.add Signal.SIGHUP expected)
+            SignalState.maskOf t0 delivered
+            |> SignalMask.signals
+            |> shouldEqual (Set.add Signal.SIGHUP expected)
 
     [<Test>]
     let ``setDisposition refuses every disposition for SIGKILL and SIGSTOP`` () : unit =
@@ -442,6 +447,11 @@ module TestSignalState =
 
     [<Test>]
     let ``every operation refuses a signal the numbering does not have`` () : unit =
+        let otherNumbering (numbering : SignalNumbering) : SignalNumbering =
+            match numbering with
+            | SignalNumbering.Linux -> SignalNumbering.Darwin
+            | SignalNumbering.Darwin -> SignalNumbering.Linux
+
         let notASignal (numbering : SignalNumbering) : Signal list =
             match numbering with
             | SignalNumbering.Linux -> [ Signal.SIGEMT ; Signal.SIGINFO ; Signal.RealTime -1 ; Signal.RealTime 33 ]
@@ -472,7 +482,7 @@ module TestSignalState =
                         Signal.SIGHUP
                         (SignalDisposition.Catch
                             { SignalCatch.ofHandler handler with
-                                Mask = Set.singleton signal
+                                Mask = SignalMask.ofSignals (otherNumbering numbering) (Set.singleton signal)
                             })
                         s
                     |> ignore<SignalState<_, _>>
@@ -1184,7 +1194,7 @@ module TestSignalState =
             match leaderDelivery [ t0 ] s with
             | Some (SignalDelivery.RunHandlers frames), s' ->
                 frames
-                |> List.map (fun frame -> frame.Entry.Signal, frame.Mask)
+                |> List.map (fun frame -> frame.Entry.Signal, SignalMask.signals frame.Mask)
                 |> shouldEqual
                     [
                         Signal.SIGTERM, Set.ofList [ Signal.SIGHUP ; Signal.SIGINT ; Signal.SIGTERM ]
@@ -1207,7 +1217,7 @@ module TestSignalState =
                 Signal.SIGINT
                 (fun c ->
                     { c with
-                        Mask = Set.singleton Signal.SIGHUP
+                        Mask = SignalMask.ofSignals SignalNumbering.Linux (Set.singleton Signal.SIGHUP)
                     }
                 )
             |> enable Signal.SIGHUP
@@ -1223,7 +1233,10 @@ module TestSignalState =
 
         let delivery, s = s |> HandlerFrames.leave t0 |> leaderDelivery [ t0 ]
         oneHandler delivery |> shouldEqual (processSignal Signal.SIGHUP)
-        SignalState.maskOf t0 s |> shouldEqual (Set.singleton Signal.SIGHUP)
+
+        SignalState.maskOf t0 s
+        |> SignalMask.signals
+        |> shouldEqual (Set.singleton Signal.SIGHUP)
 
     [<Test>]
     let ``SA_NODEFER leaves the signal unblocked, so its instances nest`` () : unit =
@@ -1251,7 +1264,7 @@ module TestSignalState =
 
             frames
             |> List.map (fun frame -> frame.Mask)
-            |> shouldEqual [ Set.empty ; Set.empty ; Set.empty ]
+            |> shouldEqual [ SignalMask.empty ; SignalMask.empty ; SignalMask.empty ]
 
             SignalState.pending s' |> shouldEqual []
         | other, _ -> failwith $"expected three nested frames, got %A{other}"
@@ -1280,7 +1293,10 @@ module TestSignalState =
 
                 let delivery, s = leaderDelivery [ t0 ] s
                 oneHandler delivery |> shouldEqual (processSignal signal)
-                SignalState.maskOf t0 s |> shouldEqual (Set.singleton signal)
+
+                SignalState.maskOf t0 s
+                |> SignalMask.signals
+                |> shouldEqual (Set.singleton signal)
 
                 let keeps = numbering = SignalNumbering.Darwin && (signo = 4 || signo = 5)
 
@@ -1401,7 +1417,7 @@ module TestSignalState =
     let private referenceMask (r : ReferenceState) (task : TestTask) : Set<Signal> =
         match referenceFrames r task with
         | [] -> Set.empty
-        | innermost :: _ -> innermost.Mask
+        | innermost :: _ -> SignalMask.signals innermost.Mask
 
     let private referenceBlocks (r : ReferenceState) (task : TestTask) (signal : Signal) : bool =
         Set.contains signal (referenceMask r task)
@@ -1425,7 +1441,11 @@ module TestSignalState =
         | SignalDisposition.Catch action ->
             SignalDisposition.Catch
                 { action with
-                    Mask = action.Mask |> Set.filter (referenceUnmaskable numbering >> not)
+                    Mask =
+                        action.Mask
+                        |> SignalMask.signals
+                        |> Set.filter (referenceUnmaskable numbering >> not)
+                        |> SignalMask.ofSignals numbering
                 }
         | other -> other
 
@@ -1739,7 +1759,7 @@ module TestSignalState =
                     Set.unionMany
                         [
                             referenceMask r task
-                            action.Mask
+                            SignalMask.signals action.Mask
                             (if action.NoDefer then Set.empty else Set.singleton e.Signal)
                         ]
                     |> Set.filter (referenceUnmaskable numbering >> not)
@@ -1749,7 +1769,7 @@ module TestSignalState =
                         Id = HandlerFrameId r.NextFrame
                         Entry = e
                         Action = action
-                        Mask = mask
+                        Mask = SignalMask.ofSignals numbering mask
                     }
 
                 let signo = Signal.toRawSignoUnder numbering e.Signal
@@ -1889,7 +1909,10 @@ module TestSignalState =
 
         for tid in taskPool do
             SignalState.framesOf tid s |> shouldEqual (referenceFrames r tid)
-            SignalState.maskOf tid s |> shouldEqual (referenceMask r tid)
+
+            SignalState.maskOf tid s
+            |> SignalMask.signals
+            |> shouldEqual (referenceMask r tid)
 
         SignalState.tasksWithFrames s
         |> shouldEqual (
@@ -1931,7 +1954,7 @@ module TestSignalState =
                 SignalDisposition.Catch
                     {
                         Handler = h
-                        Mask = mask
+                        Mask = SignalMask.ofSignals numbering mask
                         NoDefer = rng.Next 3 = 0
                         ResetHand = rng.Next 4 = 0
                         Restart = rng.Next 2 = 0
@@ -2244,7 +2267,9 @@ module TestSignalState =
                         observedDefaultsStored <- observedDefaultsStored + 1
 
                     match disposition with
-                    | SignalDisposition.Catch action when action.Mask |> Set.exists (referenceUnmaskable numbering) ->
+                    | SignalDisposition.Catch action when
+                        action.Mask |> SignalMask.signals |> Set.exists (referenceUnmaskable numbering)
+                        ->
                         observedUnmaskableInMasks <- observedUnmaskableInMasks + 1
                     | _ -> ()
 

@@ -1,0 +1,4 @@
+# Darwin 27.0.0 arm64, uid 501
+# flavour darwin USR1 bit 20000000
+libc sa_mask=ffffffff ret=0 stored=fffefeff in-handler=fffefeff after=0 end=exit0
+libc sa_mask=80000000 ret=0 stored=80000000 in-handler=a0000000 after=0 end=exit0

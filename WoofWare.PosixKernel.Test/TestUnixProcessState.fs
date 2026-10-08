@@ -54,11 +54,11 @@ module TestUnixProcessState =
             }
 
         SignalState.maskOf 7 proc.Signals
-        |> Set.contains Signal.SIGTERM
+        |> SignalMask.contains Signal.SIGTERM
         |> shouldEqual true
 
         SignalState.maskOf 8 proc.Signals
-        |> Set.contains Signal.SIGTERM
+        |> SignalMask.contains Signal.SIGTERM
         |> shouldEqual false
 
         SignalState.framesOf 7 proc.Signals

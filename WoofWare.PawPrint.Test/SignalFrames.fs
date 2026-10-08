@@ -26,18 +26,18 @@ module SignalFrames =
         =
         let before = KernelSignals.disposition carrier system
 
+        let numbering = SimulatedUnixPlatform.signalNumbering (UnixSystem.platform system)
+
         let action =
             // A handler the poll refuses to run, so a test that lets the
             // frame's handler run by mistake fails rather than passing.
             { SignalCatch.ofHandler NativeSignalHandler.CoreClrPalActivation with
-                Mask = mask
+                Mask = SignalMask.ofSignals numbering mask
                 NoDefer = true
             }
 
         let caught =
             KernelSignals.setDisposition carrier (SignalDisposition.Catch action) system
-
-        let numbering = SimulatedUnixPlatform.signalNumbering (UnixSystem.platform system)
 
         let sent =
             match UnixSignal.pthreadKill task (Signal.toRawSignoUnder numbering carrier) caught with

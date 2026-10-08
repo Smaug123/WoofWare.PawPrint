@@ -454,7 +454,7 @@ module TestThreadIds =
 
             let _, spawned = spawnOrFail 1 pendingOnLeader
 
-            SignalState.maskOf 1 spawned.Process.Signals |> shouldEqual Set.empty
+            SignalState.maskOf 1 spawned.Process.Signals |> shouldEqual SignalMask.empty
 
             SignalState.pending spawned.Process.Signals
             |> shouldEqual
@@ -471,13 +471,20 @@ module TestThreadIds =
 
             UnixTaskLifecycle.spawn 0 1 (CpuId 0) masked
             |> shouldEqual (
-                Error (SpawnRefusal.InheritedHandlerMask (0, Set.ofList [ Signal.SIGUSR1 ; Signal.SIGTERM ]))
+                Error (
+                    SpawnRefusal.InheritedHandlerMask (
+                        0,
+                        SignalMask.ofSignals
+                            (SignalState.numbering system.Process.Signals)
+                            (Set.ofList [ Signal.SIGUSR1 ; Signal.SIGTERM ])
+                    )
+                )
             )
 
             // A handler that blocks nothing is no reason to refuse.
             let unmasked = system |> HandlerFrames.enterIn "h" 0 Set.empty
             let _, spawned = spawnOrFail 1 unmasked
-            SignalState.maskOf 1 spawned.Process.Signals |> shouldEqual Set.empty
+            SignalState.maskOf 1 spawned.Process.Signals |> shouldEqual SignalMask.empty
 
     [<Test>]
     let ``a thread created from inside a caught signal's handler is refused, and created once the handler returns``
@@ -507,7 +514,16 @@ module TestThreadIds =
                 | other -> failwith $"onReturnToUser answered %A{other}"
 
             UnixTaskLifecycle.spawn 0 1 (CpuId 0) inHandler
-            |> shouldEqual (Error (SpawnRefusal.InheritedHandlerMask (0, Set.singleton Signal.SIGUSR1)))
+            |> shouldEqual (
+                Error (
+                    SpawnRefusal.InheritedHandlerMask (
+                        0,
+                        SignalMask.ofSignals
+                            (SignalState.numbering system.Process.Signals)
+                            (Set.singleton Signal.SIGUSR1)
+                    )
+                )
+            )
 
             // Once the handler has returned, the leader blocks nothing again.
             let returned = UnixSignal.sigreturn 0 frame.Id inHandler

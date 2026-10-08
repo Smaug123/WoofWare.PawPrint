@@ -9,8 +9,10 @@ type SignalCatch<'Handler> =
         Handler : 'Handler
         /// `sa_mask`: the signals blocked while the handler runs, on top of the
         /// mask in force when it was delivered. The kernel drops SIGKILL and
-        /// SIGSTOP from it, so `SignalState` never stores either.
-        Mask : Set<Signal>
+        /// SIGSTOP from it, so `SignalState` never stores either, and keeps
+        /// every other bit, one that names no signal included (Darwin's bit 31;
+        /// see `SignalMask`).
+        Mask : SignalMask
         /// `SA_NODEFER`: the signal itself is not blocked while its handler
         /// runs, so a second instance can interrupt it.
         NoDefer : bool
@@ -29,7 +31,7 @@ module SignalCatch =
     let ofHandler<'Handler> (handler : 'Handler) : SignalCatch<'Handler> =
         {
             Handler = handler
-            Mask = Set.empty
+            Mask = SignalMask.empty
             NoDefer = false
             ResetHand = false
             Restart = false
@@ -95,7 +97,7 @@ type HandlerFrame<'Task, 'Handler> =
         /// The task's signal mask while the handler runs: the mask in force
         /// when it was delivered, `Action.Mask`, and the signal itself unless
         /// `Action.NoDefer`. `sigreturn` restores the mask in force before.
-        Mask : Set<Signal>
+        Mask : SignalMask
     }
 
 /// What the kernel does with the signals a task takes as it returns to user
@@ -282,15 +284,25 @@ module SignalState =
             | DefaultDisposition.Terminate
             | DefaultDisposition.Stop -> false
 
-    /// `signals` as a kernel holds them in a mask: each one the numbering has, and without
-    /// SIGKILL and SIGSTOP, which it drops silently. Measured by the signal
-    /// fuzzer's harness (`WoofWare.PosixKernel.Test/signalFuzz/harness.c`) on
-    /// Linux 6.18.5 and Darwin 27.0.0: a handler whose `sa_mask` named both
-    /// read neither back in its mask while it ran.
-    let private maskable (operation : string) (numbering : SignalNumbering) (signals : Set<Signal>) : Set<Signal> =
-        signals
-        |> Set.map (parseUnder operation numbering)
-        |> Set.filter (fun signal -> not (kernelHoldsOnlyDefault signal))
+    /// `mask` as a kernel holds it: without SIGKILL and SIGSTOP, which it drops
+    /// silently, and with every other bit, one that names no signal included.
+    /// Fails loudly on a mask made under another numbering, whose bits name
+    /// other signals.
+    ///
+    /// Measured by the signal fuzzer's harness
+    /// (`WoofWare.PosixKernel.Test/signalFuzz/harness.c`) on Linux 6.18.5 and
+    /// Darwin 27.0.0: a handler whose `sa_mask` named both read neither back in
+    /// its mask while it ran. And by
+    /// `docs/plans/2026-08-23-posix-kernel-extraction/sigaction-mask-bits.c` on
+    /// the same two: an `sa_mask` of every bit was stored and held while the
+    /// handler ran less exactly those two, so with Darwin's bit 31 and Linux's
+    /// 32 and 33, through glibc and the raw `rt_sigaction` alike.
+    let private maskable (operation : string) (numbering : SignalNumbering) (mask : SignalMask) : SignalMask =
+        match SignalMask.numbering mask with
+        | ValueSome other when other <> numbering ->
+            failwith
+                $"SignalState.%s{operation}: the mask %O{mask} was made under the %O{other} numbering, and this process reads signals under %O{numbering}."
+        | _ -> SignalMask.without (Set.ofList [ Signal.SIGKILL ; Signal.SIGSTOP ]) mask
 
     let private withDisposition
         (signal : Signal)
@@ -418,10 +430,10 @@ module SignalState =
     let tasksWithFrames (state : SignalState<'Task, 'Handler>) : Set<'Task> = state.Frames |> Map.keys |> Set.ofSeq
 
     /// `task`'s signal mask: its innermost frame's, or empty.
-    let maskOf (task : 'Task) (state : SignalState<'Task, 'Handler>) : Set<Signal> =
+    let maskOf (task : 'Task) (state : SignalState<'Task, 'Handler>) : SignalMask =
         match framesOf task state with
         | innermost :: _ -> innermost.Mask
-        | [] -> Set.empty
+        | [] -> SignalMask.empty
 
     /// Drop everything held for `thread` alone: its handler frames, and the
     /// signals pending on it alone, which are discarded rather than passed on to
@@ -629,7 +641,7 @@ module SignalState =
         : Receiver<'Task>
         =
         let blocks (task : 'Task) : bool =
-            Set.contains entry.Signal (maskOf task state)
+            SignalMask.contains entry.Signal (maskOf task state)
 
         match entry.Target with
         | ValueSome target ->
@@ -802,10 +814,10 @@ module SignalState =
     /// under `action`, from `mask`.
     let private maskDuring
         (numbering : SignalNumbering)
-        (mask : Set<Signal>)
+        (mask : SignalMask)
         (signal : Signal)
         (action : SignalCatch<'Handler>)
-        : Set<Signal>
+        : SignalMask
         =
         // Measured by the signal fuzzer's harness
         // (`WoofWare.PosixKernel.Test/signalFuzz/harness.c`) on Linux 6.18.5 and
@@ -816,11 +828,11 @@ module SignalState =
         // `SA_RESETHAND` does not imply `SA_NODEFER`.
         let blocked =
             if action.NoDefer then
-                Set.union mask action.Mask
+                SignalMask.union mask action.Mask
             else
-                Set.union mask action.Mask |> Set.add signal
+                SignalMask.union mask action.Mask |> SignalMask.add numbering signal
 
-        blocked |> Set.filter (fun signal -> not (kernelHoldsOnlyDefault signal))
+        maskable "onReturnToUser" numbering blocked
 
     /// Whether delivering `signal` under `SA_RESETHAND` resets its disposition.
     let private resetsHand (numbering : SignalNumbering) (signal : Signal) : bool =
@@ -962,7 +974,7 @@ module SignalState =
                 // visible to `sigpending`), where this consumes the entry with
                 // the event.
                 unlessFramesPushed entry (SignalDelivery.DefaultContinue entry.Signal)
-            elif Set.contains entry.Signal (maskOf task state) then
+            elif SignalMask.contains entry.Signal (maskOf task state) then
                 walk pushed state rest
             else
 

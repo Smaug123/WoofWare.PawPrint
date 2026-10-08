@@ -197,7 +197,7 @@ module TestNativeLibc =
                         | SignalNumbering.Linux, 11 -> Set.singleton (Signal.RealTime 2)
                         | _ -> Set.empty
 
-                    action.Mask |> shouldEqual expectedMask
+                    SignalMask.signals action.Mask |> shouldEqual expectedMask
                 | SignalDisposition.Ignore
                 | SignalDisposition.Default -> ()
 
