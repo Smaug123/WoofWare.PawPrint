@@ -247,6 +247,7 @@
     <Compile Include="TestNativeLibc.fs" />
     <Compile Include="TestStartupSignalDispositions.fs" />
     <Compile Include="TestSocketEventsPal.fs" />
+    <Compile Include="TestSocketFlagsPal.fs" />
     <Compile Include="KernelTasks.fs" />
     <Compile Include="ThreadFixtures.fs" />
     <Compile Include="TestPollEventsPal.fs" />
