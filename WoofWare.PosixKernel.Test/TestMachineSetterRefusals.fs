@@ -24,8 +24,7 @@ module TestMachineSetterRefusals =
             SimulatedUnixPlatform.macOsArm64
         ]
 
-    let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+    let private imageOn (platform : SimulatedUnixPlatform) : UnixBootImage<int, string> = UnixSystem.initial platform
 
     /// An int weighted towards zero and the type's ends, where a sign test
     /// goes wrong, as well as spread across the whole range.
@@ -58,7 +57,9 @@ module TestMachineSetterRefusals =
     let ``withSoMaxConn admits exactly the positive values, and refuses the rest as not positive`` () : unit =
         let property (platform : SimulatedUnixPlatform, value : int) : unit =
             match UnixBootImage.withSoMaxConn (Some value) (imageOn platform), value >= 1 with
-            | Ok image, true -> (UnixBootImage.boot image).Machine.SoMaxConn |> shouldEqual value
+            | Ok image, true ->
+                (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine.SoMaxConn
+                |> shouldEqual value
             | Error refusal, false -> refusal |> shouldEqual (SoMaxConnRefusal.NotPositive value)
             | Ok _, false -> failwith $"%d{value} was admitted on %O{platform}"
             | Error refusal, true -> failwith $"%d{value} was refused on %O{platform}: %A{refusal}"
@@ -74,7 +75,7 @@ module TestMachineSetterRefusals =
 
             (UnixBootImage.withSoMaxConn (Some 1) (imageOn platform)
              |> Configured.expectOk SoMaxConnRefusal.describe
-             |> UnixBootImage.boot)
+             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
                 .Machine.SoMaxConn
             |> shouldEqual 1
 
@@ -85,7 +86,8 @@ module TestMachineSetterRefusals =
         let property (platform : SimulatedUnixPlatform, count : int) : unit =
             match UnixBootImage.withProcessorCount count (imageOn platform), count >= 1 with
             | Ok image, true ->
-                UnixMachineState.processorCount (UnixBootImage.boot image).Machine
+                UnixMachineState.processorCount
+                    (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine
                 |> shouldEqual count
             | Error refusal, false -> refusal |> shouldEqual (ProcessorCountRefusal.NotPositive count)
             | Ok _, false -> failwith $"%d{count} was admitted on %O{platform}"
@@ -102,7 +104,7 @@ module TestMachineSetterRefusals =
 
             UnixBootImage.withProcessorCount 1 (imageOn platform)
             |> Configured.expectOk ProcessorCountRefusal.describe
-            |> UnixBootImage.boot
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
             |> fun system -> UnixMachineState.processorCount system.Machine
             |> shouldEqual 1
 
@@ -122,7 +124,10 @@ module TestMachineSetterRefusals =
             match UnixBootImage.withEphemeralPortRange (low, high) (imageOn platform) with
             | Ok image ->
                 expected |> shouldEqual (Ok ())
-                let machine = (UnixBootImage.boot image).Machine
+
+                let machine =
+                    (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine
+
                 machine.EphemeralPortRange |> shouldEqual (low, high)
                 // Rewound into the range, so the first ephemeral port is its low end.
                 machine.NextEphemeralPort |> shouldEqual low
@@ -177,7 +182,9 @@ module TestMachineSetterRefusals =
             match UnixBootImage.withPipeDevice (Some device) (imageOn platform) with
             | Ok image ->
                 expected |> shouldEqual (Ok ())
-                (UnixBootImage.boot image).Machine.PipeDevice |> shouldEqual device
+
+                (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0) image).Machine.PipeDevice
+                |> shouldEqual device
             | Error refusal -> Error refusal |> shouldEqual expected
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip (Gen.elements platforms) anyInt64)) property)
@@ -206,7 +213,7 @@ module TestMachineSetterRefusals =
         for platform in platforms do
             (UnixBootImage.withPipeDevice None (imageOn platform)
              |> Configured.expectOk PipeDeviceRefusal.describe
-             |> UnixBootImage.boot)
+             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
                 .Machine.PipeDevice
             |> shouldEqual (UnixMachineState.defaultPipeDevice (SimulatedUnixPlatform.flavour platform))
 

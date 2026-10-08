@@ -39,7 +39,7 @@ module TestUnixProcessState =
     /// A freshly made process, for the setters, which configure one before it
     /// boots.
     let private image : UnixBootImage<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
 
     [<Test>]
     let ``the signal state is keyed by whatever the client names tasks`` () : unit =
@@ -96,9 +96,12 @@ module TestUnixProcessState =
         let property (before : UnixByteString list, after : UnixByteString list) : unit =
             let system =
                 image
-                |> UnixBootImage.withEnvironment context before
-                |> UnixBootImage.withEnvironment context after
-                |> UnixBootImage.boot
+                |> (Launched.bootWith
+                        (ProcessLaunch.withEnvironment context before
+                         >> ProcessLaunch.withEnvironment context after)
+                        UnixSystem.pipedStandardStreams
+                        0
+                        (CpuId 0))
 
             system.Process.Environment |> shouldEqual after
 
@@ -118,11 +121,11 @@ module TestUnixProcessState =
         // calls it.
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixBootImage.withEnvironment
+                ProcessLaunch.withEnvironment
                     "whatever the client calls it"
                     [ UnixByteString.empty ; Unchecked.defaultof<UnixByteString> ]
-                    image
-                |> ignore<UnixBootImage<int, string>>
+                    (Launched.launch SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0))
+                |> ignore<ProcessLaunch<int>>
             )
 
         exn.Message |> shouldContainText "whatever the client calls it"
@@ -133,11 +136,11 @@ module TestUnixProcessState =
         // can produce is a defaulted one; this setter is where it stops.
         let exn =
             Assert.Throws<exn> (fun () ->
-                UnixBootImage.withProcessPath
+                ProcessLaunch.withProcessPath
                     "the client's name for the path"
                     (Some Unchecked.defaultof<AbsoluteUnixPath>)
-                    image
-                |> ignore<UnixBootImage<int, string>>
+                    (Launched.launch SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0))
+                |> ignore<ProcessLaunch<int>>
             )
 
         exn.Message |> shouldContainText "the client's name for the path"
@@ -146,9 +149,12 @@ module TestUnixProcessState =
     let ``no path is an answer rather than a request for a default`` () : unit =
         let system =
             image
-            |> UnixBootImage.withProcessPath context (Some (AbsoluteUnixPath.parseOrFail context "/bin/app"))
-            |> UnixBootImage.withProcessPath context None
-            |> UnixBootImage.boot
+            |> (Launched.bootWith
+                    (ProcessLaunch.withProcessPath context (Some (AbsoluteUnixPath.parseOrFail context "/bin/app"))
+                     >> ProcessLaunch.withProcessPath context None)
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0))
 
         system.Process.ProcessPath |> shouldEqual None
 
@@ -165,9 +171,3 @@ module TestUnixProcessState =
             Config.QuickThrowOnFailure.WithMaxTest 200,
             Prop.forAll (Arb.fromGen CredentialsGen.credentials) property
         )
-
-    [<Test>]
-    let ``the only inode the process itself holds is its current directory`` () : unit =
-        // The descriptors' inodes are held by the descriptions they name, which
-        // are the machine's (`UnixMachineState.heldInodes`).
-        UnixProcessState.heldInodes empty |> shouldEqual (Set.singleton rootInode)

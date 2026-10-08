@@ -35,8 +35,8 @@ module TestUnixTaskLifecycle =
     /// in `flock`, and that instance's description.
     let private world (platform : SimulatedUnixPlatform) : UnixSystem<int, string> * OpenFileDescriptionId =
         let system =
-            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let create =
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
@@ -480,12 +480,15 @@ module TestUnixTaskLifecycle =
                     ->
                     // A mask is held only as handler frames, which a new task
                     // cannot inherit, so a spawn from a task that blocks
-                    // anything is refused.
-                    Assert.Throws (fun () ->
-                        UnixTaskLifecycle.spawn parent child (CpuId 0) system
-                        |> ignore<Result<OsThreadId * UnixSystem<int, string>, UnixError>>
+                    // anything is refused. The refusal carries no system, so
+                    // the run goes on from this one: no task was added, and no
+                    // thread ID handed out.
+                    UnixTaskLifecycle.spawn parent child (CpuId 0) system
+                    |> shouldEqual (
+                        Error (
+                            SpawnRefusal.InheritedHandlerMask (parent, SignalState.maskOf parent system.Process.Signals)
+                        )
                     )
-                    |> ignore<exn>
 
                     coverage.SpawnsRefusedForAMask <- coverage.SpawnsRefusedForAMask + 1
                     system, model
@@ -494,8 +497,12 @@ module TestUnixTaskLifecycle =
                     ->
                     let after =
                         match UnixTaskLifecycle.spawn parent child (CpuId 0) system with
-                        | Ok (_, after) -> after
-                        | Error error -> failwith $"spawning %d{child} from %d{parent} failed with %O{error}"
+                        | Ok (SpawnAnswer.Spawned _, after) -> after
+                        | Ok (SpawnAnswer.Failed error, _) ->
+                            failwith $"spawning %d{child} from %d{parent} failed with %O{error}"
+                        | Error refusal ->
+                            failwith
+                                $"spawning %d{child} from %d{parent} was refused: %s{SpawnRefusal.describe refusal}"
 
                     // The child starts with its parent's mask, which is empty,
                     // and nothing pending on it.

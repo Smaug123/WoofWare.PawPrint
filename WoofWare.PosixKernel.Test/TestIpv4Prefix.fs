@@ -207,9 +207,9 @@ module TestIpv4Prefix =
     let ``withLocalAddresses stores any lists of addresses and prefixes as given`` () : unit =
         let property (platform : SimulatedUnixPlatform, addresses : uint32 list, routes : Ipv4Prefix list) : unit =
             let machine =
-                (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                (UnixSystem.initial<int, string> platform
                  |> UnixBootImage.withLocalAddresses addresses routes
-                 |> UnixBootImage.boot)
+                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
                     .Machine
 
             machine.LocalAddresses |> shouldEqual addresses

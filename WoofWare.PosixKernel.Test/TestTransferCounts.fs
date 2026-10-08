@@ -70,8 +70,7 @@ module TestTransferCounts =
         ]
 
     let internal imageOn (platform : SimulatedUnixPlatform, limit : uint64 option) : UnixBootImage<int, string> =
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let image : UnixBootImage<int, string> = UnixSystem.initial platform
 
         match limit with
         | None -> image
@@ -81,7 +80,7 @@ module TestTransferCounts =
             |> Configured.expectOk UserAddressLimitRefusal.describe
 
     let internal systemOn (machine : SimulatedUnixPlatform * uint64 option) : UnixSystem<int, string> =
-        imageOn machine |> UnixBootImage.boot
+        imageOn machine |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
 
     let private contentOf (length : int) : byte[] =
         Array.init length (fun i -> byte (i + 1))
@@ -887,7 +886,7 @@ module TestTransferCounts =
                 imageOn (platform, None)
                 |> UnixBootImage.withMount (Some (EmulatedMount.defaultOf fileSystem))
                 |> Configured.expectOk MountRefusal.describe
-                |> UnixBootImage.boot
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let fd, registry =
                 FileDescriptorRegistry.openDirectory rootInode (UnixSystemState.fileDescriptors system)

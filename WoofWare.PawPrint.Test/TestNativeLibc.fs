@@ -33,8 +33,8 @@ module TestNativeLibc =
         (inheritedIgnores : Set<Signal>)
         : UnixSystem<int, NativeSignalHandler>
         =
-        UnixSystem.initial (platformOf numbering) UnixSystem.pipedStandardStreams leader (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial (platformOf numbering)
+        |> Launched.boot UnixSystem.pipedStandardStreams leader (CpuId 0)
         |> StartupSignalDispositions.install "test" numbering inheritedIgnores
 
     let private initial (numbering : SignalNumbering) : UnixSystem<int, NativeSignalHandler> =
@@ -50,8 +50,9 @@ module TestNativeLibc =
         : UnixSystem<int, NativeSignalHandler>
         =
         match UnixTaskLifecycle.spawn leader task (CpuId 0) system with
-        | Ok (_, system) -> system
-        | Error error -> failwith $"spawning task %d{task} failed with %O{error}"
+        | Ok (SpawnAnswer.Spawned _, system) -> system
+        | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawning task %d{task} failed with %O{error}"
+        | Error refusal -> failwith $"spawning task %d{task} was refused: %s{SpawnRefusal.describe refusal}"
 
     /// `system` once `entry` has been sent, by `kill(2)` to the process or by
     /// `pthread_kill(3)` to its target, failing the test unless the process

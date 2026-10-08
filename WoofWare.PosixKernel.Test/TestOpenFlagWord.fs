@@ -335,19 +335,23 @@ module TestOpenFlagWord =
                     )
                 ]
 
-        let system : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context caller
+        let system : UnixBootImage<int, string> = UnixSystem.initial platform
 
         match
-            UnixBootImage.withFileSystemAndCurrentDirectory
+            UnixBootImage.withFileSystem
                 (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
                 (InodeOwner.ofProcess credentials)
                 seed
-                (AbsoluteUnixPath.parseOrFail context "/w/p")
                 system
         with
-        | Ok image -> UnixBootImage.boot image
+        | Ok image ->
+            (Launched.bootWith
+                (Launched.credentials caller
+                 >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/w/p"))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0))
+                image
         | Error fault -> failwith $"could not build the system: %A{fault}"
 
     /// The probe's directory, `/w/p` here: `f` holding "abc" (0644), `d`

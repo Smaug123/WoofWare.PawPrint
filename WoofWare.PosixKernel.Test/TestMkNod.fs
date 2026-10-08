@@ -182,20 +182,18 @@ module TestMkNod =
                         ]
                 ]
 
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial envelope.Platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context envelope.Credentials
-            |> UnixBootImage.withUmask context (perms umask)
+        let image : UnixBootImage<int, string> = UnixSystem.initial envelope.Platform
 
-        match
-            UnixBootImage.withFileSystemAndCurrentDirectory
-                epoch
-                owner
-                seed
-                (AbsoluteUnixPath.parseOrFail context cwd)
+        match UnixBootImage.withFileSystem epoch owner seed image with
+        | Ok image ->
+            Launched.bootWith
+                (Launched.credentials envelope.Credentials
+                 >> Launched.umask (perms umask)
+                 >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context cwd))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0)
                 image
-        with
-        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"%s{context}: could not build mknodat-rules.c's cell: %A{fault}"
 
     let private readOnly : OpenFlags =

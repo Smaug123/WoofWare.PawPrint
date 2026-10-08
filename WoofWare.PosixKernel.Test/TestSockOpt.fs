@@ -45,8 +45,8 @@ module TestSockOpt =
         : int * int * UnixSystem<int, string>
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let socketFd, system =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
@@ -525,8 +525,8 @@ module TestSockOpt =
                 for kind in [ SocketKind.Stream ; SocketKind.Datagram ; SocketKind.SeqPacket ] do
                     for protocol in [ SocketProtocol.Default ; SocketProtocol.Tcp ; SocketProtocol.Udp ] do
                         let system : UnixSystem<int, string> =
-                            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                            |> UnixBootImage.boot
+                            UnixSystem.initial platform
+                            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
                         let rawDomain, rawKind, rawProtocol =
                             NewSocket.arguments platform domain kind protocol
@@ -829,8 +829,8 @@ module TestSockOpt =
         // may no longer join them.
         for platform in platforms do
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let a, system = stream system
             let system = ReuseAddress.set true a system |> boundAt a (loopback port)
@@ -847,8 +847,8 @@ module TestSockOpt =
         // candidate may now share the endpoint on Linux.
         for platform in platforms do
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let a, system = stream system
             let system = boundAt a (loopback port) system
@@ -866,8 +866,8 @@ module TestSockOpt =
         // Darwin keys on the candidate's flag alone and admits.
         for platform in platforms do
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let a, system = stream system
             let system = ReuseAddress.set true a system |> boundAt a (wildcard port)
@@ -888,8 +888,8 @@ module TestSockOpt =
     [<Test>]
     let ``Linux's listen reads SO_REUSEADDR as setsockopt last left it`` () : unit =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial linux UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial linux
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let a, system = stream system
         let system = ReuseAddress.set true a system |> boundAt a (loopback 40000us)

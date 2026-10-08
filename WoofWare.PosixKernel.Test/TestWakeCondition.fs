@@ -39,8 +39,8 @@ module TestWakeCondition =
     /// `blocked` contends with it.
     let private world : UnixSystem<int, string> * OpenFileDescriptionId * OpenFileDescriptionId =
         let system =
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let lockerFd, registry =
             FileDescriptorRegistry.createEpoll (UnixSystemState.fileDescriptors system)

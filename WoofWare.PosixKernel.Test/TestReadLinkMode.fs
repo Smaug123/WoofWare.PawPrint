@@ -155,9 +155,8 @@ module TestReadLinkMode =
         : UnixSystem<int, string>
         =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context caller
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.bootWith (Launched.credentials caller) UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let vfs = VirtualFileSystem.empty epoch rootOwner
 
@@ -186,6 +185,7 @@ module TestReadLinkMode =
                     CurrentDirectoryInode = cellInode
                 }
         }
+        |> Launched.restand
 
     let private readOnly : OpenFlags =
         {

@@ -165,20 +165,18 @@ module TestSymlink =
         (seed : Map<DirectoryEntryName, SeedEntry>)
         : UnixSystem<int, string>
         =
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial envelope.Platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context envelope.Credentials
-            |> UnixBootImage.withUmask context (bits umask)
+        let image : UnixBootImage<int, string> = UnixSystem.initial envelope.Platform
 
-        match
-            UnixBootImage.withFileSystemAndCurrentDirectory
-                epoch
-                (InodeOwner.ofProcess envelope.Credentials)
-                seed
-                (AbsoluteUnixPath.parseOrFail context "/c")
+        match UnixBootImage.withFileSystem epoch (InodeOwner.ofProcess envelope.Credentials) seed image with
+        | Ok image ->
+            (Launched.bootWith
+                (Launched.credentials envelope.Credentials
+                 >> Launched.umask (bits umask)
+                 >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/c"))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0))
                 image
-        with
-        | Ok image -> UnixBootImage.boot image
         | Error fault -> failwith $"%s{context}: could not build the probe's cell: %A{fault}"
 
     let private probeCell (envelope : Envelope) : UnixSystem<int, string> = boot envelope 0o022 (cell None 0o755)

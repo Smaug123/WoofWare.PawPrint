@@ -16,9 +16,9 @@ module KeventWorld =
     /// A Darwin system with tasks 1 to 4, booted from an image `configure`
     /// configured.
     let darwinWith (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>) : UnixSystem<int, string> =
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
         |> configure
-        |> UnixBootImage.boot
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
         |> fun system -> ([ 1..4 ], system) ||> List.foldBack Tasks.ensure
 
     /// A Darwin system with tasks 1 to 4.

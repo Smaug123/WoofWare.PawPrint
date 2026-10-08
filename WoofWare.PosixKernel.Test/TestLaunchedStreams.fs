@@ -274,8 +274,8 @@ module TestLaunchedStreams =
     /// SIGPIPE.
     let private initialSystem (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         let system =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         { system with
             Process =
@@ -411,8 +411,8 @@ module TestLaunchedStreams =
     /// Linux 6.18.5.
     let private edgesAfter (writes : int list) : bool * bool list =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let epoll, system =
             match UnixPoll.epollCreate1 0 system with
@@ -466,8 +466,8 @@ module TestLaunchedStreams =
     [<Test>]
     let ``standard input and output may be registered with epoll, and a pipe the process made may not`` () : unit =
         let system : UnixSystem<int, string> =
-            UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let epoll, system =
             match UnixPoll.epollCreate1 0 system with
@@ -502,8 +502,8 @@ module TestLaunchedStreams =
     let ``a launched pipe lives while the client holds its far end`` () : unit =
         for platform in platforms do
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let input, output, error = pipeOf 0 system, pipeOf 1 system, pipeOf 2 system
 
@@ -527,8 +527,8 @@ module TestLaunchedStreams =
     let ``a drained pipe holding bytes is a defect`` () : unit =
         for platform in platforms do
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let output = pipeOf 1 system
             let pipe = UnixMachineState.pipe output system.Machine

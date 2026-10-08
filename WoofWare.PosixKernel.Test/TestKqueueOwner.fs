@@ -64,8 +64,7 @@ module TestKqueueOwner =
         let pid = ProcessId.parseOrFail "test" 77
 
         let kqueue, system =
-            KeventWorld.darwinWith (UnixBootImage.withProcessId "test" pid)
-            |> KeventWorld.kqueue
+            KeventWorld.darwinWith (Launched.processId pid) |> KeventWorld.kqueue
 
         match FileDescriptorRegistry.tryFindTarget kqueue (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Kqueue state) -> state.Owner |> shouldEqual pid
@@ -170,8 +169,10 @@ module TestKqueueOwner =
         let _, kqueue', foreign = world (Some other)
         kqueue' |> shouldEqual kqueue
 
+        // `other` is no process on the machine, which is a defect of its own.
         UnixSystem.checkInvariants foreign
         |> shouldEqual
             [
+                UnixSystemDefect.KqueueOwnerNotLive (KeventWorld.idOf kqueue foreign, other)
                 UnixSystemDefect.KqueueOfAnotherProcess (kqueue, KeventWorld.idOf kqueue foreign, other)
             ]

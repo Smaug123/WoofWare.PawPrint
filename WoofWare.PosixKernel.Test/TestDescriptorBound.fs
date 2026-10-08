@@ -241,13 +241,15 @@ module TestDescriptorBound =
 
             let launch = Map.ofList [ bound - 1, LaunchDescriptor.Drained ]
 
-            UnixSystem.initial<int, string> platform launch 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> platform
+            |> Launched.boot launch 0 (CpuId 0)
             |> UnixSystem.checkInvariants
             |> shouldEqual []
 
-            Assert.Throws<exn> (fun () ->
-                UnixSystem.initial<int, string> platform (Map.ofList [ bound, LaunchDescriptor.Drained ]) 0 (CpuId 0)
-                |> ignore
-            )
-            |> fun e -> e.Message |> shouldContainText "bound"
+            ProcessLaunch.create platform (Map.ofList [ bound, LaunchDescriptor.Drained ]) 0 (CpuId 0)
+            |> Result.map ignore
+            |> shouldEqual (Error (LaunchTableRefusal.AtOrAboveBound (bound, bound)))
+
+            ProcessLaunch.create platform (Map.ofList [ -1, LaunchDescriptor.Drained ]) 0 (CpuId 0)
+            |> Result.map ignore
+            |> shouldEqual (Error (LaunchTableRefusal.NegativeDescriptor -1))

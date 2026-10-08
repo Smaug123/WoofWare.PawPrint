@@ -20,7 +20,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
             /// table: which open file description each descriptor names. The
             /// descriptions themselves are the machine's
             /// (`UnixMachineState.OpenFiles`). Seeded at startup from the launch
-            /// table `UnixSystem.initial` takes, as a real process inherits the
+            /// table `ProcessLaunch.create` takes, as a real process inherits the
             /// descriptors its launcher set up before `exec`. Every descriptor
             /// operation this library models routes through this table; the
             /// host's real fds are never used.
@@ -49,11 +49,11 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
             /// stale. That derivation is also what makes the path the **physical**
             /// one, every symlink resolved away, which is what `getcwd(3)` reports
             /// and so not necessarily the spelling a client passed to
-            /// `UnixBootImage.withFileSystemAndCurrentDirectory`.
+            /// `ProcessLaunch.withCurrentDirectory`.
             ///
-            /// Derived when the kernel is built, by the one setter that takes the
-            /// current directory and the filesystem together — so this is not a
-            /// knob a client may set on its own.
+            /// Resolved when the process is launched, against the filesystem of
+            /// the machine it is launched onto, which records the process as
+            /// standing in it (`UnixMachineState.CurrentDirectories`).
             ///
             /// Once a process can delete a directory, the inode outliving its own path
             /// is an ordinary state rather than a broken one: relative lookups keep
@@ -97,7 +97,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
             /// thread. Held at the width the platform's `umask(2)` stores
             /// (`SimulatedUnixPlatform.umaskStoredBits`): never above 0o777 on Linux.
             /// The process replaces it with `UnixSystem.umask`, and a client sets
-            /// the one it starts with using `UnixBootImage.withUmask`; both keep it at
+            /// the one it starts with using `ProcessLaunch.withUmask`; both keep it at
             /// that width.
             ///
             /// Deliberately *not* consulted for seed entries. A seed describes a
@@ -121,7 +121,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
             /// Whether the process writes a core dump when a signal whose default
             /// action dumps core kills it. Fixed for the whole run: this library
             /// models no `setrlimit(2)`; a client sets it once with
-            /// `UnixBootImage.withCoreDumps`.
+            /// `ProcessLaunch.withCoreDumps`.
             CoreDumps : CoreDumps
         }
 
@@ -174,23 +174,3 @@ module UnixProcessState =
         : SignalState<'Task, 'Handler>
         =
         proc.Signals
-
-    /// Every inode the process holds a reference to *directly*, independently
-    /// of any name the filesystem binds to it: its current directory. A process
-    /// that has `chdir`ed somewhere keeps that directory alive whether or not
-    /// its name outlives the call.
-    ///
-    /// The process's descriptors hold inodes only through the open file
-    /// descriptions they name, which are the machine's, so those are
-    /// `UnixMachineState.heldInodes`.
-    ///
-    /// Everything the process can *create* a reference with must appear here:
-    /// an omission makes a live inode look free, and freeing it leaves the
-    /// process standing in nothing. It is not what callers want, though — see
-    /// `ObjectLifetime.pinnedInodes`, which adds the machine's references and
-    /// those the *filesystem* holds on behalf of both.
-    let heldInodes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : Set<InodeNumber>
-        =
-        Set.singleton proc.CurrentDirectoryInode

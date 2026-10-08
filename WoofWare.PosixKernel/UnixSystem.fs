@@ -422,6 +422,27 @@ type UnixSystemDefect<'Task> =
     /// does not record as live, so one it fails to record could be handed to a
     /// second task, and one it records for no task is never handed out again.
     | LiveThreadIdsMismatch of withoutTask : Set<OsThreadId> * notRecorded : Set<OsThreadId>
+    /// The machine records as live the process IDs in `withoutProcess`, which
+    /// no process on it has, and does not record those in `notRecorded`, which
+    /// processes on it have. A new process is never given an ID the machine
+    /// records, so one it fails to record could be given to a second process.
+    | LiveProcessIdsMismatch of withoutProcess : Set<ProcessId> * notRecorded : Set<ProcessId>
+    /// The machine's process ID counter is not its flavour's: Darwin's own
+    /// counter on a Linux machine, which takes process IDs from its thread IDs,
+    /// or the other way about.
+    | ProcessIdCounterNotOfFlavour of flavour : SimulatedUnixFlavour * counter : ProcessIdCounter
+    /// On Darwin, a live process's ID is at or above the counter's next, so a
+    /// later process could be given it.
+    | ProcessIdNotBelowCounter of pid : ProcessId * next : int32
+    /// The machine records `recorded` processes standing in the directory
+    /// `inode` (`UnixMachineState.CurrentDirectories`), where `standing`
+    /// processes on it have it as their current directory. One too few lets a
+    /// removal by another process free a directory a process stands in.
+    | CurrentDirectoryHoldMismatch of inode : InodeNumber * recorded : int * standing : int
+    /// A kqueue is owned (`KqueueState.Owner`) by `owner`, which is no live
+    /// process on the machine. Its registrations name descriptors in that
+    /// process's table, which no longer exists.
+    | KqueueOwnerNotLive of kqueue : OpenFileDescriptionId * owner : ProcessId
     /// A live open file description names a pipe the pipe table does not hold.
     | DanglingPipe of description : OpenFileDescriptionId * pipe : PipeId
     /// The pipe table holds a pipe neither of whose ends is open: no live
@@ -464,20 +485,20 @@ type UnixSystemDefect<'Task> =
         flavour : SimulatedUnixFlavour
 
 /// Why the directory a host named cannot be the one a simulated process starts
-/// in. `UnixBootImage.withFileSystemAndCurrentDirectory` returns one instead of
-/// deciding what to say about it: the remedy is always "fix the knob you set
-/// this from", and only the caller knows what that knob is called.
+/// in (`ProcessLaunch.withCurrentDirectory`). Launching the process returns one
+/// instead of deciding what to say about it: the remedy is always "fix the
+/// knob you set this from", and only the caller knows what that knob is called.
 ///
 /// Every case is a host mistake rather than a process's, which is why none of
-/// them is a `UnixError`: there is no errno for "you seeded a filesystem that
-/// does not contain the directory you asked to start in", and answering ENOENT
-/// would blame a process's path when there is no process yet.
+/// them is a `UnixError`: there is no errno for "you launched a process in a
+/// directory the filesystem does not contain", and answering ENOENT would blame
+/// a process's path when there is no process yet.
 ///
-/// Three cases, and deliberately not five. The walk can also answer an inode
-/// the filesystem does not contain, or a directory it holds no path to — but
-/// not for a filesystem `toVirtualFileSystem` has just built and asserted the
-/// invariants of, so those are bugs in this library and crash here rather than
-/// being handed to a caller who could do nothing about them.
+/// Four cases, and deliberately not six. The walk could also answer an inode
+/// the filesystem does not contain, or a directory no path from the root
+/// reaches — but not for a filesystem whose invariants hold, walked from its
+/// root, so those are bugs in this library and crash rather than being handed
+/// to a caller who could do nothing about them.
 [<RequireQualifiedAccess>]
 type CurrentDirectoryFault =
     /// The path does not resolve in the seeded filesystem at all. Carries what
@@ -503,6 +524,13 @@ type CurrentDirectoryFault =
     | TooLong of SimulatedUnixFlavour
     /// The path resolves, to something that is not a directory.
     | NotADirectory
+    /// This kernel will not resolve the path.
+    | Path of PathRefusal
+
+/// Why `UnixBootImage.withFileSystem` refuses a seed: it describes a filesystem
+/// no kernel of the machine's flavour could have mounted.
+[<RequireQualifiedAccess>]
+type FileSystemSeedFault =
     /// The seed holds a directory entry whose name is past this flavour's
     /// `NAME_MAX`, so it describes a filesystem no kernel of that flavour could
     /// have mounted: `stat` of the name would answer ENAMETOOLONG while
@@ -517,8 +545,6 @@ type CurrentDirectoryFault =
     /// directory. The kernel mounts its device filesystem there at boot, and a
     /// mount over a populated directory would hide what it holds.
     | SeedCoversDeviceFileSystem of name : DirectoryEntryName
-    /// This kernel will not resolve the path.
-    | Path of PathRefusal
 
 [<RequireQualifiedAccess>]
 module UnixSystem =
@@ -995,11 +1021,27 @@ module UnixSystem =
     /// machine's counters, the thread ID allocator against every process's
     /// tasks, and the machine's filesystem type, buffer check and symbolic
     /// links against its platform.
-    let checkMachineInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let rec checkMachineInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (processes : (UnixProcessState<'Task, 'Handler> * Map<'Task, UnixTaskState>) list)
         (machine : UnixMachineState)
         : UnixSystemDefect<'Task> list
         =
+        machineDefects true processes machine
+
+    /// `checkMachineInvariants`, when `complete`; otherwise only the clauses
+    /// `processes`, some of the processes on the machine, can check truthfully:
+    /// every clause that counts or collects across every process (the holds on
+    /// descriptions, the live thread and process IDs, the current directory
+    /// holds) is skipped.
+    and internal machineDefects<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (complete : bool)
+        (processes : (UnixProcessState<'Task, 'Handler> * Map<'Task, UnixTaskState>) list)
+        (machine : UnixMachineState)
+        : UnixSystemDefect<'Task> list
+        =
+        let onlyIfComplete (defects : unit -> UnixSystemDefect<'Task> list) : UnixSystemDefect<'Task> list =
+            if complete then defects () else []
+
         let allTasks : ('Task * UnixTaskState) list =
             processes |> List.collect (fun (_, tasks) -> Map.toList tasks)
 
@@ -1313,27 +1355,30 @@ module UnixSystem =
         // one for each time a park names it. A park naming a description the
         // table does not hold is `ParkedOnAbsentDescription`'s.
         let holdCounts =
-            let implied =
-                allTasks
-                |> List.collect (fun (_, state) ->
-                    match state.Parked with
-                    | None -> []
-                    | Some park -> ParkedSyscall.descriptions park.Syscall
+            onlyIfComplete
+            <| fun () ->
+
+                let implied =
+                    allTasks
+                    |> List.collect (fun (_, state) ->
+                        match state.Parked with
+                        | None -> []
+                        | Some park -> ParkedSyscall.descriptions park.Syscall
+                    )
+                    |> List.countBy id
+                    |> Map.ofList
+
+                OpenFileTable.descriptions machine.OpenFiles
+                |> Map.toList
+                |> List.choose (fun (id, _) ->
+                    let recorded = OpenFileTable.holdCount id machine.OpenFiles |> Option.defaultValue 0
+                    let parks = Map.tryFind id implied |> Option.defaultValue 0
+
+                    if recorded = parks then
+                        None
+                    else
+                        Some (UnixSystemDefect.HoldCountMismatch (id, recorded, parks))
                 )
-                |> List.countBy id
-                |> Map.ofList
-
-            OpenFileTable.descriptions machine.OpenFiles
-            |> Map.toList
-            |> List.choose (fun (id, _) ->
-                let recorded = OpenFileTable.holdCount id machine.OpenFiles |> Option.defaultValue 0
-                let parks = Map.tryFind id implied |> Option.defaultValue 0
-
-                if recorded = parks then
-                    None
-                else
-                    Some (UnixSystemDefect.HoldCountMismatch (id, recorded, parks))
-            )
 
 
         let parkOrdinals =
@@ -1482,20 +1527,104 @@ module UnixSystem =
                 )
 
             let live =
-                let held = allTasks |> List.map (fun (_, state) -> state.OsThreadId) |> Set.ofList
-                let recorded = ThreadIdAllocator.live allocator
+                onlyIfComplete
+                <| fun () ->
 
-                if held = recorded then
-                    []
-                else
-                    [
-                        UnixSystemDefect.LiveThreadIdsMismatch (
-                            Set.difference recorded held,
-                            Set.difference held recorded
-                        )
-                    ]
+                    let held = allTasks |> List.map (fun (_, state) -> state.OsThreadId) |> Set.ofList
+                    let recorded = ThreadIdAllocator.live allocator
+
+                    if held = recorded then
+                        []
+                    else
+                        [
+                            UnixSystemDefect.LiveThreadIdsMismatch (
+                                Set.difference recorded held,
+                                Set.difference held recorded
+                            )
+                        ]
 
             allocatorFlavour @ duplicates @ unmintable @ live
+
+        // The process table against the processes: the counter is the
+        // flavour's, Darwin's is past every live ID, and the live IDs are the
+        // processes'.
+        let processIds =
+            let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+            let table = machine.ProcessIds
+
+            let counter =
+                match flavour, table.Counter with
+                | SimulatedUnixFlavour.Linux, ProcessIdCounter.ThreadIds -> []
+                | SimulatedUnixFlavour.Darwin, ProcessIdCounter.Darwin next ->
+                    table.Live
+                    |> Set.toList
+                    |> List.filter (fun pid -> ProcessId.toInt32 pid >= next)
+                    |> List.map (fun pid -> UnixSystemDefect.ProcessIdNotBelowCounter (pid, next))
+                | SimulatedUnixFlavour.Linux, ProcessIdCounter.Darwin _
+                | SimulatedUnixFlavour.Darwin, ProcessIdCounter.ThreadIds ->
+                    [ UnixSystemDefect.ProcessIdCounterNotOfFlavour (flavour, table.Counter) ]
+
+            let live =
+                onlyIfComplete
+                <| fun () ->
+
+                    let held = processes |> List.map (fun (proc, _) -> proc.ProcessId) |> Set.ofList
+
+                    let recorded = ProcessIdTable.live table
+
+                    if held = recorded then
+                        []
+                    else
+                        [
+                            UnixSystemDefect.LiveProcessIdsMismatch (
+                                Set.difference recorded held,
+                                Set.difference held recorded
+                            )
+                        ]
+
+            counter @ live
+
+        // The current directory holds against the processes standing in them.
+        let currentDirectories =
+            onlyIfComplete
+            <| fun () ->
+
+                let standing =
+                    processes
+                    |> List.countBy (fun (proc, _) -> proc.CurrentDirectoryInode)
+                    |> Map.ofList
+
+                Set.union (Map.keys standing |> Set.ofSeq) (Map.keys machine.CurrentDirectories |> Set.ofSeq)
+                |> Set.toList
+                |> List.choose (fun inode ->
+                    let recorded = Map.tryFind inode machine.CurrentDirectories |> Option.defaultValue 0
+                    let standing = Map.tryFind inode standing |> Option.defaultValue 0
+
+                    if recorded = standing then
+                        None
+                    else
+                        Some (UnixSystemDefect.CurrentDirectoryHoldMismatch (inode, recorded, standing))
+                )
+
+        // Every kqueue belongs to a live process, whose table its registrations
+        // are read in.
+        let kqueueOwners =
+            OpenFileTable.toSeq machine.OpenFiles
+            |> Seq.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.Kqueue state when
+                    not (Set.contains state.Owner (ProcessIdTable.live machine.ProcessIds))
+                    ->
+                    Some (UnixSystemDefect.KqueueOwnerNotLive (id, state.Owner))
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Epoll _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Pipe _ -> None
+            )
+            |> Seq.toList
 
 
         // The pipe table against the descriptions naming its pipes, and each
@@ -1655,6 +1784,9 @@ module UnixSystem =
         @ symlinkPermissions
         @ userBufferCheck
         @ threadIds
+        @ processIds
+        @ currentDirectories
+        @ kqueueOwners
         @ pipes
 
 
@@ -2099,8 +2231,14 @@ module UnixSystem =
 
 
     /// Every way this system's tables disagree with each other: the machine's
-    /// clauses (`checkMachineInvariants`), with this process as the only one on
-    /// the machine, and this process's view's (`checkViewInvariants`).
+    /// clauses (`checkMachineInvariants`) and this process's view's
+    /// (`checkViewInvariants`).
+    ///
+    /// On a machine holding other processes besides (a view a
+    /// `SimulatedMachine` focused), only the machine's clauses this one
+    /// process can check truthfully are run: those that count or collect
+    /// across every process are `SimulatedMachine.checkInvariants`'s, which
+    /// sees them all.
     ///
     /// Each table's own rules are elsewhere and are not repeated here:
     /// `FileDescriptorRegistry.checkInvariants` for the descriptor table and the
@@ -2116,7 +2254,10 @@ module UnixSystem =
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystemDefect<'Task> list
         =
-        checkMachineInvariants [ system.Process, system.Tasks ] system.Machine
+        let others =
+            Set.remove system.Process.ProcessId (ProcessIdTable.live system.Machine.ProcessIds)
+
+        machineDefects (Set.isEmpty others) [ system.Process, system.Tasks ] system.Machine
         @ checkViewInvariants system
 
     /// Logical-processor count a freshly-minted simulated process reports.
@@ -2156,7 +2297,7 @@ module UnixSystem =
     /// the honest answer for a simulation that declines to read the host's: a
     /// process nobody has told where it is claims nothing beyond the root. A
     /// client that wants a particular directory sets it with
-    /// `withFileSystemAndCurrentDirectory`.
+    /// `ProcessLaunch.withCurrentDirectory`.
     let defaultCurrentDirectory : AbsoluteUnixPath = AbsoluteUnixPath.root
 
     /// Executable path a freshly-minted simulated process reports: none at all.
@@ -2170,7 +2311,7 @@ module UnixSystem =
     /// executable before first asking for its path.
     ///
     /// A client that wants a particular executable sets it with
-    /// `UnixBootImage.withProcessPath`.
+    /// `ProcessLaunch.withProcessPath`.
     let defaultProcessPath : AbsoluteUnixPath option = None
 
     /// The range `bind(2)` draws from when asked for port 0, on a machine of
@@ -2210,7 +2351,7 @@ module UnixSystem =
     /// Instead the first interactive user each flavour creates: 1000 on the
     /// Ubuntu-shaped Linux, and 501 on macOS (measured, `id -u` of the first
     /// account on a macOS 26 machine, 2026-09-08). A client that wants root says
-    /// so with `UnixBootImage.withCredentials`.
+    /// so with `ProcessLaunch.withCredentials`.
     let defaultUserId (flavour : SimulatedUnixFlavour) : UserId =
         match flavour with
         | SimulatedUnixFlavour.Linux -> UserId.parseOrFail "UnixSystem.defaultUserId" 1000u
@@ -2235,7 +2376,7 @@ module UnixSystem =
     /// manager sets, and because it is the mask the existing seed defaults were
     /// written against (`SeedEntry.defaultPermsForRegularFile` is 0o666 with
     /// these bits cleared). Measured as the mask a process inherits on both
-    /// flavours. A client chooses otherwise with `UnixBootImage.withUmask`, and
+    /// flavours. A client chooses otherwise with `ProcessLaunch.withUmask`, and
     /// the process itself with `umask`.
     let defaultUmask : PermissionBits =
         PermissionBits.parseOrFail "UnixSystem.defaultUmask" 0o022
@@ -2244,7 +2385,7 @@ module UnixSystem =
     /// signal kills it: never, as under an `RLIMIT_CORE` of 0. A dump is a
     /// file the simulated process would leave behind, which a client has to
     /// ask for. A client chooses otherwise with
-    /// `UnixBootImage.withCoreDumps`.
+    /// `ProcessLaunch.withCoreDumps`.
     let defaultCoreDumps : CoreDumps = CoreDumps.Suppressed
 
     /// Process ID a freshly-minted simulated process reports: 4242.
@@ -2304,22 +2445,15 @@ module UnixSystem =
                 2, LaunchDescriptor.Drained
             ]
 
-    /// The boot image of a simulated process on a machine of the given platform:
-    /// no sockets, no connections, an empty filesystem, and only the
-    /// descriptors `launch` gives it open. Configure it with the setters in
-    /// `UnixBootImage`, then `UnixBootImage.boot` it for its first syscall.
+    /// The boot image of a machine of the given platform: no processes, no
+    /// sockets, no connections, and an empty filesystem. Configure it with the
+    /// setters in `UnixBootImage`, then `UnixBootImage.boot` it, which launches
+    /// its first process, for its first syscall.
     ///
-    /// Each entry of `launch` is a descriptor the launcher set up before the
-    /// process started, at that number: a pipe end of its own, whose other end
-    /// is the client's, as the entry says (see `LaunchDescriptor`). The pipes
-    /// are the first the machine makes, in descriptor order. A launch table
-    /// naming a negative descriptor, or one at or above the bound
-    /// (`SimulatedUnixPlatform.descriptorBound`), is refused.
-    ///
-    /// It has one task, `leader`, on the logical processor `leaderCpu`. The
-    /// leader's thread ID is the process ID, `defaultProcessId`: on Linux because
-    /// it always is, and on Darwin as the start of a quiet machine's counter,
-    /// which a client moves with `UnixBootImage.withLeaderThreadId`.
+    /// The first process's ID is `defaultProcessId`, and so is its leader's
+    /// thread ID: on Linux because it always is, and on Darwin as the start of a
+    /// quiet machine's counter. A client moves them with
+    /// `UnixBootImage.withProcessId` and `UnixBootImage.withLeaderThreadId`.
     ///
     /// The fields the platform *fixes* are derived from it rather than
     /// taken as arguments — `SoMaxConn`, the TCP buffer sysctls, `Mount`, and the platform
@@ -2329,19 +2463,15 @@ module UnixSystem =
     /// by hand is what lets that state exist, so the constructor is also the
     /// rule.
     ///
-    /// The ephemeral port range and the process identity are the flavour's
-    /// shipped defaults too, though a host may set either: they are what a
-    /// default machine of that flavour reports, not facts of its kernel image.
-    /// The buffer check is the platform's default too, though its limit is a
-    /// property of the machine's paging depth rather than of its kernel. All of
-    /// these are configuration a caller overrides with the setters in
-    /// `UnixBootImage`, which is also how a caller supplies a non-empty
-    /// filesystem or a different address list.
+    /// The ephemeral port range is the flavour's shipped default too, though a
+    /// host may set it: it is what a default machine of that flavour reports,
+    /// not a fact of its kernel image. The buffer check is the platform's
+    /// default too, though its limit is a property of the machine's paging
+    /// depth rather than of its kernel. All of these are configuration a
+    /// caller overrides with the setters in `UnixBootImage`, which is also how
+    /// a caller supplies a non-empty filesystem or a different address list.
     let initial<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (platform : SimulatedUnixPlatform)
-        (launch : Map<int, LaunchDescriptor>)
-        (leader : 'Task)
-        (leaderCpu : CpuId)
         : UnixBootImage<'Task, 'Handler>
         =
         // `SimulatedUnixPlatform.create` validates at construction, so a value
@@ -2353,8 +2483,6 @@ module UnixSystem =
 
         let deviceMount = DeviceFileSystemMount.defaultFor flavour
 
-        // Bound once so that `CurrentDirectoryInode` is the root of *this*
-        // filesystem rather than of a second one that merely looks like it.
         let filesystem =
             let bootTime = UnixTimestamp.ofMillisecondsSinceEpoch 0L
 
@@ -2367,97 +2495,58 @@ module UnixSystem =
                 failwith
                     $"UnixSystem.initial: mounting the device filesystem over an empty root failed with %A{fault} (this is a bug in this library)."
 
-        let leaderThreadId, threadIds =
+        let threadIds, processIds =
             match flavour with
             | SimulatedUnixFlavour.Linux ->
                 ThreadIdAllocator.startLinux "UnixSystem.initial" defaultPidMax defaultProcessId
+                |> snd,
+                ProcessIdTable.linux
             | SimulatedUnixFlavour.Darwin ->
                 ThreadIdAllocator.startDarwin "UnixSystem.initial" (uint64 (ProcessId.toInt32 defaultProcessId))
-
-        // One pipe per launch descriptor, numbered in descriptor order from the
-        // first pipe the machine makes.
-        let launched =
-            launch
-            |> Map.toList
-            |> List.mapi (fun index (fd, descriptor) ->
-                if fd < 0 then
-                    failwith
-                        $"UnixSystem.initial: the launch table names descriptor %d{fd}, which is negative; no process has a descriptor below 0."
-
-                if fd >= SimulatedUnixPlatform.descriptorBound platform then
-                    failwith
-                        $"UnixSystem.initial: the launch table names descriptor %d{fd}, at or above the bound %d{SimulatedUnixPlatform.descriptorBound platform} this kernel assumes the process's RLIMIT_NOFILE reaches; it hands out no descriptor there."
-
-                let pipeId = PipeId (int64 index)
-                let pipe, pipeEnd = PipeState.launch platform defaultProcessId fd descriptor
-                fd, pipeId, pipeEnd, pipe
-            )
-
-        let launchedDescriptors =
-            FileDescriptorRegistry.ofLaunchedPipes
-                (launched
-                 |> List.map (fun (fd, pipeId, pipeEnd, _) -> fd, (pipeId, pipeEnd))
-                 |> Map.ofList)
-                OpenFileTable.empty
+                |> snd,
+                ProcessIdTable.darwinAfter defaultProcessId
 
         {
-            System =
+            Machine =
                 {
-                    Machine =
-                        {
-                            OpenFiles = FileDescriptorRegistry.openFiles launchedDescriptors
-                            Sockets = Map.empty
-                            Pipes = launched |> List.map (fun (_, pipeId, _, pipe) -> pipeId, pipe) |> Map.ofList
-                            NextPipeId = PipeId (int64 (List.length launched))
-                            Delivered = DeliveryLog.empty
-                            // Any start would do; one, because no filesystem hands out
-                            // inode 0.
-                            NextPipeInode = InodeNumber 1L
-                            PipeDevice = UnixMachineState.defaultPipeDevice flavour
-                            Connections = Map.empty
-                            NextConnectionId = ConnectionId 0L
-                            NextEventRegistrationOrdinal = 0L
-                            NextParkOrdinal = ParkOrdinal 0L
-                            ThreadIds = threadIds
-                            NextSocketId = SocketId 0L
-                            NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
-                            EphemeralPortRange = defaultEphemeralPortRange flavour
-                            SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
-                            TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
-                            Ipv6OnlyByDefault = false
-                            TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace flavour
-                            TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax flavour
-                            LocalAddresses = defaultLocalAddresses
-                            LocalRoutes = defaultLocalRoutes
-                            NanosecondsSinceBoot = 0L
-                            BootTime = UnixTimestamp.epoch
-                            EntropyPool = EntropyPool.ofSeed defaultEntropySeed
-                            ProcessorCount = defaultProcessorCount
-                            UserBufferCheck = defaultUserBufferCheck platform
-                            UnixPlatform = platform
-                            FileSystem = filesystem
-                            Mount = EmulatedMount.defaultFor flavour
-                            DeviceMount = deviceMount
-                            ProtectedFiles = ProtectedFiles.off
-                        }
-                    Process =
-                        {
-                            FileDescriptors = FileDescriptorRegistry.descriptorTable launchedDescriptors
-                            Environment = []
-                            // The default current directory is the root, which every filesystem
-                            // has and no operation can remove, so the pair starts consistent
-                            // whatever else a host goes on to set.
-                            CurrentDirectoryInode = VirtualFileSystem.root filesystem
-                            ProcessPath = defaultProcessPath
-                            Credentials = defaultCredentials flavour
-                            Umask = defaultUmask
-                            ProcessId = defaultProcessId
-                            Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform) Set.empty
-                            CoreDumps = defaultCoreDumps
-                        }
-                    Tasks = UnixTaskTable.add leader leaderCpu leaderThreadId Map.empty
-                    Leader = leader
+                    OpenFiles = OpenFileTable.empty
+                    Sockets = Map.empty
+                    Pipes = Map.empty
+                    NextPipeId = PipeId 0L
+                    Delivered = DeliveryLog.empty
+                    // Any start would do; one, because no filesystem hands out
+                    // inode 0.
+                    NextPipeInode = InodeNumber 1L
+                    PipeDevice = UnixMachineState.defaultPipeDevice flavour
+                    Connections = Map.empty
+                    NextConnectionId = ConnectionId 0L
+                    NextEventRegistrationOrdinal = 0L
+                    NextParkOrdinal = ParkOrdinal 0L
+                    ThreadIds = threadIds
+                    ProcessIds = processIds
+                    CurrentDirectories = Map.empty
+                    NextSocketId = SocketId 0L
+                    NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
+                    EphemeralPortRange = defaultEphemeralPortRange flavour
+                    SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
+                    TcpSendSpace = UnixMachineState.defaultTcpSendSpace flavour
+                    Ipv6OnlyByDefault = false
+                    TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace flavour
+                    TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax flavour
+                    LocalAddresses = defaultLocalAddresses
+                    LocalRoutes = defaultLocalRoutes
+                    NanosecondsSinceBoot = 0L
+                    BootTime = UnixTimestamp.epoch
+                    EntropyPool = EntropyPool.ofSeed defaultEntropySeed
+                    ProcessorCount = defaultProcessorCount
+                    UserBufferCheck = defaultUserBufferCheck platform
+                    UnixPlatform = platform
+                    FileSystem = filesystem
+                    Mount = EmulatedMount.defaultFor flavour
+                    DeviceMount = deviceMount
+                    ProtectedFiles = ProtectedFiles.off
                 }
+            ProcessId = defaultProcessId
         }
 
     /// The machine's administrator writes Linux's `kernel.pid_max` sysctl

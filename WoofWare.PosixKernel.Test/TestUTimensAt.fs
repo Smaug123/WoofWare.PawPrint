@@ -263,21 +263,20 @@ module TestUTimensAt =
             |> Map.ofList
 
         let image : UnixBootImage<int, string> =
-            UnixSystem.initial caller.Platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context Owners.root
+            UnixSystem.initial caller.Platform
             |> UnixBootImage.withBootTime bootTime
             |> Configured.expectOk BootTimeRefusal.describe
 
         let system =
-            match
-                UnixBootImage.withFileSystemAndCurrentDirectory
-                    bootTime
-                    (ownedBy 0u 0u)
-                    seed
-                    (AbsoluteUnixPath.parseOrFail context "/c/w")
+            match UnixBootImage.withFileSystem bootTime (ownedBy 0u 0u) seed image with
+            | Ok image ->
+                Launched.bootWith
+                    (Launched.credentials Owners.root
+                     >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/c/w"))
+                    UnixSystem.pipedStandardStreams
+                    0
+                    (CpuId 0)
                     image
-            with
-            | Ok image -> UnixBootImage.boot image
             | Error fault -> failwith $"%s{context}: could not build the probe's cell: %A{fault}"
 
         // Each object's initial times, as the probe's owner set them. Darwin
@@ -1276,10 +1275,10 @@ module TestUTimensAt =
             let atFdCwd = atFdCwd caller
 
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+                UnixSystem.initial platform
                 |> UnixBootImage.withMount (Some EmulatedMount.Nfs)
                 |> Configured.expectOk MountRefusal.describe
-                |> UnixBootImage.boot
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let file, system =
                 opened

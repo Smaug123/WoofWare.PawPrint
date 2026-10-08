@@ -574,8 +574,8 @@ module SocketFuzz =
         let mutable state =
             {
                 Kernel =
-                    UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                    |> UnixBootImage.boot
+                    UnixSystem.initial SimulatedUnixPlatform.linuxX64
+                    |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
                 SlotFd = Map.empty
                 NextListenerPort = listenerPortBase
             }

@@ -199,8 +199,8 @@ module TestTcpTransferMeasured =
             | SimulatedUnixFlavour.Darwin -> SimulatedUnixPlatform.macOsArm64
 
         let system =
-            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         TcpBufferSizing.newTransfer SocketDomain.Inet system.Machine
 

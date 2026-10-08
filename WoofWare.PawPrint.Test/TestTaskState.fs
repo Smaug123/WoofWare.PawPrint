@@ -43,8 +43,12 @@ module TestTaskState =
         (bare ())
             .MapKernel (fun _ ->
                 EmulatedKernel.initialImage
-                |> UnixBootImage.withProcessorCount 4
-                |> Result.defaultWith (fun refusal -> failwith $"test bug: %s{ProcessorCountRefusal.describe refusal}")
+                |> KernelImage.mapMachine (fun image ->
+                    UnixBootImage.withProcessorCount 4 image
+                    |> Result.defaultWith (fun refusal ->
+                        failwith $"test bug: %s{ProcessorCountRefusal.describe refusal}"
+                    )
+                )
                 |> EmulatedKernel.boot
             )
 
@@ -428,7 +432,7 @@ module TestTaskState =
         let exn =
             Assert.Throws<exn> (fun () ->
                 UnixTaskLifecycle.spawn (ThreadId 0) thread (CpuId 3) state.Kernel.System
-                |> ignore<Result<OsThreadId * UnixSystem<ThreadId, NativeSignalHandler>, UnixError>>
+                |> ignore<Result<SpawnAnswer * UnixSystem<ThreadId, NativeSignalHandler>, SpawnRefusal<ThreadId>>>
             )
 
         exn.Message |> shouldContainText "already names a task"

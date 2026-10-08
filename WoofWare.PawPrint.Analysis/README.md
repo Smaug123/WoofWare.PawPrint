@@ -125,7 +125,7 @@ lets the analysis take a contract in place of a method's body, and each answer l
 escaping could come from, so that without them the answer could be "unknown". It may also list one
 that a handler in a method this one calls made unnecessary, since a callee's answer records only
 that it relied on the assumption. Allowed none, every
-answer follows from the code alone. There is one so far:
+answer follows from the code alone. There are two so far:
 
 * `CoreLibResourceLookup`: CoreLib's lookup of its own resource strings,
   `SR.InternalGetResourceString`, which gives every CoreLib exception its message, raises only
@@ -139,6 +139,16 @@ answer follows from the code alone. There is one so far:
   there: CoreCLR runs none for CoreLib's own satellite assembly. Without this assumption,
   constructing almost any CoreLib exception is "unknown", because the lookup reaches culture data,
   formatting, collections, event tracing and reflection.
+* `NamedTypesLoad`: every type that the metadata of a loaded type names loads. The assembly that
+  defines it is found without running the program's `AssemblyResolve` or `Resolving` handlers, is
+  intact, and defines the type as named. So CoreCLR's native code for listing a generic parameter's
+  constraints (the QCall `RuntimeTypeHandle_GetConstraints`, which loads each constraint's type)
+  raises only `ArgumentException` (for a type that is not a generic parameter),
+  `OutOfMemoryException` and `StackOverflowException`. The runtime makes that `ArgumentException`
+  with its parameterless constructor, which looks up its message, so the analysis follows that
+  constructor too: without `CoreLibResourceLookup`, the answer is still "unknown". `RuntimeType`
+  asks for the constraints whenever it works out a generic parameter's base type, so without this
+  assumption, comparing `Type`s or asking whether one is a value type is "unknown".
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set

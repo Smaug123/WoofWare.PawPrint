@@ -6,13 +6,15 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// `EmulatedKernel.withFileSystemAndCurrentDirectory`, which is the wrapper
-/// around `UnixBootImage.withFileSystemAndCurrentDirectory`: that it threads its
-/// arguments through rather than reading the kernel's own fields, and what a
-/// host that misconfigures the two knobs is told.
+/// `EmulatedKernel.withFileSystemAndCurrentDirectory`, which sets the machine's
+/// filesystem (`UnixBootImage.withFileSystem`) and the directory the process
+/// starts in (`ProcessLaunch.withCurrentDirectory`), and `EmulatedKernel.boot`,
+/// which resolves the one in the other: that they thread their arguments
+/// through rather than reading the kernel's own fields, and what a host that
+/// misconfigures the two knobs is told.
 ///
 /// The messages are the reason these rows are here rather than in the library.
-/// The library answers a `CurrentDirectoryFault`, deliberately saying nothing
+/// The library answers a `FileSystemSeedFault` or a `CurrentDirectoryFault`, deliberately saying nothing
 /// about `KernelConfig`, which it cannot see; turning each case into advice
 /// naming the field the host actually set is this wrapper's whole job, and
 /// `TestWithFileSystemAndCurrentDirectory` covers everything underneath it.

@@ -140,20 +140,17 @@ module internal FcntlWorld =
                     )
                 ]
 
-        let image : UnixBootImage<int, string> =
-            UnixSystem.initial run.Platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withCredentials context run.Caller
+        let image : UnixBootImage<int, string> = UnixSystem.initial run.Platform
 
-        match
-            UnixBootImage.withFileSystemAndCurrentDirectory
-                (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
-                root
-                seed
-                (AbsoluteUnixPath.parseOrFail context "/w")
-                image
-        with
+        match UnixBootImage.withFileSystem (UnixTimestamp.ofMillisecondsSinceEpoch 0L) root seed image with
         | Ok image ->
-            UnixBootImage.boot image
+            (Launched.bootWith
+                (Launched.credentials run.Caller
+                 >> ProcessLaunch.withCurrentDirectory (AbsoluteUnixPath.parseOrFail context "/w"))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0))
+                image
             |> fun system -> ([ 1..3 ], system) ||> List.foldBack Tasks.ensure
         | Error fault -> failwith $"could not build the system: %A{fault}"
 

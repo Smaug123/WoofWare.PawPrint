@@ -46,14 +46,13 @@ module TestEphemeralPorts =
     /// A fresh system whose ephemeral range is `low..high`, so that the
     /// allocator wraps within a test.
     let private systemOn (platform : SimulatedUnixPlatform) (low : uint16, high : uint16) : UnixSystem<int, string> =
-        let system : UnixBootImage<int, string> =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        let system : UnixBootImage<int, string> = UnixSystem.initial platform
 
 
         system
         |> UnixBootImage.withEphemeralPortRange (low, high)
         |> Configured.expectOk EphemeralPortRangeRefusal.describe
-        |> UnixBootImage.boot
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private newStream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system

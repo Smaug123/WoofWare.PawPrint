@@ -167,14 +167,17 @@ module TestOpenFlagsPal =
     let ``the kernel answers every word the shim can pass`` () : unit =
         for platform in platforms do
             let system : UnixSystem<int, string> =
-                UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.withCredentials
-                    "TestOpenFlagsPal"
-                    (Credentials.ofIds
-                        (UserId.parseOrFail "TestOpenFlagsPal" 1000u)
-                        (GroupId.parseOrFail "TestOpenFlagsPal" 1000u)
-                        [])
-                |> UnixBootImage.boot
+                UnixSystem.initial platform
+                |> (Launched.bootWith
+                        (Launched.credentials (
+                            Credentials.ofIds
+                                (UserId.parseOrFail "TestOpenFlagsPal" 1000u)
+                                (GroupId.parseOrFail "TestOpenFlagsPal" 1000u)
+                                []
+                        ))
+                        UnixSystem.pipedStandardStreams
+                        0
+                        (CpuId 0))
 
             let words =
                 [

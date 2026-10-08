@@ -1,7 +1,47 @@
 namespace WoofWare.PosixKernel
 
+/// Where a process's view of a `SimulatedMachine` was taken from: the machine
+/// and the process's own state as they stood, which `SimulatedMachine.unfocus`
+/// requires to be the machine's still, so that a view whose copy of the
+/// machine is stale, or of another history of it, is refused rather than
+/// written back over a change it never saw.
+///
+/// Compared by identity rather than by content, both by `unfocus` and as part
+/// of a `UnixSystem`'s equality: two views are views of the same state when
+/// they were taken from the same values. A system no machine has focused is
+/// `NotFocused`, so equality between such systems is unaffected.
+[<CustomEquality ; NoComparison>]
+type internal FocusOrigin<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    | NotFocused
+    | FocusedFrom of
+        machine : UnixMachineState *
+        proc : UnixProcessState<'Task, 'Handler> *
+        tasks : Map<'Task, UnixTaskState>
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? FocusOrigin<'Task, 'Handler> as other ->
+            match this, other with
+            | NotFocused, NotFocused -> true
+            | FocusedFrom (machine, proc, tasks), FocusedFrom (machine', proc', tasks') ->
+                obj.ReferenceEquals (machine, machine')
+                && obj.ReferenceEquals (proc, proc')
+                && obj.ReferenceEquals (tasks, tasks')
+            | NotFocused, FocusedFrom _
+            | FocusedFrom _, NotFocused -> false
+        | _ -> false
+
+    override this.GetHashCode () : int =
+        match this with
+        | NotFocused -> 0
+        | FocusedFrom _ -> 1
+
 /// Everything one simulated POSIX process is, as a syscall sees it: the machine
 /// it runs on, its own per-process state, and its tasks.
+///
+/// On a `SimulatedMachine` holding several processes, this is one process's
+/// view of it (`SimulatedMachine.focus`): it holds no other process, so no
+/// syscall can reach one.
 ///
 /// Generic in what names a task and what a signal handler is, for the same
 /// reason `SignalState` is: those are the client's identities and this library
@@ -23,6 +63,9 @@ type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
             /// (`UnixTaskLifecycle.exitThread` refuses that), so it is a task for as
             /// long as the process is running. On Linux its thread ID is the process ID.
             Leader : 'Task
+            /// Where this view was taken from, if a `SimulatedMachine` focused
+            /// it; see `FocusOrigin`.
+            Origin : FocusOrigin<'Task, 'Handler>
         }
 
 /// Reading and writing a `UnixSystem`'s process's descriptor table together
@@ -137,16 +180,22 @@ module internal UnixParkState =
             Tasks = UnixTaskTable.unpark task system.Tasks
         }
 
-/// A simulated process and the machine it runs on before either has run: what
-/// `UnixSystem.initial` makes, which the setters in `UnixBootImage` configure
-/// and `UnixBootImage.boot` turns into the `UnixSystem` that syscalls take.
+/// A simulated machine before it has booted, with the ID its first process
+/// will have: what `UnixSystem.initial` makes, which the setters in
+/// `UnixBootImage` configure and `UnixBootImage.boot` turns, by launching that
+/// first process (`ProcessLaunch`), into the `UnixSystem` that syscalls take.
 ///
-/// Opaque, so that the only way to the system inside it is `boot`, after which
-/// no setter applies.
+/// Generic in the task and handler types of the system it boots into.
+///
+/// Opaque, so that the only way to a system from it is `boot`, after which no
+/// setter applies.
 type UnixBootImage<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     internal
         {
-            System : UnixSystem<'Task, 'Handler>
+            Machine : UnixMachineState
+            /// The ID the first process gets. The machine's thread ID allocator
+            /// already holds its leader's thread ID as its one live ID.
+            ProcessId : ProcessId
         }
 
 /// What the entry point returns, for a request this kernel could answer.

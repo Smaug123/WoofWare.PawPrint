@@ -47,8 +47,8 @@ module TestSocketOptions =
             Option.get (SimulatedUnixPlatform.lingerSecondsOption platform)
 
     let private fresh (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private socketOf
         (domain : SocketDomain)
@@ -150,9 +150,9 @@ module TestSocketOptions =
     [<TestCaseSource(nameof platforms)>]
     let ``a new IPv6 socket takes IPV6_V6ONLY from the machine's sysctl`` (platform : SimulatedUnixPlatform) : unit =
         let system =
-            UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            UnixSystem.initial platform
             |> UnixBootImage.withIpv6OnlyByDefault true
-            |> UnixBootImage.boot
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let tcp6, system = socketOf SocketDomain.Inet6 SocketKind.Stream system
         let udp6, system = socketOf SocketDomain.Inet6 SocketKind.Datagram system

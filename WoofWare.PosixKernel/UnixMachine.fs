@@ -66,6 +66,21 @@ type UnixMachineState =
             /// process). `UnixSystem.checkInvariants` holds the live ids to the
             /// tasks'.
             ThreadIds : ThreadIdAllocator
+            /// Where the next process's ID comes from, and the ID of every
+            /// process on the machine: see `ProcessIdTable`. A process joins it
+            /// when it is launched (`UnixBootImage.boot`, `SimulatedMachine.launch`)
+            /// and leaves it when it ends.
+            ProcessIds : ProcessIdTable
+            /// For each directory some process stands in, how many processes
+            /// do: the reference a current directory holds on its inode.
+            ///
+            /// The machine's rather than read off each process, because a
+            /// directory one process stands in must outlive a removal by
+            /// another, and a process's view cannot see the other processes. A
+            /// launch takes a hold on the process's starting directory, `chdir`
+            /// moves one, and the process's end lets its own go. An inode no
+            /// process stands in has no entry.
+            CurrentDirectories : Map<InodeNumber, int>
             /// The port a `bind(2)` of port 0 will try first.
             ///
             /// A counter rather than a draw from the seeded PRNG. Which port an
@@ -224,7 +239,7 @@ type UnixMachineState =
             /// The simulated process's filesystem: every inode a process can reach
             /// through the path syscalls.
             ///
-            /// Set by `UnixBootImage.withFileSystemAndCurrentDirectory`, and changed by
+            /// Set by `UnixBootImage.withFileSystem`, and changed by
             /// the syscalls that write, create or truncate. It is emulated kernel
             /// state rather than anything read from the host, for the usual reason:
             /// a filesystem read from the host would make a replay depend on the
@@ -429,17 +444,17 @@ module UnixMachineState =
         || OpenFileTable.toSeq machine.OpenFiles
            |> Seq.exists (fun (_, description) -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
 
-    /// Every inode the machine's open file descriptions hold a reference to
-    /// *directly*, independently of any name the filesystem binds to it: each
-    /// one onto a file, a directory or a device's node.
+    /// Every inode something on the machine holds a reference to *directly*,
+    /// independently of any name the filesystem binds to it: each open file
+    /// description onto a file, a directory or a device's node, and each
+    /// directory some process stands in (`CurrentDirectories`).
     ///
     /// A real kernel keeps an inode alive while any reference survives. Every
-    /// kind of description that can *create* a reference must appear here: an
-    /// omission makes a live inode look free, and freeing it leaves a
-    /// descriptor pointing at nothing. It is not what callers want, though —
-    /// see `ObjectLifetime.pinnedInodes`, which adds each process's own
-    /// references (`UnixProcessState.heldInodes`) and those the *filesystem*
-    /// holds on behalf of both.
+    /// kind of reference a process can *create* must appear here: an omission
+    /// makes a live inode look free, and freeing it leaves a descriptor, or a
+    /// process standing in it, pointing at nothing. It is not what callers
+    /// want, though — see `ObjectLifetime.pinnedInodes`, which adds those the
+    /// *filesystem* holds on behalf of these.
     let heldInodes (machine : UnixMachineState) : Set<InodeNumber> =
         OpenFileTable.toSeq machine.OpenFiles
         |> Seq.choose (fun (_, description) ->
@@ -453,6 +468,31 @@ module UnixMachineState =
             | OpenFileTarget.Pipe _ -> None
         )
         |> Set.ofSeq
+        |> Set.union (machine.CurrentDirectories |> Map.keys |> Set.ofSeq)
+
+    /// `machine` with one more process standing in `inode`.
+    let internal holdCurrentDirectory (inode : InodeNumber) (machine : UnixMachineState) : UnixMachineState =
+        let count = Map.tryFind inode machine.CurrentDirectories |> Option.defaultValue 0
+
+        { machine with
+            CurrentDirectories = Map.add inode (count + 1) machine.CurrentDirectories
+        }
+
+    /// `machine` with one process fewer standing in `inode`. Loudly partial on
+    /// an inode no process stands in.
+    let internal releaseCurrentDirectory (inode : InodeNumber) (machine : UnixMachineState) : UnixMachineState =
+        match Map.tryFind inode machine.CurrentDirectories with
+        | None ->
+            failwith
+                $"UnixMachineState.releaseCurrentDirectory: no process stands in inode %O{inode} (this is a bug in this library)."
+        | Some 1 ->
+            { machine with
+                CurrentDirectories = Map.remove inode machine.CurrentDirectories
+            }
+        | Some count ->
+            { machine with
+                CurrentDirectories = Map.add inode (count - 1) machine.CurrentDirectories
+            }
 
     /// The pipe `pipeId` names.
     ///

@@ -91,13 +91,46 @@ module TestArchitectureFacts =
                 |> Gen.map (fun s -> if isNull s then "" else s)
             ]
 
-    let private combinationGen : Gen<SimulatedUnixFlavour * SimulatedUnixArchitecture * SimulatedPageSize * string> =
+    /// A kernel of `flavour`. Every Linux version is one `create` admits, so the
+    /// version is generated freely.
+    let private kernelGen (flavour : SimulatedUnixFlavour) : Gen<SimulatedUnixKernel> =
+        match flavour with
+        | SimulatedUnixFlavour.Darwin -> Gen.constant SimulatedUnixKernel.Darwin
+        | SimulatedUnixFlavour.Linux ->
+            gen {
+                let! major = ArbMap.defaults |> ArbMap.generate<uint32>
+                let! minor = ArbMap.defaults |> ArbMap.generate<uint32>
+                let! patch = ArbMap.defaults |> ArbMap.generate<uint32>
+
+                return
+                    SimulatedUnixKernel.Linux
+                        {
+                            Major = major
+                            Minor = minor
+                            Patch = patch
+                        }
+            }
+
+    /// The kernel of `flavour` the admission tables are asked about.
+    let private kernelOf (flavour : SimulatedUnixFlavour) : SimulatedUnixKernel =
+        match flavour with
+        | SimulatedUnixFlavour.Darwin -> SimulatedUnixKernel.Darwin
+        | SimulatedUnixFlavour.Linux ->
+            SimulatedUnixKernel.Linux
+                {
+                    Major = 6u
+                    Minor = 18u
+                    Patch = 5u
+                }
+
+    let private combinationGen : Gen<SimulatedUnixKernel * SimulatedUnixArchitecture * SimulatedPageSize * string> =
         gen {
             let! flavour = Gen.elements flavours
+            let! kernel = kernelGen flavour
             let! architecture = Gen.elements architectures
             let! pageSize = Gen.elements pageSizes
             let! release = releaseGen
-            return flavour, architecture, pageSize, release
+            return kernel, architecture, pageSize, release
         }
 
     let private releaseIsValid (release : string) : bool =
@@ -111,7 +144,7 @@ module TestArchitectureFacts =
             for flavour in flavours do
                 for architecture in architectures do
                     for pageSize in pageSizes do
-                        match SimulatedUnixPlatform.create flavour architecture pageSize "6.18.5" with
+                        match SimulatedUnixPlatform.create (kernelOf flavour) architecture pageSize "6.18.5" with
                         | Ok platform -> yield platform
                         | Error _ -> ()
         ]
@@ -120,11 +153,14 @@ module TestArchitectureFacts =
     let ``every measured kernel is admitted, and nothing else is`` () : unit =
         admittedPlatforms |> List.length |> shouldEqual (List.length measuredKernels)
 
-        let property (flavour, architecture, pageSize, release) : unit =
-            match SimulatedUnixPlatform.create flavour architecture pageSize release with
+        let property (kernel, architecture, pageSize, release) : unit =
+            let flavour = SimulatedUnixKernel.flavour kernel
+
+            match SimulatedUnixPlatform.create kernel architecture pageSize release with
             | Ok platform ->
                 releaseIsValid release |> shouldEqual true
                 isMeasured flavour architecture pageSize |> shouldEqual true
+                SimulatedUnixPlatform.kernel platform |> shouldEqual kernel
                 SimulatedUnixPlatform.flavour platform |> shouldEqual flavour
                 SimulatedUnixPlatform.architecture platform |> shouldEqual architecture
                 SimulatedUnixPlatform.pageSize platform |> shouldEqual pageSize
@@ -159,7 +195,7 @@ module TestArchitectureFacts =
     let ``page sizes and getrandom's cap agree with the measured table`` () : unit =
         for (flavour, architecture, pageSize), pageBytes, maxTransfer in measuredKernels do
             let platform =
-                SimulatedUnixPlatform.createOrFail "test" flavour architecture pageSize "6.18.5"
+                SimulatedUnixPlatform.createOrFail "test" (kernelOf flavour) architecture pageSize "6.18.5"
 
             SimulatedPageSize.bytes (SimulatedUnixPlatform.pageSize platform)
             |> shouldEqual pageBytes
@@ -206,8 +242,8 @@ module TestArchitectureFacts =
     let ``no machine mixes one architecture's address limit with another's`` () : unit =
         for platform, expected in presetChecks do
             let system =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial<int, string> platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             UnixMachineState.userBufferCheck system.Machine |> shouldEqual expected
             UnixSystem.checkInvariants system |> shouldEqual []
@@ -221,8 +257,7 @@ module TestArchitectureFacts =
                 ]
 
         let property (platform : SimulatedUnixPlatform, limit : uint64) : unit =
-            let image =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            let image = UnixSystem.initial<int, string> platform
 
             let flavour = SimulatedUnixPlatform.flavour platform
             let architecture = SimulatedUnixPlatform.architecture platform
@@ -247,7 +282,8 @@ module TestArchitectureFacts =
             | Ok image ->
                 expected |> shouldEqual (Ok ())
 
-                UnixMachineState.userBufferCheck (UnixBootImage.boot image).Machine
+                UnixMachineState.userBufferCheck
+                    (image |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)).Machine
                 |> shouldEqual (UserBufferCheck.BeforeOperation limit)
             | Error refusal -> Error refusal |> shouldEqual expected
 
@@ -271,8 +307,8 @@ module TestArchitectureFacts =
 
         let property (platform : SimulatedUnixPlatform, check : UserBufferCheck) : unit =
             let system =
-                UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-                |> UnixBootImage.boot
+                UnixSystem.initial<int, string> platform
+                |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let forged =
                 { system with

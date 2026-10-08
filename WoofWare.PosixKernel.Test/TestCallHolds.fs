@@ -75,8 +75,8 @@ module TestCallHolds =
 
     let private world (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         let system =
-            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.boot
+            UnixSystem.initial<int, string> platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         // A process whose pipe writes end at once: no `SIGPIPE` to refuse a
         // close that ends one.
@@ -452,8 +452,9 @@ module TestCallHolds =
                     let before = ThreadIdAllocator.live system.Machine.ThreadIds
 
                     match UnixTaskLifecycle.spawn parent child (CpuId 0) system with
-                    | Error error -> failwith $"spawn: %O{error}"
-                    | Ok (id, after) ->
+                    | Error refusal -> failwith $"spawn: %s{SpawnRefusal.describe refusal}"
+                    | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawn: %O{error}"
+                    | Ok (SpawnAnswer.Spawned id, after) ->
                         Set.contains id before |> shouldEqual false
                         coverage.Spawns <- coverage.Spawns + 1
 

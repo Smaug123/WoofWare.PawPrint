@@ -17,13 +17,14 @@ module TestUnixTaskTable =
 
     /// A Linux process whose leader is task 0, with process ID 4242.
     let private initial : UnixSystem<int, string> =
-        UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private withTask (name : int) (cpu : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixTaskLifecycle.spawn system.Leader name (CpuId cpu) system with
-        | Ok (_, system) -> system
-        | Error error -> failwith $"spawning %d{name} failed with %O{error}"
+        | Ok (SpawnAnswer.Spawned _, system) -> system
+        | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawning %d{name} failed with %O{error}"
+        | Error refusal -> failwith $"spawning %d{name} was refused: %s{SpawnRefusal.describe refusal}"
 
     let private idOf (name : int) (tasks : Map<int, UnixTaskState>) : uint64 =
         OsThreadId.toUInt64 (UnixTaskTable.osThreadIdOf name tasks)

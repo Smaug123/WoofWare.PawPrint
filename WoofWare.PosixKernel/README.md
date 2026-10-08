@@ -41,7 +41,7 @@ Converting those to and from a client's own encoding is the client's business.
 
 The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three parts:
 
-* the machine (`UnixMachineState`): the filesystem, the open file descriptions (with the state of each epoll instance and kqueue, and how many descriptors and calls in flight reference each), sockets, connections and pipes, the thread IDs live tasks hold, the clock, the entropy pool, and the platform being simulated;
+* the machine (`UnixMachineState`): the filesystem, the open file descriptions (with the state of each epoll instance and kqueue, and how many descriptors and calls in flight reference each), sockets, connections and pipes, the thread IDs live tasks hold, the processes on it and the directories they stand in, the clock, the entropy pool, and the platform being simulated;
 * the process (`UnixProcessState`): the descriptor table, which says only which open file description each descriptor names, and the process's credentials, umask, current directory, environment and signal state;
 * the tasks (`UnixTaskState`): the process's tasks, and what each is blocked in, if anything.
 
@@ -51,9 +51,11 @@ A client reads a system through `UnixSystem`'s queries, such as `leader`, `tasks
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
 
-`UnixSystem.initial` builds the *boot image* of a process that has not done anything yet: a `UnixBootImage`, which no syscall takes.
-Configure it with the setters in the `UnixBootImage` module, such as `withCredentials`, `withFileSystemAndCurrentDirectory`, `withBootTime` and `withEnvironment`, then `UnixBootImage.boot` it to get the `UnixSystem` its first syscall takes.
-A machine setter that can refuse a value, such as `withBootTime` or `withMount`, returns a `Result` whose `Error` says why (see "Answers and refusals" below).
+`UnixSystem.initial` builds the *boot image* of a machine that has not done anything yet: a `UnixBootImage`, which no syscall takes.
+Configure it with the setters in the `UnixBootImage` module, such as `withFileSystem`, `withBootTime` and `withProcessId` (the first process's ID, where the machine's counters start).
+How a process starts is a `ProcessLaunch`: `ProcessLaunch.create` takes the descriptors it is launched with and its first task, and the setters in the `ProcessLaunch` module set the rest, such as `withCredentials`, `withCurrentDirectory` and `withEnvironment`.
+`UnixBootImage.boot` launches the machine's first process from one, to get the `UnixSystem` its first syscall takes.
+A setter that rejects a value, such as `withBootTime` or `withMount`, returns `Result`, with a refusal type of its own whose `describe` says why (see "Answers and refusals" below); only the caller knows what it called the value.
 Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
 What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixSystem.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
 
@@ -65,13 +67,24 @@ let path (text : string) : PathArgumentBytes =
     | Ok bytes -> PathArgumentBytes.Bytes bytes
     | Error defect -> failwith $"not a path: %O{defect}"
 
+let orFail (describe : 'Refusal -> string) (result : Result<'a, 'Refusal>) : 'a =
+    match result with
+    | Ok value -> value
+    | Error refusal -> failwith (describe refusal)
+
 // A process on a Linux x86-64 machine, before anything has happened to it:
 // a filesystem holding nothing but /dev, and descriptors 0, 1 and 2 as pipes. It has one task,
 // which this client names 0, on logical processor 0, and runs as root.
 let system : UnixSystem<int, unit> =
-    UnixSystem.initial SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
-    |> UnixBootImage.withCredentials "example" (Credentials.ofIds UserId.root (GroupId.parseOrFail "example" 0u) [])
-    |> UnixBootImage.boot
+    let launch =
+        ProcessLaunch.create SimulatedUnixPlatform.linuxX64 UnixSystem.pipedStandardStreams 0 (CpuId 0)
+        |> orFail LaunchTableRefusal.describe
+        |> ProcessLaunch.withCredentials (Credentials.ofIds UserId.root (GroupId.parseOrFail "example" 0u) [])
+        |> orFail CredentialsRefusal.describe
+
+    UnixSystem.initial SimulatedUnixPlatform.linuxX64
+    |> UnixBootImage.boot launch
+    |> orFail LaunchRefusal.describe
 
 // mkdir(2) is mkdirat(2) from AT_FDCWD, in the flavour's own numbering.
 let atFdCwd : int = AtDirectory.atFdCwd SimulatedUnixFlavour.Linux
@@ -93,6 +106,16 @@ let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
 system |> mkdir |> mkdir |> ignore
 ```
 
+### Several processes
+
+A `SimulatedMachine` holds several processes on one machine. `SimulatedMachine.ofSystem` makes one of a booted system, and `SimulatedMachine.launch` starts another process on it from a `ProcessLaunch`, in a directory of the machine's filesystem; the kernel chooses its process ID, as Linux does from its thread ID counter and Darwin from a process ID counter of its own.
+
+A syscall is still made in a `UnixSystem`: `SimulatedMachine.focus` gives one process's view of the machine, which holds that process and no other, so no call can read or change another process's own state, and `SimulatedMachine.unfocus` writes the view back. `inView` and `step` do both around one call. A view records which state of the machine it was taken from, and `unfocus` refuses a view taken before some other write-back, whose copy of the machine is stale.
+
+Everything one process's call does to another goes through the machine they share: ports, connections, pipes, files, the open file descriptions, the directories processes stand in, and the thread and process IDs. `SimulatedMachine.checkInvariants` holds every process to the machine and to each other; `UnixSystem.checkInvariants` of one view checks only what one process can see truthfully.
+
+Not yet modelled: a call in one process waking a task parked in another, a Darwin kqueue seeing an event raised in another process, and a process ending on a `SimulatedMachine`.
+
 ### The syscalls
 
 Each syscall is a function in the module for its family.
@@ -105,7 +128,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `mknod` and `mknodat` (regular files only), `unlink`, `rmdir`, `unlinkat`, `rename`, `renameat`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
 | `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
-| `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `setsockopt`, `getsockopt` |
+| `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `getpeername`, `setsockopt`, `getsockopt` |
 | `UnixConnection` | `connect`, `accept` |
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
 | `UnixKqueue` | `kqueue`, `kevent` |
@@ -135,12 +158,11 @@ A syscall's result has two levels.
 
 A call that a real kernel would not let happen at all, such as a task making a syscall while it is blocked in another, is a bug in the client, and throws.
 
-A setter of the machine's boot configuration refuses the same way.
-Each one that can refuse a value returns `Result<UnixBootImage<_, _>, _>`, with a refusal type of its own (`BootTimeRefusal`, `MountRefusal`, `TcpSendSpaceRefusal` and so on) whose cases state the facts: a value this library has not measured or does not model, or one no machine of the flavour could have.
+A setter of the machine's boot configuration or of a process's launch refuses the same way.
+Each one that can refuse a value returns a `Result`, with a refusal type of its own (`BootTimeRefusal`, `MountRefusal`, `ProcessIdRefusal`, `CredentialsRefusal` and so on) whose cases state the facts: a value this library has not measured or does not model, or one no machine of the flavour could have.
 Each refusal type has a `describe`.
-The library does not know what the client called the value, so it names no knob; the client does that, as `withFileSystemAndCurrentDirectory`'s `CurrentDirectoryFault` already leaves it to.
+The library does not know what the client called the value, so it names no knob; the client does that.
 A value no `parse` could have produced, such as one built with `Unchecked.defaultof`, is still a bug in the client, and throws.
-The process's setters that can reject a value (`withCredentials`, `withUmask`, `withProcessId` and `withLeaderThreadId`) still throw, prefixed with the `context` their caller passes.
 
 ### Blocking
 
@@ -160,7 +182,8 @@ WoofWare.PosixKernel's behaviour does not depend on the host platform; indeed, i
 However, POSIX is extremely underspecified (and implementations frequently diverge from their documentation!),
 and I only have easy access to a few flavours.
 
-A `SimulatedUnixPlatform` names the kernel being simulated: its flavour (Linux or Darwin), its architecture, its page size and its release.
+A `SimulatedUnixPlatform` names the kernel being simulated: its flavour (Linux or Darwin) and, for Linux, the version of the source it was built from (`LinuxKernelVersion`), its architecture, its page size and its release.
+The release is only what `uname` reports; where Linux's behaviour changed between versions, the platform's version decides which answer applies.
 Only the combinations that have been measured can be built: Linux on x86-64 and on aarch64 with 4 KiB pages, and Darwin on arm64 with 16 KiB pages.
 `SimulatedUnixPlatform.linuxX64`, `linuxArm64` and `macOsArm64` are the presets.
 Where the flavours disagree, the platform says which answer applies, down to whose numbering an errno or a signal is reported in.

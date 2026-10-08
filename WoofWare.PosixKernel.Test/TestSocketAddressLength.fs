@@ -64,8 +64,8 @@ module TestSocketAddressLength =
     /// A fresh process on `platform` whose leader is task 0, as every call here
     /// is made by.
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        UnixSystem.initial platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-        |> UnixBootImage.boot
+        UnixSystem.initial platform
+        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private streamSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
@@ -179,12 +179,22 @@ module TestSocketAddressLength =
                         $"%O{platform} connect at 0x%08x{word}: expected %A{measuredCopyIn platform word}, got %A{actual}"
             )
 
+    /// What the length cell holds after the address copy faults, by the version
+    /// of the kernel each preset runs (`docs/probes/sockname-fault-length`):
+    /// 16 on Linux 6.18.5, and the declared length, untouched, on Linux 6.17 and
+    /// Darwin.
+    let private lengthAfterFault (platform : SimulatedUnixPlatform) : int option =
+        if platform = SimulatedUnixPlatform.linuxArm64 then Some 16
+        elif platform = SimulatedUnixPlatform.linuxX64 then None
+        elif platform = SimulatedUnixPlatform.macOsArm64 then None
+        else failwith $"no measured fault length for %O{platform}"
+
     /// Through real storage and through an unmapped buffer: Linux answers EINVAL
     /// for a negative length before it touches either the buffer or the length
     /// cell; Darwin bounds the copy by the length, so no length is an error.
     [<Test>]
     let ``getsockname answers the measured length table at every length`` () : unit =
-        for platform in platforms do
+        for platform in SimulatedUnixPlatform.linuxArm64 :: platforms do
             everyLength (fun word ->
                 let fd, system = streamSocket (systemOn platform)
                 let system = bindAt (loopback 6000us) fd system
@@ -196,10 +206,7 @@ module TestSocketAddressLength =
                         else
                             match destination with
                             | UserBuffer.Unmapped _ when word <> 0u ->
-                                GetSockNameAnswer.Failed (
-                                    UnixError.EFAULT,
-                                    (if isLinux platform then Some 16 else None)
-                                )
+                                GetSockNameAnswer.Failed (UnixError.EFAULT, lengthAfterFault platform)
                             | _ -> GetSockNameAnswer.Reported (CopyOut.expected platform (loopback 6000us) word, 16)
 
                     match UnixSocket.getsockname fd destination word system with

@@ -284,7 +284,7 @@ module TestImpureCases =
     /// echoes the directory it observed to stdout, so the assertion is
     /// that the bytes it printed are the UTF-8 of the path we configured —
     /// which pins the whole chain (`KernelConfig.CurrentDirectory` ->
-    /// `withFileSystemAndCurrentDirectory` -> `SystemNative_GetCwd` -> CoreLib's
+    /// `EmulatedKernel.withFileSystemAndCurrentDirectory` -> `SystemNative_GetCwd` -> CoreLib's
     /// buffer dance -> `Marshal.PtrToStringUTF8`) to an exact value, not a shape.
     let private currentDirectoryCase (dir : string) : EndToEndTestCase =
         {
@@ -1446,6 +1446,27 @@ module TestImpureCases =
             AssertTerminalState = None
         }
 
+    /// `SocketPeerName.cs` under `platform`: `getpeername(2)` through the
+    /// managed `RemoteEndPoint` and by hand, which exits 0 for Linux's ENOTCONN
+    /// on a refused socket and 100 for Darwin's EINVAL
+    /// (`docs/probes/getpeername/getpeername.c`).
+    let private socketPeerNameCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketPeerName.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1612,6 +1633,8 @@ module TestImpureCases =
             socketConnectDestinationsCase SimulatedUnixPlatform.macOsArm64
             socketOptionsCase SimulatedUnixPlatform.linuxX64
             socketOptionsCase SimulatedUnixPlatform.macOsArm64
+            socketPeerNameCase SimulatedUnixPlatform.linuxX64
+            socketPeerNameCase SimulatedUnixPlatform.macOsArm64
             {
                 // A managed bind of a multicast and of the broadcast address under
                 // Darwin: EAFNOSUPPORT on a stream socket, EADDRNOTAVAIL for the
@@ -4902,7 +4925,7 @@ module TestImpureCases =
             let platform =
                 SimulatedUnixPlatform.createOrFail
                     "test"
-                    SimulatedUnixFlavour.Linux
+                    (SimulatedUnixPlatform.kernel SimulatedUnixPlatform.linuxX64)
                     SimulatedUnixArchitecture.X64
                     SimulatedPageSize.FourKiB
                     release

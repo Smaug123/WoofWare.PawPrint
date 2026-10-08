@@ -51,10 +51,16 @@ module TestPosixFadvise =
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         match
-            UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
-            |> UnixBootImage.withFileSystemAndCurrentDirectory createdAt Owners.linuxDefault seed (absolute "/dir")
+            UnixSystem.initial<int, string> platform
+            |> UnixBootImage.withFileSystem createdAt Owners.linuxDefault seed
         with
-        | Ok image -> UnixBootImage.boot image
+        | Ok image ->
+            (Launched.bootWith
+                (ProcessLaunch.withCurrentDirectory (absolute "/dir"))
+                UnixSystem.pipedStandardStreams
+                0
+                (CpuId 0))
+                image
         | Error fault -> failwith $"the fixture's own seed did not boot: %O{fault}."
 
     let private inodeOf (system : UnixSystem<int, string>) (path : string) : InodeNumber =
