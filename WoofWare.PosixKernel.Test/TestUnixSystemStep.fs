@@ -281,6 +281,7 @@ module TestUnixSystemStep =
             Binding = None
             Phase = SocketPhase.Idle
             ReuseAddress = false
+            Options = SocketOptions.initial
         }
 
     let private socketZero : SocketId = SocketId 0L
@@ -648,6 +649,7 @@ module TestUnixSystemStep =
                 Binding = None
                 Phase = established
                 ReuseAddress = false
+                Options = SocketOptions.initial
             }
 
         let fd, registry =
@@ -753,6 +755,7 @@ module TestUnixSystemStep =
                 Binding = None
                 Phase = SocketPhase.Idle
                 ReuseAddress = false
+                Options = SocketOptions.initial
             }
 
         let withSocket (flavour : UnixSystem<int, string>) : int * UnixSystem<int, string> =
@@ -1638,10 +1641,9 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``statOf an inode the filesystem does not hold is None`` () : unit =
-        // `None` rather than a crash, because `statOf` is public and a caller
-        // that got its inode from somewhere other than a live descriptor cannot
-        // be assumed to have checked. `fstat` is the caller that *can* assume it,
-        // and it crashes on `None` for that reason.
+        // `None` rather than a crash, so that each caller says what a missing
+        // inode means to it. `fstat` holds its inode through a live descriptor,
+        // so for it a missing inode is a bug in this library, and it crashes.
         UnixPathResolution.statOf (InodeNumber 99L) linux |> shouldEqual None
 
     [<Test>]
@@ -2408,7 +2410,12 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not unlink the file: %O{error}"
 
         let released =
-            match FileDescriptorRegistry.dropDescriptor fd Set.empty (UnixSystemState.fileDescriptors system) with
+            match
+                FileDescriptorRegistry.dropDescriptor
+                    system.Process.ProcessId
+                    fd
+                    (UnixSystemState.fileDescriptors system)
+            with
             | Ok (registry, _) -> registry
             | Error error -> failwith $"could not close the descriptor: %O{error}"
 
@@ -2957,8 +2964,19 @@ module TestUnixSystemStep =
         let held = UnixDescriptor.flock holderTask first 2 system |> granted
         let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
 
+        // The forgery lets go of the park's hold behind its back as well.
+        let secondId =
+            FileDescriptorRegistry.tryFindId second (UnixSystemState.fileDescriptors parkedIn)
+            |> Option.get
+
         let closed =
-            match FileDescriptorRegistry.dropDescriptor second Set.empty (UnixSystemState.fileDescriptors parkedIn) with
+            match
+                FileDescriptorRegistry.dropDescriptor
+                    parkedIn.Process.ProcessId
+                    second
+                    (UnixSystemState.fileDescriptors parkedIn
+                     |> FileDescriptorRegistry.mapOpenFiles (OpenFileTable.releaseHold secondId))
+            with
             | Ok (registry, Some _) -> UnixSystemState.withFileDescriptors registry parkedIn
             | other -> failwith $"expected the forged close to destroy the description, got %A{other}"
 
@@ -3593,7 +3611,12 @@ module TestUnixSystemStep =
         let queueId = descriptionOf fd system
 
         let closed =
-            match FileDescriptorRegistry.dropDescriptor fd Set.empty (UnixSystemState.fileDescriptors system) with
+            match
+                FileDescriptorRegistry.dropDescriptor
+                    system.Process.ProcessId
+                    fd
+                    (UnixSystemState.fileDescriptors system)
+            with
             | Ok (registry, _) -> UnixSystemState.withFileDescriptors registry system
             | Error error -> failwith $"expected the close to succeed, got %O{error}"
 
@@ -4988,17 +5011,25 @@ module TestUnixSystemStep =
             |> shouldEqual (Error (GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
 
     [<Test>]
-    let ``a faulting getsockname has already reported the length on one flavour`` () : unit =
-        // The two kernels order the two stores differently. Measured against a
-        // wholly unmapped destination with sentinel lengths of 7, 13, 100 and
-        // 4096, so a cell that came back reading 16 can only have been written:
-        // Linux 6.18.5 writes the untruncated length before attempting the copy
-        // that then faults, macOS 26.6 reports it only once the copy succeeded.
+    let ``a faulting getsockname has already reported the length on Linux from 6.18`` () : unit =
+        // The kernels order the two stores differently. Measured against a
+        // wholly unmapped destination with declared lengths of 1, 7, 13, 16, 100
+        // and 4096, so a cell that came back reading 16 can only have been
+        // written (`docs/probes/sockname-fault-length`): Linux 6.18.5 writes the
+        // untruncated length before attempting the copy that then faults, while
+        // Linux 6.17 and Darwin 27.0.0 report it only once the copy succeeded.
+        let since618Fd, since618System =
+            withBoundSocket (systemOn SimulatedUnixPlatform.linuxArm64)
+
+        UnixSocket.getsockname since618Fd (UserBuffer.Unmapped 8UL) 13u since618System
+        |> sockNameFailed
+        |> shouldEqual (UnixError.EFAULT, Some 16)
+
         let linuxFd, linuxSystem = withBoundSocket linux
 
         UnixSocket.getsockname linuxFd (UserBuffer.Unmapped 8UL) 13u linuxSystem
         |> sockNameFailed
-        |> shouldEqual (UnixError.EFAULT, Some 16)
+        |> shouldEqual (UnixError.EFAULT, None)
 
         let darwinFd, darwinSystem = withBoundSocket darwin
 

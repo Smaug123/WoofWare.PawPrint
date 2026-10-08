@@ -71,6 +71,7 @@ module TestPollTimeout =
                             LockedPort = true
                         }
                 ReuseAddress = false
+                Options = SocketOptions.initial
                 Phase =
                     SocketPhase.Listening
                         {
@@ -437,10 +438,25 @@ module TestPollTimeout =
         count |> shouldEqual 0
 
     /// `system` with `fd` closed and a file opened in its place, as only a caller
-    /// going around `UnixDescriptor.close` could.
+    /// going around `UnixDescriptor.close` could, and every hold a call had on
+    /// what `fd` named let go of behind the calls' backs, so that the close
+    /// destroys it if no other descriptor names it.
     let private forgeRebind (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let registry = UnixSystemState.fileDescriptors system
+        let id = FileDescriptorRegistry.tryFindId fd registry |> Option.get
+
+        let holds =
+            OpenFileTable.holdCount id (FileDescriptorRegistry.openFiles registry)
+            |> Option.defaultValue 0
+
         let registry =
-            match FileDescriptorRegistry.dropDescriptor fd Set.empty (UnixSystemState.fileDescriptors system) with
+            (registry, [ 1..holds ])
+            ||> List.fold (fun registry _ ->
+                FileDescriptorRegistry.mapOpenFiles (OpenFileTable.releaseHold id) registry
+            )
+
+        let registry =
+            match FileDescriptorRegistry.dropDescriptor system.Process.ProcessId fd registry with
             | Ok (registry, _) -> registry
             | Error error -> failwith $"drop failed: %O{error}"
 

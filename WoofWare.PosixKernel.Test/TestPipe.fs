@@ -404,7 +404,7 @@ module TestPipe =
                             endedProcess.Termination
                             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGPIPE, false))
 
-                            endedProcess.Machine |> shouldEqual system.Machine
+                            EndedMachine.assertTasksGone system endedProcess
                             ended <- true
                         | SignalDisposition.Ignore,
                           Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, signal, after)) ->

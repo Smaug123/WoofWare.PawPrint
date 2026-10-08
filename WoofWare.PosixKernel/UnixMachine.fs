@@ -53,13 +53,18 @@ type UnixMachineState =
             /// by park is a wait queue on a kernel object, and processes can share
             /// one.
             NextParkOrdinal : ParkOrdinal
-            /// Where the next thread's id comes from: see `ThreadIdAllocator`.
+            /// Where the next thread's id comes from, and which ids live tasks
+            /// hold: see `ThreadIdAllocator`.
             ///
             /// The machine's rather than a process's, because on both flavours the
-            /// counter is shared by every process on the machine. Set by
+            /// counter is shared by every process on the machine, and an id one
+            /// process's task holds is not handed to another's. Set by
             /// `UnixSystem.initial`, `UnixBootImage.withProcessId`,
-            /// `UnixBootImage.withLeaderThreadId` and `UnixSystem.writePidMaxSysctl`, and
-            /// advanced only by `UnixTaskLifecycle.spawn`.
+            /// `UnixBootImage.withLeaderThreadId` and `UnixSystem.writePidMaxSysctl`;
+            /// advanced only by `UnixTaskLifecycle.spawn`, and an id is freed by its
+            /// task's exit (`UnixTaskLifecycle.exitThread`, and the end of the
+            /// process). `UnixSystem.checkInvariants` holds the live ids to the
+            /// tasks'.
             ThreadIds : ThreadIdAllocator
             /// The port a `bind(2)` of port 0 will try first.
             ///
@@ -86,6 +91,11 @@ type UnixMachineState =
             /// `UnixBootImage.withTcpSendSpace`. Only the Darwin flavour reads
             /// it, through `TcpBufferSizing`.
             TcpSendSpace : int
+            /// The `IPV6_V6ONLY` a new IPv6 socket starts with: Linux's
+            /// `net.ipv6.bindv6only` sysctl, Darwin's `net.inet6.ip6.v6only`.
+            /// Host configuration, off by default on both (measured); see
+            /// `UnixBootImage.withIpv6OnlyByDefault`.
+            Ipv6OnlyByDefault : bool
             /// The receive buffer a new TCP socket starts with, in bytes:
             /// Darwin's `net.inet.tcp.recvspace` sysctl, and Linux's
             /// `net.ipv4.tcp_rmem` default (its second value). Host

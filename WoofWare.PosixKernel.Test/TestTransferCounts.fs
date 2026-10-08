@@ -659,7 +659,7 @@ module TestTransferCounts =
             let create =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
                 | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
-                | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
+                | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue system.Process.ProcessId
 
             let fd, registry = create registry
 
@@ -682,6 +682,7 @@ module TestTransferCounts =
                                         Binding = None
                                         Phase = SocketPhase.Idle
                                         ReuseAddress = false
+                                        Options = SocketOptions.initial
                                     }
                                 ]
                     }

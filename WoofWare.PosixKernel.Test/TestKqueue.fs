@@ -162,6 +162,7 @@ module TestKqueue =
                         Target =
                             OpenFileTarget.Kqueue
                                 {
+                                    Owner = created.Process.ProcessId
                                     Drained = false
                                     Registrations = Map.empty
                                     Active = []
@@ -325,6 +326,7 @@ module TestKqueue =
                     Protocol = SocketProtocol.Udp
                     Binding = None
                     ReuseAddress = false
+                    Options = SocketOptions.initial
                     Phase = SocketPhase.Idle
                 }
 
@@ -760,6 +762,7 @@ module TestKqueue =
                 Some (
                     OpenFileTarget.Kqueue
                         {
+                            Owner = closed.Process.ProcessId
                             Drained = true
                             Registrations = Map.empty
                             Active = []
@@ -892,6 +895,7 @@ module TestKqueue =
                 Some (
                     OpenFileTarget.Kqueue
                         {
+                            Owner = closed.Process.ProcessId
                             Drained = true
                             Registrations = Map.empty
                             Active = []
@@ -1071,7 +1075,7 @@ module TestKqueue =
     [<Test>]
     let ``checkInvariants rejects an object the flavour's kernel does not have`` () : unit =
         let fd, registry =
-            FileDescriptorRegistry.createKqueue (UnixSystemState.fileDescriptors linux)
+            FileDescriptorRegistry.createKqueue linux.Process.ProcessId (UnixSystemState.fileDescriptors linux)
 
         let withKqueue = withRegistry registry linux
 
@@ -1082,6 +1086,7 @@ module TestKqueue =
                     idOf fd withKqueue,
                     OpenFileTarget.Kqueue
                         {
+                            Owner = linux.Process.ProcessId
                             Drained = false
                             Registrations = Map.empty
                             Active = []

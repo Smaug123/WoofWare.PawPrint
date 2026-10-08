@@ -103,6 +103,7 @@ module TestUnixSystemInvariants =
                                             Protocol = SocketProtocol.Tcp
                                             Binding = None
                                             ReuseAddress = false
+                                            Options = SocketOptions.initial
                                             Phase = phase
                                         }
                                     ]
@@ -154,6 +155,7 @@ module TestUnixSystemInvariants =
                                             Protocol = SocketProtocol.Tcp
                                             Binding = None
                                             ReuseAddress = false
+                                            Options = SocketOptions.initial
                                             Phase = SocketPhase.Established (connection, ConnectionEnd.Client)
                                         }
                                     ]
@@ -323,6 +325,11 @@ module TestUnixSystemInvariants =
         | None -> registered
         | Some parked -> UnixWait.park task parked registered
 
+    /// `system` with one registered task, parked as `parked` says on a
+    /// description the open file table may not hold, which no syscall parks on.
+    let private withForgedTask (parked : ParkedSyscall) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        Tasks.ensure task system |> ForgedPark.onAbsent task parked
+
     /// A description id nothing in `system` holds.
     let private absentDescription : OpenFileDescriptionId = OpenFileDescriptionId 999L
 
@@ -333,11 +340,17 @@ module TestUnixSystemInvariants =
             FileDescriptorRegistry.tryFindId 0 (UnixSystemState.fileDescriptors system)
             |> Option.get
 
+        // Held while the descriptor goes, so that the description survives
+        // it, and let go of afterwards, so that nothing references it.
         let registry =
             match
-                FileDescriptorRegistry.dropDescriptor 0 (Set.singleton stdin) (UnixSystemState.fileDescriptors system)
+                FileDescriptorRegistry.dropDescriptor
+                    system.Process.ProcessId
+                    0
+                    (UnixSystemState.fileDescriptors system
+                     |> FileDescriptorRegistry.mapOpenFiles (OpenFileTable.hold stdin))
             with
-            | Ok (registry, None) -> registry
+            | Ok (registry, None) -> FileDescriptorRegistry.mapOpenFiles (OpenFileTable.releaseHold stdin) registry
             | other -> failwith $"expected the description to survive, got %A{other}"
 
         stdin, UnixSystemState.withFileDescriptors registry system
@@ -368,14 +381,12 @@ module TestUnixSystemInvariants =
     [<Test>]
     let ``a task parked on an flock of an absent description is a defect`` () : unit =
         system
-        |> withTask (
-            Some (
-                ParkedSyscall.Flock
-                    {
-                        Requester = absentDescription
-                        Mode = FlockMode.Exclusive
-                    }
-            )
+        |> withForgedTask (
+            ParkedSyscall.Flock
+                {
+                    Requester = absentDescription
+                    Mode = FlockMode.Exclusive
+                }
         )
         |> UnixSystem.checkInvariants
         |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentDescription (task, absentDescription) ]
@@ -383,16 +394,14 @@ module TestUnixSystemInvariants =
     [<Test>]
     let ``a task parked in an epoll_wait on an absent description is a defect`` () : unit =
         system
-        |> withTask (
-            Some (
-                ParkedSyscall.EpollWait
-                    {
-                        Epoll = absentDescription
-                        MaxEvents = 1
-                        Buffer = UserBuffer.Mapped
-                        Deadline = None
-                    }
-            )
+        |> withForgedTask (
+            ParkedSyscall.EpollWait
+                {
+                    Epoll = absentDescription
+                    MaxEvents = 1
+                    Buffer = UserBuffer.Mapped
+                    Deadline = None
+                }
         )
         |> UnixSystem.checkInvariants
         |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentDescription (task, absentDescription) ]
@@ -540,6 +549,7 @@ module TestUnixSystemInvariants =
             Protocol = SocketProtocol.Tcp
             Binding = binding
             ReuseAddress = false
+            Options = SocketOptions.initial
             Phase = phase
         }
 
@@ -759,7 +769,16 @@ module TestUnixSystemInvariants =
                         system.Tasks
             }
             |> UnixSystem.checkInvariants
-            |> shouldEqual [ UnixSystemDefect.DuplicateOsThreadId (leader.OsThreadId, [ 0 ; 1 ]) ]
+            |> shouldEqual
+                [
+                    UnixSystemDefect.DuplicateOsThreadId (leader.OsThreadId, [ 0 ; 1 ])
+                    // Task 1's own ID, which the allocator still records, is
+                    // held by no task now.
+                    UnixSystemDefect.LiveThreadIdsMismatch (
+                        Set.singleton (UnixTaskTable.osThreadIdOf 1 system.Tasks),
+                        Set.empty
+                    )
+                ]
 
     [<Test>]
     let ``on Linux a leader whose thread ID is not the process ID is a defect, and on Darwin it is not`` () : unit =
@@ -812,8 +831,20 @@ module TestUnixSystemInvariants =
                     .Tasks
                 |> UnixTaskTable.osThreadIdOf 0
 
+            let replaced = UnixTaskTable.osThreadIdOf 1 linux.Tasks
+
             foreign,
             { linux with
+                Machine =
+                    { linux.Machine with
+                        // Recording the foreign ID as live in place of the one it
+                        // replaces, so that what the counter could have minted is
+                        // all that is wrong.
+                        ThreadIds =
+                            { linux.Machine.ThreadIds with
+                                Live = linux.Machine.ThreadIds.Live |> Set.remove replaced |> Set.add foreign
+                            }
+                    }
                 Tasks =
                     Map.add
                         1
@@ -829,7 +860,7 @@ module TestUnixSystemInvariants =
         let foreign, at = withDarwinId 4194304UL
 
         UnixSystem.checkInvariants at
-        |> shouldEqual [ UnixSystemDefect.OsThreadIdNotMintable (1, foreign, linux.Machine.ThreadIds) ]
+        |> shouldEqual [ UnixSystemDefect.OsThreadIdNotMintable (1, foreign, at.Machine.ThreadIds) ]
 
         // Darwin: an id the counter has not reached, which it would hand out again.
         let darwin = spawned SimulatedUnixPlatform.macOsArm64
@@ -843,6 +874,10 @@ module TestUnixSystemInvariants =
              |> UnixBootImage.withLeaderThreadId "test" 4242UL
              |> UnixBootImage.boot)
                 .Machine.ThreadIds
+            |> fun behind ->
+                { behind with
+                    Live = darwin.Machine.ThreadIds.Live
+                }
 
         { darwin with
             Machine =

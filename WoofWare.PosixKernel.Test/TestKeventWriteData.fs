@@ -180,6 +180,7 @@ module TestKeventWriteData =
             Protocol = SocketProtocol.Tcp
             Binding = None
             ReuseAddress = false
+            Options = SocketOptions.initial
             Phase = phase
         }
 

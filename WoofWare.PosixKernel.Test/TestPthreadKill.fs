@@ -206,7 +206,7 @@ module TestPthreadKill =
                     ended.Termination
                     |> shouldEqual (ProcessTermination.Signaled (signal, coreDumped))
 
-                    ended.Machine |> shouldEqual system.Machine
+                    EndedMachine.assertTasksGone system ended
                 | _ ->
                     failwith
                         $"pthread_kill(%d{target}, %d{signo}) under %O{flavour} answered %O{outcome}, but generating it is %O{expected}"

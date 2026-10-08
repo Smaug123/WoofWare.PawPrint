@@ -9,6 +9,15 @@ type DescriptionReleaseRefusal =
     /// `listener`, whose accept queue still holds `connection`, and that
     /// connection's client (socket `client`) is still open.
     | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
+    /// The description is the last reference to the connected stream socket
+    /// `socket`, whose `SO_LINGER` is on with a time of zero, and its
+    /// connection `connection` is still referenced: by its peer, or by a
+    /// listener's accept queue.
+    ///
+    /// A real kernel closes such a socket abortively, resetting the connection
+    /// rather than shutting it down in order, and the peer reads ECONNRESET
+    /// from `SO_ERROR` (measured on both). This kernel models no reset.
+    | AbortiveClose of socket : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module DescriptionReleaseRefusal =
@@ -18,6 +27,8 @@ module DescriptionReleaseRefusal =
         match refusal with
         | DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
             $"releasing the last reference destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client when the listener goes, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
+        | DescriptionReleaseRefusal.AbortiveClose (socket, connection) ->
+            $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time of zero, while its connection %O{connection} is still referenced. A real kernel resets the connection rather than shutting it down in order, and the peer reads ECONNRESET; this kernel models no reset, and would otherwise deliver an orderly end of stream instead."
 
 /// When this kernel frees what nothing references any more: an open file
 /// description once no descriptor names it and no syscall in flight holds it,
@@ -25,19 +36,6 @@ module DescriptionReleaseRefusal =
 /// inode once nothing names or holds it.
 [<RequireQualifiedAccess>]
 module ObjectLifetime =
-
-    /// The open file descriptions some task's syscall in flight holds
-    /// (`ParkedSyscall.descriptions`): those a description stays alive for after
-    /// its last descriptor has closed.
-    let heldByCalls<'Task when 'Task : comparison> (tasks : Map<'Task, UnixTaskState>) : Set<OpenFileDescriptionId> =
-        tasks
-        |> Map.toSeq
-        |> Seq.collect (fun (_, state) ->
-            match state.Parked with
-            | None -> []
-            | Some park -> ParkedSyscall.descriptions park.Syscall
-        )
-        |> Set.ofSeq
 
     /// Every inode that must not be freed: `UnixMachineState.heldInodes` and
     /// `UnixProcessState.heldInodes`, closed under `DirectoryContent.Parent`.
@@ -247,6 +245,13 @@ module ObjectLifetime =
         // could.
         let establishedSurvivors : Result<SocketId list, DescriptionReleaseRefusal> =
             match dying.Phase with
+            | SocketPhase.Established (connection, _)
+            | SocketPhase.EstablishedPendingReport connection when
+                dying.Options.Linger.Enabled
+                && dying.Options.Linger.Hundredths = 0L
+                && stillReferenced connection
+                ->
+                Error (DescriptionReleaseRefusal.AbortiveClose (socketId, connection))
             | SocketPhase.Established _
             | SocketPhase.EstablishedPendingReport _ ->
                 sockets
@@ -324,14 +329,15 @@ module ObjectLifetime =
         |> Ok
 
     /// Destroy each of `descriptions` that nothing references any more — no
-    /// descriptor names it, and no syscall in flight holds it — releasing what
-    /// it was the last reference to (`releaseDestroyed`). A description still
-    /// referenced, or already gone, is left as it is.
+    /// descriptor names it, and no syscall in flight holds it
+    /// (`OpenFileTable.holdCount`) — releasing what it was the last reference
+    /// to (`releaseDestroyed`). A description still referenced, or already
+    /// gone, is left as it is.
     ///
     /// What a syscall that held `descriptions` while it slept calls once it has
-    /// returned, so that a description whose last descriptor closed while it
-    /// slept goes now, as a real kernel releases the file when the call drops
-    /// its reference.
+    /// returned, and its park has let go of the holds it took, so that a
+    /// description whose last descriptor closed while it slept goes now, as a
+    /// real kernel releases the file when the call drops its reference.
     let releaseUnreferenced<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (descriptions : OpenFileDescriptionId list)
         (system : UnixSystem<'Task, 'Handler>)
@@ -343,7 +349,7 @@ module ObjectLifetime =
             | Error refusal -> Error refusal
             | Ok system ->
 
-            match OpenFileTable.destroyIfUnreferenced id (heldByCalls system.Tasks) system.Machine.OpenFiles with
+            match OpenFileTable.destroyIfUnreferenced id system.Machine.OpenFiles with
             | _, None -> Ok system
             | openFiles, Some destroyed ->
                 UnixSystemState.mapOpenFiles (fun _ -> openFiles) system

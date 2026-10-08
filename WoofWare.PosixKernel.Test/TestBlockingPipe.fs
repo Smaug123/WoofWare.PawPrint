@@ -1189,6 +1189,22 @@ module TestBlockingPipe =
                         failwith
                             $"%s{where}: descriptions %A{actualDescriptions} exist, expected %A{expectedDescriptions}"
 
+                    // A description's holds are its calls': one for each call,
+                    // asleep or woken, that has not returned and that no Darwin
+                    // close has ended.
+                    for KeyValue (description, id) in libraryDescription do
+                        let expected =
+                            reference.Parks
+                            |> Map.filter (fun _ park -> park.Through.IsSome && descriptionOf park.Call = description)
+                            |> Map.count
+
+                        let recorded =
+                            OpenFileTable.holdCount id system.Machine.OpenFiles |> Option.defaultValue 0
+
+                        if recorded <> expected then
+                            failwith
+                                $"%s{where}: description %d{description} records %d{recorded} holds, expected %d{expected}"
+
                     // Gone once nothing references either end.
                     match Map.tryFind pipeId system.Machine.Pipes with
                     | Some pipe -> PipeBuffer.held pipe.Buffer |> shouldEqual (held reference.Buffer)

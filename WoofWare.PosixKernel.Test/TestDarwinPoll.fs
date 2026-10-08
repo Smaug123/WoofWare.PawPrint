@@ -682,10 +682,7 @@ module TestDarwinPoll =
         finishAnswer both |> shouldEqual ([ pollIn ||| pollOut ||| pollHup ], 1)
 
         // A poll made in that final state.
-        let fresh =
-            { both with
-                Tasks = UnixTaskTable.unpark poller both.Tasks
-            }
+        let fresh = UnixParkState.unpark poller both
 
         answered [ entry socket (pollIn ||| pollOut) ] fresh
         |> shouldEqual ([ pollIn ||| pollHup ], 1)
@@ -789,10 +786,7 @@ module TestDarwinPoll =
         |> Map.containsKey acceptedId
         |> shouldEqual false
 
-        let fresh =
-            { closed with
-                Tasks = UnixTaskTable.unpark poller closed.Tasks
-            }
+        let fresh = UnixParkState.unpark poller closed
 
         answered [ entry client pollIn ] fresh
         |> shouldEqual ([ pollIn ||| pollHup ], 1)

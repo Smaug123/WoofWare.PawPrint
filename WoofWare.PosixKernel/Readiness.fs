@@ -609,24 +609,35 @@ module KqueueQueue =
         )
 
     /// Something happened to the socket `socketId` that wakes each filter of
-    /// `filters`, in that order: in every kqueue, and in the kqueue of every
-    /// Darwin `poll` asleep (`ParkedKqueuePoll`), queue each registration of
-    /// the socket for that filter whose filter is ready now and which is not
-    /// queued already. Of several registrations of the socket for one filter,
-    /// made through different descriptors onto it, the newest-registered is
-    /// queued first.
+    /// `filters`, in that order: in every kqueue `system`'s process owns
+    /// (`KqueueState.Owner`), and in the kqueue of every Darwin `poll` asleep in
+    /// it (`ParkedKqueuePoll`), queue each registration of the socket for that
+    /// filter whose filter is ready now and which is not queued already. Of
+    /// several registrations of the socket for one filter, made through
+    /// different descriptors onto it, the newest-registered is queued first.
+    ///
+    /// Fails loudly if a kqueue another process owns registers anything: its
+    /// registrations name descriptors in that process's table, which this
+    /// process's view cannot read, so whether the event reaches them is not
+    /// known here.
     let activate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (filters : KqueueFilter list)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
+        let owner = system.Process.ProcessId
+
         let kqueues =
             OpenFileTable.toSeq system.Machine.OpenFiles
             |> Seq.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
-                | OpenFileTarget.Kqueue state -> Some (id, state)
+                | OpenFileTarget.Kqueue state when state.Owner = owner -> Some (id, state)
+                | OpenFileTarget.Kqueue state when state.Registrations.IsEmpty -> None
+                | OpenFileTarget.Kqueue state ->
+                    failwith
+                        $"KqueueQueue.activate: an event on socket %O{socketId} in process %O{owner} may reach kqueue %O{id}, which process %O{state.Owner} owns and which registers %A{Map.keys state.Registrations |> Seq.toList}. Those registrations name descriptors in process %O{state.Owner}'s table, which this process's view cannot read, so which of them name the socket is not known here."
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
@@ -654,6 +665,8 @@ module KqueueQueue =
                         system
             )
 
+        // A Darwin poll holds no description (`ParkedSyscall.descriptions`), so
+        // rewriting its park moves no hold.
         let tasks =
             system.Tasks
             |> Map.map (fun _ task ->
@@ -840,8 +853,15 @@ module SocketWake =
         | SocketWake.RefusalReset -> []
 
     /// `wake` happened to the socket `socketId`: signal every epoll
-    /// registration of it, and activate every kqueue registration of it,
-    /// including those of a sleeping Darwin `poll`.
+    /// registration of it on the machine, whichever process made it, and
+    /// activate every kqueue registration of it in a kqueue `system`'s process
+    /// owns, including those of a Darwin `poll` asleep in it (see
+    /// `KqueueQueue.activate`).
+    ///
+    /// An epoll registration is reached through the description it names,
+    /// as Linux reaches an epitem through the file's wait queue, so no
+    /// descriptor table is read. A kqueue registration names a descriptor in
+    /// its owner's table, so only the owner's view can resolve it.
     ///
     /// Called with the socket already in the state the event left it in,
     /// since a kqueue registration is activated only if its filter is then

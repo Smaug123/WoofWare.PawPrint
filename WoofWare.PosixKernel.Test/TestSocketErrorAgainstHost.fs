@@ -353,21 +353,21 @@ module TestSocketErrorAgainstHost =
 
         match UnixSocket.getsockopt fd level optionName (userBuffer value) lengthBuffer read system with
         | Error refusal -> failwith $"the model refused SO_ERROR: %s{SocketOptionRefusal.describe refusal}"
-        | Ok (GetSockOptAnswer.Failed error, system) ->
+        | Ok (GetSockOptAnswer.Failed (error, overwritten), system) ->
             {
                 Errno = errnoOf platform error
                 Value = untouched value (Array.create 8 sentinel)
-                Length = untouched lengthCell declaredLength
+                Length = untouched lengthCell (Option.defaultValue declaredLength overwritten)
             },
             system
-        | Ok (GetSockOptAnswer.Reported (reported, length), system) ->
+        | Ok (GetSockOptAnswer.Reported copied, system) ->
             let bytes = Array.create 8 sentinel
-            Array.blit (BitConverter.GetBytes reported) 0 bytes 0 (int length)
+            copied.CopyTo bytes
 
             {
                 Errno = 0
                 Value = untouched value bytes
-                Length = untouched lengthCell length
+                Length = untouched lengthCell (uint32 copied.Length)
             },
             system
 

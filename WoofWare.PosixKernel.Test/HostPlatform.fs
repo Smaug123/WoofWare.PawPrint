@@ -1,8 +1,38 @@
 namespace WoofWare.PosixKernel.Test
 
+open System
 open System.Runtime.InteropServices
+open System.Text
+open System.Text.RegularExpressions
 open NUnit.Framework
 open WoofWare.PosixKernel
+
+/// Reading a Linux kernel's version out of the release string `uname -r`
+/// prints.
+[<RequireQualifiedAccess>]
+module LinuxRelease =
+
+    /// The version a release such as `6.17.0-1022-azure` or `6.18.5` begins with,
+    /// or `None` for one that does not begin `major.minor`. A missing patch
+    /// level is 0, as the kernel's own Makefile prints a `SUBLEVEL` of 0.
+    let version (release : string) : LinuxKernelVersion option =
+        let m = Regex.Match (release, @"^([0-9]+)\.([0-9]+)(?:\.([0-9]+))?")
+
+        if not m.Success then
+            None
+        else
+            let part (i : int) : uint32 =
+                if m.Groups.[i].Success then
+                    UInt32.Parse m.Groups.[i].Value
+                else
+                    0u
+
+            Some
+                {
+                    Major = part 1
+                    Minor = part 2
+                    Patch = part 3
+                }
 
 /// The kernel *this test process* is running on, in the vocabulary the emulated
 /// kernel uses for the kernel it impersonates.
@@ -15,6 +45,9 @@ open WoofWare.PosixKernel
 /// kernel.
 [<RequireQualifiedAccess>]
 module HostPlatform =
+
+    [<DllImport("libc", EntryPoint = "uname", SetLastError = true)>]
+    extern int private hostUname(byte[] buffer)
 
     /// `None` on a host whose flavour the library does not model at all —
     /// Windows, or any Unix that is neither Linux nor Darwin.
@@ -77,4 +110,45 @@ module HostPlatform =
             match presetFor flavour architecture with
             | None -> Assert.Ignore $"the library has no %O{flavour} %O{architecture} platform to compare against"
             | Some platform -> action platform
+        )
+
+    /// This Linux host's `uname -r`. Linux's `struct utsname` is six 65-byte
+    /// fields, and the release is the third.
+    let private linuxRelease () : string =
+        let buffer = Array.zeroCreate<byte> (6 * 65)
+
+        if hostUname buffer <> 0 then
+            failwith $"uname failed with errno %d{Marshal.GetLastPInvokeError ()}"
+
+        let field = ReadOnlySpan<byte> (buffer, 2 * 65, 65)
+        let length = field.IndexOf 0uy
+
+        if length < 0 then
+            failwith "uname's release field is not NUL-terminated"
+
+        Encoding.ASCII.GetString (field.Slice (0, length))
+
+    /// Run `action` against a model of the kernel this host is running: the
+    /// preset for its flavour and architecture, but running this host's own
+    /// Linux version and reporting its own release. For tests of a fact that
+    /// changed between kernel versions, which must hold on whichever kernel the
+    /// suite runs on. Skips where `onUnixHostPreset` does.
+    let onUnixHostKernel (action : SimulatedUnixPlatform -> unit) : unit =
+        onUnixHostPreset (fun preset ->
+            match SimulatedUnixPlatform.kernel preset with
+            | SimulatedUnixKernel.Darwin -> action preset
+            | SimulatedUnixKernel.Linux _ ->
+
+            let release = linuxRelease ()
+
+            match LinuxRelease.version release with
+            | None -> failwith $"this host's release %s{release} does not begin with a Linux version"
+            | Some version ->
+                SimulatedUnixPlatform.createOrFail
+                    "HostPlatform.onUnixHostKernel"
+                    (SimulatedUnixKernel.Linux version)
+                    (SimulatedUnixPlatform.architecture preset)
+                    (SimulatedUnixPlatform.pageSize preset)
+                    release
+                |> action
         )

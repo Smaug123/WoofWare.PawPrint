@@ -68,6 +68,75 @@ module internal UnixSystemState =
                 }
         }
 
+/// Writing a task's park, together with the holds it takes on open file
+/// descriptions.
+[<RequireQualifiedAccess>]
+module internal UnixParkState =
+    /// The machine's open file table with the holds of `released` let go of and
+    /// those of `taken` taken: one per time a park names a description
+    /// (`ParkedSyscall.descriptions`).
+    let private moveHolds
+        (released : TaskPark option)
+        (taken : TaskPark option)
+        (openFiles : OpenFileTable)
+        : OpenFileTable
+        =
+        let descriptions (park : TaskPark option) : OpenFileDescriptionId list =
+            match park with
+            | None -> []
+            | Some park -> ParkedSyscall.descriptions park.Syscall
+
+        let openFiles =
+            (openFiles, descriptions released)
+            ||> List.fold (fun openFiles id -> OpenFileTable.releaseHold id openFiles)
+
+        (openFiles, descriptions taken)
+        ||> List.fold (fun openFiles id -> OpenFileTable.hold id openFiles)
+
+    /// `system` with `task` parked in `park`, which replaces any park it was in,
+    /// and with the holds the machine records moved to match: the old park's
+    /// let go of, and the new park's taken. Every write of a park goes through
+    /// here or `unpark`, so the holds the open file table records are always
+    /// those the parks name.
+    ///
+    /// Refuses to replace a park of one syscall with a park of another, as
+    /// `UnixTaskTable.withPark` does. Writes `park` as it stands, ordinal and
+    /// all: `UnixWait.park` is what mints a fresh ordinal.
+    let setPark<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (park : TaskPark)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let previous = UnixTaskTable.parkOf task system.Tasks
+
+        { system with
+            Machine =
+                { system.Machine with
+                    OpenFiles = moveHolds previous (Some park) system.Machine.OpenFiles
+                }
+            Tasks = UnixTaskTable.withPark task park system.Tasks
+        }
+
+    /// `system` with `task` no longer parked, its call having returned or been
+    /// ended, and the holds its park took let go of. Destroys nothing: a
+    /// description only the park held stays in the table until
+    /// `ObjectLifetime.releaseUnreferenced` is asked about it.
+    let unpark<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let previous = UnixTaskTable.parkOf task system.Tasks
+
+        { system with
+            Machine =
+                { system.Machine with
+                    OpenFiles = moveHolds previous None system.Machine.OpenFiles
+                }
+            Tasks = UnixTaskTable.unpark task system.Tasks
+        }
+
 /// A simulated process and the machine it runs on before either has run: what
 /// `UnixSystem.initial` makes, which the setters in `UnixBootImage` configure
 /// and `UnixBootImage.boot` turns into the `UnixSystem` that syscalls take.

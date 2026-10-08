@@ -41,7 +41,7 @@ module TestUnixTaskLifecycle =
         let create =
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Linux -> FileDescriptorRegistry.createEpoll
-            | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue
+            | SimulatedUnixFlavour.Darwin -> FileDescriptorRegistry.createKqueue system.Process.ProcessId
 
         let fd, registry = create (UnixSystemState.fileDescriptors system)
 
@@ -196,7 +196,7 @@ module TestUnixTaskLifecycle =
                         (status, ExitStatus.waitidStatus exitStatus) |> shouldEqual (status, kept)
                     | ProcessTermination.Signaled _ -> failwith $"expected an exit, got %O{ended.Termination}"
 
-                    ended.Machine |> shouldEqual system.Machine
+                    EndedMachine.assertTasksGone system ended
                     perTaskEntries ended.FinalProcess |> shouldEqual []
 
                     { ended.FinalProcess with
@@ -284,7 +284,7 @@ module TestUnixTaskLifecycle =
             | ProcessTermination.Exited status -> ExitStatus.waitidStatus status |> shouldEqual expected
             | ProcessTermination.Signaled _ -> failwith $"expected an exit, got %O{ended.Termination}"
 
-            ended.Machine |> shouldEqual system.Machine
+            EndedMachine.assertTasksGone system ended
             perTaskEntries ended.FinalProcess |> shouldEqual []
 
             // The process-directed signal is the process's, not a task's.
@@ -447,7 +447,7 @@ module TestUnixTaskLifecycle =
             ExitStatus.waitidStatus exitStatus |> shouldEqual (kept platform status)
         | ProcessTermination.Signaled _ -> failwith $"expected an exit, got %O{ended.Termination}"
 
-        ended.Machine |> shouldEqual before.Machine
+        EndedMachine.assertTasksGone before ended
         perTaskEntries ended.FinalProcess |> shouldEqual []
 
         SignalState.pending ended.FinalProcess.Signals
@@ -552,9 +552,7 @@ module TestUnixTaskLifecycle =
                         Parked = Set.add task model.Parked
                     }
                 | Op.Unpark task when live task ->
-                    { system with
-                        Tasks = UnixTaskTable.unpark task system.Tasks
-                    },
+                    UnixParkState.unpark task system,
                     { model with
                         Parked = Set.remove task model.Parked
                     }
@@ -627,7 +625,20 @@ module TestUnixTaskLifecycle =
                         |> shouldEqual (SignalState.dispositions signalsBefore)
 
                         after.Tasks |> shouldEqual (Map.remove task system.Tasks)
-                        after.Machine |> shouldEqual system.Machine
+
+                        // The task's thread ID is freed, and nothing else on the
+                        // machine moves.
+                        ThreadIdAllocator.live after.Machine.ThreadIds
+                        |> shouldEqual (
+                            Set.remove
+                                (UnixTaskTable.osThreadIdOf task system.Tasks)
+                                (ThreadIdAllocator.live system.Machine.ThreadIds)
+                        )
+
+                        { after.Machine with
+                            ThreadIds = system.Machine.ThreadIds
+                        }
+                        |> shouldEqual system.Machine
 
                         { after.Process with
                             Signals = signalsBefore

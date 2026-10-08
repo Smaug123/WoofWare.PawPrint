@@ -181,11 +181,17 @@ module TestBlockingAccept =
                         }
                 )
 
+                // The park holds the listener, and with that hold let go of,
+                // nothing else has changed.
+                OpenFileTable.holdCount listener parked.Machine.OpenFiles
+                |> shouldEqual (Some 1)
+
                 { parked with
                     Tasks = system.Tasks
                     Machine =
                         { parked.Machine with
                             NextParkOrdinal = system.Machine.NextParkOrdinal
+                            OpenFiles = OpenFileTable.releaseHold listener parked.Machine.OpenFiles
                         }
                 }
                 |> shouldEqual system
@@ -324,14 +330,7 @@ module TestBlockingAccept =
                 | other -> failwith $"expected the accept to park again, got %A{other}"
             else
                 let oracle =
-                    UnixConnection.accept
-                        1
-                        fd
-                        destination
-                        declaredLength
-                        { system with
-                            Tasks = UnixTaskTable.unpark 1 system.Tasks
-                        }
+                    UnixConnection.accept 1 fd destination declaredLength (UnixParkState.unpark 1 system)
 
                 finished |> shouldEqual oracle
 
@@ -1463,7 +1462,16 @@ module TestBlockingAccept =
 
         let absent = OpenFileDescriptionId 1_000_000L
 
-        UnixSystem.checkInvariants (parkedOn absent 1_000)
+        system
+        |> ForgedPark.onAbsent
+            1
+            (ParkedSyscall.Accept
+                {
+                    Listener = SleepTarget.Waiting (absent, 1_000)
+                    Destination = UserBuffer.Mapped
+                    DeclaredLength = 16u
+                })
+        |> UnixSystem.checkInvariants
         |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentDescription (1, absent) ]
 
     /// `system` with the park of `task` passed through `rewrite`.
@@ -1479,19 +1487,12 @@ module TestBlockingAccept =
         | Some ({
                     Syscall = ParkedSyscall.Accept accept
                 } as park) ->
-            { system with
-                Tasks =
-                    Map.add
-                        task
-                        { state with
-                            Parked =
-                                Some
-                                    { park with
-                                        Syscall = ParkedSyscall.Accept (rewrite accept)
-                                    }
-                        }
-                        system.Tasks
-            }
+            UnixParkState.setPark
+                task
+                { park with
+                    Syscall = ParkedSyscall.Accept (rewrite accept)
+                }
+                system
         | other -> failwith $"task %d{task} is parked in %A{other}"
 
     /// `system` with the listener `fd` names marked drained, as only a Darwin

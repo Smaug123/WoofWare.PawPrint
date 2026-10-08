@@ -251,7 +251,59 @@ module SocketPhase =
         | SocketPhase.Refused _
         | SocketPhase.DatagramPeer _ -> false
 
+/// `SO_LINGER` as a socket holds it.
+type SocketLinger =
+    {
+        /// `l_onoff`: whether a close lingers at all.
+        Enabled : bool
+        /// `l_linger`, in hundredths of a second, kept whether or not `Enabled`
+        /// is. Darwin keeps it at this resolution in sixteen bits, and a set
+        /// stores the low sixteen bits of what it computes (measured); Linux
+        /// keeps whole seconds, so its value here is always a multiple of 100.
+        Hundredths : int64
+    }
+
+/// The socket options `setsockopt(2)` sets and `getsockopt(2)` reads that this
+/// kernel stores and nothing else in it consults. `accept(2)` gives the socket
+/// it returns the listener's.
+type SocketOptions =
+    {
+        /// `TCP_NODELAY`, which turns Nagle's algorithm off. It has no
+        /// observable effect here: a loopback transfer is delivered at once
+        /// whatever its size, so there is nothing for the algorithm to hold
+        /// back.
+        NoDelay : bool
+        /// `IPV6_V6ONLY`, which confines an IPv6 socket to IPv6 peers. Only an
+        /// IPv6 socket has it; it can change only while the socket has no
+        /// address.
+        Ipv6Only : bool
+        /// `SO_LINGER`. Stored only: what a close does with it -- with a
+        /// linger time of zero, a reset instead of an orderly shutdown --
+        /// belongs with `close` and `shutdown`, which do not model it yet, and
+        /// so refuse the close of a connected socket whose connection that
+        /// reset would reach (`DescriptionReleaseRefusal.AbortiveClose`).
+        Linger : SocketLinger
+    }
+
+[<RequireQualifiedAccess>]
+module SocketOptions =
+    /// What a socket starts with on both kernels, measured: every option off,
+    /// and a linger time of zero. A new IPv6 socket's `Ipv6Only` is instead the
+    /// machine's sysctl; see `UnixMachineState.Ipv6OnlyByDefault`.
+    let initial : SocketOptions =
+        {
+            NoDelay = false
+            Ipv6Only = false
+            Linger =
+                {
+                    Enabled = false
+                    Hundredths = 0L
+                }
+        }
+
 /// A socket, as the emulated kernel's socket table holds it.
+///
+/// Carries no identity of its own:/// A socket, as the emulated kernel's socket table holds it.
 ///
 /// Carries no identity of its own: the table is keyed by `SocketId`, so a field
 /// here would be a second copy of the key, free to disagree with it.
@@ -278,6 +330,9 @@ type SocketDescription =
         /// the call rather than when it was bound. See
         /// `SimulatedUnixPlatform.bindConflict`.
         ReuseAddress : bool
+        /// The other options this kernel stores for the socket. See
+        /// `SocketOptions`.
+        Options : SocketOptions
         /// Where this socket is in its connection lifecycle: idle, listening
         /// (with the accept queue), connected, or latched by a refusal.
         ///
@@ -543,6 +598,14 @@ type KqueueRegistration =
 /// Everything one Darwin kqueue holds.
 type KqueueState =
     {
+        /// The process that created the kqueue, whose descriptor table its
+        /// registrations' descriptor numbers are read in.
+        ///
+        /// A kqueue belongs to that process alone: Darwin closes a kqueue's
+        /// descriptor in the child of a `fork(2)` (it carries `FD_CLOFORK`), and
+        /// this library models no other way for a descriptor to reach another
+        /// process, so no other process's descriptor names it.
+        Owner : ProcessId
         /// Whether a `close(2)` has ended a `kevent` wait on this kqueue, which
         /// Darwin calls draining it.
         ///
@@ -553,11 +616,12 @@ type KqueueState =
         /// Closing a descriptor no waiter entered through changes nothing.
         Drained : bool
         /// The registrations, keyed as Darwin keys them: the descriptor number
-        /// the registration was made through, and the filter. Closing that
-        /// descriptor removes the registration, in every kqueue, even while
-        /// something else keeps what it named alive (another descriptor, or a
-        /// call in flight that holds it); so every registration names an open
-        /// descriptor, and destroying a description touches none.
+        /// the registration was made through, in `Owner`'s descriptor table,
+        /// and the filter. Closing that descriptor removes the registration,
+        /// in every kqueue `Owner` owns, even while something else keeps what
+        /// it named alive (another descriptor, or a call in flight that holds
+        /// it); so every registration names an open descriptor, and destroying
+        /// a description touches none.
         Registrations : Map<int * KqueueFilter, KqueueRegistration>
         /// The registrations activated and still to be reported, in the order
         /// a wait reports them; and, for a registration added without
@@ -859,8 +923,8 @@ type DescriptorTable =
             Fds : Map<int, DescriptorEntry>
         }
 
-/// One entry of the machine's open file table: the description, and how many
-/// descriptors name it.
+/// One entry of the machine's open file table: the description, how many
+/// descriptors name it, and how many holds calls in flight have on it.
 type private OpenFileEntry =
     {
         Description : OpenFileDescription
@@ -869,6 +933,12 @@ type private OpenFileEntry =
         /// that holds one of them cannot see the others; `OpenFileTable.checkInvariants`
         /// holds it to the tables it is given.
         Descriptors : int
+        /// How many holds syscalls in flight have on this description, in every
+        /// process on the machine: one for each time a park names it
+        /// (`ParkedSyscall.descriptions`). Stored rather than derived for the
+        /// reason `Descriptors` is: a process's view cannot see another
+        /// process's parks. `UnixSystem.checkInvariants` holds it to the parks.
+        Holds : int
     }
 
 /// The machine's open file descriptions, POSIX's "open file description" and
@@ -877,13 +947,12 @@ type private OpenFileEntry =
 ///
 /// A description is live exactly while some descriptor names it or something
 /// outside the descriptor tables holds it, as a real kernel keeps a file while
-/// anything holds a reference to it. Each description counts the descriptors
-/// naming it (`OpenFileTable.descriptorCount`). The holders outside the tables
-/// are not counted here: each names the description in its own record, and
-/// every function that can destroy a description is told which ones they hold
-/// (`heldOutsideTable`). Today the only such holder is a syscall in flight
-/// (`ParkedSyscall.descriptions`); `SCM_RIGHTS` messages and `mmap` would be
-/// more, and are not modelled.
+/// anything holds a reference to it. Each description counts both: the
+/// descriptors naming it (`OpenFileTable.descriptorCount`), and the holds of
+/// syscalls in flight (`OpenFileTable.holdCount`, one for each time a park
+/// names it, `ParkedSyscall.descriptions`). It is destroyed when both are
+/// zero. `SCM_RIGHTS` messages and `mmap` would hold descriptions too, and are
+/// not modelled.
 ///
 /// An epoll instance's interest table and ready list, and a kqueue's
 /// registrations, are the state of the description they are reached through
@@ -1113,6 +1182,12 @@ module OpenFileTable =
     let descriptorCount (id : OpenFileDescriptionId) (table : OpenFileTable) : int option =
         Map.tryFind id table.Entries |> Option.map (fun entry -> entry.Descriptors)
 
+    /// How many holds syscalls in flight have on the description `id`, in every
+    /// process on the machine, if it is live: one for each time a park names it
+    /// (`ParkedSyscall.descriptions`).
+    let holdCount (id : OpenFileDescriptionId) (table : OpenFileTable) : int option =
+        Map.tryFind id table.Entries |> Option.map (fun entry -> entry.Holds)
+
     /// A fresh description, named by the one descriptor its creator is about to
     /// install, and its identity.
     let internal create
@@ -1131,6 +1206,7 @@ module OpenFileTable =
                     {
                         Description = description
                         Descriptors = 1
+                        Holds = 0
                     }
                     table.Entries
             NextId = OpenFileDescriptionId (raw + 1L)
@@ -1202,6 +1278,37 @@ module OpenFileTable =
                 }
             )
 
+    /// A syscall going to sleep takes one more hold on the live description
+    /// `id`.
+    let internal hold (id : OpenFileDescriptionId) (table : OpenFileTable) : OpenFileTable =
+        table
+        |> mapEntry
+            "hold"
+            id
+            (fun entry ->
+                { entry with
+                    Holds = entry.Holds + 1
+                }
+            )
+
+    /// A syscall in flight lets go of one hold on the live description `id`.
+    /// Loudly partial on a description no call holds. Destroys nothing:
+    /// `destroyIfUnreferenced` is what frees a description nothing references.
+    let internal releaseHold (id : OpenFileDescriptionId) (table : OpenFileTable) : OpenFileTable =
+        table
+        |> mapEntry
+            "releaseHold"
+            id
+            (fun entry ->
+                if entry.Holds <= 0 then
+                    failwith
+                        $"OpenFileTable.releaseHold: open file description %O{id} records %d{entry.Holds} holds by calls in flight, so none can be let go of (this is a bug in this library)."
+
+                { entry with
+                    Holds = entry.Holds - 1
+                }
+            )
+
     /// Rewrite the status of the description `id`. Partial: `id` must be
     /// live, which every caller has just established.
     let internal mapStatus
@@ -1267,25 +1374,23 @@ module OpenFileTable =
         }
 
     /// Destroy the description `id` if nothing references it any more: no
-    /// descriptor in any process names it, and it is not in `heldOutsideTable`,
-    /// the descriptions something outside the descriptor tables holds. Reports
-    /// the description it destroyed, if it did; a description already gone, or
-    /// still referenced, is left as it is and answers `None`.
+    /// descriptor in any process names it, and no syscall in flight holds it
+    /// (`holdCount`). Reports the description it destroyed, if it did; a
+    /// description already gone, or still referenced, is left as it is and
+    /// answers `None`.
     ///
-    /// For a holder outside the descriptor tables that has just let go of `id`:
-    /// it calls this with what is still held once it has gone. Like
+    /// For a holder that has just let go of `id`. Like
     /// `FileDescriptorRegistry.dropDescriptor`, it releases nothing the
     /// description referenced.
     let destroyIfUnreferenced
         (id : OpenFileDescriptionId)
-        (heldOutsideTable : Set<OpenFileDescriptionId>)
         (table : OpenFileTable)
         : OpenFileTable * OpenFileDescription option
         =
         match Map.tryFind id table.Entries with
         | None -> table, None
         | Some entry ->
-            if entry.Descriptors > 0 || Set.contains id heldOutsideTable then
+            if entry.Descriptors > 0 || entry.Holds > 0 then
                 table, None
             else
                 destroy id table, Some entry.Description
@@ -2277,19 +2382,20 @@ module FileDescriptorRegistry =
                     registry.Descriptors.Fds)
                 registry
 
-    /// Remove a descriptor from the table, destroying the description it named
-    /// if nothing references that description any more: no other descriptor,
-    /// in this process or any other, names it, and it is not in
-    /// `heldOutsideTable`, the descriptions something outside the descriptor
-    /// tables holds. Mirrors `close(2)`: returns `Error BadFd` (= `EBADF`) when
-    /// `fd` is not currently live.
+    /// Remove a descriptor from the table of the process `owner`, destroying the
+    /// description it named if nothing references that description any more:
+    /// no other descriptor, in this process or any other, names it, and no
+    /// syscall in flight holds it (`OpenFileTable.holdCount`). Mirrors
+    /// `close(2)`: returns `Error BadFd` (= `EBADF`) when `fd` is not currently
+    /// live.
     ///
     /// Closing one descriptor of a `dup` pair leaves the other's description
     /// intact — true of everything this library models, though not of POSIX in
     /// general (see the record-lock note on `FileDescriptorRegistry`).
     ///
     /// The descriptor-table half of `close(2)`, and only that half: it drops
-    /// the descriptor, every kqueue registration made through it, and, if it
+    /// the descriptor, every registration made through it in a kqueue `owner`
+    /// holds (`KqueueState.Owner`), and, if it
     /// was the last reference, the description, and it releases nothing that
     /// description referenced. `UnixDescriptor.close` is the syscall, and the
     /// one caller; a client that wants `close(2)` wants
@@ -2299,14 +2405,14 @@ module FileDescriptorRegistry =
     ///
     /// Reports the description it destroyed, if it destroyed one: closing a
     /// `dup(2)` of a live descriptor destroys nothing and answers `None`, and
-    /// so does closing the last descriptor onto a description something outside
-    /// the table still holds. The caller needs this because a description can
+    /// so does closing the last descriptor onto a description a call in flight
+    /// still holds. The caller needs this because a description can
     /// be the last reference to a *kernel object* whose lifetime is decided
     /// elsewhere — `UnixMachineState.Sockets` is the one that exists today —
     /// and this registry cannot reach that state to clean it up itself.
     let internal dropDescriptor
+        (owner : ProcessId)
         (fd : int)
-        (heldOutsideTable : Set<OpenFileDescriptionId>)
         (registry : FileDescriptorRegistry)
         : Result<FileDescriptorRegistry * OpenFileDescription option, FileDescriptorCloseError>
         =
@@ -2316,13 +2422,17 @@ module FileDescriptorRegistry =
             // Every kqueue registration made through this descriptor goes with
             // it, queued or not, whether or not something else keeps the
             // description alive: Darwin keys a registration by the descriptor
-            // number (measured, `kevent-register.c` section G).
+            // number (measured, `kevent-register.c` section G). The number is
+            // one in the kqueue's owner's table, so another process's kqueue
+            // registers nothing through this descriptor, whatever numbers it
+            // holds.
             let openFiles =
                 (registry.OpenFiles, OpenFileTable.toSeq registry.OpenFiles)
                 ||> Seq.fold (fun openFiles (kqueue, description) ->
                     match description.Target with
                     | OpenFileTarget.Kqueue state when
-                        state.Registrations |> Map.exists (fun (registeredFd, _) _ -> registeredFd = fd)
+                        state.Owner = owner
+                        && state.Registrations |> Map.exists (fun (registeredFd, _) _ -> registeredFd = fd)
                         ->
                         OpenFileTable.setKqueueState
                             kqueue
@@ -2349,8 +2459,7 @@ module FileDescriptorRegistry =
                     $"FileDescriptorRegistry.dropDescriptor: file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is a bug in this library: every descriptor names a description in the table)"
 
             let openFiles, destroyed =
-                OpenFileTable.release id openFiles
-                |> OpenFileTable.destroyIfUnreferenced id heldOutsideTable
+                OpenFileTable.release id openFiles |> OpenFileTable.destroyIfUnreferenced id
 
             Ok (
                 {
@@ -2499,10 +2608,11 @@ module FileDescriptorRegistry =
     /// descriptor flags are `UnixKqueue.kqueue`'s to set.
     ///
     /// Total, like `createEpoll`.
-    let createKqueue (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+    let createKqueue (owner : ProcessId) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
         createAnonymous
             (OpenFileTarget.Kqueue
                 {
+                    Owner = owner
                     Drained = false
                     Registrations = Map.empty
                     Active = []
@@ -2777,9 +2887,10 @@ module FileDescriptorRegistry =
     /// against this process's descriptor table alone, which holds every
     /// descriptor on a machine running this one process.
     ///
-    /// Whether a description is still referenced is not among them: what holds
-    /// one outside the table is not recorded here, so that is
-    /// `UnixSystem.checkInvariants`'s `UnreferencedDescription`.
+    /// Whether a description is still referenced, and whether its holds are
+    /// those the parks name, are not among them: the parks are the tasks',
+    /// which a registry does not hold, so those are `UnixSystem.checkInvariants`'s
+    /// `UnreferencedDescription` and `HoldCountMismatch`.
     let checkInvariants (registry : FileDescriptorRegistry) : FileDescriptorRegistryDefect list =
         let descriptions = OpenFileTable.descriptions registry.OpenFiles
 
@@ -2853,7 +2964,8 @@ module FileDescriptorRegistry =
     module Unchecked =
         /// A registry whose descriptor table is `fds` and whose open file
         /// descriptions are `descriptions`, each counting the descriptors in
-        /// `fds` that name it, with `nextId` the identity the next one gets.
+        /// `fds` that name it and no holds, with `nextId` the identity the next
+        /// one gets.
         let ofParts
             (fds : Map<int, OpenFileDescriptionId>)
             (descriptions : Map<OpenFileDescriptionId, OpenFileDescription>)
@@ -2875,6 +2987,7 @@ module FileDescriptorRegistry =
                                 {
                                     Description = description
                                     Descriptors = Map.tryFind id naming |> Option.defaultValue 0
+                                    Holds = 0
                                 }
                             )
                         NextId = nextId
