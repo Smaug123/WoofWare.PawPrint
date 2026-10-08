@@ -1641,10 +1641,9 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``statOf an inode the filesystem does not hold is None`` () : unit =
-        // `None` rather than a crash, because `statOf` is public and a caller
-        // that got its inode from somewhere other than a live descriptor cannot
-        // be assumed to have checked. `fstat` is the caller that *can* assume it,
-        // and it crashes on `None` for that reason.
+        // `None` rather than a crash, so that each caller says what a missing
+        // inode means to it. `fstat` holds its inode through a live descriptor,
+        // so for it a missing inode is a bug in this library, and it crashes.
         UnixPathResolution.statOf (InodeNumber 99L) linux |> shouldEqual None
 
     [<Test>]
