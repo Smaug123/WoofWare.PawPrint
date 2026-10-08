@@ -290,11 +290,14 @@ type SocketOptions =
         /// IPv6 socket has it; it can change only while the socket has no
         /// address.
         Ipv6Only : bool
-        /// `SO_LINGER`. Stored only: what a close does with it -- with a
-        /// linger time of zero, a reset instead of an orderly shutdown --
-        /// belongs with `close` and `shutdown`, which do not model it yet, and
-        /// so refuse the close of a connected socket whose connection that
-        /// reset would reach (`DescriptionReleaseRefusal.AbortiveClose`).
+        /// `SO_LINGER`. Stored only: what a close does with it belongs with
+        /// `close` and `shutdown`, which do not model it yet, and so refuse the
+        /// close of a connected socket where it would differ from the ordinary
+        /// close. With a linger time of zero that close is a reset instead of
+        /// an orderly shutdown, refused while the connection is still
+        /// referenced (`DescriptionReleaseRefusal.AbortiveClose`); with a
+        /// positive time it waits for bytes still in the send buffer, refused
+        /// where a real kernel waits (`DescriptionReleaseRefusal.LingeringClose`).
         Linger : SocketLinger
     }
 

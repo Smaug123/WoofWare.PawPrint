@@ -117,7 +117,9 @@ type AcceptRefusal =
     /// listener's `SO_LINGER`, on with a time of zero, while the client is
     /// still open. A real kernel resets the connection, and the client reads
     /// ECONNRESET; this kernel models no abortive close. See
-    /// `DescriptionReleaseRefusal.AbortiveClose`.
+    /// `DescriptionReleaseRefusal.AbortiveClose`. Under a positive linger time
+    /// the drop is the ordinary close, since the server end has written
+    /// nothing that could still be in its send buffer.
     | AbortiveDrop of listener : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]

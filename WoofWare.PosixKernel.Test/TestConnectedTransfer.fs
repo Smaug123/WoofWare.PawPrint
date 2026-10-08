@@ -633,6 +633,184 @@ module TestConnectedTransfer =
         assertClean system
 
     // ------------------------------------------------------------------
+    // A close under SO_LINGER with a time
+    // ------------------------------------------------------------------
+
+    /// `SO_LINGER` on `fd`, set as section G of `tcp-shutdown.c` sets it:
+    /// `l_onoff` of `onOff` and a time of `seconds`, through `SO_LINGER_SEC`
+    /// where the flavour has it and `SO_LINGER` otherwise.
+    let private lingerFor (fd : int) (onOff : int) (seconds : int) (system : UnixSystem<int, string>) =
+        let platform = system.Machine.UnixPlatform
+        let level = SimulatedUnixPlatform.socketOptionLevel platform
+
+        let name =
+            match SimulatedUnixPlatform.lingerSecondsOption platform with
+            | Some name -> name
+            | None -> SimulatedUnixPlatform.lingerOption platform
+
+        let value = OptionValue.ofLinger onOff seconds
+
+        let length = uint32 value.Length
+
+        let supplied =
+            match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped length system with
+            | Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create (value, 0, count))
+            | other -> failwith $"admitting SO_LINGER on fd %d{fd}: %A{other}"
+
+        match UnixSocket.setsockopt fd level name UserBuffer.Mapped length supplied system with
+        | Ok (SetSockOptAnswer.Set, system) -> system
+        | other -> failwith $"setting SO_LINGER on fd %d{fd}: %A{other}"
+
+    /// What a close under `SO_LINGER` came to, as section G records it.
+    [<RequireQualifiedAccess>]
+    type private LingerRow =
+        /// The real close waited for the unsent bytes (about a second); this
+        /// kernel refuses it.
+        | Waited
+        /// The real close returned 0 at once, and the peer then read every byte
+        /// the closer had written, then end of file, with no error pending.
+        | Closed
+
+    /// A connected pair whose connecting end `c` is set up for one row: its
+    /// send buffer full behind a full peer if `unsent`, its `SO_LINGER` on
+    /// with a time of one second if `lingers` and otherwise off with that time
+    /// kept, and its description blocking if `blocking`. Returns `c`,
+    /// the peer, how many bytes `c` wrote, and the system.
+    let private lingerRowSetUp
+        (platform : SimulatedUnixPlatform)
+        (written : string)
+        (lingers : bool)
+        (blocking : bool)
+        : int * int * int64 * UnixSystem<int, string>
+        =
+        let c, p, system = pair true (systemOn small platform)
+
+        let filled, system =
+            match written with
+            | "unsent" -> fill c system
+            // Bytes that all reached the peer's receive buffer: written, but
+            // none unsent.
+            | "delivered" -> 100L, sentAll c 100 system
+            | "nothing" -> 0L, system
+            | other -> failwith $"no such row: %s{other}"
+
+        // Linux keeps the time when `l_onoff` is zero, and Darwin stores it
+        // whatever `l_onoff` is, so either way lingering off leaves a time of
+        // one second.
+        let system = lingerFor c 1 1 system
+
+        let system = if lingers then system else lingerFor c 0 1 system
+
+        (UnixMachineState.socket (socketOf c system) system.Machine).Options.Linger
+        |> shouldEqual
+            {
+                Enabled = lingers
+                Hundredths = 100L
+            }
+
+        let _, system = UnixDescriptor.setNonBlocking c (not blocking) system
+        c, p, filled, system
+
+    /// Section G of `tcp-shutdown.c` (docs/plans/2026-10-08-tcp-shutdown-linger),
+    /// replayed: `close(c)` under `SO_LINGER` {1, 1 s}, with `c`'s send buffer
+    /// full behind a full peer or with nothing written, through a blocking or a
+    /// non-blocking description. The rows `~timing` marks, where the real close
+    /// waited, are refused, with the count of bytes still in `c`'s send buffer;
+    /// every other row is the ordinary close.
+    ///
+    /// Beyond the measurement: bytes written that all reached the peer leave
+    /// nothing to wait for, and with lingering off the close never waits.
+    [<Test>]
+    let ``a close under a linger time is refused where it would wait, as section G measured`` () : unit =
+        let rows : (SimulatedUnixPlatform * string * bool * bool * LingerRow) list =
+            let linux = SimulatedUnixPlatform.linuxX64
+            let darwin = SimulatedUnixPlatform.macOsArm64
+
+            [
+                // Linux 6.18.5: 1025 ms non-blocking, 1023 ms blocking.
+                linux, "unsent", true, false, LingerRow.Waited
+                linux, "unsent", true, true, LingerRow.Waited
+                linux, "nothing", true, false, LingerRow.Closed
+                linux, "nothing", true, true, LingerRow.Closed
+                // Darwin 27.0.0: 0 ms non-blocking, 1001 ms blocking.
+                darwin, "unsent", true, false, LingerRow.Closed
+                darwin, "unsent", true, true, LingerRow.Waited
+                darwin, "nothing", true, false, LingerRow.Closed
+                darwin, "nothing", true, true, LingerRow.Closed
+            ]
+            @ [
+                for platform in Machines.platforms do
+                    for blocking in [ false ; true ] do
+                        yield platform, "delivered", true, blocking, LingerRow.Closed
+                        yield platform, "unsent", false, blocking, LingerRow.Closed
+            ]
+
+        for platform, written, lingers, blocking, expected in rows do
+            let row =
+                $"%A{SimulatedUnixPlatform.flavour platform} %s{written} lingers %b{lingers} blocking %b{blocking}"
+
+            let c, p, filled, system = lingerRowSetUp platform written lingers blocking
+
+            match expected, UnixDescriptor.close c system with
+            | LingerRow.Waited,
+              Error (CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose (socket, _, unsent))) ->
+                socket |> shouldEqual (socketOf c system)
+                // Whatever the peer's receive buffer could not take.
+                let connection = system.Machine.Connections |> Map.toList |> List.exactlyOne |> snd
+                let arrived = TcpTransfer.readable ConnectionEnd.Server connection.Transfer
+                int64 unsent |> shouldEqual (filled - int64 arrived)
+                unsent |> shouldBeGreaterThan 0
+            | LingerRow.Closed, Ok (SyscallAnswer.Completed 0L, system) ->
+                assertClean system
+
+                let rec drain (total : int64) (system : UnixSystem<int, string>) =
+                    match received p 65536 system with
+                    | ReadAnswer.Completed bytes, system when not bytes.IsEmpty ->
+                        drain (total + int64 bytes.Length) system
+                    | last, system -> total, last, system
+
+                let drained, last, system = drain 0L system
+                drained |> shouldEqual filled
+                last |> shouldEqual (ReadAnswer.Completed ImmutableArray.Empty)
+
+                match KeventWorld.readSocketError p system with
+                | GetSockOptAnswer.Reported (OptionValue.Int 0), _ -> ()
+                | other -> failwith $"%s{row}: SO_ERROR(p) answered %A{other}"
+            | _, other -> failwith $"%s{row}: expected %A{expected}, got %A{other}"
+
+    /// A close under `SO_LINGER` {1, 0} never waits, so bytes still in the
+    /// send buffer do not make it a `LingeringClose`. Darwin keeps them
+    /// counted there after the peer's reset, which leaves the closer's
+    /// connection referenced by nothing else, and so its close, even through
+    /// a blocking description, is the ordinary one; Linux discards them at the
+    /// reset.
+    [<Test>]
+    let ``a close under a zero linger time with bytes unsent after the peer's reset is the ordinary close`` () : unit =
+        for platform in Machines.platforms do
+            let c, p, system = pair true (systemOn small platform)
+            let system = lingerFor c 1 0 system
+            let _, system = fill c system
+            // `p` leaves bytes unread, so its close resets `c`.
+            let system = KeventWorld.close p system
+            // Through a blocking description, where Darwin's positive linger
+            // time would wait.
+            let _, system = UnixDescriptor.setNonBlocking c false system
+
+            let connection = system.Machine.Connections |> Map.toList |> List.exactlyOne |> snd
+
+            let expectedUnsent =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> false
+                | SimulatedUnixFlavour.Darwin -> true
+
+            TcpTransfer.unsent ConnectionEnd.Client connection.Transfer > 0
+            |> shouldEqual expectedUnsent
+
+            match UnixDescriptor.close c system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> assertClean system
+            | other -> failwith $"%A{SimulatedUnixPlatform.flavour platform}: closing c answered %A{other}"
+
+    // ------------------------------------------------------------------
     // Resets
     // ------------------------------------------------------------------
 

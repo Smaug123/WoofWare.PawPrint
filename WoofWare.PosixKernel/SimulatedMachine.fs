@@ -95,7 +95,9 @@ type ProcessEndRefusal =
     /// Closing the process's descriptors releases an open file description
     /// this library will not release (`DescriptionReleaseRefusal`): so far,
     /// the last reference to a listener holding a connection another
-    /// process's open socket made, which a real kernel resets.
+    /// process's open socket made, which a real kernel resets, or to a
+    /// connected socket whose `SO_LINGER` would make its close reset the
+    /// connection or wait.
     | Release of DescriptionReleaseRefusal
 
 [<RequireQualifiedAccess>]
