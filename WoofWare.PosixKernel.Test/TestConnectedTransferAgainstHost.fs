@@ -811,13 +811,15 @@ module TestConnectedTransferAgainstHost =
             let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
             match UnixSocket.getsockopt s level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system with
-            | Ok (GetSockOptAnswer.Reported (0, _), system) -> [ Seen.PendingError None ], system
-            | Ok (GetSockOptAnswer.Reported (raw, _), system) ->
+            | Ok (GetSockOptAnswer.Reported (OptionValue.Int 0), system) -> [ Seen.PendingError None ], system
+            | Ok (GetSockOptAnswer.Reported (OptionValue.Int raw), system) ->
                 [
                     Seen.PendingError (UnixError.ofRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) raw)
                 ],
                 system
-            | Ok (GetSockOptAnswer.Failed error, _) -> failwith $"getsockopt(SO_ERROR): %O{error}"
+            | Ok (GetSockOptAnswer.Reported copied, _) ->
+                failwith $"getsockopt(SO_ERROR) copied out %A{copied}, not an int"
+            | Ok (GetSockOptAnswer.Failed (error, _), _) -> failwith $"getsockopt(SO_ERROR): %O{error}"
             | Error refusal -> failwith $"getsockopt(SO_ERROR): %s{SocketOptionRefusal.describe refusal}"
         | Operation.Read -> thrice (kernelRead s 4096)
         | Operation.ReadZero -> thrice (kernelRead s 0)

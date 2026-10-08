@@ -495,8 +495,9 @@ module TestCallHolds =
                     let before = ThreadIdAllocator.live system.Machine.ThreadIds
 
                     match UnixTaskLifecycle.spawn parent child (CpuId 0) system with
-                    | Error error -> failwith $"spawn: %O{error}"
-                    | Ok (id, after) ->
+                    | Error refusal -> failwith $"spawn: %s{SpawnRefusal.describe refusal}"
+                    | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawn: %O{error}"
+                    | Ok (SpawnAnswer.Spawned id, after) ->
                         Set.contains id before |> shouldEqual false
                         coverage.Spawns <- coverage.Spawns + 1
 

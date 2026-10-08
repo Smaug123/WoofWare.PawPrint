@@ -522,7 +522,7 @@ module TestSocketEventDelivery =
         let optionName = SimulatedUnixPlatform.socketErrorOption platform
 
         match UnixSocket.getsockopt fd level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) kernel with
-        | Ok (GetSockOptAnswer.Reported (value, 4u), kernel) -> value, kernel
+        | Ok (GetSockOptAnswer.Reported (OptionValue.Int value), kernel) -> value, kernel
         | other -> failwith $"getsockopt(SO_ERROR) answered %A{other}"
 
     /// Taking the refusal with an `SO_ERROR` read lowers the level without

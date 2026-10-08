@@ -89,6 +89,7 @@ module TestAccept =
                         LockedPort = false
                     }
             ReuseAddress = false
+            Options = SocketOptions.initial
             Phase = phase
         }
 

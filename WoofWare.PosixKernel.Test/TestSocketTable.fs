@@ -119,6 +119,7 @@ module TestSocketTable =
             Binding = None
             Phase = SocketPhase.Idle
             ReuseAddress = false
+            Options = SocketOptions.initial
         }
 
     /// The triple a socket is created with, asserted per field: a transposition

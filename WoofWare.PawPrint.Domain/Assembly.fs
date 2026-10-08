@@ -875,6 +875,12 @@ type DumpedAssembly =
     /// <summary>
     /// As <see cref="TryGetTopLevelTypeDef"/>, comparing names case-insensitively.
     /// </summary>
+    /// <param name="namespace">
+    /// The namespace of the type sought, in whatever case the caller has it; this does the folding.
+    /// </param>
+    /// <param name="name">
+    /// The name of the type sought, in whatever case the caller has it; this does the folding.
+    /// </param>
     /// <param name="isCandidate">
     /// Which definitions the caller is searching among. A parameter rather than something the
     /// caller filters off the result, because whether a folded query is *ambiguous* depends on

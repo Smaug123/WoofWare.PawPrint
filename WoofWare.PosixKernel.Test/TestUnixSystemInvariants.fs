@@ -103,6 +103,7 @@ module TestUnixSystemInvariants =
                                             Protocol = SocketProtocol.Tcp
                                             Binding = None
                                             ReuseAddress = false
+                                            Options = SocketOptions.initial
                                             Phase = phase
                                         }
                                     ]
@@ -154,6 +155,7 @@ module TestUnixSystemInvariants =
                                             Protocol = SocketProtocol.Tcp
                                             Binding = None
                                             ReuseAddress = false
+                                            Options = SocketOptions.initial
                                             Phase = SocketPhase.Established (connection, ConnectionEnd.Client)
                                         }
                                     ]
@@ -555,6 +557,7 @@ module TestUnixSystemInvariants =
             Protocol = SocketProtocol.Tcp
             Binding = binding
             ReuseAddress = false
+            Options = SocketOptions.initial
             Phase = phase
         }
 
@@ -745,8 +748,9 @@ module TestUnixSystemInvariants =
                 (UnixSystem.initial<int, string> platform
                  |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
         with
-        | Ok (_, system) -> system
-        | Error error -> failwith $"spawn failed: %O{error}"
+        | Ok (SpawnAnswer.Spawned _, system) -> system
+        | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawn failed: %O{error}"
+        | Error refusal -> failwith $"spawn was refused: %s{SpawnRefusal.describe refusal}"
 
     [<Test>]
     let ``a leader that is not a task is a defect`` () : unit =

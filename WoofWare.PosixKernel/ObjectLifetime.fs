@@ -9,6 +9,16 @@ type DescriptionReleaseRefusal =
     /// `listener`, whose accept queue still holds `connection`, and that
     /// connection's client (socket `client`) is still open.
     | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
+    /// The description is the last reference to the connected stream socket
+    /// `socket`, whose `SO_LINGER` is on with a time of zero, and its
+    /// connection `connection` is still referenced: by its peer, or by a
+    /// listener's accept queue.
+    ///
+    /// A real kernel closes such a socket abortively, resetting the connection
+    /// rather than shutting it down in order, and the peer reads ECONNRESET
+    /// from `SO_ERROR` (measured on both). This kernel's close resets a
+    /// connection only when bytes are left unread, and otherwise sends a FIN.
+    | AbortiveClose of socket : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module DescriptionReleaseRefusal =
@@ -18,6 +28,8 @@ module DescriptionReleaseRefusal =
         match refusal with
         | DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
             $"releasing the last reference destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client when the listener goes, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
+        | DescriptionReleaseRefusal.AbortiveClose (socket, connection) ->
+            $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time of zero, while its connection %O{connection} is still referenced. A real kernel resets the connection rather than shutting it down in order, and the peer reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless bytes were left unread."
 
 /// When this kernel frees what nothing references any more: an open file
 /// description once no descriptor names it and no syscall in flight holds it,
@@ -235,13 +247,21 @@ module ObjectLifetime =
         // connection (`TcpTransfer.close`): a FIN, or a reset if bytes it had
         // not read remain; the wakes either raises are signalled below, once
         // the socket table reflects the release, so the level a wake filters
-        // against is the survivor's new one. A dying *listener* instead RSTs
-        // its unaccepted queue entries' clients, whose resulting level is
-        // unmeasured -- that case refuses when a registration could observe
-        // it, and an RST raises ERR, which no interest mask can hide, so any
-        // registration could.
+        // against is the survivor's new one. Under `SO_LINGER` {1, 0} the close
+        // would be abortive, which is refused while the connection is still
+        // referenced (`DescriptionReleaseRefusal.AbortiveClose`). A dying
+        // *listener* instead RSTs its unaccepted queue entries' clients, whose
+        // resulting level is unmeasured -- that case refuses when a
+        // registration could observe it, and an RST raises ERR, which no
+        // interest mask can hide, so any registration could.
         let closing : Result<(ConnectionId * TcpWake list * TcpTransfer) option, DescriptionReleaseRefusal> =
             match SocketPhase.connectionEnd dying.Phase with
+            | Some (connection, _) when
+                dying.Options.Linger.Enabled
+                && dying.Options.Linger.Hundredths = 0L
+                && stillReferenced connection
+                ->
+                Error (DescriptionReleaseRefusal.AbortiveClose (socketId, connection))
             | Some (connection, connectionEnd) ->
                 let wakes, transfer =
                     TcpTransfer.close connectionEnd (UnixMachineState.connection connection system.Machine).Transfer

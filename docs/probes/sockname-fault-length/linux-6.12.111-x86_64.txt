@@ -1,0 +1,25 @@
+uname: Linux 6.12.111+deb13-amd64 x86_64
+getsockname null     declared=1          -> r=-1 errno=14 cell=1
+getsockname unmapped declared=1          -> r=-1 errno=14 cell=1
+getpeername null     declared=1          -> r=-1 errno=14 cell=1
+getpeername unmapped declared=1          -> r=-1 errno=14 cell=1
+getsockname null     declared=7          -> r=-1 errno=14 cell=7
+getsockname unmapped declared=7          -> r=-1 errno=14 cell=7
+getpeername null     declared=7          -> r=-1 errno=14 cell=7
+getpeername unmapped declared=7          -> r=-1 errno=14 cell=7
+getsockname null     declared=13         -> r=-1 errno=14 cell=13
+getsockname unmapped declared=13         -> r=-1 errno=14 cell=13
+getpeername null     declared=13         -> r=-1 errno=14 cell=13
+getpeername unmapped declared=13         -> r=-1 errno=14 cell=13
+getsockname null     declared=16         -> r=-1 errno=14 cell=16
+getsockname unmapped declared=16         -> r=-1 errno=14 cell=16
+getpeername null     declared=16         -> r=-1 errno=14 cell=16
+getpeername unmapped declared=16         -> r=-1 errno=14 cell=16
+getsockname null     declared=100        -> r=-1 errno=14 cell=100
+getsockname unmapped declared=100        -> r=-1 errno=14 cell=100
+getpeername null     declared=100        -> r=-1 errno=14 cell=100
+getpeername unmapped declared=100        -> r=-1 errno=14 cell=100
+getsockname null     declared=4096       -> r=-1 errno=14 cell=4096
+getsockname unmapped declared=4096       -> r=-1 errno=14 cell=4096
+getpeername null     declared=4096       -> r=-1 errno=14 cell=4096
+getpeername unmapped declared=4096       -> r=-1 errno=14 cell=4096

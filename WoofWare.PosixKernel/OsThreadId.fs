@@ -66,6 +66,18 @@ type ThreadIdAllocator =
             Live : Set<OsThreadId>
         }
 
+/// What `ThreadIdAllocator.allocate` did.
+[<RequireQualifiedAccess>]
+type internal ThreadIdAllocation =
+    /// `id` is handed out, and is live in `allocator` from then on.
+    | Issued of id : OsThreadId * allocator : ThreadIdAllocator
+    /// Every id Linux would hand out is held, so the thread's creation fails
+    /// with `error`.
+    | Failed of error : UnixError
+    /// Darwin's counter has reached the top of its 64-bit range, and what
+    /// Darwin does next has not been measured.
+    | DarwinCounterExhausted
+
 [<RequireQualifiedAccess>]
 module ThreadIdAllocator =
 
@@ -160,12 +172,13 @@ module ThreadIdAllocator =
     let internal live (allocator : ThreadIdAllocator) : Set<OsThreadId> = allocator.Live
 
     /// Hand out the next id, which is live from then on, skipping every id a
-    /// live task holds; or EAGAIN if every id Linux would hand out is held.
-    let internal allocate (allocator : ThreadIdAllocator) : Result<OsThreadId * ThreadIdAllocator, UnixError> =
+    /// live task holds; or EAGAIN if every id Linux would hand out is held; or
+    /// nothing, if Darwin's counter has reached the top of its range.
+    let internal allocate (allocator : ThreadIdAllocator) : ThreadIdAllocation =
         let held = allocator.Live
 
         let issued (id : OsThreadId) (counter : ThreadIdCounter) =
-            Ok (
+            ThreadIdAllocation.Issued (
                 id,
                 {
                     Counter = counter
@@ -202,15 +215,14 @@ module ThreadIdAllocator =
 
             match found with
             | Some id -> issued (OsThreadId (uint64 id)) (ThreadIdCounter.Linux (id + 1, pidMax))
-            | None -> Error UnixError.EAGAIN
+            | None -> ThreadIdAllocation.Failed UnixError.EAGAIN
         | ThreadIdCounter.Darwin next ->
             // A 64-bit counter never wraps in practice, and what Darwin does if it
             // did has not been measured.
             if next = UInt64.MaxValue then
-                failwith
-                    "ThreadIdAllocator.allocate: Darwin's thread ID counter has reached the top of its 64-bit range, and what Darwin does next has not been measured."
-
-            issued (OsThreadId next) (ThreadIdCounter.Darwin (next + 1UL))
+                ThreadIdAllocation.DarwinCounterExhausted
+            else
+                issued (OsThreadId next) (ThreadIdCounter.Darwin (next + 1UL))
 
     /// The task holding `id` has exited, so `id` is no longer live. Loudly
     /// partial on an id that is not live: every live task's id is.

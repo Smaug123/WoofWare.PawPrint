@@ -102,7 +102,7 @@ has never heard of .NET, so **it states POSIX values and no client's encoding of
 them**: a raw `<errno.h>` number, epoll's own readiness conditions, a signo, the
 set of sockets it will create. A conversion between one of those and a .NET
 encoding goes on PawPrint's side, in `WoofWare.PawPrint/Native/`, as a
-`*Pal.fs` adapter beside the sixteen that live there (count them with
+`*Pal.fs` adapter beside the seventeen that live there (count them with
 `ls WoofWare.PawPrint/Native/*Pal.fs`):
 
 - errors and signals: `UnixErrorPal` (`Interop.Error`'s numbering),
@@ -111,8 +111,10 @@ encoding goes on PawPrint's side, in `WoofWare.PawPrint/Native/`, as a
 - sockets and readiness: `SocketEventsPal` (the `SocketEvents` bits),
   `SocketArgumentsPal` (the `AF_*`/`SOCK_*`/`PT_*` numbering and the shim's
   argument screens), `SocketShimPal` (compile-time constants the shim
-  reports, such as its socket-address sizes), `PollEventsPal` (the
-  `PollEvents` bits);
+  reports, such as its socket-address sizes), `SocketOptionPal` (the
+  managed `SocketOptionLevel`/`SocketOptionName` pairs, what the shim does
+  with each, and its `LingerOption`), `PollEventsPal` (the `PollEvents`
+  bits);
 - files: `OpenFlagsPal`, `PipeFlagsPal`, `FileAdvicePal` (the shim's
   `OpenFlags`, `PipeFlags` and `FileAdvice` numberings and their screens),
   `FileStatusPal` (`st_flags` as the shim reports it), `FileSystemTypePal`
@@ -202,6 +204,15 @@ constant.
 guest reads from `uname`; it is **not** evidence about the kernel a test runs on.
 Reading `access_ok` at the preset's version gave a sign-bit split where CI
 measured `TASK_SIZE_MAX`, because x86 changed the rule between 6.9 and 6.12.
+
+No fact follows from the release string. A fact that changed between Linux
+versions follows the platform's `LinuxKernelVersion` (`SimulatedUnixKernel.Linux`),
+which each preset states for itself (`linuxX64` 6.17.0, `linuxArm64` 6.18.5):
+`getSockNameFaultLength` is the first, after Linux 6.18 moved the length's store
+ahead of the copy, which CI's 6.17 caught where 6.18.5 had been measured. A
+host-equality test of such a fact models the host's *own* version
+(`HostPlatform.onUnixHostKernel`), so it holds on whichever kernel runs it, and
+its rows should come from kernels on both sides of the change.
 
 See `reference/probing.md` for the probe technique, including the two ways a
 set-ID measurement reads as "unsupported" when it is not.
