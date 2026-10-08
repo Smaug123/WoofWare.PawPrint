@@ -121,5 +121,6 @@ spread raw how=3 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4000 second
 spread rawpthread how=1 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4001 second=2 end=exit0
 spread rawpthread how=2 set=3 (main 1, second 2) ret=0 errno=0 old=1 now=0 second=2 end=exit0
 spread rawpthread how=3 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4000 second=2 end=exit0
+errno pthread how=100 errno-before=0 ret=22 errno-after=22 how=100 errno-before=1234 ret=22 errno-after=22 how=1 errno-before=0 ret=0 errno-after=0 how=1 errno-before=1234 ret=0 errno-after=1234 end=exit0
 unblock kill before=0 ret=0 at-return=3 order=USR1,TERM,ILL end=exit0
 unblock pthread_kill before=0 ret=0 at-return=3 order=USR1,TERM,ILL end=exit0

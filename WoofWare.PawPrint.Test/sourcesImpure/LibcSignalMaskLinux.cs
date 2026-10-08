@@ -20,7 +20,7 @@ unsafe class Program
     const ulong GlibcCancel = 1UL << 31;
     const ulong Untouched = 0xA5A5A5A5A5A5A5A5UL;
 
-    [DllImport("libc", EntryPoint = "pthread_sigmask")]
+    [DllImport("libc", EntryPoint = "pthread_sigmask", SetLastError = true)]
     static extern int PthreadSigmask(int how, ulong* set, ulong* oldSet);
 
     [DllImport("libc", EntryPoint = "sigprocmask", SetLastError = true)]
@@ -46,12 +46,13 @@ unsafe class Program
                 handled.Set();
             });
 
-        // An unnamed how with a set: pthread_sigmask returns EINVAL rather than
-        // setting errno, and writes nothing to the old set.
+        // An unnamed how with a set: glibc's pthread_sigmask returns EINVAL and
+        // leaves errno alone, and writes nothing to the old set.
         ulong set = Term;
         ulong old = Untouched;
         if (PthreadSigmask(100, &set, &old) != 22) return 1;
         if (old != Untouched) return 2;
+        if (Marshal.GetLastPInvokeError() != 0) return 22;
 
         // With a NULL set, how is not looked at.
         if (PthreadSigmask(100, null, &old) != 0) return 3;

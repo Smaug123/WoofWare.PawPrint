@@ -92,12 +92,27 @@ module NativeLibcSignalMask =
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim value)) ctx.Thread
         |> NativeHandlerResult.completed
 
-    /// How a mask call reports a failure: `pthread_sigmask` returns the errno,
-    /// and `sigprocmask` returns -1 and sets errno.
+    /// How a mask call reports a failure.
     [<RequireQualifiedAccess>]
     type private ErrorConvention =
+        /// Returns the error number and leaves errno alone: glibc's
+        /// `pthread_sigmask`.
         | Returned
+        /// Returns the error number and sets errno to it too: Darwin's
+        /// `pthread_sigmask`.
+        | ReturnedAndInErrno
+        /// Returns -1 and sets errno: `sigprocmask`.
         | InErrno
+
+    /// `pthread_sigmask`'s convention on this flavour. Measured by
+    /// `sigprocmask-ops.c`'s "errno" row on Linux 6.18.5 (glibc 2.41) and
+    /// Darwin 27.0.0: with an unnamed `how`, both returned 22; errno was then
+    /// 22 on Darwin and as it was before the call on Linux. A successful call
+    /// left errno alone on both.
+    let private pthreadConvention (numbering : SignalNumbering) : ErrorConvention =
+        match numbering with
+        | SignalNumbering.Linux -> ErrorConvention.Returned
+        | SignalNumbering.Darwin -> ErrorConvention.ReturnedAndInErrno
 
     /// `pthread_sigmask(how, set, oldset)` or `sigprocmask(how, set, oldset)`,
     /// as `call` answers it. Signals the change makes deliverable to the
@@ -106,7 +121,7 @@ module NativeLibcSignalMask =
     let private maskCall
         (ctx : NativeCallContext)
         (operation : string)
-        (convention : ErrorConvention)
+        (convention : SignalNumbering -> ErrorConvention)
         (call :
             ThreadId
                 -> int
@@ -129,12 +144,13 @@ module NativeLibcSignalMask =
         | Error error ->
             // Measured by `sigprocmask-ops.c`: a failed call writes nothing to
             // `oldset`.
-            match convention with
-            | ErrorConvention.Returned ->
-                let raw =
-                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform) error
+            let raw =
+                UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform) error
 
-                pushInt32 ctx raw state
+            match convention numbering with
+            | ErrorConvention.Returned -> pushInt32 ctx raw state
+            | ErrorConvention.ReturnedAndInErrno ->
+                NativeSystemNative.withErrnoOnly ctx error state |> pushInt32 ctx raw
             | ErrorConvention.InErrno -> NativeSystemNative.withErrnoOnly ctx error state |> pushInt32 ctx -1
 
     /// `sigpending(set)`: the signals pending for the calling thread that its
@@ -178,13 +194,13 @@ module NativeLibcSignalMask =
           [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ; ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int pthread_sigmask(int how, const sigset_t* set, sigset_t* oldset)`.
-            maskCall ctx "libc pthread_sigmask" ErrorConvention.Returned UnixSignal.pthreadSigmask
+            maskCall ctx "libc pthread_sigmask" pthreadConvention UnixSignal.pthreadSigmask
             |> Some
         | Some "sigprocmask",
           [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ; ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int sigprocmask(int how, const sigset_t* set, sigset_t* oldset)`.
-            maskCall ctx "libc sigprocmask" ErrorConvention.InErrno UnixSignal.sigprocmask
+            maskCall ctx "libc sigprocmask" (fun _ -> ErrorConvention.InErrno) UnixSignal.sigprocmask
             |> Some
         | Some "sigpending",
           [ ConcretePointer _ ],

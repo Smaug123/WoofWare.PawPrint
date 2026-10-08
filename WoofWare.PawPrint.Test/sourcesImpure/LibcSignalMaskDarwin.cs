@@ -20,7 +20,7 @@ unsafe class Program
     const uint Bit31 = 1u << 31;
     const uint Untouched = 0xA5A5A5A5u;
 
-    [DllImport("libc", EntryPoint = "pthread_sigmask")]
+    [DllImport("libc", EntryPoint = "pthread_sigmask", SetLastError = true)]
     static extern int PthreadSigmask(int how, uint* set, uint* oldSet);
 
     [DllImport("libc", EntryPoint = "sigprocmask", SetLastError = true)]
@@ -46,12 +46,13 @@ unsafe class Program
                 handled.Set();
             });
 
-        // An unnamed how with a set: pthread_sigmask returns EINVAL rather than
-        // setting errno, and writes nothing to the old set.
+        // Darwin's pthread_sigmask returns EINVAL and sets errno to it too, and
+        // writes nothing to the old set.
         uint set = Term;
         uint old = Untouched;
         if (PthreadSigmask(100, &set, &old) != 22) return 1;
         if (old != Untouched) return 2;
+        if (Marshal.GetLastPInvokeError() != 22) return 22;
 
         // With a NULL set, how is not looked at.
         if (PthreadSigmask(100, null, &old) != 0) return 3;

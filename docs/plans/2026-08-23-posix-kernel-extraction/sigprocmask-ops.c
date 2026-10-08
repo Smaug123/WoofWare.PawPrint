@@ -32,6 +32,9 @@
 //             through each route (SIG_BLOCK {TERM}, SIG_UNBLOCK {HUP, INT},
 //             SIG_SETMASK {TERM}), then both report their masks. Where the
 //             call reaches another thread, exactly what it does there.
+//   errno   - pthread_sigmask with an unnamed how and a set, from errno 0
+//             and from errno 1234: what it returns, and what errno holds
+//             after it, failed or not.
 //   unblock - handlers for ILL, USR1 and TERM (empty sa_mask, no flags), all
 //             three blocked, all three sent (process-directed with kill, or
 //             thread-directed with pthread_kill), then one SIG_UNBLOCK of all
@@ -358,6 +361,22 @@ static void spread_body(int fd, void *arg)
     out(fd, " second=%llx", (unsigned long long)g_thread_mask);
 }
 
+static void errno_body(int fd, void *arg)
+{
+    (void)arg;
+    sigset_t set;
+    set_bits(&set, bit(SIGTERM));
+    int hows[] = { 100, SIG_BLOCK };
+    int before[] = { 0, 1234 };
+    for (size_t h = 0; h < 2; h++) {
+        for (size_t b = 0; b < 2; b++) {
+            errno = before[b];
+            int ret = pthread_sigmask(hows[h], &set, NULL);
+            out(fd, " how=%d errno-before=%d ret=%d errno-after=%d", hows[h], before[b], ret, errno);
+        }
+    }
+}
+
 static volatile sig_atomic_t g_order[8];
 static volatile sig_atomic_t g_count;
 
@@ -485,6 +504,8 @@ int main(void)
             in_child(tag, spread_body, &row);
         }
     }
+
+    in_child("errno pthread", errno_body, NULL);
 
     for (int thread_directed = 0; thread_directed <= 1; thread_directed++) {
         snprintf(tag, sizeof tag, "unblock %s", thread_directed ? "pthread_kill" : "kill");
