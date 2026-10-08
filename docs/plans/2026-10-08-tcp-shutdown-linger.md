@@ -325,13 +325,58 @@ flushes, and resets the first arrival.
   have to take the socket table, and `TcpTransfer.violations` could no
   longer check the states against each other.
 
-**Recommend (A).** It adds to the stack's tested state rather than replacing
-it. Each flavour's reading of the mask lives in the rule functions, which
-already branch on `TcpTransferRules`. Blast radius if wrong: the mask is
-internal to `TcpTransfer`, so moving to (B) later is a change to one module
-and its reference model.
+- **(D) Split the end state along the fact boundary.** `TcpEndState` today
+  holds two kinds of fact. The FIN travelling towards an end (none, queued
+  behind `Sending`, arrived) is a fact about a *direction*. Whether the
+  socket is open, reset or closed is a fact about an *end*. `SHUT_WR` is a
+  direction fact that must outlive the peer's end fact, which is why (A)
+  needs its `Write` bit. So separate them:
 
-The rules, as functions over (A), with each measured row as a test:
+  ```fsharp
+  /// The FIN in one direction: the sender's SHUT_WR or close.
+  type TcpFin = NotSent | Queued | Arrived            // on TcpDirection
+  type TcpEndState =                                   // per end
+      | Open of receiveShut : bool
+      | Reset of errorPending : bool
+      | Closed of afterPeerFin : bool
+  ```
+
+  - An end is write-shut exactly when its outbound direction's `Fin` is not
+    `NotSent`. Nothing else holds that fact, and it survives the peer's close.
+  - `Reset`'s `afterFin` is derived as the inbound FIN `Arrived` and the
+    outbound FIN `NotSent`. That is `tcp_reset`'s own test: `EPIPE` only in
+    `CLOSE_WAIT`, `ECONNRESET` in `CLOSING` and `LAST_ACK`.
+  - `receiveShut` exists only on `Open`. A reset end is shut both ways
+    anyway (`tcp_done` sets `SHUTDOWN_MASK`), and a closed one has no
+    reader.
+  - `afterPeerFin` is stored rather than derived. The inbound FIN can still
+    change after the end closes (the peer's later `SHUT_WR` reaches an
+    orphan), and a derived value would change with it.
+  - Only the byte-queue invariants stay in `violations`: `Queued` implies
+    `Sending` is not empty while the receiver is `Open`; `Arrived` implies
+    `Sending` is empty; `Reset` implies `Sending` is empty.
+
+  (A) admits a `Write` bit with no FIN opposite, a FIN opposite an end that
+  has not shut writing (a check that must be weakened in exactly the case
+  that motivates the bit), four representations of each `Reset` and `Closed`
+  end, and a stored `afterFin` that disagrees with the FIN. (D) admits none
+  of these. (B) admits all of them and more, and transcribing the kernels'
+  `rcvShut` loses a distinction the model needs: both kernels set it on their
+  own `SHUT_RD` *or* on the peer's FIN, while only Darwin's `SHUT_RD` flushes.
+
+**Chosen: (D).** It replaces `TcpEndState` like (B), but each old case maps to
+one new one (`Open` to `Open false`, `FinQueued` and `FinReceived` to the
+direction's `Fin`, `Reset (a, e)` to `Reset e`, `Closed` to `Closed _`). The
+type is `internal`. It is stage 3's first commit, once #1793 and #1795 have
+merged.
+
+Both kernels fold the peer's FIN into receive-shut (`tcp_fin` sets
+`RCV_SHUTDOWN`; XNU calls `socantrcvmore`). The rules compute "receive-shut" once, as
+`receiveShut` or the inbound FIN `Arrived`, and read that, rather than
+restating it per row. That one fact explains Darwin's `ENOTCONN` to `SHUT_RD`
+after a FIN, and Linux's HUP after `SHUT_WR` and then the peer's FIN.
+
+The rules, as functions over (D), with each measured row as a test:
 
 - **Read** with nothing queued: 0 once read-shut, on both. On Linux a pending
   error is answered first when no FIN has arrived (`tcp_recvmsg`'s order).
@@ -340,11 +385,13 @@ The rules, as functions over (A), with each measured row as a test:
   that is also reset keeps the stack's existing reset rules, which come first
   (on Linux, `sk_stream_error` answers a pending error before `EPIPE`).
 - **Arrival** at a read-shut end: on Darwin, and on Linux once write-shut too,
-  the arrival resets. The sender gets `Reset (afterFin, true)`, where
-  `afterFin` is whether the receiver's FIN had reached it. The receiver gets
-  `Reset (false, true)` on Linux, and `Reset (false, false)` on Darwin, whose
-  shutter sees no error. Otherwise the arrival queues as now.
-- **`shutdown` itself**: the 2.1 table as a pure function from (mask,
+  the arrival resets. The sender gets `Reset true`; whether its error reads
+  as `EPIPE` or `ECONNRESET` follows from the FINs, as (D) derives it, so a
+  sender that had itself shut writing gets `ECONNRESET` (the row section 5
+  asks to measure). The receiver gets `Reset true` on Linux, and
+  `Reset false` on Darwin, whose shutter sees no error. Otherwise the
+  arrival queues as now.
+- **`shutdown` itself**: the 2.1 table as a pure function from (shut state,
   end state, `how`) to (answer, new state, wakes), including Darwin's
   half-by-half `SHUT_RDWR`.
 
@@ -480,12 +527,13 @@ been rebased onto main (with #1790).
      `ListenerWouldResetUnacceptedClient` goes.
    - The same applies when a process ends with a listener open.
    - Tests: Q's rows, and a fuzz case that connects just before a close.
-3. **Half-close in `TcpTransfer`, as pure functions** (3.1 (A)).
-   - The mask, the read, write and arrival rules, `shutdown`'s answer
-     function, `closeWith` over the shut states, `Closed of afterPeerFin`, and
-     the relaxed `violations`.
-   - Tests: a property test against the reference model, extended with the
-     mask. S, T, R and P are replayed per flavour from the embedded output,
+3. **Half-close in `TcpTransfer`, as pure functions** (3.1 (D)).
+   - First commit: the split of `TcpEndState`, with behaviour unchanged.
+   - Then the read, write and arrival rules, `shutdown`'s answer function,
+     `closeWith` over the shut states, and `violations` reduced to the
+     byte-queue invariants.
+   - Tests: a property test against the reference model, extended with
+     `shutdown`. S, T, R and P are replayed per flavour from the embedded output,
      as `TestTcpTransferMeasured` replays `tcp-transfer.c`.
    - No syscall uses any of it yet.
 4. **`shutdown(2)` on connected sockets.**
@@ -509,16 +557,17 @@ been rebased onto main (with #1790).
 Stages 1 and 2 need nothing from 3, and either can go first. Stage 6 can merge
 with stage 4 if small.
 
-## 5. Decisions for a human
+## 5. Decisions
 
-- **3.1: (A) or (B).** (B) is the most faithful shape, but it rewrites
-  `TcpTransfer`, which open PRs are built on. (A) is recommended.
-- **Scope.** The Kestrel path needs `SHUT_RDWR` on connected sockets only.
-  `SHUT_RD` and `SHUT_WR` alone cost little once `SHUT_RDWR` exists, since it
-  is both halves, so stage 4 includes them. Listener `shutdown` (stage 5) could
-  instead be refused for now.
-- **The passive closer's port (3.5):** model it in stage 4, which is
-  recommended, or state it as a non-reproduction. A non-reproduction is
-  guest-visible: a bind that the kernel allows would answer `EADDRINUSE`.
-- **`SO_LINGER` {1, t > 0} (3.4):** refuse, which is recommended, or model
-  the wait with the virtual clock.
+- **3.1: (D)**, the split of `TcpEndState` into a FIN per direction and an
+  end state per end.
+- **One row to measure before stage 3.** X shuts writing with bytes still
+  waiting, so its FIN is queued. Y then shuts both ways and reads, and that
+  arrival resets the connection. `tcp_reset` says X gets `ECONNRESET`, not
+  `EPIPE`, because X's own FIN had been sent. 2.2's last row stops before Y
+  reads. Add the row to the probe and run it on both flavours.
+- **Scope:** stage 5, `shutdown` on a listener, is deferred. Until it lands,
+  that call is refused by name. Neither Kestrel nor `HttpClient` makes it.
+- **The passive closer's port (3.5):** modelled in stage 4. Not modelling it
+  would answer `EADDRINUSE` to a `bind` that the kernel allows.
+- **`SO_LINGER` {1, t > 0} (3.4):** refused when the close would wait.
