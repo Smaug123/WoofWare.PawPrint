@@ -3025,15 +3025,12 @@ module UnixReadWrite =
         let system = intoConnection connectionId connectionEnd bytes transfer system
         let written = parked.Written + taking
 
+        // With more left, the room is gone, so the write sleeps again. No
+        // signal is pending to end it: `admitFinishWrite` answers one before it
+        // names any bytes.
         if written = parked.Count then
             Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 parked.Count), UnixParkState.unpark task system))
-        else if
-
-            // More is left and the room is gone, so the write sleeps again. No
-            // signal is pending to end it: `admitFinishWrite` answers one before it
-            // names any bytes.
-            nonBlockingNow writer system
-        then
+        elif nonBlockingNow writer system then
             Error (WriteRefusal.ConnectionBecameNonBlocking socketId)
         else
             Ok (parkConnectionWrite task writer fd parked.Buffer parked.Count written system)
