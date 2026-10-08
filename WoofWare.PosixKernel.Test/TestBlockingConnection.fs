@@ -1809,3 +1809,115 @@ module TestBlockingConnection =
         events |> shouldEqual [ EpollEvents.Out ]
         // The edge comes as the sleeping writer is woken.
         woken |> shouldEqual [ 1 ]
+
+    /// A Linux write that takes nothing and sleeps arms the edge too, with
+    /// nothing before it having armed it: the buffers were filled by a write
+    /// they took whole.
+    [<Test>]
+    let ``a Linux write that sleeps having taken nothing arms the send-space edge`` () : unit =
+        let client, server, system = pair (systemOn SimulatedUnixPlatform.linuxX64 false)
+        let connection = connectionOf client system
+
+        let toServer =
+            (UnixMachineState.connection connection system.Machine).Transfer.ToServer
+
+        let fits = toServer.SendCapacity + toServer.ReceiveCapacity
+        let written, system = wrote client fits system
+        written |> shouldEqual (int64 fits)
+
+        let epoll, system =
+            match UnixPoll.epollCreate1 0 system with
+            | Ok (Ok created) -> created
+            | other -> failwith $"epoll_create1: %A{other}"
+
+        // Registered while the socket is not writable, so with no edge of
+        // its own.
+        let system =
+            match
+                UnixPoll.epollCtl
+                    epoll
+                    1
+                    client
+                    (EpollEventArgument.Readable (EpollEvents.Out ||| EpollEvents.EdgeTriggered, 0UL))
+                    system
+            with
+            | Ok (EpollCtlAnswer.Changed, system) -> system
+            | other -> failwith $"epoll_ctl: %A{other}"
+
+        let edges (system : UnixSystem<int, string>) : uint32 list * UnixSystem<int, string> =
+            match UnixPoll.epollWait 3 epoll 2 UserBuffer.Mapped 0 system with
+            | Ok (EpollWaitOutcome.Answered events, system) -> List.map snd events, system
+            | other -> failwith $"epoll_wait: %A{other}"
+
+        let none, system = edges system
+        none |> shouldEqual []
+
+        // The ADD found the socket unwritable, which marks it too; drain to
+        // the edge that mark gives, so that only the sleeping write can mark
+        // it again.
+        let rec drainToEdge (reads : int) (system : UnixSystem<int, string>) =
+            if reads > 100 then
+                failwith "no edge came for the ADD's mark"
+
+            let system = readNow server 1000 system |> snd
+
+            match edges system with
+            | [], system -> drainToEdge (reads + 1) system
+            | _, system -> system
+
+        let system = drainToEdge 0 system
+
+        let written, system =
+            wrote
+                client
+                (toServer.SendCapacity + toServer.ReceiveCapacity
+                 - clientQueued connection system
+                 - TcpTransfer.readable
+                     ConnectionEnd.Server
+                     (UnixMachineState.connection connection system.Machine).Transfer)
+                system
+
+        written |> shouldBeGreaterThan 0L
+        let system = asleepWriting 1 client (payload 12 1000) system
+
+        match UnixTaskTable.parkedFor 1 system.Tasks with
+        | Some (ParkedSyscall.ConnectionWrite write) -> write.Written |> shouldEqual 0
+        | other -> failwith $"%A{other}"
+
+        let rec drain (reads : int) (system : UnixSystem<int, string>) =
+            if reads > 100 then
+                failwith "no edge came for the sleeping write's mark"
+
+            let system = readNow server 1000 system |> snd
+
+            match edges system with
+            | [], system -> drain (reads + 1) system
+            | events, _ -> events
+
+        drain 0 system |> shouldEqual [ EpollEvents.Out ]
+
+    /// Darwin's sleeping writer with less than the low-water mark left wakes
+    /// once there is room for all of what is left, though not for the mark.
+    [<Test>]
+    let ``Darwin: a writer with a short remainder wakes for room for all of it`` () : unit =
+        let client, server, system = pair (systemOn SimulatedUnixPlatform.macOsArm64 false)
+        let connection = connectionOf client system
+
+        let toServer =
+            (UnixMachineState.connection connection system.Machine).Transfer.ToServer
+
+        let room = toServer.SendCapacity + toServer.ReceiveCapacity
+        let system = asleepWriting 1 client (payload 13 (room + 100)) system
+
+        match UnixTaskTable.parkedFor 1 system.Tasks with
+        | Some (ParkedSyscall.ConnectionWrite write) -> write.Count - write.Written |> shouldEqual 100
+        | other -> failwith $"%A{other}"
+
+        let system = readNow server 50 system |> snd
+        wokenAmong [ 1 ] system |> shouldEqual []
+        let system = readNow server 50 system |> snd
+        wokenAmong [ 1 ] system |> shouldEqual [ 1 ]
+
+        match finishedWrite 1 (payload 13 (room + 100)) system with
+        | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, _)) -> n |> shouldEqual (int64 (room + 100))
+        | other -> failwith $"%A{other}"
