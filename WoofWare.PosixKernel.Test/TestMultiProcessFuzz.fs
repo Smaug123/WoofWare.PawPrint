@@ -1119,11 +1119,15 @@ module TestMultiProcessFuzz =
         | SimulatedUnixFlavour.Linux ->
             image
             |> UnixBootImage.withTcpSendSpaceMax (Some 16384)
+            |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
             |> UnixBootImage.withTcpReceiveSpace (Some 8192)
+            |> Configured.expectOk TcpReceiveSpaceRefusal.describe
         | SimulatedUnixFlavour.Darwin ->
             image
             |> UnixBootImage.withTcpSendSpace (Some UnixMachineState.darwinLoopbackSendPipe)
+            |> Configured.expectOk TcpSendSpaceRefusal.describe
             |> UnixBootImage.withTcpReceiveSpace (Some UnixMachineState.darwinLoopbackReceivePipe)
+            |> Configured.expectOk TcpReceiveSpaceRefusal.describe
 
     let private run (coverage : Coverage) (case : Case) : unit =
         let pids, machine =

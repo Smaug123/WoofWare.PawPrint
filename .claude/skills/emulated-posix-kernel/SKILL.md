@@ -1,6 +1,6 @@
 ---
 name: emulated-posix-kernel
-description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; whose encoding a value is stated in; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in WoofWare.PosixKernel (the Unix* syscall files — UnixSocket.fs, UnixConnection.fs, UnixPoll.fs, UnixKqueue.fs, UnixDescriptor.fs, UnixPathResolution.fs, UnixReadWrite.fs, UnixNamespace.fs, UnixPipe.fs, UnixSignal.fs, UnixClock.fs, UnixEntropy.fs, UnixCredentials.fs, UnixTaskLifecycle.fs, UnixWait.fs, UnixSystem.fs, UnixBootImage.fs — as well as the platform profile and the per-syscall divergence rules it selects between — SimulatedUnixPlatform.fs, SimulatedUnixFlavour.fs, StartingPointRules.fs, CreatingOpenRules.fs, MkDirRules.fs, RemovalRules.fs, RenameRules.fs, AccessRules.fs, StatRules.fs, OwnerChangeRules.fs, ProtectedFiles.fs, Sockaddr.fs, UserBuffer.fs, EmulatedFileSystemType.fs — and VirtualFileSystem.fs, PathWalk.fs, FileDescriptorRegistry.fs, Signal.fs), in EmulatedKernel.fs or SignalState.fs, in a Native/*Pal.fs adapter, or in a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
+description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; whose encoding a value is stated in; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in WoofWare.PosixKernel (the Unix* syscall files — UnixSocket.fs, UnixConnection.fs, UnixPoll.fs, UnixKqueue.fs, UnixDescriptor.fs, UnixPathResolution.fs, UnixReadWrite.fs, UnixNamespace.fs, UnixPipe.fs, UnixSignal.fs, UnixClock.fs, UnixEntropy.fs, UnixCredentials.fs, UnixTaskLifecycle.fs, UnixWait.fs, UnixSystem.fs, UnixBootImage.fs — as well as the platform profile and the per-syscall divergence rules it selects between — SimulatedUnixPlatform.fs, SimulatedUnixFlavour.fs, StartingPointRules.fs, CreatingOpenRules.fs, MkDirRules.fs, MkNodRules.fs, RemovalRules.fs, RenameRules.fs, AccessRules.fs, StatRules.fs, AttributeChangeRules.fs, TimestampChangeRules.fs, OwnerChangeRules.fs, ProtectedFiles.fs, Sockaddr.fs, UserBuffer.fs, EmulatedFileSystemType.fs — and VirtualFileSystem.fs, PathWalk.fs, FileDescriptorRegistry.fs, Signal.fs), in EmulatedKernel.fs or SignalState.fs, in a Native/*Pal.fs adapter, or in a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
 ---
 
 # Deciding what the emulated kernel says
@@ -170,6 +170,19 @@ a constant becomes a lie the moment the state it depends on lands. This is why
 `SystemNative_FStat` refuses a socket — seventeen fields would be invented and
 the platforms agree on none — while `SystemNative_GetFileSystemType` answers,
 having one field measured on both.
+
+Inside `WoofWare.PosixKernel`, "refuse" means a typed `Error`, never a throw,
+and that holds for boot configuration too: a setter in `UnixBootImage` or
+`ProcessLaunch` that rejects a well-formed value (`withBootTime`, `withMount`,
+`withTcpSendSpace`, `withProcessId`, `withCredentials`, …) returns a `Result`
+whose `Error` is a refusal type of that setter's own, with a `describe`, whose
+cases state facts and name no knob. Each case's docstring says whether the
+value is unmeasured, unmodelled or contradictory. `KernelConfig.toKernel`
+matches every case and fails with the `KernelConfig` field the value came from
+(`"KernelConfig.Mount: "` and so on), as
+`EmulatedKernel.withFileSystemAndCurrentDirectory` does for
+`FileSystemSeedFault`. Only a forged value (`Unchecked.defaultof`) still throws, and
+a setter keeps a `context` parameter only to name the knob in that throw.
 
 Before concluding a modelled constant has **no guest observer**, enumerate the
 interpreter's own limits that are *arithmetic in that constant*: a byte-offset

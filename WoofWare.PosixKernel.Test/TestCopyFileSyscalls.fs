@@ -12,8 +12,8 @@ open NUnit.Framework
 open WoofWare.PosixKernel
 
 /// The Linux syscalls a file copy is made of: `futimens(2)` with explicit
-/// times, `ioctl(FICLONE)` and `copy_file_range(2)` at the descriptions' own
-/// offsets.
+/// times (glibc's `utimensat(2)` with a null pathname), `ioctl(FICLONE)` and
+/// `copy_file_range(2)` at the descriptions' own offsets.
 ///
 /// The rows come from `docs/plans/2026-08-23-posix-kernel-extraction/copy-file-syscalls.c`,
 /// run on Linux 6.18.5 (aarch64, root in the container, tmpfs and ext4 alike);
@@ -350,7 +350,11 @@ module TestCopyFileSyscalls =
         UnixDescriptor.fileClone outFd inFd darwin
         |> shouldEqual (Error (FileCloneRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
 
-        let nfs = kindsSystemWith (UnixBootImage.withMount (Some EmulatedMount.Nfs))
+        let nfs =
+            kindsSystemWith (
+                UnixBootImage.withMount (Some EmulatedMount.Nfs)
+                >> Configured.expectOk MountRefusal.describe
+            )
 
         let inFd, nfs = opened "ksrc" FileAccessMode.ReadOnly nfs
         let outFd, nfs = opened "kdst" FileAccessMode.WriteOnly nfs
@@ -688,6 +692,27 @@ module TestCopyFileSyscalls =
     let private mtime : UnixTimestamp =
         UnixTimestamp.createOrFail context 900_000_000L 222_222_222
 
+    let private fieldsOf (time : UnixTimestamp) : TimespecFields =
+        {
+            Seconds = UnixTimestamp.seconds time
+            Nanoseconds = int64 (UnixTimestamp.nanoseconds time)
+        }
+
+    /// `futimens(2)` with two explicit times, which glibc makes
+    /// `utimensat(fd, NULL, times, 0)`.
+    let private futimens
+        (fd : int)
+        (access : UnixTimestamp)
+        (modification : UnixTimestamp)
+        (system : UnixSystem<int, string>)
+        =
+        UnixPathResolution.utimensat
+            fd
+            NullablePathArgument.Null
+            (TimesArgument.Fields (fieldsOf access, fieldsOf modification))
+            0
+            system
+
     [<Test>]
     let ``futimens sets both times of a file or directory through any descriptor of its owner`` () : unit =
         for kind in [ "file-ro" ; "file-wo" ; "file-rw" ; "dir" ] do
@@ -702,7 +727,7 @@ module TestCopyFileSyscalls =
 
             let before = (VirtualFileSystem.tryGet target system.Machine.FileSystem).Value
 
-            match UnixPathResolution.futimens fd atime mtime system with
+            match futimens fd atime mtime system with
             | Ok (SyscallAnswer.Completed 0L, after) ->
                 let entry = (VirtualFileSystem.tryGet target after.Machine.FileSystem).Value
 
@@ -729,30 +754,37 @@ module TestCopyFileSyscalls =
             | other -> failwith $"%s{kind}: %A{other}"
 
     [<Test>]
-    let ``futimens answers EBADF for a descriptor not held, and refuses what it does not model`` () : unit =
+    let ``futimens answers EBADF for a descriptor not held, and as the probe saw for each other kind`` () : unit =
         for kind in [ "closed" ; "fd9999" ] do
             let fd, system = make kind "ksrc" (kindsSystem ())
 
-            UnixPathResolution.futimens fd atime mtime system
+            futimens fd atime mtime system
             |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EBADF, system))
 
-        for kind in [ "pipe-r" ; "pipe-w" ; "socket" ; "port" ] do
-            let fd, system = make kind "ksrc" (kindsSystem ())
+        // Both ends of a pipe report the times set through either.
+        match UnixPipe.pipe2 0 UserBuffer.Mapped (kindsSystem ()) with
+        | Ok (Pipe2Answer.Created (readFd, writeFd), system) ->
+            for fd in [ readFd ; writeFd ] do
+                match futimens fd atime mtime system with
+                | Ok (SyscallAnswer.Completed 0L, after) ->
+                    for pipeEnd in [ readFd ; writeFd ] do
+                        match UnixPathResolution.fstat pipeEnd after with
+                        | Ok (FileStatusAnswer.Reported status) ->
+                            (status.AccessTime, status.ModificationTime) |> shouldEqual (atime, mtime)
+                        | other -> failwith $"fd %d{fd}: fstat(%d{pipeEnd}): %A{other}"
+                | other -> failwith $"fd %d{fd}: %A{other}"
+        | other -> failwith $"pipe2: %A{other}"
 
-            match UnixPathResolution.futimens fd atime mtime system with
-            | Error (FUTimensRefusal.UnmodelledObject _) -> ()
-            | other -> failwith $"%s{kind}: %A{other}"
+        let fd, system = make "port" "ksrc" (kindsSystem ())
 
-        let darwin =
-            systemOn
-                SimulatedUnixPlatform.macOsArm64
-                (Credentials.ofIds (uid 501u) (gid 20u) [])
-                (filesystem [ "f", owner 501u 20u, 0o644, "hello" ])
+        futimens fd atime mtime system
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system))
 
-        let fd, darwin = opened "f" FileAccessMode.ReadOnly darwin
+        let fd, system = make "socket" "ksrc" (kindsSystem ())
 
-        UnixPathResolution.futimens fd atime mtime darwin
-        |> shouldEqual (Error (FUTimensRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin))
+        match futimens fd atime mtime system with
+        | Error (UTimensAtRefusal.Socket _) -> ()
+        | other -> failwith $"socket: %A{other}"
 
     [<Test>]
     let ``futimens sets explicit times only for the owner or a privileged caller`` () : unit =
@@ -774,7 +806,7 @@ module TestCopyFileSyscalls =
 
             let fd, system = opened "t" access system
 
-            match UnixPathResolution.futimens fd atime mtime system, permitted with
+            match futimens fd atime mtime system, permitted with
             | Ok (SyscallAnswer.Completed 0L, after), true ->
                 (entryOf after "t").Times.Modification |> shouldEqual mtime
             | Ok (SyscallAnswer.Failed UnixError.EPERM, after), false -> after |> shouldEqual system
@@ -799,14 +831,22 @@ module TestCopyFileSyscalls =
             let system = kindsSystem ()
             let fd, system = opened "ksrc" FileAccessMode.ReadOnly system
 
-            match UnixPathResolution.futimens fd access modification system with
+            match futimens fd access modification system with
             | Ok (SyscallAnswer.Completed 0L, after) ->
                 let times = (entryOf after "ksrc").Times
                 times.Access |> shouldEqual access
                 times.Modification |> shouldEqual modification
                 times.Birth |> shouldEqual (entryOf system "ksrc").Times.Birth
 
-                match UnixSystem.step 0 (Syscall.FUTimens (fd, access, modification)) system with
+                let call =
+                    Syscall.UTimensAt (
+                        fd,
+                        NullablePathArgument.Null,
+                        TimesArgument.Fields (fieldsOf access, fieldsOf modification),
+                        0
+                    )
+
+                match UnixSystem.step 0 call system with
                 | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), stepped) -> stepped |> shouldEqual after
                 | other -> failwith $"step: %A{other}"
             | other -> failwith $"%A{other}"

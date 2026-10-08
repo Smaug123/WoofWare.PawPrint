@@ -50,11 +50,15 @@ module TestConnectedTransfer =
         | SimulatedUnixFlavour.Linux ->
             image
             |> UnixBootImage.withTcpSendSpaceMax (Some 30000)
+            |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
             |> UnixBootImage.withTcpReceiveSpace (Some 10000)
+            |> Configured.expectOk TcpReceiveSpaceRefusal.describe
         | SimulatedUnixFlavour.Darwin ->
             image
             |> UnixBootImage.withTcpSendSpace (Some UnixMachineState.darwinLoopbackSendPipe)
+            |> Configured.expectOk TcpSendSpaceRefusal.describe
             |> UnixBootImage.withTcpReceiveSpace (Some UnixMachineState.darwinLoopbackReceivePipe)
+            |> Configured.expectOk TcpReceiveSpaceRefusal.describe
 
     /// A connected pair on `system`, made by a blocking connect and accept:
     /// the connecting socket, then the accepted one, each non-blocking if
@@ -924,7 +928,10 @@ module TestConnectedTransfer =
     let ``a reset frees its ephemeral port and four-tuple to the next connect's implicit bind`` () : unit =
         for platform in Machines.platforms do
             let system =
-                systemOn (UnixBootImage.withEphemeralPortRange (40000us, 40000us)) platform
+                systemOn
+                    (UnixBootImage.withEphemeralPortRange (40000us, 40000us)
+                     >> Configured.expectOk EphemeralPortRangeRefusal.describe)
+                    platform
 
             let listener, system = KeventWorld.listenerAt port system
             let first, system = KeventWorld.stream false system
@@ -951,7 +958,10 @@ module TestConnectedTransfer =
     let ``a socket that closed with a reset leaves its port to the next implicit bind`` () : unit =
         for platform in Machines.platforms do
             let system =
-                systemOn (UnixBootImage.withEphemeralPortRange (40000us, 40000us)) platform
+                systemOn
+                    (UnixBootImage.withEphemeralPortRange (40000us, 40000us)
+                     >> Configured.expectOk EphemeralPortRangeRefusal.describe)
+                    platform
 
             let listener, system = KeventWorld.listenerAt port system
             let client, system = KeventWorld.stream false system

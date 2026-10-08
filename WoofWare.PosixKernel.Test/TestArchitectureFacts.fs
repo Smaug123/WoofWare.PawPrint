@@ -223,29 +223,33 @@ module TestArchitectureFacts =
         let property (platform : SimulatedUnixPlatform, limit : uint64) : unit =
             let image = UnixSystem.initial<int, string> platform
 
-            let admissible =
-                SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
-                && observedLimits
-                   |> List.contains (limit, SimulatedUnixPlatform.architecture platform)
+            let flavour = SimulatedUnixPlatform.flavour platform
+            let architecture = SimulatedUnixPlatform.architecture platform
 
-            let outcome =
-                try
-                    Ok
-                        (UnixBootImage.withUserAddressLimit limit image
-                         |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
-                            .Machine
-                with e ->
-                    Error e.Message
+            // From the observation table rather than from `architectureOf`, so
+            // that the oracle shares nothing with the setter.
+            let observedOn =
+                observedLimits
+                |> List.tryFind (fun (observed, _) -> observed = limit)
+                |> Option.map snd
 
-            match outcome with
-            | Ok after ->
-                admissible |> shouldEqual true
+            let expected : Result<unit, UserAddressLimitRefusal> =
+                match flavour with
+                | SimulatedUnixFlavour.Darwin -> Error (UserAddressLimitRefusal.NoUpFrontScreen flavour)
+                | SimulatedUnixFlavour.Linux ->
+                    if observedOn = Some architecture then
+                        Ok ()
+                    else
+                        Error (UserAddressLimitRefusal.NotObservedOn (limit, architecture, observedOn))
 
-                UnixMachineState.userBufferCheck after
+            match UnixBootImage.withUserAddressLimit limit image with
+            | Ok image ->
+                expected |> shouldEqual (Ok ())
+
+                UnixMachineState.userBufferCheck
+                    (image |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)).Machine
                 |> shouldEqual (UserBufferCheck.BeforeOperation limit)
-            | Error message ->
-                admissible |> shouldEqual false
-                message |> shouldContainText "UnixBootImage.withUserAddressLimit"
+            | Error refusal -> Error refusal |> shouldEqual expected
 
         let gen = Gen.zip (Gen.elements (presetChecks |> List.map fst)) limitGen
 

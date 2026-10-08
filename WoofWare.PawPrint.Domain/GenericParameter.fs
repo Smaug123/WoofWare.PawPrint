@@ -47,7 +47,7 @@ type GenericParameter =
 
         /// <summary>
         /// The zero-based index of the generic parameter in the generic parameter list.
-        /// For example, in Dictionary&lt;TKey, TValue&rt;, TKey has index 0 and TValue has index 1.
+        /// For example, in Dictionary&lt;TKey, TValue&gt;, TKey has index 0 and TValue has index 1.
         /// </summary>
         SequenceNumber : int
 

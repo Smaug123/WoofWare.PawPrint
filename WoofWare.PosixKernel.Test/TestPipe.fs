@@ -1522,15 +1522,14 @@ module TestPipe =
         defectsOf forged
         |> shouldEqual [ UnixSystemDefect.PipeDeviceNotOfFlavour (5L, SimulatedUnixFlavour.Darwin) ]
 
-        Assert.Throws<System.Exception> (fun () ->
-            UnixBootImage.withPipeDevice (Some 5L) (imageOn SimulatedUnixPlatform.macOsArm64)
-            |> ignore
-        )
-        |> ignore
+        UnixBootImage.withPipeDevice (Some 5L) (imageOn SimulatedUnixPlatform.macOsArm64)
+        |> Result.map ignore<UnixBootImage<int, string>>
+        |> shouldEqual (Error (PipeDeviceRefusal.DarwinReportsZero 5L))
 
         let pipeDeviceBootedWith (device : int64 option) : int64 =
             (imageOn SimulatedUnixPlatform.linuxX64
              |> UnixBootImage.withPipeDevice device
+             |> Configured.expectOk PipeDeviceRefusal.describe
              |> (Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)))
                 .Machine.PipeDevice
 

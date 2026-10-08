@@ -1291,8 +1291,21 @@ module EmulatedKernel =
             failwith
                 $"WallClockEpochMs must be at most %d{ClockPal.maxWallClockEpochMs} (9999-12-31T23:59:59.999Z, the last instant System.DateTime can represent); got %d{epochMs}"
 
+        let bootTime = UnixTimestamp.ofMillisecondsSinceEpoch epochMs
+
+        // Each refusal is out of reach: the checks above keep the instant in
+        // [0, 9999-12-31], far inside the range the library admits, and a whole
+        // number of milliseconds is never finer than a microsecond.
         image
-        |> KernelImage.mapMachine (UnixBootImage.withBootTime (UnixTimestamp.ofMillisecondsSinceEpoch epochMs))
+        |> KernelImage.mapMachine (fun image ->
+            match UnixBootImage.withBootTime bootTime image with
+            | Ok image -> image
+            | Error (BootTimeRefusal.BeforeEpoch _ as refusal)
+            | Error (BootTimeRefusal.PastMaxBootTime _ as refusal)
+            | Error (BootTimeRefusal.FinerThanMicrosecond _ as refusal) ->
+                failwith
+                    $"WallClockEpochMs: %d{epochMs} passed this function's own range check, but the kernel refused it as a boot time: %s{BootTimeRefusal.describe refusal} This is a bug in PawPrint."
+        )
 
 
 
@@ -1782,9 +1795,10 @@ type KernelConfig =
         /// it could not observe on real .NET. See `EnvironmentPal.tryEncodeEntry`.
         Environment : string list
         /// Logical processor count the guest observes via
-        /// `Environment.ProcessorCount`. Must be at least 1: the real property is
-        /// documented as always positive and BCL callers divide by it, so
-        /// `NativeEnvironment` also asserts the invariant at the point of use.
+        /// `Environment.ProcessorCount`. `toKernel` fails below 1: the real
+        /// property is documented as always positive and BCL callers divide by
+        /// it, so `NativeEnvironment` also asserts the invariant at the point of
+        /// use.
         ///
         /// `Program.prepare` applies it before the entry type's `.cctor` is
         /// pumped, because CoreLib latches `Environment.ProcessorCount` into a
@@ -1793,9 +1807,10 @@ type KernelConfig =
         /// Greatest value `address + length` may take for a user buffer the
         /// simulated kernel will accept — the machine's `TASK_SIZE_MAX`. `None`
         /// takes the platform's default (`UnixSystem.defaultUserBufferCheck`).
-        /// `Some` must be a limit machines of the platform's architecture have
-        /// (`ObservedUserAddressLimit`), on a platform that screens buffers up
-        /// front at all; see `UnixMachineState.UserBufferCheck` for why this is
+        /// `toKernel` fails for a `Some` that is not a limit machines of the
+        /// platform's architecture have been observed with
+        /// (`ObservedUserAddressLimit`), or on a platform that screens no buffer
+        /// up front; see `UnixMachineState.UserBufferCheck` for why this is
         /// configuration rather than a property of the platform.
         UserAddressLimit : uint64 option
         /// Virtual time charged per retired IL instruction, in 100 ns ticks — the speed of the
@@ -1938,8 +1953,8 @@ type KernelConfig =
         /// This is configuration rather than something derived from the
         /// flavour because a flavour does not determine a mount's type — one
         /// Linux reports three different numbers for three directories in one
-        /// process. It does constrain it, so a mount incoherent with
-        /// `UnixPlatform` is refused; see `EmulatedFileSystemType`.
+        /// process. It does constrain it, so `toKernel` fails for a mount
+        /// incoherent with `UnixPlatform`; see `EmulatedFileSystemType`.
         ///
         /// Its type also decides a directory's `st_size` and where `SEEK_END`
         /// lands on one. The filesystem's other behaviour — its name and path
@@ -1949,19 +1964,21 @@ type KernelConfig =
         Mount : EmulatedMount option
         /// Range `bind(2)` draws an ephemeral port from, inclusive at both ends,
         /// or `None` for the flavour's default (32768-60999 on Linux,
-        /// 49152-65535 on Darwin). See `UnixSystem.defaultEphemeralPortRange`; the low end must not
-        /// exceed the high end, and neither may be zero, since port 0 is the
-        /// request rather than an answer.
+        /// 49152-65535 on Darwin). See `UnixSystem.defaultEphemeralPortRange`.
+        /// `toKernel` fails if the low end exceeds the high end, or is zero,
+        /// since port 0 is the request rather than an answer.
         EphemeralPortRange : (uint16 * uint16) option
         /// The `somaxconn` sysctl, or `None` for the flavour's measured
         /// default (4096 on Linux, 128 on Darwin): the ceiling `listen(2)`
-        /// clamps its backlog to. See `UnixBootImage.withSoMaxConn`.
+        /// clamps its backlog to. `toKernel` fails below 1. See
+        /// `UnixBootImage.withSoMaxConn`.
         SoMaxConn : int option
         /// Darwin's `net.inet.tcp.sendspace` sysctl, the send buffer a new TCP
         /// socket starts with, or `None` for the flavour's measured default
         /// (131072 on Darwin). A kqueue's `EVFILT_WRITE` reports the buffer's
-        /// free space. Only `None` is admitted on Linux, which reads nothing
-        /// of it. See `UnixBootImage.withTcpSendSpace`.
+        /// free space. `toKernel` fails for any `Some` on Linux, which reads
+        /// nothing of it, and on Darwin for one outside the range
+        /// `UnixBootImage.withTcpSendSpace` admits.
         TcpSendSpace : int option
         /// The TCP receive buffer sysctl — Darwin's `net.inet.tcp.recvspace`,
         /// Linux's `net.ipv4.tcp_rmem` default — or `None` for the flavour's
@@ -1980,13 +1997,14 @@ type KernelConfig =
         /// `protected_regular=2`, group-writable) directory, and hard-linking
         /// another user's file the caller may not read and write. Defaults to
         /// `ProtectedFiles.off`, the kernel's own default;
-        /// many distributions set them non-zero through `sysctl.d`. Only
-        /// `ProtectedFiles.off` is admitted on Darwin, which has none of them.
+        /// many distributions set them non-zero through `sysctl.d`. `toKernel`
+        /// fails on Darwin, which has none of them, for anything but
+        /// `ProtectedFiles.off`.
         ///
         /// They decide anything only where a seed gives some inode an owner
         /// other than the process (see `FileSystem`).
         ProtectedFiles : ProtectedFiles
-        /// The IPv4 addresses this machine holds, as prefixes. See
+        /// The IPv4 addresses this machine holds, host order. See
         /// `UnixSystem.defaultLocalAddresses`, and note the flavours read one
         /// list differently.
         LocalAddresses : uint32 list
@@ -2018,8 +2036,10 @@ type KernelConfig =
         /// Defaults to `Suppressed`, as under an `RLIMIT_CORE` of 0; see
         /// `UnixProcessState.CoreDumps`.
         CoreDumps : CoreDumps
-        /// Linux's `kernel.pid_max`: thread IDs are below it, and once they reach
-        /// it they start again from 300, skipping those in use. `None` takes
+        /// Linux's `kernel.pid_max`: the thread IDs the process's threads get are
+        /// below it, and once they reach it they start again from 300, skipping
+        /// those in use. It may be at or below `ProcessId`, as a real
+        /// administrator may lower it after the process started. `None` takes
         /// `UnixSystem.defaultPidMax`, the largest Linux allows, so an ID is reused
         /// only after four million threads. Refused on Darwin, which has no such
         /// setting.
@@ -2095,11 +2115,122 @@ module KernelConfig =
 
         go entries
 
+    // Each applies one machine setter for `toKernel`, failing on a refusal
+    // with the `KernelConfig` field the value came from: the library states
+    // what is wrong with the value and has no name for the knob.
+
+    let private withProcessorCount
+        (count : int)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withProcessorCount count image with
+        | Ok image -> image
+        | Error (ProcessorCountRefusal.NotPositive _ as refusal) ->
+            failwith $"KernelConfig.ProcessorCount: %s{ProcessorCountRefusal.describe refusal} Configure at least 1."
+
+    let private withUserAddressLimit
+        (limit : uint64)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withUserAddressLimit limit image with
+        | Ok image -> image
+        | Error (UserAddressLimitRefusal.NoUpFrontScreen _ as refusal) ->
+            failwith $"KernelConfig.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Leave it None."
+        | Error (UserAddressLimitRefusal.NotObservedOn _ as refusal) ->
+            failwith
+                $"KernelConfig.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Pick one of those, or None for the platform's own."
+
+    let private withMount
+        (mount : EmulatedMount option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withMount mount image with
+        | Ok image -> image
+        | Error (MountRefusal.NotReportableUnder (_, flavour) as refusal) ->
+            failwith
+                $"KernelConfig.Mount: %s{MountRefusal.describe refusal} Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
+
+    let private withEphemeralPortRange
+        (range : uint16 * uint16)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withEphemeralPortRange range image with
+        | Ok image -> image
+        | Error (EphemeralPortRangeRefusal.LowIsZero _ as refusal)
+        | Error (EphemeralPortRangeRefusal.Empty _ as refusal) ->
+            failwith $"KernelConfig.EphemeralPortRange: %s{EphemeralPortRangeRefusal.describe refusal}"
+
+    let private withSoMaxConn
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withSoMaxConn value image with
+        | Ok image -> image
+        | Error (SoMaxConnRefusal.NotPositive _ as refusal) ->
+            failwith
+                $"KernelConfig.SoMaxConn: %s{SoMaxConnRefusal.describe refusal} Configure a positive value, or None for the flavour's default."
+
+    let private withTcpSendSpace
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpSendSpace value image with
+        | Ok image -> image
+        | Error (TcpSendSpaceRefusal.NotReadOn _ as refusal) ->
+            failwith $"KernelConfig.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Pass None."
+        | Error (TcpSendSpaceRefusal.AboveSocketBufferMax (_, max) as refusal) ->
+            failwith
+                $"KernelConfig.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at most %d{max}, or None for the default."
+        | Error (TcpSendSpaceRefusal.BelowLoopbackSendPipe (_, sendPipe) as refusal) ->
+            failwith
+                $"KernelConfig.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at least %d{sendPipe}, or None for the default."
+
+    let private withTcpReceiveSpace
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpReceiveSpace value image with
+        | Ok image -> image
+        | Error refusal ->
+            failwith
+                $"KernelConfig.TcpReceiveSpace: %s{TcpReceiveSpaceRefusal.describe refusal} Configure another size, or None for the default."
+
+    let private withTcpSendSpaceMax
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpSendSpaceMax value image with
+        | Ok image -> image
+        | Error (TcpSendSpaceMaxRefusal.NotReadOn _ as refusal) ->
+            failwith $"KernelConfig.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Pass None."
+        | Error (TcpSendSpaceMaxRefusal.NotPositive _ as refusal) ->
+            failwith
+                $"KernelConfig.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Configure a positive size, or None for the default."
+
+    let private withProtectedFiles
+        (protection : ProtectedFiles)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withProtectedFiles protection image with
+        | Ok image -> image
+        | Error (ProtectedFilesRefusal.NoSuchSysctls _ as refusal) ->
+            failwith $"KernelConfig.ProtectedFiles: %s{ProtectedFilesRefusal.describe refusal}"
+
     /// The kernel a host configuration describes: a boot image on the
     /// configured platform, with every other field applied through its own
     /// setter before it boots, so the validation those setters perform (e.g.
-    /// rejecting a non-positive processor count) also guards the
-    /// configuration path. `pid_max`, which a sysctl may change on a running
+    /// refusing a non-positive processor count) also guards the
+    /// configuration path, and fails naming the field a refused value came
+    /// from. `pid_max`, which a sysctl may change on a running
     /// machine, is written just after boot, before the process runs anything.
     ///
     /// The platform is the constructor's argument rather than a setter's,
@@ -2173,14 +2304,14 @@ module KernelConfig =
         EmulatedKernel.image platform config.StandardStreams
         |> launch (ProcessLaunch.withCoreDumps config.CoreDumps)
         |> EmulatedKernel.withEnvironment "KernelConfig.Environment" config.Environment
-        |> machine (UnixBootImage.withProcessorCount config.ProcessorCount)
+        |> machine (withProcessorCount config.ProcessorCount)
         |> machine (fun image ->
             match config.UserAddressLimit with
             | None -> image
-            | Some limit -> UnixBootImage.withUserAddressLimit limit image
+            | Some limit -> withUserAddressLimit limit image
         )
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
-        |> machine (UnixBootImage.withMount config.Mount)
+        |> machine (withMount config.Mount)
         |> launch (ProcessLaunch.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
         // The configured user and group, named here rather than read back off
         // the process, which only takes them below. Every entry is given its
@@ -2194,16 +2325,16 @@ module KernelConfig =
             config.CurrentDirectory
         |> launch credentialsOrFail
         |> machine (
-            UnixBootImage.withEphemeralPortRange (
+            withEphemeralPortRange (
                 config.EphemeralPortRange
                 |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour)
             )
         )
-        |> machine (UnixBootImage.withSoMaxConn config.SoMaxConn)
-        |> machine (UnixBootImage.withTcpSendSpace config.TcpSendSpace)
-        |> machine (UnixBootImage.withTcpReceiveSpace config.TcpReceiveSpace)
-        |> machine (UnixBootImage.withTcpSendSpaceMax config.TcpSendSpaceMax)
-        |> machine (UnixBootImage.withProtectedFiles "KernelConfig.ProtectedFiles" config.ProtectedFiles)
+        |> machine (withSoMaxConn config.SoMaxConn)
+        |> machine (withTcpSendSpace config.TcpSendSpace)
+        |> machine (withTcpReceiveSpace config.TcpReceiveSpace)
+        |> machine (withTcpSendSpaceMax config.TcpSendSpaceMax)
+        |> machine (withProtectedFiles config.ProtectedFiles)
         |> machine (UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> launch umaskOrFail
         |> machine processIdOrFail
@@ -2214,8 +2345,8 @@ module KernelConfig =
         // `pid_max` is a sysctl the machine's administrator writes, here before
         // the process has run anything. The process ID was set before it: the
         // machine boots with the largest `pid_max` Linux has, so any process ID
-        // a Linux kernel could have is admitted, and the write then refuses a
-        // `pid_max` at or below it.
+        // a Linux kernel could have is admitted, and it keeps that ID whatever
+        // `pid_max` is then written.
         |> EmulatedKernel.mapUnix (fun system ->
             match config.PidMax with
             | None -> system

@@ -12,7 +12,9 @@ type SymlinkProtection =
     | Off
     /// 1: a walk refuses with EACCES to follow a link in the final position of
     /// a path when the directory holding the link is sticky and world-writable,
-    /// unless the follower owns the link or the directory's owner does.
+    /// unless the follower owns the link or the directory's owner does. Past
+    /// half the traversal budget Linux's answer depends on its dentry cache,
+    /// so such a walk is refused (`PathRefusal.ProtectedSymlinkCacheDependent`).
     ///
     /// Many distributions set this through `sysctl.d`.
     | InWorldWritableStickyDirectories

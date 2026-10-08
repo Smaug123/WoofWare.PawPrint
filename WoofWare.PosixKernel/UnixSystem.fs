@@ -29,23 +29,32 @@ type Syscall =
     | FLock of fd : int * operation : int
     | FTruncate of fd : int * length : int64
     | Close of fd : int
-    /// `mode` is raw, as `mkdir(2)` takes it: how it combines with the umask
-    /// and with the parent's set-group-ID bit is behaviour this kernel models,
-    /// and models per flavour.
-    | MkDir of path : PathArgumentBytes * mode : int
-    | Unlink of path : PathArgumentBytes
-    | RmDir of path : PathArgumentBytes
+    /// `dirfd` and `mode` are raw, as `mkdirat(2)` takes them: how `mode`
+    /// combines with the umask and with the parent's set-group-ID bit is
+    /// behaviour this kernel models, and models per flavour. `mkdir(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`).
+    | MkDirAt of dirfd : int * path : PathArgumentBytes * mode : int
+    /// `dirfd` and `flags` are raw, as `unlinkat(2)` takes them: each flavour
+    /// numbers `AT_FDCWD` and `AT_REMOVEDIR` its own way, and which other bits
+    /// it rejects is behaviour this kernel models per flavour. `unlink(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no
+    /// flags, and `rmdir(2)` with `AT_REMOVEDIR` (`UnlinkAtRules.atRemoveDir`).
+    | UnlinkAt of dirfd : int * path : PathArgumentBytes * flags : int
     | ChDir of path : PathArgumentBytes
-    /// `mode` is raw, as `chmod(2)` takes it: which of its bits the inode gets
-    /// is behaviour this kernel models.
-    | ChMod of path : PathArgumentBytes * mode : int
+    /// `dirfd`, `mode` and `flags` are raw, as `fchmodat(2)` takes them: each
+    /// flavour numbers `AT_FDCWD` and the flags its own way, and which bits of
+    /// `mode` the inode gets is behaviour this kernel models. `chmod(2)` is
+    /// this with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no
+    /// flags.
+    | FChModAt of dirfd : int * path : PathArgumentBytes * mode : int * flags : int
     /// `mode` is raw, as `fchmod(2)` takes it.
     | FChMod of fd : int * mode : int
-    /// `None` is `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is.
-    | ChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
-    /// As `ChOwn`, without following a symbolic link in the final position.
-    | LChOwn of path : PathArgumentBytes * user : UserId option * group : GroupId option
-    /// As `ChOwn`, of the inode `fd` names.
+    /// `dirfd` and `flags` are raw, as `fchownat(2)` takes them. `None` is
+    /// `(uid_t)-1` or `(gid_t)-1`: leave that ID as it is. `chown(2)` is this
+    /// with the flavour's `AT_FDCWD` (`AtDirectory.atFdCwd`) and no flags, and
+    /// `lchown(2)` with `AT_SYMLINK_NOFOLLOW` (0x100 on Linux, 0x20 on Darwin).
+    | FChOwnAt of dirfd : int * path : PathArgumentBytes * user : UserId option * group : GroupId option * flags : int
+    /// As `FChOwnAt`'s `chown(2)`, of the inode `fd` names.
     | FChOwn of fd : int * user : UserId option * group : GroupId option
     /// `mask` is raw, as `umask(2)` takes it: which of its bits the process
     /// keeps is behaviour this kernel models, and models per flavour. Answers
@@ -69,8 +78,13 @@ type Syscall =
         newdirfd : int *
         newpath : PathArgumentBytes *
         flags : int
-    /// `futimens(2)` with two explicit times; see `UnixPathResolution.futimens`.
-    | FUTimens of fd : int * access : UnixTimestamp * modification : UnixTimestamp
+    /// `dirfd` and `flags` are raw, as `utimensat(2)` takes them: each flavour
+    /// numbers `AT_FDCWD` and the flags its own way, and `times` holds the
+    /// fields the caller stored, which each flavour reads its own way (see
+    /// `TimestampChangeRules.decode`). A null `path` means something of its
+    /// own on Linux. `futimens(2)` is, on Linux, this with `fd` as `dirfd`, a
+    /// null `path` and no flags.
+    | UTimensAt of dirfd : int * path : NullablePathArgument * times : TimesArgument * flags : int
     /// `copy_file_range(2)` at both descriptions' own offsets. `length` is the
     /// `size_t` asked for and `flags` is raw, since any flag is refused.
     | CopyFileRange of inFd : int * outFd : int * length : uint64 * flags : int
@@ -99,19 +113,17 @@ type SyscallRefusal<'Task> =
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
     | MkDir of PathRefusal
-    | Unlink of RemovalRefusal
-    | RmDir of RemovalRefusal
+    | UnlinkAt of UnlinkAtRefusal
     | ChDir of PathRefusal
-    | ChMod of ChModRefusal
+    | FChModAt of FChModAtRefusal
     | FChMod of FChModRefusal
-    /// `chown(2)` and `lchown(2)` alike.
-    | ChOwn of ChOwnRefusal
+    | FChOwnAt of FChOwnAtRefusal
     | FChOwn of FChOwnRefusal
     | Access of AccessRefusal
     | Symlink of SymlinkRefusal
     | Link of LinkRefusal
     | Close of CloseRefusal<'Task>
-    | FUTimens of FUTimensRefusal
+    | UTimensAt of UTimensAtRefusal
     | CopyFileRange of CopyFileRangeRefusal
     | FileClone of FileCloneRefusal
     | CloneFile of CloneFileRefusal
@@ -441,8 +453,9 @@ type UnixSystemDefect<'Task> =
     /// On Linux, the leader's thread ID is not the process ID, which it always is.
     | LeaderThreadIdNotProcessId of leader : 'Task * id : OsThreadId * pid : ProcessId
     /// A task's thread ID is one the machine's counter could not have handed out:
-    /// at or above `pid_max` on Linux, or not yet reached on Darwin. A later
-    /// thread could be given the same ID.
+    /// at or above the greatest `pid_max` Linux takes
+    /// (`ThreadIdAllocator.linuxPidMaxCeiling`), or not yet reached on Darwin,
+    /// where a later thread could be given the same ID.
     | OsThreadIdNotMintable of task : 'Task * id : OsThreadId * allocator : ThreadIdAllocator
     /// The machine's thread ID counter is not its flavour's: a Linux counter on a
     /// Darwin machine, or the other way about.
@@ -974,38 +987,30 @@ module UnixSystem =
             UnixDescriptor.close fd system
             |> answered
             |> Result.mapError SyscallRefusal.Close
-        | Syscall.MkDir (path, mode) ->
-            UnixNamespace.mkdir path mode system
+        | Syscall.MkDirAt (dirfd, path, mode) ->
+            UnixNamespace.mkdirat dirfd path mode system
             |> answered
             |> Result.mapError SyscallRefusal.MkDir
-        | Syscall.Unlink path ->
-            UnixNamespace.unlink path system
+        | Syscall.UnlinkAt (dirfd, path, flags) ->
+            UnixNamespace.unlinkat dirfd path flags system
             |> answered
-            |> Result.mapError SyscallRefusal.Unlink
-        | Syscall.RmDir path ->
-            UnixNamespace.rmdir path system
-            |> answered
-            |> Result.mapError SyscallRefusal.RmDir
+            |> Result.mapError SyscallRefusal.UnlinkAt
         | Syscall.ChDir path ->
             UnixPathResolution.chdir path system
             |> answered
             |> Result.mapError SyscallRefusal.ChDir
-        | Syscall.ChMod (path, mode) ->
-            UnixPathResolution.chmod path mode system
+        | Syscall.FChModAt (dirfd, path, mode, flags) ->
+            UnixPathResolution.fchmodat dirfd path mode flags system
             |> answered
-            |> Result.mapError SyscallRefusal.ChMod
+            |> Result.mapError SyscallRefusal.FChModAt
         | Syscall.FChMod (fd, mode) ->
             UnixPathResolution.fchmod fd mode system
             |> answered
             |> Result.mapError SyscallRefusal.FChMod
-        | Syscall.ChOwn (path, user, group) ->
-            UnixPathResolution.chown path user group system
+        | Syscall.FChOwnAt (dirfd, path, user, group, flags) ->
+            UnixPathResolution.fchownat dirfd path user group flags system
             |> answered
-            |> Result.mapError SyscallRefusal.ChOwn
-        | Syscall.LChOwn (path, user, group) ->
-            UnixPathResolution.lchown path user group system
-            |> answered
-            |> Result.mapError SyscallRefusal.ChOwn
+            |> Result.mapError SyscallRefusal.FChOwnAt
         | Syscall.FChOwn (fd, user, group) ->
             UnixPathResolution.fchown fd user group system
             |> answered
@@ -1026,10 +1031,10 @@ module UnixSystem =
             UnixNamespace.linkat olddirfd oldpath newdirfd newpath flags system
             |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
             |> Result.mapError SyscallRefusal.Link
-        | Syscall.FUTimens (fd, access, modification) ->
-            UnixPathResolution.futimens fd access modification system
+        | Syscall.UTimensAt (dirfd, path, times, flags) ->
+            UnixPathResolution.utimensat dirfd path times flags system
             |> answered
-            |> Result.mapError SyscallRefusal.FUTimens
+            |> Result.mapError SyscallRefusal.UTimensAt
         | Syscall.CopyFileRange (inFd, outFd, length, flags) ->
             UnixReadWrite.copyFileRange inFd outFd length flags system
             |> answered
@@ -2519,7 +2524,7 @@ module UnixSystem =
     /// The prefixes Linux's local routing table holds, which it will `bind(2)`
     /// any address inside. Loopback's `127.0.0.0/8` is the one every Linux has,
     /// and is why `127.9.9.9` binds there and not on Darwin.
-    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
+    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.loopbackNetwork ]
 
     /// Effective user ID a freshly-minted simulated process runs as.
     ///
@@ -2731,33 +2736,33 @@ module UnixSystem =
 
     /// The machine's administrator writes Linux's `kernel.pid_max` sysctl
     /// (through `/proc/sys`), which a sysctl allows at any time, the machine
-    /// running or not: thread IDs are below it, and once they reach it they
-    /// start again from 300, skipping those still in use.
+    /// running or not: the thread IDs handed out from then on are below it, and
+    /// once they reach it they start again from 300, skipping those still in use.
+    ///
+    /// Any value from 301 to 4194304 is accepted, including one at or below a live
+    /// task's thread ID: as on Linux, that task keeps its ID, and the next thread
+    /// takes its ID from 300 up.
     ///
     /// Not configuration, which is `UnixBootImage`'s, but the outside world
     /// acting on a running machine, as `UnixSystem.advanceClock` is.
     ///
-    /// Refuses a Darwin machine, which has no such setting; a value Linux does not
-    /// accept, which is anything outside 301 to 4194304; and a value at or below a
-    /// live task's thread ID.
+    /// Throws for a Darwin machine, which has no such setting, and for a value
+    /// outside 301 to 4194304 (`ThreadIdAllocator.linuxPidMaxFloor` to
+    /// `ThreadIdAllocator.linuxPidMaxCeiling`), which Linux's sysctl answers
+    /// with EINVAL.
     let writePidMaxSysctl<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (context : string)
         (pidMax : int32)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
         =
+        // Measured on Linux 6.18.5 aarch64 by
+        // `docs/plans/2026-08-23-posix-kernel-extraction/pid-max-below-live.c`:
+        // with process 5000 and its thread 5001 alive, writes of 1000, 5000, 5001,
+        // 5002 and 400 each take; both keep their IDs, `kill` and `tgkill` still
+        // find them, and the threads started after each write get 300, 301, and
+        // on up.
         let threadIds = ThreadIdAllocator.withPidMax context pidMax system.Machine.ThreadIds
-
-        // What Linux does with a live ID at or above a lowered `pid_max` has not
-        // been measured. Every live ID on the machine, not only this process's
-        // tasks': a sysctl is the machine's, and on a machine holding other
-        // processes their tasks' IDs are live too.
-        match
-            ThreadIdAllocator.live threadIds
-            |> Seq.tryFind (fun id -> not (ThreadIdAllocator.couldHaveMinted id threadIds))
-        with
-        | Some id -> failwith $"%s{context}: thread ID %O{id} is live, and not below pid_max %d{pidMax}."
-        | None ->
 
         { system with
             Machine =

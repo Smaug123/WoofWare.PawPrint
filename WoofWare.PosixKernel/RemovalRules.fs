@@ -59,6 +59,94 @@ module RemovalRefusal =
         | RemovalRefusal.DeviceFileSystem (directory, name) ->
             $"the call would remove \"%s{DirectoryEntryName.toEscaped name}\" from inode %O{directory}, on the device filesystem, which holds only the nodes of the devices this kernel has drivers for; it removes none of them, because it could not then say what a real one answers for the name."
 
+/// Which removal an `unlinkat(2)` makes, as its flag word says.
+[<RequireQualifiedAccess>]
+type RemovalKind =
+    /// No `AT_REMOVEDIR`: the call is `unlink(2)`'s, under `UnlinkRules`.
+    | Unlink
+    /// `AT_REMOVEDIR`: the call is `rmdir(2)`'s, under `RmDirRules`.
+    | RmDir
+
+/// What screening `unlinkat(2)`'s flag word came to.
+[<RequireQualifiedAccess>]
+type UnlinkAtScreen =
+    /// A word this kernel accepts, and the removal it asks for.
+    | Screened of RemovalKind
+    /// The call fails with this errno before its path is copied in.
+    | Failed of error : UnixError
+    /// The word carries `flags`, which the flavour accepts and this library
+    /// does not model.
+    | Unmodelled of flags : int
+
+/// Why this kernel will not answer an `unlinkat(2)`.
+[<RequireQualifiedAccess>]
+type UnlinkAtRefusal =
+    /// The flag word carries flags the flavour accepts and this library does
+    /// not model; see `UnlinkAtScreen.Unmodelled`. `flags` is the whole word.
+    | UnmodelledFlags of flags : int
+    /// The flag word asked for a removal, and this kernel will not answer it.
+    | Removal of RemovalRefusal
+
+[<RequireQualifiedAccess>]
+module UnlinkAtRefusal =
+    /// What this kernel knows about why it will not answer. A client adds which
+    /// entry point asked, and with which path.
+    let describe (refusal : UnlinkAtRefusal) : string =
+        match refusal with
+        | UnlinkAtRefusal.UnmodelledFlags flags ->
+            $"the flag word 0x%x{flags} carries a flag Darwin accepts and this library does not model: 0x100, AT_SYMLINK_NOFOLLOW_ANY (0x800), 0x1000, AT_RESOLVE_BENEATH (0x2000), AT_NODELETEBUSY (0x4000) or AT_UNIQUE (0x8000)."
+        | UnlinkAtRefusal.Removal refusal -> RemovalRefusal.describe refusal
+
+[<RequireQualifiedAccess>]
+module UnlinkAtRules =
+
+    // `<fcntl.h>`'s numbering, measured by `at-dirfd.c` (CONST and FLAGS) on
+    // Linux 6.18.5 and Darwin 27.0.
+    let private linuxAtRemoveDir : int = 0x200
+    let private darwinAtRemoveDir : int = 0x80
+    // Two bits the SDK's <sys/fcntl.h> does not name, then
+    // AT_SYMLINK_NOFOLLOW_ANY, AT_RESOLVE_BENEATH, AT_NODELETEBUSY and
+    // AT_UNIQUE.
+    let private darwinUnmodelledFlags : int =
+        0x100 ||| 0x800 ||| 0x1000 ||| 0x2000 ||| 0x4000 ||| 0x8000
+
+    /// `AT_REMOVEDIR` in `flavour`'s numbering: 0x200 on Linux, 0x80 on
+    /// Darwin. `rmdir(2)` is `unlinkat(2)` with this flag from `AT_FDCWD`, and
+    /// `unlink(2)` is it with no flags.
+    let atRemoveDir (flavour : SimulatedUnixFlavour) : int =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> linuxAtRemoveDir
+        | SimulatedUnixFlavour.Darwin -> darwinAtRemoveDir
+
+    /// Screen `unlinkat(2)`'s raw flag word as `flavour` does, before the path
+    /// is copied in and before `dirfd` is looked at.
+    ///
+    /// Linux accepts only `AT_REMOVEDIR` (0x200). Darwin accepts
+    /// `AT_REMOVEDIR` (0x80) and six flags this library does not model (see
+    /// `UnlinkAtRefusal.UnmodelledFlags`). Each answers EINVAL for a word
+    /// carrying any other bit, even beside a flag it accepts; a word whose
+    /// bits Darwin accepts and which carries one of the six is
+    /// `UnlinkAtScreen.Unmodelled`.
+    let screen (flavour : SimulatedUnixFlavour) (flags : int) : UnlinkAtScreen =
+        // Measured by `at-dirfd.c` (FLAGS, FLAGORDER: every single bit, and a
+        // rejected bit against a NULL path, a bad dirfd and the empty path)
+        // and by `unlinkat-rules.c` (FLAGS2: AT_REMOVEDIR, and each of
+        // Darwin's six, beside a rejected bit, against a file, a directory, a
+        // NULL path and a bad dirfd, which is EINVAL in every cell).
+        let removeDir, unmodelled =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> linuxAtRemoveDir, 0
+            | SimulatedUnixFlavour.Darwin -> darwinAtRemoveDir, darwinUnmodelledFlags
+
+        if flags &&& ~~~(removeDir ||| unmodelled) <> 0 then
+            UnlinkAtScreen.Failed UnixError.EINVAL
+        elif flags &&& unmodelled <> 0 then
+            UnlinkAtScreen.Unmodelled flags
+        elif flags &&& removeDir <> 0 then
+            UnlinkAtScreen.Screened RemovalKind.RmDir
+        else
+            UnlinkAtScreen.Screened RemovalKind.Unlink
+
 /// <summary>
 /// Parametrises the behaviour of different kernels when <c>unlink(2)</c> removes a name.
 /// </summary>
