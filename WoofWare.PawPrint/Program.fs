@@ -58,6 +58,8 @@ module Program =
 
     type ProgramStartResult =
         | Ready of PreparedProgram
+        /// The run finished before `Main` was installed: the process ended, or PawPrint stopped it
+        /// at an undefined value.
         | CompletedBeforeMain of RunEnd
 
     type ProgramStepOutcome =
@@ -81,6 +83,11 @@ module Program =
         | WorkerTerminated of PreparedProgram * terminatingThread : ThreadId
         | Completed of RunOutcome
         | Deadlocked of PreparedProgram * stuckThreads : string
+        /// `observingThread` was about to use a value whose content is undefined, so PawPrint
+        /// stopped the run there (see `ExecutionResult.UndefinedValueObserved`). The process has
+        /// not ended, so there is no `RunOutcome`; `PreparedProgram` holds the state from before
+        /// the observing step. Stepping it again would observe the value again.
+        | StoppedAtUndefinedValue of PreparedProgram * observingThread : ThreadId * UndefinedValueObservation
 
     /// Where a `Startup` has got to, together with whatever that phase needs to hand on.
     ///
@@ -146,6 +153,8 @@ module Program =
         | PhaseAdvanced of Startup
         | Completed of ProgramStartResult
         | Deadlocked of Startup * stuckThreads : string
+        /// As `ProgramStepOutcome.StoppedAtUndefinedValue`, in whichever phase of startup.
+        | StoppedAtUndefinedValue of Startup * observingThread : ThreadId * UndefinedValueObservation
 
     /// Where each live thread is, for the deadlock reports below and for every host that
     /// consumes a `Deadlocked` outcome. The status alone does not locate a guest — every thread
@@ -479,6 +488,8 @@ module Program =
                 "Step ended the thread with an unhandled exception at {ExceptionObject}",
                 exn.ExceptionObject
             )
+        | WhatWeDid.UndefinedValueObserved observation ->
+            logger.LogTrace ("Step used an undefined value: {Observation}", observation)
         | WhatWeDid.SuspendedForClassInit ->
             logger.LogTrace "Suspended execution of current method for class initialisation."
         | WhatWeDid.SuspendedForManagedCall ->
@@ -712,18 +723,28 @@ module Program =
     /// The eval stack is exactly what the signature says by the time this runs:
     /// `returnStackFrame` has already refused, as invalid CIL, a `Main` that returned with any
     /// other number of values on it.
+    ///
+    /// An undefined return value is an `Error`: the exit code is the host's observation of it,
+    /// and there is no exit code to report without inventing one.
     let private latchMainReturnValue
         (returns : MainReturn)
         (entry : ThreadId)
         (state : IlMachineState)
-        : IlMachineState
+        : Result<IlMachineState, UndefinedValueObservation>
         =
         match returns, state.ThreadState.[entry].MethodState.EvaluationStack.Values with
-        | MainReturn.Void, [] -> state
+        | MainReturn.Void, [] -> Ok state
         | MainReturn.Int32, [ EvalStackValue.Int32 (Int32Source.Verbatim code) ] ->
             { state with
                 LatchedExitCode = code
             }
+            |> Ok
+        | MainReturn.Int32, [ EvalStackValue.Undefined value ] ->
+            Error
+                {
+                    Value = value
+                    Use = UndefinedValueUse.ExitCode
+                }
         | MainReturn.Int32, [ other ] ->
             failwith
                 $"an int Main returned %O{other}, which is not a verbatim int32; PawPrint cannot report it as an exit code"
@@ -786,7 +807,17 @@ module Program =
     /// fold the outcome back into the thread states. `prepared` must already have been through
     /// `advanceToDecision`; running this against an inter-tick value would consult the policy
     /// about a Runnable set that a deadline or a spurious wake was about to change.
-    let private stepDecided (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : Tick =
+    ///
+    /// `beforeTick` is the program as the tick found it, before its preamble and its scheduling
+    /// decision: a stop at an undefined value is reported there, so that stepping it again runs the
+    /// same preamble and makes the same decision, and stops again.
+    let private stepDecided
+        (loggerFactory : ILoggerFactory)
+        (logger : ILogger)
+        (beforeTick : PreparedProgram)
+        (prepared : PreparedProgram)
+        : Tick
+        =
         let scheduledState, scheduledChoice =
             Scheduler.chooseNext prepared.LastRan prepared.State
 
@@ -834,10 +865,13 @@ module Program =
                             prepared.EntryThread
                         )
 
-                        let state =
-                            state
-                            |> latchMainReturnValue returns prepared.EntryThread
-                            |> Scheduler.onMainReturned prepared.EntryThread
+                        match latchMainReturnValue returns prepared.EntryThread state with
+                        | Error observation ->
+                            ProgramStepOutcome.StoppedAtUndefinedValue (beforeTick, prepared.EntryThread, observation)
+                            |> Tick.Stepped
+                        | Ok state ->
+
+                        let state = state |> Scheduler.onMainReturned prepared.EntryThread
 
                         // The `ret` retired a step, reported here as `WhatWeDid.Executed`, so it
                         // gets that outcome's consequences — as the dispatcher's final `ret`
@@ -944,6 +978,9 @@ module Program =
                         RunOutcome.GuestUnhandledException (state, terminatingThread, exn, termination)
                     )
                 )
+            | ExecutionResult.UndefinedValueObserved (observingThread, observation) ->
+                // Not a process ending, so the kernel is not told anything.
+                Tick.Stepped (ProgramStepOutcome.StoppedAtUndefinedValue (beforeTick, observingThread, observation))
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->
                 logStepOutcome logger state nextThread whatWeDid
 
@@ -1019,7 +1056,7 @@ module Program =
             prepared.State
             (fun () ->
                 match advanceToDecision prepared with
-                | Advanced.Decide advanced -> stepDecided loggerFactory logger advanced
+                | Advanced.Decide advanced -> stepDecided loggerFactory logger prepared advanced
                 | Advanced.Ended outcome -> Tick.Stepped (ProgramStepOutcome.Completed outcome)
             )
 
@@ -1056,6 +1093,8 @@ module Program =
     let rec pumpPrepared (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : RunEnd =
         match stepPrepared loggerFactory logger prepared with
         | ProgramStepOutcome.Completed outcome -> RunEnd.Ended outcome
+        | ProgramStepOutcome.StoppedAtUndefinedValue (prepared, thread, observation) ->
+            RunEnd.StoppedAtUndefinedValue (prepared.State, thread, observation)
         | ProgramStepOutcome.Deadlocked (_, stuck) ->
             failwith $"Deadlock: no runnable threads and the process has not exited. Stuck: {stuck}"
         | ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
@@ -1460,6 +1499,9 @@ module Program =
 
                 failwith
                     $"TODO: initialising the entry point's declaring type aborted the process (%O{fatal.Code}): %s{message}"
+            | WhatWeDid.UndefinedValueObserved observation ->
+                RunEnd.StoppedAtUndefinedValue (state, mainThread, observation)
+                |> ProgramStartResult.CompletedBeforeMain
             | WhatWeDid.SuspendedForClassInit -> failwith "TODO: suspended for class init"
             | WhatWeDid.SuspendedForManagedCall ->
                 failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
@@ -1478,7 +1520,7 @@ module Program =
                 // anticipate, and the entry-point sequencer needs to decide explicitly
                 // whether to honour the yield before running Main.
                 failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
-            | WhatWeDid.Executed -> ()
+            | WhatWeDid.Executed ->
 
             ProgramStartResult.Ready
                 {
@@ -1648,6 +1690,15 @@ module Program =
                 },
                 stuck
             )
+        | ProgramStepOutcome.StoppedAtUndefinedValue (prepared, thread, observation) ->
+            // In any phase: the stop is a value a caller inspects, never a refusal.
+            StartupStepOutcome.StoppedAtUndefinedValue (
+                { startup with
+                    Prepared = prepared
+                },
+                thread,
+                observation
+            )
         | ProgramStepOutcome.Completed outcome ->
 
         // The process ended before `Main` was installed.
@@ -1698,10 +1749,14 @@ module Program =
             | StartupStepOutcome.PhaseAdvanced startup -> go startup
             | StartupStepOutcome.Deadlocked (_, stuck) ->
                 failwith $"Deadlock during startup: no runnable threads and startup has not finished. Stuck: {stuck}"
+            | StartupStepOutcome.StoppedAtUndefinedValue (startup, thread, observation) ->
+                RunEnd.StoppedAtUndefinedValue (startup.State, thread, observation)
+                |> ProgramStartResult.CompletedBeforeMain
 
         go (beginStartup loggerFactory originalPath fileStream hostConfig)
 
-    /// Returns the outcome of the program run: normal exit or unhandled guest exception.
+    /// Runs the program until its process ends, or until PawPrint stops it at an undefined value;
+    /// either is returned, never raised.
     ///
     /// `hostConfig.PctSeed` flows through to `prepare`: `Some s` selects PCT with seed `s`,
     /// `None` keeps the default round-robin scheduler. See `prepare` for the
@@ -1771,7 +1826,8 @@ module Program =
     type PrefixOutcome =
         /// Reached a contended decision. Resume with `resumeFork`, once per seed.
         | ForkedAt of ForkSnapshot
-        /// The program ran to completion without ever reaching a contended decision. No policy
+        /// The program ran to completion, or PawPrint stopped it at an undefined value, without
+        /// ever reaching a contended decision. No policy
         /// had a choice anywhere, so this is the outcome under *every* seed, and a sweep is
         /// answered by this one run. (Its state's `Scheduling` is the `RoundRobin` the prefix ran
         /// under, where a from-scratch `Pct s` run would carry `Pct (ofSeed s)`; nothing
@@ -1819,6 +1875,7 @@ module Program =
         | WhatWeDid.Executed
         | WhatWeDid.Aborted _
         | WhatWeDid.UnhandledException _
+        | WhatWeDid.UndefinedValueObserved _
         | WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall
         | WhatWeDid.BlockedOnClassInit _
@@ -1854,11 +1911,14 @@ module Program =
                 }
         | None ->
 
-        match annotating advanced.State (fun () -> stepDecided loggerFactory logger advanced) with
+        match annotating advanced.State (fun () -> stepDecided loggerFactory logger prepared advanced) with
         | Tick.StartupCallReturned _ ->
             failwith
                 "Program.runToNextFork: the entry thread's startup call returned, but a fork snapshot is taken only once Main is installed"
         | Tick.Stepped (ProgramStepOutcome.Completed outcome) -> PrefixOutcome.NeverForked (RunEnd.Ended outcome)
+        | Tick.Stepped (ProgramStepOutcome.StoppedAtUndefinedValue (next, thread, observation)) ->
+            RunEnd.StoppedAtUndefinedValue (next.State, thread, observation)
+            |> PrefixOutcome.NeverForked
         | Tick.Stepped (ProgramStepOutcome.Deadlocked (_, stuck)) -> PrefixOutcome.DeadlockedBeforeFork stuck
         | Tick.Stepped (ProgramStepOutcome.WorkerTerminated (next, _)) -> runToNextFork loggerFactory logger next
         | Tick.Stepped (ProgramStepOutcome.InstructionStepped (next, ran, whatWeDid, _)) ->
@@ -1908,6 +1968,9 @@ module Program =
             | StartupStepOutcome.Completed (ProgramStartResult.CompletedBeforeMain outcome) ->
                 PrefixOutcome.NeverForked outcome
             | StartupStepOutcome.Deadlocked (_, stuck) -> PrefixOutcome.DeadlockedBeforeFork stuck
+            | StartupStepOutcome.StoppedAtUndefinedValue (startup, thread, observation) ->
+                RunEnd.StoppedAtUndefinedValue (startup.State, thread, observation)
+                |> PrefixOutcome.NeverForked
             | StartupStepOutcome.Stepped (startup, ran, whatWeDid, _) ->
                 checkYieldDidNotStraddle ran whatWeDid startup.Prepared
                 goStartup startup

@@ -181,6 +181,7 @@ module TestByteViewChainAccess =
                 ]
             |> Gen.map CliType.ObjectRef
         | CliType.RuntimePointer _ -> Gen.constant template
+        | CliType.Undefined u -> failwith $"valueLike: the template %O{u} is undefined, but templates are zero values"
         | CliType.ValueType cvt ->
             (Gen.constant cvt, fieldsOf template)
             ||> List.fold (fun acc f ->

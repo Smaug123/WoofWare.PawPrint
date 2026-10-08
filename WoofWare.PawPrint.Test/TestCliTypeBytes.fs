@@ -2398,3 +2398,165 @@ module TestCliTypeBytes =
             }
 
         Check.One (config, Prop.forAll (Arb.fromGen gen) (fun (v, o, c) -> property v o c))
+
+    /// What one byte of a value holds, for the model below: a number or a named byte of a native
+    /// int, or a byte nothing wrote.
+    type private ModelByte =
+        | Named of UInt8Source
+        | Unwritten of UninitialisedByte
+
+    /// A struct holding a type handle's named bytes beside a field that may be undefined, read
+    /// and written a byte range at a time. A range is read exactly as its own bytes: named where
+    /// they are named, undefined where they are undefined, and refused only where it holds both an
+    /// undefined byte and a named one, which no single byte image spells. A write rebuilds only
+    /// the fields it lands on, so the named bytes elsewhere survive it.
+    [<Test>]
+    let ``A struct range holding named and undefined bytes reads and writes as its own bytes`` () : unit =
+        let handle =
+            NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed int32Handle)
+
+        let unwritten (offset : int) : UninitialisedByte =
+            {
+                Memory = UninitialisedMemory.Native (NativeMemoryBlockId 7)
+                Offset = offset
+            }
+
+        let genValueByte : Gen<ValueByte> =
+            Gen.oneof
+                [
+                    Gen.choose (0, 255) |> Gen.map (byte >> ValueByte.Defined)
+                    Gen.choose (0, 15) |> Gen.map (unwritten >> ValueByte.Undefined)
+                ]
+
+        // Handle at [0, 8), an int at [8, 12), a byte at 12, and padding at [13, 16).
+        let build (intBytes : ValueByte[]) (byteField : byte) : CliType =
+            let fields =
+                [
+                    cliField "Handle" (CliType.Numeric (CliNumericType.NativeInt handle)) (Some 0) intPtrHandle
+                    cliField
+                        "Int"
+                        (CliType.OfValueBytesLike (CliType.Numeric (CliNumericType.Int32 0)) intBytes)
+                        (Some 8)
+                        int32Handle
+                    cliField
+                        "Byte"
+                        (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim byteField)))
+                        (Some 12)
+                        byteHandle
+                ]
+
+            SynthesisedLayoutKind.ofFields
+                bct
+                allCt
+                declaredHandle
+                (Layout.Custom (size = 16, packingSize = 0))
+                CharSet.Ansi
+                fields
+            |> CliType.ValueType
+
+        let toModel (b : ValueByte) : ModelByte =
+            match b with
+            | ValueByte.Defined b -> ModelByte.Named (UInt8Source.Verbatim b)
+            | ValueByte.Undefined origin -> ModelByte.Unwritten origin
+
+        let expectRead (model : ModelByte[]) (offset : int) (count : int) (value : CliType) : unit =
+            let slice = Array.sub model offset count
+
+            let named =
+                slice
+                |> Array.choose (fun b ->
+                    match b with
+                    | ModelByte.Named s -> Some s
+                    | ModelByte.Unwritten _ -> None
+                )
+
+            if named.Length = count then
+                CliType.ImageBytesAt offset count value
+                |> shouldEqual (ImageBytes.Defined named)
+            elif
+                named
+                |> Array.forall (fun s ->
+                    match s with
+                    | UInt8Source.Verbatim _ -> true
+                    | _ -> false
+                )
+            then
+                let expected =
+                    slice
+                    |> Array.map (fun b ->
+                        match b with
+                        | ModelByte.Named (UInt8Source.Verbatim b) -> ValueByte.Defined b
+                        | ModelByte.Unwritten origin -> ValueByte.Undefined origin
+                        | ModelByte.Named other -> failwith $"unreachable: %O{other} was just checked to be verbatim"
+                    )
+
+                CliType.ImageBytesAt offset count value
+                |> shouldEqual (ImageBytes.SomeUndefined expected)
+            else
+                // Both an undefined byte and a named one: refused.
+                Assert.Throws<exn> (fun () -> CliType.ImageBytesAt offset count value |> ignore<ImageBytes>)
+                |> ignore<exn>
+
+        let gen =
+            gen {
+                let! intBytes = Gen.arrayOfLength 4 genValueByte
+                let! byteField = Gen.choose (0, 255) |> Gen.map byte
+
+                // Writes land on the int, the byte and the padding, never on the handle, whose
+                // bytes have no number to be written over; padding is written with numbers only.
+                let! writes =
+                    Gen.listOf (
+                        gen {
+                            let! offset = Gen.choose (8, 15)
+                            let! count = Gen.choose (1, 16 - offset)
+
+                            let! bytes =
+                                Gen.arrayOfLength count genValueByte
+                                |> Gen.map (
+                                    Array.mapi (fun i b ->
+                                        match b with
+                                        | ValueByte.Undefined _ when offset + i >= 12 ->
+                                            ValueByte.Defined (byte (offset + i))
+                                        | b -> b
+                                    )
+                                )
+
+                            return offset, bytes
+                        }
+                    )
+
+                let! reads =
+                    Gen.nonEmptyListOf (
+                        gen {
+                            let! offset = Gen.choose (0, 15)
+                            let! count = Gen.choose (1, 16 - offset)
+                            return offset, count
+                        }
+                    )
+
+                return intBytes, byteField, writes, reads
+            }
+
+        let property (intBytes : ValueByte[], byteField : byte, writes, reads) : unit =
+            let model : ModelByte[] =
+                Array.concat
+                    [
+                        Array.init 8 (fun i -> ModelByte.Named (UInt8Source.NativeIntByte (handle, i)))
+                        Array.map toModel intBytes
+                        [| ModelByte.Named (UInt8Source.Verbatim byteField) |]
+                        Array.create 3 (ModelByte.Named (UInt8Source.Verbatim 0uy))
+                    ]
+
+            let value =
+                (build intBytes byteField, writes)
+                ||> List.fold (fun value (offset : int, bytes : ValueByte[]) ->
+                    bytes |> Array.iteri (fun i b -> model.[offset + i] <- toModel b)
+
+                    CliType.WithValueBytesAtIfChanged offset bytes value
+                    |> Option.defaultValue value
+                )
+
+            for offset, count in reads do
+                expectRead model offset count value
+
+        Check.One (config, Prop.forAll (Arb.fromGen gen) property)

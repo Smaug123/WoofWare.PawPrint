@@ -541,6 +541,24 @@ module TestSchedulerYieldDebt =
                         Message = Some "boom"
                     }
                 WhatWeDid.UnhandledException (unhandledException ())
+                WhatWeDid.UndefinedValueObserved
+                    {
+                        Value =
+                            match
+                                UndefinedValue.tryOfBytes
+                                    UndefinedPrimitive.Bool
+                                    [
+                                        ValueByte.Undefined
+                                            {
+                                                Memory = UninitialisedMemory.Native (NativeMemoryBlockId 0)
+                                                Offset = 0
+                                            }
+                                    ]
+                            with
+                            | ValueSome u -> u
+                            | ValueNone -> failwith "unreachable: the image is undefined"
+                        Use = UndefinedValueUse.ExitCode
+                    }
             ]
 
         // As in `mapState reaches ...` below: the table is hand-written, so tie it to the type or
@@ -561,6 +579,7 @@ module TestSchedulerYieldDebt =
             match variant with
             | WhatWeDid.Aborted _ -> expectRefusal variant "ExecutionResult.Aborted"
             | WhatWeDid.UnhandledException _ -> expectRefusal variant "ExecutionResult.UnhandledException"
+            | WhatWeDid.UndefinedValueObserved _ -> expectRefusal variant "ExecutionResult.UndefinedValueObserved"
             | _ -> Scheduler.onStepOutcome ran variant state |> ignore
 
     [<Test>]
@@ -569,7 +588,7 @@ module TestSchedulerYieldDebt =
         // mapping over whatever `executeOneStep` returned, so an outcome whose state `mapState`
         // failed to touch would silently skip the per-step bookkeeping. The compiler catches a
         // *missing* variant; this catches one that is present but wired to the wrong field, and
-        // pins that no variant is deliberately exempted later.
+        // pins that no variant but the stateless stop is exempted.
         let marked = baseState () |> withThreads (runnable 1)
 
         let mark (_ : IlMachineState) : IlMachineState = marked
@@ -600,6 +619,26 @@ module TestSchedulerYieldDebt =
                 ExecutionResult.SignalTerminated (sentinel, Signal.SIGINT, false)
                 ExecutionResult.Stepped (sentinel, WhatWeDid.Executed, StepEffect.NoEffect)
                 ExecutionResult.UnhandledException (sentinel, thread, guestException)
+                ExecutionResult.UndefinedValueObserved (
+                    thread,
+                    {
+                        Value =
+                            match
+                                UndefinedValue.tryOfBytes
+                                    UndefinedPrimitive.Bool
+                                    [
+                                        ValueByte.Undefined
+                                            {
+                                                Memory = UninitialisedMemory.Native (NativeMemoryBlockId 0)
+                                                Offset = 0
+                                            }
+                                    ]
+                            with
+                            | ValueSome u -> u
+                            | ValueNone -> failwith "unreachable: the image is undefined"
+                        Use = UndefinedValueUse.ExitCode
+                    }
+                )
             ]
 
         // The table above is hand-written, so it can fall behind the type — which is the exact
@@ -615,14 +654,20 @@ module TestSchedulerYieldDebt =
 
             let state =
                 match mapped with
+                // A stop describes a step that did not happen, so it carries no state, and there
+                // is no bookkeeping for `mapState` to skip.
+                | ExecutionResult.UndefinedValueObserved _ -> None
                 | ExecutionResult.Terminated (s, _)
                 | ExecutionResult.ProcessExit (s, _)
                 | ExecutionResult.Aborted (s, _, _)
                 | ExecutionResult.SignalTerminated (s, _, _)
                 | ExecutionResult.Stepped (s, _, _)
-                | ExecutionResult.UnhandledException (s, _, _) -> s
+                | ExecutionResult.UnhandledException (s, _, _) -> Some s
 
-            // Reference equality would be ideal but `IlMachineState` is a large record; the
-            // thread map is enough to tell the marked state from the sentinel.
-            state.ThreadState.Count |> shouldEqual marked.ThreadState.Count
-            state.ThreadState.Count |> shouldNotEqual sentinel.ThreadState.Count
+            match state with
+            | None -> ()
+            | Some state ->
+                // Reference equality would be ideal but `IlMachineState` is a large record; the
+                // thread map is enough to tell the marked state from the sentinel.
+                state.ThreadState.Count |> shouldEqual marked.ThreadState.Count
+                state.ThreadState.Count |> shouldNotEqual sentinel.ThreadState.Count

@@ -91,6 +91,8 @@ module EvalStackValueComparisons =
         let var2 = unwrapPlaceholderForBitComparison var2
 
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.clt" u
         // A byref that `conv.i4` truncated has no numeric value to order: only a
         // mask can say anything about it (see `Int32Source`).
         | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _), _
@@ -145,6 +147,8 @@ module EvalStackValueComparisons =
         let var2 = unwrapPlaceholderForBitComparison var2
 
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.cgt" u
         // A byref that `conv.i4` truncated has no numeric value to order: only a
         // mask can say anything about it (see `Int32Source`).
         | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer _), _
@@ -198,6 +202,8 @@ module EvalStackValueComparisons =
     /// correct ECMA-335 ordered ble semantics.
     let cle (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.cle" u
         // Non-float types defer to `not (cgt v1 v2)` — note that for floats this would be
         // wrong (`not cgt` is the *unordered* ble, since `cgt(NaN, _)` is false), so the
         // Float × Float arm overrides explicitly. Cross-type (Float vs Int / NativeInt) is
@@ -209,6 +215,8 @@ module EvalStackValueComparisons =
     /// Ordered "greater than or equal". Float × Float uses IEEE `>=` (NaN ⇒ false).
     let cge (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.cge" u
         // Mirrors `cle`: other types defer to `not (clt v1 v2)`, with the Float × Float
         // arm overriding explicitly. Cross-type guards are inherited from `clt`.
         | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
@@ -220,6 +228,8 @@ module EvalStackValueComparisons =
         let var2 = unwrapPlaceholderForBitComparison var2
 
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.cgtUn" u
         // A WidenedNativeInt is the int64 bit pattern of a NativeInt under our
         // 64-bit assumption, so unsigned comparison agrees with comparing the
         // underlying NativeInt directly. Rewriting here lets the NativeInt
@@ -327,6 +337,8 @@ module EvalStackValueComparisons =
         let var2 = unwrapPlaceholderForBitComparison var2
 
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.cltUn" u
         // See cgtUn: WidenedNativeInt collapses to NativeInt for unsigned
         // comparison under the 64-bit assumption.
         | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)), _ -> cltUn (EvalStackValue.NativeInt src) var2
@@ -414,6 +426,8 @@ module EvalStackValueComparisons =
 
     let cgeUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.cgeUn" u
         | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
             not (EvalStackFloat.toDouble var1 < EvalStackFloat.toDouble var2)
         | EvalStackValue.Float _, _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
@@ -422,6 +436,8 @@ module EvalStackValueComparisons =
 
     let cleUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.cleUn" u
         | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
             not (EvalStackFloat.toDouble var1 > EvalStackFloat.toDouble var2)
         | EvalStackValue.Float _, _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
@@ -436,6 +452,8 @@ module EvalStackValueComparisons =
         // so UserDefinedValueType here is always a genuine user struct. ECMA leaves ceq between
         // user-defined value types unspecified, so we fail loud.
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.ceq" u
         | EvalStackValue.UserDefinedValueType var1, v ->
             failwith $"ceq is not specified for UserDefinedValueType: %O{var1} vs %O{v}"
         | u, EvalStackValue.UserDefinedValueType var2 ->
@@ -583,6 +601,8 @@ module EvalStackValueComparisons =
         let var2 = unwrapPlaceholderForBitComparison var2
 
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u -> UndefinedValue.failUnobserved "EvalStackValueComparisons.ceqDeferred" u
         | EvalStackValue.ManagedPointer p1, EvalStackValue.ManagedPointer p2 ->
             ManagedPointerSource.ceqNormalisedDeferred
                 "byref"
@@ -648,6 +668,9 @@ module EvalStackValueComparisons =
             EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 (uint32 i)))
 
         match var1, var2 with
+        | EvalStackValue.Undefined u, _
+        | _, EvalStackValue.Undefined u ->
+            UndefinedValue.failUnobserved "EvalStackValueComparisons.unsignedBranchWidenings" u
         | EvalStackValue.Int32 (Int32Source.Verbatim i), EvalStackValue.NativeInt _ when i < 0 ->
             Some ((signExtendInt32 i, var2), (zeroExtendInt32 i, var2))
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 (Int32Source.Verbatim i) when i < 0 ->

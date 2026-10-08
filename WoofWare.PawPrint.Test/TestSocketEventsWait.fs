@@ -93,6 +93,8 @@ class WaitsOnADuplicatedPort
                 failwith $"guest did not deadlock within %d{maxSteps} steps"
 
             match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
             | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) -> prepared, stuck
             | Program.ProgramStepOutcome.Completed outcome ->
                 failwith
@@ -570,6 +572,8 @@ class TwoPortsOneEdge
                 | _ -> ranAfterParking
 
             match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.StoppedAtUndefinedValue (_, thread, observation) ->
+                failwith $"PawPrint stopped the guest on %O{thread} at an undefined value: %O{observation}"
             | Program.ProgramStepOutcome.Completed _ -> quiet.IsSome, busyParked, busyWoke, ranAfterParking
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
                 failwith $"guest deadlocked rather than completing. Stuck: %s{stuck}"

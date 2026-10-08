@@ -175,6 +175,9 @@ type CliByteAddressabilityRejection =
     /// the innermost offending field's declaring type.
     | ValueTypeContainsRuntimePointers of ConcreteTypeHandle
     | ValueTypeContainsNonByteAddressableField of ConcreteTypeHandle * FieldId * CliByteAddressabilityRejection
+    /// A byte whose content is undefined, because it descends from memory nothing wrote. It has
+    /// no value to give, and no name to give instead.
+    | UndefinedByte of UninitialisedByte
 
     member this.Description : string =
         match this with
@@ -190,6 +193,21 @@ type CliByteAddressabilityRejection =
         | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ -> "value type containing runtime pointers"
         | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_, field, rejection) ->
             $"value type containing non-byte-addressable field %O{field}: %s{rejection.Description}"
+        | CliByteAddressabilityRejection.UndefinedByte origin -> $"undefined byte, descended from %O{origin}"
+
+    /// The never-written byte this obstruction is, through any fields it is nested in, or `None`
+    /// for an obstruction that is not an undefined byte.
+    member this.UndefinedOrigin : UninitialisedByte option =
+        match this with
+        | CliByteAddressabilityRejection.UndefinedByte origin -> Some origin
+        | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_, _, inner) -> inner.UndefinedOrigin
+        | CliByteAddressabilityRejection.ObjectReference
+        | CliByteAddressabilityRejection.RuntimePointer
+        | CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable _
+        | CliByteAddressabilityRejection.UInt8SourceNotByteAddressable _
+        | CliByteAddressabilityRejection.Int64SourceNotByteAddressable _
+        | CliByteAddressabilityRejection.ValueTypeContainsObjectReferences _
+        | CliByteAddressabilityRejection.ValueTypeContainsRuntimePointers _ -> None
 
 type CliByteAddressability =
     | ByteAddressable
@@ -324,6 +342,64 @@ type CliType =
     /// This is *not* a CLI type as such. I don't actually know its status. A value type is represented
     /// as a concatenated list of its fields.
     | ValueType of CliValueType
+    /// A primitive at least one of whose bytes nothing ever wrote, standing in for the leaf shape
+    /// its `Kind` names. A value type is never undefined as a whole: its fields are, one leaf at a
+    /// time. See `UndefinedValue` for what may and may not be done with one.
+    | Undefined of UndefinedValue
+
+    /// The all-zero value of a primitive leaf shape.
+    static member ZeroOfPrimitive (kind : UndefinedPrimitive) : CliType =
+        match kind with
+        | UndefinedPrimitive.Int8 -> CliType.Numeric (CliNumericType.Int8 0y)
+        | UndefinedPrimitive.UInt8 -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
+        | UndefinedPrimitive.Int16 -> CliType.Numeric (CliNumericType.Int16 0s)
+        | UndefinedPrimitive.UInt16 -> CliType.Numeric (CliNumericType.UInt16 0us)
+        | UndefinedPrimitive.Int32 -> CliType.Numeric (CliNumericType.Int32 0)
+        | UndefinedPrimitive.Int64 -> CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))
+        | UndefinedPrimitive.NativeInt -> CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+        | UndefinedPrimitive.Float32 -> CliType.Numeric (CliNumericType.Float32 0.0f)
+        | UndefinedPrimitive.Float64 -> CliType.Numeric (CliNumericType.Float64 0.0)
+        | UndefinedPrimitive.NativeFloat -> CliType.Numeric (CliNumericType.NativeFloat 0.0)
+        | UndefinedPrimitive.Bool -> CliType.Bool 0uy
+        | UndefinedPrimitive.Char -> CliType.Char (0uy, 0uy)
+        | UndefinedPrimitive.ObjectRef -> CliType.ObjectRef None
+        | UndefinedPrimitive.RuntimePointer ->
+            CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
+
+    /// `t`, with an undefined leaf replaced by the zero of its shape. For questions about layout and
+    /// marshalling, which depend on a value's shape and never on its content, and which an
+    /// undefined leaf therefore answers exactly as a defined one of its shape does.
+    static member Shape (t : CliType) : CliType =
+        match t with
+        | CliType.Undefined u -> CliType.ZeroOfPrimitive u.Kind
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _
+        | CliType.ValueType _ -> t
+
+    /// The primitive leaf shape of `t`, or `None` for a value type, which has no single one.
+    static member TryPrimitiveShape (t : CliType) : UndefinedPrimitive option =
+        match t with
+        | CliType.Numeric numeric ->
+            match numeric with
+            | CliNumericType.Int8 _ -> Some UndefinedPrimitive.Int8
+            | CliNumericType.UInt8 _ -> Some UndefinedPrimitive.UInt8
+            | CliNumericType.Int16 _ -> Some UndefinedPrimitive.Int16
+            | CliNumericType.UInt16 _ -> Some UndefinedPrimitive.UInt16
+            | CliNumericType.Int32 _ -> Some UndefinedPrimitive.Int32
+            | CliNumericType.Int64 _ -> Some UndefinedPrimitive.Int64
+            | CliNumericType.NativeInt _ -> Some UndefinedPrimitive.NativeInt
+            | CliNumericType.Float32 _ -> Some UndefinedPrimitive.Float32
+            | CliNumericType.Float64 _ -> Some UndefinedPrimitive.Float64
+            | CliNumericType.NativeFloat _ -> Some UndefinedPrimitive.NativeFloat
+        | CliType.Bool _ -> Some UndefinedPrimitive.Bool
+        | CliType.Char _ -> Some UndefinedPrimitive.Char
+        | CliType.ObjectRef _ -> Some UndefinedPrimitive.ObjectRef
+        | CliType.RuntimePointer _ -> Some UndefinedPrimitive.RuntimePointer
+        | CliType.Undefined u -> Some u.Kind
+        | CliType.ValueType _ -> None
 
     static member SizeOf (t : CliType) : SizeofResult =
         match t with
@@ -355,10 +431,18 @@ type CliType =
                 Alignment = 8
             }
         | CliType.ValueType vt -> CliValueType.SizeOf vt
+        | CliType.Undefined u ->
+            let size = UndefinedPrimitive.size u.Kind
+
+            {
+                Size = size
+                Alignment = size
+            }
 
     static member ContainsObjectReferences (t : CliType) : bool =
         match t with
         | CliType.ObjectRef _ -> true
+        | CliType.Undefined u -> u.Kind = UndefinedPrimitive.ObjectRef
         | CliType.ValueType vt -> CliValueType.ContainsObjectReferences vt
         | CliType.Numeric _
         | CliType.Bool _
@@ -370,6 +454,7 @@ type CliType =
     static member ContainsRuntimePointers (t : CliType) : bool =
         match t with
         | CliType.RuntimePointer _ -> true
+        | CliType.Undefined u -> u.Kind = UndefinedPrimitive.RuntimePointer
         | CliType.ValueType vt -> CliValueType.ContainsRuntimePointers vt
         | CliType.Numeric _
         | CliType.Bool _
@@ -384,6 +469,8 @@ type CliType =
         | CliType.ObjectRef _ -> CliByteAddressability.Rejected CliByteAddressabilityRejection.ObjectReference
         | CliType.RuntimePointer _ -> CliByteAddressability.Rejected CliByteAddressabilityRejection.RuntimePointer
         | CliType.ValueType vt -> CliValueType.ByteAddressability vt
+        | CliType.Undefined u ->
+            CliByteAddressability.Rejected (CliByteAddressabilityRejection.UndefinedByte (List.head u.Origins))
 
     static member TryFindMarshalSizeDifference (t : CliType) : string option =
         match t with
@@ -391,6 +478,7 @@ type CliType =
         | CliType.Char _ -> Some "System.Char marshalling depends on CharSet and does not always match 2-byte CLI char"
         | CliType.ObjectRef _ -> Some "object references require managed-to-unmanaged marshalling"
         | CliType.ValueType vt -> CliValueType.TryFindMarshalSizeDifference vt
+        | CliType.Undefined u -> CliType.TryFindMarshalSizeDifference (CliType.ZeroOfPrimitive u.Kind)
         | CliType.Numeric _
         | CliType.RuntimePointer _ -> None
 
@@ -422,6 +510,8 @@ type CliType =
             MarshalSizeError.NotImplemented "object references require managed-to-unmanaged marshalling"
             |> Result.Error
         | CliType.ValueType vt -> CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
+        | CliType.Undefined u ->
+            CliType.TryComputeMarshalSize concreteTypes assemblies corelib (CliType.ZeroOfPrimitive u.Kind)
 
     /// The offset `Marshal.OffsetOf` reports for the instance field `field` of `declaringType`:
     /// where that field lands in `declaringType`'s unmanaged image. `zero` must be
@@ -465,6 +555,9 @@ type CliType =
         | CliType.Bool _
         | CliType.Char _
         | CliType.RuntimePointer _ -> Result.Ok 0
+        | CliType.Undefined u ->
+            failwith
+                $"CliType.TryComputeMarshalFieldOffset: the zero value passed for %s{AllConcreteTypes.describe assemblies concreteTypes declaringType} is the undefined %O{u}, and a zero value is never undefined"
         | CliType.ObjectRef _ ->
             failwith
                 $"CliType.TryComputeMarshalFieldOffset: %s{AllConcreteTypes.describe assemblies concreteTypes declaringType} is a class; a class's native layout is its base chain's, from CliValueType.TryComputeClassMarshalLayout"
@@ -521,6 +614,9 @@ type CliType =
             failwith
                 $"TODO: CliType.ToBytes cannot render the runtime pointer %O{pointer} as bytes; PawPrint models a managed pointer as a provenance-carrying identity rather than an address, so it has no byte image (see CliType.ByteAddressability, and CliType.SymbolicBytesAt for the byref byte-view reader that can name one instead)"
         | CliType.ValueType cvt -> CliValueType.ToBytes cvt
+        | CliType.Undefined u ->
+            failwith
+                $"CliType.ToBytes cannot render the undefined %O{u} as bytes: at least one of its bytes descends from memory nothing wrote, and PawPrint does not invent a value for it (see CliType.ByteAddressability)"
 
     static member OfBytesAsType (targetType : ConcreteTypeHandle) (bytes : byte[]) : CliType = failwith "TODO"
 
@@ -555,6 +651,12 @@ type CliType =
     /// object refs, runtime pointers etc. are out of scope for this helper and
     /// fall through to a specific `failwith`.
     static member OfBytesLike (template : CliType) (bytes : byte[]) : CliType =
+        let template =
+            match template with
+            // An undefined cell's bytes being all defined makes it an ordinary value of its shape.
+            | CliType.Undefined u -> CliType.ZeroOfPrimitive u.Kind
+            | _ -> template
+
         let expected = CliType.SizeOf(template).Size
 
         if bytes.Length <> expected then
@@ -590,10 +692,64 @@ type CliType =
         | CliType.Numeric (CliNumericType.NativeInt _) ->
             CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (BitConverter.ToInt64 (bytes, 0))))
         | CliType.ValueType vt -> CliValueType.OfBytesLike vt bytes |> CliType.ValueType
+        | CliType.Undefined _ -> failwith "unreachable: an undefined template was replaced by its shape's zero above"
         | CliType.ObjectRef _
         | CliType.RuntimePointer _ ->
             failwith
                 $"TODO: CliType.OfBytesLike: non-primitive template %O{template} (bytes reconstruction for non-primitive storage not yet modelled)"
+
+    /// Reconstruct a value of `template`'s shape from an image some of whose bytes may be undefined.
+    ///
+    /// An image whose bytes are all defined is <see cref="OfBytesLike" />, unchanged. Otherwise a
+    /// primitive template gives an undefined value of its shape, and a value type is rebuilt one
+    /// field at a time, each field undefined exactly when its own bytes include an undefined one:
+    /// undefinedness lives at the leaves. An undefined byte that no field covers — padding, or a
+    /// value type stored as raw bytes — is refused, because the value type would have to hold a
+    /// number for it.
+    static member OfValueBytesLike (template : CliType) (bytes : ValueByte[]) : CliType =
+        let defined =
+            bytes
+            |> Array.forall (fun b ->
+                match b with
+                | ValueByte.Defined _ -> true
+                | ValueByte.Undefined _ -> false
+            )
+
+        if defined then
+            let numbers =
+                bytes
+                |> Array.map (fun b ->
+                    match b with
+                    | ValueByte.Defined b -> b
+                    | ValueByte.Undefined _ -> failwith "unreachable: every byte was just checked to be defined"
+                )
+
+            match CliType.TryPrimitiveShape template with
+            // A reference or pointer has one value a byte image spells: all zeros is null. Any other
+            // image names nothing, and `OfBytesLike` refuses it.
+            | Some (UndefinedPrimitive.ObjectRef | UndefinedPrimitive.RuntimePointer as kind) when
+                Array.forall ((=) 0uy) numbers
+                ->
+                CliType.ZeroOfPrimitive kind
+            | _ -> CliType.OfBytesLike template numbers
+        else
+
+        match template with
+        | CliType.ValueType vt -> CliValueType.OfValueBytesLike vt bytes |> CliType.ValueType
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _
+        | CliType.Undefined _ ->
+            let kind =
+                match CliType.TryPrimitiveShape template with
+                | Some kind -> kind
+                | None -> failwith $"unreachable: %O{template} is a primitive leaf but has no primitive shape"
+
+            match UndefinedValue.tryOfBytes kind (List.ofArray bytes) with
+            | ValueSome u -> CliType.Undefined u
+            | ValueNone -> failwith "unreachable: the image was just checked to hold an undefined byte"
 
     /// The all-zero value of the same CLI shape as `template`: same primitive flavour, same
     /// declared struct type and field list, same storage form. Total, unlike `OfBytesLike`,
@@ -618,6 +774,7 @@ type CliType =
         | CliType.ObjectRef _ -> CliType.ObjectRef None
         | CliType.RuntimePointer _ -> CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null)
         | CliType.ValueType vt -> CliValueType.ZeroLike vt |> CliType.ValueType
+        | CliType.Undefined u -> CliType.ZeroOfPrimitive u.Kind
         | CliType.Numeric numeric ->
             let zeroed =
                 match numeric with
@@ -697,6 +854,16 @@ type CliType =
         | CliType.RuntimePointer _ ->
             checkRange (CliType.SizeOf(value).Size)
             Array.create count (Error CliByteAddressabilityRejection.RuntimePointer)
+        | CliType.Undefined u ->
+            checkRange (CliType.SizeOf(value).Size)
+
+            UndefinedValue.bytesAt offset count u
+            |> List.map (fun b ->
+                match b with
+                | ValueByte.Defined b -> Ok b
+                | ValueByte.Undefined origin -> Error (CliByteAddressabilityRejection.UndefinedByte origin)
+            )
+            |> Array.ofList
         | CliType.Numeric _
         | CliType.Bool _
         | CliType.Char _ ->
@@ -741,6 +908,274 @@ type CliType =
         match firstObstruction with
         | Some rejection -> Error rejection
         | None -> Ok bytes
+
+    /// Whether some leaf of `value` is undefined. Not a member of the module below because the byte
+    /// helpers here need it.
+    static member internal HasUndefinedLeaf (value : CliType) : bool =
+        match value with
+        | CliType.Undefined _ -> true
+        | CliType.ValueType vt ->
+            CliValueType.TryAllFields vt
+            |> List.exists (fun f -> CliType.HasUndefinedLeaf (CliConcreteField.ToCliField f).Contents)
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ -> false
+
+    /// The bytes of `[offset, offset + count)`, each a number or undefined. Refuses a range reaching
+    /// a byte with neither: inside a reference, a runtime pointer, or a native int PawPrint models
+    /// as an identity. A range outside the value is a caller bug and fails.
+    static member ValueBytesAt (offset : int) (count : int) (value : CliType) : ValueByte[] =
+        CliType.ByteImageAt offset count value
+        |> Array.mapi (fun i b ->
+            match b with
+            | Ok b -> ValueByte.Defined b
+            | Error rejection ->
+                match rejection.UndefinedOrigin with
+                | Some origin -> ValueByte.Undefined origin
+                | None ->
+                    failwith
+                        $"CliType.ValueBytesAt: byte %d{offset + i} of %O{value} is a %s{rejection.Description}, which is neither a number nor undefined. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+        )
+
+    /// `ValueBytesAt` over the whole of `value`.
+    static member ValueBytesOf (value : CliType) : ValueByte[] =
+        CliType.ValueBytesAt 0 (CliType.SizeOf(value).Size) value
+
+    /// The bytes of `[offset, offset + count)` as a read of a typed value needs them: exactly
+    /// `SymbolicBytesAt`'s answer when every byte has content, and each byte as a number or
+    /// undefined when one is undefined. Refuses what `SymbolicBytesAt` refuses, and a range holding
+    /// an undefined byte beside a byte that is not a number.
+    static member ImageBytesAt (offset : int) (count : int) (value : CliType) : ImageBytes =
+        if not (CliType.HasUndefinedLeaf value) then
+            CliType.SymbolicBytesAt offset count value |> ImageBytes.Defined
+        else
+
+        let bytes = CliType.RangeImageAt offset count value
+
+        let named =
+            bytes
+            |> Array.choose (fun b ->
+                match b with
+                | CliImageByte.Named source -> Some source
+                | CliImageByte.Unwritten _ -> None
+            )
+
+        if named.Length = count then
+            ImageBytes.Defined named
+        else
+
+        bytes
+        |> Array.mapi (fun i b ->
+            match b with
+            | CliImageByte.Named (UInt8Source.Verbatim b) -> ValueByte.Defined b
+            | CliImageByte.Unwritten origin -> ValueByte.Undefined origin
+            | CliImageByte.Named other ->
+                failwith
+                    $"CliType.ImageBytesAt: bytes [%d{offset}, %d{offset + count}) of %O{value} hold an undefined byte beside byte %d{offset + i}, %O{other}, which has no number, and no byte image spells both. Value layout:\n%s{CliType.DescribeByteLayout None value}"
+        )
+        |> ImageBytes.SomeUndefined
+
+    /// Each byte of `[offset, offset + count)` of `value`, from the range's own bytes only: a
+    /// struct's field is read over the part of it inside the range, so an undefined field
+    /// elsewhere, or a named native int elsewhere, has no bearing. Refuses a byte with no image
+    /// (inside a reference or a runtime pointer), as `SymbolicBytesAt` does.
+    static member private RangeImageAt (offset : int) (count : int) (value : CliType) : CliImageByte[] =
+        let named () =
+            CliType.SymbolicBytesAt offset count value |> Array.map CliImageByte.Named
+
+        match value with
+        | CliType.Undefined u ->
+            UndefinedValue.bytesAt offset count u
+            |> List.map (fun b ->
+                match b with
+                | ValueByte.Defined b -> CliImageByte.Named (UInt8Source.Verbatim b)
+                | ValueByte.Undefined origin -> CliImageByte.Unwritten origin
+            )
+            |> Array.ofList
+        | CliType.ValueType vt when CliType.HasUndefinedLeaf value ->
+            match vt._Storage with
+            | CliValueTypeStorage.RawBytes _ -> named ()
+            | CliValueTypeStorage.Fields storage ->
+                CliType.CheckByteRange
+                    "CliType.RangeImageAt"
+                    offset
+                    count
+                    storage.PreservedBytes.Length
+                    $"value type %O{vt._Declared}"
+
+                let result =
+                    Array.init
+                        count
+                        (fun i -> CliImageByte.Named (UInt8Source.Verbatim storage.PreservedBytes.[offset + i]))
+
+                // Fields overlay the preserved bytes in the order they were written, as
+                // `SymbolicBytesAt` replays them.
+                storage.Fields
+                |> List.filter (fun f -> f.Offset < offset + count && offset < f.Offset + f.Size)
+                |> List.sortBy _.EditedAtTime
+                |> List.iter (fun field ->
+                    let start = max field.Offset offset
+                    let finish = min (field.Offset + field.Size) (offset + count)
+
+                    let inner =
+                        CliType.RangeImageAt (start - field.Offset) (finish - start) field.Contents
+
+                    Array.blit inner 0 result (start - offset) inner.Length
+                )
+
+                result
+        | CliType.ValueType _
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ -> named ()
+
+    /// A value of `template`'s shape from bytes `ImageBytesAt` or a block read gave.
+    static member OfImageBytesLike (template : CliType) (bytes : ImageBytes) : CliType =
+        match bytes with
+        | ImageBytes.Defined bytes -> CliType.OfSymbolicBytesLike template bytes
+        | ImageBytes.SomeUndefined bytes -> CliType.OfValueBytesLike template bytes
+
+    /// `value` with the bytes at `offset` replaced by `bytes`, or `None` if that changes nothing.
+    ///
+    /// Where the value is all numbers and so are the bytes written, this is `WithBytesAtIfChanged`.
+    /// Otherwise each field the range lands on is rebuilt over the part of it inside the range, and
+    /// nothing else is: a leaf is undefined afterwards exactly when one of its bytes is, so defined
+    /// bytes written over undefined ones define them, and an undefined byte written anywhere
+    /// undefines its leaf, while a named native int outside the range is untouched. Refuses a range
+    /// landing on a byte that is neither a number nor undefined, an undefined byte written into
+    /// padding, and a range over fields that share bytes in a value holding such a byte.
+    static member WithValueBytesAtIfChanged (offset : int) (bytes : ValueByte[]) (value : CliType) : CliType option =
+        let definedBytes =
+            bytes
+            |> Array.map (fun b ->
+                match b with
+                | ValueByte.Defined b -> Some b
+                | ValueByte.Undefined _ -> None
+            )
+
+        let byteAddressable =
+            match CliType.ByteAddressability value with
+            | CliByteAddressability.ByteAddressable -> true
+            | CliByteAddressability.SymbolicallyAddressable _
+            | CliByteAddressability.Rejected _ -> false
+
+        if byteAddressable && Array.forall Option.isSome definedBytes then
+            CliType.WithBytesAtIfChanged offset (Array.map Option.get definedBytes) value
+        else
+
+        match value with
+        | CliType.ValueType vt ->
+            match vt._Storage with
+            | CliValueTypeStorage.Fields storage ->
+                CliType.CheckByteRange
+                    "CliType.WithValueBytesAtIfChanged"
+                    offset
+                    bytes.Length
+                    storage.PreservedBytes.Length
+                    $"value type %O{vt._Declared}"
+
+                let touching =
+                    storage.Fields
+                    |> List.filter (fun f -> f.Offset < offset + bytes.Length && offset < f.Offset + f.Size)
+
+                if touching |> List.forall (fun f -> CliValueType.SharesNoBytes f vt) then
+                    CliType.WithValueBytesOfFieldsAtIfChanged offset bytes touching vt
+                else
+                    CliType.WithValueBytesOfWholeValueAtIfChanged offset bytes value
+            | CliValueTypeStorage.RawBytes _ -> CliType.WithValueBytesOfWholeValueAtIfChanged offset bytes value
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _
+        | CliType.Undefined _ -> CliType.WithValueBytesOfWholeValueAtIfChanged offset bytes value
+
+    /// `WithValueBytesAtIfChanged` over a struct whose fields `touching` hold every field byte of
+    /// the range and share no byte with any other field: each field is rebuilt over the part of
+    /// it inside the range, and the rest is padding, written as numbers. Nothing outside the
+    /// range is rebuilt, so a named native int elsewhere survives. Refuses an undefined byte
+    /// written into padding, which is stored as a number.
+    static member private WithValueBytesOfFieldsAtIfChanged
+        (offset : int)
+        (bytes : ValueByte[])
+        (touching : CliConcreteField list)
+        (vt : CliValueType)
+        : CliType option
+        =
+        let afterFields, fieldsChanged =
+            ((vt, false), touching)
+            ||> List.fold (fun (current, changed) field ->
+                let start = max field.Offset offset
+                let finish = min (field.Offset + field.Size) (offset + bytes.Length)
+                let inner = Array.sub bytes (start - offset) (finish - start)
+
+                match CliType.WithValueBytesAtIfChanged (start - field.Offset) inner field.Contents with
+                | Some contents -> CliValueType.WithFieldSetById field.Id contents current, true
+                | None -> current, changed
+            )
+
+        let covered (i : int) : bool =
+            touching |> List.exists (fun f -> f.Offset <= i && i < f.Offset + f.Size)
+
+        // Maximal runs of the range that no field covers, as (start, length).
+        let paddingRuns =
+            ([], [ offset .. offset + bytes.Length - 1 ])
+            ||> List.fold (fun runs i ->
+                if covered i then
+                    runs
+                else
+                    match runs with
+                    | (start, length) :: rest when start + length = i -> (start, length + 1) :: rest
+                    | _ -> (i, 1) :: runs
+            )
+            |> List.rev
+
+        let final, changed =
+            ((afterFields, fieldsChanged), paddingRuns)
+            ||> List.fold (fun (current, changed) (start, length) ->
+                let numbers =
+                    Array.sub bytes (start - offset) length
+                    |> Array.mapi (fun i b ->
+                        match b with
+                        | ValueByte.Defined b -> b
+                        | ValueByte.Undefined origin ->
+                            failwith
+                                $"refusing to write an undefined byte (descended from %O{origin}) into padding at offset %d{start + i} of %O{vt.Declared}; a value type's padding is stored as a number"
+                    )
+
+                match CliValueType.WithPaddingBytesAtIfChanged start numbers current with
+                | Some updated -> updated, true
+                | None -> current, changed
+            )
+
+        if changed then Some (CliType.ValueType final) else None
+
+    /// `WithValueBytesAtIfChanged` by rebuilding the whole of `value` from its image with `bytes`
+    /// spliced in; refuses a value with a byte that is neither a number nor undefined.
+    static member private WithValueBytesOfWholeValueAtIfChanged
+        (offset : int)
+        (bytes : ValueByte[])
+        (value : CliType)
+        : CliType option
+        =
+        let size = CliType.SizeOf(value).Size
+        let image = CliType.ValueBytesAt 0 size value
+
+        if offset < 0 || bytes.Length > size - offset then
+            failwith
+                $"CliType.WithValueBytesAtIfChanged: range of %d{bytes.Length} byte(s) at offset %d{offset} is outside the %d{size}-byte %O{value}"
+
+        let updated = Array.copy image
+        Array.blit bytes 0 updated offset bytes.Length
+
+        if updated = image then
+            None
+        else
+            Some (CliType.OfValueBytesLike value updated)
 
     /// The bytes of `[offset, offset + count)`, where a byte covered by a native int PawPrint
     /// models as an identity rather than as an address is *named* rather than materialised.
@@ -970,6 +1405,11 @@ type CliType =
         | CliType.ValueType vt ->
             CliValueType.WithZeroedRangeIfChanged offset count vt
             |> Option.map CliType.ValueType
+        | CliType.Undefined u ->
+            UndefinedValue.withBytesAt offset (List.replicate count (ValueByte.Defined 0uy)) u
+            |> Array.ofList
+            |> CliType.OfValueBytesLike value
+            |> Some
         | CliType.ObjectRef _
         | CliType.RuntimePointer _ ->
             // A reference or pointer occupies its slot indivisibly: there is no such thing as
@@ -1014,7 +1454,8 @@ type CliType =
         | CliType.Char _
         | CliType.Numeric _
         | CliType.ObjectRef _
-        | CliType.RuntimePointer _ -> None
+        | CliType.RuntimePointer _
+        | CliType.Undefined _ -> None
 
     /// The bytes of `[offset, offset + count)`, which must lie wholly within a single padding run
     /// of `value`. Unlike `BytesAt` this is defined even when `value` has no byte image, which is
@@ -1070,6 +1511,22 @@ type CliType =
     /// `CliValueType.WithBytesAtIfChanged`, so represented padding and overlapping-field
     /// provenance stay within the value-layout model.
     static member WithBytesAtIfChanged (offset : int) (bytes : byte[]) (value : CliType) : CliType option =
+        match value with
+        | CliType.Undefined u ->
+            // Every byte written is defined, so the write can only make the value more defined:
+            // it changes the value exactly when it lands on an undefined byte or on a different
+            // number.
+            let written = bytes |> Array.toList |> List.map ValueByte.Defined
+
+            if UndefinedValue.bytesAt offset bytes.Length u = written then
+                None
+            else
+                UndefinedValue.withBytesAt offset written u
+                |> Array.ofList
+                |> CliType.OfValueBytesLike value
+                |> Some
+        | _ ->
+
         match CliType.ByteAddressability value with
         | CliByteAddressability.SymbolicallyAddressable rejection
         | CliByteAddressability.Rejected rejection ->
@@ -1126,6 +1583,7 @@ type CliType =
                 | CliType.Char _ -> "char"
                 | CliType.ObjectRef _ -> "object reference"
                 | CliType.RuntimePointer _ -> "runtime pointer"
+                | CliType.Undefined u -> $"undefined %A{u.Kind}"
                 | CliType.ValueType _ -> failwith "unreachable"
 
             [
@@ -1248,6 +1706,12 @@ and CliValueTypeStorage =
     | Fields of CliFieldBackedStorage
     /// Raw storage is used only for fieldless custom-layout value types.
     | RawBytes of byte[]
+
+/// One byte of a value as `CliType.ImageBytesAt` finds it: a number, or a named byte of a native
+/// int (`UInt8Source`), or a byte nothing wrote.
+and [<RequireQualifiedAccess>] internal CliImageByte =
+    | Named of UInt8Source
+    | Unwritten of UninitialisedByte
 
 /// Where one declared field of a value type lands in that type's *unmanaged* (marshalled)
 /// image, as computed by <see cref="CliValueType.TryComputeNativeLayout"/>.
@@ -1429,7 +1893,7 @@ and CliValueType =
     static member private EnumUnderlyingIsFlattenable (fields : CliConcreteField list) : bool =
         match fields with
         | [ f ] when f.Name = "value__" && f.Offset = 0 ->
-            match f.Contents with
+            match CliType.Shape f.Contents with
             | CliType.Numeric numeric ->
                 match numeric with
                 | CliNumericType.Int8 _
@@ -1447,6 +1911,7 @@ and CliValueType =
             | CliType.ObjectRef _
             | CliType.RuntimePointer _
             | CliType.ValueType _ -> false
+            | CliType.Undefined _ -> failwith "unreachable: CliType.Shape never returns an undefined value"
         | _ -> false
 
     /// Combine the nominal BCL-wrapper classification with the enum classification.
@@ -1478,6 +1943,8 @@ and CliValueType =
     /// Classify a field for `ComputeAutoLayoutFields`. See `AutoLayoutFieldClass` for the rule
     /// and for why enums and `IntPtr` land on the primitive side of it.
     static member private ClassifyForAutoLayout (contents : CliType) : AutoLayoutFieldClass =
+        let contents = CliType.Shape contents
+
         let asPrimitive (isObjectReference : bool) : AutoLayoutFieldClass =
             let size = (CliType.SizeOf contents).Size
 
@@ -1511,6 +1978,7 @@ and CliValueType =
             | Some PrimitiveLikeKind.FlattenToRuntimePointer
             | Some PrimitiveLikeKind.FlattenToManagedPointer
             | None -> AutoLayoutFieldClass.ValueClass
+        | CliType.Undefined _ -> failwith "unreachable: CliType.Shape never returns an undefined value"
 
     /// Port of CoreCLR's `MethodTableBuilder::HandleAutoLayout` (methodtablebuilder.cpp:8266),
     /// restricted to the value-type case: no parent instance fields, no 32-bit-only offset bias,
@@ -2963,6 +3431,16 @@ and CliValueType =
             Array.blit bytes 0 existing offset bytes.Length
             Some (CliValueType.OfBytesLike cvt existing)
 
+    /// Whether no other field of `cvt` shares a byte with `field`, so that `field`'s contents are
+    /// the value's bytes over the whole of its extent.
+    static member internal SharesNoBytes (field : CliConcreteField) (cvt : CliValueType) : bool =
+        CliValueType.TryAllFields cvt
+        |> List.forall (fun other ->
+            FieldId.exactlyEqual other.Id field.Id
+            || other.Offset + other.Size <= field.Offset
+            || field.Offset + field.Size <= other.Offset
+        )
+
     /// Return a value with the requested byte range replaced. If the requested write would not
     /// change the materialised byte image, this returns `cvt` unchanged.
     static member WithBytesAt (offset : int) (bytes : byte[]) (cvt : CliValueType) : CliValueType =
@@ -3277,6 +3755,12 @@ and CliValueType =
         match affectedFields with
         | [] -> failwith "unexpectedly didn't dereference a field"
         | [ f ] -> f.Contents
+        | _ :: _ :: _ when CliType.HasUndefinedLeaf (CliType.ValueType cvt) ->
+            // The field's own bytes, each defined or not, as they stand after every overlapping
+            // write: a field some of whose bytes another field left undefined is undefined in
+            // those bytes, and one all of whose bytes are defined is the number they spell.
+            CliType.ImageBytesAt targetField.Offset targetField.Size (CliType.ValueType cvt)
+            |> CliType.OfImageBytesLike targetField.Contents
         | _ :: _ :: _ ->
             let fieldBytes = CliValueType.BytesAt targetField.Offset targetField.Size cvt
 
@@ -3496,13 +3980,14 @@ and CliValueType =
         (contents : CliType)
         : Result<BoolCharMarshal, MarshalSizeError> option
         =
-        match contents with
+        match CliType.Shape contents with
         | CliType.Bool _ -> Some (BoolCharMarshal.ofBoolField descriptor)
         | CliType.Char _ -> Some (BoolCharMarshal.ofCharField charSet descriptor)
         | CliType.Numeric _
         | CliType.ObjectRef _
         | CliType.RuntimePointer _
         | CliType.ValueType _ -> None
+        | CliType.Undefined _ -> failwith "unreachable: CliType.Shape never returns an undefined value"
 
     /// True iff `handle` names the given non-generic corelib type.
     ///
@@ -3860,7 +4345,7 @@ and CliValueType =
         (contents : CliType)
         : UnmanagedType list option
         =
-        match fieldType, contents with
+        match fieldType, CliType.Shape contents with
         | ConcreteTypeHandle.FunctionPointer _, _ -> Some [ UnmanagedType.FunctionPtr ]
         | ConcreteTypeHandle.Pointer _, _ -> Some []
         | _, CliType.Numeric numeric ->
@@ -3885,6 +4370,7 @@ and CliValueType =
         | _, CliType.Char _
         | _, CliType.ObjectRef _
         | _, CliType.RuntimePointer _ -> None
+        | _, CliType.Undefined _ -> failwith "unreachable: CliType.Shape never returns an undefined value"
 
     /// What a single field contributes to its containing type's native image, consulting its
     /// `[MarshalAs(...)]` descriptor and the containing type's `CharSet`. An enum-typed field is
@@ -3914,6 +4400,9 @@ and CliValueType =
             match CliValueType.TryEnumUnderlying concreteTypes assemblies corelib contents with
             | Some underlying -> underlying
             | None -> fieldType, contents
+
+        // Only the field's shape decides how it marshals, so an undefined leaf is its shape's zero.
+        let contents = CliType.Shape contents
 
         let leaf (size : SizeofResult) : Result<MarshalFieldNative, MarshalSizeError> =
             Result.Ok (MarshalFieldNative.Leaf size)
@@ -4080,6 +4569,7 @@ and CliValueType =
                 | CliType.Bool _
                 | CliType.Char _ ->
                     failwith $"unreachable: %O{contents} is a primitive, a bool or a char, each classified above"
+                | CliType.Undefined _ -> failwith "unreachable: `contents` was replaced by its shape above"
             | None ->
                 match contents with
                 | CliType.Numeric _
@@ -4092,6 +4582,7 @@ and CliValueType =
                     MarshalSizeError.NotImplemented "object references require managed-to-unmanaged marshalling"
                     |> Result.Error
                 | CliType.ValueType vt -> nested vt
+                | CliType.Undefined _ -> failwith "unreachable: `contents` was replaced by its shape above"
 
         match classified with
         | Result.Ok native -> Result.Ok native
@@ -4717,6 +5208,66 @@ and CliValueType =
                 NextTimestamp = max 1UL (uint64 fields.Length)
             }
 
+    /// `CliType.OfValueBytesLike` for a value type: each field is rebuilt from its own bytes, so a
+    /// field is undefined exactly when one of them is. Refuses an undefined byte no field covers,
+    /// and any undefined byte of a value type stored as raw bytes, since either would have to be
+    /// stored as a number.
+    static member OfValueBytesLike (template : CliValueType) (bytes : ValueByte[]) : CliValueType =
+        match template._Storage with
+        | CliValueTypeStorage.RawBytes _ ->
+            failwith
+                $"refusing to build %O{template._Declared} from an image with an undefined byte: it is stored as raw bytes, which have no field to hold an undefined value"
+        | CliValueTypeStorage.Fields storage ->
+            let expected = CliValueType.SizeOf(template).Size
+
+            if bytes.Length <> expected then
+                failwith
+                    $"CliValueType.OfValueBytesLike: byte count mismatch for field-backed value type %O{template._Declared}; expected %i{expected}, got %i{bytes.Length}"
+
+            bytes
+            |> Array.iteri (fun i b ->
+                match b with
+                | ValueByte.Defined _ -> ()
+                | ValueByte.Undefined origin ->
+                    let covered =
+                        storage.Fields |> List.exists (fun f -> f.Offset <= i && i < f.Offset + f.Size)
+
+                    if not covered then
+                        failwith
+                            $"refusing to build %O{template._Declared} from an image whose padding byte %d{i} is undefined (it descends from %O{origin}); a value type's padding is stored as a number"
+            )
+
+            let fields =
+                storage.Fields
+                |> List.mapi (fun index field ->
+                    let fieldBytes = Array.sub bytes field.Offset field.Size
+
+                    { field with
+                        Contents = CliType.OfValueBytesLike field.Contents fieldBytes
+                        EditedAtTime = uint64 index
+                    }
+                )
+
+            // Every undefined byte is covered by a field, which is authoritative for it, so the
+            // number stored in its place here is never read back.
+            let preserved =
+                bytes
+                |> Array.map (fun b ->
+                    match b with
+                    | ValueByte.Defined b -> b
+                    | ValueByte.Undefined _ -> 0uy
+                )
+
+            { template with
+                _Storage =
+                    CliValueTypeStorage.Fields
+                        {
+                            Fields = fields
+                            PreservedBytes = preserved
+                        }
+                NextTimestamp = max 1UL (uint64 fields.Length)
+            }
+
     /// Reconstruct a value type from preserved bytes using `template` for field layout and field
     /// shapes. Preserved bytes do not encode original overlapping-field write history, so the
     /// recovered value uses declaration-order replay as its canonical write order.
@@ -4912,6 +5463,25 @@ module InlineArrayStorage =
 
 [<RequireQualifiedAccess>]
 module CliType =
+    /// An undefined leaf of `value`, the first in field order, or `None` when every leaf is
+    /// defined. A value type is never undefined as a whole, so this is how a caller that is about
+    /// to read a whole value — a native method's argument, say — finds out whether it can.
+    ///
+    /// Under explicit layout a field another write has since overlaid still holds its old
+    /// contents, and is still searched; an undefined one there is reported although the bytes it
+    /// covers may have been rewritten, which errs towards refusing.
+    let rec tryFindUndefined (value : CliType) : UndefinedValue option =
+        match value with
+        | CliType.Undefined u -> Some u
+        | CliType.ValueType vt ->
+            CliValueType.TryAllFields vt
+            |> List.tryPick (fun f -> tryFindUndefined f.Contents)
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ -> None
+
     /// If `ty` is a primitive-like wrapper (IntPtr, RuntimeTypeHandle, an enum, ...) at rest,
     /// return the contents of its single underlying field; otherwise return `ty` unchanged.
     /// Used by consumers that read stored primitive-like fields and need to see the flattened
@@ -5316,6 +5886,7 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.Undefined u -> failwith $"the undefined %O{u} is a primitive, and has no fields"
         | CliType.ValueType cvt -> CliValueType.WithFieldSet field value cvt |> CliType.ValueType
 
     let withFieldSetById (field : FieldId) (value : CliType) (c : CliType) : CliType =
@@ -5325,6 +5896,7 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.Undefined u -> failwith $"the undefined %O{u} is a primitive, and has no fields"
         | CliType.ValueType cvt -> CliValueType.WithFieldSetById field value cvt |> CliType.ValueType
 
     let getField (field : string) (value : CliType) : CliType =
@@ -5334,6 +5906,7 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.Undefined u -> failwith $"the undefined %O{u} is a primitive, and has no fields"
         | CliType.ValueType cvt -> CliValueType.DereferenceField field cvt
 
     let getFieldById (field : FieldId) (value : CliType) : CliType =
@@ -5343,6 +5916,7 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.Undefined u -> failwith $"the undefined %O{u} is a primitive, and has no fields"
         | CliType.ValueType cvt -> CliValueType.DereferenceFieldById field cvt
 
     /// Read the cell a `CellPathsExactlyCovering` path names. An empty path is the value itself.
@@ -5369,6 +5943,7 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.Undefined u -> failwith $"the undefined %O{u} is a primitive, and has no fields"
         | CliType.ValueType cvt -> CliValueType.GetFieldLayout field cvt
 
     /// Returns the offset and size.
@@ -5379,6 +5954,7 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.Undefined u -> failwith $"the undefined %O{u} is a primitive, and has no fields"
         | CliType.ValueType cvt -> CliValueType.GetFieldLayoutById field cvt
 
     /// See `CliValueType.FieldLayoutTemplateById`.
@@ -5395,4 +5971,5 @@ module CliType =
         | CliType.Char (high, low) -> failwith "todo"
         | CliType.ObjectRef managedHeapAddressOption -> failwith "todo"
         | CliType.RuntimePointer cliRuntimePointer -> failwith "todo"
+        | CliType.Undefined u -> failwith $"the undefined %O{u} is a primitive, and has no fields"
         | CliType.ValueType cvt -> CliValueType.FieldsAt offset cvt |> List.tryExactlyOne
