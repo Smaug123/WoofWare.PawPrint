@@ -252,12 +252,17 @@ module TestPublicSurface =
 
         // Controls, so that this cannot pass by finding no functions, or by
         // finding every type held: a client reaches a system and its
-        // descriptor table, and never a bare descriptor table.
+        // descriptor table, and never a bare descriptor table, nor the
+        // machine or the process a system is made of.
         functions.Length |> shouldBeGreaterThan 500
 
         held.Contains (keyOf typedefof<UnixSystem<int, string>>) |> shouldEqual true
         held.Contains (keyOf typeof<FileDescriptorRegistry>) |> shouldEqual true
         held.Contains (keyOf typeof<DescriptorTable>) |> shouldEqual false
+        held.Contains (keyOf typeof<UnixMachineState>) |> shouldEqual false
+
+        held.Contains (keyOf typedefof<UnixProcessState<int, string>>)
+        |> shouldEqual false
 
         functions
         |> List.choose (fun (s : Signature) ->

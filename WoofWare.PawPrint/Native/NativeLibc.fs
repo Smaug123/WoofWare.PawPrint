@@ -251,13 +251,13 @@ module NativeLibc =
         | KillOutcome.ProcessContinues after -> state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
         | KillOutcome.ProcessEnded ended ->
             // The process never returns from this call.
-            match ended.Termination with
+            match EndedProcess.termination ended with
             | ProcessTermination.Signaled _ ->
                 ExecutionResult.SignalTerminated (state, ended)
                 |> NativeHandlerResult.ofExecutionResult
             | ProcessTermination.Exited _ ->
                 failwith
-                    $"%s{operation}: kill(%d{pid}, %d{signo}) ended the process with an exit status (%O{ended.Termination}), which only an exit can"
+                    $"%s{operation}: kill(%d{pid}, %d{signo}) ended the process with an exit status (%O{EndedProcess.termination ended}), which only an exit can"
         | KillOutcome.ProcessStopped (signal, _) ->
             failwith
                 $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."
@@ -324,13 +324,13 @@ module NativeLibc =
         | KillOutcome.ProcessContinues after -> state.MapKernel (EmulatedKernel.withUnix after) |> returning 0
         | KillOutcome.ProcessEnded ended ->
             // The process never returns from this call.
-            match ended.Termination with
+            match EndedProcess.termination ended with
             | ProcessTermination.Signaled _ ->
                 ExecutionResult.SignalTerminated (state, ended)
                 |> NativeHandlerResult.ofExecutionResult
             | ProcessTermination.Exited _ ->
                 failwith
-                    $"%s{operation}: raise(%d{signo}) ended the process with an exit status (%O{ended.Termination}), which only an exit can"
+                    $"%s{operation}: raise(%d{signo}) ended the process with an exit status (%O{EndedProcess.termination ended}), which only an exit can"
         | KillOutcome.ProcessStopped (signal, _) ->
             failwith
                 $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."

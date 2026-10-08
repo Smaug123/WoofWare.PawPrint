@@ -1646,13 +1646,13 @@ module EmulatedKernel =
         | Ok (TaskOutcome.Continues system) -> withUnix system kernel
         | Ok (TaskOutcome.ProcessEnded ended) ->
             failwith
-                $"EmulatedKernel.exitThread: %O{thread} was the process's last task, so its exit ended the process (%O{ended.Termination}); the entry thread never exits through here, so it should still have had a task"
+                $"EmulatedKernel.exitThread: %O{thread} was the process's last task, so its exit ended the process (%O{EndedProcess.termination ended}); the entry thread never exits through here, so it should still have had a task"
         | Error refusal -> failwith $"EmulatedKernel.exitThread: %s{ThreadExitRefusal.describe refusal}"
 
     /// `UnixTaskLifecycle.exitGroup` through this kernel: `thread` calls
     /// `exit(3)` with `status`, which ends in `exit_group(2)`, and the process
     /// ends. The answer is the process's end (`EndedProcess`), whose
-    /// `Termination` is how it ended; the kernel is left as it stood.
+    /// `EndedProcess.termination` is how it ended; the kernel is left as it stood.
     ///
     /// This is how a CoreCLR process that is not killed ends: the host passes the
     /// latched exit code to `exit`, once `Main` has returned and the foreground
@@ -1667,7 +1667,7 @@ module EmulatedKernel =
 
     /// `abort(3)`, called by `thread` at the end of CoreCLR's `PROCAbort`, which is
     /// how the runtime ends a process that failed fast or let an exception escape.
-    /// The answer is the process's end (`EndedProcess`), whose `Termination` is
+    /// The answer is the process's end (`EndedProcess`), whose `EndedProcess.termination` is
     /// a death by SIGABRT; the kernel is left as it stood.
     ///
     /// Fails loudly if the process survives, or dies of anything but SIGABRT.
@@ -1706,7 +1706,7 @@ module EmulatedKernel =
 
         match UnixSignal.pthreadKill thread signo system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
-            match ended.Termination with
+            match EndedProcess.termination ended with
             | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended
             | other -> failwith $"EmulatedKernel.abort: %O{thread} raised SIGABRT, but the process ended by %O{other}"
         | other ->

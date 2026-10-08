@@ -250,7 +250,8 @@ module TestSignalDispatch =
     let private poll (state : IlMachineState) : IlMachineState =
         match SignalDispatch.poll baseClassTypes state with
         | SignalPoll.Continues state -> state
-        | SignalPoll.ProcessKilled (_, ended) -> failwith $"the poll killed the process: %O{ended.Termination}"
+        | SignalPoll.ProcessKilled (_, ended) ->
+            failwith $"the poll killed the process: %O{EndedProcess.termination ended}"
 
     let private pipeOf (state : IlMachineState) : SignalPipe =
         PosixSignalShim.signalPipe state.Kernel.PosixSignalShim
@@ -619,7 +620,7 @@ module TestSignalDispatch =
                 let state =
                     match finishCallback dispatcher 1 state with
                     | SignalPoll.Continues state -> poll state
-                    | SignalPoll.ProcessKilled (_, ended) -> failwith $"killed: %O{ended.Termination}"
+                    | SignalPoll.ProcessKilled (_, ended) -> failwith $"killed: %O{EndedProcess.termination ended}"
 
                 match (state.ThreadState |> Map.find dispatcher).Status with
                 | ThreadStatus.Parked -> List.rev called
@@ -1063,7 +1064,7 @@ module TestSignalDispatch =
 
         match SignalDispatch.poll baseClassTypes written with
         | SignalPoll.ProcessKilled (_, ended) ->
-            ended.Termination
+            EndedProcess.termination ended
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGTERM, false))
         | SignalPoll.Continues _ -> failwith "expected SIGTERM to kill the process"
 
@@ -1108,7 +1109,7 @@ module TestSignalDispatch =
             |> finishCallback dispatcher 0
         with
         | SignalPoll.ProcessKilled (_, ended) ->
-            ended.Termination
+            EndedProcess.termination ended
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGINT, false))
         | SignalPoll.Continues _ -> failwith "expected SIGINT to kill the process"
 
@@ -1122,7 +1123,8 @@ module TestSignalDispatch =
         | SignalPoll.Continues state ->
             (state.ThreadState |> Map.find dispatcher).Status
             |> shouldEqual ThreadStatus.Parked
-        | SignalPoll.ProcessKilled (_, ended) -> failwith $"SIGWINCH killed the process: %O{ended.Termination}"
+        | SignalPoll.ProcessKilled (_, ended) ->
+            failwith $"SIGWINCH killed the process: %O{EndedProcess.termination ended}"
 
     [<Test>]
     let ``the native handler refuses a pipe whose write end the guest closed`` () : unit =
@@ -1395,7 +1397,7 @@ module TestSignalDispatch =
 
         match SignalDispatch.poll baseClassTypes state with
         | SignalPoll.ProcessKilled (_, ended) ->
-            match ended.Termination with
+            match EndedProcess.termination ended with
             | ProcessTermination.Signaled (signal, _) -> signal |> shouldEqual Signal.SIGABRT
             | other -> failwith $"expected a death by SIGABRT, got %O{other}"
         | SignalPoll.Continues _ -> failwith "expected the poll to abort the process"

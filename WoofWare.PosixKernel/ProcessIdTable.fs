@@ -14,14 +14,13 @@ type ProcessIdCounter =
 /// The machine's process table, as far as this library keeps one: where the
 /// next process's ID comes from, and the ID of every process on the machine,
 /// which no new process is given.
-type ProcessIdTable =
-    internal
-        {
-            Counter : ProcessIdCounter
-            /// Every process on the machine. A process joins it when it is
-            /// launched and leaves it when it ends.
-            Live : Set<ProcessId>
-        }
+type internal ProcessIdTable =
+    {
+        Counter : ProcessIdCounter
+        /// Every process on the machine. A process joins it when it is
+        /// launched and leaves it when it ends.
+        Live : Set<ProcessId>
+    }
 
 [<RequireQualifiedAccess>]
 module ProcessIdTable =

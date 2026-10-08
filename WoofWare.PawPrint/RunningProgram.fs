@@ -463,7 +463,7 @@ module internal RunningProgram =
     /// The run's end when a signal killed the process: `ended` is the kernel's answer to
     /// the signal, and `state` the machine as it stood when the signal was sent.
     let signalTerminated (state : IlMachineState) (ended : EndedProcess<ThreadId, NativeSignalHandler>) : RunOutcome =
-        match ended.Termination with
+        match EndedProcess.termination ended with
         | ProcessTermination.Signaled (signal, coreDumped) -> RunOutcome.SignalTerminated (state, signal, coreDumped)
         | ProcessTermination.Exited _ as other ->
             failwith
@@ -589,7 +589,10 @@ module internal RunningProgram =
             let ended =
                 EmulatedKernel.exitGroup program.EntryThread program.State.LatchedExitCode program.State.Kernel
 
-            ProgramTick.Ended (RunOutcome.NormalExit (program.State, program.EntryThread, ended.Termination), ended)
+            ProgramTick.Ended (
+                RunOutcome.NormalExit (program.State, program.EntryThread, EndedProcess.termination ended),
+                ended
+            )
         | _ ->
             // The latch goes one way, so this rebuilds the program at most once per run; every
             // other tick hands `program` on as it is.
@@ -765,16 +768,20 @@ module internal RunningProgram =
                 let ended =
                     EmulatedKernel.exitGroup exitingThread state.LatchedExitCode state.Kernel
 
-                ProgramTick.Ended (RunOutcome.ProcessExit (state, exitingThread, ended.Termination), ended)
+                ProgramTick.Ended (RunOutcome.ProcessExit (state, exitingThread, EndedProcess.termination ended), ended)
             | ExecutionResult.Aborted (state, abortingThread, message) ->
                 let ended = abortTermination abortingThread state
-                ProgramTick.Ended (RunOutcome.Aborted (state, abortingThread, message, ended.Termination), ended)
+
+                ProgramTick.Ended (
+                    RunOutcome.Aborted (state, abortingThread, message, EndedProcess.termination ended),
+                    ended
+                )
             | ExecutionResult.SignalTerminated (state, ended) -> ProgramTick.Ended (signalTerminated state ended, ended)
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
                 let ended = abortTermination terminatingThread state
 
                 ProgramTick.Ended (
-                    RunOutcome.GuestUnhandledException (state, terminatingThread, exn, ended.Termination),
+                    RunOutcome.GuestUnhandledException (state, terminatingThread, exn, EndedProcess.termination ended),
                     ended
                 )
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->
