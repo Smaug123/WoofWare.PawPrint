@@ -791,6 +791,14 @@ static void section_g(void) {
     do_connect6("G7 connect to L", s, to, 28);
     do_connect6("G7 established, connect at length 16", s, to, 16);
     do_connect6("G7 established, connect AF_UNSPEC", s, u, 28);
+    {
+        int srv = accept(l, NULL, NULL);
+        close(srv);
+    }
+    close(s);
+    // A fresh connection: Linux's AF_UNSPEC above disconnected that one.
+    s = tcp6_v6only(0);
+    connect(s, (struct sockaddr *)&to, sizeof to);
     errno = 0;
     printf("%-60s -> %s\n", "G7 established, connect sockaddr_in at 28", en(result(timed_connect(s, (struct sockaddr *)v4long, 28))));
     {

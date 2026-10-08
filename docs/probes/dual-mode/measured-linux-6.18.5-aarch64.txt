@@ -768,6 +768,6 @@ G6 accepted: getpeername                                     cell=16  -> OK len=
 G7 connect to L                                              -> OK
 G7 established, connect at length 16                         -> EISCONN
 G7 established, connect AF_UNSPEC                            -> OK
-G7 established, connect sockaddr_in at 28                    -> EAFNOSUPPORT
+G7 established, connect sockaddr_in at 28                    -> EISCONN
 G8 AF_INET client                                            -> OK SO_SNDBUF=3939840 SO_RCVBUF=131072 TCP_MAXSEG=32741
 G8 dual-mode client                                          -> OK SO_SNDBUF=3939840 SO_RCVBUF=131072 TCP_MAXSEG=32741

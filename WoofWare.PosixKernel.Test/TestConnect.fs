@@ -213,6 +213,39 @@ module TestConnect =
             Error (ConnectRefusal.Copy (SockaddrCopyRefusal.UnmodelledDomain (SocketId 0L, SocketDomain.Unix)))
         )
 
+        // A length the copy-in rejects outright: Linux's connect answers it
+        // before anything about the socket, Darwin's after the domain.
+        let unixFd, unixSystem =
+            withSocket
+                (SocketId 9L)
+                ({ streamSocket None SocketPhase.Idle with
+                    Domain = SocketDomain.Unix
+                })
+                system
+
+        let overlong =
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> 129u
+            | SimulatedUnixFlavour.Darwin -> 256u
+
+        let viaSocket =
+            UnixConnection.connectSocket (SocketId 9L) false overlong ImmutableArray.Empty unixSystem
+
+        viaSocket
+        |> shouldEqual (
+            CopyIn.connect unixFd UserBuffer.Mapped overlong (CopyIn.inet platform (loopback 5000us)) unixSystem
+        )
+
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            viaSocket
+            |> shouldEqual (Ok (ConnectOutcome.Failed UnixError.EINVAL, unixSystem))
+        | SimulatedUnixFlavour.Darwin ->
+            viaSocket
+            |> shouldEqual (
+                Error (ConnectRefusal.Copy (SockaddrCopyRefusal.UnmodelledDomain (SocketId 9L, SocketDomain.Unix)))
+            )
+
     /// Measured: Linux takes 16 through 128 and answers EINVAL above, Darwin
     /// insists on exactly 16, answers EINVAL up to 255, and ENAMETOOLONG beyond.
     /// Only the outright rejections are answers *before the copy*; the rest reach
