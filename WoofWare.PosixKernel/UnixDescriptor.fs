@@ -886,7 +886,7 @@ module UnixDescriptor =
     ///
     /// Not short-circuited when the file is already that length: unlike a write
     /// of no bytes, a truncation that moves no bytes still stamps the inode.
-    let truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (length : int64)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1591,8 +1591,9 @@ module UnixDescriptor =
     /// sleeping call holds is the task table's.
     ///
     /// Every kqueue registration made through `fd` goes with it, in each kqueue
-    /// the process owns (`KqueueState.Owner`) and in the kqueue of every Darwin
-    /// `poll` asleep (`ParkedKqueuePoll`), whose entry then reports nothing.
+    /// the process owns (`KqueueState.Owner`) and in the kqueue of every
+    /// sleeping Darwin `poll` of the process's own (`PollQueue`), whose entry
+    /// then reports nothing.
     ///
     /// EBADF is its only errno; see `CloseRefusal` for the inputs it declines
     /// to answer at all.
@@ -1962,13 +1963,6 @@ module UnixDescriptor =
                 failwith
                     $"UnixDescriptor.close: fd %d{fd} named open file description %O{closingId} (%A{closing.Target}) a moment ago, and the registry now calls it a bad descriptor (this is a bug in this library)."
 
-        // `dropDescriptor` removed the kqueue registrations made through `fd`
-        // from every kqueue the process owns; a sleeping Darwin poll's kqueue
-        // is the call's own, so it loses them here (measured, `poll-timeout.c`
-        // section E: the entry then reports nothing, and the poll sleeps on to
-        // its timeout).
-        let tasks = KqueuePoll.dropRegistrationsThrough fd system.Tasks
-
         // Measured on Darwin 27.0.0 (`kqueue-kevent.c`, sections E and F):
         // closing a descriptor a task is asleep in `kevent` through drains the
         // kqueue, which ends that wait and every other wait on the kqueue with
@@ -2008,11 +2002,17 @@ module UnixDescriptor =
             | OpenFileTarget.Socket _
             | OpenFileTarget.Pipe _ -> registry
 
+        let closed = UnixSystemState.withFileDescriptors registry system
+
+        // `dropDescriptor` removed the kqueue registrations made through `fd`
+        // from every kqueue the process owns; a sleeping Darwin poll's kqueue
+        // is the call's own, so it loses them here (measured, `poll-timeout.c`
+        // section E: the entry then reports nothing, and the poll sleeps on to
+        // its timeout).
         let closed =
-            { system with
-                Tasks = tasks
+            { closed with
+                Machine = KqueuePoll.dropRegistrationsThrough system.Process.ProcessId fd closed.Machine
             }
-            |> UnixSystemState.withFileDescriptors registry
 
         match destroyed with
         | None -> Ok (SyscallAnswer.Completed 0L, closed)

@@ -20,6 +20,7 @@ module LaunchedStreams =
     /// `UnixSystem.initial` numbers them.
     let registry : FileDescriptorRegistry =
         FileDescriptorRegistry.ofLaunchedPipes
+            DescriptorCensus.Complete
             ([ 0 ; 1 ; 2 ]
              |> List.map (fun fd -> fd, (PipeId (int64 fd), endOf fd))
              |> Map.ofList)

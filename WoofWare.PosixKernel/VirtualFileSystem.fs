@@ -240,7 +240,7 @@ type VirtualFileSystemDefect =
 
 /// Why `VirtualFileSystem.mountAtRoot` will not mount a filesystem.
 [<RequireQualifiedAccess>]
-type MountFault =
+type internal MountFault =
     /// The root already binds `name` to something other than an empty
     /// directory, which a mount over it would hide.
     | CoveredEntryNotAnEmptyDirectory of name : DirectoryEntryName
@@ -269,7 +269,7 @@ type UnbindTargetEffect =
 /// one that moved and the one that lost its name — and only the second has
 /// anything left to decide. Naming the field is what stops the two being
 /// confused at a call site where both are just numbers.
-type RenameOutcome =
+type internal RenameOutcome =
     {
         /// The inode the destination name was bound to before the rename took
         /// it, or `None` when that name was free.
@@ -308,7 +308,7 @@ type SeekWhence =
 /// alike, `pwrite` of one byte at offset 2^40 succeeds and leaves a sparse 1 TB
 /// file behind.
 [<RequireQualifiedAccess>]
-type FileWriteRefusal =
+type internal FileWriteRefusal =
     /// The write would leave the file longer than `VirtualFileSystem.maxFileLength`.
     /// Carries the write rather than the resulting length, which need not be a
     /// number: `offset + count` can leave `int64` entirely.
@@ -329,7 +329,7 @@ type FileWriteRefusal =
 /// APFS alike, `ftruncate(fd, 3e9)` succeeds and leaves a sparse
 /// three-gigabyte file behind.
 [<RequireQualifiedAccess>]
-type FileTruncationRefusal =
+type internal FileTruncationRefusal =
     /// The requested length is more than `VirtualFileSystem.maxFileLength`.
     /// Carries the length as asked for, which need not fit in an `int`.
     | WouldExceedMaxLength of length : int64
@@ -345,7 +345,7 @@ type FileTruncationRefusal =
 /// Collapsing them here would push that distinction into the caller as a
 /// second computation of the same arithmetic.
 [<RequireQualifiedAccess>]
-type SeekFault =
+type internal SeekFault =
     /// The computed position is negative. Real kernels reject rather than
     /// clamp, so a file offset is never pinned to 0 by a wild seek.
     | Negative
@@ -470,7 +470,7 @@ module VirtualFileSystem =
     ///
     /// Takes the time rather than reading a clock: a filesystem that read the
     /// host's clock would make a replay depend on when it was recorded.
-    let empty (now : UnixTimestamp) (rootOwner : InodeOwner) : VirtualFileSystem =
+    let internal empty (now : UnixTimestamp) (rootOwner : InodeOwner) : VirtualFileSystem =
         {
             Inodes =
                 Map.ofList
@@ -527,7 +527,7 @@ module VirtualFileSystem =
                 $"VirtualFileSystem.%s{context}: inode %O{inode} is the root of a mounted filesystem, whose name cannot be removed or replaced while it is mounted (this is a bug in the caller of VirtualFileSystem.%s{context})."
 
 
-    let nextInode (vfs : VirtualFileSystem) : InodeNumber = vfs.NextInode
+    let internal nextInode (vfs : VirtualFileSystem) : InodeNumber = vfs.NextInode
 
     let inodes (vfs : VirtualFileSystem) : Map<InodeNumber, Inode> = vfs.Inodes
 
@@ -556,7 +556,7 @@ module VirtualFileSystem =
     /// Reading at or past the end is 0 rather than an error — measured, and the
     /// same on Linux and Darwin. So is a zero-length request, which is why
     /// callers must not treat 0 as EOF-specific.
-    let readTransferCount (offset : int64) (count : int) (length : int) : int =
+    let internal readTransferCount (offset : int64) (count : int) (length : int) : int =
         // The caller is responsible for rejecting a negative offset (EINVAL)
         // and refusing a negative size, so both are established before here.
         System.Diagnostics.Debug.Assert (offset >= 0L, "readTransferCount: offset must not be negative")
@@ -591,7 +591,7 @@ module VirtualFileSystem =
     ///
     /// Separate from `writtenContents` so that both sides of the ceiling can be
     /// checked without allocating two gigabytes to do it.
-    let writtenLength (offset : int64) (count : int) (length : int) : Result<int, FileWriteRefusal> =
+    let internal writtenLength (offset : int64) (count : int) (length : int) : Result<int, FileWriteRefusal> =
         System.Diagnostics.Debug.Assert (offset >= 0L, "writtenLength: offset must not be negative")
         System.Diagnostics.Debug.Assert (count >= 0, "writtenLength: count must not be negative")
         System.Diagnostics.Debug.Assert (length >= 0, "writtenLength: length must not be negative")
@@ -624,7 +624,7 @@ module VirtualFileSystem =
     /// offset and a byte array it is property-testable against naive splicing,
     /// where the same arithmetic inlined into a syscall is reachable only
     /// through a whole simulated system.
-    let writtenContents
+    let internal writtenContents
         (contents : ImmutableArray<byte>)
         (offset : int64)
         (bytes : ImmutableArray<byte>)
@@ -676,7 +676,7 @@ module VirtualFileSystem =
     ///
     /// A negative length is the caller's to reject (EINVAL), so it is
     /// established before here.
-    let truncatedLength (length : int64) : Result<int, FileTruncationRefusal> =
+    let internal truncatedLength (length : int64) : Result<int, FileTruncationRefusal> =
         System.Diagnostics.Debug.Assert (length >= 0L, "truncatedLength: length must not be negative")
 
         if length > maxFileLength then
@@ -697,7 +697,7 @@ module VirtualFileSystem =
     /// separated from `writeFile`: as a function of a byte array and a length it
     /// is property-testable against naive take/pad, where the same arithmetic
     /// inlined into a syscall is reachable only through a whole simulated system.
-    let truncatedContents
+    let internal truncatedContents
         (contents : ImmutableArray<byte>)
         (length : int64)
         : Result<ImmutableArray<byte>, FileTruncationRefusal>
@@ -745,7 +745,7 @@ module VirtualFileSystem =
     /// such a descriptor with `SEEK_SET` or `SEEK_CUR` is portable and must keep
     /// working, so the caller passes a thunk that refuses, and only the `End`
     /// case forces it.
-    let seekTarget
+    let internal seekTarget
         (whence : SeekWhence)
         (current : int64)
         (size : Lazy<int64>)
@@ -998,7 +998,7 @@ module VirtualFileSystem =
     /// if the name is taken, ENOTDIR if `directory` is not a directory, ENOENT if
     /// it is absent. Who a new inode belongs to is `InodeOwner.ofNewInode`'s
     /// decision, not this function's.
-    let createDirectory
+    let internal createDirectory
         (directory : InodeNumber)
         (name : DirectoryEntryName)
         (permissions : PermissionBits)
@@ -1027,7 +1027,7 @@ module VirtualFileSystem =
 
     /// Create a regular file with the given contents, owned by `owner`. Mirrors
     /// `open(2)` with `O_CREAT | O_EXCL`.
-    let createFile
+    let internal createFile
         (directory : InodeNumber)
         (name : DirectoryEntryName)
         (permissions : PermissionBits)
@@ -1065,7 +1065,7 @@ module VirtualFileSystem =
     /// Partial in `source`, which must name a regular file this filesystem
     /// contains. Fails as `createFile` does when `directory` cannot take the
     /// name.
-    let cloneFile
+    let internal cloneFile
         (source : InodeNumber)
         (directory : InodeNumber)
         (name : DirectoryEntryName)
@@ -1124,7 +1124,7 @@ module VirtualFileSystem =
     /// Which bits a link may have is a rule of the flavour, which this
     /// filesystem does not know: `SimulatedUnixPlatform.symlinkCreationPermissions`
     /// gives them, and `UnixSystem.checkInvariants` holds a system to it.
-    let createSymlink
+    let internal createSymlink
         (directory : InodeNumber)
         (name : DirectoryEntryName)
         (permissions : PermissionBits)
@@ -1152,7 +1152,7 @@ module VirtualFileSystem =
     /// its refusal to hard-link a directory (EPERM): that would make the graph
     /// a non-tree, and a directory's `Parent` could then name only one of its
     /// containers.
-    let hardLink
+    let internal hardLink
         (directory : InodeNumber)
         (name : DirectoryEntryName)
         (target : InodeNumber)
@@ -1218,7 +1218,7 @@ module VirtualFileSystem =
     /// inode with entries of its own can be unbound — `rename(2)` moves a
     /// populated directory by unbinding and rebinding it, and the subtree is
     /// legitimately unreachable in between.
-    let unbind
+    let internal unbind
         (effect : UnbindTargetEffect)
         (directory : InodeNumber)
         (name : DirectoryEntryName)
@@ -1390,7 +1390,7 @@ module VirtualFileSystem =
     /// `..` to climb and no caller has that question — every caller obtains it
     /// from a resolution that has just named it as the directory a new entry
     /// would go into.
-    let isWithinSubtree (root : InodeNumber) (candidate : InodeNumber) (vfs : VirtualFileSystem) : bool =
+    let internal isWithinSubtree (root : InodeNumber) (candidate : InodeNumber) (vfs : VirtualFileSystem) : bool =
         match tryGetDirectory candidate vfs with
         | None ->
             failwith
@@ -1456,7 +1456,7 @@ module VirtualFileSystem =
     ///    This is also what keeps `isOrphanedDirectory`'s stated invariant true:
     ///    an orphan is empty because `rmdir` refuses a populated directory *and*
     ///    nothing can afterwards put an entry into one.
-    let rename
+    let internal rename
         (sourceDirectory : InodeNumber)
         (sourceName : DirectoryEntryName)
         (destinationDirectory : InodeNumber)
@@ -1715,7 +1715,7 @@ module VirtualFileSystem =
     /// `UnixNamespace.readDirectoryEntry` answers before it gets here; glibc
     /// turns that into end-of-stream.) `isOrphanedDirectory` is the whole test,
     /// because an orphan is empty by construction.
-    let nextDirectoryEntry
+    let internal nextDirectoryEntry
         (directory : InodeNumber)
         (cursor : DirectoryCursor)
         (vfs : VirtualFileSystem)
@@ -1781,7 +1781,7 @@ module VirtualFileSystem =
     /// strand what it holds.
     ///
     /// The number is not reused; see `VirtualFileSystem.NextInode`.
-    let forget (inode : InodeNumber) (vfs : VirtualFileSystem) : VirtualFileSystem =
+    let internal forget (inode : InodeNumber) (vfs : VirtualFileSystem) : VirtualFileSystem =
         if not (Map.containsKey inode vfs.Inodes) then
             failwith
                 $"VirtualFileSystem.forget: inode %O{inode} is not in the graph, so it cannot be forgotten (this is a bug in the caller of VirtualFileSystem.forget)."
@@ -1818,7 +1818,7 @@ module VirtualFileSystem =
     /// then covers; otherwise the mount covers a directory that held nothing,
     /// whose inode number is taken from the counter. Anything else at `name` is
     /// refused: a mount over a populated directory would hide what it holds.
-    let mountAtRoot
+    let internal mountAtRoot
         (fileSystem : MountedFileSystem)
         (name : DirectoryEntryName)
         (permissions : PermissionBits)
@@ -1930,7 +1930,7 @@ module VirtualFileSystem =
     /// timestamp and strips no bit, so treating it as an ordinary write of nothing
     /// would restamp the inode for a call a real kernel makes no record of. The
     /// caller short-circuits it.
-    let writeFile
+    let internal writeFile
         (inode : InodeNumber)
         (offset : int64)
         (bytes : ImmutableArray<byte>)
@@ -2018,7 +2018,7 @@ module VirtualFileSystem =
     /// resolved a descriptor open for writing, and `open(2)` answers EISDIR for
     /// every write access mode on a directory and resolves a symlink to whatever
     /// it names.
-    let truncateFile
+    let internal truncateFile
         (inode : InodeNumber)
         (length : int64)
         (rule : SetIdBitsOnTruncation)
@@ -2091,7 +2091,7 @@ module VirtualFileSystem =
     /// Partial in the inode, which must name a regular file, a device or a
     /// directory this filesystem contains: no syscall this library models
     /// changes a symbolic link's own bits.
-    let setPermissions
+    let internal setPermissions
         (inode : InodeNumber)
         (bits : PermissionBits)
         (now : UnixTimestamp)
@@ -2141,7 +2141,7 @@ module VirtualFileSystem =
     /// no other timestamp moves.
     ///
     /// Partial in the inode, which must be one this filesystem contains.
-    let setOwner
+    let internal setOwner
         (inode : InodeNumber)
         (owner : InodeOwner)
         (now : UnixTimestamp)
@@ -2173,7 +2173,7 @@ module VirtualFileSystem =
     /// included. The caller decides which of them a change moves.
     ///
     /// Partial in the inode, which must be one this filesystem contains.
-    let setTimes (inode : InodeNumber) (times : InodeTimes) (vfs : VirtualFileSystem) : VirtualFileSystem =
+    let internal setTimes (inode : InodeNumber) (times : InodeTimes) (vfs : VirtualFileSystem) : VirtualFileSystem =
         match Map.tryFind inode vfs.Inodes with
         | None ->
             failwith
@@ -2571,7 +2571,7 @@ module VirtualFileSystem =
     /// Fail loudly if `vfs` is not sound, naming `context`. For the operations
     /// that build a filesystem from host configuration, where a defect is a
     /// host bug rather than anything a process could have caused.
-    let assertInvariants (context : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
+    let internal assertInvariants (context : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
         // Nothing pinned: these callers build a filesystem out of host
         // configuration, before any process exists to have opened anything, so an
         // inode no path reaches is a bug in the builder every time.
@@ -2598,7 +2598,7 @@ module VirtualFileSystem =
     ///
     /// `symlinkPermissions` are every seeded symbolic link's bits, which a seed
     /// does not state: see `SeedEntry.Symlink`.
-    let ofFileSystemSeed
+    let internal ofFileSystemSeed
         (createdAt : UnixTimestamp)
         (defaultOwner : InodeOwner)
         (symlinkPermissions : PermissionBits)
@@ -2658,7 +2658,7 @@ module VirtualFileSystem =
     /// greppable token, so that any non-test code reaching for it is visible
     /// in review — nothing outside tests should.
     [<RequireQualifiedAccess>]
-    module Unchecked =
+    module internal Unchecked =
         /// The filesystem with exactly these parts. The binding counts, the
         /// sorted names and the subdirectory counts are computed from the
         /// entries, so a graph forged to exhibit some other defect does not

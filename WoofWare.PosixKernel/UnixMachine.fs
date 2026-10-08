@@ -46,6 +46,14 @@ type UnixMachineState =
             /// `EV_ADD` of a kqueue registration commits, so a failed `epoll_ctl`
             /// leaves the kernel exactly as it found it.
             NextEventRegistrationOrdinal : int64
+            /// The kqueue of every Darwin `poll(2)` asleep on the machine, in
+            /// whichever process: see `PollQueue`. Made as the call goes to
+            /// sleep, and destroyed with the park that names it.
+            PollQueues : Map<PollQueueId, PollQueue>
+            /// The identity the next sleeping Darwin `poll` gives its kqueue.
+            /// Monotonic and never reused, for the replay-trace reason
+            /// `NextSocketId` gives.
+            NextPollQueueId : PollQueueId
             /// The ordinal the next park of any task records as its
             /// `TaskPark.Ordinal`. Monotonic, and bumped only by `UnixWait.park`.
             ///
@@ -275,7 +283,7 @@ type UnixMachineState =
 /// What a socket is taking an ephemeral port for, which decides what stands
 /// in a candidate port's way.
 [<RequireQualifiedAccess>]
-type EphemeralPortUse =
+type internal EphemeralPortUse =
     /// `bind(2)` with port 0, and the implicit bind `listen(2)` performs on an
     /// unbound socket: the port is reserved outright. Another socket's binding
     /// stands in the way as `bind(2)` decides, and so does an endpoint of any
@@ -320,7 +328,7 @@ module UnixMachineState =
     /// backwards, and one that would take `NanosecondsSinceBoot` past
     /// `Int64.MaxValue` (about 292 years of uptime), beyond which no monotonic
     /// reading can be represented.
-    let advanceClock (nanoseconds : int64) (machine : UnixMachineState) : UnixMachineState =
+    let internal advanceClock (nanoseconds : int64) (machine : UnixMachineState) : UnixMachineState =
         if nanoseconds < 0L then
             failwith
                 $"UnixMachineState.advanceClock: %d{nanoseconds} ns is negative, and every clock this kernel models is monotonic."
@@ -342,16 +350,17 @@ module UnixMachineState =
 
     /// How long this machine has been up, to the nanosecond.
     ///
-    /// For the client that decides when time passes, which reads this to know
-    /// how far to `advanceClock`. A process reads the same instant through
-    /// `UnixClock.clockGettime`, at the granularity its flavour reports.
-    let nanosecondsSinceBoot (machine : UnixMachineState) : int64 = machine.NanosecondsSinceBoot
+    /// The client that decides when time passes reads this through
+    /// `UnixSystem.nanosecondsSinceBoot`, to know how far to `advanceClock`. A
+    /// process reads the same instant through `UnixClock.clockGettime`, at the
+    /// granularity its flavour reports.
+    let internal nanosecondsSinceBoot (machine : UnixMachineState) : int64 = machine.NanosecondsSinceBoot
 
     /// The type of filesystem `inode` is on: the root filesystem's mount, or,
     /// for an inode on the device filesystem, tmpfs, which a Linux devtmpfs
     /// is underneath (measured: its `f_type`, and its directories' sizes,
     /// follow tmpfs's rules).
-    let fileSystemTypeOf (inode : InodeNumber) (machine : UnixMachineState) : EmulatedFileSystemType =
+    let internal fileSystemTypeOf (inode : InodeNumber) (machine : UnixMachineState) : EmulatedFileSystemType =
         match VirtualFileSystem.mountedRootOf inode machine.FileSystem, machine.DeviceMount with
         | None, _ -> EmulatedMount.fileSystemType machine.Mount
         | Some _, DeviceFileSystemMount.Devtmpfs _ -> EmulatedFileSystemType.Tmpfs
@@ -369,27 +378,29 @@ module UnixMachineState =
 
     /// Whether, and where, this machine's kernel screens a read or write buffer
     /// before performing the operation. See `UnixMachineState.UserBufferCheck`.
-    let userBufferCheck (machine : UnixMachineState) : UserBufferCheck = machine.UserBufferCheck
+    let internal userBufferCheck (machine : UnixMachineState) : UserBufferCheck = machine.UserBufferCheck
 
     /// The platform this machine impersonates, which `UnixSystem.initial` fixed
     /// for the machine's life.
     ///
     /// A process knows its platform by having been built for it, and learns the
-    /// kernel's release through `uname(2)`. A client reads it here to speak to the
-    /// kernel in the platform's own numbering.
-    let platform (machine : UnixMachineState) : SimulatedUnixPlatform = machine.UnixPlatform
+    /// kernel's release through `uname(2)`. A client reads it through
+    /// `UnixSystem.platform`, to speak to the kernel in the platform's own
+    /// numbering.
+    let internal platform (machine : UnixMachineState) : SimulatedUnixPlatform = machine.UnixPlatform
 
     /// The number of logical processors this machine reports to a process. See
     /// `UnixMachineState.ProcessorCount`.
-    let processorCount (machine : UnixMachineState) : int = machine.ProcessorCount
+    let internal processorCount (machine : UnixMachineState) : int = machine.ProcessorCount
 
     /// Every write that has reached a client draining one of this machine's
     /// pipes, oldest first: what the outside world has received from the
     /// process. See `UnixMachineState.Delivered`.
     ///
-    /// For the client that drains those pipes. No process can read this back,
-    /// because the bytes have left the machine.
-    let delivered (machine : UnixMachineState) : DeliveryLog = machine.Delivered
+    /// The client that drains those pipes reads this through
+    /// `UnixSystem.delivered`. No process can read this back, because the bytes
+    /// have left the machine.
+    let internal delivered (machine : UnixMachineState) : DeliveryLog = machine.Delivered
 
     /// The socket `socketId` names.
     ///
@@ -397,15 +408,55 @@ module UnixMachineState =
     /// caller can hold came out of an `OpenFileTarget.Socket`, and
     /// `checkInvariants` rejects a machine in which one of those names nothing.
     /// A `None` here would push that impossible case onto every call site.
-    let socket (socketId : SocketId) (machine : UnixMachineState) : SocketDescription =
+    let internal socket (socketId : SocketId) (machine : UnixMachineState) : SocketDescription =
         match Map.tryFind socketId machine.Sockets with
         | Some socket -> socket
         | None ->
             failwith
                 $"UnixMachineState.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and UnixSystemDefect.DanglingSocket exists to make that unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand, rather than anything the simulated process did."
 
+    /// A new kqueue for a Darwin `poll` about to sleep, holding `queue`: its
+    /// identity, and the machine holding it.
+    let internal addPollQueue (queue : PollQueue) (machine : UnixMachineState) : PollQueueId * UnixMachineState =
+        let (PollQueueId next) = machine.NextPollQueueId
+        let id = PollQueueId next
+
+        id,
+        { machine with
+            PollQueues = Map.add id queue machine.PollQueues
+            NextPollQueueId = PollQueueId (next + 1L)
+        }
+
+    /// The kqueue `queue` of a sleeping Darwin `poll`. Loudly partial: the
+    /// caller read the identity from a park, which holds it.
+    let pollQueue (queue : PollQueueId) (machine : UnixMachineState) : PollQueue =
+        match Map.tryFind queue machine.PollQueues with
+        | Some found -> found
+        | None ->
+            failwith
+                $"UnixMachineState.pollQueue: %O{queue} is not on the machine, but a park names it, and a park holds its poll's kqueue until it ends (this is a bug in this library, or in a caller that assembled the state by hand)."
+
+    /// The machine with the sleeping Darwin poll's kqueue `queue` replaced by
+    /// `state`. Loudly partial, as `pollQueue` is.
+    let internal setPollQueue
+        (queue : PollQueueId)
+        (state : PollQueue)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
+        if not (Map.containsKey queue machine.PollQueues) then
+            failwith $"UnixMachineState.setPollQueue: %O{queue} is not on the machine (this is a bug in this library)."
+
+        { machine with
+            PollQueues = Map.add queue state machine.PollQueues
+        }
+
     /// Every live open file description on the machine naming `socketId`.
-    let descriptionsNamingSocket (socketId : SocketId) (machine : UnixMachineState) : Set<OpenFileDescriptionId> =
+    let internal descriptionsNamingSocket
+        (socketId : SocketId)
+        (machine : UnixMachineState)
+        : Set<OpenFileDescriptionId>
+        =
         OpenFileTable.toSeq machine.OpenFiles
         |> Seq.choose (fun (descriptionId, description) ->
             match description.Target with
@@ -416,7 +467,7 @@ module UnixMachineState =
 
     /// Every live open file description on the machine naming `pipeEnd` of
     /// `pipeId`.
-    let descriptionsNamingPipeEnd
+    let internal descriptionsNamingPipeEnd
         (pipeId : PipeId)
         (pipeEnd : PipeEnd)
         (machine : UnixMachineState)
@@ -439,7 +490,13 @@ module UnixMachineState =
     /// end closes when the last description onto it goes, which is when its
     /// last descriptor closes, or when a call that held it returns after that,
     /// unless the client holds it; and `dup` keeps it open.
-    let pipeEndOpen (pipeId : PipeId) (pipe : PipeState) (pipeEnd : PipeEnd) (machine : UnixMachineState) : bool =
+    let internal pipeEndOpen
+        (pipeId : PipeId)
+        (pipe : PipeState)
+        (pipeEnd : PipeEnd)
+        (machine : UnixMachineState)
+        : bool
+        =
         PipeState.heldByClient pipeEnd pipe
         || OpenFileTable.toSeq machine.OpenFiles
            |> Seq.exists (fun (_, description) -> description.Target = OpenFileTarget.Pipe (pipeId, pipeEnd))
@@ -455,7 +512,7 @@ module UnixMachineState =
     /// process standing in it, pointing at nothing. It is not what callers
     /// want, though — see `ObjectLifetime.pinnedInodes`, which adds those the
     /// *filesystem* holds on behalf of these.
-    let heldInodes (machine : UnixMachineState) : Set<InodeNumber> =
+    let internal heldInodes (machine : UnixMachineState) : Set<InodeNumber> =
         OpenFileTable.toSeq machine.OpenFiles
         |> Seq.choose (fun (_, description) ->
             match description.Target with
@@ -500,7 +557,7 @@ module UnixMachineState =
     /// caller can hold came out of an `OpenFileTarget.Pipe`, and
     /// `UnixSystem.checkInvariants` rejects a machine in which one of those
     /// names nothing.
-    let pipe (pipeId : PipeId) (machine : UnixMachineState) : PipeState =
+    let internal pipe (pipeId : PipeId) (machine : UnixMachineState) : PipeState =
         match Map.tryFind pipeId machine.Pipes with
         | Some pipe -> pipe
         | None ->
@@ -524,7 +581,7 @@ module UnixMachineState =
     /// Total, and loudly partial rather than an option: every `ConnectionId` a
     /// caller can hold came out of a socket phase or an accept queue, and
     /// `checkInvariants` rejects a machine in which one of those dangles.
-    let connection (connectionId : ConnectionId) (machine : UnixMachineState) : TcpConnection =
+    let internal connection (connectionId : ConnectionId) (machine : UnixMachineState) : TcpConnection =
         match Map.tryFind connectionId machine.Connections with
         | Some connection -> connection
         | None ->
@@ -537,7 +594,7 @@ module UnixMachineState =
     ///
     /// Derived rather than stored: the connection object outlives its ends
     /// exactly as long as something references it, so the scan is the truth.
-    let peerOpen (socketId : SocketId) (connectionId : ConnectionId) (machine : UnixMachineState) : bool =
+    let internal peerOpen (socketId : SocketId) (connectionId : ConnectionId) (machine : UnixMachineState) : bool =
         machine.Sockets
         |> Map.exists (fun otherId other ->
             otherId <> socketId
@@ -567,7 +624,7 @@ module UnixMachineState =
     ///
     /// Defined only for a socket `LinuxReadiness.modelsSocket` accepts, and
     /// failing for a `SOCK_SEQPACKET` one, whose epoll level is unmeasured.
-    let socketReadinessLevel (socketId : SocketId) (machine : UnixMachineState) : ReadinessLevel =
+    let internal socketReadinessLevel (socketId : SocketId) (machine : UnixMachineState) : ReadinessLevel =
         let target = socket socketId machine
 
         match target.Phase with
@@ -648,7 +705,7 @@ module UnixMachineState =
     /// The relation `bind(2)` decides admission with, `listen(2)` asks again
     /// on the flavour that re-screens an already-bound socket, and every
     /// ephemeral-port choice asks of each port it considers.
-    let bindingConflicts
+    let internal bindingConflicts
         (socketId : SocketId)
         (socket : SocketDescription)
         (candidate : SocketBinding)
@@ -736,7 +793,7 @@ module UnixMachineState =
     /// `None` when a full sweep finds nothing. The caller decides what to do:
     /// there is no measured answer for an exhausted range, so inventing an
     /// errno here would be a guess.
-    let allocateEphemeralPort
+    let internal allocateEphemeralPort
         (purpose : EphemeralPortUse)
         (socketId : SocketId)
         (socket : SocketDescription)
@@ -861,7 +918,7 @@ module UnixMachineState =
     /// This is the instant the kernel stamps on an inode it changes.
     /// `clock_gettime(CLOCK_REALTIME)` reports the same clock, but at the
     /// granularity its flavour reports it at; see `UnixClock.clockGettime`.
-    let realtime (machine : UnixMachineState) : UnixTimestamp =
+    let internal realtime (machine : UnixMachineState) : UnixTimestamp =
         // Both unreachable through the public API, which sets these only through
         // `withBootTime` and `advanceClock`; checked because the carry below is only sound when each
         // operand is inside the range those two admit.

@@ -96,7 +96,7 @@ module ObjectLifetime =
     /// directory's ".." was the last reference to. So one call collects a whole
     /// orphaned chain, and the caller passes only the inode whose reference it
     /// just dropped.
-    let rec forgetIfUnheld<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let rec internal forgetIfUnheld<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystem<'Task, 'Handler>
@@ -151,7 +151,7 @@ module ObjectLifetime =
     ///
     /// Destroying a stream socket's description sends its established peer the
     /// FIN, raising that peer's state-change edge.
-    let releaseDestroyed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal releaseDestroyed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destroyed : OpenFileDescription)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>
@@ -168,6 +168,15 @@ module ObjectLifetime =
             // last name went away earlier, which is what keeps `read` on an
             // unlinked descriptor working right up until the descriptor goes.
             Ok (forgetIfUnheld inode system)
+        | OpenFileTarget.Pipe (pipeId, _) when
+            not (Map.containsKey pipeId system.Machine.Pipes)
+            && Set.isEmpty (UnixMachineState.descriptionsNamingPipeEnd pipeId PipeEnd.Read system.Machine)
+            && Set.isEmpty (UnixMachineState.descriptionsNamingPipeEnd pipeId PipeEnd.Write system.Machine)
+            ->
+            // Both ends' descriptions were destroyed before either was
+            // released, as a process's end on Linux destroys them, and the
+            // other's release freed the pipe.
+            Ok system
         | OpenFileTarget.Pipe (pipeId, _) ->
             // The pipe goes when neither end is open any more: it is the last
             // description onto either end that frees it, not the last onto both.
@@ -336,7 +345,7 @@ module ObjectLifetime =
     /// returned, and its park has let go of the holds it took, so that a
     /// description whose last descriptor closed while it slept goes now, as a
     /// real kernel releases the file when the call drops its reference.
-    let releaseUnreferenced<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal releaseUnreferenced<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (descriptions : OpenFileDescriptionId list)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>

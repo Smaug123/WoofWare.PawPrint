@@ -194,8 +194,8 @@ module TestCallHolds =
                     ParkedSyscall.KqueuePoll
                         {
                             Entries = []
-                            Registrations = Map.empty
-                            Active = []
+                            // `park` makes the kqueue this names.
+                            Queue = PollQueueId -1L
                             Deadline = None
                         },
                     []
@@ -273,6 +273,47 @@ module TestCallHolds =
                         },
                     [ id ]
                 )
+
+    /// `task` parked in `parked`, as `UnixWait.park` parks it; a Darwin poll
+    /// first makes the kqueue it holds, empty, as the call does before it
+    /// sleeps, unless the task is already asleep in one, whose it keeps.
+    let private park
+        (task : int)
+        (parked : ParkedSyscall)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        match parked with
+        | ParkedSyscall.KqueuePoll poll ->
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some (ParkedSyscall.KqueuePoll existing) ->
+                UnixWait.park
+                    task
+                    (ParkedSyscall.KqueuePoll
+                        { poll with
+                            Queue = existing.Queue
+                        })
+                    system
+            | _ ->
+                let queue, machine =
+                    UnixMachineState.addPollQueue
+                        {
+                            Owner = system.Process.ProcessId
+                            Registrations = Map.empty
+                            Active = []
+                        }
+                        system.Machine
+
+                UnixWait.park
+                    task
+                    (ParkedSyscall.KqueuePoll
+                        { poll with
+                            Queue = queue
+                        })
+                    { system with
+                        Machine = machine
+                    }
+        | _ -> UnixWait.park task parked system
 
     let private kindOf (parked : ParkedSyscall) : int =
         match parked with
@@ -357,7 +398,7 @@ module TestCallHolds =
                             let released =
                                 existing |> Option.map ParkedSyscall.descriptions |> Option.defaultValue []
 
-                            UnixWait.park task parked system
+                            park task parked system
                             |> ObjectLifetime.releaseUnreferencedUnrefusable "test" released,
                             { model with
                                 Holds = Map.add task held model.Holds
@@ -558,7 +599,7 @@ module TestCallHolds =
             match shapeOf shape a b system with
             | None -> ()
             | Some (parked, held) ->
-                let system = UnixWait.park 0 parked system
+                let system = park 0 parked system
 
                 let ids =
                     OpenFileTable.descriptions system.Machine.OpenFiles |> Map.keys |> List.ofSeq

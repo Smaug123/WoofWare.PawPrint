@@ -126,7 +126,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         }
 
 [<RequireQualifiedAccess>]
-module UnixProcessState =
+module internal UnixProcessState =
 
     /// Whether the simulated process is exempt from the permission rules a kernel
     /// applies to everyone else. This is `Credentials.privilege` of its

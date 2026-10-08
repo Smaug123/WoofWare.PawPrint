@@ -169,21 +169,44 @@ type PollRegistration =
         /// socket's filter, made through different descriptors onto it,
         /// queues the latest-made first, as it does in a kqueue `kevent` fills.
         RegisteredAt : int
+        /// For a socket's filter, the socket the descriptor named when the
+        /// call registered it: what the filter is attached to, so that an
+        /// event on the socket reaches it whichever process's call caused the
+        /// event, without reading any descriptor table. `None` for a pipe's or
+        /// a regular file's filter, which nothing activates (see
+        /// `PollQueue.Active`).
+        Socket : SocketId option
     }
 
-/// One task's in-flight Darwin-flavoured `poll(2)`: the kqueue the call made
-/// for its own use, and when it times out.
+/// The identity of the kqueue a Darwin `poll(2)` made for its own use
+/// (`PollQueue`). Minted from `UnixMachineState.NextPollQueueId`, and never
+/// reused.
+type PollQueueId =
+    | PollQueueId of int64
+
+    /// A human-readable description of the identity.
+    override this.ToString () =
+        match this with
+        | PollQueueId.PollQueueId i -> $"<poll queue #%i{i}>"
+
+/// The kqueue a Darwin `poll(2)` made for its own use, while the call sleeps.
 ///
 /// Darwin builds `poll` over kqueue: the call registers a filter per group of
 /// requested bits in a kqueue that has no descriptor, and translates what the
 /// filters report back into `revents`. A sleeping call keeps that kqueue, and
 /// what it reports when it wakes depends on what has been activated in it, and
 /// in which order -- not only on what its descriptors present then.
-type ParkedKqueuePoll =
+///
+/// Held on the machine (`UnixMachineState.PollQueues`) rather than in the
+/// call's park, because a socket event in any process's call activates its
+/// filters, as one does a kqueue's (`KqueueRegistration.Socket`), and no
+/// process's view holds another's tasks. It lives exactly as long as the park
+/// naming it (`ParkedKqueuePoll.Queue`): the park's end destroys it.
+type PollQueue =
     {
-        /// The entries, in the caller's order, which is the order the
-        /// finishing call reports `revents` in.
-        Entries : PollEntry list
+        /// The process whose `poll` made the queue, whose descriptor table its
+        /// registrations' descriptor numbers are read in.
+        Owner : ProcessId
         /// The filters still registered: those that have not yet reported, keyed
         /// by descriptor number and filter. Closing a descriptor removes every
         /// one made through it, as it does from a kqueue a process holds.
@@ -199,6 +222,19 @@ type ParkedKqueuePoll =
         /// filters report in cannot change what the entry answers, so a scan
         /// reports a pipe's registration exactly while its filter is ready.
         Active : (int * KqueueFilter) list
+    }
+
+/// One task's in-flight Darwin-flavoured `poll(2)`: its entries, the kqueue
+/// the call made for its own use, and when it times out.
+type ParkedKqueuePoll =
+    {
+        /// The entries, in the caller's order, which is the order the
+        /// finishing call reports `revents` in.
+        Entries : PollEntry list
+        /// The kqueue the call made for its own use, on the machine
+        /// (`UnixMachineState.PollQueues`). The park holds it: it is destroyed
+        /// when the park ends (`UnixParkState.unpark`).
+        Queue : PollQueueId
         /// The instant, in nanoseconds since boot, at which the call stops
         /// waiting and returns 0; or `None` for a call that waits until
         /// something is reported.
@@ -365,7 +401,7 @@ module ParkedSyscall =
         // (`knote_fdclose`), and the file with it if that was the last
         // reference. Measured (`poll-timeout.c` section E): a datagram sent to
         // the address of a socket closed under a sleeping Darwin poll wakes
-        // nothing.
+        // nothing. The kqueue it made is its own (`ParkedKqueuePoll.Queue`).
         | ParkedSyscall.KqueuePoll _ -> []
         // A call a close has ended holds nothing: Darwin's close does not
         // return until the call has, and the call's reference goes as it does.
@@ -473,7 +509,7 @@ module UnixTaskTable =
     /// Total, and loudly partial rather than an option: every task is added
     /// when it is created and removed only when it exits, so a name that
     /// resolves to nothing is a client bug rather than anything a process did.
-    let get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
+    let internal get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
         match Map.tryFind name tasks with
         | Some task -> task
         | None ->
@@ -521,7 +557,11 @@ module UnixTaskTable =
         (get name tasks).Parked |> Option.map (fun park -> park.Syscall)
 
     /// The park `name` is in, with its place in park order, if it is parked.
-    let parkOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : TaskPark option =
+    let internal parkOf<'Task when 'Task : comparison>
+        (name : 'Task)
+        (tasks : Map<'Task, UnixTaskState>)
+        : TaskPark option
+        =
         (get name tasks).Parked
 
     /// Record that `name` is in `park`.

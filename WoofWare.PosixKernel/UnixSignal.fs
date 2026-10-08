@@ -5,8 +5,9 @@ namespace WoofWare.PosixKernel
 [<RequireQualifiedAccess>]
 type KillRefusal =
     /// A positive process ID other than the calling process's own. A real
-    /// kernel's answer depends on other processes, which this library has none
-    /// of.
+    /// kernel's answer depends on whether that process exists and on what the
+    /// signal does to it, and a process's view holds no other process: sending
+    /// a signal to another process is not modelled.
     | OtherProcess of pid : int32
     /// Zero or a negative number: a process group, or every process the caller
     /// may signal.

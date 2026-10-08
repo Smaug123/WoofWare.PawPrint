@@ -4,7 +4,7 @@ namespace WoofWare.PosixKernel
 /// flavours number alike. Only those four bits are read for the type, and
 /// only the low twelve for the permissions; every other bit is ignored.
 [<RequireQualifiedAccess>]
-type NodeTypeField =
+type internal NodeTypeField =
     /// 0: no type named. Linux makes a regular file of it.
     | Unset
     /// `S_IFIFO`, 0o010000.
@@ -26,7 +26,7 @@ type NodeTypeField =
     | Unnamed of bits : int
 
 [<RequireQualifiedAccess>]
-module NodeTypeField =
+module internal NodeTypeField =
     /// The type field of a raw `mknod(2)` mode word.
     let ofMode (mode : int) : NodeTypeField =
         // Measured by `mknodat-rules.c` (WIDE) on Linux 6.18.5 and Darwin
@@ -62,7 +62,7 @@ type MkNodRules =
 /// What Linux's `mknod(2)` goes on to make once the type field has passed
 /// its screen.
 [<RequireQualifiedAccess>]
-type MkNodNode =
+type internal MkNodNode =
     /// `S_IFREG`, or a type field of 0.
     | RegularFile
     /// `S_IFIFO`.
@@ -118,7 +118,7 @@ module MkNodRefusal =
 
 /// What a `mknod(2)` does before it reads its path.
 [<RequireQualifiedAccess>]
-type MkNodScreen =
+type internal MkNodScreen =
     /// Answer with this errno. The path is never read.
     | Fails of error : UnixError
     /// This kernel will not answer. The path is never read.
@@ -129,7 +129,7 @@ type MkNodScreen =
 
 /// What a `mknod(2)` does once its path has resolved.
 [<RequireQualifiedAccess>]
-type MkNodVerdict =
+type internal MkNodVerdict =
     /// Answer the caller with this errno.
     | Refuse of error : UnixError
     /// Bind a new empty regular file under `name` in `directory`.
@@ -138,7 +138,7 @@ type MkNodVerdict =
     | Refused of refusal : MkNodRefusal
 
 [<RequireQualifiedAccess>]
-module MkNodRules =
+module internal MkNodRules =
     /// What a `mknod(2)` under `rules`, by a caller with `credentials`, does
     /// with the raw `mode` and `dev` before it reads its path: only the type
     /// field of `mode` is read here (`NodeTypeField.ofMode`).

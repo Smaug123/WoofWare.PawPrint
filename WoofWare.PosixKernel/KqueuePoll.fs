@@ -83,11 +83,15 @@ module DarwinPollEvents =
 /// The registration half, which decides which filters an entry registers, is
 /// `UnixPoll.poll`'s.
 [<RequireQualifiedAccess>]
-module KqueuePoll =
+module internal KqueuePoll =
 
     /// What the registration of `filter` through the descriptor `fd` reports
     /// now, and whether the report carries `EV_OOBAND`; or `None` when its
     /// filter is not ready.
+    ///
+    /// A socket's filter is read off the socket it is attached to
+    /// (`PollRegistration.Socket`); any other's off what the descriptor names
+    /// in `system`'s process's table, which must be the poll's own.
     ///
     /// Loudly partial: a poll registers only on the targets answered here, and
     /// closing a descriptor removes every registration made through it.
@@ -97,13 +101,19 @@ module KqueuePoll =
         (system : UnixSystem<'Task, 'Handler>)
         : (KqueueFilterReport * bool) option
         =
-        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+        match registration.Socket with
         // A socket's filter clears `EV_OOBAND` when it attaches (XNU's
         // `filt_sockattach`), so its report never carries the flag: no socket
         // here holds out-of-band data.
-        | Some (OpenFileTarget.Socket socketId) ->
+        | Some socketId ->
             DarwinReadiness.ofSocket filter socketId system.Machine
             |> Option.map (fun report -> report, false)
+        | None ->
+
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+        | Some (OpenFileTarget.Socket _) as other ->
+            failwith
+                $"KqueuePoll: a poll's kqueue registers %A{key} as attached to no socket, but its descriptor names %A{other}. A poll attaches a socket's filter to the socket when it registers it, and closing a descriptor removes every registration made through it (this is a bug in this library, or in a caller that assembled the park by hand)."
         // Every other filter keeps the flags it was registered with, and so
         // reports `EV_OOBAND` back when it was asked for (measured,
         // `poll-darwin.c` section S: a pipe holding data answers `POLLPRI`).
@@ -168,18 +178,9 @@ module KqueuePoll =
             else
                 revents ||| (events &&& (DarwinPollEvents.Out ||| DarwinPollEvents.WrBand))
 
-    /// Whether the registration of `key` is of a socket's filter: the only
-    /// registrations a scan walks in the order they were activated (see
-    /// `ParkedKqueuePoll.Active`).
-    let private isSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (fd : int, _ : KqueueFilter)
-        (system : UnixSystem<'Task, 'Handler>)
-        : bool
-        =
-        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
-        | Some (OpenFileTarget.Socket _) -> true
-        | Some _
-        | None -> false
+    /// Whether `registration` is of a socket's filter: the only registrations
+    /// a scan walks in the order they were activated (see `PollQueue.Active`).
+    let private isSocket (registration : PollRegistration) : bool = registration.Socket.IsSome
 
     /// The registrations of sockets' filters among `registrations` that are
     /// ready now, in the order they were made: the queue a call has once it
@@ -194,7 +195,7 @@ module KqueuePoll =
         |> Map.toList
         |> List.sortBy (fun (_, registration) -> registration.RegisteredAt)
         |> List.filter (fun (key, registration) ->
-            isSocket key system && Option.isSome (reportOf key registration system)
+            isSocket registration && Option.isSome (reportOf key registration system)
         )
         |> List.map fst
 
@@ -225,7 +226,7 @@ module KqueuePoll =
             |> Map.toList
             |> List.sortBy (fun (_, registration) -> registration.RegisteredAt)
             |> List.filter (fun (key, registration) ->
-                not (isSocket key system) && Option.isSome (reportOf key registration system)
+                not (isSocket registration) && Option.isSome (reportOf key registration system)
             )
             |> List.map fst
 
@@ -238,7 +239,7 @@ module KqueuePoll =
             match Map.tryFind key registrations with
             | None ->
                 failwith
-                    $"KqueuePoll.scan: the active list names %A{key}, which is not registered. ParkedKqueuePoll.Active is a subset of its registrations, and UnixSystem.checkInvariants says so (this is a bug in this library, or in a caller that assembled the park by hand)."
+                    $"KqueuePoll.scan: the active list names %A{key}, which is not registered. PollQueue.Active is a subset of its registrations, and UnixSystem.checkInvariants says so (this is a bug in this library, or in a caller that assembled the park by hand)."
             | Some registration ->
 
             match reportOf key registration system with
@@ -268,44 +269,40 @@ module KqueuePoll =
         match UnixTaskTable.parkedFor task system.Tasks with
         | Some (ParkedSyscall.KqueuePoll poll) ->
             let zero = poll.Entries |> List.map (fun _ -> 0s)
-            let revents, _, _ = scan poll.Entries zero poll.Registrations poll.Active system
+            let queue = UnixMachineState.pollQueue poll.Queue system.Machine
+            let revents, _, _ = scan poll.Entries zero queue.Registrations queue.Active system
             revents |> List.exists (fun revents -> revents <> 0s)
         | other ->
             failwith
                 $"KqueuePoll.reportable: task %O{task} is parked in %A{other}, not in a Darwin poll (this is a bug in the caller that recorded the park)."
 
-    /// What closing the descriptor `fd` does to the kqueue of every Darwin
-    /// `poll` asleep in `tasks`: each filter registered through `fd` goes, as
-    /// `FileDescriptorRegistry.dropDescriptor` removes those of every kqueue the
-    /// process owns (XNU's `knote_fdclose`). The poll sleeps on, and the entry
-    /// reports nothing more, whatever a new descriptor at the number does.
-    let dropRegistrationsThrough<'Task when 'Task : comparison>
+    /// What the process `owner` closing its descriptor `fd` does to the kqueue
+    /// of every Darwin `poll` of its own asleep on `machine`: each filter
+    /// registered through `fd` goes, as `FileDescriptorRegistry.dropDescriptor`
+    /// removes those of every kqueue the process owns (XNU's `knote_fdclose`).
+    /// The poll sleeps on, and the entry reports nothing more, whatever a new
+    /// descriptor at the number does. Another process's poll registers nothing
+    /// through `owner`'s descriptors, whatever numbers it holds.
+    let internal dropRegistrationsThrough
+        (owner : ProcessId)
         (fd : int)
-        (tasks : Map<'Task, UnixTaskState>)
-        : Map<'Task, UnixTaskState>
+        (machine : UnixMachineState)
+        : UnixMachineState
         =
-        // A Darwin poll holds no description (`ParkedSyscall.descriptions`), so
-        // rewriting its park moves no hold.
-        tasks
-        |> Map.map (fun _ task ->
-            match task.Parked with
-            | Some ({
-                        Syscall = ParkedSyscall.KqueuePoll poll
-                    } as park) when poll.Registrations |> Map.exists (fun (registered, _) _ -> registered = fd) ->
-                { task with
-                    Parked =
-                        Some
-                            { park with
-                                Syscall =
-                                    ParkedSyscall.KqueuePoll
-                                        { poll with
-                                            Registrations =
-                                                poll.Registrations
-                                                |> Map.filter (fun (registered, _) _ -> registered <> fd)
-                                            Active = poll.Active |> List.filter (fun (active, _) -> active <> fd)
-                                        }
-                            }
-                }
-            | Some _
-            | None -> task
-        )
+        { machine with
+            PollQueues =
+                machine.PollQueues
+                |> Map.map (fun _ queue ->
+                    if
+                        queue.Owner = owner
+                        && queue.Registrations |> Map.exists (fun (registered, _) _ -> registered = fd)
+                    then
+                        { queue with
+                            Registrations =
+                                queue.Registrations |> Map.filter (fun (registered, _) _ -> registered <> fd)
+                            Active = queue.Active |> List.filter (fun (active, _) -> active <> fd)
+                        }
+                    else
+                        queue
+                )
+        }

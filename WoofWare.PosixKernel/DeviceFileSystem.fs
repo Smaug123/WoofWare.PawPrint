@@ -54,7 +54,7 @@ module DeviceFileSystemMount =
         | SimulatedUnixFlavour.Darwin -> DeviceFileSystemMount.Devfs
 
     /// What the filesystem's inode graph holds of this mount.
-    let mounted (mount : DeviceFileSystemMount) : MountedFileSystem =
+    let internal mounted (mount : DeviceFileSystemMount) : MountedFileSystem =
         match mount with
         | DeviceFileSystemMount.Devtmpfs _ -> MountedFileSystem.Devtmpfs
         | DeviceFileSystemMount.Devfs -> MountedFileSystem.Devfs

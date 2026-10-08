@@ -317,12 +317,36 @@ type UnixSystemDefect<'Task> =
     | ParkedKqueuePollEntryOutOfRange of task : 'Task * key : (int * KqueueFilter) * entry : int
     /// A task's parked Darwin `poll` lists `key` as activated where the list
     /// may not hold it: `key` is not registered, is listed twice, or is not a
-    /// socket's filter (see `ParkedKqueuePoll.Active`).
+    /// socket's filter (see `PollQueue.Active`).
     | ParkedKqueuePollActiveMalformed of task : 'Task * key : (int * KqueueFilter)
     /// A task's parked Darwin `poll` registers the socket filter `key`, which is
     /// ready, and does not list it as activated: whatever made it ready did not
     /// activate it, so the call would sleep through what a real one wakes for.
     | ParkedKqueuePollActivationMissed of task : 'Task * key : (int * KqueueFilter)
+    /// A task's parked Darwin `poll` registers the filter `key` as attached to
+    /// the socket `attached` (`None`: to none), through a descriptor naming the
+    /// socket `named` (`None`: something other than a socket). A poll attaches
+    /// a socket's filter, and only a socket's, to the socket its descriptor
+    /// names, and closing the descriptor removes the filter, so the two agree
+    /// for as long as it lasts.
+    | ParkedKqueuePollAttachedElsewhere of
+        task : 'Task *
+        key : (int * KqueueFilter) *
+        attached : SocketId option *
+        named : SocketId option
+    /// A task is parked in a Darwin `poll` whose kqueue (`ParkedKqueuePoll.Queue`)
+    /// is not on the machine. The park holds it until the park ends.
+    | ParkedOnAbsentPollQueue of task : 'Task * queue : PollQueueId
+    /// A task is parked in a Darwin `poll` whose kqueue another process,
+    /// `owner`, made. A poll's kqueue is its own call's.
+    | PollQueueOfAnotherProcess of task : 'Task * queue : PollQueueId * owner : ProcessId
+    /// The machine holds a sleeping Darwin poll's kqueue that `parks` parks
+    /// name, rather than exactly one: it is made as its call sleeps, and
+    /// destroyed as the park naming it ends.
+    | PollQueueNotHeldOnce of queue : PollQueueId * parks : int
+    /// The machine holds a sleeping Darwin poll's kqueue whose identity is not
+    /// below the counter it is minted from.
+    | PollQueueIdNotFresh of next : PollQueueId * existing : PollQueueId
     /// A task is parked in an `accept` on a description that is not a listening
     /// socket, which no accept could have produced and on which
     /// `WakeCondition.satisfied` crashes.
@@ -785,8 +809,18 @@ module UnixSystem =
         =
         UnixMachineState.socket socketId system.Machine
 
+    /// The kqueue of the sleeping Darwin `poll` whose park names `queue`
+    /// (`ParkedKqueuePoll.Queue`), or `None` if the machine holds none by that
+    /// identity.
+    let pollQueue<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (queue : PollQueueId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : PollQueue option
+        =
+        Map.tryFind queue system.Machine.PollQueues
+
     /// The pipe `pipeId` names. Loudly partial, as `UnixMachineState.pipe` is.
-    let pipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal pipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
         (system : UnixSystem<'Task, 'Handler>)
         : PipeState
@@ -795,7 +829,7 @@ module UnixSystem =
 
     /// How ready the socket `socketId` is. See
     /// `UnixMachineState.socketReadinessLevel`.
-    let socketReadinessLevel<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal socketReadinessLevel<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (system : UnixSystem<'Task, 'Handler>)
         : ReadinessLevel
@@ -1380,6 +1414,40 @@ module UnixSystem =
                         Some (UnixSystemDefect.HoldCountMismatch (id, recorded, parks))
                 )
 
+        // Each sleeping Darwin poll's kqueue against the parks of every
+        // process's tasks: exactly one names it. A park naming one the machine
+        // does not hold is `ParkedOnAbsentPollQueue`'s.
+        let pollQueueParks =
+            onlyIfComplete
+            <| fun () ->
+
+                let parks =
+                    allTasks
+                    |> List.choose (fun (_, state) ->
+                        match state.Parked with
+                        | Some {
+                                   Syscall = ParkedSyscall.KqueuePoll poll
+                               } -> Some poll.Queue
+                        | Some _
+                        | None -> None
+                    )
+                    |> List.countBy id
+                    |> Map.ofList
+
+                machine.PollQueues
+                |> Map.toList
+                |> List.choose (fun (queue, _) ->
+                    match Map.tryFind queue parks |> Option.defaultValue 0 with
+                    | 1 -> None
+                    | count -> Some (UnixSystemDefect.PollQueueNotHeldOnce (queue, count))
+                )
+
+        let pollQueueFreshness =
+            machine.PollQueues
+            |> Map.toList
+            |> List.filter (fun (queue, _) -> queue >= machine.NextPollQueueId)
+            |> List.map (fun (queue, _) -> UnixSystemDefect.PollQueueIdNotFresh (machine.NextPollQueueId, queue))
+
 
         let parkOrdinals =
             allTasks
@@ -1776,6 +1844,8 @@ module UnixSystem =
         @ statusOfFlavour
         @ unreferencedDescriptions
         @ holdCounts
+        @ pollQueueParks
+        @ pollQueueFreshness
         @ parkOrdinalFreshness
         @ parkOrdinalDuplicates
         @ bindings
@@ -1964,6 +2034,12 @@ module UnixSystem =
                                 target @ rebound
                     )
                 | Some (ParkedSyscall.KqueuePoll poll) ->
+                    match Map.tryFind poll.Queue system.Machine.PollQueues with
+                    | None -> [ UnixSystemDefect.ParkedOnAbsentPollQueue (task, poll.Queue) ]
+                    | Some queue when queue.Owner <> system.Process.ProcessId ->
+                        [ UnixSystemDefect.PollQueueOfAnotherProcess (task, poll.Queue, queue.Owner) ]
+                    | Some queue ->
+
                     let entries = List.length poll.Entries
 
                     let socketOf (fd : int) : SocketId option =
@@ -1972,8 +2048,32 @@ module UnixSystem =
                         | Some _
                         | None -> None
 
+                    let attachments =
+                        queue.Registrations
+                        |> Map.toList
+                        |> List.choose (fun ((fd, _ as key), registration) ->
+                            let named = socketOf fd
+
+                            // A closed descriptor is `ParkedKqueuePollRegistrationTarget`'s.
+                            let fdOpen =
+                                (FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system))
+                                    .IsSome
+
+                            if registration.Socket = named || not fdOpen then
+                                None
+                            else
+                                Some (
+                                    UnixSystemDefect.ParkedKqueuePollAttachedElsewhere (
+                                        task,
+                                        key,
+                                        registration.Socket,
+                                        named
+                                    )
+                                )
+                        )
+
                     let registrations =
-                        poll.Registrations
+                        queue.Registrations
                         |> Map.toList
                         |> List.collect (fun ((fd, filter as key), registration) ->
                             let target =
@@ -1984,7 +2084,7 @@ module UnixSystem =
                                     match Map.tryFind socketId system.Machine.Sockets with
                                     | Some socket when DarwinReadiness.modelsSocket socket ->
                                         if
-                                            not (List.contains key poll.Active)
+                                            not (List.contains key queue.Active)
                                             && Option.isSome (DarwinReadiness.ofSocket filter socketId system.Machine)
                                         then
                                             [ UnixSystemDefect.ParkedKqueuePollActivationMissed (task, key) ]
@@ -2012,14 +2112,14 @@ module UnixSystem =
                         )
 
                     let active =
-                        poll.Active
+                        queue.Active
                         |> List.indexed
                         |> List.choose (fun (index, (fd, _ as key)) ->
-                            let repeated = poll.Active |> List.take index |> List.contains key
+                            let repeated = queue.Active |> List.take index |> List.contains key
 
                             if
                                 repeated
-                                || not (Map.containsKey key poll.Registrations)
+                                || not (Map.containsKey key queue.Registrations)
                                 || Option.isNone (socketOf fd)
                             then
                                 Some (UnixSystemDefect.ParkedKqueuePollActiveMalformed (task, key))
@@ -2027,7 +2127,7 @@ module UnixSystem =
                                 None
                         )
 
-                    registrations @ active
+                    attachments @ registrations @ active
                 | Some (ParkedSyscall.Accept accept) ->
                     match accept.Listener with
                     | SleepTarget.EndedByClose _ -> endedByClose task
@@ -2522,6 +2622,8 @@ module UnixSystem =
                     NextConnectionId = ConnectionId 0L
                     NextEventRegistrationOrdinal = 0L
                     NextParkOrdinal = ParkOrdinal 0L
+                    PollQueues = Map.empty
+                    NextPollQueueId = PollQueueId 0L
                     ThreadIds = threadIds
                     ProcessIds = processIds
                     CurrentDirectories = Map.empty

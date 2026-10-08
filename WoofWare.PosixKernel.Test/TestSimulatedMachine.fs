@@ -401,6 +401,7 @@ module TestSimulatedMachine =
                                 Receipt = false
                                 UserData = 0UL
                                 RegisteredAt = 0L
+                                Socket = SocketId 0L
                             }
                         ]
                 Active = []
