@@ -46,7 +46,7 @@ module TestPeerName =
         |> UnixBootImage.boot
 
     let private endpointOf (fd : int) (system : UnixSystem<int, string>) : InternetEndpoint =
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
             match (UnixMachineState.socket socketId system.Machine).Binding with
             | Some binding -> binding.Endpoint

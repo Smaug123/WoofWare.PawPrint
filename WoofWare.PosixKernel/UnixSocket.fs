@@ -1463,7 +1463,7 @@ module UnixSocket =
         =
         // EBADF and ENOTSOCK come first, the destination untouched, exactly as
         // for `getsockname`: measured in `socket-address-length.c`, O1 and O2.
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | None -> Ok (GetSockNameAnswer.Failed (UnixError.EBADF, None))
         | Some target ->
 
@@ -1497,19 +1497,15 @@ module UnixSocket =
         // never connects a datagram socket to one.
         | SocketPhase.DatagramPeer peer when peer.Port = 0us -> notConnected
         | SocketPhase.DatagramPeer peer -> reportPeer peer
-        | SocketPhase.Established connectionId
+        // Only `connect` enters the pending report, so its socket is the client.
         | SocketPhase.EstablishedPendingReport connectionId ->
+            reportPeer (UnixMachineState.connection connectionId system.Machine).ServerAddress
+        | SocketPhase.Established (connectionId, connectionEnd) ->
             let connection = UnixMachineState.connection connectionId system.Machine
 
-            // The socket's own address says which end it is: a connecting socket
-            // is bound at the connection's client address, an accepted one at
-            // its server address. Where the two coincide, either is the peer.
-            match socket.Binding with
-            | Some binding when binding.Endpoint = connection.ClientAddress -> reportPeer connection.ServerAddress
-            | Some binding when binding.Endpoint = connection.ServerAddress -> reportPeer connection.ClientAddress
-            | binding ->
-                failwith
-                    $"UnixSocket.getpeername: socket %O{socketId} holds connection %O{connectionId} between %s{InternetEndpoint.toString connection.ClientAddress} and %s{InternetEndpoint.toString connection.ServerAddress}, but is bound at %A{binding}, which is neither end (this is a bug in this library, or in a caller that assembled the state by hand)."
+            match connectionEnd with
+            | ConnectionEnd.Client -> reportPeer connection.ServerAddress
+            | ConnectionEnd.Server -> reportPeer connection.ClientAddress
 
     /// `sizeof(int)`: what both kernels copy in for `SO_REUSEADDR` whatever
     /// length the caller declares, and the most they copy out of either option.
