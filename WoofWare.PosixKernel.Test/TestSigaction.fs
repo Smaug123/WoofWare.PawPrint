@@ -91,17 +91,24 @@ module TestSigaction =
                 ArbMap.defaults |> ArbMap.generate<int>
             ]
 
-    /// A handler action as the probe installs it: `sa_mask` holding every
-    /// number from 1 to the highest signal.
+    /// Every bit of the flavour's `sigset_t`: what the probe writes into
+    /// `sa_mask` (`memset` on Linux, `~(sigset_t)0` on Darwin, which also sets
+    /// bit 31, a signal number Darwin does not have).
+    let private fullWord (flavour : SimulatedUnixFlavour) : uint64 =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> UInt64.MaxValue
+        | SimulatedUnixFlavour.Darwin -> 0xffffffffUL
+
+    /// A handler action as the probe installs it: `sa_mask` holding every bit.
     let private probeHandler (flavour : SimulatedUnixFlavour) : SignalDisposition<string> =
-        let numbering = numberingOf flavour
+        let mask =
+            match SignalMask.ofWord (numberingOf flavour) (fullWord flavour) with
+            | Ok mask -> mask
+            | Error refusal -> failwith (SignalMaskRefusal.describe refusal)
 
         SignalDisposition.Catch
             { SignalCatch.ofHandler "H" with
-                Mask =
-                    [ 1 .. highestSigno flavour ]
-                    |> List.map (fun signo -> Signal.ofRawSignoUnder numbering signo |> ValueOption.get)
-                    |> Set.ofList
+                Mask = mask
             }
 
     /// One call of the probe's sequence, as the probe prints it: `EINVAL`, or
@@ -158,12 +165,17 @@ module TestSigaction =
 
     [<Test>]
     let ``the old action's mask is the one installed, less SIGKILL and SIGSTOP`` () : unit =
-        // The probe's q1 rows: every number from 1 to the highest signal was
-        // installed, and SIGKILL and SIGSTOP were missing on the way back;
-        // Linux's 32 and 33 were not.
-        for flavour in flavours do
-            let numbering = numberingOf flavour
+        // The probe's q1 rows: every bit was installed, and SIGKILL and
+        // SIGSTOP were missing on the way back; Linux's 32 and 33 were not.
+        // `sigaction-mask-bits.c` read the whole word back: Linux
+        // fffffffffffbfeff through glibc and the raw rt_sigaction alike, and
+        // Darwin fffefeff, which keeps bit 31.
+        let measuredWord (flavour : SimulatedUnixFlavour) : uint64 =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> 0xfffffffffffbfeffUL
+            | SimulatedUnixFlavour.Darwin -> 0xfffefeffUL
 
+        for flavour in flavours do
             for entry in entries do
                 for signo in [ 1 .. highestSigno flavour ] do
                     if measured flavour entry signo = Row.Accepted then
@@ -176,28 +188,30 @@ module TestSigaction =
                         | Ok (SignalDisposition.Catch action, after) ->
                             after |> shouldEqual installed
 
-                            let expected =
-                                [ 1 .. highestSigno flavour ]
-                                |> List.filter (fun s -> s <> 9 && s <> sigstop flavour)
-                                |> Set.ofList
-
-                            (flavour, entry, signo, action.Mask |> Set.map (Signal.toRawSignoUnder numbering))
-                            |> shouldEqual (flavour, entry, signo, expected)
+                            (flavour, entry, signo, SignalMask.toWord action.Mask)
+                            |> shouldEqual (flavour, entry, signo, measuredWord flavour)
                         | other -> failwith $"%O{flavour} %A{entry} %d{signo}: expected the handler back, got %A{other}"
 
     /// What the oracle stores for a number: the disposition installed, with
-    /// its mask as raw numbers.
+    /// its mask as the raw numbers whose bits it sets.
     type private Installed =
         | Dfl
         | Ign
         | Handler of name : string * mask : Set<int>
 
-    let private installedOf (numbering : SignalNumbering) (disposition : SignalDisposition<string>) : Installed =
+    let private installedOf (disposition : SignalDisposition<string>) : Installed =
         match disposition with
         | SignalDisposition.Default -> Installed.Dfl
         | SignalDisposition.Ignore -> Installed.Ign
         | SignalDisposition.Catch action ->
-            Installed.Handler (action.Handler, action.Mask |> Set.map (Signal.toRawSignoUnder numbering))
+            let word = SignalMask.toWord action.Mask
+
+            Installed.Handler (
+                action.Handler,
+                [ 1..64 ]
+                |> List.filter (fun signo -> word &&& (1UL <<< (signo - 1)) <> 0UL)
+                |> Set.ofList
+            )
 
     [<Test>]
     let ``sigaction behaves as a table of dispositions with the measured refusals`` () : unit =
@@ -207,7 +221,10 @@ module TestSigaction =
             let catchGen =
                 gen {
                     let! handler = Gen.elements [ "a" ; "b" ]
-                    let! mask = Gen.subListOf [ 1 ; 2 ; 9 ; sigstop flavour ; 15 ; 28 ; 31 ]
+                    // 32 is a signal on Linux, and on Darwin a bit that names
+                    // none, which Darwin stores all the same
+                    // (`sigaction-mask-bits.c`).
+                    let! mask = Gen.subListOf [ 1 ; 2 ; 9 ; sigstop flavour ; 15 ; 28 ; 31 ; 32 ]
                     let! noDefer = ArbMap.defaults |> ArbMap.generate<bool>
                     let! resetHand = ArbMap.defaults |> ArbMap.generate<bool>
                     let! restart = ArbMap.defaults |> ArbMap.generate<bool>
@@ -217,9 +234,13 @@ module TestSigaction =
                             {
                                 Handler = handler
                                 Mask =
-                                    mask
-                                    |> List.map (fun signo -> Signal.ofRawSignoUnder numbering signo |> ValueOption.get)
-                                    |> Set.ofList
+                                    match
+                                        SignalMask.ofWord
+                                            numbering
+                                            (mask |> List.fold (fun word signo -> word ||| (1UL <<< (signo - 1))) 0UL)
+                                    with
+                                    | Ok mask -> mask
+                                    | Error refusal -> failwith (SignalMaskRefusal.describe refusal)
                                 NoDefer = noDefer
                                 ResetHand = resetHand
                                 Restart = restart
@@ -272,14 +293,14 @@ module TestSigaction =
                         after |> shouldEqual system
                         system, oracle
                     | Row.Accepted, None, Ok (old, after) ->
-                        installedOf numbering old |> shouldEqual (installedNow oracle signo)
+                        installedOf old |> shouldEqual (installedNow oracle signo)
                         after |> shouldEqual system
                         system, oracle
                     | Row.Accepted, Some installed, Ok (old, after) ->
-                        installedOf numbering old |> shouldEqual (installedNow oracle signo)
+                        installedOf old |> shouldEqual (installedNow oracle signo)
 
                         let stored =
-                            match installedOf numbering installed with
+                            match installedOf installed with
                             | Installed.Handler (name, mask) ->
                                 Installed.Handler (name, mask |> Set.remove 9 |> Set.remove (sigstop flavour))
                             | other -> other
@@ -299,9 +320,7 @@ module TestSigaction =
             // syscall, which answers for every signal Linux has.
             for signo in [ 1 .. highestSigno flavour ] do
                 match UnixSignal.sigactionSyscall signo None finalSystem with
-                | Ok (now, _) ->
-                    (signo, installedOf numbering now)
-                    |> shouldEqual (signo, installedNow finalOracle signo)
+                | Ok (now, _) -> (signo, installedOf now) |> shouldEqual (signo, installedNow finalOracle signo)
                 | Error errno ->
                     (signo, measured flavour Entry.Syscall signo)
                     |> shouldEqual (signo, Row.Refused)
