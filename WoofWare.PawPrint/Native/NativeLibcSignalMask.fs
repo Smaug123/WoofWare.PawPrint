@@ -4,8 +4,9 @@ open System.Collections.Immutable
 open WoofWare.PosixKernel
 
 /// The C library's signal-mask entry points: `pthread_sigmask(3)`,
-/// `sigprocmask(2)` and `sigpending(2)`. No BCL code reaches them (System.Native
-/// blocks signals only inside its own fork-and-exec), so only a guest that
+/// `sigprocmask(2)`, `sigpending(2)`, `sigsuspend(2)` and `pause(2)`. No BCL
+/// code reaches them (System.Native blocks signals only inside its own
+/// fork-and-exec, and waits for signals on a pipe), so only a guest that
 /// declares them itself, naming the library `libc`, calls these.
 ///
 /// Each reads and writes a `sigset_t` through the guest's pointer, as many
@@ -176,6 +177,56 @@ module NativeLibcSignalMask =
         |> writeSet ctx operation "set" numbering argument pending
         |> pushInt32 ctx 0
 
+    /// `sigsuspend(mask)`, or `pause()` when `mask` is `None`: wait, under a
+    /// temporary mask, for a signal that runs a handler. The call fails with
+    /// EINTR (-1, with errno EINTR) once the handlers have run, which they do
+    /// as the leader returns to user mode (`SignalDispatch.poll`), and the mask
+    /// is then what it was before the call.
+    ///
+    /// A first entry makes the call, and either answers at once or parks
+    /// re-entrantly, as `SystemNative_Poll` does: the frame stays and the
+    /// caller's program counter still names the call, so a wake re-enters this
+    /// handler, which finishes the call from the task's park record.
+    ///
+    /// Refused on a thread other than the leader: PawPrint delivers signals to
+    /// the leader alone (`SignalDispatch`), so nothing could end such a wait.
+    let private suspend (ctx : NativeCallContext) (operation : string) (mask : CliType option) : NativeHandlerResult =
+        let state = ctx.State
+
+        if ctx.Thread <> state.Kernel.Leader then
+            failwith
+                $"%s{operation}: thread %O{ctx.Thread} waits for a signal, but PawPrint delivers signals to the leader %O{state.Kernel.Leader} alone, so nothing could end the wait. Make the call on the main thread."
+
+        let answered =
+            match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
+            | Some ParkedSyscall.SigSuspend -> UnixSignal.finishSigsuspend ctx.Thread state.Kernel.System
+            | Some other ->
+                // Unreachable: a task parked in another syscall is not running
+                // IL. Refused rather than treated as a first entry, which would
+                // park over the stale record and destroy the evidence.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered the call while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
+            | None ->
+                match mask with
+                | None -> UnixSignal.pause ctx.Thread state.Kernel.System
+                | Some argument ->
+                    let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+
+                    match readSet ctx operation numbering argument state with
+                    | Some mask -> UnixSignal.sigsuspend ctx.Thread mask state.Kernel.System
+                    | None ->
+                        failwith
+                            $"%s{operation}: `mask` is NULL. The kernel answers EFAULT, which PawPrint does not model. Pass a real sigset_t."
+
+        match answered with
+        | Error refusal -> failwith $"%s{operation}: %s{SigsuspendRefusal.describe refusal}"
+        | Ok (SigsuspendOutcome.Failed error, system) ->
+            NativeSystemNative.withErrno ctx error system state |> pushInt32 ctx -1
+        | Ok (SigsuspendOutcome.WouldBlock _, system) ->
+            NativeSystemNative.withAnswered system state
+            |> Scheduler.parkInSyscall ctx.Thread
+            |> NativeHandlerResult.blockedRetainingFrame
+
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -207,4 +258,14 @@ module NativeLibcSignalMask =
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int sigpending(sigset_t* set)`.
             sigpending ctx |> Some
+        | Some "sigsuspend",
+          [ ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // `int sigsuspend(const sigset_t* mask)`.
+            suspend ctx "libc sigsuspend" (Some instruction.Arguments.[0]) |> Some
+        | Some "pause",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
+            // `int pause(void)`.
+            suspend ctx "libc pause" None |> Some
         | _ -> None

@@ -1279,3 +1279,12 @@ module TestSigsuspend =
             SignalState.maskToRestore helper forgotten |> shouldEqual None
             SignalState.tasksWithMasksToRestore forgotten |> shouldEqual Set.empty
             SignalState.maskOf helper forgotten |> shouldEqual SignalMask.empty
+
+    [<Test>]
+    let ``SyscallInterruption says a sigsuspend fails with EINTR whatever SA_RESTART says`` () : unit =
+        // The probe's "handler flags=RESTART" and "pause-handler flags=RESTART"
+        // rows: EINTR under SA_RESTART, on both flavours. The calls' own
+        // finishing answers that without asking; this is the classification
+        // any other reader of a park gets.
+        SyscallInterruption.ruleOf ParkedSyscall.SigSuspend
+        |> shouldEqual SignalRestartRule.FailsWithEintr
