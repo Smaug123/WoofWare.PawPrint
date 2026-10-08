@@ -69,6 +69,10 @@ type ProcessCreationRefusal =
     /// (`ProcessIdTable.darwinPidMax`). xnu wraps it back to 100, skipping IDs
     /// in use; that has not been measured, so this library does not wrap.
     | DarwinPidMaxReached of pidMax : int32
+    /// On Darwin, the 64-bit thread ID counter has reached the top of its
+    /// range, so the new process's leader would take an ID beyond it; what
+    /// Darwin does then has not been measured.
+    | DarwinThreadIdCounterExhausted
 
 [<RequireQualifiedAccess>]
 module ProcessCreationRefusal =
@@ -81,6 +85,8 @@ module ProcessCreationRefusal =
             "every process ID the machine would hand out is a live thread's, so fork(2) would answer EAGAIN."
         | ProcessCreationRefusal.DarwinPidMaxReached pidMax ->
             $"the machine's process ID counter has reached Darwin's PID_MAX %d{pidMax}; what Darwin does next (xnu's source wraps to 100) has not been measured."
+        | ProcessCreationRefusal.DarwinThreadIdCounterExhausted ->
+            "the machine's thread ID counter has reached the top of its 64-bit range, so the new process's leader would take an ID beyond it; what Darwin does then has not been measured."
 
 /// Why `SimulatedMachine.endProcess` will not end a process: what closing
 /// its descriptors would do has not been measured.
@@ -172,8 +178,11 @@ module SimulatedMachine =
             match current.ProcessIds.Counter with
             | ProcessIdCounter.ThreadIds ->
                 match ThreadIdAllocator.allocate current.ThreadIds with
-                | Error _ -> Error ProcessCreationRefusal.NoFreeProcessId
-                | Ok (leader, threadIds) ->
+                | ThreadIdAllocation.Failed _ -> Error ProcessCreationRefusal.NoFreeProcessId
+                | ThreadIdAllocation.DarwinCounterExhausted ->
+                    failwith
+                        "SimulatedMachine.launch: Linux's thread ID allocator answered that Darwin's counter is exhausted (this is a bug in this library)."
+                | ThreadIdAllocation.Issued (leader, threadIds) ->
                     let pid =
                         ProcessId.parseOrFail "SimulatedMachine.launch" (int32 (OsThreadId.toUInt64 leader))
 
@@ -189,10 +198,12 @@ module SimulatedMachine =
                 | None -> Error (ProcessCreationRefusal.DarwinPidMaxReached ProcessIdTable.darwinPidMax)
                 | Some (pid, processIds) ->
                     match ThreadIdAllocator.allocate current.ThreadIds with
-                    | Error error ->
+                    | ThreadIdAllocation.Failed error ->
                         failwith
                             $"SimulatedMachine.launch: Darwin's thread ID counter answered %O{error}, which it never does (this is a bug in this library)."
-                    | Ok (leader, threadIds) ->
+                    | ThreadIdAllocation.DarwinCounterExhausted ->
+                        Error ProcessCreationRefusal.DarwinThreadIdCounterExhausted
+                    | ThreadIdAllocation.Issued (leader, threadIds) ->
                         Ok (
                             pid,
                             leader,

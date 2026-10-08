@@ -103,7 +103,8 @@ module TestSockOpt =
             match UnixSocket.admitSetSockOpt fd level optionName value optionLength system with
             | Ok (SetSockOptAdmission.Transfer length) ->
                 length |> shouldEqual 4
-                Some supplied
+                Some (OptionValue.ofInt supplied)
+            | Ok SetSockOptAdmission.NoCopy
             | Ok (SetSockOptAdmission.Answered _)
             | Error _ -> None
 
@@ -391,12 +392,12 @@ module TestSockOpt =
             get UserBuffer.Opaque 4u
             |> shouldEqual (Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
-            get UserBuffer.Opaque 0u |> shouldEqual (Ok (GetSockOptAnswer.Reported (0, 0u)))
+            get UserBuffer.Opaque 0u |> shouldEqual (Ok (OptionValue.reported (0) (0u)))
 
             match SimulatedUnixPlatform.flavour platform with
             | SimulatedUnixFlavour.Linux ->
                 get UserBuffer.Addressless 0u
-                |> shouldEqual (Ok (GetSockOptAnswer.Reported (0, 0u)))
+                |> shouldEqual (Ok (OptionValue.reported (0) (0u)))
 
                 get UserBuffer.Addressless 4u
                 |> shouldEqual (Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
@@ -568,9 +569,7 @@ module TestSockOpt =
                             | other -> failwith $"%O{platform}: setting %d{value} answered %A{other}"
 
                         getWith socketFd level optionName UserBuffer.Mapped UserBuffer.Mapped 4u system
-                        |> shouldEqual (
-                            Ok (GetSockOptAnswer.Reported ((if value = 0 then 0 else readBack platform), 4u))
-                        )
+                        |> shouldEqual (Ok (OptionValue.reported (if value = 0 then 0 else readBack platform) 4u))
 
                         system
                     )
@@ -587,7 +586,7 @@ module TestSockOpt =
             let level, optionName = numbered platform Option.ReuseAddress
 
             getWith socketFd level optionName UserBuffer.Mapped UserBuffer.Mapped 4u system
-            |> shouldEqual (Ok (GetSockOptAnswer.Reported (0, 4u)))
+            |> shouldEqual (Ok (OptionValue.reported (0) (4u)))
 
     type private GetRow =
         {
@@ -669,7 +668,7 @@ module TestSockOpt =
                 let actual =
                     match getWith fd level optionName row.Value row.LengthCell row.Length system with
                     | Ok (GetSockOptAnswer.Reported _) -> Expect.Succeeds
-                    | Ok (GetSockOptAnswer.Failed error) -> Expect.Fails error
+                    | Ok (GetSockOptAnswer.Failed (error, _)) -> Expect.Fails error
                     | Error (SocketOptionRefusal.UnmodelledOption (SocketId 0L, l, n)) ->
                         (l, n) |> shouldEqual (level, optionName)
                         Expect.Refused
@@ -701,17 +700,17 @@ module TestSockOpt =
 
                 let expected =
                     if negativeOnLinux then
-                        GetSockOptAnswer.Failed UnixError.EINVAL
+                        GetSockOptAnswer.Failed (UnixError.EINVAL, None)
                     elif viaNull then
                         match SimulatedUnixPlatform.flavour platform with
-                        | SimulatedUnixFlavour.Darwin -> GetSockOptAnswer.Reported (readBack platform, 0u)
+                        | SimulatedUnixFlavour.Darwin -> OptionValue.reported (readBack platform) (0u)
                         | SimulatedUnixFlavour.Linux ->
                             if declaredLength = 0u then
-                                GetSockOptAnswer.Reported (readBack platform, 0u)
+                                OptionValue.reported (readBack platform) (0u)
                             else
-                                GetSockOptAnswer.Failed UnixError.EFAULT
+                                GetSockOptAnswer.Failed (UnixError.EFAULT, None)
                     else
-                        GetSockOptAnswer.Reported (readBack platform, min declaredLength 4u)
+                        OptionValue.reported (readBack platform) (min declaredLength 4u)
 
                 answer |> shouldEqual (Ok expected)
 
@@ -736,7 +735,7 @@ module TestSockOpt =
                 let level, optionName = numbered platform Option.ReuseAddress
 
                 getWith socketFd level optionName UserBuffer.Mapped UserBuffer.Mapped 4u system
-                |> shouldEqual (Ok (GetSockOptAnswer.Reported (0, 4u)))
+                |> shouldEqual (Ok (OptionValue.reported (0) (4u)))
 
     // ------------------------------------------------------------------
     // The contract with the caller
@@ -750,7 +749,14 @@ module TestSockOpt =
 
             let tooMuch =
                 Assert.Throws<exn> (fun () ->
-                    UnixSocket.setsockopt socketFd level optionName UserBuffer.Mapped 3u (Some 1) system
+                    UnixSocket.setsockopt
+                        socketFd
+                        level
+                        optionName
+                        UserBuffer.Mapped
+                        3u
+                        (Some (OptionValue.ofInt 1))
+                        system
                     |> ignore<_>
                 )
 

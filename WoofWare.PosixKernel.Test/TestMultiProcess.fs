@@ -90,8 +90,9 @@ module TestMultiProcess =
         // second process gets the one after.
         let worker, first =
             match UnixTaskLifecycle.spawn 0 1 (CpuId 0) first with
-            | Ok spawned -> spawned
-            | Error error -> failwith $"spawn: %O{error}"
+            | Ok (SpawnAnswer.Spawned worker, first) -> worker, first
+            | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawn: %O{error}"
+            | Error refusal -> failwith $"spawn: %s{SpawnRefusal.describe refusal}"
 
         OsThreadId.toUInt64 worker |> shouldEqual 4243UL
 
@@ -167,6 +168,40 @@ module TestMultiProcess =
         SimulatedMachine.launch (launchOn platform) (SimulatedMachine.ofSystem first)
         |> Result.map ignore
         |> shouldEqual (Error (ProcessCreationRefusal.DarwinPidMaxReached ProcessIdTable.darwinPidMax))
+
+    [<Test>]
+    let ``Darwin refuses a launch once its thread ID counter has reached the top`` () : unit =
+        let platform = SimulatedUnixPlatform.macOsArm64
+
+        // The leader takes UInt64.MaxValue - 1, so the counter is left at
+        // UInt64.MaxValue, beyond which what Darwin does is unmeasured.
+        let first =
+            UnixSystem.initial<int, string> platform
+            |> Launched.leaderThreadId (System.UInt64.MaxValue - 1UL)
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+        SimulatedMachine.launch (launchOn platform) (SimulatedMachine.ofSystem first)
+        |> Result.map ignore
+        |> shouldEqual (Error ProcessCreationRefusal.DarwinThreadIdCounterExhausted)
+
+        // One below, the launch takes the counter's last ID, and the next is refused.
+        let first =
+            UnixSystem.initial<int, string> platform
+            |> Launched.leaderThreadId (System.UInt64.MaxValue - 2UL)
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+        let pid, machine =
+            match SimulatedMachine.launch (launchOn platform) (SimulatedMachine.ofSystem first) with
+            | Ok launched -> launched
+            | Error refusal -> failwith $"launch: %s{ProcessCreationRefusal.describe refusal}"
+
+        UnixTaskTable.osThreadIdOf 0 (viewOf pid machine).Tasks
+        |> OsThreadId.toUInt64
+        |> shouldEqual (System.UInt64.MaxValue - 1UL)
+
+        SimulatedMachine.launch (launchOn platform) machine
+        |> Result.map ignore
+        |> shouldEqual (Error ProcessCreationRefusal.DarwinThreadIdCounterExhausted)
 
     [<Test>]
     let ``Linux refuses a launch once every process ID it would hand out is a live thread's`` () : unit =

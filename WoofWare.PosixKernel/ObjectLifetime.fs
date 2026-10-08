@@ -9,6 +9,15 @@ type DescriptionReleaseRefusal =
     /// `listener`, whose accept queue still holds `connection`, and that
     /// connection's client (socket `client`) is still open.
     | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
+    /// The description is the last reference to the connected stream socket
+    /// `socket`, whose `SO_LINGER` is on with a time of zero, and its
+    /// connection `connection` is still referenced: by its peer, or by a
+    /// listener's accept queue.
+    ///
+    /// A real kernel closes such a socket abortively, resetting the connection
+    /// rather than shutting it down in order, and the peer reads ECONNRESET
+    /// from `SO_ERROR` (measured on both). This kernel models no reset.
+    | AbortiveClose of socket : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module DescriptionReleaseRefusal =
@@ -18,6 +27,8 @@ module DescriptionReleaseRefusal =
         match refusal with
         | DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
             $"releasing the last reference destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client when the listener goes, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
+        | DescriptionReleaseRefusal.AbortiveClose (socket, connection) ->
+            $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time of zero, while its connection %O{connection} is still referenced. A real kernel resets the connection rather than shutting it down in order, and the peer reads ECONNRESET; this kernel models no reset, and would otherwise deliver an orderly end of stream instead."
 
 /// When this kernel frees what nothing references any more: an open file
 /// description once no descriptor names it and no syscall in flight holds it,
@@ -241,6 +252,13 @@ module ObjectLifetime =
         // could.
         let establishedSurvivors : Result<SocketId list, DescriptionReleaseRefusal> =
             match dying.Phase with
+            | SocketPhase.Established (connection, _)
+            | SocketPhase.EstablishedPendingReport connection when
+                dying.Options.Linger.Enabled
+                && dying.Options.Linger.Hundredths = 0L
+                && stillReferenced connection
+                ->
+                Error (DescriptionReleaseRefusal.AbortiveClose (socketId, connection))
             | SocketPhase.Established _
             | SocketPhase.EstablishedPendingReport _ ->
                 sockets

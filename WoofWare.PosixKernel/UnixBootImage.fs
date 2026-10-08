@@ -774,6 +774,18 @@ module UnixBootImage =
             |> withMachine image
         )
 
+    /// Set the sysctl that gives a new IPv6 socket its `IPV6_V6ONLY`
+    /// (`UnixMachineState.Ipv6OnlyByDefault`).
+    let withIpv6OnlyByDefault<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (value : bool)
+        (image : UnixBootImage<'Task, 'Handler>)
+        : UnixBootImage<'Task, 'Handler>
+        =
+        { image.Machine with
+            Ipv6OnlyByDefault = value
+        }
+        |> withMachine image
+
     /// Set the TCP send buffer sysctl (`TcpSendSpace`). `None` takes the
     /// measured default of this machine's flavour.
     ///
