@@ -66,9 +66,9 @@ type FileStatus =
         ///
         /// For a regular file or a symbolic link this is how many names it
         /// has, and 0 once the last has gone while a descriptor still holds
-        /// it. A directory's is a rule of the filesystem it is on: tmpfs
-        /// counts "." and each subdirectory's "..", and APFS 2 plus every
-        /// name the directory binds. A pipe's is the flavour's. Darwin
+        /// it. A directory's is a rule of the filesystem it is on: on tmpfs 2
+        /// plus its subdirectories, and 0 once it has been removed; on APFS 2
+        /// plus every name the directory binds. A pipe's is the flavour's. Darwin
         /// reports no more than 65535; see
         /// `SimulatedUnixPlatform.linkCountCeiling`.
         LinkCount : int64

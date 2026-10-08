@@ -1201,10 +1201,13 @@ module UnixSocket =
     /// `SO_REUSEADDR` as `setsockopt` last left it, on this socket and on the
     /// others. Both flavours answer `EADDRINUSE` for two sockets on one port
     /// with overlapping addresses (the wildcard overlaps every address), and
-    /// both relax that when both sockets set `SO_REUSEADDR`, in opposite
-    /// directions: Linux only while neither is listening, Darwin only for
-    /// addresses that differ, such as the wildcard and a specific address,
-    /// listening or not. Linux's `listen` is judged by the same rule.
+    /// relax that under `SO_REUSEADDR` in different ways. Linux relaxes it when
+    /// both sockets set the flag and the bound one is not listening. Darwin
+    /// relaxes it when the new socket sets the flag, whatever the bound one
+    /// does, for an address that differs from the bound one's (the wildcard
+    /// beside a specific address, listening or not) and for the exact endpoint
+    /// of an established connection. Linux's `listen` is judged by the same
+    /// rule.
     ///
     /// Answers where the socket ended up, which for a request of port 0 is a
     /// port this kernel chose.
