@@ -60,7 +60,7 @@ type InodeTimes =
     }
 
 [<RequireQualifiedAccess>]
-module InodeTimes =
+module internal InodeTimes =
     /// <summary>
     /// The timing metadata of a freshly-created inode has.
     /// </summary>
@@ -233,7 +233,7 @@ module InodeOwner =
     /// `parentPermissions`.
     ///
     /// The user is always the creator's effective user ID.
-    let ofNewInode
+    let internal ofNewInode
         (rule : NewInodeGroupRule)
         (credentials : Credentials)
         (parentOwner : InodeOwner)
@@ -264,7 +264,7 @@ module InodeOwner =
 
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
-module Standing =
+module internal Standing =
     /// How a process with `credentials` stands towards an inode owned by
     /// `owner`.
     ///

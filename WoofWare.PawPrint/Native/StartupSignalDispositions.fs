@@ -218,8 +218,8 @@ module StartupSignalDispositions =
                     Handler = handler
                     Mask =
                         match numbering, signo with
-                        | SignalNumbering.Linux, 11 -> Set.singleton (signal 34)
-                        | _ -> Set.empty
+                        | SignalNumbering.Linux, 11 -> SignalMask.ofSignals numbering (Set.singleton (signal 34))
+                        | _ -> SignalMask.empty
                     NoDefer = false
                     ResetHand = false
                     Restart = true

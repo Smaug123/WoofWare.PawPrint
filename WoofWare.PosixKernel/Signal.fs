@@ -638,3 +638,217 @@ module Signal =
         | Signal.SIGSYS
         | Signal.SIGEMT
         | Signal.RealTime _ -> DefaultDisposition.Terminate
+
+/// Why `SignalMask.ofWord` refuses a word.
+[<RequireQualifiedAccess>]
+type SignalMaskRefusal =
+    /// Contradictory. `word` sets a bit at or above `sigsetBits`, the width of
+    /// the numbering's `sigset_t`, so no signal set of that flavour can hold
+    /// it: Darwin's `sigset_t` is 32 bits, where Linux's kernel set is 64.
+    | WiderThanSigset of word : uint64 * sigsetBits : int
+
+[<RequireQualifiedAccess>]
+module SignalMaskRefusal =
+    /// A human-readable account of why the word was refused.
+    let describe (refusal : SignalMaskRefusal) : string =
+        match refusal with
+        | SignalMaskRefusal.WiderThanSigset (word, sigsetBits) ->
+            $"the signal set 0x%x{word} sets a bit at or above bit %d{sigsetBits}, and this flavour's sigset_t is only %d{sigsetBits} bits wide"
+
+/// <summary>
+/// A signal set as a kernel holds it: the bits of a <c>sigset_t</c>, in which
+/// bit <c>n - 1</c> is signal number <c>n</c>, read under one
+/// <c>SignalNumbering</c>.
+/// </summary>
+/// <remarks>
+/// A set of <c>Signal</c>s is not enough, because a kernel holds a bit that
+/// names no signal: Darwin's <c>sigset_t</c> is 32 bits and its highest signal
+/// is 31, and Darwin 27.0.0 stores bit 31 (signal number 32) in a thread's mask
+/// and in a handler's <c>sa_mask</c>, and hands it back
+/// (<c>docs/plans/2026-08-23-posix-kernel-extraction/sigprocmask-ops.c</c> and
+/// <c>sigaction-mask-bits.c</c>). Darwin's <c>sigfillset</c> sets every bit,
+/// so an ordinary <c>sigfillset</c> and <c>SIG_SETMASK</c> sets it. Every bit
+/// of Linux's 64 names a signal.
+///
+/// Opaque: made by <c>SignalMask.ofWord</c> or <c>SignalMask.ofSignals</c>,
+/// and read by <c>SignalMask.signals</c> and <c>SignalMask.toWord</c>. The empty
+/// mask is the same under every numbering, so <c>SignalMask.empty</c> needs
+/// none; any other mask remembers the numbering it was made under, and the
+/// operations that combine two masks fail loudly if theirs differ.
+///
+/// A mask may name SIGKILL and SIGSTOP. A kernel drops both when it stores a
+/// mask, which <c>SignalState</c> does; this type does not.
+/// </remarks>
+[<RequireQualifiedAccess>]
+[<StructuredFormatDisplay("{Display}")>]
+type SignalMask =
+    internal
+    | Empty
+    /// `word` is not zero, and sets no bit at or above the numbering's
+    /// `sigset_t` width.
+    | Under of numbering : SignalNumbering * word : uint64
+
+    /// The signals the mask names, and the bits it sets that name none.
+    member this.Display : string =
+        match this with
+        | SignalMask.Empty -> "{}"
+        | SignalMask.Under (numbering, word) ->
+            let named =
+                [
+                    for bit in 0..63 do
+                        if word &&& (1UL <<< bit) <> 0UL then
+                            match Signal.ofRawSignoUnder numbering (bit + 1) with
+                            | ValueSome signal -> yield Choice1Of2 signal
+                            | ValueNone -> yield Choice2Of2 (bit + 1)
+                ]
+
+            let parts =
+                named
+                |> List.map (fun part ->
+                    match part with
+                    | Choice1Of2 signal -> string<Signal> signal
+                    | Choice2Of2 signo -> $"unnamed signal number %d{signo}"
+                )
+
+            "{" + String.concat ", " parts + "} under " + string<SignalNumbering> numbering
+
+    override this.ToString () = this.Display
+
+[<RequireQualifiedAccess>]
+module SignalMask =
+
+    /// How many bits the numbering's `sigset_t` holds: Linux's kernel set is
+    /// 64 bits (`rt_sigprocmask`'s `sigsetsize` is 8), Darwin's `sigset_t` 32.
+    let private sigsetBits (numbering : SignalNumbering) : int =
+        match numbering with
+        | SignalNumbering.Linux -> 64
+        | SignalNumbering.Darwin -> 32
+
+    /// The mask that blocks nothing, under every numbering.
+    let empty : SignalMask = SignalMask.Empty
+
+    /// The mask whose bits are `word`, read under `numbering`: bit `n - 1` is
+    /// signal number `n`. A bit that names no signal is kept (Darwin's bit 31,
+    /// see `SignalMask`).
+    ///
+    /// Refuses a word wider than the numbering's `sigset_t`: on Darwin, any
+    /// bit from 32 up.
+    let ofWord (numbering : SignalNumbering) (word : uint64) : Result<SignalMask, SignalMaskRefusal> =
+        let bits = sigsetBits numbering
+
+        if bits < 64 && word >>> bits <> 0UL then
+            Error (SignalMaskRefusal.WiderThanSigset (word, bits))
+        elif word = 0UL then
+            Ok SignalMask.Empty
+        else
+            Ok (SignalMask.Under (numbering, word))
+
+    /// The mask naming exactly `signals`, under `numbering`.
+    ///
+    /// Fails loudly on a signal the numbering does not have (see
+    /// `Signal.existsUnder`), which a client can build only by hand: one read
+    /// from a signal number went through `Signal.ofRawSignoUnder`, which
+    /// refuses those.
+    let ofSignals (numbering : SignalNumbering) (signals : Set<Signal>) : SignalMask =
+        let word =
+            (0UL, signals)
+            ||> Set.fold (fun word signal ->
+                if not (Signal.existsUnder numbering signal) then
+                    failwith
+                        $"SignalMask.ofSignals: %O{signal} is not a signal under the %O{numbering} numbering, so no mask there can name it."
+
+                word ||| (1UL <<< (Signal.toRawSignoUnder numbering signal - 1))
+            )
+
+        if word = 0UL then
+            SignalMask.Empty
+        else
+            SignalMask.Under (numbering, word)
+
+    /// The mask's bits as its numbering's `sigset_t` holds them: bit `n - 1`
+    /// is signal number `n`. Zero for the empty mask.
+    let toWord (mask : SignalMask) : uint64 =
+        match mask with
+        | SignalMask.Empty -> 0UL
+        | SignalMask.Under (_, word) -> word
+
+    /// The signals the mask names. A bit that names no signal (Darwin's bit 31)
+    /// is left out: only `toWord` shows it.
+    let signals (mask : SignalMask) : Set<Signal> =
+        match mask with
+        | SignalMask.Empty -> Set.empty
+        | SignalMask.Under (numbering, word) ->
+            seq {
+                for bit in 0..63 do
+                    if word &&& (1UL <<< bit) <> 0UL then
+                        match Signal.ofRawSignoUnder numbering (bit + 1) with
+                        | ValueSome signal -> yield signal
+                        | ValueNone -> ()
+            }
+            |> Set.ofSeq
+
+    /// Whether the mask names `signal`. False for a signal its numbering does
+    /// not have.
+    let contains (signal : Signal) (mask : SignalMask) : bool =
+        match mask with
+        | SignalMask.Empty -> false
+        | SignalMask.Under (numbering, word) ->
+            Signal.existsUnder numbering signal
+            && word &&& (1UL <<< (Signal.toRawSignoUnder numbering signal - 1)) <> 0UL
+
+    /// Whether the mask sets no bit.
+    let isEmpty (mask : SignalMask) : bool =
+        match mask with
+        | SignalMask.Empty -> true
+        | SignalMask.Under _ -> false
+
+    /// The numbering a non-empty mask was made under.
+    let internal numbering (mask : SignalMask) : SignalNumbering voption =
+        match mask with
+        | SignalMask.Empty -> ValueNone
+        | SignalMask.Under (numbering, _) -> ValueSome numbering
+
+    let private ofWordUnder (numbering : SignalNumbering) (word : uint64) : SignalMask =
+        if word = 0UL then
+            SignalMask.Empty
+        else
+            SignalMask.Under (numbering, word)
+
+    /// The numbering two masks share, failing loudly if they disagree: the
+    /// same bit is a different signal under each.
+    let private shared (operation : string) (a : SignalMask) (b : SignalMask) : SignalNumbering voption =
+        match a, b with
+        | SignalMask.Empty, SignalMask.Empty -> ValueNone
+        | SignalMask.Under (numbering, _), SignalMask.Empty
+        | SignalMask.Empty, SignalMask.Under (numbering, _) -> ValueSome numbering
+        | SignalMask.Under (left, _), SignalMask.Under (right, _) ->
+            if left <> right then
+                failwith
+                    $"SignalMask.%s{operation}: a mask under the %O{left} numbering cannot be combined with one under %O{right}."
+
+            ValueSome left
+
+    /// Every bit either mask sets.
+    let internal union (a : SignalMask) (b : SignalMask) : SignalMask =
+        match shared "union" a b with
+        | ValueNone -> SignalMask.Empty
+        | ValueSome numbering -> ofWordUnder numbering (toWord a ||| toWord b)
+
+    /// The bits of `a` that `b` does not set.
+    let internal difference (a : SignalMask) (b : SignalMask) : SignalMask =
+        match shared "difference" a b with
+        | ValueNone -> SignalMask.Empty
+        | ValueSome numbering -> ofWordUnder numbering (toWord a &&& ~~~(toWord b))
+
+    /// `mask` with `signal`'s bit set, under `numbering`, which must be the
+    /// mask's own if it is not empty.
+    let internal add (numbering : SignalNumbering) (signal : Signal) (mask : SignalMask) : SignalMask =
+        union mask (ofSignals numbering (Set.singleton signal))
+
+    /// `mask` without the bit of any of `signals` its numbering has.
+    let internal without (signals : Set<Signal>) (mask : SignalMask) : SignalMask =
+        match mask with
+        | SignalMask.Empty -> SignalMask.Empty
+        | SignalMask.Under (numbering, _) ->
+            let present = signals |> Set.filter (Signal.existsUnder numbering)
+            difference mask (ofSignals numbering present)

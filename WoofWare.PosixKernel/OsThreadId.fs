@@ -42,7 +42,7 @@ module OsThreadId =
 /// process's first task's id is the process id. Darwin takes it from one 64-bit
 /// counter shared by every process on the machine, unrelated to the process id.
 [<RequireQualifiedAccess>]
-type ThreadIdCounter =
+type internal ThreadIdCounter =
     internal
     /// `cursor` is where the next search for a free id starts; the ids it hands
     /// out are below `pidMax`, which may since have been lowered beneath ids

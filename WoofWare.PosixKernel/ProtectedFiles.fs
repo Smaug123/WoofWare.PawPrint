@@ -94,7 +94,7 @@ module ProtectedFiles =
     ///
     /// The effective user decides it, and privilege does not exempt a caller:
     /// root is refused like anyone else.
-    let refusesToFollow
+    let internal refusesToFollow
         (protection : SymlinkProtection)
         (credentials : Credentials)
         (directoryOwner : InodeOwner)
@@ -125,7 +125,7 @@ module ProtectedFiles =
     /// directory) is screened whatever the sysctls say, as
     /// `CreationProtection.InWorldWritableStickyDirectories` would screen it.
     /// The effective user decides it, and privilege does not exempt a caller.
-    let refusesCreatingOpen
+    let internal refusesCreatingOpen
         (protection : ProtectedFiles)
         (credentials : Credentials)
         (directoryOwner : InodeOwner)
@@ -168,7 +168,7 @@ module ProtectedFiles =
     /// the inode nor is privileged may link only a regular file that is
     /// neither set-user-ID nor set-group-ID and group-executable, and that it
     /// may both read and write.
-    let refusesToLink (protection : HardlinkProtection) (credentials : Credentials) (source : Inode) : bool =
+    let internal refusesToLink (protection : HardlinkProtection) (credentials : Credentials) (source : Inode) : bool =
         // Measured on Linux 6.18.5 (`link-rules.c`, ORDER rows, as uid 1000
         // and root): another user's 0600 and 0644 files, a 04666 file, a 02676
         // file, a symbolic link and a directory are refused; a 0666 and a

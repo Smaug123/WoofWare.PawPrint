@@ -102,7 +102,7 @@ module EmulatedFileSystemType =
     ///
     /// NFS is the `None`: an NFS client reports whatever the server's own
     /// filesystem says, and nothing about this machine says what that is.
-    let directorySize (fsType : EmulatedFileSystemType) (entries : int) : int64 option =
+    let internal directorySize (fsType : EmulatedFileSystemType) (entries : int) : int64 option =
         System.Diagnostics.Debug.Assert (entries >= 0, "directorySize: a directory cannot hold fewer than no names")
 
         // Measured 2026-09-23 by a history probe run from an empty directory:
@@ -143,7 +143,7 @@ module EmulatedFileSystemType =
     /// decides.
     ///
     /// Partial in `directory`, which must be a directory `vfs` contains.
-    let directoryLinkCount
+    let internal directoryLinkCount
         (fsType : EmulatedFileSystemType)
         (directory : InodeNumber)
         (vfs : VirtualFileSystem)

@@ -33,7 +33,7 @@ module HandlerFrames =
 
         let action =
             { SignalCatch.ofHandler handler with
-                Mask = mask
+                Mask = SignalMask.ofSignals (SignalState.numbering state) mask
                 NoDefer = true
             }
 
