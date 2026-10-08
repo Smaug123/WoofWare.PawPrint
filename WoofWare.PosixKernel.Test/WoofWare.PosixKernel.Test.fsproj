@@ -157,6 +157,8 @@
     <Compile Include="TestSocketOptions.fs" />
     <Compile Include="TestSocketErrorOption.fs" />
     <Compile Include="TestSocketErrorAgainstHost.fs" />
+    <Compile Include="TestPeerName.fs" />
+    <Compile Include="TestPeerNameAgainstHost.fs" />
     <Compile Include="TestUnconnectedSocketTransfer.fs" />
     <Compile Include="TestConnectedTransferAgainstHost.fs" />
     <Compile Include="TestTcpTransfer.fs" />
