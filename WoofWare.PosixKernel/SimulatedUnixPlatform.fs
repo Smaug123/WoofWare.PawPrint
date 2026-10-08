@@ -230,7 +230,7 @@ type GetSockNameFaultLength =
 /// What a kernel does with the buffer size a `readlink(2)` caller passed,
 /// before it copies anything. `SimulatedUnixPlatform.readlinkCapacity`.
 [<RequireQualifiedAccess>]
-type ReadLinkCapacityVerdict =
+type internal ReadLinkCapacityVerdict =
     /// The call fails with this errno before the path is resolved: a missing
     /// path is answered the same way.
     | Refuse of UnixError
@@ -619,7 +619,11 @@ module SimulatedUnixPlatform =
     /// The permission bits this platform gives a symbolic link created by a
     /// process whose umask is `umask`: 0o777 on Linux whatever the umask, and
     /// 0o777 less the umask on Darwin, as it does for a regular file.
-    let symlinkCreationPermissions (platform : SimulatedUnixPlatform) (umask : PermissionBits) : PermissionBits =
+    let internal symlinkCreationPermissions
+        (platform : SimulatedUnixPlatform)
+        (umask : PermissionBits)
+        : PermissionBits
+        =
         // Measured by `link-symlink.c` (SYMMODE) on Linux 6.18.5 and Darwin
         // 27.0, under umasks 000, 022, 077, 0700 and 0777.
         match flavour platform with
@@ -981,7 +985,7 @@ module SimulatedUnixPlatform =
     ///   never consulted -- a null buffer is accepted.
     ///
     /// A positive size is admitted on both.
-    let readlinkCapacity (platform : SimulatedUnixPlatform) (capacity : int) : ReadLinkCapacityVerdict =
+    let internal readlinkCapacity (platform : SimulatedUnixPlatform) (capacity : int) : ReadLinkCapacityVerdict =
         if capacity > 0 then
             ReadLinkCapacityVerdict.Admit
         else
@@ -1105,7 +1109,7 @@ module SimulatedUnixPlatform =
             ]
 
     /// The first fault in this platform's order that `faults` contains.
-    let firstBindFault (platform : SimulatedUnixPlatform) (faults : Set<BindFault>) : BindFault option =
+    let internal firstBindFault (platform : SimulatedUnixPlatform) (faults : Set<BindFault>) : BindFault option =
         bindFaultOrder platform |> List.tryFind (fun fault -> Set.contains fault faults)
 
     /// The greatest `socketAddressLen` Darwin's `bind(2)` will consider at all.
@@ -1125,7 +1129,12 @@ module SimulatedUnixPlatform =
     /// rejects with `EINVAL` before the copy as it does an over-long one; Darwin
     /// reads it as the `socklen_t` it is, so the same word is a length past its
     /// threshold.
-    let bindAddressLength (platform : SimulatedUnixPlatform) (exactSize : int) (declared : uint32) : BindLengthVerdict =
+    let internal bindAddressLength
+        (platform : SimulatedUnixPlatform)
+        (exactSize : int)
+        (declared : uint32)
+        : BindLengthVerdict
+        =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
             // `move_addr_to_kernel`: `if (ulen < 0 || ulen > sizeof(struct
@@ -1155,7 +1164,7 @@ module SimulatedUnixPlatform =
     /// it models no group membership and no interface to receive or broadcast
     /// on, so such a binding would become a lie the moment a transfer landed.
     /// Every bind of one that fails has its measured errno.
-    let isBroadcastOrMulticast (address : uint32) : bool =
+    let internal isBroadcastOrMulticast (address : uint32) : bool =
         address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
 
     /// May a socket bind to this address, given the addresses this machine holds?
@@ -1168,7 +1177,7 @@ module SimulatedUnixPlatform =
     ///
     /// Says nothing about broadcast and multicast addresses, which each flavour
     /// rules on apart from its address list: see `bindGroupAddressRule`.
-    let isBindableAddress
+    let internal isBindableAddress
         (platform : SimulatedUnixPlatform)
         (localAddresses : uint32 list)
         (localRoutes : Ipv4Prefix list)
@@ -1199,7 +1208,7 @@ module SimulatedUnixPlatform =
     /// stream socket it answers `EAFNOSUPPORT` for both, before it asks whether
     /// the socket is already bound. None of this depends on the addresses the
     /// machine holds, so a client that lists such an address cannot change it.
-    let bindGroupAddressRule
+    let internal bindGroupAddressRule
         (platform : SimulatedUnixPlatform)
         (kind : SocketKind)
         (address : uint32)
@@ -1218,7 +1227,7 @@ module SimulatedUnixPlatform =
     /// Whether `bind(2)` rules on the address itself, on a socket of `kind`, as
     /// opposed to on the length, the family, or another socket: `EADDRNOTAVAIL`,
     /// ranked against the other faults at `BindFault.AddressNotLocal`.
-    let bindAddressFaults
+    let internal bindAddressFaults
         (platform : SimulatedUnixPlatform)
         (kind : SocketKind)
         (localAddresses : uint32 list)
@@ -1257,7 +1266,7 @@ module SimulatedUnixPlatform =
     /// one listens, and the *second* `listen` is then EADDRINUSE — exactly what
     /// this says when the other socket is already listening. Darwin never refuses
     /// a listen, and never lets the pair coexist in the first place.
-    let bindConflict
+    let internal bindConflict
         (platform : SimulatedUnixPlatform)
         (existing : SocketBinding)
         (existingReuse : bool)

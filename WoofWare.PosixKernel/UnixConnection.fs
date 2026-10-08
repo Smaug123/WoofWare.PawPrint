@@ -1233,15 +1233,18 @@ module UnixConnection =
 
     /// `connect(2)` on the socket `socketId` past the descriptor screens: the
     /// ladder `connect` runs once it has looked the descriptor up, through a
-    /// description whose `O_NONBLOCK` is `nonBlocking`. For a client that wants
+    /// description whose `O_NONBLOCK` is `nonBlocking`. For a test that wants
     /// to put a kernel into a state where a connection is pending, established
     /// or refused; a syscall goes through `connect`.
+    ///
+    /// Internal because a `SocketId` that names no socket throws: a client
+    /// reaches a socket only through a descriptor, which `connect` looks up.
     ///
     /// `copied` is the bytes a copy-in of `declaredLength` takes from real
     /// storage: exactly as many as `admitSockaddrCopy` answers `Transfer` with
     /// for a mapped buffer, and none where it rejects the length before the
     /// copy. Passing any other number is refused, as a bug in the caller.
-    let connectSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal connectSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (nonBlocking : bool)
         (declaredLength : uint32)

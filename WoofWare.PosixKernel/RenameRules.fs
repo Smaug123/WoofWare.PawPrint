@@ -78,7 +78,7 @@ type RenameRules =
 
 /// What `rename(2)` should do next, once both of its paths have been resolved.
 [<RequireQualifiedAccess>]
-type RenameVerdict =
+type internal RenameVerdict =
     /// Answer the caller with this errno.
     | Refuse of error : UnixError
     /// Both paths name one inode. Succeed, and change nothing at all — not a
@@ -143,7 +143,7 @@ module private RenameChecks =
         | None -> false
 
 [<RequireQualifiedAccess>]
-module RenameRules =
+module internal RenameRules =
     /// The refusals the source earns *before* the destination's final name is
     /// looked up — `None` when it earns none yet and the verdict will judge it
     /// against both paths.

@@ -13,7 +13,7 @@ type SignalRestartRule =
 
 /// How a signal with a handler ends the syscall a task is asleep in.
 [<RequireQualifiedAccess>]
-type SyscallInterruption =
+type internal SyscallInterruption =
     /// The syscall fails with `EINTR`. The handlers run as the task returns
     /// from it.
     | Eintr
@@ -161,7 +161,7 @@ module SyscallInterruption =
     /// put bytes into a pipe does. `Error` where this library will not say what
     /// the task takes as it returns to user mode, or where it is a signal's
     /// default action.
-    let interrupts<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal interrupts<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<bool, SyscallInterruptionRefusal>
@@ -175,7 +175,7 @@ module SyscallInterruption =
     /// Under Linux it may, whatever signal is pending: the handlers run as the
     /// task returns. Under Darwin it may only if no signal with a handler is
     /// deliverable to the task too.
-    let beforeCompleting<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal beforeCompleting<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<unit, SyscallInterruptionRefusal>
@@ -201,7 +201,7 @@ module SyscallInterruption =
     /// and the handlers run as it returns.
     ///
     /// Fails loudly if `task` is not asleep in a syscall.
-    let ofPark<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal ofPark<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallInterruption option, SyscallInterruptionRefusal>
