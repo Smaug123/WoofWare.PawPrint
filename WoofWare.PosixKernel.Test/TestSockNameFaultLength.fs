@@ -164,6 +164,53 @@ module TestSockNameFaultLength =
                         failwith $"%s{m.Resource} %A{row}: the model answered errno %d{errno}, cell %d{cell}"
                 | other -> failwith $"%s{m.Resource} %A{row}: the model answered %A{other}"
 
+    /// A client connected to a listener on loopback on `platform`, and the
+    /// client's descriptor.
+    let private connectedClient (platform : SimulatedUnixPlatform) : int * UnixSystem<int, string> =
+        let listener, system = boundSocket platform
+
+        let system =
+            match UnixSocket.listen listener 8 system with
+            | Ok (ListenAnswer.Listening _, system) -> system
+            | other -> failwith $"listening: %A{other}"
+
+        let client, system =
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+        let endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+
+        match CopyIn.connect client UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
+        | Ok (ConnectOutcome.Completed, system) -> client, system
+        | other -> failwith $"connecting: %A{other}"
+
+    [<Test>]
+    let ``getpeername leaves the length cell as each measured kernel did`` () : unit =
+        for m in measurements.Force () do
+            let fd, system = connectedClient m.Platform
+
+            let rows = m.Rows |> List.filter (fun row -> row.Call = "getpeername")
+            rows |> shouldNotEqual []
+
+            for row in rows do
+                let destination =
+                    match row.Destination with
+                    | "null" -> UserBuffer.Unmapped 0UL
+                    | _ -> UserBuffer.Unmapped 0x1000UL
+
+                match UnixSocket.getpeername fd destination row.Declared system with
+                | Ok (GetSockNameAnswer.Failed (error, overwritten)) ->
+                    let errno =
+                        UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering m.Platform) error
+
+                    let cell =
+                        match overwritten with
+                        | Some length -> uint32 length
+                        | None -> row.Declared
+
+                    if (errno, cell) <> (row.Errno, row.Cell) then
+                        failwith $"%s{m.Resource} %A{row}: the model answered errno %d{errno}, cell %d{cell}"
+                | other -> failwith $"%s{m.Resource} %A{row}: the model answered %A{other}"
+
     /// `getpeername` copies out through the same kernel routine, and every
     /// kernel measured agrees: the two calls' rows are the same.
     [<Test>]
