@@ -403,7 +403,7 @@ module IlMachineThreadState =
 
     /// Spawn `thread`'s task, created by `parent` on `cpu`. Fails if the kernel
     /// has no thread ID left to give it, which with Linux's default `pid_max`
-    /// takes four million live threads.
+    /// takes four million live threads, and if the kernel refuses the creation.
     let private spawnTask
         (parent : ThreadId)
         (thread : ThreadId)
@@ -412,10 +412,12 @@ module IlMachineThreadState =
         : EmulatedKernel
         =
         match UnixTaskLifecycle.spawn parent thread cpu kernel.System with
-        | Ok (_, system) -> EmulatedKernel.withUnix system kernel
-        | Error error ->
+        | Ok (SpawnAnswer.Spawned _, system) -> EmulatedKernel.withUnix system kernel
+        | Ok (SpawnAnswer.Failed error, _) ->
             failwith
                 $"%O{parent} creating %O{thread}: the kernel answered clone with %O{error}, because every thread ID below pid_max is in use; PawPrint does not model a failing thread creation"
+        | Error refusal ->
+            failwith $"%O{parent} creating %O{thread}: the kernel refused clone: %s{SpawnRefusal.describe refusal}"
 
     /// Allocate a fresh `ThreadId` for a Thread heap object that the guest has
     /// just constructed (i.e. its `Initialize` ran) but not yet started. The

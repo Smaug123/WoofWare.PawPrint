@@ -740,8 +740,9 @@ module TestUnixSystemInvariants =
                 (UnixSystem.initial<int, string> platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
                  |> UnixBootImage.boot)
         with
-        | Ok (_, system) -> system
-        | Error error -> failwith $"spawn failed: %O{error}"
+        | Ok (SpawnAnswer.Spawned _, system) -> system
+        | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawn failed: %O{error}"
+        | Error refusal -> failwith $"spawn was refused: %s{SpawnRefusal.describe refusal}"
 
     [<Test>]
     let ``a leader that is not a task is a defect`` () : unit =
