@@ -529,29 +529,31 @@ module KqueueQueue =
         =
         UnixSystemState.mapOpenFiles (OpenFileTable.setKqueueState kqueue state) system
 
-    /// The socket the descriptor `fd` names, or `None` when it names anything
-    /// else or nothing.
-    let private socketOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (fd : int)
-        (system : UnixSystem<'Task, 'Handler>)
-        : SocketId option
-        =
-        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
-        | Some (OpenFileTarget.Socket socketId) -> Some socketId
-        | Some _
-        | None -> None
-
-    /// What the registration `key` would report were a wait to reach it now.
-    let private reportOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (fd : int, filter : KqueueFilter as key)
-        (system : UnixSystem<'Task, 'Handler>)
+    /// What the registration `registration`, of the filter `filter`, would
+    /// report were a wait to reach it now: read off the socket it is attached
+    /// to (`KqueueRegistration.Socket`), so from any process's view.
+    let private reportOf
+        (filter : KqueueFilter)
+        (registration : KqueueRegistration)
+        (machine : UnixMachineState)
         : KqueueFilterReport option
         =
-        match socketOf fd system with
-        | Some socketId -> DarwinReadiness.ofSocket filter socketId system.Machine
+        DarwinReadiness.ofSocket filter registration.Socket machine
+
+    /// The registration `key` of the kqueue `kqueue`, whose state is `state`.
+    /// Loudly partial: every caller read `key` from the kqueue's registrations
+    /// or from its queue, which is a subset of them.
+    let private registrationOf
+        (kqueue : OpenFileDescriptionId)
+        (state : KqueueState)
+        (key : int * KqueueFilter)
+        : KqueueRegistration
+        =
+        match Map.tryFind key state.Registrations with
+        | Some registration -> registration
         | None ->
             failwith
-                $"KqueueQueue: a kqueue registers %A{key}, whose descriptor names no socket. Closing a descriptor removes its registrations, and `kevent` registers sockets alone, so the system breaks UnixSystem.checkInvariants (this is a bug in this library, or in a caller that assembled the state by hand)."
+                $"KqueueQueue: kqueue %O{kqueue} queues %A{key}, which it does not register. FileDescriptorRegistryDefect.KqueueActiveEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants (this is a bug in this library, or in a caller that assembled the state by hand)."
 
     /// Activate the registration `key` of the kqueue `kqueue`: queue it at the
     /// tail if its filter is ready now and it is not queued already. What an
@@ -564,11 +566,17 @@ module KqueueQueue =
         =
         let state = stateOf "activateRegistration" kqueue system
 
-        if not (Map.containsKey key state.Registrations) then
-            failwith
-                $"KqueueQueue.activateRegistration: kqueue %O{kqueue} does not register %A{key} (this is a bug in the caller, which has just added it)."
+        let registration =
+            match Map.tryFind key state.Registrations with
+            | Some registration -> registration
+            | None ->
+                failwith
+                    $"KqueueQueue.activateRegistration: kqueue %O{kqueue} does not register %A{key} (this is a bug in the caller, which has just added it)."
 
-        if List.contains key state.Active || Option.isNone (reportOf key system) then
+        if
+            List.contains key state.Active
+            || Option.isNone (reportOf (snd key) registration system.Machine)
+        then
             system
         else
             withState
@@ -578,18 +586,19 @@ module KqueueQueue =
                 }
                 system
 
-    /// The registrations of the socket `socketId` among `registrations` (each
-    /// with the ordinal it was first made at) that an event waking each filter
-    /// of `filters`, in that order, activates: each whose filter is ready now
-    /// and which is not in `active` already. Of several registrations of the
-    /// socket for one filter, made through different descriptors onto it, the
+    /// The registrations attached to the socket `socketId` among
+    /// `registrations` (each with the socket it is attached to and the ordinal
+    /// it was first made at) that an event waking each filter of `filters`, in
+    /// that order, activates: each whose filter is ready now and which is not
+    /// in `active` already. Of several registrations of the socket for one
+    /// filter, made through different descriptors onto it, the
     /// newest-registered comes first.
-    let private entering<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private entering
         (socketId : SocketId)
         (filters : KqueueFilter list)
-        (registrations : ((int * KqueueFilter) * int64) list)
+        (registrations : ((int * KqueueFilter) * SocketId option * int64) list)
         (active : (int * KqueueFilter) list)
-        (system : UnixSystem<'Task, 'Handler>)
+        (machine : UnixMachineState)
         : (int * KqueueFilter) list
         =
         // Measured on Darwin 27.0.0 (`kevent-register.c`): one event activates
@@ -599,106 +608,78 @@ module KqueueQueue =
         filters
         |> List.collect (fun filter ->
             registrations
-            |> List.filter (fun ((fd, registered), _) -> registered = filter && socketOf fd system = Some socketId)
-            |> List.sortByDescending snd
-            |> List.map fst
+            |> List.filter (fun ((_, registered), socket, _) -> registered = filter && socket = Some socketId)
+            |> List.sortByDescending (fun (_, _, registeredAt) -> registeredAt)
+            |> List.map (fun (key, _, _) -> key)
         )
         |> List.filter (fun (_, filter as key) ->
             not (List.contains key active)
-            && Option.isSome (DarwinReadiness.ofSocket filter socketId system.Machine)
+            && Option.isSome (DarwinReadiness.ofSocket filter socketId machine)
         )
 
     /// Something happened to the socket `socketId` that wakes each filter of
-    /// `filters`, in that order: in every kqueue `system`'s process owns
-    /// (`KqueueState.Owner`), and in the kqueue of every Darwin `poll` asleep in
-    /// it (`ParkedKqueuePoll`), queue each registration of the socket for that
-    /// filter whose filter is ready now and which is not queued already. Of
-    /// several registrations of the socket for one filter, made through
-    /// different descriptors onto it, the newest-registered is queued first.
+    /// `filters`, in that order: in every kqueue on the machine, and in the
+    /// kqueue of every Darwin `poll` asleep on it (`PollQueue`), whichever
+    /// process each belongs to, queue each registration attached to the socket
+    /// for that filter whose filter is ready now and which is not queued
+    /// already. Of several registrations of the socket for one filter, made
+    /// through different descriptors onto it, the newest-registered is queued
+    /// first.
     ///
-    /// Fails loudly if a kqueue another process owns registers anything: its
-    /// registrations name descriptors in that process's table, which this
-    /// process's view cannot read, so whether the event reaches them is not
-    /// known here.
-    let activate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (socketId : SocketId)
-        (filters : KqueueFilter list)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        let owner = system.Process.ProcessId
-
-        let kqueues =
-            OpenFileTable.toSeq system.Machine.OpenFiles
-            |> Seq.toList
-            |> List.choose (fun (id, description) ->
+    /// A registration is reached through the socket it is attached to
+    /// (`KqueueRegistration.Socket`, `PollRegistration.Socket`), as XNU reaches
+    /// a knote through the socket's own list, so no descriptor table is read:
+    /// an event one process's call causes activates another's registrations
+    /// as its own.
+    let activate (socketId : SocketId) (filters : KqueueFilter list) (machine : UnixMachineState) : UnixMachineState =
+        let openFiles =
+            (machine.OpenFiles, OpenFileTable.toSeq machine.OpenFiles |> Seq.toList)
+            ||> List.fold (fun openFiles (kqueue, description) ->
                 match description.Target with
-                | OpenFileTarget.Kqueue state when state.Owner = owner -> Some (id, state)
-                | OpenFileTarget.Kqueue state when state.Registrations.IsEmpty -> None
                 | OpenFileTarget.Kqueue state ->
-                    failwith
-                        $"KqueueQueue.activate: an event on socket %O{socketId} in process %O{owner} may reach kqueue %O{id}, which process %O{state.Owner} owns and which registers %A{Map.keys state.Registrations |> Seq.toList}. Those registrations name descriptors in process %O{state.Owner}'s table, which this process's view cannot read, so which of them name the socket is not known here."
+                    let registrations =
+                        state.Registrations
+                        |> Map.toList
+                        |> List.map (fun (key, registration) ->
+                            key, Some registration.Socket, registration.RegisteredAt
+                        )
+
+                    match entering socketId filters registrations state.Active machine with
+                    | [] -> openFiles
+                    | entering ->
+                        OpenFileTable.setKqueueState
+                            kqueue
+                            { state with
+                                Active = state.Active @ entering
+                            }
+                            openFiles
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
-                | OpenFileTarget.Pipe _ -> None
+                | OpenFileTarget.Pipe _ -> openFiles
             )
 
-        let system =
-            (system, kqueues)
-            ||> List.fold (fun system (kqueue, state) ->
+        let pollQueues =
+            machine.PollQueues
+            |> Map.map (fun _ queue ->
                 let registrations =
-                    state.Registrations
+                    queue.Registrations
                     |> Map.toList
-                    |> List.map (fun (key, registration) -> key, registration.RegisteredAt)
+                    |> List.map (fun (key, registration) -> key, registration.Socket, int64 registration.RegisteredAt)
 
-                match entering socketId filters registrations state.Active system with
-                | [] -> system
+                match entering socketId filters registrations queue.Active machine with
+                | [] -> queue
                 | entering ->
-                    withState
-                        kqueue
-                        { state with
-                            Active = state.Active @ entering
-                        }
-                        system
+                    { queue with
+                        Active = queue.Active @ entering
+                    }
             )
 
-        // A Darwin poll holds no description (`ParkedSyscall.descriptions`), so
-        // rewriting its park moves no hold.
-        let tasks =
-            system.Tasks
-            |> Map.map (fun _ task ->
-                match task.Parked with
-                | Some ({
-                            Syscall = ParkedSyscall.KqueuePoll poll
-                        } as park) ->
-                    let registrations =
-                        poll.Registrations
-                        |> Map.toList
-                        |> List.map (fun (key, registration) -> key, int64 registration.RegisteredAt)
-
-                    match entering socketId filters registrations poll.Active system with
-                    | [] -> task
-                    | entering ->
-                        { task with
-                            Parked =
-                                Some
-                                    { park with
-                                        Syscall =
-                                            ParkedSyscall.KqueuePoll
-                                                { poll with
-                                                    Active = poll.Active @ entering
-                                                }
-                                    }
-                        }
-                | Some _
-                | None -> task
-            )
-
-        { system with
-            Tasks = tasks
+        { machine with
+            OpenFiles = openFiles
+            PollQueues = pollQueues
         }
 
     /// Whether a wait on the kqueue `kqueue` would report at least one event
@@ -719,7 +700,11 @@ module KqueueQueue =
                 $"KqueueQueue.hasDeliverableEvent: %O{kqueue} names no live open file description, but a task waits on it, and a park holds what it waits on until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
         | Some {
                    Target = OpenFileTarget.Kqueue state
-               } -> state.Active |> List.exists (fun key -> Option.isSome (reportOf key system))
+               } ->
+            state.Active
+            |> List.exists (fun (_, filter as key) ->
+                Option.isSome (reportOf filter (registrationOf kqueue state key) system.Machine)
+            )
         | Some other ->
             failwith
                 $"KqueueQueue.hasDeliverableEvent: %O{kqueue} names %A{other.Target} rather than a kqueue, so no wait can be parked on it (this is a bug in the caller)."
@@ -760,14 +745,9 @@ module KqueueQueue =
             | _ when List.length reported = maxCount -> List.rev reported, remaining @ List.rev requeued
             | [] -> List.rev reported, List.rev requeued
             | (fd, filter as key) :: rest ->
-                let registration =
-                    match Map.tryFind key state.Registrations with
-                    | Some registration -> registration
-                    | None ->
-                        failwith
-                            $"KqueueQueue.drain: kqueue %O{kqueue} queues %A{key}, which it does not register. FileDescriptorRegistryDefect.KqueueActiveEntryUnregistered exists to make this unreachable, so the system breaks UnixSystem.checkInvariants (this is a bug in this library, or in a caller that assembled the state by hand)."
+                let registration = registrationOf kqueue state key
 
-                match reportOf key system with
+                match reportOf filter registration system.Machine with
                 | None -> walk reported requeued rest
                 | Some report ->
                     let reported =
@@ -853,15 +833,14 @@ module SocketWake =
         | SocketWake.RefusalReset -> []
 
     /// `wake` happened to the socket `socketId`: signal every epoll
-    /// registration of it on the machine, whichever process made it, and
-    /// activate every kqueue registration of it in a kqueue `system`'s process
-    /// owns, including those of a Darwin `poll` asleep in it (see
-    /// `KqueueQueue.activate`).
+    /// registration of it on the machine, and activate every kqueue
+    /// registration attached to it, including those of every Darwin `poll`
+    /// asleep (see `KqueueQueue.activate`), whichever process made each.
     ///
     /// An epoll registration is reached through the description it names,
-    /// as Linux reaches an epitem through the file's wait queue, so no
-    /// descriptor table is read. A kqueue registration names a descriptor in
-    /// its owner's table, so only the owner's view can resolve it.
+    /// as Linux reaches an epitem through the file's wait queue, and a kqueue
+    /// registration through the socket it is attached to, as XNU reaches a
+    /// knote through the socket's own list; so no descriptor table is read.
     ///
     /// Called with the socket already in the state the event left it in,
     /// since a kqueue registration is activated only if its filter is then
@@ -879,4 +858,6 @@ module SocketWake =
                     (epollKey wake))
                 system
 
-        KqueueQueue.activate socketId (kqueueFilters wake) system
+        { system with
+            Machine = KqueueQueue.activate socketId (kqueueFilters wake) system.Machine
+        }

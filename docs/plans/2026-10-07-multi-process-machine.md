@@ -116,19 +116,35 @@ Each stage is a PR, green alone.
    onto an existing machine. A property test: a random interleaving of two
    processes' syscalls keeps every invariant, and leaves the other process's
    slot unchanged.
-4. **Wakes across processes.** These are tests of the kernel alone:
-   - B's connect wakes A's epoll instance and A's kqueue.
-   - A exits, and B sees the FIN.
-   - A file unlinked by A survives while B has it open.
+4. **Wakes across processes.** Done. Tests of the kernel alone
+   (`TestCrossProcess`, and `TestMultiProcessFuzz` with stage 3's exclusions
+   lifted):
+   - B's connect wakes A's accept, A's epoll instance and A's kqueue, and A's
+     sleeping Darwin `poll`. `SimulatedMachine.wakes` asks each sleeping
+     task's condition of its own process's view, and picks the one waiter of
+     an exclusive queue across every process by the machine's park order. No
+     such queue is shared between processes yet: nothing passes a descriptor
+     to another process, so no pipe, listener or epoll instance is.
+   - A kqueue registration, and a filter a sleeping Darwin `poll` registered,
+     records the socket its descriptor named (`KqueueRegistration.Socket`,
+     `PollRegistration.Socket`), as XNU attaches a knote to the socket, so
+     activation walks every kqueue on the machine without reading a
+     descriptor table. A sleeping Darwin poll's kqueue (`PollQueue`) moved
+     from its park to the machine, for the same reason, and lives exactly as
+     long as the park.
+   - A exits, and B sees the FIN: `SimulatedMachine.endProcess` releases what
+     A's calls held, then closes every descriptor of A's in each flavour's
+     measured order (`exit-close-order.c`: Linux drops them lowest first and
+     releases the last let go of first, Darwin closes them highest first),
+     and removes A. A listener holding another process's open client is refused, as
+     `close` refuses it: the reset is not measured. The single-process
+     `EndedProcess.Machine` still leaves the descriptors open.
+   - A file unlinked by A survives while B has it open, and goes as B closes
+     it.
+   - `FileDescriptorRegistry.checkInvariants` of one view checks only what
+     one descriptor table can tell (`DescriptorCensus`).
 
-   Stage 3's fuzzer (`TestMultiProcessFuzz`) excludes what this stage must
-   lift, and its docstring says so: no call blocks (sockets are non-blocking,
-   `epoll_wait` and `kevent` are polled with a zero timeout), since a view
-   wakes only its own parked tasks; on Darwin, kqueues are made only where no
-   other process touches a socket, since `KqueueQueue.activate` fails loudly
-   on any socket event while another process's kqueue registers anything;
-   Darwin `poll` is not called; and no process ends, since
-   `SimulatedMachine` has no way to record an `EndedProcess`.
+   `kill` of another process is still refused.
 5. **PawPrint driver.** An N-program driver in `Program` owns the machine, and
    deadline jumps and deadlock detection move into it. The one-program path
    becomes the N = 1 case, and the old loop is deleted.

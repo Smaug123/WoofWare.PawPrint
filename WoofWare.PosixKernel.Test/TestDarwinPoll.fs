@@ -756,7 +756,9 @@ module TestDarwinPoll =
         sound closed
 
         match UnixTaskTable.parkedFor poller closed.Tasks with
-        | Some (ParkedSyscall.KqueuePoll poll) -> poll.Registrations |> shouldEqual Map.empty
+        | Some (ParkedSyscall.KqueuePoll poll) ->
+            (UnixMachineState.pollQueue poll.Queue closed.Machine).Registrations
+            |> shouldEqual Map.empty
         | other -> failwith $"expected a Darwin poll, got %A{other}"
 
         // A new listener takes the number, and is connected to: nothing wakes
@@ -892,32 +894,111 @@ module TestDarwinPoll =
         sound connected
 
         // Undo the activation the connection made.
-        let tasks =
-            connected.Tasks
-            |> Map.map (fun _ task ->
-                match task.Parked with
-                | Some ({
-                            Syscall = ParkedSyscall.KqueuePoll poll
-                        } as park) ->
-                    { task with
-                        Parked =
-                            Some
-                                { park with
-                                    Syscall =
-                                        ParkedSyscall.KqueuePoll
-                                            { poll with
-                                                Active = []
-                                            }
-                                }
-                    }
-                | _ -> task
-            )
+        let machine =
+            { connected.Machine with
+                PollQueues =
+                    connected.Machine.PollQueues
+                    |> Map.map (fun _ queue ->
+                        { queue with
+                            Active = []
+                        }
+                    )
+            }
 
         UnixSystem.checkInvariants
             { connected with
-                Tasks = tasks
+                Machine = machine
             }
         |> shouldEqual
             [
                 UnixSystemDefect.ParkedKqueuePollActivationMissed (poller, (listener, KqueueFilter.Read))
             ]
+
+    [<Test>]
+    let ``a sleeping poll's kqueue is held by its park alone, attached to the sockets its descriptors name`` () : unit =
+        let listener, system = KeventWorld.listenerAt 5109us KeventWorld.darwin
+        let _, parked = parks [ entry listener pollIn ] 1000 system
+        sound parked
+
+        let queueId, queue =
+            match UnixTaskTable.parkedFor poller parked.Tasks with
+            | Some (ParkedSyscall.KqueuePoll poll) -> poll.Queue, UnixMachineState.pollQueue poll.Queue parked.Machine
+            | other -> failwith $"expected a Darwin poll, got %A{other}"
+
+        let socket =
+            match FileDescriptorRegistry.tryFindTarget listener (UnixSystemState.fileDescriptors parked) with
+            | Some (OpenFileTarget.Socket socket) -> socket
+            | other -> failwith $"the listener's descriptor names %A{other}"
+
+        queue.Registrations
+        |> Map.toList
+        |> List.map (fun (key, registration) -> key, registration.Socket)
+        |> shouldEqual [ (listener, KqueueFilter.Read), Some socket ]
+
+        let withQueues (queues : Map<PollQueueId, PollQueue>) (next : PollQueueId) =
+            { parked with
+                Machine =
+                    { parked.Machine with
+                        PollQueues = queues
+                        NextPollQueueId = next
+                    }
+            }
+
+        let next = parked.Machine.NextPollQueueId
+
+        // Gone from the machine while the park names it.
+        UnixSystem.checkInvariants (withQueues Map.empty next)
+        |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentPollQueue (poller, queueId) ]
+
+        // A second one no park names.
+        let (PollQueueId n) = next
+
+        UnixSystem.checkInvariants (withQueues (Map.add next queue parked.Machine.PollQueues) (PollQueueId (n + 1L)))
+        |> shouldEqual [ UnixSystemDefect.PollQueueNotHeldOnce (next, 0) ]
+
+        // Not below the counter.
+        UnixSystem.checkInvariants (withQueues parked.Machine.PollQueues queueId)
+        |> shouldEqual [ UnixSystemDefect.PollQueueIdNotFresh (queueId, queueId) ]
+
+        // Another process's.
+        let other = ProcessId.parseOrFail "test" 9
+
+        UnixSystem.checkInvariants (
+            withQueues
+                (Map.add
+                    queueId
+                    { queue with
+                        Owner = other
+                    }
+                    parked.Machine.PollQueues)
+                next
+        )
+        |> shouldEqual [ UnixSystemDefect.PollQueueOfAnotherProcess (poller, queueId, other) ]
+
+        // A socket's filter attached to no socket.
+        let detached =
+            { queue with
+                Registrations =
+                    queue.Registrations
+                    |> Map.map (fun _ registration ->
+                        { registration with
+                            Socket = None
+                        }
+                    )
+            }
+
+        UnixSystem.checkInvariants (withQueues (Map.add queueId detached parked.Machine.PollQueues) next)
+        |> shouldEqual
+            [
+                UnixSystemDefect.ParkedKqueuePollAttachedElsewhere (
+                    poller,
+                    (listener, KqueueFilter.Read),
+                    None,
+                    Some socket
+                )
+            ]
+
+        // ...and the park's end lets it go.
+        let finished = UnixParkState.unpark poller parked
+        finished.Machine.PollQueues |> shouldEqual Map.empty
+        sound finished

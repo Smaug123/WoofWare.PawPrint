@@ -73,26 +73,48 @@ module UnixWait =
     ///
     /// A woken task is owed no success: several waiters for one lock all wake,
     /// and all but one find it taken again and re-park.
-    let wakes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let rec wakes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (asleep : Set<'Task>)
         (system : UnixSystem<'Task, 'Handler>)
         : ('Task * Set<WakePrimitive>) list
         =
-        let satisfied =
-            asleep
-            |> Set.toList
-            |> List.choose (fun task ->
-                match UnixTaskTable.parkOf task system.Tasks with
-                | None ->
-                    failwith
-                        $"UnixWait.wakes: task %O{task} is asleep in a syscall but records no park, so nothing says what it waits for. A park is recorded by `UnixWait.park` when the task goes to sleep (this is a bug in the client)."
-                | Some park ->
-                    let fired = WakeCondition.satisfied task (WakeCondition.ofPark park.Syscall) system
+        wakesAmong [ (), asleep, system ] system.Machine
+        |> List.map (fun ((), task, fired) -> task, fired)
 
-                    if Set.isEmpty fired then
-                        None
-                    else
-                        Some (park.Ordinal, task, fired)
+    /// `wakes`, of every process on `machine` at once: each of `views` is one
+    /// process's view of `machine`, with the tasks of it the client holds
+    /// asleep, and the process is named by its `'Process`. Every process with
+    /// a task parked must be among them, since a parked task not asleep stands
+    /// for a woken call on whatever queue it waits on.
+    ///
+    /// Each task's condition is asked of its own process's view, and a queue
+    /// waiters wait on exclusively wakes one of them by park order across
+    /// every view, the ordinals being the machine's. The answer is in park
+    /// order across every view.
+    and internal wakesAmong<'Process, 'Task, 'Handler
+        when 'Process : equality and 'Task : comparison and 'Handler : equality>
+        (views : ('Process * Set<'Task> * UnixSystem<'Task, 'Handler>) list)
+        (machine : UnixMachineState)
+        : ('Process * 'Task * Set<WakePrimitive>) list
+        =
+        let satisfied =
+            views
+            |> List.collect (fun (owner, asleep, system) ->
+                asleep
+                |> Set.toList
+                |> List.choose (fun task ->
+                    match UnixTaskTable.parkOf task system.Tasks with
+                    | None ->
+                        failwith
+                            $"UnixWait.wakes: task %O{task} is asleep in a syscall but records no park, so nothing says what it waits for. A park is recorded by `UnixWait.park` when the task goes to sleep (this is a bug in the client)."
+                    | Some park ->
+                        let fired = WakeCondition.satisfied task (WakeCondition.ofPark park.Syscall) system
+
+                        if Set.isEmpty fired then
+                            None
+                        else
+                            Some (park.Ordinal, (owner, task), fired)
+                )
             )
             |> List.sortBy (fun (ordinal, _, _) -> ordinal)
 
@@ -147,7 +169,7 @@ module UnixWait =
         // becomes ready wakes; and a deadline, like a signal, is each waiter's
         // own.
         let linux =
-            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            match SimulatedUnixPlatform.flavour machine.UnixPlatform with
             | SimulatedUnixFlavour.Linux -> true
             | SimulatedUnixFlavour.Darwin -> false
 
@@ -156,7 +178,7 @@ module UnixWait =
         // something else, for every task asked about; a task woken and not yet
         // finished is not asked, so is looked up leniently here.
         let pipeOf (description : OpenFileDescriptionId) : PipeId option =
-            match OpenFileTable.tryFind description system.Machine.OpenFiles with
+            match OpenFileTable.tryFind description machine.OpenFiles with
             | Some {
                        Target = OpenFileTarget.Pipe (pipeId, _)
                    } -> Some pipeId
@@ -185,57 +207,58 @@ module UnixWait =
             | WakePrimitive.EndedByClose -> None
 
         let finishing : Set<ExclusiveWaitQueue> =
-            system.Tasks
-            |> Map.toSeq
-            |> Seq.choose (fun (task, state) ->
-                if Set.contains task asleep then
-                    None
-                else
-                    match state.Parked with
-                    | Some {
-                               Syscall = ParkedSyscall.EpollWait wait
-                           } -> Some (ExclusiveWaitQueue.Epoll wait.Epoll)
-                    // A call a close has ended waits on no queue.
-                    | Some {
-                               Syscall = ParkedSyscall.Accept accept
-                           } ->
-                        SleepTarget.description accept.Listener
-                        |> Option.map ExclusiveWaitQueue.Listener
-                    | Some {
-                               Syscall = ParkedSyscall.PipeRead read
-                           } when linux ->
-                        SleepTarget.description read.Reader
-                        |> Option.bind pipeOf
-                        |> Option.map ExclusiveWaitQueue.PipeReaders
-                    | Some {
-                               Syscall = ParkedSyscall.PipeWrite write
-                           } when linux ->
-                        SleepTarget.description write.Writer
-                        |> Option.bind pipeOf
-                        |> Option.map ExclusiveWaitQueue.PipeWriters
-                    | Some {
-                               Syscall = ParkedSyscall.Flock _
-                           }
-                    | Some {
-                               Syscall = ParkedSyscall.Kevent _
-                           }
-                    | Some {
-                               Syscall = ParkedSyscall.Poll _
-                           }
-                    | Some {
-                               Syscall = ParkedSyscall.KqueuePoll _
-                           }
-                    | Some {
-                               Syscall = ParkedSyscall.PipeRead _
-                           }
-                    | Some {
-                               Syscall = ParkedSyscall.PipeWrite _
-                           }
-                    | None -> None
+            views
+            |> Seq.collect (fun (_, asleep, system) ->
+                system.Tasks
+                |> Map.toSeq
+                |> Seq.filter (fun (task, _) -> not (Set.contains task asleep))
+            )
+            |> Seq.choose (fun (_, state) ->
+                match state.Parked with
+                | Some {
+                           Syscall = ParkedSyscall.EpollWait wait
+                       } -> Some (ExclusiveWaitQueue.Epoll wait.Epoll)
+                // A call a close has ended waits on no queue.
+                | Some {
+                           Syscall = ParkedSyscall.Accept accept
+                       } ->
+                    SleepTarget.description accept.Listener
+                    |> Option.map ExclusiveWaitQueue.Listener
+                | Some {
+                           Syscall = ParkedSyscall.PipeRead read
+                       } when linux ->
+                    SleepTarget.description read.Reader
+                    |> Option.bind pipeOf
+                    |> Option.map ExclusiveWaitQueue.PipeReaders
+                | Some {
+                           Syscall = ParkedSyscall.PipeWrite write
+                       } when linux ->
+                    SleepTarget.description write.Writer
+                    |> Option.bind pipeOf
+                    |> Option.map ExclusiveWaitQueue.PipeWriters
+                | Some {
+                           Syscall = ParkedSyscall.Flock _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.Kevent _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.Poll _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.KqueuePoll _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.PipeRead _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.PipeWrite _
+                       }
+                | None -> None
             )
             |> Set.ofSeq
 
-        let chosen : Map<ExclusiveWaitQueue, 'Task> =
+        let chosen : Map<ExclusiveWaitQueue, 'Process * 'Task> =
             satisfied
             |> List.collect (fun (ordinal, task, fired) ->
                 fired
@@ -271,7 +294,7 @@ module UnixWait =
                 | None -> true
             )
         )
-        |> List.map (fun (_, task, fired) -> task, fired)
+        |> List.map (fun (_, (owner, task), fired) -> owner, task, fired)
 
     /// Every deadline the parks of `asleep` are waiting for, in nanoseconds since
     /// boot, with a repeat for each park that waits for it.

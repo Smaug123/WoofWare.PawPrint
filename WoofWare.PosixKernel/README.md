@@ -112,9 +112,13 @@ A `SimulatedMachine` holds several processes on one machine. `SimulatedMachine.o
 
 A syscall is still made in a `UnixSystem`: `SimulatedMachine.focus` gives one process's view of the machine, which holds that process and no other, so no call can read or change another process's own state, and `SimulatedMachine.unfocus` writes the view back. `inView` and `step` do both around one call. A view records which state of the machine it was taken from, and `unfocus` refuses a view taken before some other write-back, whose copy of the machine is stale.
 
-Everything one process's call does to another goes through the machine they share: ports, connections, pipes, files, the open file descriptions, the directories processes stand in, and the thread and process IDs. `SimulatedMachine.checkInvariants` holds every process to the machine and to each other; `UnixSystem.checkInvariants` of one view checks only what one process can see truthfully.
+Everything one process's call does to another goes through the machine they share: ports, connections, pipes, files and their locks, the open file descriptions, the directories processes stand in, and the thread and process IDs. `SimulatedMachine.checkInvariants` holds every process to the machine and to each other; `UnixSystem.checkInvariants` and `FileDescriptorRegistry.checkInvariants` of one view check only what one process can see truthfully.
 
-Not yet modelled: a call in one process waking a task parked in another, a Darwin kqueue seeing an event raised in another process, and a process ending on a `SimulatedMachine`.
+A call asleep in one process wakes for what another process's call does: a connection queued on its listener, a peer's FIN, a lock let go of. `SimulatedMachine.wakes` is `UnixWait.wakes` of every process at once: each sleeping task's condition is asked of its own process's view, and where a kernel wakes one waiter of a queue at a time, the one is chosen across every process by the machine's park order. A woken call is finished in its own process's view. A kqueue registration, and a filter a sleeping Darwin `poll` registered, is attached to the socket its descriptor named, as XNU attaches a knote to the socket, so an event on the socket reaches it whichever process caused the event; a sleeping Darwin poll's kqueue (`PollQueue`) is the machine's for as long as the call sleeps.
+
+`SimulatedMachine.endProcess` ends a process on the machine, as the call that ended it (`exit_group`, the last thread's exit, a signal) answered it: it releases what only the process's calls held, then closes every descriptor in the order each kernel measurably does (Linux drops them lowest first and releases the last let go of first; Darwin closes them highest first), sending its peers their FINs and letting its locks, pipes, listeners and event queues go, and removes the process. It refuses where a close would: a listener holding a connection another process's open socket made is not released, since what the reset does to that socket is not measured.
+
+Nothing passes a descriptor from one process to another (no `fork`, no `SCM_RIGHTS`, and a launched pipe's other end is the client's), so no pipe, listener or epoll instance is shared, and `kill` of another process is refused.
 
 ### The syscalls
 
@@ -147,7 +151,7 @@ Every descriptor lies below `SimulatedUnixPlatform.descriptorBound`, the soft `R
 `UnixSystem.checkInvariants` lists every way a system's tables disagree with each other.
 No sequence of syscalls should ever produce one.
 It is two halves: `UnixSystem.checkMachineInvariants`, the rules about the machine, which takes every process on it, and `UnixSystem.checkViewInvariants`, those about one process's view of it.
-A fact a syscall needs about other processes is kept on the machine's object rather than derived from the processes: each open file description counts the descriptors naming it and the holds of calls in flight on it, the thread ID allocator records which IDs live tasks hold, and a kqueue records the process that owns it, whose descriptor numbers its registrations name.
+A fact a syscall needs about other processes is kept on the machine's object rather than derived from the processes: each open file description counts the descriptors naming it and the holds of calls in flight on it, the thread ID allocator records which IDs live tasks hold, a kqueue records the process that owns it, whose descriptor numbers its registrations name, and each kqueue registration records the socket it is attached to.
 
 ### Answers and refusals
 

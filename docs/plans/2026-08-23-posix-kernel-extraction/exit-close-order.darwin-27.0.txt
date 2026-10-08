@@ -1,0 +1,64 @@
+27.0.0
+section O
+  trial  0: s1 s3 s2
+  trial  1: s1 s3 s2
+  trial  2: s1 s3 s2
+  trial  3: s1 s3 s2
+  trial  4: s1 s3 s2
+  trial  5: s1 s3 s2
+  trial  6: s1 s3 s2
+  trial  7: s1 s3 s2
+  trial  8: s1 s3 s2
+  trial  9: s1 s3 s2
+  trial 10: s1 s3 s2
+  trial 11: s1 s3 s2
+  trial 12: s1 s3 s2
+  trial 13: s1 s3 s2
+  trial 14: s1 s3 s2
+  trial 15: s1 s3 s2
+  trial 16: s1 s3 s2
+  trial 17: s1 s3 s2
+  trial 18: s1 s3 s2
+  trial 19: s1 s3 s2
+section L
+  trial  0: s1 s3 s2  listener readable 1, accept 1
+  trial  1: s1 s3 s2  listener readable 1, accept 1
+  trial  2: s1 s3 s2  listener readable 1, accept 1
+  trial  3: s1 s3 s2  listener readable 1, accept 1
+  trial  4: s1 s3 s2  listener readable 1, accept 1
+  trial  5: s1 s3 s2  listener readable 1, accept 1
+  trial  6: s1 s3 s2  listener readable 1, accept 1
+  trial  7: s1 s3 s2  listener readable 1, accept 1
+  trial  8: s1 s3 s2  listener readable 1, accept 1
+  trial  9: s1 s3 s2  listener readable 1, accept 1
+  trial 10: s1 s3 s2  listener readable 1, accept 1
+  trial 11: s1 s3 s2  listener readable 1, accept 1
+  trial 12: s1 s3 s2  listener readable 1, accept 1
+  trial 13: s1 s3 s2  listener readable 1, accept 1
+  trial 14: s1 s3 s2  listener readable 1, accept 1
+  trial 15: s1 s3 s2  listener readable 1, accept 1
+  trial 16: s1 s3 s2  listener readable 1, accept 1
+  trial 17: s1 s3 s2  listener readable 1, accept 1
+  trial 18: s1 s3 s2  listener readable 1, accept 1
+  trial 19: s1 s3 s2  listener readable 1, accept 1
+section D
+  trial  0: s3 s2 s1
+  trial  1: s3 s2 s1
+  trial  2: s3 s2 s1
+  trial  3: s3 s2 s1
+  trial  4: s3 s2 s1
+  trial  5: s3 s2 s1
+  trial  6: s3 s2 s1
+  trial  7: s3 s2 s1
+  trial  8: s3 s2 s1
+  trial  9: s3 s2 s1
+  trial 10: s3 s2 s1
+  trial 11: s3 s2 s1
+  trial 12: s3 s2 s1
+  trial 13: s3 s2 s1
+  trial 14: s3 s2 s1
+  trial 15: s3 s2 s1
+  trial 16: s3 s2 s1
+  trial 17: s3 s2 s1
+  trial 18: s3 s2 s1
+  trial 19: s3 s2 s1
