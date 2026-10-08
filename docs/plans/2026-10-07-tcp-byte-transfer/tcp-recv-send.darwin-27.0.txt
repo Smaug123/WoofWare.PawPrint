@@ -1,0 +1,68 @@
+H	MSG_OOB	0x1
+H	MSG_PEEK	0x2
+H	MSG_DONTROUTE	0x4
+H	MSG_EOR	0x8
+H	MSG_TRUNC	0x10
+H	MSG_CTRUNC	0x20
+H	MSG_WAITALL	0x40
+H	MSG_DONTWAIT	0x80
+H	MSG_NOSIGNAL	0x80000
+H	MSG_EOF	0x100
+H	MSG_WAITSTREAM	0x200
+H	MSG_FLUSH	0x400
+H	MSG_HOLD	0x800
+H	MSG_SEND	0x1000
+H	MSG_HAVEMORE	0x2000
+H	MSG_RCVMORE	0x4000
+H	MSG_NEEDSA	0x10000
+O	badfd	mapped	len=4	recv=-1 EBADF	send=-1 EBADF	sigpipe=0
+O	badfd	mapped	len=0	recv=-1 EBADF	send=-1 EBADF	sigpipe=0
+O	badfd	null	len=4	recv=-1 EBADF	send=-1 EBADF	sigpipe=0
+O	badfd	null	len=0	recv=-1 EBADF	send=-1 EBADF	sigpipe=0
+O	badfd	minus1	len=4	recv=-1 EBADF	send=-1 EBADF	sigpipe=0
+O	badfd	minus1	len=0	recv=-1 EBADF	send=-1 EBADF	sigpipe=0
+O	file	mapped	len=4	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	file	mapped	len=0	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	file	null	len=4	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	file	null	len=0	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	file	minus1	len=4	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	file	minus1	len=0	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-read	mapped	len=4	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-read	mapped	len=0	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-read	null	len=4	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-read	null	len=0	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-read	minus1	len=4	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-read	minus1	len=0	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-write	mapped	len=4	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-write	mapped	len=0	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-write	null	len=4	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-write	null	len=0	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-write	minus1	len=4	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	pipe-write	minus1	len=0	recv=-1 ENOTSOCK	send=-1 ENOTSOCK	sigpipe=0
+O	socket-idle	mapped	len=4	recv=-1 EAGAIN	send=4	sigpipe=0
+O	socket-idle	mapped	len=0	recv=0	send=0	sigpipe=0
+O	socket-idle	null	len=4	recv=-1 EAGAIN	send=-1 EFAULT	sigpipe=0
+O	socket-idle	null	len=0	recv=0	send=0	sigpipe=0
+O	socket-idle	minus1	len=4	recv=-1 EAGAIN	send=-1 EFAULT	sigpipe=0
+O	socket-idle	minus1	len=0	recv=0	send=0	sigpipe=0
+O	p-fionread-after	4
+P	P-sleep	before=asleep	peek=10	elapsed_ge100=1	fionread=10	recv=10
+P	P-zero	flags=0	nonblocking=0	before=0	after_write=0	finally=0	fionread=10
+P	P-zero	flags=MSG_PEEK	nonblocking=0	before=0	after_write=0	finally=0	fionread=10
+P	P-eof	peek=1000	recv=1000	peek_again=0	so_error=0
+P	P-eof-asleep	before=asleep	peek=0	peek_again=0
+P	P-reset	before=asleep	peek=-1 ECONNRESET	so_error_after_peek=ECONNRESET	recv_after=0
+P	P-eintr	restart=0	after_signal=-1 EINTR	after_write=-1 EINTR	sigusr1=1	fionread=10
+P	P-eintr	restart=1	after_signal=asleep	after_write=10	sigusr1=1	fionread=10
+Z	recv0-blocking	before=0	after_write=0	finally=0	fionread=10
+D	recv-idle	-1 EAGAIN	nonblocking_after=0
+D	send-idle	65536	nonblocking_after=0
+D	send-full	filled=833868	after_200ms=asleep	after_drain=65536	drained=899404	nonblocking_after=0
+N	N-recv	idle=-1 EAGAIN	queued=10
+N	N-partial	flags=MSG_NOSIGNAL	before=asleep	send=-1 EPIPE	sigpipe=0	so_error=ECONNRESET
+N	N-empty	flags=MSG_NOSIGNAL	filled=744484	before=asleep	send=-1 EPIPE	sigpipe=0	so_error=ECONNRESET
+N	N-partial	flags=0	before=asleep	send=-1 EPIPE	sigpipe=1	so_error=ECONNRESET
+N	N-empty	flags=0	filled=744484	before=asleep	send=-1 EPIPE	sigpipe=1	so_error=ECONNRESET
+W	write	rv=10	getfl_before=0x2	getfl_after=0x10002
+W	send	rv=10	getfl_before=0x2	getfl_after=0x2
+W	send0	rv=0	getfl_before=0x2	getfl_after=0x2
