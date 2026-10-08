@@ -123,7 +123,9 @@ type WakePrimitive =
     /// the call parks.
     | DeadlinePassed of nanosecondsSinceBoot : int64
     /// A signal with a handler is deliverable to the task that waits: were it to
-    /// return to user mode now, it would run that handler.
+    /// return to user mode now, it would run that handler. For a task in
+    /// `sigsuspend`, any signal its temporary mask lets through that its
+    /// finishing call would act on (`SyscallInterruption.wakes`).
     ///
     /// Names no kernel object, because what it asks about is the waiter itself:
     /// a condition is always some task's, and `satisfied` is told whose. Every

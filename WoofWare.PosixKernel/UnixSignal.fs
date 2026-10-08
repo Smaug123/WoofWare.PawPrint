@@ -66,43 +66,6 @@ type SigsuspendOutcome =
     /// call.
     | WouldBlock of WakeCondition
 
-/// Why this library will not answer a `sigsuspend(2)` or `pause(2)`, or the
-/// finishing of one: something it does not model, rather than an error a
-/// kernel would report.
-[<RequireQualifiedAccess>]
-type SigsuspendRefusal =
-    /// The library will not say what the task takes as it returns to user
-    /// mode.
-    | Receiver of SignalReceiverRefusal
-    /// The first signal the task would take under the temporary mask is
-    /// `signal`, at its default, which stops the process. Stopped and then
-    /// continued with no handler run, a real kernel restarts the call, so that
-    /// it sleeps on under the temporary mask (measured on both flavours); this
-    /// library models no stopped process for the call to sleep on in.
-    | DefaultStop of signal : Signal
-    /// Under Darwin, the task could take a pending SIGCONT under the temporary
-    /// mask, ignored or at its default. Darwin leaves one generated while the
-    /// task blocked it pending under such a mask, without ending the call, and
-    /// does not end it even once a handler is installed for the signal, until
-    /// another signal ends the call and both are delivered (measured). This
-    /// library wakes a sleeping task from the state alone, so cannot leave a
-    /// signal it could deliver undelivered; and what Darwin does with one
-    /// generated during the sleep is unmeasured.
-    | DarwinPendingContinue
-
-[<RequireQualifiedAccess>]
-module SigsuspendRefusal =
-    /// What this kernel knows about why it cannot answer. The client supplies
-    /// its own half: which call was made, and by which task.
-    let describe (refusal : SigsuspendRefusal) : string =
-        match refusal with
-        | SigsuspendRefusal.Receiver refusal ->
-            $"a task in sigsuspend would take a signal, and this kernel will not say what it takes as it returns to user mode: %A{refusal}."
-        | SigsuspendRefusal.DefaultStop signal ->
-            $"the first signal a task in sigsuspend would take is %O{signal}, at its default, which stops the process. A real kernel restarts the call once the process is continued, if no handler has run, and this kernel models no stopped process."
-        | SigsuspendRefusal.DarwinPendingContinue ->
-            "under Darwin, a task in sigsuspend could take a pending SIGCONT, ignored or at its default. Darwin was measured to leave such a signal pending without ending the call until another signal does, which this kernel cannot express: it wakes a sleeping task whenever the state holds something for it to take."
-
 [<RequireQualifiedAccess>]
 module UnixSignal =
 
@@ -596,72 +559,6 @@ module UnixSignal =
 
         SignalState.pendingBlocked system.Leader task system.Process.Signals
 
-    /// What a task in `sigsuspend` does now, its temporary mask in force.
-    [<RequireQualifiedAccess>]
-    type private Suspension<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
-        /// The call ends: the task's return to user mode runs a handler, or
-        /// applies a default that terminates the process. The signals are as
-        /// the call leaves them, for that return to take from.
-        | Ends of SignalState<'Task, 'Handler>
-        /// The call sleeps on, with these signals.
-        | Sleeps of SignalState<'Task, 'Handler>
-
-    /// What the `sigsuspend` `task` is in does, with `signals` holding its
-    /// temporary mask and the mask to restore: what the task would take as it
-    /// returned to user mode decides it.
-    let private suspension<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (task : 'Task)
-        (system : UnixSystem<'Task, 'Handler>)
-        (signals : SignalState<'Task, 'Handler>)
-        : Result<Suspension<'Task, 'Handler>, SigsuspendRefusal>
-        =
-        let tasks = tasksOf system
-        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
-
-        let rec decide
-            (signals : SignalState<'Task, 'Handler>)
-            : Result<Suspension<'Task, 'Handler>, SigsuspendRefusal>
-            =
-            match SignalState.takeOnReturn system.Process.CoreDumps system.Leader tasks task signals with
-            | Error refusal -> Error (SigsuspendRefusal.Receiver refusal)
-            // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/sigsuspend-mask.c`
-            // on Linux 6.18.5 and Darwin 27.0.0: a caught signal ended the call
-            // with EINTR once its handler had run, whether it was pending as the
-            // call was made or sent during it, SA_RESTART or not; and a TERM at
-            // its default killed the process, sent during the call or pending
-            // before it and unblocked by the temporary mask.
-            | Ok (Some (SignalDelivery.RunHandlers _), _)
-            | Ok (Some (SignalDelivery.DefaultTerminate _), _) -> Ok (Suspension.Ends signals)
-            // Measured: stopped and continued with no handler run, the call slept
-            // on, on both flavours.
-            | Ok (Some (SignalDelivery.DefaultStop signal), _) -> Error (SigsuspendRefusal.DefaultStop signal)
-            | Ok (Some (SignalDelivery.DefaultContinue _), taken) ->
-                match flavour with
-                // Measured: a SIGCONT at its default, blocked and pending, which
-                // the temporary mask unblocked, ended nothing, and was never
-                // delivered to a handler installed afterwards: Linux takes and
-                // discards it, then restarts the call (`-ERESTARTNOHAND` with no
-                // handler run).
-                | SimulatedUnixFlavour.Linux -> decide taken
-                | SimulatedUnixFlavour.Darwin -> Error SigsuspendRefusal.DarwinPendingContinue
-            | Ok (None, walked) ->
-                match flavour with
-                // Measured: an ignored signal, blocked and pending, which the
-                // temporary mask unblocked, ended nothing, and was never delivered
-                // to a handler installed afterwards. The return to user mode
-                // discards it, as Linux's does, and the call restarts.
-                | SimulatedUnixFlavour.Linux -> Ok (Suspension.Sleeps walked)
-                // Darwin discards an ignored signal at generation, SIGCONT apart,
-                // so a walk that discards something has found a SIGCONT, which
-                // Darwin was measured to leave pending.
-                | SimulatedUnixFlavour.Darwin ->
-                    if walked = signals then
-                        Ok (Suspension.Sleeps signals)
-                    else
-                        Error SigsuspendRefusal.DarwinPendingContinue
-
-        decide signals
-
     /// `sigsuspend` with `temporary`, made by `task`.
     let private suspendWith<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (operation : string)
@@ -687,10 +584,11 @@ module UnixSignal =
         // A signal the temporary mask lets through ends the call as it is made,
         // without a sleep (the probe's "pending" and "two" rows answered within
         // 50 ms), as a `poll` with something to report answers at once.
-        match suspension task system signals with
+        match SyscallInterruption.suspension task system signals with
         | Error refusal -> Error refusal
-        | Ok (Suspension.Ends signals) -> Ok (SigsuspendOutcome.Failed UnixError.EINTR, withSignals signals system)
-        | Ok (Suspension.Sleeps signals) ->
+        | Ok (SyscallInterruption.Suspension.Ends signals) ->
+            Ok (SigsuspendOutcome.Failed UnixError.EINTR, withSignals signals system)
+        | Ok (SyscallInterruption.Suspension.Sleeps signals) ->
             Ok (
                 SigsuspendOutcome.WouldBlock (WakeCondition.ofPark ParkedSyscall.SigSuspend),
                 UnixWait.park task ParkedSyscall.SigSuspend (withSignals signals system)
@@ -812,11 +710,11 @@ module UnixSignal =
             failwith
                 $"UnixSignal.finishSigsuspend: task %O{task} is not parked, so there is no sigsuspend to finish. Only a task `sigsuspend` or `pause` answered `WouldBlock` finishes here (this is a bug in the client)."
 
-        match suspension task system system.Process.Signals with
+        match SyscallInterruption.suspension task system system.Process.Signals with
         | Error refusal -> Error refusal
-        | Ok (Suspension.Ends signals) ->
+        | Ok (SyscallInterruption.Suspension.Ends signals) ->
             Ok (SigsuspendOutcome.Failed UnixError.EINTR, withSignals signals (UnixParkState.unpark task system))
-        | Ok (Suspension.Sleeps signals) ->
+        | Ok (SyscallInterruption.Suspension.Sleeps signals) ->
             Ok (
                 SigsuspendOutcome.WouldBlock (WakeCondition.ofPark ParkedSyscall.SigSuspend),
                 UnixWait.park task ParkedSyscall.SigSuspend (withSignals signals system)

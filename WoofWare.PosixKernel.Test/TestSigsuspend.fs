@@ -1288,3 +1288,62 @@ module TestSigsuspend =
         // any other reader of a park gets.
         SyscallInterruption.ruleOf ParkedSyscall.SigSuspend
         |> shouldEqual SignalRestartRule.FailsWithEintr
+
+    [<Test>]
+    let ``Darwin: a pending SIGCONT another thread's sigprocmask lets through wakes the call into its refusal``
+        ()
+        : unit
+        =
+        // Found by review, and reproduced natively: Darwin leaves such a
+        // SIGCONT pending without ending the call, even once a handler is
+        // installed for it. Were the sleeper not woken, the refusal would never
+        // be reached, and a later handler would end the call where Darwin does
+        // not.
+        for disposition in [ SignalDisposition.Ignore ; SignalDisposition.Default ] do
+            let flavour = SimulatedUnixFlavour.Darwin
+            let numbering = numberingOf flavour
+            let cont = SignalMask.ofSignals numbering (Set.singleton Signal.SIGCONT)
+            let contSigno = Signal.toRawSignoUnder numbering Signal.SIGCONT
+
+            let orFail (what : string) (result : Result<'a * UnixSystem<int, string>, 'e>) =
+                match result with
+                | Ok (_, system) -> system
+                | Error e -> failwith $"%s{what}: %A{e}"
+
+            let spawned =
+                match UnixTaskLifecycle.spawn main helper (CpuId 0) (boot flavour) with
+                | Ok (SpawnAnswer.Spawned _, system) -> system
+                | other -> failwith $"spawn: %A{other}"
+
+            let blocking =
+                spawned
+                |> UnixSignal.sigaction contSigno (Some disposition)
+                |> orFail "sigaction"
+                |> UnixSignal.pthreadSigmask main (how flavour SignalMaskChange.SetMask) (Some cont)
+                |> orFail "pthread_sigmask"
+                |> UnixSignal.pthreadSigmask helper (how flavour SignalMaskChange.SetMask) (Some cont)
+                |> orFail "pthread_sigmask"
+
+            let sent =
+                match UnixSignal.kill (ProcessId.toInt32 (UnixSystem.processId blocking)) contSigno blocking with
+                | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                | other -> failwith $"kill: %A{other}"
+
+            let asleep =
+                match UnixSignal.sigsuspend main cont sent with
+                | Ok (SigsuspendOutcome.WouldBlock _, system) -> system
+                | other -> failwith $"sigsuspend: %A{other}"
+
+            UnixWait.wakes (Set.singleton main) asleep |> shouldEqual []
+
+            let unblocked =
+                UnixSignal.sigprocmask helper (how flavour SignalMaskChange.Unblock) (Some cont) asleep
+                |> orFail "sigprocmask"
+
+            UnixWait.wakes (Set.singleton main) unblocked
+            |> List.map fst
+            |> shouldEqual [ main ]
+
+            match UnixSignal.finishSigsuspend main unblocked with
+            | Error refusal -> refusal |> shouldEqual SigsuspendRefusal.DarwinPendingContinue
+            | other -> failwith $"%A{disposition}: finishSigsuspend answered %A{other}"
