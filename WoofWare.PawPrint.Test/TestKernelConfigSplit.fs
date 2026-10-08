@@ -97,6 +97,8 @@ module TestKernelConfigSplit =
         )
         |> machine (UnixBootImage.withSoMaxConn config.SoMaxConn >> ok)
         |> machine (UnixBootImage.withTcpSendSpace config.TcpSendSpace >> ok)
+        |> machine (UnixBootImage.withTcpReceiveSpace config.TcpReceiveSpace >> ok)
+        |> machine (UnixBootImage.withTcpSendSpaceMax config.TcpSendSpaceMax >> ok)
         |> machine (UnixBootImage.withProtectedFiles config.ProtectedFiles >> ok)
         |> machine (UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> launch (ProcessLaunch.withUmask config.Umask >> ok)
@@ -203,6 +205,15 @@ module TestKernelConfigSplit =
                 | SimulatedUnixFlavour.Linux -> Gen.constant None
                 | SimulatedUnixFlavour.Darwin -> Gen.elements [ None ; Some 65536 ]
 
+            // 65536 is a receive space both flavours admit: on Darwin, one whose
+            // buffer the handshake settles.
+            let! tcpReceiveSpace = Gen.elements [ None ; Some 65536 ]
+
+            let! tcpSendSpaceMax =
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> Gen.elements [ None ; Some 65536 ]
+                | SimulatedUnixFlavour.Darwin -> Gen.constant None
+
             let! protectedFiles =
                 match flavour with
                 | SimulatedUnixFlavour.Darwin -> Gen.constant ProtectedFiles.off
@@ -253,6 +264,8 @@ module TestKernelConfigSplit =
                     EphemeralPortRange = ports
                     SoMaxConn = soMaxConn
                     TcpSendSpace = tcpSendSpace
+                    TcpReceiveSpace = tcpReceiveSpace
+                    TcpSendSpaceMax = tcpSendSpaceMax
                     ProtectedFiles = protectedFiles
                     LocalAddresses = UnixSystem.defaultLocalAddresses
                     LocalRoutes = UnixSystem.defaultLocalRoutes

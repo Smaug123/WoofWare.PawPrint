@@ -52,7 +52,9 @@ type InodeTimes =
         /// <c>st_birthtim</c>: when the inode was created.
         /// </summary>
         /// <remarks>
-        /// Never moves after creation.
+        /// Moves after creation only where Darwin's <c>utimensat</c> sets a
+        /// modification time earlier than it, which pulls it back; see
+        /// <c>TimestampChangeRules.changed</c>.
         /// </remarks>
         Birth : UnixTimestamp
     }

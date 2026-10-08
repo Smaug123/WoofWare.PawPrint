@@ -2008,6 +2008,16 @@ type KernelConfig =
         /// nothing of it, and on Darwin for one outside the range
         /// `UnixBootImage.withTcpSendSpace` admits.
         TcpSendSpace : int option
+        /// The TCP receive buffer sysctl — Darwin's `net.inet.tcp.recvspace`,
+        /// Linux's `net.ipv4.tcp_rmem` default — or `None` for the flavour's
+        /// measured default (131072 on both). A connection's receive buffer is
+        /// derived from it. See `UnixBootImage.withTcpReceiveSpace`.
+        TcpReceiveSpace : int option
+        /// Linux's `net.ipv4.tcp_wmem` maximum, the size a connection's send
+        /// buffer autotunes to, or `None` for the measured default (4194304).
+        /// Only `None` is admitted on Darwin, which reads nothing of it. See
+        /// `UnixBootImage.withTcpSendSpaceMax`.
+        TcpSendSpaceMax : int option
         /// Linux's `fs.protected_symlinks`, `fs.protected_regular`,
         /// `fs.protected_fifos` and `fs.protected_hardlinks` sysctls, which forbid
         /// following another user's symbolic link, or opening another user's file
@@ -2098,6 +2108,8 @@ type KernelConfig =
             EphemeralPortRange = None
             SoMaxConn = None
             TcpSendSpace = None
+            TcpReceiveSpace = None
+            TcpSendSpaceMax = None
             ProtectedFiles = ProtectedFiles.off
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
@@ -2218,6 +2230,10 @@ type MachineConfig =
         SoMaxConn : int option
         /// See `KernelConfig.TcpSendSpace`.
         TcpSendSpace : int option
+        /// See `KernelConfig.TcpReceiveSpace`.
+        TcpReceiveSpace : int option
+        /// See `KernelConfig.TcpSendSpaceMax`.
+        TcpSendSpaceMax : int option
         /// See `KernelConfig.ProtectedFiles`.
         ProtectedFiles : ProtectedFiles
         /// See `KernelConfig.LocalAddresses`.
@@ -2476,6 +2492,32 @@ module MachineConfig =
             failwith
                 $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at least %d{sendPipe}, or None for the default."
 
+    let private withTcpReceiveSpace
+        (knobs : string)
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpReceiveSpace value image with
+        | Ok image -> image
+        | Error refusal ->
+            failwith
+                $"%s{knobs}.TcpReceiveSpace: %s{TcpReceiveSpaceRefusal.describe refusal} Configure another size, or None for the default."
+
+    let private withTcpSendSpaceMax
+        (knobs : string)
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpSendSpaceMax value image with
+        | Ok image -> image
+        | Error (TcpSendSpaceMaxRefusal.NotReadOn _ as refusal) ->
+            failwith $"%s{knobs}.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Pass None."
+        | Error (TcpSendSpaceMaxRefusal.NotPositive _ as refusal) ->
+            failwith
+                $"%s{knobs}.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Configure a positive size, or None for the default."
+
     let private withProtectedFiles
         (knobs : string)
         (protection : ProtectedFiles)
@@ -2545,6 +2587,8 @@ module MachineConfig =
              |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour))
         |> withSoMaxConn knobs config.SoMaxConn
         |> withTcpSendSpace knobs config.TcpSendSpace
+        |> withTcpReceiveSpace knobs config.TcpReceiveSpace
+        |> withTcpSendSpaceMax knobs config.TcpSendSpaceMax
         |> withProtectedFiles knobs config.ProtectedFiles
         |> UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes
         |> processIdOrFail
@@ -2664,6 +2708,8 @@ module KernelConfig =
                 EphemeralPortRange = config.EphemeralPortRange
                 SoMaxConn = config.SoMaxConn
                 TcpSendSpace = config.TcpSendSpace
+                TcpReceiveSpace = config.TcpReceiveSpace
+                TcpSendSpaceMax = config.TcpSendSpaceMax
                 ProtectedFiles = config.ProtectedFiles
                 LocalAddresses = config.LocalAddresses
                 LocalRoutes = config.LocalRoutes
