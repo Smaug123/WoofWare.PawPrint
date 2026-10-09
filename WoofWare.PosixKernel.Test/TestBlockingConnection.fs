@@ -504,6 +504,49 @@ module TestBlockingConnection =
                 8, Gen.map BlockingConnectionOp.Finish task
             ]
 
+    /// Two tasks read one end and sleep; then `between` makes that end
+    /// readable, a wake wakes both, and the client finishes them in turn.
+    /// Each op names a task and a descriptor by index, as `opGen`'s do: the
+    /// first idle task, and the first descriptor or the second.
+    let private twoReaders (between : BlockingConnectionOp) : BlockingConnectionOp list =
+        [
+            BlockingConnectionOp.Read (0, 0, 100000)
+            BlockingConnectionOp.Read (0, 0, 100000)
+            between
+            BlockingConnectionOp.Wake
+            BlockingConnectionOp.Finish 0
+            BlockingConnectionOp.Finish 0
+        ]
+
+    /// Two tasks write enough to one end that both sleep, the second having
+    /// taken nothing; the other end closes over the bytes it has not read,
+    /// which resets the connection; a third task reads the reset's error, and
+    /// the client wakes and finishes the writers.
+    let private resetUnderWriters : BlockingConnectionOp list =
+        [
+            BlockingConnectionOp.Write (0, 0, 200000)
+            BlockingConnectionOp.Write (0, 0, 200000)
+            BlockingConnectionOp.Close 1
+            BlockingConnectionOp.Read (0, 0, 100)
+            BlockingConnectionOp.Wake
+            BlockingConnectionOp.Finish 0
+            BlockingConnectionOp.Finish 0
+        ]
+
+    /// Openings that reach what a random run reaches only now and then: seven
+    /// bytes for two readers, so that the second finds nothing and sleeps
+    /// again; the other end's close under two readers, so that both read end
+    /// of file; and a reset under two writers, whose read is `ECONNRESET` and
+    /// whose second writer's finish, the error taken, is `EPIPE`.
+    let private openingGen : Gen<BlockingConnectionOp list> =
+        Gen.frequency
+            [
+                6, Gen.constant []
+                1, Gen.constant (twoReaders (BlockingConnectionOp.Write (0, 1, 7)))
+                1, Gen.constant (twoReaders (BlockingConnectionOp.Close 1))
+                1, Gen.constant resetUnderWriters
+            ]
+
     /// TCP buffers as small as each flavour admits.
     let private small (image : UnixBootImage<int, string>) : UnixBootImage<int, string> =
         match SimulatedUnixPlatform.flavour (UnixBootImage.platform image) with
@@ -1082,8 +1125,9 @@ module TestBlockingConnection =
                 let! platform = Gen.elements Machines.platforms
                 let! restart = Gen.elements [ true ; false ]
                 let! closes = Gen.elements [ 0 ; 1 ; 2 ]
+                let! opening = openingGen
                 let! ops = Gen.listOfLength 80 (opGen closes)
-                return platform, restart, ops
+                return platform, restart, opening @ ops
             }
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 400, Prop.forAll (Arb.fromGen gen) property)
@@ -1101,11 +1145,12 @@ module TestBlockingConnection =
         for line in report do
             System.Console.WriteLine line
 
-        // Each reached at least ten times in each of five runs when this was
-        // written. Darwin's buffers are the larger, so its writers sleep less
-        // often, and those of its paths, like a finish's ECONNRESET and the
-        // non-blocking refusals, are reached only now and then: the rows below
-        // hold each of them, and the property checks every one it reaches.
+        // Each reached in every one of sixty runs of 400 cases, the rarest
+        // made common by `openingGen`. Darwin's buffers are the larger, so its
+        // writers sleep less often, and those of its paths, like a finish's
+        // ECONNRESET and the non-blocking refusals, are reached only now and
+        // then: the rows below hold each of them, and the property checks
+        // every one it reaches.
         for flavour in [ "Linux" ; "Darwin" ] do
             for what in
                 [
