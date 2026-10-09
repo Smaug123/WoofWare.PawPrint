@@ -15,11 +15,11 @@ open WoofWare.PosixKernel
 /// through: the S section of `tcp-transfer.c`
 /// (docs/plans/2026-10-07-tcp-byte-transfer), measured on Linux 6.18.5
 /// aarch64 and Darwin 27.0 and embedded from beside the probe, held to the
-/// host the suite runs on. Each host falsifies its own column: Darwin's here,
-/// Linux's on CI's x86-64.
-///
-/// The kernel does not yet transfer bytes between sockets, so these rows are
-/// the measurement the model will be held to, not yet a check of it.
+/// host the suite runs on and to the kernel. Each host falsifies its own
+/// column: Darwin's here, Linux's on CI's x86-64. The kernel is held to both
+/// flavours' rows on every host, for the calls it has (`read` and `write`,
+/// not `recv` and `send`) and the states it can reach (not `SO_LINGER`'s), and
+/// to what `epoll` and the kqueue filters reported as well as `poll`.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestConnectedTransferAgainstHost =
@@ -85,6 +85,11 @@ module TestConnectedTransferAgainstHost =
             Before : Readiness
             Seen : Seen list
             After : Readiness
+            /// What the probe recorded besides `poll` and `FIONREAD`: Linux's
+            /// level-triggered `epoll` mask, and Darwin's two kqueue filters,
+            /// as `waiters` renders them.
+            BeforeWaiters : string
+            AfterWaiters : string
         }
 
     let private stateNamed (name : string) : State =
@@ -127,6 +132,16 @@ module TestConnectedTransferAgainstHost =
 
     let private readinessPattern : Regex =
         Regex @"poll=0x([0-9a-f]+) .* fionread=(-?\d+)"
+
+    let private waitersPattern : Regex = Regex @"poll=0x[0-9a-f]+ (.*) fionread="
+
+    let private waitersOf (text : string) : string =
+        let m = waitersPattern.Match text
+
+        if not m.Success then
+            failwith $"no waiters in %s{text}"
+
+        m.Groups.[1].Value
 
     let private readinessOf (text : string) : Readiness =
         let m = readinessPattern.Match text
@@ -178,6 +193,8 @@ module TestConnectedTransferAgainstHost =
                         Before = readinessOf before
                         Seen = seen.Split " ; " |> Array.toList |> List.map seenOf
                         After = readinessOf after
+                        BeforeWaiters = waitersOf before
+                        AfterWaiters = waitersOf after
                     }
             | _ -> None
         )
@@ -532,3 +549,317 @@ module TestConnectedTransferAgainstHost =
 
             disagreements |> shouldEqual []
         )
+
+    // The kernel
+
+    /// Whether the kernel can be held to `row`: a call it has, in a state it
+    /// can reach and holds still. `recv` and `send` are not modelled yet, nor
+    /// `SO_LINGER`. A Linux send buffer the timer frees space in is the
+    /// kernel's stated non-reproduction (it frees space only as the peer
+    /// reads), so a write to a full one answers `EAGAIN` for ever where Linux
+    /// took 100 bytes 20 ms on; and Darwin's full send buffer drains on another
+    /// thread, so its rows after a fill are not repeatable at all.
+    let private kernelHolds (row : Row) : bool =
+        let operation =
+            match row.Operation with
+            | Operation.Readiness
+            | Operation.Read
+            | Operation.ReadZero
+            | Operation.Write
+            | Operation.WriteZero -> true
+            | Operation.Recv
+            | Operation.RecvZero
+            | Operation.Peek
+            | Operation.Send
+            | Operation.SendZero
+            | Operation.SendNoSignal
+            | Operation.DontWait -> false
+
+        let state =
+            match row.Flavour, row.State with
+            | _, State.LingerZero -> false
+            | SimulatedUnixFlavour.Darwin, State.SendFull
+            | SimulatedUnixFlavour.Darwin, State.SendFullReset -> false
+            | SimulatedUnixFlavour.Linux, State.SendFull -> row.Operation <> Operation.Write
+            | _, _ -> true
+
+        operation && state
+
+    let private kernelPort : uint16 = 5000us
+
+    let private kernelLoopback (platform : SimulatedUnixPlatform) : byte[] =
+        CopyIn.inet platform (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress kernelPort)
+
+    let private kernelClose (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixDescriptor.close fd system with
+        | Ok (SyscallAnswer.Completed 0L, system) -> system
+        | other -> failwith $"closing fd %d{fd}: %A{other}"
+
+    /// A booted system of `platform`, with task 1 for `accept` and `SIGPIPE`
+    /// ignored, as the test host and the .NET runtime ignore it.
+    let private kernelSystem (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        let system =
+            UnixSystem.initial<int, string> platform
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> Tasks.ensure 1
+
+        { system with
+            Process =
+                { system.Process with
+                    Signals = SignalState.setDisposition Signal.SIGPIPE SignalDisposition.Ignore system.Process.Signals
+                }
+        }
+
+    /// A connected loopback pair in the kernel, both ends non-blocking, as
+    /// `hostPair` makes one: the connecting socket, then the accepted one.
+    let private kernelPair (platform : SimulatedUnixPlatform) : int * int * UnixSystem<int, string> =
+        let system = kernelSystem platform
+
+        let listener, system =
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+        let system =
+            match CopyIn.bind listener UserBuffer.Mapped 16u (kernelLoopback platform) system with
+            | Ok (BindAnswer.Bound _, system) -> system
+            | other -> failwith $"bind: %A{other}"
+
+        let system =
+            match UnixSocket.listen listener 8 system with
+            | Ok (ListenAnswer.Listening _, system) -> system
+            | other -> failwith $"listen: %A{other}"
+
+        let client, system =
+            NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
+
+        let system =
+            match CopyIn.connect client UserBuffer.Mapped 16u (kernelLoopback platform) system with
+            | Ok (ConnectOutcome.Completed, system) -> system
+            | other -> failwith $"connect: %A{other}"
+
+        let server, system =
+            match UnixConnection.accept 1 listener UserBuffer.Mapped 16u system with
+            | Ok (AcceptOutcome.Accepted (accepted, _, _), system) -> accepted, system
+            | other -> failwith $"accept: %A{other}"
+
+        let system = kernelClose listener system
+        let _, system = UnixDescriptor.setNonBlocking client true system
+        let _, system = UnixDescriptor.setNonBlocking server true system
+        client, server, system
+
+    /// A write of `count` bytes of the payload through `fd`: what it answered,
+    /// whether it raised `SIGPIPE`, and the system after.
+    let private kernelWrite
+        (fd : int)
+        (count : int)
+        (system : UnixSystem<int, string>)
+        : Seen * UnixSystem<int, string>
+        =
+        let bytes = System.Collections.Immutable.ImmutableArray.Create (payload, 0, count)
+
+        match WriteOutcomes.admitThenWrite system.Leader fd UserBuffer.Mapped bytes system with
+        | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, system)) -> Seen.Returned written, system
+        | Ok (WriteOutcome.Returns (WriteAnswer.Failed error, system)) -> Seen.Failed (error, false), system
+        | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed error, entry, system)) when entry.Signal = Signal.SIGPIPE ->
+            Seen.Failed (error, true), system
+        | other -> failwith $"a write of %d{count} through fd %d{fd}: %A{other}"
+
+    let private kernelRead
+        (fd : int)
+        (count : int)
+        (system : UnixSystem<int, string>)
+        : Seen * UnixSystem<int, string>
+        =
+        match ReadOutcomes.read fd UserBuffer.Mapped (uint64 count) system with
+        | Ok (ReadAnswer.Completed bytes, system) -> Seen.Returned (int64 bytes.Length), system
+        | Ok (ReadAnswer.Failed error, system) -> Seen.Failed (error, false), system
+        | other -> failwith $"a read of %d{count} through fd %d{fd}: %A{other}"
+
+    let private kernelWriteExactly
+        (fd : int)
+        (count : int)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        match kernelWrite fd count system with
+        | Seen.Returned written, system when written = int64 count -> system
+        | other, _ -> failwith $"a write of %d{count} answered %A{other}"
+
+    /// Bring a fresh pair in the kernel to `state`, as `hostBuild` does on the
+    /// host: the observed socket, and the system.
+    let private kernelBuild (platform : SimulatedUnixPlatform) (state : State) : int * UnixSystem<int, string> =
+        let s, p, system = kernelPair platform
+
+        let rec fill (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+            match kernelWrite s 65536 system with
+            | Seen.Returned _, system -> fill system
+            | Seen.Failed (UnixError.EAGAIN, false), system -> system
+            | other, _ -> failwith $"filling: %A{other}"
+
+        let system =
+            match state with
+            | State.Idle -> system
+            | State.DataIn -> kernelWriteExactly p 1000 system
+            | State.SendFull -> fill system
+            | State.SendFullReset -> fill system |> kernelClose p
+            | State.Fin -> kernelClose p system
+            | State.FinData -> kernelWriteExactly p 1000 system |> kernelClose p
+            | State.FinDrained ->
+                let system = kernelWriteExactly p 1000 system |> kernelClose p
+
+                match kernelRead s 4096 system with
+                | Seen.Returned 1000L, system -> system
+                | other, _ -> failwith $"FIN_DRAINED: the drain read %A{other}"
+            | State.Reset -> kernelWriteExactly s 1000 system |> kernelClose p
+            | State.ResetData -> kernelWriteExactly p 1000 system |> kernelWriteExactly s 1000 |> kernelClose p
+            | State.LingerZero -> failwith "SO_LINGER is not modelled, so the kernel cannot reach LINGER0"
+            | State.FinWritten -> kernelClose p system |> kernelWriteExactly s 100
+
+        s, system
+
+    /// What `fd` presents in the kernel: `poll`'s revents for every event the
+    /// flavour has (a poll, which a Linux socket's send-space wake can notice),
+    /// `FIONREAD`, and the waiters as the probe printed them.
+    let private kernelReadiness
+        (fd : int)
+        (system : UnixSystem<int, string>)
+        : Readiness * string * UnixSystem<int, string>
+        =
+        let platform = system.Machine.UnixPlatform
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        let revents, system =
+            match
+                UnixPoll.poll
+                    system.Leader
+                    [
+                        {
+                            Fd = fd
+                            Events = everyEvent flavour
+                        }
+                    ]
+                    0
+                    system
+            with
+            | Ok (PollOutcome.Answered ([ revents ], _), system) -> int (uint16 revents), system
+            | other -> failwith $"poll: %A{other}"
+
+        let readable =
+            match UnixDescriptor.bytesAvailable fd UserBuffer.Mapped system with
+            | Ok (BytesAvailableAnswer.Reported count) -> count
+            | other -> failwith $"FIONREAD: %A{other}"
+
+        let socketId =
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+            | Some (OpenFileTarget.Socket socketId) -> socketId
+            | other -> failwith $"fd %d{fd} names %A{other}"
+
+        let waiters =
+            match flavour with
+            | SimulatedUnixFlavour.Linux ->
+                let description =
+                    match FileDescriptorRegistry.tryFindId fd (UnixSystemState.fileDescriptors system) with
+                    | Some description -> description
+                    | None -> failwith $"fd %d{fd} names no description"
+
+                $"epoll=0x%x{LinuxReadiness.ofDescription description system}"
+            | SimulatedUnixFlavour.Darwin ->
+                let fflags (error : UnixError option) : int =
+                    match error with
+                    | None -> 0
+                    | Some error -> UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+
+                let render (name : string) (filter : KqueueFilter) : string =
+                    match DarwinReadiness.ofSocket filter socketId system.Machine with
+                    | None -> $"%s{name}(-)"
+                    | Some (KqueueFilterReport.Ready data) -> $"%s{name}(data=%d{data} fflags=0)"
+                    | Some (KqueueFilterReport.EndOfFile (data, error)) ->
+                        $"%s{name}(data=%d{data} EOF fflags=%d{fflags error})"
+
+                let read = render "READ" KqueueFilter.Read
+                let write = render "WRITE" KqueueFilter.Write
+                $"%s{read} %s{write}"
+
+        {
+            Revents = revents
+            Readable = readable
+        },
+        waiters,
+        system
+
+    /// What the kernel answered to `operation`, one entry per call.
+    let private kernelCalls
+        (s : int)
+        (operation : Operation)
+        (system : UnixSystem<int, string>)
+        : Seen list * UnixSystem<int, string>
+        =
+        let thrice
+            (call : UnixSystem<int, string> -> Seen * UnixSystem<int, string>)
+            : Seen list * UnixSystem<int, string>
+            =
+            (([], system), [ 1..3 ])
+            ||> List.fold (fun (seen, system) _ ->
+                let answer, system = call system
+                seen @ [ answer ], system
+            )
+
+        match operation with
+        | Operation.Readiness ->
+            let platform = system.Machine.UnixPlatform
+
+            let level = SimulatedUnixPlatform.socketOptionLevel platform
+            let optionName = SimulatedUnixPlatform.socketErrorOption platform
+
+            match UnixSocket.getsockopt s level optionName UserBuffer.Mapped UserBuffer.Mapped (Some 4u) system with
+            | Ok (GetSockOptAnswer.Reported (OptionValue.Int 0), system) -> [ Seen.PendingError None ], system
+            | Ok (GetSockOptAnswer.Reported (OptionValue.Int raw), system) ->
+                [
+                    Seen.PendingError (UnixError.ofRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) raw)
+                ],
+                system
+            | Ok (GetSockOptAnswer.Reported copied, _) ->
+                failwith $"getsockopt(SO_ERROR) copied out %A{copied}, not an int"
+            | Ok (GetSockOptAnswer.Failed (error, _), _) -> failwith $"getsockopt(SO_ERROR): %O{error}"
+            | Error refusal -> failwith $"getsockopt(SO_ERROR): %s{SocketOptionRefusal.describe refusal}"
+        | Operation.Read -> thrice (kernelRead s 4096)
+        | Operation.ReadZero -> thrice (kernelRead s 0)
+        | Operation.Write -> thrice (kernelWrite s 100)
+        | Operation.WriteZero -> thrice (kernelWrite s 0)
+        | other -> failwith $"the kernel has no %A{other}"
+
+    [<Test>]
+    let ``the kernel answers every state and operation it can reach as each flavour was measured to`` () : unit =
+        for flavour in [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ] do
+            let platform = HostPlatform.platformOf flavour
+            let rows = rowsOf flavour |> List.filter kernelHolds
+
+            // Every reachable state with each of the five calls the kernel has,
+            // bar what `kernelHolds` leaves out.
+            rows.Length
+            |> shouldEqual (
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> 10 * 5 - 1
+                | SimulatedUnixFlavour.Darwin -> 8 * 5
+            )
+
+            let disagreements =
+                rows
+                |> List.collect (fun row ->
+                    let s, system = kernelBuild platform row.State
+                    let before, beforeWaiters, system = kernelReadiness s system
+                    let answered, system = kernelCalls s row.Operation system
+                    let after, afterWaiters, system = kernelReadiness s system
+
+                    UnixSystem.checkInvariants system |> shouldEqual []
+
+                    [
+                        if before <> row.Before || beforeWaiters <> row.BeforeWaiters then
+                            $"%A{flavour} %A{row.State} %A{row.Operation}: before the calls the kernel reports %A{before} %s{beforeWaiters}, measured %A{row.Before} %s{row.BeforeWaiters}"
+                        if answered <> row.Seen then
+                            $"%A{flavour} %A{row.State} %A{row.Operation}: the kernel answered %A{answered}, measured %A{row.Seen}"
+                        if after <> row.After || afterWaiters <> row.AfterWaiters then
+                            $"%A{flavour} %A{row.State} %A{row.Operation}: after the calls the kernel reports %A{after} %s{afterWaiters}, measured %A{row.After} %s{row.AfterWaiters}"
+                    ]
+                )
+
+            disagreements |> shouldEqual []

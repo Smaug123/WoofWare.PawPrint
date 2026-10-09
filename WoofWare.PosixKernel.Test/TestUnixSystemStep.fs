@@ -325,21 +325,19 @@ module TestUnixSystemStep =
         }
 
     [<Test>]
-    let ``a socket with a peer is refused, and the refusal names it`` () : unit =
-        // A connected socket's read moves bytes, which this kernel does not
-        // model. The refusal carries the socket's domain, kind and phase,
-        // because only the library can see them. One with no peer is answered
+    let ``a socket with a refused connection's error is refused, and the refusal names it`` () : unit =
+        // What a read reports of a refused connection's error is not modelled.
+        // The refusal carries the socket's domain, kind and phase, because only
+        // the library can see them. One with no peer is answered
         // (`TestUnconnectedSocketTransfer` holds those rows to the measured
         // ones): ENOTCONN for an INET stream socket on both flavours.
         for platform in [ linux ; darwin ] do
-            let established = SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
-            let fd, system = withSocketIn established platform
+            let refused = SocketPhase.Refused RefusalError.Pending
+            let fd, system = withSocketIn refused platform
 
             ReadOutcomes.read fd UserBuffer.Mapped 5UL system
             |> shouldEqual (
-                Error (
-                    ReadRefusal.UnmodelledSocketPhase (socketZero, SocketDomain.Inet, SocketKind.Stream, established)
-                )
+                Error (ReadRefusal.UnmodelledSocketPhase (socketZero, SocketDomain.Inet, SocketKind.Stream, refused))
             )
 
             let fd, system = withSocket platform
@@ -410,6 +408,9 @@ module TestUnixSystemStep =
                 SocketPhase.Refused RefusalError.Pending
             ]
 
+        // The connected phases' connection, both of whose ends are open.
+        let linux = ForgedConnection.add (ConnectionId 0L) SocketDomain.Inet [] linux
+
         for phase in phases do
             let fd, registry =
                 FileDescriptorRegistry.createSocket socketZero (UnixSystemState.fileDescriptors linux)
@@ -433,12 +434,16 @@ module TestUnixSystemStep =
             ReadOutcomes.read fd UserBuffer.Mapped 0UL system
             |> shouldEqual (Ok (ReadAnswer.Completed ImmutableArray.Empty, system))
 
-            // ...and one byte is refused in every phase with a peer or an error,
-            // so the row above is about the length rather than about the phase
-            // happening to be an answerable one.
+            // ...and one byte is answered by the phase: ENOTCONN with no peer,
+            // a sleep (refused) on a connection with nothing to read, and a
+            // refusal with an error, so the row above is about the length
+            // rather than about the phase.
             match phase, ReadOutcomes.read fd UserBuffer.Mapped 1UL system with
             | SocketPhase.Idle, answer
             | SocketPhase.Listening _, answer -> answer |> shouldEqual (notConnected system)
+            | SocketPhase.Established _, refusal
+            | SocketPhase.EstablishedPendingReport _, refusal ->
+                refusal |> shouldEqual (Error (ReadRefusal.ConnectionSleep socketZero))
             | _, Error (ReadRefusal.UnmodelledSocketPhase (_, _, _, refusedIn)) -> refusedIn |> shouldEqual phase
             | _, other -> failwith $"expected a refusal for phase %O{phase}, got %A{other}"
 
@@ -632,13 +637,13 @@ module TestUnixSystemStep =
         | _ -> false
 
     [<Test>]
-    let ``a socket with a peer is refused by both halves of the write`` () : unit =
-        // A connected socket's write moves bytes, which this kernel does not
-        // model. Both calls must refuse: the admission because a caller must
-        // not extract bytes for a write that cannot happen, and `write` because
-        // a caller that skipped the admission must not get a guess either.
+    let ``a socket with a refused connection's error is refused by both halves of the write`` () : unit =
+        // What a write reports of a refused connection's error is not modelled.
+        // Both calls must refuse: the admission because a caller must not
+        // extract bytes for a write that cannot happen, and `write` because a
+        // caller that skipped the admission must not get a guess either.
         let socketId = SocketId 0L
-        let established = SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
+        let refused = SocketPhase.Refused RefusalError.Pending
 
         let socket : SocketDescription =
             {
@@ -646,7 +651,7 @@ module TestUnixSystemStep =
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
                 Binding = None
-                Phase = established
+                Phase = refused
                 ReuseAddress = false
                 Options = SocketOptions.initial
             }
@@ -664,7 +669,7 @@ module TestUnixSystemStep =
             |> UnixSystemState.withFileDescriptors registry
 
         let expected =
-            Error (WriteRefusal.UnmodelledSocketPhase (socketId, SocketDomain.Inet, SocketKind.Stream, established))
+            Error (WriteRefusal.UnmodelledSocketPhase (socketId, SocketDomain.Inet, SocketKind.Stream, refused))
 
         WriteAdmissions.unchanged fd UserBuffer.Mapped 5UL system
         |> shouldEqual expected
@@ -704,15 +709,13 @@ module TestUnixSystemStep =
         |> shouldEqual true
 
     [<Test>]
-    let ``every phase with a peer or a refused connection's error refuses a read and a write`` () : unit =
+    let ``every phase with a datagram peer or a refused connection's error refuses a read and a write`` () : unit =
         // Measured, a refused socket answers neither as a fresh one nor as the
         // other flavour's does (socket-unconnected-transfer-after.c), and a
-        // connected one moves bytes; so each is refused, naming its phase, and
-        // only `Idle` and `Listening` are answered.
+        // datagram peer is a delivery this kernel does not model; so each is
+        // refused, naming its phase.
         let refusing =
             [
-                SocketPhase.EstablishedPendingReport (ConnectionId 0L)
-                SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
                 SocketPhase.DatagramPeer (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 9us)
@@ -1013,12 +1016,12 @@ module TestUnixSystemStep =
         // phase, and is refused in some, but its seekability does not — every
         // socket is unseekable whatever it is connected to, so `pread` never
         // reaches the read operation to ask.
-        let established = SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)
-        let fd, system = withSocketIn established linux
+        let refused = SocketPhase.Refused RefusalError.Pending
+        let fd, system = withSocketIn refused linux
 
         ReadOutcomes.read fd UserBuffer.Mapped 5UL system
         |> shouldEqual (
-            Error (ReadRefusal.UnmodelledSocketPhase (socketZero, SocketDomain.Inet, SocketKind.Stream, established))
+            Error (ReadRefusal.UnmodelledSocketPhase (socketZero, SocketDomain.Inet, SocketKind.Stream, refused))
         )
 
         PReadUnchanged.pread fd UserBuffer.Mapped 5UL 0L system

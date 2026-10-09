@@ -239,7 +239,12 @@ module TestPoll =
                     let fd, system = add system
                     (name, fd, level) :: rows, system
                 )
-                ([], linux)
+                // The "peer closed" row's server end has gone, and both ends
+                // of the "peer alive" rows' connection are held.
+                ([],
+                 linux
+                 |> ForgedConnection.add connection SocketDomain.Inet []
+                 |> ForgedConnection.add orphan SocketDomain.Inet [ ConnectionEnd.Server ])
 
         // The peer of the "peer alive" rows: a second end on the same
         // connection. Not itself a row, because it duplicates one.
@@ -365,7 +370,7 @@ module TestPoll =
                 SocketDomain.Inet
                 SocketKind.Stream
                 (SocketPhase.Established (ConnectionId 3L, ConnectionEnd.Client))
-                linux
+                (ForgedConnection.add (ConnectionId 3L) SocketDomain.Inet [ ConnectionEnd.Server ] linux)
 
         pollOrFail [ entry fd pollRdHup ] 0 system |> shouldEqual ([ pollRdHup ], 1)
         pollOrFail [ entry fd pollIn ] 0 system |> shouldEqual ([ pollIn ], 1)

@@ -1,0 +1,8 @@
+survivor=c how=r locked=0 so_error=104 setsockopt=ok bind=ok bind_reuse=-1 Address already in use getsockname_port_same=1
+survivor=c how=r locked=1 so_error=104 setsockopt=ok bind=-1 Address already in use bind_reuse=ok getsockname_port_same=1
+survivor=c how=f locked=0 so_error=0 setsockopt=ok bind=-1 Address already in use bind_reuse=ok getsockname_port_same=1
+survivor=c how=f locked=1 so_error=0 setsockopt=ok bind=-1 Address already in use bind_reuse=ok getsockname_port_same=1
+survivor=s how=r locked=0 so_error=104 setsockopt=ok bind=ok bind_reuse=-1 Address already in use getsockname_port_same=1
+survivor=s how=r locked=1 so_error=104 setsockopt=ok bind=ok bind_reuse=-1 Address already in use getsockname_port_same=1
+survivor=s how=f locked=0 so_error=0 setsockopt=ok bind=-1 Address already in use bind_reuse=ok getsockname_port_same=1
+survivor=s how=f locked=1 so_error=0 setsockopt=ok bind=-1 Address already in use bind_reuse=ok getsockname_port_same=1
