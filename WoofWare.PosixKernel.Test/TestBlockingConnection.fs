@@ -1351,6 +1351,66 @@ module TestBlockingConnection =
                     UnixTaskTable.parkOf 2 after.Tasks |> shouldEqual None
                 | other -> failwith $"%O{platform} restart %b{restart}: the write came to %A{other}"
 
+    /// A signal the sleeping task blocks neither wakes a sleeping transfer nor
+    /// ends it: the read answers the bytes that wake it, and the signal stays
+    /// pending.
+    [<Test>]
+    let ``a signal the task blocks leaves a sleeping transfer asleep, and pending`` () : unit =
+        for platform in Machines.platforms do
+            let numbering = SignalState.numbering (systemOn platform false).Process.Signals
+            let usr1 = SignalMask.ofSignals numbering (Set.singleton Signal.SIGUSR1)
+
+            let sigBlock =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 1
+
+            let blocking (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+                match UnixSignal.pthreadSigmask task sigBlock (Some usr1) system with
+                | Ok (_, system) -> system
+                | Error errno -> failwith $"%O{platform}: pthread_sigmask: %O{errno}"
+
+            let client, server, system = pair (systemOn platform false)
+            let system = system |> blocking 1 |> blocking 2
+
+            let system = asleepReading 1 client 4096 system |> signalled 1
+            wokenAmong [ 1 ] system |> shouldEqual []
+
+            let system = wrote server 100 system |> snd
+            wokenAmong [ 1 ] system |> shouldEqual [ 1 ]
+
+            let system =
+                match UnixReadWrite.finishRead 1 system with
+                | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
+                    List.ofSeq bytes |> shouldEqual (payload 99 100)
+                    after
+                | other -> failwith $"%O{platform}: the read came to %A{other}"
+
+            UnixSignal.sigpending 1 system |> shouldEqual usr1
+
+            // The server's end full, so a write by it takes nothing.
+            let _, system = UnixDescriptor.setNonBlocking server true system
+
+            let rec fill (system : UnixSystem<int, string>) =
+                match
+                    WriteOutcomes.admitThenWrite
+                        0
+                        server
+                        UserBuffer.Mapped
+                        (ImmutableArray.CreateRange (payload 1 65536))
+                        system
+                with
+                | Ok (WriteOutcome.Returns (WriteAnswer.Completed _, system)) -> fill system
+                | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EAGAIN, system)) -> system
+                | other -> failwith $"filling: %A{other}"
+
+            let system = fill system
+            let _, system = UnixDescriptor.setNonBlocking server false system
+            let system = asleepWriting 2 server (payload 2 1000) system |> signalled 2
+            wokenAmong [ 2 ] system |> shouldEqual []
+            UnixSignal.sigpending 2 system |> shouldEqual usr1
+            UnixSystem.checkInvariants system |> shouldEqual []
+
     /// R-order: three readers asleep on one socket all wake for one byte, on
     /// either flavour; the first to finish takes it, and the rest sleep again.
     [<Test>]
