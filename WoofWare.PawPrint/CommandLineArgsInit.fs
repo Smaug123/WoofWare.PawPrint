@@ -53,6 +53,17 @@ module CommandLineArgsInit =
             failwith
                 $"%s{describe ()} contains a NUL at index %i{index}, so it cannot appear on a command line: a Unix process's arguments are NUL-terminated C strings, and no `execve` could have produced this one. Remove it, or truncate the value yourself if truncation is what you meant."
 
+    /// Refuse `exePath` or any of `argv` if it contains a NUL, which no `execve` could have
+    /// produced (see `rejectInteriorNul`), naming the `GuestConfig` knob it came from.
+    let validate (exePath : string) (argv : string list) : unit =
+        // `exePath` is named as `GuestConfig.AssemblyPath` because that is the only way a host
+        // can put a NUL there: the fallback it defaults to comes from the image's `Module` row,
+        // and a metadata string is itself NUL-terminated in the `#Strings` heap.
+        rejectInteriorNul (fun () -> "GuestConfig.AssemblyPath") exePath
+
+        argv
+        |> List.iteri (fun i arg -> rejectInteriorNul (fun () -> $"GuestConfig.Argv[%i{i}]") arg)
+
     /// Build the call that installs `exePath` and `argv` as the process's command line,
     /// returning the machine state with the argument buffers allocated and a frame ready to
     /// be installed and run. The frame's return value is the `string[]` that `Main` must be
@@ -78,13 +89,7 @@ module CommandLineArgsInit =
         (state : IlMachineState)
         : IlMachineState * MethodState
         =
-        // `exePath` is named as `GuestConfig.AssemblyPath` because that is the only way a host
-        // can put a NUL there: the fallback it defaults to comes from the image's `Module` row,
-        // and a metadata string is itself NUL-terminated in the `#Strings` heap.
-        rejectInteriorNul (fun () -> "GuestConfig.AssemblyPath") exePath
-
-        argv
-        |> List.iteri (fun i arg -> rejectInteriorNul (fun () -> $"GuestConfig.Argv[%i{i}]") arg)
+        validate exePath argv
 
         let exePathPointer, state = HostStartupCall.allocateWideString exePath state
 

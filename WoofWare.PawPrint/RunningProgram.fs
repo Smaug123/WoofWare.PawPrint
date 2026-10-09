@@ -14,13 +14,47 @@ type internal MainReturn =
     /// earlier `Environment.ExitCode` write and overwritten by any later one.
     | Int32
 
+/// Where a program's startup has got to: which call it is pumping on the entry thread, and
+/// what it does when that call returns.
+///
+/// Startup runs guest code up to three times before `Main`, and the runs are not
+/// interchangeable. They are in the order CoreCLR runs them: the AppContext seed is
+/// `CorHost2::CreateAppDomainWithManager`, and the command line is
+/// `CorHost2::ExecuteAssembly` calling `SetCommandLineArgs` immediately before
+/// `ExecuteMainMethod` — which is what triggers the entry type's `.cctor`. Both deadlines
+/// bite: BCL feature switches latch into `static readonly` fields on first read, and a
+/// `.cctor` may call `Environment.GetCommandLineArgs` itself.
+///
+/// Modelled as a DU carrying each phase's own data so the phases cannot drift apart —
+/// there is no way to be initialising classes without `Main`'s arguments in hand, nor to
+/// be pumping a call without knowing what to do when it returns. Each pumped phase names
+/// its successor rather than always yielding to class initialisation, so inserting or
+/// skipping one is a local change.
+///
+/// The phase transitions are closures. They capture concretization results (a concretized
+/// `Main`, the entry type's handle) whose inspectable form would be no more use to a caller
+/// than the functions that consume them, and hoisting them to module scope would mean
+/// threading ten parameters through for no gain in reasoning. What a caller *can* see —
+/// the machine state, and which outcome a step produced — is data.
+[<RequireQualifiedAccess>]
+type internal StartupPhase =
+    /// Pumping `AppContext.Setup`; `onReturn` puts the next phase's call on the entry thread.
+    | SeedingAppContext of onReturn : (IlMachineState -> IlMachineState * StartupPhase)
+    /// Pumping `Environment.InitializeCommandLineArgs`, whose return value is the array
+    /// `Main` must receive; `onReturn` puts the next phase's call on the entry thread.
+    | InitialisingCommandLine of onReturn : (IlMachineState -> IlMachineState * StartupPhase)
+    /// Pumping class initialisers, the entry type's included, with `Main`'s arguments
+    /// already in hand: `installMain` puts `Main` on the entry thread once they have run, and
+    /// `returns` is what `Main` returns.
+    | InitialisingClasses of installMain : (IlMachineState -> IlMachineState) * returns : MainReturn
+
 /// What the entry thread is running, which decides what its bottom frame returning means.
 [<RequireQualifiedAccess>]
 type internal EntryFrameKind =
     /// One of the calls startup pumps to completion: the AppContext seed, the command-line
-    /// initialiser, a class initialiser. Its return ends the phase, and the entry thread is
-    /// left as it is for startup to give it its next frame.
-    | StartupCall
+    /// initialiser, a class initialiser. Its return ends the phase, and `phase` says what the
+    /// entry thread runs next.
+    | StartupCall of phase : StartupPhase
     /// `Main`. Its return latches the exit code if `Main` returns one, and does not end the
     /// run: the entry thread goes to `ThreadStatus.WaitingForForegroundThreads` (and
     /// background), and the run ends with `NormalExit` once `shutdownSignalled` — CoreCLR's
@@ -69,9 +103,9 @@ type internal ProgramTick =
     /// A worker thread's last frame returned.
     | WorkerTerminated of afterTermination : RunningProgram * terminatingThread : ThreadId
     /// The entry thread's `EntryFrameKind.StartupCall` returned, which ends a phase of startup
-    /// rather than the process. The program is the one the step was taken from, with this
-    /// state.
-    | StartupCallReturned of returnedState : IlMachineState
+    /// rather than the process: `advanced` is the program in its next phase, or running `Main`
+    /// if the phase that ended was the last.
+    | StartupCallReturned of advanced : RunningProgram
     /// The process ended, as `outcome` says, and `ended` is the kernel's account of the end,
     /// which the driver takes to the machine the process ran on.
     | Ended of outcome : RunOutcome * ended : EndedProcess<ThreadId, NativeSignalHandler>
@@ -435,6 +469,46 @@ module internal RunningProgram =
             failwith
                 $"Program: a signal was reported to have killed the process, but the kernel ended it by %O{other} (this is an interpreter bug)."
 
+    /// How a startup call that was pumped to completion ended, as the tail of a sentence
+    /// naming what was being run: "Seeding AppContext <this>."
+    ///
+    /// By case rather than with `%O`: every `RunOutcome` carries an `IlMachineState`, so
+    /// structural formatting would render the entire heap into the exception message.
+    let private describeStartupOutcome (outcome : RunOutcome) : string =
+        match outcome with
+        | RunOutcome.NormalExit _ -> "exited normally"
+        | RunOutcome.ProcessExit (_, thread, _) -> $"called Environment.Exit on %O{thread}"
+        | RunOutcome.Aborted (_, thread, fatal, _) ->
+            let message = fatal.Message |> Option.defaultValue "<no message>"
+            $"aborted on %O{thread} with %O{fatal.Code}: %s{message}"
+        | RunOutcome.SignalTerminated (_, signal, coreDumped) ->
+            if coreDumped then
+                $"was terminated by signal %O{signal} (core dumped)"
+            else
+                $"was terminated by signal %O{signal}"
+        | RunOutcome.GuestUnhandledException (finalState, thread, exn, _) ->
+            $"threw an unhandled exception on %O{thread}:\n%s{UnhandledExceptionReport.describe finalState exn}"
+
+    /// How `program`'s run ended, given that its process ended as `outcome` says while
+    /// `program`'s entry thread was running what `program.EntryFrame` says.
+    ///
+    /// Fails loudly if the process ended while startup was seeding AppContext or installing the
+    /// command line. Neither `AppContext.Setup` nor `InitializeCommandLineArgs` can legitimately
+    /// exit, fail fast or throw: each allocates and copies strings out of buffers PawPrint
+    /// itself just wrote. Anything else means a `.cctor` dragged in by that work misbehaved,
+    /// and the run is not one a host should be handed as the guest's.
+    let runEnd (program : RunningProgram) (outcome : RunOutcome) : RunEnd =
+        match program.EntryFrame with
+        | EntryFrameKind.StartupCall (StartupPhase.InitialisingCommandLine _) ->
+            failwith $"Installing the guest's command line %s{describeStartupOutcome outcome}."
+        | EntryFrameKind.StartupCall (StartupPhase.SeedingAppContext _) ->
+            failwith $"Seeding AppContext %s{describeStartupOutcome outcome}."
+        // The entry thread's `.cctor` raised, or a worker spawned during cctor pumping exited,
+        // failed fast, or took a terminating signal: the CLR tears the process down, and the
+        // guest-level diagnostic is the run's end, before `Main` ever ran.
+        | EntryFrameKind.StartupCall (StartupPhase.InitialisingClasses _)
+        | EntryFrameKind.Main _ -> RunEnd.Ended outcome
+
     /// True iff the process waits for `thread` before it can exit: what CoreCLR's
     /// `ThreadStore::OtherThreadsComplete` counts, a foreground thread that has been started and
     /// has not finished.
@@ -499,7 +573,7 @@ module internal RunningProgram =
         : ProgramTick
         =
         match program.EntryFrame with
-        | EntryFrameKind.StartupCall -> continuing program
+        | EntryFrameKind.StartupCall _ -> continuing program
         | EntryFrameKind.Main (returns, shutdownSignalled) ->
 
         let entry = program.State.ThreadState.[program.EntryThread]
@@ -569,7 +643,33 @@ module internal RunningProgram =
             | ExecutionResult.Terminated (state, terminatingThread) ->
                 if terminatingThread = program.EntryThread then
                     match program.EntryFrame with
-                    | EntryFrameKind.StartupCall -> ProgramTick.StartupCallReturned state
+                    | EntryFrameKind.StartupCall phase ->
+                        // The pumped call is done, which ends a phase of startup rather than the
+                        // process, whatever the other threads are doing. The entry thread is
+                        // deliberately not marked Terminated — it is about to get its next frame,
+                        // ultimately `Main` — because a worker that joined it during a `.cctor`
+                        // must not observe a false end-of-thread and proceed past its Join before
+                        // `Main` has started.
+                        match phase with
+                        | StartupPhase.SeedingAppContext onReturn
+                        | StartupPhase.InitialisingCommandLine onReturn ->
+                            let state, next = onReturn state
+
+                            ProgramTick.StartupCallReturned
+                                { program with
+                                    State = state
+                                    EntryFrame = EntryFrameKind.StartupCall next
+                                }
+                        | StartupPhase.InitialisingClasses (installMain, returns) ->
+                            ProgramTick.StartupCallReturned
+                                { program with
+                                    State = installMain state
+                                    // Nothing can have signalled shutdown yet: the entry thread is
+                                    // about to run `Main` as a foreground thread, and only `Main`
+                                    // arms the latch.
+                                    EntryFrame = EntryFrameKind.Main (returns, false)
+                                    LastRan = program.EntryThread
+                                }
                     | EntryFrameKind.Main (returns, _) ->
                         // `Main` has returned. Its return value, if it has one, is latched as the
                         // exit code now, and the entry thread keeps its final frame and waits for
