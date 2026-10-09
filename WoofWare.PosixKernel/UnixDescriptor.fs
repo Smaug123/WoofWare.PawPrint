@@ -1304,6 +1304,7 @@ module UnixDescriptor =
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in an accept on %O{accept.Listener}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
             | Some (ParkedSyscall.KqueuePoll _ as other)
             | Some (ParkedSyscall.PipeRead _ as other)
+            | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.PipeWrite _ as other) ->
                 failwith
                     $"UnixDescriptor.flockAcquire: task %O{task} is parked in %A{other}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
@@ -1680,6 +1681,7 @@ module UnixDescriptor =
                     | ParkedSyscall.PipeWrite _
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _
+                    | ParkedSyscall.SigSuspend
                     // A Darwin poll's filters go with the descriptor (below).
                     | ParkedSyscall.KqueuePoll _ -> None
                 )
@@ -1714,6 +1716,7 @@ module UnixDescriptor =
                 | ParkedSyscall.KqueuePoll _
                 | ParkedSyscall.Accept _
                 | ParkedSyscall.PipeRead _
+                | ParkedSyscall.SigSuspend
                 | ParkedSyscall.PipeWrite _ -> None
             )
 
@@ -1744,6 +1747,7 @@ module UnixDescriptor =
                    | ParkedSyscall.Poll _
                    | ParkedSyscall.KqueuePoll _
                    | ParkedSyscall.PipeRead _
+                   | ParkedSyscall.SigSuspend
                    | ParkedSyscall.PipeWrite _ -> false
                )
 
@@ -1791,6 +1795,7 @@ module UnixDescriptor =
             | ParkedSyscall.Kevent _
             | ParkedSyscall.Flock _
             | ParkedSyscall.Poll _
+            | ParkedSyscall.SigSuspend
             | ParkedSyscall.KqueuePoll _ -> None
 
         let endedCalls =
@@ -1923,6 +1928,7 @@ module UnixDescriptor =
                     | ParkedSyscall.Kevent _
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _
+                    | ParkedSyscall.SigSuspend
                     | ParkedSyscall.KqueuePoll _ -> false
                 )
 
@@ -1988,6 +1994,7 @@ module UnixDescriptor =
                         | ParkedSyscall.KqueuePoll _
                         | ParkedSyscall.Accept _
                         | ParkedSyscall.PipeRead _
+                        | ParkedSyscall.SigSuspend
                         | ParkedSyscall.PipeWrite _ -> false
                     )
 

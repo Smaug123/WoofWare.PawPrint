@@ -34,6 +34,7 @@ module NativeDispatch =
             NativeSystemNative.tryExecute
             NativeLibc.tryExecute
             NativeLibcFile.tryExecute
+            NativeLibcSignalMask.tryExecute
             NativeCryptoNative.tryExecute
             NativeLowLevelMonitor.tryExecute
             NativeDebugger.tryExecute

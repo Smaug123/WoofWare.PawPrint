@@ -1,6 +1,8 @@
 namespace WoofWare.PosixKernel.Test
 
+open System
 open System.Runtime.InteropServices
+open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
@@ -101,4 +103,107 @@ module TestSignalMaskAgainstHost =
                 let report = String.concat "; " disagreements
 
                 failwith $"%O{numbering}: isUnblockableUnder disagrees with this host's pthread_sigmask: %s{report}"
+        )
+
+    let private wordOfBuffer (buffer : byte[]) : uint64 = BitConverter.ToUInt64 (buffer, 0)
+
+    let private bufferOfWord (word : uint64) : byte[] =
+        let buffer : byte[] = Array.zeroCreate sigsetBytes
+        BitConverter.GetBytes(word).CopyTo (buffer, 0)
+        buffer
+
+    [<Test>]
+    let ``UnixSignal.pthreadSigmask answers as this host's pthread_sigmask, call for call`` () : unit =
+        // Random sequences of calls on this thread, each made on the host and
+        // on the model, compared answer by answer and mask by mask. The sets
+        // name only signals the test host can leave blocked for a moment,
+        // SIGKILL's and SIGSTOP's bits, and the bits one flavour treats
+        // specially: Linux's 32 and 33, which glibc screens, and Darwin's bit
+        // 31, which names no signal and is kept.
+        HostPlatform.onUnixHost (fun flavour ->
+            let platform = HostPlatform.platformOf flavour
+            let numbering = SimulatedUnixPlatform.signalNumbering platform
+            let sigBlock, sigSetMask = howFor flavour
+
+            let bitOf (signal : Signal) : int =
+                Signal.toRawSignoUnder numbering signal - 1
+
+            let bits =
+                [
+                    Signal.SIGHUP
+                    Signal.SIGINT
+                    Signal.SIGUSR2
+                    Signal.SIGTERM
+                    Signal.SIGALRM
+                    Signal.SIGKILL
+                    Signal.SIGSTOP
+                ]
+                |> List.map bitOf
+                |> List.append (
+                    match flavour with
+                    | SimulatedUnixFlavour.Linux -> [ 31 ; 32 ]
+                    | SimulatedUnixFlavour.Darwin -> [ 31 ]
+                )
+
+            let hows = [ sigBlock ; sigBlock + 1 ; sigSetMask ; 100 ]
+            let rng = Random 20261008
+            let original : byte[] = Array.zeroCreate sigsetBytes
+
+            if pthread_sigmask (sigBlock, null, original) <> 0 then
+                failwith "could not read this thread's mask"
+
+            try
+                for _ in 1..200 do
+                    if pthread_sigmask (sigSetMask, bufferOfWord 0UL, null) <> 0 then
+                        failwith "could not clear this thread's mask"
+
+                    let mutable system : UnixSystem<int, unit> =
+                        UnixSystem.initial platform
+                        |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+
+                    for _ in 1..10 do
+                        let how = hows.[rng.Next hows.Length]
+
+                        let set =
+                            if rng.Next 6 = 0 then
+                                None
+                            else
+                                Some (
+                                    bits
+                                    |> List.filter (fun _ -> rng.Next 2 = 0)
+                                    |> List.fold (fun w b -> w ||| (1UL <<< b)) 0UL
+                                )
+
+                        let old : byte[] = Array.zeroCreate sigsetBytes
+
+                        let rc =
+                            pthread_sigmask (how, (set |> Option.map bufferOfWord |> Option.toObj), old)
+
+                        let modelSet =
+                            set
+                            |> Option.map (fun word ->
+                                match SignalMask.ofWord numbering word with
+                                | Ok mask -> mask
+                                | Error refusal -> failwith (SignalMaskRefusal.describe refusal)
+                            )
+
+                        match UnixSignal.pthreadSigmask 0 how modelSet system with
+                        | Ok (modelOld, after) ->
+                            (how, set, rc, SignalMask.toWord modelOld)
+                            |> shouldEqual (how, set, 0, wordOfBuffer old)
+
+                            system <- after
+                        | Error errno ->
+                            let expected =
+                                UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) errno
+
+                            (how, set, rc) |> shouldEqual (how, set, expected)
+
+                        let now : byte[] = Array.zeroCreate sigsetBytes
+                        pthread_sigmask (sigBlock, null, now) |> ignore<int>
+
+                        (how, set, SignalState.maskOf 0 (UnixSystem.signals system) |> SignalMask.toWord)
+                        |> shouldEqual (how, set, wordOfBuffer now)
+            finally
+                pthread_sigmask (sigSetMask, original, null) |> ignore<int>
         )

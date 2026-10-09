@@ -90,10 +90,21 @@ storing an empty stack, and `TestSignalState.fs` / `TestLastError.fs`
 property-test that against a store-everything oracle: reads must agree, **and** no
 default may ever be stored.
 
-A task's signal mask is exactly its innermost handler frame's: the library models
-no `sigprocmask(2)`, so a mask exists only while a handler runs, and a test that
-needs a task to block signals puts it in a handler (`HandlerFrames` in
-`WoofWare.PosixKernel.Test`, `SignalFrames` in `WoofWare.PawPrint.Test`).
+`SignalState.Blocked` is such a map: a task absent from it blocks nothing, and
+an empty mask is never stored. `sigprocmask(2)` and delivery set a task's mask,
+`sigreturn` restores the mask its frame saved, a new task copies its creator's,
+and a task's exit drops it. A test that needs a task to block signals calls
+`UnixSignal.pthreadSigmask`; putting it in a handler (`HandlerFrames` in
+`WoofWare.PosixKernel.Test`, `SignalFrames` in `WoofWare.PawPrint.Test`) still
+works, and is what a test of frames wants. A mask is a `SignalMask`, not a set
+of signals, because Darwin keeps bit 31, which names none.
+
+`SignalState.MasksToRestore` is the other per-task map: the mask a
+`sigsuspend(2)` replaced, held from the call until the task returns to user
+mode. There an absent key means "not in the call", so an empty mask *is*
+stored, as the mask to restore. It lives in the signal state rather than the
+park because it outlives the park: the finishing call unparks before the
+client's `onReturnToUser` pushes the frame that saves it.
 
 ## 3. Whose encoding is this?
 

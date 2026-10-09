@@ -230,6 +230,7 @@
     <Compile Include="Native\NativeString.fs" />
     <Compile Include="Native\NativeSystemNative.fs" />
     <Compile Include="Native\NativeLibcFile.fs" />
+    <Compile Include="Native\NativeLibcSignalMask.fs" />
     <Compile Include="Native\NativeLowLevelMonitor.fs" />
     <Compile Include="Native\NativeCryptoNative.fs" />
     <Compile Include="Native\NativeDispatch.fs" />

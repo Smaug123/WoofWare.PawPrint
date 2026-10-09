@@ -4004,7 +4004,8 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.PipeRead _ as other)
-            | Some (ParkedSyscall.PipeWrite _ as other) ->
+            | Some (ParkedSyscall.PipeWrite _ as other)
+            | Some (ParkedSyscall.SigSuspend as other) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
@@ -5350,7 +5351,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.Poll _)
             | Some (ParkedSyscall.KqueuePoll _)
             | Some (ParkedSyscall.PipeRead _)
-            | Some (ParkedSyscall.PipeWrite _) ->
+            | Some (ParkedSyscall.PipeWrite _)
+            | Some ParkedSyscall.SigSuspend ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
@@ -6844,7 +6846,8 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.PipeRead _ as other)
-            | Some (ParkedSyscall.PipeWrite _ as other) ->
+            | Some (ParkedSyscall.PipeWrite _ as other)
+            | Some (ParkedSyscall.SigSuspend as other) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
@@ -7142,7 +7145,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.Flock _)
             | Some (ParkedSyscall.Accept _)
             | Some (ParkedSyscall.PipeRead _)
-            | Some (ParkedSyscall.PipeWrite _) ->
+            | Some (ParkedSyscall.PipeWrite _)
+            | Some ParkedSyscall.SigSuspend ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
