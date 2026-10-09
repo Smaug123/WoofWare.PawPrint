@@ -15,7 +15,8 @@ open WoofWare.PosixKernel
 /// instances, which share one anonymous inode and so contend under `flock`, with an
 /// exclusive lock held through the first; neither epoll instance has anything to deliver;
 /// two kqueues, the first with a ready listener queued and the second drained;
-/// the standard streams, whose readiness is the launch shape's; and two tasks,
+/// a connected client socket with nothing written either way; the standard
+/// streams, whose readiness is the launch shape's; and two tasks,
 /// of which only `signalled` has a caught signal pending.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -159,6 +160,20 @@ module TestWakeCondition =
         let _, _, blocked = world
         blocked
 
+    /// The open file description of the listener's connected client, the
+    /// connection's client end: nothing has been written either way.
+    let private connectedClient : OpenFileDescriptionId =
+        OpenFileTable.descriptions system.Machine.OpenFiles
+        |> Map.toList
+        |> List.pick (fun (id, description) ->
+            match description.Target with
+            | OpenFileTarget.Socket socket ->
+                match SocketPhase.connectionEnd (UnixMachineState.socket socket system.Machine).Phase with
+                | Some (_, ConnectionEnd.Client) -> Some id
+                | _ -> None
+            | _ -> None
+        )
+
     /// The primitives whose answer does not depend on the clock, each with that answer.
     let private fixedTruths : (WakePrimitive * bool) list =
         [
@@ -188,6 +203,11 @@ module TestWakeCondition =
             WakePrimitive.KqueueDrained (idOf 6 system), true
             WakePrimitive.KqueueEventDeliverable (idOf 5 system), true
             WakePrimitive.KqueueEventDeliverable (idOf 6 system), false
+            // The client end has nothing to read, and all its buffers' room
+            // to write into.
+            WakePrimitive.ConnectionReadable connectedClient, false
+            WakePrimitive.ConnectionWritable (connectedClient, 1), true
+            WakePrimitive.ConnectionWritable (connectedClient, 10_000_000), true
         ]
 
     let private at (clock : int64) : UnixSystem<int, string> =
@@ -214,7 +234,9 @@ module TestWakeCondition =
         | WakePrimitive.PipeWriteEndClosed _
         | WakePrimitive.PipeHasRoom _
         | WakePrimitive.PipeReadEndClosed _
-        | WakePrimitive.PipeReadWhileNonBlocking _ ->
+        | WakePrimitive.PipeReadWhileNonBlocking _
+        | WakePrimitive.ConnectionReadable _
+        | WakePrimitive.ConnectionWritable _ ->
             match List.tryFind (fun (p, _) -> p = primitive) fixedTruths with
             | Some (_, truth) -> truth
             | None -> failwith $"the oracle's truth table has no row for %O{primitive}"
@@ -429,6 +451,8 @@ module TestWakeCondition =
                         | WakePrimitive.PipeHasRoom _
                         | WakePrimitive.PipeReadEndClosed _
                         | WakePrimitive.PipeReadWhileNonBlocking _
+                        | WakePrimitive.ConnectionReadable _
+                        | WakePrimitive.ConnectionWritable _
                         | WakePrimitive.SignalDeliverable -> None
                     )
                 )

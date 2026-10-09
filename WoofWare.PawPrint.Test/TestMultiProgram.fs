@@ -73,11 +73,20 @@ public static class Program
                 failwith $"the driver's machine changed at step %d{steps} while its one program ran"
 
             match MultiProgram.step loggerFactory logger driver with
-            | DriverTick.InstructionStepped (driver, _, _, _)
-            | DriverTick.WorkerTerminated (driver, _) -> go driver (steps + 1)
-            | DriverTick.Ended (outcome, remaining) -> outcome, remaining
-            | DriverTick.Deadlocked (_, stuck) -> failwith $"deadlocked: %s{stuck}"
-            | DriverTick.StartupCallReturned _ -> failwith "a startup call returned after Main was installed"
+            | MultiStepOutcome.Stepped (driver,
+                                        pid,
+                                        (ProgramEvent.InstructionStepped _ | ProgramEvent.WorkerTerminated _)) ->
+                pid |> shouldEqual processId
+                go driver (steps + 1)
+            | MultiStepOutcome.Finished ([ pid, RunEnd.Ended outcome ], remaining) ->
+                pid |> shouldEqual processId
+                outcome, remaining
+            | MultiStepOutcome.Finished (ends, _) -> failwith $"expected one program's end, got %A{ends}"
+            | MultiStepOutcome.Deadlocked (_, stuck) -> failwith $"deadlocked: %A{stuck}"
+            | MultiStepOutcome.Stepped (_, _, ProgramEvent.PhaseAdvanced) ->
+                failwith "a startup call returned after Main was installed"
+            | MultiStepOutcome.Stepped (_, _, ProgramEvent.Ended _) ->
+                failwith "the one program ended and the driver ran on"
 
         let outcome, remaining = go prepared.Driver 0
 

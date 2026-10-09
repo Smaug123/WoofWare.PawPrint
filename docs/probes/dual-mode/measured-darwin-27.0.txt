@@ -1,0 +1,759 @@
+uname -r: 27.0.0 arm64; macOS 27.0.1
+sizeof(struct sockaddr_in6)=28 AF_INET6=30
+== A: connect to ::ffff:127.0.0.1 ==
+A1 fresh V6ONLY=0 getsockname                                cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+A1 fresh V6ONLY=0 getpeername                                cell=28  -> ENOTCONN
+A1 fresh getsockname, cell 16                                cell=16  -> OK len=28 family=30 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00]
+A1 fresh getsockname, cell 128                               cell=128 -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 aa aa aa aa]
+A1 fresh getsockname, cell 0                                 cell=0   -> OK len=28 family=170 []
+A2 V6ONLY=0 unbound, connect ::ffff:127.0.0.1:L              -> OK
+A2 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+A2 after: getpeername                                        cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+A2 after: getpeername cell 16                                cell=16  -> OK len=28 family=30 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00]
+A2 after: getpeername cell 24                                cell=24  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01]
+A2 after: getsockname cell 128                               cell=128 -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00 aa aa aa aa]
+A2 after: getsockopt IPV6_V6ONLY                             -> OK value=0
+A2 after: setsockopt IPV6_V6ONLY=1                           -> EINVAL
+A2 after: setsockopt IPV6_V6ONLY=0                           -> EINVAL
+A2 again: connect ::ffff:127.0.0.1:L                         -> EISCONN
+A2 accept on the AF_INET listener                            -> OK len=16
+A2 accepted: getsockname                                     cell=28  -> OK len=16 family=AF_INET 127.0.0.1:L [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+A2 accepted: getpeername                                     cell=28  -> OK len=16 family=AF_INET 127.0.0.1:eph [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+A2 client's local port = server's peer port                  -> yes
+A2 a byte client to server                                   -> wrote 1 read 1 'x'
+A3 V6ONLY=1, connect ::ffff:127.0.0.1:L                      -> EAFNOSUPPORT
+A3 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+A3 V6ONLY=1, again                                           -> EAFNOSUPPORT
+A4 V6ONLY=0 non-blocking, connect ::ffff:127.0.0.1:L         -> EINPROGRESS
+A4 again                                                     -> EISCONN
+A4 and again                                                 -> EISCONN
+A4 getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+A4 getpeername                                               cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+A5 V6ONLY=0, connect ::ffff:127.0.0.1:<closed>               -> ECONNREFUSED
+A5 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+A5 after: getpeername                                        cell=28  -> EINVAL
+A5 again, to L                                               -> EISCONN
+A6 V6ONLY=0, connect ::ffff:0.0.0.0:L                        -> OK
+A6 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+A6 after: getpeername                                        cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+A7 V6ONLY=0, connect ::ffff:127.0.0.2:L (listener 127.0.0.1) -> EINTR(timed out after 3s)
+A7 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+A8 V6ONLY=0, connect ::ffff:127.0.0.1:0                      -> EADDRNOTAVAIL
+A8 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+A9 V6ONLY=0, connect ::ffff:224.0.0.1:L                      -> EAFNOSUPPORT
+A9 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+A10 V6ONLY=0, connect ::ffff:255.255.255.255:L               -> EAFNOSUPPORT
+A11 V6ONLY=0, v4-mapped with flowinfo 0x12345                -> OK
+A11 getpeername                                              cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+A12 V6ONLY=0, v4-mapped with scope id 7                      -> OK
+A12 getpeername                                              cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+A13 V6ONLY=0, v4-mapped with sin6_len 0                      -> OK
+A14 AF_INET6 v4-mapped at length 0                           -> EINVAL bound-port=0
+A14 AF_INET6 v4-mapped at length 1                           -> EINVAL bound-port=0
+A14 AF_INET6 v4-mapped at length 2                           -> EINVAL bound-port=eph
+A14 AF_INET6 v4-mapped at length 8                           -> EINVAL bound-port=eph
+A14 AF_INET6 v4-mapped at length 16                          -> EINVAL bound-port=eph
+A14 AF_INET6 v4-mapped at length 23                          -> EINTR(timed out after 3s) bound-port=eph
+A14 AF_INET6 v4-mapped at length 24                          -> OK bound-port=eph
+A14 AF_INET6 v4-mapped at length 25                          -> OK bound-port=eph
+A14 AF_INET6 v4-mapped at length 27                          -> OK bound-port=eph
+A14 AF_INET6 v4-mapped at length 28                          -> OK bound-port=eph
+A14 AF_INET6 v4-mapped at length 29                          -> OK bound-port=eph
+A14 AF_INET6 v4-mapped at length 32                          -> OK bound-port=eph
+A14 AF_INET6 v4-mapped at length 128                         -> OK bound-port=eph
+A14 AF_INET6 v4-mapped at length 129                         -> OK bound-port=eph
+A14 AF_INET6 v4-mapped at length 255                         -> OK bound-port=eph
+A14 AF_INET6 v4-mapped at length 256                         -> ENAMETOOLONG bound-port=0
+A15 AF_INET sockaddr_in at length 16                         -> EAFNOSUPPORT
+A15 AF_INET sockaddr_in at length 28                         -> EAFNOSUPPORT
+A16 AF_UNSPEC at length 28, idle                             -> OK
+A16 after: getsockname                                       cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+== N: native IPv6 ==
+N1 V6ONLY=0, connect [::1]:<closed>                          -> ECONNREFUSED
+N2 V6ONLY=0, connect [::]:<closed>                           -> ECONNREFUSED
+N3 V6ONLY=0, connect [::1]:L (only a v4 listener)            -> ECONNREFUSED
+== B: bind ==
+B1 V6ONLY=0 bind [::ffff:127.0.0.1]:B                        -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:B flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+B1 V6ONLY=0 bind [::ffff:127.0.0.1]:0                        -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+B1 V6ONLY=0 bind [::ffff:0.0.0.0]:B                          -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:B flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=0 bind [::ffff:0.0.0.0]:0                          -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=0 bind [::]:B                                      -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:B flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=0 bind [::]:0                                      -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=0 bind [::1]:B                                     -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::1]:B flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00]
+B1 V6ONLY=0 bind [::1]:0                                     -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00]
+B1 V6ONLY=0 bind [::ffff:127.0.0.2]:B                        -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=0 bind [::ffff:127.0.0.2]:0                        -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=0 bind [::ffff:10.255.255.1]:B                     -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=0 bind [::ffff:10.255.255.1]:0                     -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=0 bind [::ffff:224.0.0.1]:B                        -> EAFNOSUPPORT
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=0 bind [::ffff:224.0.0.1]:0                        -> EAFNOSUPPORT
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:127.0.0.1]:B                        -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:127.0.0.1]:0                        -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:0.0.0.0]:B                          -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:0.0.0.0]:0                          -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::]:B                                      -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:B flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::]:0                                      -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::1]:B                                     -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::1]:B flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00]
+B1 V6ONLY=1 bind [::1]:0                                     -> OK
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:127.0.0.2]:B                        -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:127.0.0.2]:0                        -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:10.255.255.1]:B                     -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:10.255.255.1]:0                     -> EADDRNOTAVAIL
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:224.0.0.1]:B                        -> EAFNOSUPPORT
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B1 V6ONLY=1 bind [::ffff:224.0.0.1]:0                        -> EAFNOSUPPORT
+   getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+B2 bound ::ffff:127.0.0.1, set IPV6_V6ONLY=1                 -> EINVAL
+B3 bound ::ffff:127.0.0.1, bind again ::ffff:127.0.0.1:0     -> EINVAL
+B4 V6ONLY=0 bind sockaddr_in 127.0.0.1:0 len 16              -> EAFNOSUPPORT
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 0                   -> EINVAL
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 8                   -> EINVAL
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 16                  -> EINVAL
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 23                  -> EADDRNOTAVAIL
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 24                  -> OK
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 27                  -> OK
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 28                  -> OK
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 29                  -> OK
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 128                 -> OK
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 129                 -> OK
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 255                 -> OK
+B5 AF_INET6 ::ffff:127.0.0.1:0 at length 256                 -> ENAMETOOLONG
+B6 V6ONLY=0 unbound listen                                   -> OK
+B6 getsockname                                               cell=28  -> OK len=28 family=AF_INET6 [::]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+== C: bind conflicts ==
+C listen=0 reuse=00 [4 127.0.0.1         ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=00 [4 127.0.0.1         ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=0 reuse=00 [4 127.0.0.1         ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [4 127.0.0.1         ] then [6o ::               ] -> OK
+C listen=0 reuse=00 [4 127.0.0.1         ] then [6d ::1              ] -> OK
+C listen=0 reuse=00 [4 127.0.0.1         ] then [6o ::1              ] -> OK
+C listen=0 reuse=00 [4 0.0.0.0           ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=00 [4 0.0.0.0           ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=0 reuse=00 [4 0.0.0.0           ] then [6d ::               ] -> OK
+C listen=0 reuse=00 [4 0.0.0.0           ] then [6o ::               ] -> OK
+C listen=0 reuse=00 [4 0.0.0.0           ] then [6d ::1              ] -> OK
+C listen=0 reuse=00 [4 0.0.0.0           ] then [6o ::1              ] -> OK
+C listen=0 reuse=00 [6d ::ffff:127.0.0.1 ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::ffff:127.0.0.1 ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::ffff:127.0.0.1 ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::ffff:127.0.0.1 ] then [6o ::               ] -> OK
+C listen=0 reuse=00 [6d ::ffff:127.0.0.1 ] then [6d ::1              ] -> OK
+C listen=0 reuse=00 [6d ::ffff:127.0.0.1 ] then [6o ::1              ] -> OK
+C listen=0 reuse=00 [6d ::ffff:0.0.0.0   ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::ffff:0.0.0.0   ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=00 [6d ::ffff:0.0.0.0   ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::ffff:0.0.0.0   ] then [6o ::               ] -> OK
+C listen=0 reuse=00 [6d ::ffff:0.0.0.0   ] then [6d ::1              ] -> OK
+C listen=0 reuse=00 [6d ::ffff:0.0.0.0   ] then [6o ::1              ] -> OK
+C listen=0 reuse=00 [6d ::               ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::               ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::               ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=00 [6d ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::               ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::               ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=00 [6o ::               ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=00 [6o ::               ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=00 [6o ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=00 [6o ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=00 [6o ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6o ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6o ::               ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=00 [6o ::               ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=00 [6d ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=00 [6d ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=00 [6d ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=00 [6d ::1              ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::1              ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=00 [6d ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=00 [6o ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=00 [6o ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=00 [6o ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=00 [6o ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=00 [6o ::1              ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6o ::1              ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=00 [6o ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=00 [6o ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=10 [4 127.0.0.1         ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=10 [4 127.0.0.1         ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=0 reuse=10 [4 127.0.0.1         ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [4 127.0.0.1         ] then [6o ::               ] -> OK
+C listen=0 reuse=10 [4 127.0.0.1         ] then [6d ::1              ] -> OK
+C listen=0 reuse=10 [4 127.0.0.1         ] then [6o ::1              ] -> OK
+C listen=0 reuse=10 [4 0.0.0.0           ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=10 [4 0.0.0.0           ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=0 reuse=10 [4 0.0.0.0           ] then [6d ::               ] -> OK
+C listen=0 reuse=10 [4 0.0.0.0           ] then [6o ::               ] -> OK
+C listen=0 reuse=10 [4 0.0.0.0           ] then [6d ::1              ] -> OK
+C listen=0 reuse=10 [4 0.0.0.0           ] then [6o ::1              ] -> OK
+C listen=0 reuse=10 [6d ::ffff:127.0.0.1 ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::ffff:127.0.0.1 ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::ffff:127.0.0.1 ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::ffff:127.0.0.1 ] then [6o ::               ] -> OK
+C listen=0 reuse=10 [6d ::ffff:127.0.0.1 ] then [6d ::1              ] -> OK
+C listen=0 reuse=10 [6d ::ffff:127.0.0.1 ] then [6o ::1              ] -> OK
+C listen=0 reuse=10 [6d ::ffff:0.0.0.0   ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::ffff:0.0.0.0   ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=10 [6d ::ffff:0.0.0.0   ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::ffff:0.0.0.0   ] then [6o ::               ] -> OK
+C listen=0 reuse=10 [6d ::ffff:0.0.0.0   ] then [6d ::1              ] -> OK
+C listen=0 reuse=10 [6d ::ffff:0.0.0.0   ] then [6o ::1              ] -> OK
+C listen=0 reuse=10 [6d ::               ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::               ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::               ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=10 [6d ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::               ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::               ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=10 [6o ::               ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=10 [6o ::               ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=10 [6o ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=10 [6o ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=10 [6o ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6o ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6o ::               ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=10 [6o ::               ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=10 [6d ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=10 [6d ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=10 [6d ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=10 [6d ::1              ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::1              ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=10 [6d ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=10 [6o ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=10 [6o ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=10 [6o ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=10 [6o ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=10 [6o ::1              ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6o ::1              ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=10 [6o ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=10 [6o ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=01 [4 127.0.0.1         ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=01 [4 127.0.0.1         ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=01 [4 127.0.0.1         ] then [6d ::               ] -> OK
+C listen=0 reuse=01 [4 127.0.0.1         ] then [6o ::               ] -> OK
+C listen=0 reuse=01 [4 127.0.0.1         ] then [6d ::1              ] -> OK
+C listen=0 reuse=01 [4 127.0.0.1         ] then [6o ::1              ] -> OK
+C listen=0 reuse=01 [4 0.0.0.0           ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=01 [4 0.0.0.0           ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=0 reuse=01 [4 0.0.0.0           ] then [6d ::               ] -> OK
+C listen=0 reuse=01 [4 0.0.0.0           ] then [6o ::               ] -> OK
+C listen=0 reuse=01 [4 0.0.0.0           ] then [6d ::1              ] -> OK
+C listen=0 reuse=01 [4 0.0.0.0           ] then [6o ::1              ] -> OK
+C listen=0 reuse=01 [6d ::ffff:127.0.0.1 ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=0 reuse=01 [6d ::ffff:127.0.0.1 ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=01 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=01 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=01 [6d ::ffff:127.0.0.1 ] then [6d ::               ] -> OK
+C listen=0 reuse=01 [6d ::ffff:127.0.0.1 ] then [6o ::               ] -> OK
+C listen=0 reuse=01 [6d ::ffff:127.0.0.1 ] then [6d ::1              ] -> OK
+C listen=0 reuse=01 [6d ::ffff:127.0.0.1 ] then [6o ::1              ] -> OK
+C listen=0 reuse=01 [6d ::ffff:0.0.0.0   ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=01 [6d ::ffff:0.0.0.0   ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=01 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=01 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=01 [6d ::ffff:0.0.0.0   ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=01 [6d ::ffff:0.0.0.0   ] then [6o ::               ] -> OK
+C listen=0 reuse=01 [6d ::ffff:0.0.0.0   ] then [6d ::1              ] -> OK
+C listen=0 reuse=01 [6d ::ffff:0.0.0.0   ] then [6o ::1              ] -> OK
+C listen=0 reuse=01 [6d ::               ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=01 [6d ::               ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=01 [6d ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=01 [6d ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=01 [6d ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=01 [6d ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=01 [6d ::               ] then [6d ::1              ] -> OK
+C listen=0 reuse=01 [6d ::               ] then [6o ::1              ] -> OK
+C listen=0 reuse=01 [6o ::               ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=01 [6o ::               ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=01 [6o ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=01 [6o ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=01 [6o ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=01 [6o ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=01 [6o ::               ] then [6d ::1              ] -> OK
+C listen=0 reuse=01 [6o ::               ] then [6o ::1              ] -> OK
+C listen=0 reuse=01 [6d ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=01 [6d ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=01 [6d ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=01 [6d ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=01 [6d ::1              ] then [6d ::               ] -> OK
+C listen=0 reuse=01 [6d ::1              ] then [6o ::               ] -> OK
+C listen=0 reuse=01 [6d ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=01 [6d ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=01 [6o ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=01 [6o ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=01 [6o ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=01 [6o ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=01 [6o ::1              ] then [6d ::               ] -> OK
+C listen=0 reuse=01 [6o ::1              ] then [6o ::               ] -> OK
+C listen=0 reuse=01 [6o ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=01 [6o ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=11 [4 127.0.0.1         ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=11 [4 127.0.0.1         ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=11 [4 127.0.0.1         ] then [6d ::               ] -> OK
+C listen=0 reuse=11 [4 127.0.0.1         ] then [6o ::               ] -> OK
+C listen=0 reuse=11 [4 127.0.0.1         ] then [6d ::1              ] -> OK
+C listen=0 reuse=11 [4 127.0.0.1         ] then [6o ::1              ] -> OK
+C listen=0 reuse=11 [4 0.0.0.0           ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=11 [4 0.0.0.0           ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=0 reuse=11 [4 0.0.0.0           ] then [6d ::               ] -> OK
+C listen=0 reuse=11 [4 0.0.0.0           ] then [6o ::               ] -> OK
+C listen=0 reuse=11 [4 0.0.0.0           ] then [6d ::1              ] -> OK
+C listen=0 reuse=11 [4 0.0.0.0           ] then [6o ::1              ] -> OK
+C listen=0 reuse=11 [6d ::ffff:127.0.0.1 ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=0 reuse=11 [6d ::ffff:127.0.0.1 ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=11 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=0 reuse=11 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=11 [6d ::ffff:127.0.0.1 ] then [6d ::               ] -> OK
+C listen=0 reuse=11 [6d ::ffff:127.0.0.1 ] then [6o ::               ] -> OK
+C listen=0 reuse=11 [6d ::ffff:127.0.0.1 ] then [6d ::1              ] -> OK
+C listen=0 reuse=11 [6d ::ffff:127.0.0.1 ] then [6o ::1              ] -> OK
+C listen=0 reuse=11 [6d ::ffff:0.0.0.0   ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=11 [6d ::ffff:0.0.0.0   ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=11 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=11 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=11 [6d ::ffff:0.0.0.0   ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=11 [6d ::ffff:0.0.0.0   ] then [6o ::               ] -> OK
+C listen=0 reuse=11 [6d ::ffff:0.0.0.0   ] then [6d ::1              ] -> OK
+C listen=0 reuse=11 [6d ::ffff:0.0.0.0   ] then [6o ::1              ] -> OK
+C listen=0 reuse=11 [6d ::               ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=11 [6d ::               ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=0 reuse=11 [6d ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=11 [6d ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=11 [6d ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=11 [6d ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=11 [6d ::               ] then [6d ::1              ] -> OK
+C listen=0 reuse=11 [6d ::               ] then [6o ::1              ] -> OK
+C listen=0 reuse=11 [6o ::               ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=11 [6o ::               ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=11 [6o ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=11 [6o ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=11 [6o ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=0 reuse=11 [6o ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=0 reuse=11 [6o ::               ] then [6d ::1              ] -> OK
+C listen=0 reuse=11 [6o ::               ] then [6o ::1              ] -> OK
+C listen=0 reuse=11 [6d ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=11 [6d ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=11 [6d ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=11 [6d ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=11 [6d ::1              ] then [6d ::               ] -> OK
+C listen=0 reuse=11 [6d ::1              ] then [6o ::               ] -> OK
+C listen=0 reuse=11 [6d ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=11 [6d ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=0 reuse=11 [6o ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=0 reuse=11 [6o ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=0 reuse=11 [6o ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=0 reuse=11 [6o ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=0 reuse=11 [6o ::1              ] then [6d ::               ] -> OK
+C listen=0 reuse=11 [6o ::1              ] then [6o ::               ] -> OK
+C listen=0 reuse=11 [6o ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=0 reuse=11 [6o ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=00 [4 127.0.0.1         ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=00 [4 127.0.0.1         ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=1 reuse=00 [4 127.0.0.1         ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [4 127.0.0.1         ] then [6o ::               ] -> OK
+C listen=1 reuse=00 [4 127.0.0.1         ] then [6d ::1              ] -> OK
+C listen=1 reuse=00 [4 127.0.0.1         ] then [6o ::1              ] -> OK
+C listen=1 reuse=00 [4 0.0.0.0           ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=00 [4 0.0.0.0           ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=1 reuse=00 [4 0.0.0.0           ] then [6d ::               ] -> OK
+C listen=1 reuse=00 [4 0.0.0.0           ] then [6o ::               ] -> OK
+C listen=1 reuse=00 [4 0.0.0.0           ] then [6d ::1              ] -> OK
+C listen=1 reuse=00 [4 0.0.0.0           ] then [6o ::1              ] -> OK
+C listen=1 reuse=00 [6d ::ffff:127.0.0.1 ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::ffff:127.0.0.1 ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::ffff:127.0.0.1 ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::ffff:127.0.0.1 ] then [6o ::               ] -> OK
+C listen=1 reuse=00 [6d ::ffff:127.0.0.1 ] then [6d ::1              ] -> OK
+C listen=1 reuse=00 [6d ::ffff:127.0.0.1 ] then [6o ::1              ] -> OK
+C listen=1 reuse=00 [6d ::ffff:0.0.0.0   ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::ffff:0.0.0.0   ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=00 [6d ::ffff:0.0.0.0   ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::ffff:0.0.0.0   ] then [6o ::               ] -> OK
+C listen=1 reuse=00 [6d ::ffff:0.0.0.0   ] then [6d ::1              ] -> OK
+C listen=1 reuse=00 [6d ::ffff:0.0.0.0   ] then [6o ::1              ] -> OK
+C listen=1 reuse=00 [6d ::               ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::               ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::               ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=00 [6d ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::               ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::               ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=00 [6o ::               ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=00 [6o ::               ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=00 [6o ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=00 [6o ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=00 [6o ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6o ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6o ::               ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=00 [6o ::               ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=00 [6d ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=00 [6d ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=00 [6d ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=00 [6d ::1              ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::1              ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=00 [6d ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=00 [6o ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=00 [6o ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=00 [6o ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=00 [6o ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=00 [6o ::1              ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6o ::1              ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=00 [6o ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=00 [6o ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=10 [4 127.0.0.1         ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=10 [4 127.0.0.1         ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=1 reuse=10 [4 127.0.0.1         ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [4 127.0.0.1         ] then [6o ::               ] -> OK
+C listen=1 reuse=10 [4 127.0.0.1         ] then [6d ::1              ] -> OK
+C listen=1 reuse=10 [4 127.0.0.1         ] then [6o ::1              ] -> OK
+C listen=1 reuse=10 [4 0.0.0.0           ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=10 [4 0.0.0.0           ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=1 reuse=10 [4 0.0.0.0           ] then [6d ::               ] -> OK
+C listen=1 reuse=10 [4 0.0.0.0           ] then [6o ::               ] -> OK
+C listen=1 reuse=10 [4 0.0.0.0           ] then [6d ::1              ] -> OK
+C listen=1 reuse=10 [4 0.0.0.0           ] then [6o ::1              ] -> OK
+C listen=1 reuse=10 [6d ::ffff:127.0.0.1 ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::ffff:127.0.0.1 ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::ffff:127.0.0.1 ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::ffff:127.0.0.1 ] then [6o ::               ] -> OK
+C listen=1 reuse=10 [6d ::ffff:127.0.0.1 ] then [6d ::1              ] -> OK
+C listen=1 reuse=10 [6d ::ffff:127.0.0.1 ] then [6o ::1              ] -> OK
+C listen=1 reuse=10 [6d ::ffff:0.0.0.0   ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::ffff:0.0.0.0   ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=10 [6d ::ffff:0.0.0.0   ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::ffff:0.0.0.0   ] then [6o ::               ] -> OK
+C listen=1 reuse=10 [6d ::ffff:0.0.0.0   ] then [6d ::1              ] -> OK
+C listen=1 reuse=10 [6d ::ffff:0.0.0.0   ] then [6o ::1              ] -> OK
+C listen=1 reuse=10 [6d ::               ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::               ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::               ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=10 [6d ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::               ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::               ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=10 [6o ::               ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=10 [6o ::               ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=10 [6o ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=10 [6o ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=10 [6o ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6o ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6o ::               ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=10 [6o ::               ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=10 [6d ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=10 [6d ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=10 [6d ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=10 [6d ::1              ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::1              ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=10 [6d ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=10 [6o ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=10 [6o ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=10 [6o ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=10 [6o ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=10 [6o ::1              ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6o ::1              ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=10 [6o ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=10 [6o ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=01 [4 127.0.0.1         ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=01 [4 127.0.0.1         ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=01 [4 127.0.0.1         ] then [6d ::               ] -> OK
+C listen=1 reuse=01 [4 127.0.0.1         ] then [6o ::               ] -> OK
+C listen=1 reuse=01 [4 127.0.0.1         ] then [6d ::1              ] -> OK
+C listen=1 reuse=01 [4 127.0.0.1         ] then [6o ::1              ] -> OK
+C listen=1 reuse=01 [4 0.0.0.0           ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=01 [4 0.0.0.0           ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=1 reuse=01 [4 0.0.0.0           ] then [6d ::               ] -> OK
+C listen=1 reuse=01 [4 0.0.0.0           ] then [6o ::               ] -> OK
+C listen=1 reuse=01 [4 0.0.0.0           ] then [6d ::1              ] -> OK
+C listen=1 reuse=01 [4 0.0.0.0           ] then [6o ::1              ] -> OK
+C listen=1 reuse=01 [6d ::ffff:127.0.0.1 ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=1 reuse=01 [6d ::ffff:127.0.0.1 ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=01 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=01 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=01 [6d ::ffff:127.0.0.1 ] then [6d ::               ] -> OK
+C listen=1 reuse=01 [6d ::ffff:127.0.0.1 ] then [6o ::               ] -> OK
+C listen=1 reuse=01 [6d ::ffff:127.0.0.1 ] then [6d ::1              ] -> OK
+C listen=1 reuse=01 [6d ::ffff:127.0.0.1 ] then [6o ::1              ] -> OK
+C listen=1 reuse=01 [6d ::ffff:0.0.0.0   ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=01 [6d ::ffff:0.0.0.0   ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=01 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=01 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=01 [6d ::ffff:0.0.0.0   ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=01 [6d ::ffff:0.0.0.0   ] then [6o ::               ] -> OK
+C listen=1 reuse=01 [6d ::ffff:0.0.0.0   ] then [6d ::1              ] -> OK
+C listen=1 reuse=01 [6d ::ffff:0.0.0.0   ] then [6o ::1              ] -> OK
+C listen=1 reuse=01 [6d ::               ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=01 [6d ::               ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=01 [6d ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=01 [6d ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=01 [6d ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=01 [6d ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=01 [6d ::               ] then [6d ::1              ] -> OK
+C listen=1 reuse=01 [6d ::               ] then [6o ::1              ] -> OK
+C listen=1 reuse=01 [6o ::               ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=01 [6o ::               ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=01 [6o ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=01 [6o ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=01 [6o ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=01 [6o ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=01 [6o ::               ] then [6d ::1              ] -> OK
+C listen=1 reuse=01 [6o ::               ] then [6o ::1              ] -> OK
+C listen=1 reuse=01 [6d ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=01 [6d ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=01 [6d ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=01 [6d ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=01 [6d ::1              ] then [6d ::               ] -> OK
+C listen=1 reuse=01 [6d ::1              ] then [6o ::               ] -> OK
+C listen=1 reuse=01 [6d ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=01 [6d ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=01 [6o ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=01 [6o ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=01 [6o ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=01 [6o ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=01 [6o ::1              ] then [6d ::               ] -> OK
+C listen=1 reuse=01 [6o ::1              ] then [6o ::               ] -> OK
+C listen=1 reuse=01 [6o ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=01 [6o ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=11 [4 127.0.0.1         ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=11 [4 127.0.0.1         ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=11 [4 127.0.0.1         ] then [6d ::               ] -> OK
+C listen=1 reuse=11 [4 127.0.0.1         ] then [6o ::               ] -> OK
+C listen=1 reuse=11 [4 127.0.0.1         ] then [6d ::1              ] -> OK
+C listen=1 reuse=11 [4 127.0.0.1         ] then [6o ::1              ] -> OK
+C listen=1 reuse=11 [4 0.0.0.0           ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=11 [4 0.0.0.0           ] then [6d ::ffff:0.0.0.0   ] -> EADDRINUSE
+C listen=1 reuse=11 [4 0.0.0.0           ] then [6d ::               ] -> OK
+C listen=1 reuse=11 [4 0.0.0.0           ] then [6o ::               ] -> OK
+C listen=1 reuse=11 [4 0.0.0.0           ] then [6d ::1              ] -> OK
+C listen=1 reuse=11 [4 0.0.0.0           ] then [6o ::1              ] -> OK
+C listen=1 reuse=11 [6d ::ffff:127.0.0.1 ] then [4 127.0.0.1         ] -> EADDRINUSE
+C listen=1 reuse=11 [6d ::ffff:127.0.0.1 ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=11 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:127.0.0.1 ] -> EADDRINUSE
+C listen=1 reuse=11 [6d ::ffff:127.0.0.1 ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=11 [6d ::ffff:127.0.0.1 ] then [6d ::               ] -> OK
+C listen=1 reuse=11 [6d ::ffff:127.0.0.1 ] then [6o ::               ] -> OK
+C listen=1 reuse=11 [6d ::ffff:127.0.0.1 ] then [6d ::1              ] -> OK
+C listen=1 reuse=11 [6d ::ffff:127.0.0.1 ] then [6o ::1              ] -> OK
+C listen=1 reuse=11 [6d ::ffff:0.0.0.0   ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=11 [6d ::ffff:0.0.0.0   ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=11 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=11 [6d ::ffff:0.0.0.0   ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=11 [6d ::ffff:0.0.0.0   ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=11 [6d ::ffff:0.0.0.0   ] then [6o ::               ] -> OK
+C listen=1 reuse=11 [6d ::ffff:0.0.0.0   ] then [6d ::1              ] -> OK
+C listen=1 reuse=11 [6d ::ffff:0.0.0.0   ] then [6o ::1              ] -> OK
+C listen=1 reuse=11 [6d ::               ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=11 [6d ::               ] then [4 0.0.0.0           ] -> EADDRINUSE
+C listen=1 reuse=11 [6d ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=11 [6d ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=11 [6d ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=11 [6d ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=11 [6d ::               ] then [6d ::1              ] -> OK
+C listen=1 reuse=11 [6d ::               ] then [6o ::1              ] -> OK
+C listen=1 reuse=11 [6o ::               ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=11 [6o ::               ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=11 [6o ::               ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=11 [6o ::               ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=11 [6o ::               ] then [6d ::               ] -> EADDRINUSE
+C listen=1 reuse=11 [6o ::               ] then [6o ::               ] -> EADDRINUSE
+C listen=1 reuse=11 [6o ::               ] then [6d ::1              ] -> OK
+C listen=1 reuse=11 [6o ::               ] then [6o ::1              ] -> OK
+C listen=1 reuse=11 [6d ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=11 [6d ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=11 [6d ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=11 [6d ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=11 [6d ::1              ] then [6d ::               ] -> OK
+C listen=1 reuse=11 [6d ::1              ] then [6o ::               ] -> OK
+C listen=1 reuse=11 [6d ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=11 [6d ::1              ] then [6o ::1              ] -> EADDRINUSE
+C listen=1 reuse=11 [6o ::1              ] then [4 127.0.0.1         ] -> OK
+C listen=1 reuse=11 [6o ::1              ] then [4 0.0.0.0           ] -> OK
+C listen=1 reuse=11 [6o ::1              ] then [6d ::ffff:127.0.0.1 ] -> OK
+C listen=1 reuse=11 [6o ::1              ] then [6d ::ffff:0.0.0.0   ] -> OK
+C listen=1 reuse=11 [6o ::1              ] then [6d ::               ] -> OK
+C listen=1 reuse=11 [6o ::1              ] then [6o ::               ] -> OK
+C listen=1 reuse=11 [6o ::1              ] then [6d ::1              ] -> EADDRINUSE
+C listen=1 reuse=11 [6o ::1              ] then [6o ::1              ] -> EADDRINUSE
+CL reuse=11 [4 127.0.0.1         ] [6d ::ffff:0.0.0.0   ] listen a -> OK, listen b -> OK
+CL reuse=11 [4 127.0.0.1         ] [6d ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [4 127.0.0.1         ] [6o ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [4 127.0.0.1         ] [6d ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [4 127.0.0.1         ] [6o ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [4 0.0.0.0           ] [6d ::ffff:127.0.0.1 ] listen a -> OK, listen b -> OK
+CL reuse=11 [4 0.0.0.0           ] [6d ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [4 0.0.0.0           ] [6o ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [4 0.0.0.0           ] [6d ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [4 0.0.0.0           ] [6o ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:127.0.0.1 ] [4 0.0.0.0           ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:127.0.0.1 ] [6d ::ffff:0.0.0.0   ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:127.0.0.1 ] [6d ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:127.0.0.1 ] [6o ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:127.0.0.1 ] [6d ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:127.0.0.1 ] [6o ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:0.0.0.0   ] [4 127.0.0.1         ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:0.0.0.0   ] [6d ::ffff:127.0.0.1 ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:0.0.0.0   ] [6d ::ffff:0.0.0.0   ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:0.0.0.0   ] [6o ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:0.0.0.0   ] [6d ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::ffff:0.0.0.0   ] [6o ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::               ] [4 127.0.0.1         ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::               ] [6d ::ffff:127.0.0.1 ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::               ] [6d ::ffff:0.0.0.0   ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::               ] [6d ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::               ] [6o ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::               ] [4 127.0.0.1         ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::               ] [4 0.0.0.0           ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::               ] [6d ::ffff:127.0.0.1 ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::               ] [6d ::ffff:0.0.0.0   ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::               ] [6d ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::               ] [6o ::1              ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::1              ] [4 127.0.0.1         ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::1              ] [4 0.0.0.0           ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::1              ] [6d ::ffff:127.0.0.1 ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::1              ] [6d ::ffff:0.0.0.0   ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::1              ] [6d ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [6d ::1              ] [6o ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::1              ] [4 127.0.0.1         ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::1              ] [4 0.0.0.0           ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::1              ] [6d ::ffff:127.0.0.1 ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::1              ] [6d ::ffff:0.0.0.0   ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::1              ] [6d ::               ] listen a -> OK, listen b -> OK
+CL reuse=11 [6o ::1              ] [6o ::               ] listen a -> OK, listen b -> OK
+== D: accept on a dual-mode listener ==
+D [6d ::               ] bind -> OK listen -> OK
+  AF_INET client connects 127.0.0.1:L                        -> OK
+  accept, cell 28                                            -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+  accepted: getsockname                                      cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+  accepted: getpeername                                      cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+  client: getpeername                                        cell=16  -> OK len=16 family=AF_INET 127.0.0.1:L [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00]
+  accepted: getsockopt IPV6_V6ONLY                           -> OK value=0
+  dual-mode client connects ::ffff:127.0.0.1:L               -> OK
+  accept, cell 16                                            -> OK len=28 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00]
+D [6d ::ffff:127.0.0.1 ] bind -> OK listen -> OK
+  AF_INET client connects 127.0.0.1:L                        -> OK
+  accept, cell 28                                            -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+  accepted: getsockname                                      cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+  accepted: getpeername                                      cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+  client: getpeername                                        cell=16  -> OK len=16 family=AF_INET 127.0.0.1:L [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00]
+  accepted: getsockopt IPV6_V6ONLY                           -> OK value=0
+  dual-mode client connects ::ffff:127.0.0.1:L               -> OK
+  accept, cell 16                                            -> OK len=28 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00]
+D [6d ::ffff:0.0.0.0   ] bind -> OK listen -> OK
+  AF_INET client connects 127.0.0.1:L                        -> OK
+  accept, cell 28                                            -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+  accepted: getsockname                                      cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+  accepted: getpeername                                      cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+  client: getpeername                                        cell=16  -> OK len=16 family=AF_INET 127.0.0.1:L [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00]
+  accepted: getsockopt IPV6_V6ONLY                           -> OK value=0
+  dual-mode client connects ::ffff:127.0.0.1:L               -> OK
+  accept, cell 16                                            -> OK len=28 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00]
+D [6o ::               ] bind -> OK listen -> OK
+  AF_INET client connects 127.0.0.1:L                        -> ECONNREFUSED
+  dual-mode client connects ::ffff:127.0.0.1:L               -> ECONNREFUSED
+  accept, cell 16                                            -> EAGAIN len=16
+== E: refusals ==
+E1 bound ::ffff:127.0.0.1:B, blocking connect to <closed>    -> ECONNREFUSED
+E1 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:B flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+E1 after: getpeername                                        cell=28  -> EINVAL
+E2 unbound non-blocking connect to <closed>                  -> EINPROGRESS
+E2 pending: getsockname                                      cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+E2 pending: getpeername                                      cell=28  -> EINVAL
+E2 SO_ERROR                                                  -> ECONNREFUSED
+E2 taken: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+E3 unbound blocking connect to <closed>                      -> ECONNREFUSED
+E3 then to L                                                 -> EISCONN
+E3 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+E3 after: getpeername                                        cell=28  -> EINVAL
+== F: bind fault order ==
+F1 bound, rebind non-local ::ffff:10.255.255.1               -> EINVAL
+F2 bound, rebind sockaddr_in at 28                           -> EAFNOSUPPORT
+F3 bound, rebind at length 16                                -> EINVAL
+F4 bound, rebind ::ffff:224.0.0.1                            -> EAFNOSUPPORT
+F5 V6ONLY=1 bound [::], rebind ::ffff:127.0.0.1              -> EINVAL
+F6 V6ONLY=1, ::ffff:10.255.255.1                             -> EADDRNOTAVAIL
+F7 V6ONLY=1, ::ffff:255.255.255.255                          -> EAFNOSUPPORT
+F8 V6ONLY=1, ::ffff:127.0.0.1 at length 16                   -> EINVAL
+F9 V6ONLY=1, sockaddr_in at 28                               -> EAFNOSUPPORT
+F10 V6ONLY=0, ::ffff:255.255.255.255                         -> EAFNOSUPPORT
+F11 V6ONLY=0, sockaddr_in at length 16                       -> EAFNOSUPPORT
+F12 V6ONLY=0, sockaddr_in at length 23                       -> EAFNOSUPPORT
+F13 V6ONLY=0, AF_UNSPEC ::ffff:127.0.0.1 at 28               -> OK
+F13 getsockname                                              cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+F14 bound, rebind to a port in use                           -> EINVAL
+F15 V6ONLY=1, a v4-mapped port in use                        -> EADDRNOTAVAIL
+F16 V6ONLY=0, [::1] (native)                                 -> OK
+F17 unprivileged, ::ffff:127.0.0.1:80                        -> EACCES
+F18 unprivileged, ::ffff:10.255.255.1:80                     -> EADDRNOTAVAIL
+F19 unprivileged, bound, rebind ::ffff:127.0.0.1:80          -> EINVAL
+F20 unprivileged, V6ONLY=1, ::ffff:127.0.0.1:80              -> EADDRNOTAVAIL
+== G: connect ladder ==
+G1 V6ONLY=1, mapped at length 16                             -> EINVAL
+G2 V6ONLY=1, sockaddr_in at 28                               -> EAFNOSUPPORT
+G3 V6ONLY=1, AF_UNSPEC mapped at 28                          -> EAFNOSUPPORT
+G3 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+G4 V6ONLY=1, ::ffff:224.0.0.1                                -> EAFNOSUPPORT
+G5 V6ONLY=1, mapped port 0                                   -> EAFNOSUPPORT
+G5 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::]:0 flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00]
+G6 bound ::ffff:127.0.0.1:B, connect to L                    -> OK
+G6 after: getsockname                                        cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:B flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+G6 after: getpeername                                        cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+G6 accepted: getpeername                                     cell=16  -> OK len=16 family=AF_INET 127.0.0.1:B [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00]
+G7 connect to L                                              -> OK
+G7 established, connect at length 16                         -> EISCONN
+G7 established, connect AF_UNSPEC                            -> EISCONN
+G7 established, connect sockaddr_in at 28                    -> EISCONN
+G8 AF_INET client                                            -> OK SO_SNDBUF=146988 SO_RCVBUF=408300 TCP_MAXSEG=16332
+G8 dual-mode client                                          -> OK SO_SNDBUF=146988 SO_RCVBUF=408300 TCP_MAXSEG=16332

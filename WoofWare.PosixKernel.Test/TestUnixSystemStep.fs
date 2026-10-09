@@ -435,15 +435,21 @@ module TestUnixSystemStep =
             |> shouldEqual (Ok (ReadAnswer.Completed ImmutableArray.Empty, system))
 
             // ...and one byte is answered by the phase: ENOTCONN with no peer,
-            // a sleep (refused) on a connection with nothing to read, and a
-            // refusal with an error, so the row above is about the length
-            // rather than about the phase.
-            match phase, ReadOutcomes.read fd UserBuffer.Mapped 1UL system with
+            // a sleep on a connection with nothing to read, and a refusal with
+            // an error, so the row above is about the length rather than about
+            // the phase.
+            match phase, UnixReadWrite.read system.Leader fd UserBuffer.Mapped 1UL system with
             | SocketPhase.Idle, answer
-            | SocketPhase.Listening _, answer -> answer |> shouldEqual (notConnected system)
-            | SocketPhase.Established _, refusal
-            | SocketPhase.EstablishedPendingReport _, refusal ->
-                refusal |> shouldEqual (Error (ReadRefusal.ConnectionSleep socketZero))
+            | SocketPhase.Listening _, answer ->
+                answer
+                |> Result.map (fun (outcome, after) ->
+                    match outcome with
+                    | ReadOutcome.Answered answer -> answer, after
+                    | other -> failwith $"expected an answer, got %A{other}"
+                )
+                |> shouldEqual (notConnected system)
+            | SocketPhase.Established _, Ok (ReadOutcome.WouldBlock _, _)
+            | SocketPhase.EstablishedPendingReport _, Ok (ReadOutcome.WouldBlock _, _) -> ()
             | _, Error (ReadRefusal.UnmodelledSocketPhase (_, _, _, refusedIn)) -> refusedIn |> shouldEqual phase
             | _, other -> failwith $"expected a refusal for phase %O{phase}, got %A{other}"
 

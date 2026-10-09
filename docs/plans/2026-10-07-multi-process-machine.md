@@ -148,8 +148,11 @@ Each stage is a PR, green alone.
 5. **PawPrint driver.** An N-program driver in `Program` owns the machine, and
    deadline jumps and deadlock detection move into it. The one-program path
    becomes the N = 1 case, and the old loop is deleted.
-6. **Two guests.** A listener guest and a connecting guest, as two processes,
-   exit 0.
+6. **Two guests.** Done, in 5d's `TestSeveralPrograms`. A listener guest
+   and a connecting guest, as two processes, exit 0, on the host's CoreLib
+   and on the Linux one: the listener accepts one connection on a fixed
+   port and checks its peer's address, and the connector retries on
+   `ECONNREFUSED` until the listener is up.
 
 After that come the socket features rung M needs, each a stage of its own:
 
@@ -223,9 +226,15 @@ makes.
 
 5c built the driver for one program: `MultiProgram = { Machine; Current;
 Clock }`, with `Current` a `RunningProgram` (what `PreparedProgram` held).
-The phases of startup stay in `Program`'s `Startup`, which holds a driver,
-as `PreparedProgram` does. `Idle`, `Ended`, `ProgramSlot` and the program
-choice come with several programs, in 5d.
+5d added `Idle`, `Ended`, `Launched`, the program choice and the program
+chosen last. There is no `ProgramSlot`: a program's phase of startup is
+what its entry thread is running, so it is `EntryFrameKind.StartupCall` of
+a `StartupPhase`, and a `RunningProgram` is a program in any phase.
+`RunningProgram.stepDecided` moves it to its next phase, or installs
+`Main`, when the pumped call returns. The per-program core of startup moved
+from `Program.beginStartup` to `ProgramStartup`, which the driver's
+`launchAll` runs for each program; `Program.Startup` and
+`Program.PreparedProgram` are both a driver of one program.
 
 ### 1. What stays per program, and what moves to the driver
 
@@ -456,8 +465,18 @@ it is needed, since it changes which interleavings can be reached.
   `endProcess` runs at every end. The oracles are the whole suite, Guest
   fixtures included; `TestScheduleFork`'s bit-identity; and `TestClockJitter`
   and `TestRetireStep`. The PR reports the performance numbers.
-- **5d.** Several programs. New tests in `TestMultiProgram`, whose guests
-  write through `SystemNative_Write` so that they stay fast:
+- **5d.** Done. Several programs. `begin` is an F# keyword, so the host API
+  is `MultiProgram.start`, `step` and `run`. An idle program is checked
+  out for its signal poll only when `SignalDispatch.mayAct` says the poll
+  can do something. That leaves out a dispatcher asleep in its read of the
+  signal pipe, which only its own process writes, and whose poll runs
+  while that process is still checked out; so no idle program is checked
+  out for its poll until a process can signal another or share its pipe. A failure in a driver phase is annotated with the
+  program checked out when the tick began, and a failure in a step with
+  the program that stepped, rather than with every program: `GuestLocation`
+  names threads, which two programs share the names of. New tests in
+  `TestSeveralPrograms`, whose guests write through `SystemNative_Write`
+  so that they stay fast:
   - **`two guests on one machine report distinct process IDs and keep
     separate output logs`.** The first process has the configured ID and
     the second has the kernel's next ID, and each log holds only its own

@@ -358,6 +358,20 @@ module GuestLocation =
                                     $"for room for %d{parked.Count - parked.Written} more of %d{parked.Count} bytes in the pipe end of open file description %O{writer}, entered through fd %d{fd}"
                             | SleepTarget.EndedByClose pipe ->
                                 Some $"in a write into pipe %O{pipe}, which a close has ended with EPIPE"
+                        | Some (ParkedSyscall.ConnectionRead parked) ->
+                            match parked.Socket with
+                            | SleepTarget.Waiting (reader, fd) ->
+                                Some
+                                    $"for up to %d{parked.Count} bytes from the connected socket of open file description %O{reader}, entered through fd %d{fd}"
+                            | SleepTarget.EndedByClose socket ->
+                                Some $"in a read of socket %O{socket}, which a close has ended with EBADF"
+                        | Some (ParkedSyscall.ConnectionWrite parked) ->
+                            match parked.Socket with
+                            | SleepTarget.Waiting (writer, fd) ->
+                                Some
+                                    $"for room for %d{parked.Count - parked.Written} more of %d{parked.Count} bytes on the connected socket of open file description %O{writer}, entered through fd %d{fd}"
+                            | SleepTarget.EndedByClose socket ->
+                                Some $"in a write to socket %O{socket}, which a close has ended with EBADF"
                         | Some (ParkedSyscall.KqueuePoll parked) ->
                             let watched =
                                 match UnixSystem.pollQueue parked.Queue state.Kernel.System with

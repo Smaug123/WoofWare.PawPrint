@@ -26,8 +26,8 @@ open WoofWare.PosixKernel
 /// `poll`, `flock` and pipe transfers sleep, and a sleeping task makes no call
 /// until a wake pass finishes its own. A connected socket's `read` and `write`
 /// move bytes between processes, through buffers small enough that writes
-/// fill them; one that would sleep is refused (`ConnectionSleep`), which must
-/// change nothing.
+/// fill them, and a blocking one sleeps until the other process's transfer,
+/// close or end wakes it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestMultiProcessFuzz =
@@ -57,6 +57,9 @@ module TestMultiProcessFuzz =
         | SendThrough of port : int * size : int
         /// A `close` of the socket `ReceiveThrough` picks.
         | CloseThrough of port : int
+        /// Set `O_NONBLOCK` on the description of the socket `ReceiveThrough`
+        /// picks.
+        | MakeNonBlockingThrough of port : int
         | Pipe
         | PipeRead of fd : int
         | PipeWrite of fd : int * size : int
@@ -125,13 +128,13 @@ module TestMultiProcessFuzz =
                 (fun f s n -> Op.Receive (f, s, n))
                 small
                 (Gen.elements [ 0 ; 1 ; 1000 ; 65536 ])
-                (Gen.elements [ true ; true ; true ; false ])
+                (Gen.elements [ true ; false ])
             3,
             Gen.map3
                 (fun f s n -> Op.Send (f, s, n))
                 small
                 (Gen.elements [ 0 ; 1 ; 1000 ; 70000 ; 300000 ])
-                (Gen.elements [ true ; true ; true ; false ])
+                (Gen.elements [ true ; false ])
             1, Gen.map Op.MakeNonBlocking small
         ]
 
@@ -174,10 +177,15 @@ module TestMultiProcessFuzz =
         ]
 
     /// The calls a process on `platform` may make. `socketBias` weights the
-    /// socket calls against the rest, and is itself drawn per case, so some
-    /// runs are mostly sockets and some mostly files.
-    let private opsFor (socketBias : int) (platform : SimulatedUnixPlatform) : Gen<Op> =
+    /// socket calls against the rest, and `transferBias` the transfers on
+    /// connected sockets, each drawn per case, so some runs are mostly sockets,
+    /// some mostly transfers and some mostly files.
+    let private opsFor (socketBias : int) (transferBias : int) (platform : SimulatedUnixPlatform) : Gen<Op> =
         let sockets = socketOps |> List.map (fun (weight, op) -> weight * socketBias, op)
+
+        let transferOps =
+            transferOps |> List.map (fun (weight, op) -> weight * transferBias, op)
+
         let exit = [ 1, Gen.map Op.Exit (Gen.choose (0, 3)) ]
         // A process's end is rare, so that most of a run has several processes.
         let common (ops : (int * Gen<Op>) list) =
@@ -220,12 +228,13 @@ module TestMultiProcessFuzz =
                 Step.Call ((first + processes - 1) % processes, secondTask, op)
 
             // The server end closes the connection the client end has closed,
-            // and the client end connects to `ports.[first]` afresh, so that a
-            // later scenario finds a connection there.
+            // and the client end connects to `ports.[first]` afresh, blocking as
+            // a prepared one is, so that a later scenario finds a connection
+            // there.
             let reconnect : Step list =
                 [
                     byFirst (Op.CloseThrough first)
-                    byClient (Op.Socket true)
+                    byClient (Op.Socket false)
                     byClient (Op.Connect (0, first))
                     byFirst (Op.Accept 0)
                 ]
@@ -270,7 +279,7 @@ module TestMultiProcessFuzz =
                             ]
                         // The first locks the file a prepared process has open,
                         // the second sleeps waiting for it, and the first lets go.
-                        1,
+                        2,
                         Gen.constant
                             [
                                 byFirst (Op.Flock (0, lockExclusive))
@@ -286,11 +295,24 @@ module TestMultiProcessFuzz =
                                 byClient (Op.SendThrough (first, 1000))
                                 byFirst (Op.ReceiveThrough (first, 65536))
                             ]
+                        // The client end, blocking, writes more than the buffers
+                        // hold, and sleeps; the server end's reads make room,
+                        // which wakes it.
+                        2,
+                        Gen.constant
+                            [
+                                byClient (Op.SendThrough (first, 300000))
+                                byFirst (Op.ReceiveThrough (first, 65536))
+                                byFirst (Op.ReceiveThrough (first, 65536))
+                            ]
                         // The client end closes with nothing unread, a FIN, and
                         // the server end reads what is left, then end of file.
+                        // The client end drains without blocking: a read that
+                        // slept would leave the task asleep, making no close.
                         3,
                         Gen.constant (
                             [
+                                byClient (Op.MakeNonBlockingThrough first)
                                 byClient (Op.ReceiveThrough (first, 65536))
                                 byClient (Op.CloseThrough first)
                                 byFirst (Op.ReceiveThrough (first, 65536))
@@ -321,6 +343,7 @@ module TestMultiProcessFuzz =
             // both long runs within one process and constant switching occur.
             let! stickiness = Gen.choose (0, 9)
             let! socketBias = Gen.choose (1, 6)
+            let! transferBias = Gen.elements [ 1 ; 1 ; 1 ; 3 ; 8 ]
             let! length = Gen.choose (20, 120)
 
             let rec steps (n : int) (current : int) (acc : Step list) : Gen<Step list> =
@@ -345,7 +368,7 @@ module TestMultiProcessFuzz =
                             let! other = Gen.choose (0, processes - 1)
                             let proc = if switch >= stickiness then other else current
                             let! task = Gen.choose (0, tasks - 1)
-                            let! op = opsFor socketBias platform
+                            let! op = opsFor socketBias transferBias platform
                             return! steps (n - 1) proc (Step.Call (proc, task, op) :: acc)
                     }
 
@@ -389,9 +412,13 @@ module TestMultiProcessFuzz =
             mutable Resets : int
             /// A read that met end of file.
             mutable EndsOfFile : int
-            /// A blocking transfer refused as one that would sleep, which is
-            /// expected and changes nothing.
-            mutable ConnectionSleeps : int
+            /// A blocking read of a connected socket that slept.
+            mutable ConnectionReadParks : int
+            /// A blocking write to a connected socket that slept, having taken
+            /// part of its bytes or none.
+            mutable ConnectionWriteParks : int
+            /// A finished connection transfer that answered.
+            mutable ConnectionFinishes : int
             mutable Refusals : int
             mutable Calls : int
         }
@@ -668,10 +695,10 @@ module TestMultiProcessFuzz =
                 coverage.Resets <- coverage.Resets + 1
                 Made.Answered after
             | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EAGAIN), after) -> Made.Answered after
+            | Ok (ReadOutcome.WouldBlock _, after) ->
+                coverage.ConnectionReadParks <- coverage.ConnectionReadParks + 1
+                Made.Sleeps after
             | Ok (outcome, _) -> failwith $"a read of a connected socket answered %A{outcome}"
-            | Error (ReadRefusal.ConnectionSleep _) ->
-                coverage.ConnectionSleeps <- coverage.ConnectionSleeps + 1
-                Made.Answered view
             | Error refusal -> failwith $"a read of a connected socket was refused: %s{ReadRefusal.describe refusal}"
 
         // A write of `size` bytes to the connected socket `fd`.
@@ -692,10 +719,10 @@ module TestMultiProcessFuzz =
             | Ok (WriteOutcome.ProcessEnded _) as outcome ->
                 coverage.Resets <- coverage.Resets + 1
                 ofWrite outcome
+            | Ok (WriteOutcome.WouldBlock (_, after)) ->
+                coverage.ConnectionWriteParks <- coverage.ConnectionWriteParks + 1
+                Made.Sleeps after
             | Ok outcome -> failwith $"a write to a connected socket answered %A{outcome}"
-            | Error (WriteRefusal.ConnectionSleep _) ->
-                coverage.ConnectionSleeps <- coverage.ConnectionSleeps + 1
-                Made.Answered view
             | Error refusal -> failwith $"a write to a connected socket was refused: %s{WriteRefusal.describe refusal}"
 
         match op with
@@ -784,6 +811,10 @@ module TestMultiProcessFuzz =
             match connectedThrough port view with
             | None -> Made.Answered view
             | Some fd -> UnixDescriptor.close fd view |> answered
+        | Op.MakeNonBlockingThrough port ->
+            match connectedThrough port view with
+            | None -> Made.Answered view
+            | Some fd -> Made.Answered (UnixDescriptor.setNonBlocking fd true view |> snd)
         | Op.Pipe -> UnixPipe.pipe2 0 UserBuffer.Mapped view |> answered
         | Op.PipeRead fd ->
             match pick fd (ofKind (isPipeEnd PipeEnd.Read) view) with
@@ -964,7 +995,7 @@ module TestMultiProcessFuzz =
         | Op.Exit status -> Made.Ended (UnixTaskLifecycle.exitGroup task status view)
 
     /// The call `task` of the view `view` is asleep in, finished.
-    let private finish (task : int) (view : UnixSystem<int, string>) : Made =
+    let private finish (coverage : Coverage) (task : int) (view : UnixSystem<int, string>) : Made =
         match UnixTaskTable.parkedFor task view.Tasks with
         | Some (ParkedSyscall.Accept _) ->
             match UnixConnection.finishAccept task view with
@@ -997,17 +1028,40 @@ module TestMultiProcessFuzz =
             | Ok (ReadOutcome.WouldBlock _, after) -> Made.Sleeps after
             | Ok (_, after) -> Made.Answered after
             | Error _ -> Made.Refused
-        | Some (ParkedSyscall.PipeWrite _) ->
-            match UnixReadWrite.admitFinishWrite task view with
+        | Some (ParkedSyscall.ConnectionRead _) ->
+            match UnixReadWrite.finishRead task view with
+            | Ok (ReadOutcome.WouldBlock _, after) -> Made.Sleeps after
+            | Ok (_, after) ->
+                coverage.ConnectionFinishes <- coverage.ConnectionFinishes + 1
+                Made.Answered after
             | Error _ -> Made.Refused
-            | Ok (WriteOutcome.Returns (WriteResumption.Transfer (_, count), admitted)) ->
-                UnixReadWrite.finishWrite task (ImmutableArray.Create<byte> (Array.zeroCreate<byte> count)) admitted
-                |> ofWrite
-            | Ok (WriteOutcome.Returns (WriteResumption.Answered _, after))
-            | Ok (WriteOutcome.ReturnsRaising (_, _, after))
-            | Ok (WriteOutcome.Restarts after) -> Made.Answered after
-            | Ok (WriteOutcome.WouldBlock (_, after)) -> Made.Sleeps after
-            | Ok (WriteOutcome.ProcessEnded ended) -> Made.Ended ended
+        | Some (ParkedSyscall.PipeWrite _)
+        | Some (ParkedSyscall.ConnectionWrite _) ->
+            let connection =
+                match UnixTaskTable.parkedFor task view.Tasks with
+                | Some (ParkedSyscall.ConnectionWrite _) -> true
+                | _ -> false
+
+            let made =
+                match UnixReadWrite.admitFinishWrite task view with
+                | Error _ -> Made.Refused
+                | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
+                    UnixReadWrite.finishWrite
+                        task
+                        (ImmutableArray.Create<byte> (Array.init count (fun i -> byte (offset + i))))
+                        admitted
+                    |> ofWrite
+                | Ok (WriteOutcome.Returns (WriteResumption.Answered _, after))
+                | Ok (WriteOutcome.ReturnsRaising (_, _, after))
+                | Ok (WriteOutcome.Restarts after) -> Made.Answered after
+                | Ok (WriteOutcome.WouldBlock (_, after)) -> Made.Sleeps after
+                | Ok (WriteOutcome.ProcessEnded ended) -> Made.Ended ended
+
+            match made with
+            | Made.Answered _ when connection -> coverage.ConnectionFinishes <- coverage.ConnectionFinishes + 1
+            | _ -> ()
+
+            made
         | Some ParkedSyscall.SigSuspend ->
             match UnixSignal.finishSigsuspend task view with
             | Ok (SigsuspendOutcome.WouldBlock _, after) -> Made.Sleeps after
@@ -1163,7 +1217,9 @@ module TestMultiProcessFuzz =
                 else
 
                 let before = world.Machine
-                let made = finish task (SimulatedMachine.focus pid world.Machine |> Option.get)
+
+                let made =
+                    finish coverage task (SimulatedMachine.focus pid world.Machine |> Option.get)
 
                 match made with
                 | Made.Refused ->
@@ -1337,11 +1393,20 @@ module TestMultiProcessFuzz =
 
                 // Then each process connects to the next one's listener, and
                 // the next accepts, so that bytes cross between processes from
-                // the first step.
+                // the first step: the connecting end blocking, so that its
+                // transfers sleep, and the accepted end not.
                 (machine, List.indexed pids)
                 ||> List.fold (fun machine (i, client) ->
                     let next = (i + 1) % pids.Length
-                    let _, machine = Machines.inProcess client (KeventWorld.client ports.[next]) machine
+
+                    let machine =
+                        Machines.doIn
+                            client
+                            (fun view ->
+                                let fd, view = KeventWorld.client ports.[next] view
+                                UnixDescriptor.setNonBlocking fd false view |> snd
+                            )
+                            machine
 
                     Machines.doIn
                         pids.[next]
@@ -1398,42 +1463,52 @@ module TestMultiProcessFuzz =
                 ShortWrites = 0
                 Resets = 0
                 EndsOfFile = 0
-                ConnectionSleeps = 0
+                ConnectionReadParks = 0
+                ConnectionWriteParks = 0
+                ConnectionFinishes = 0
                 Refusals = 0
                 Calls = 0
             }
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen caseGen) (run coverage))
+        // 1500 cases, because the cases biased towards transfers leave fewer
+        // steps for the rest, and 1000 reached the rarest of the paths below
+        // too seldom for its bound to be safe.
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1500, Prop.forAll (Arb.fromGen caseGen) (run coverage))
+        printfn $"%A{coverage}"
 
         // The paths the property exists for, each reached often enough that a
         // generator regression shows here rather than as a silently weaker
-        // test: about a third of what 1000 cases reached when this was written.
-        coverage.CrossConnects |> shouldBeGreaterThan 711
-        coverage.CrossAddressInUse |> shouldBeGreaterThan 147
-        coverage.Accepts |> shouldBeGreaterThan 435
-        coverage.CrossRmDirOfStanding |> shouldBeGreaterThan 92
-        coverage.EpollAdds |> shouldBeGreaterThan 126
-        coverage.KeventAdds |> shouldBeGreaterThan 173
-        coverage.Parks |> shouldBeGreaterThan 1180
-        coverage.DarwinPollParks |> shouldBeGreaterThan 128
-        coverage.KeventParks |> shouldBeGreaterThan 154
-        coverage.Finishes |> shouldBeGreaterThan 390
-        coverage.Exits |> shouldBeGreaterThan 46
-        coverage.CrossWakes |> shouldBeGreaterThan 397
-        coverage.CrossReads |> shouldBeGreaterThan 143
-        coverage.ShortWrites |> shouldBeGreaterThan 45
-        coverage.Resets |> shouldBeGreaterThan 99
-        coverage.EndsOfFile |> shouldBeGreaterThan 241
-        coverage.ConnectionSleeps |> shouldBeGreaterThan 90
+        // test: about a third of the median over 60 seeded runs.
+        coverage.CrossConnects |> shouldBeGreaterThan 840
+        coverage.CrossAddressInUse |> shouldBeGreaterThan 173
+        coverage.Accepts |> shouldBeGreaterThan 476
+        coverage.CrossRmDirOfStanding |> shouldBeGreaterThan 113
+        coverage.EpollAdds |> shouldBeGreaterThan 152
+        coverage.KeventAdds |> shouldBeGreaterThan 222
+        coverage.Parks |> shouldBeGreaterThan 1942
+        coverage.DarwinPollParks |> shouldBeGreaterThan 170
+        coverage.KeventParks |> shouldBeGreaterThan 196
+        coverage.Finishes |> shouldBeGreaterThan 569
+        coverage.Exits |> shouldBeGreaterThan 74
+        coverage.CrossWakes |> shouldBeGreaterThan 610
+        coverage.CrossReads |> shouldBeGreaterThan 418
+        coverage.ShortWrites |> shouldBeGreaterThan 113
+        coverage.Resets |> shouldBeGreaterThan 140
+        coverage.EndsOfFile |> shouldBeGreaterThan 277
+        coverage.ConnectionReadParks |> shouldBeGreaterThan 180
+        coverage.ConnectionWriteParks |> shouldBeGreaterThan 112
+        coverage.ConnectionFinishes |> shouldBeGreaterThan 68
 
         let crossWakes (kind : string) : int =
             Map.tryFind kind coverage.CrossWakeKinds |> Option.defaultValue 0
 
-        crossWakes "AcceptQueueNonEmpty" |> shouldBeGreaterThan 178
-        crossWakes "EpollEventDeliverable" |> shouldBeGreaterThan 65
-        crossWakes "KqueueEventDeliverable" |> shouldBeGreaterThan 75
-        crossWakes "KqueuePollReportable" |> shouldBeGreaterThan 55
-        crossWakes "FlockGrantable" |> shouldBeGreaterThan 36
-        crossWakes "DescriptorReady" |> shouldBeGreaterThan 51
+        crossWakes "AcceptQueueNonEmpty" |> shouldBeGreaterThan 206
+        crossWakes "EpollEventDeliverable" |> shouldBeGreaterThan 73
+        crossWakes "KqueueEventDeliverable" |> shouldBeGreaterThan 89
+        crossWakes "KqueuePollReportable" |> shouldBeGreaterThan 70
+        crossWakes "FlockGrantable" |> shouldBeGreaterThan 80
+        crossWakes "DescriptorReady" |> shouldBeGreaterThan 56
+        crossWakes "ConnectionReadable" |> shouldBeGreaterThan 52
+        crossWakes "ConnectionWritable" |> shouldBeGreaterThan 73
         // Refusals are steps that tested nothing; they must stay rare.
         coverage.Refusals * 10 |> shouldBeSmallerThan coverage.Calls

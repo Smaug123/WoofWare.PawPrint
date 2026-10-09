@@ -1,0 +1,213 @@
+R	R-data	after=100	then=100	second_read=-1 EAGAIN	sigusr1=0	sigpipe=0	so_error=0
+R	R-fin	after=0	then=0	second_read=0 	sigusr1=0	sigpipe=0	so_error=0
+R	R-reset	after=-1 ECONNRESET	then=-1 ECONNRESET	second_read=0 	sigusr1=0	sigpipe=0	so_error=0
+R	R-eintr	after=-1 EINTR	then=-1 EINTR	second_read=-1 EAGAIN	sigusr1=1	sigpipe=0	so_error=0
+R	R-restart	after=asleep	then=100	second_read=-1 EAGAIN	sigusr1=1	sigpipe=0	so_error=0
+R	R-close	close=0 0	after_close=asleep	after_peer_write(100)=100	after_peer_close=100
+R	R-order	210 201 201 201 201 201 201 210 201 201 
+W	W-resume	defaults	sndbuf=4194304	rcvbuf(p)=131072
+W	W-resume	read=0	fionread=127717	unsent_before=3782534	unsent=3782534	taken=3910251	sndbuf=4194304
+W	W-resume	read=65536	fionread=129253	unsent_before=3782534	unsent=3782534	taken=3977323	sndbuf=4194304
+W	W-resume	read=81920	fionread=112869	unsent_before=3782534	unsent=3715462	taken=3910251	sndbuf=4194304
+W	W-resume	read=194789	fionread=94976	unsent_before=3715462	unsent=3715462	taken=4005227	sndbuf=4194304
+W	W-resume	read=211173	fionread=78592	unsent_before=3715462	unsent=3620486	taken=3910251	sndbuf=4194304
+W	W-resume	read=289765	fionread=94976	unsent_before=3620486	unsent=3620486	taken=4005227	sndbuf=4194304
+W	W-resume	read=306149	fionread=78592	unsent_before=3620486	unsent=3525510	taken=3910251	sndbuf=4194304
+W	W-resume	read=384741	fionread=94976	unsent_before=3525510	unsent=3525510	taken=4005227	sndbuf=4194304
+W	W-resume	read=401125	fionread=78592	unsent_before=3525510	unsent=3430534	taken=3910251	sndbuf=4194304
+W	W-resume	read=479717	fionread=94976	unsent_before=3430534	unsent=3430534	taken=4005227	sndbuf=4194304
+W	W-resume	read=496101	fionread=78592	unsent_before=3430534	unsent=3335558	taken=3910251	sndbuf=4194304
+W	W-resume	read=574693	fionread=94976	unsent_before=3335558	unsent=3335558	taken=4005227	sndbuf=4194304
+W	W-resume	read=591077	fionread=78592	unsent_before=3335558	unsent=3240582	taken=3910251	sndbuf=4194304
+W	W-resume	read=669669	fionread=94976	unsent_before=3240582	unsent=3240582	taken=4005227	sndbuf=4194304
+W	W-resume	read=686053	fionread=78592	unsent_before=3240582	unsent=3145606	taken=3910251	sndbuf=4194304
+W	W-resume	read=764645	fionread=94976	unsent_before=3145606	unsent=3145606	taken=4005227	sndbuf=4194304
+W	W-resume	read=781029	fionread=78592	unsent_before=3145606	unsent=3050630	taken=3910251	sndbuf=4194304
+W	W-resume	read=859621	fionread=94976	unsent_before=3050630	unsent=3050630	taken=4005227	sndbuf=4194304
+W	W-resume	read=876005	fionread=78592	unsent_before=3050630	unsent=2955654	taken=3910251	sndbuf=4194304
+W	W-resume	read=954597	fionread=94976	unsent_before=2955654	unsent=2955654	taken=4005227	sndbuf=4194304
+W	W-resume	read=970981	fionread=78592	unsent_before=2955654	unsent=2860678	taken=3910251	sndbuf=4194304
+W	W-resume	read=1049573	fionread=94976	unsent_before=2860678	unsent=2860678	taken=4005227	sndbuf=4194304
+W	W-resume	read=1065957	fionread=78592	unsent_before=2860678	unsent=2765702	taken=3910251	sndbuf=4194304
+W	W-resume	read=1144549	fionread=94976	unsent_before=2765702	unsent=2765702	taken=4005227	sndbuf=4194304
+W	W-resume	read=1160933	fionread=78592	unsent_before=2765702	unsent=4142854	taken=5382379	sndbuf=4194304
+W	W-resume	read=1239525	fionread=94976	unsent_before=4142854	unsent=4142854	taken=5477355	sndbuf=4194304
+W	W-resume	read=1255909	fionread=78592	unsent_before=4142854	unsent=4047878	taken=5382379	sndbuf=4194304
+W	W-resume	read=1334501	fionread=94976	unsent_before=4047878	unsent=4047878	taken=5477355	sndbuf=4194304
+W	W-resume	read=1350885	fionread=78592	unsent_before=4047878	unsent=3952902	taken=5382379	sndbuf=4194304
+W	W-resume	read=1429477	fionread=94976	unsent_before=3952902	unsent=3952902	taken=5477355	sndbuf=4194304
+W	W-resume	read=1445861	fionread=78592	unsent_before=3952902	unsent=3857926	taken=5382379	sndbuf=4194304
+W	W-resume	read=1524453	fionread=94976	unsent_before=3857926	unsent=3857926	taken=5477355	sndbuf=4194304
+W	W-resume	read=1540837	fionread=78592	unsent_before=3857926	unsent=3762950	taken=5382379	sndbuf=4194304
+W	W-resume	read=1619429	fionread=94976	unsent_before=3762950	unsent=3762950	taken=5477355	sndbuf=4194304
+W	W-resume	read=1635813	fionread=78592	unsent_before=3762950	unsent=3667974	taken=5382379	sndbuf=4194304
+W	W-resume	read=1714405	fionread=94976	unsent_before=3667974	unsent=3667974	taken=5477355	sndbuf=4194304
+W	W-resume	read=1730789	fionread=78592	unsent_before=3667974	unsent=3572998	taken=5382379	sndbuf=4194304
+W	W-resume	read=1809381	fionread=94976	unsent_before=3572998	unsent=3572998	taken=5477355	sndbuf=4194304
+W	W-resume	read=1825765	fionread=78592	unsent_before=3572998	unsent=3478022	taken=5382379	sndbuf=4194304
+W	W-resume	read=1904357	fionread=94976	unsent_before=3478022	unsent=3478022	taken=5477355	sndbuf=4194304
+W	W-resume	read=1920741	fionread=78592	unsent_before=3478022	unsent=3383046	taken=5382379	sndbuf=4194304
+W	W-resume	read=1999333	fionread=94976	unsent_before=3383046	unsent=3383046	taken=5477355	sndbuf=4194304
+W	W-resume	read=2015717	fionread=78592	unsent_before=3383046	unsent=3288070	taken=5382379	sndbuf=4194304
+W	W-resume	read=2094309	fionread=94976	unsent_before=3288070	unsent=3288070	taken=5477355	sndbuf=4194304
+W	W-resume	read=2110693	fionread=78592	unsent_before=3288070	unsent=3193094	taken=5382379	sndbuf=4194304
+W	W-resume	read=2189285	fionread=94976	unsent_before=3193094	unsent=3193094	taken=5477355	sndbuf=4194304
+W	W-resume	read=2205669	fionread=78592	unsent_before=3193094	unsent=3098118	taken=5382379	sndbuf=4194304
+W	W-resume	read=2284261	fionread=94976	unsent_before=3098118	unsent=3098118	taken=5477355	sndbuf=4194304
+W	W-resume	read=2300645	fionread=78592	unsent_before=3098118	unsent=3003142	taken=5382379	sndbuf=4194304
+W	W-resume	read=2379237	fionread=94976	unsent_before=3003142	unsent=3003142	taken=5477355	sndbuf=4194304
+W	W-resume	read=2395621	fionread=78592	unsent_before=3003142	unsent=2908166	taken=5382379	sndbuf=4194304
+W	W-resume	read=2474213	fionread=94976	unsent_before=2908166	unsent=2908166	taken=5477355	sndbuf=4194304
+W	W-resume	read=2490597	fionread=78592	unsent_before=2908166	unsent=2813190	taken=5382379	sndbuf=4194304
+W	W-resume	read=2569189	fionread=94976	unsent_before=2813190	unsent=2813190	taken=5477355	sndbuf=4194304
+W	W-resume	read=2585573	fionread=78592	unsent_before=2813190	unsent=4142854	taken=6807019	sndbuf=4194304
+W	W-resume	read=2664165	fionread=94976	unsent_before=4142854	unsent=4142854	taken=6901995	sndbuf=4194304
+W	W-resume	read=2680549	fionread=78592	unsent_before=4142854	unsent=4047878	taken=6807019	sndbuf=4194304
+W	W-resume	read=2759141	fionread=94976	unsent_before=4047878	unsent=4047878	taken=6901995	sndbuf=4194304
+W	W-resume	read=2775525	fionread=78592	unsent_before=4047878	unsent=3952902	taken=6807019	sndbuf=4194304
+W	W-resume	read=2854117	fionread=94976	unsent_before=3952902	unsent=3952902	taken=6901995	sndbuf=4194304
+W	W-resume	read=2870501	fionread=78592	unsent_before=3952902	unsent=3857926	taken=6807019	sndbuf=4194304
+W	W-resume	read=2949093	fionread=94976	unsent_before=3857926	unsent=3857926	taken=6901995	sndbuf=4194304
+W	W-resume	read=2965477	fionread=78592	unsent_before=3857926	unsent=3762950	taken=6807019	sndbuf=4194304
+W	W-resume	read=3044069	fionread=94976	unsent_before=3762950	unsent=3762950	taken=6901995	sndbuf=4194304
+W	W-resume	read=3060453	fionread=78592	unsent_before=3762950	unsent=3667974	taken=6807019	sndbuf=4194304
+W	W-resume	read=3139045	fionread=94976	unsent_before=3667974	unsent=3667974	taken=6901995	sndbuf=4194304
+W	W-resume	read=3155429	fionread=78592	unsent_before=3667974	unsent=3572998	taken=6807019	sndbuf=4194304
+W	W-resume	read=3234021	fionread=94976	unsent_before=3572998	unsent=3572998	taken=6901995	sndbuf=4194304
+W	W-resume	read=3250405	fionread=78592	unsent_before=3572998	unsent=3478022	taken=6807019	sndbuf=4194304
+W	W-resume	read=3328997	fionread=94976	unsent_before=3478022	unsent=3478022	taken=6901995	sndbuf=4194304
+W	W-resume	read=3345381	fionread=78592	unsent_before=3478022	unsent=3383046	taken=6807019	sndbuf=4194304
+W	W-resume	read=3423973	fionread=94976	unsent_before=3383046	unsent=3383046	taken=6901995	sndbuf=4194304
+W	W-resume	read=3440357	fionread=78592	unsent_before=3383046	unsent=3288070	taken=6807019	sndbuf=4194304
+W	W-resume	read=3518949	fionread=94976	unsent_before=3288070	unsent=3288070	taken=6901995	sndbuf=4194304
+W	W-resume	read=3535333	fionread=78592	unsent_before=3288070	unsent=3193094	taken=6807019	sndbuf=4194304
+W	W-resume	read=3613925	fionread=94976	unsent_before=3193094	unsent=3193094	taken=6901995	sndbuf=4194304
+W	W-resume	read=3630309	fionread=78592	unsent_before=3193094	unsent=3098118	taken=6807019	sndbuf=4194304
+W	W-resume	read=3708901	fionread=94976	unsent_before=3098118	unsent=3098118	taken=6901995	sndbuf=4194304
+W	W-resume	read=3725285	fionread=78592	unsent_before=3098118	unsent=3003142	taken=6807019	sndbuf=4194304
+W	W-resume	read=3803877	fionread=94976	unsent_before=3003142	unsent=3003142	taken=6901995	sndbuf=4194304
+W	W-resume	read=3820261	fionread=78592	unsent_before=3003142	unsent=2908166	taken=6807019	sndbuf=4194304
+W	W-resume	read=3898853	fionread=94976	unsent_before=2908166	unsent=2908166	taken=6901995	sndbuf=4194304
+W	W-resume	read=3915237	fionread=78592	unsent_before=2908166	unsent=2813190	taken=6807019	sndbuf=4194304
+W	W-resume	read=3993829	fionread=94976	unsent_before=2813190	unsent=2813190	taken=6901995	sndbuf=4194304
+W	W-resume	read=4010213	fionread=78592	unsent_before=2813190	unsent=4142854	taken=8231659	sndbuf=4194304
+W	W-resume	read=4088805	fionread=94976	unsent_before=4142854	unsent=4142854	taken=8326635	sndbuf=4194304
+W	W-resume	read=4105189	fionread=78592	unsent_before=4142854	unsent=4047878	taken=8231659	sndbuf=4194304
+W	W-resume	read=4183781	fionread=94976	unsent_before=4047878	unsent=4047878	taken=8326635	sndbuf=4194304
+W	W-resume	read=4200165	fionread=78592	unsent_before=4047878	unsent=3952902	taken=8231659	sndbuf=4194304
+W	W-resume	read=4278757	fionread=94976	unsent_before=3952902	unsent=3952902	taken=8326635	sndbuf=4194304
+W	W-resume	read=4295141	fionread=78592	unsent_before=3952902	unsent=3857926	taken=8231659	sndbuf=4194304
+W	W-resume	read=4373733	fionread=94976	unsent_before=3857926	unsent=3857926	taken=8326635	sndbuf=4194304
+W	W-resume	read=4390117	fionread=78592	unsent_before=3857926	unsent=3762950	taken=8231659	sndbuf=4194304
+W	W-resume	read=4468709	fionread=94976	unsent_before=3762950	unsent=3762950	taken=8326635	sndbuf=4194304
+W	W-resume	read=4485093	fionread=78592	unsent_before=3762950	unsent=3667974	taken=8231659	sndbuf=4194304
+W	W-resume	read=4563685	fionread=94976	unsent_before=3667974	unsent=3667974	taken=8326635	sndbuf=4194304
+W	W-resume	read=4580069	fionread=78592	unsent_before=3667974	unsent=3572998	taken=8231659	sndbuf=4194304
+W	W-resume	read=4658661	fionread=94976	unsent_before=3572998	unsent=3572998	taken=8326635	sndbuf=4194304
+W	W-resume	read=4675045	fionread=78592	unsent_before=3572998	unsent=3478022	taken=8231659	sndbuf=4194304
+W	W-resume	read=4753637	fionread=94976	unsent_before=3478022	unsent=3478022	taken=8326635	sndbuf=4194304
+W	W-resume	read=4770021	fionread=78592	unsent_before=3478022	unsent=3383046	taken=8231659	sndbuf=4194304
+W	W-resume	read=4848613	fionread=94976	unsent_before=3383046	unsent=3383046	taken=8326635	sndbuf=4194304
+W	W-resume	read=4864997	fionread=78592	unsent_before=3383046	unsent=3288070	taken=8231659	sndbuf=4194304
+W	W-resume	read=4943589	fionread=94976	unsent_before=3288070	unsent=3288070	taken=8326635	sndbuf=4194304
+W	W-resume	read=4959973	fionread=78592	unsent_before=3288070	unsent=3193094	taken=8231659	sndbuf=4194304
+W	W-resume	read=5038565	fionread=94976	unsent_before=3193094	unsent=3193094	taken=8326635	sndbuf=4194304
+W	W-resume	read=5054949	fionread=78592	unsent_before=3193094	unsent=3098118	taken=8231659	sndbuf=4194304
+W	W-resume	read=5133541	fionread=94976	unsent_before=3098118	unsent=3098118	taken=8326635	sndbuf=4194304
+W	W-resume	read=5149925	fionread=78592	unsent_before=3098118	unsent=3003142	taken=8231659	sndbuf=4194304
+W	W-resume	read=5228517	fionread=94976	unsent_before=3003142	unsent=3003142	taken=8326635	sndbuf=4194304
+W	W-resume	read=5244901	fionread=78592	unsent_before=3003142	unsent=2908166	taken=8231659	sndbuf=4194304
+W	W-resume	read=5323493	fionread=94976	unsent_before=2908166	unsent=2908166	taken=8326635	sndbuf=4194304
+W	W-resume	read=5339877	fionread=78592	unsent_before=2908166	unsent=2813190	taken=8231659	sndbuf=4194304
+W	W-resume	read=5418469	fionread=94976	unsent_before=2813190	unsent=2813190	taken=8326635	sndbuf=4194304
+W	W-resume	read=5434853	fionread=78592	unsent_before=2813190	unsent=2875163	taken=8388608	sndbuf=4194304
+W	W-resume	read=5513445	fionread=94976	unsent_before=2875163	unsent=2875163	taken=8483584	sndbuf=4194304
+W	W-resume	read=5529829	fionread=78592	unsent_before=2875163	unsent=2780187	taken=8388608	sndbuf=4194304
+W	W-resume	read=5608421	fionread=94976	unsent_before=2780187	unsent=2780187	taken=8483584	sndbuf=4194304
+W	W-resume	read=5624805	fionread=78592	unsent_before=2780187	unsent=2685211	taken=8388608	sndbuf=4194304
+W	W-resume	read=5703397	fionread=94976	unsent_before=2685211	unsent=2685211	taken=8483584	sndbuf=4194304
+W	W-resume	read=5719781	fionread=78592	unsent_before=2685211	unsent=2590235	taken=8388608	sndbuf=4194304
+W	W-resume	read=5798373	fionread=94976	unsent_before=2590235	unsent=2590235	taken=8483584	sndbuf=4194304
+W	W-resume	read=5814757	fionread=78592	unsent_before=2590235	unsent=2495259	taken=8388608	sndbuf=4194304
+W	W-resume	read=5893349	fionread=94976	unsent_before=2495259	unsent=2495259	taken=8483584	sndbuf=4194304
+W	W-resume	read=5909733	fionread=78592	unsent_before=2495259	unsent=2400283	taken=8388608	sndbuf=4194304
+W	W-resume	read=5988325	fionread=94976	unsent_before=2400283	unsent=2400283	taken=8483584	sndbuf=4194304
+W	W-resume	read=6004709	fionread=78592	unsent_before=2400283	unsent=2305307	taken=8388608	sndbuf=4194304
+W	W-resume	read=6083301	fionread=94976	unsent_before=2305307	unsent=2305307	taken=8483584	sndbuf=4194304
+W	W-resume	read=6099685	fionread=78592	unsent_before=2305307	unsent=2210331	taken=8388608	sndbuf=4194304
+W	W-resume	read=6178277	fionread=94976	unsent_before=2210331	unsent=2210331	taken=8483584	sndbuf=4194304
+W	W-resume	read=6194661	fionread=78592	unsent_before=2210331	unsent=2115355	taken=8388608	sndbuf=4194304
+W	W-resume	read=6273253	fionread=94976	unsent_before=2115355	unsent=2115355	taken=8483584	sndbuf=4194304
+W	W-resume	read=6289637	fionread=78592	unsent_before=2115355	unsent=2020379	taken=8388608	sndbuf=4194304
+W	W-resume	read=6368229	fionread=94976	unsent_before=2020379	unsent=2020379	taken=8483584	sndbuf=4194304
+W	W-resume	read=6384613	fionread=78592	unsent_before=2020379	unsent=1925403	taken=8388608	sndbuf=4194304
+W	W-resume	read=6463205	fionread=94976	unsent_before=1925403	unsent=1925403	taken=8483584	sndbuf=4194304
+W	W-resume	read=6479589	fionread=78592	unsent_before=1925403	unsent=1830427	taken=8388608	sndbuf=4194304
+W	W-resume	read=6558181	fionread=94976	unsent_before=1830427	unsent=1830427	taken=8483584	sndbuf=4194304
+W	W-resume	read=6574565	fionread=78592	unsent_before=1830427	unsent=1735451	taken=8388608	sndbuf=4194304
+W	W-resume	read=6653157	fionread=94976	unsent_before=1735451	unsent=1735451	taken=8483584	sndbuf=4194304
+W	W-resume	read=6669541	fionread=78592	unsent_before=1735451	unsent=1640475	taken=8388608	sndbuf=4194304
+W	W-resume	read=6748133	fionread=94976	unsent_before=1640475	unsent=1640475	taken=8483584	sndbuf=4194304
+W	W-resume	read=6764517	fionread=78592	unsent_before=1640475	unsent=1545499	taken=8388608	sndbuf=4194304
+W	W-resume	read=6843109	fionread=94976	unsent_before=1545499	unsent=1545499	taken=8483584	sndbuf=4194304
+W	W-resume	read=6859493	fionread=78592	unsent_before=1545499	unsent=1450523	taken=8388608	sndbuf=4194304
+W	W-resume	read=6938085	fionread=94976	unsent_before=1450523	unsent=1450523	taken=8483584	sndbuf=4194304
+W	W-resume	read=6954469	fionread=78592	unsent_before=1450523	unsent=1355547	taken=8388608	sndbuf=4194304
+W	W-resume	read=7033061	fionread=94976	unsent_before=1355547	unsent=1355547	taken=8483584	sndbuf=4194304
+W	W-resume	read=7049445	fionread=78592	unsent_before=1355547	unsent=1260571	taken=8388608	sndbuf=4194304
+W	W-resume	read=7128037	fionread=94976	unsent_before=1260571	unsent=1260571	taken=8483584	sndbuf=4194304
+W	W-resume	read=7144421	fionread=78592	unsent_before=1260571	unsent=1165595	taken=8388608	sndbuf=4194304
+W	W-resume	read=7223013	fionread=94976	unsent_before=1165595	unsent=1165595	taken=8483584	sndbuf=4194304
+W	W-resume	read=7239397	fionread=78592	unsent_before=1165595	unsent=1070619	taken=8388608	sndbuf=4194304
+W	W-resume	read=7317989	fionread=94976	unsent_before=1070619	unsent=1070619	taken=8483584	sndbuf=4194304
+W	W-resume	read=7334373	fionread=78592	unsent_before=1070619	unsent=975643	taken=8388608	sndbuf=4194304
+W	W-resume	read=7412965	fionread=94976	unsent_before=975643	unsent=975643	taken=8483584	sndbuf=4194304
+W	W-resume	read=7429349	fionread=78592	unsent_before=975643	unsent=880667	taken=8388608	sndbuf=4194304
+W	W-resume	read=7507941	fionread=94976	unsent_before=880667	unsent=880667	taken=8483584	sndbuf=4194304
+W	W-resume	read=7524325	fionread=78592	unsent_before=880667	unsent=785691	taken=8388608	sndbuf=4194304
+W	W-resume	read=7602917	fionread=94976	unsent_before=785691	unsent=785691	taken=8483584	sndbuf=4194304
+W	W-resume	read=7619301	fionread=78592	unsent_before=785691	unsent=690715	taken=8388608	sndbuf=4194304
+W	W-resume	read=7697893	fionread=94976	unsent_before=690715	unsent=690715	taken=8483584	sndbuf=4194304
+W	W-resume	read=7714277	fionread=78592	unsent_before=690715	unsent=595739	taken=8388608	sndbuf=4194304
+W	W-resume	read=7792869	fionread=94976	unsent_before=595739	unsent=595739	taken=8483584	sndbuf=4194304
+W	W-resume	read=7809253	fionread=78592	unsent_before=595739	unsent=500763	taken=8388608	sndbuf=4194304
+W	W-resume	read=7887845	fionread=94976	unsent_before=500763	unsent=500763	taken=8483584	sndbuf=4194304
+W	W-resume	read=7904229	fionread=78592	unsent_before=500763	unsent=405787	taken=8388608	sndbuf=4194304
+W	W-resume	read=7982821	fionread=94976	unsent_before=405787	unsent=405787	taken=8483584	sndbuf=4194304
+W	W-resume	read=7999205	fionread=78592	unsent_before=405787	unsent=310811	taken=8388608	sndbuf=4194304
+W	W-resume	read=8077797	fionread=94976	unsent_before=310811	unsent=310811	taken=8483584	sndbuf=4194304
+W	W-resume	read=8094181	fionread=78592	unsent_before=310811	unsent=215835	taken=8388608	sndbuf=4194304
+W	W-resume	read=8172773	fionread=94976	unsent_before=215835	unsent=215835	taken=8483584	sndbuf=4194304
+W	W-resume	read=8189157	fionread=78592	unsent_before=215835	unsent=120859	taken=8388608	sndbuf=4194304
+W	W-resume	read=8267749	fionread=94976	unsent_before=120859	unsent=120859	taken=8483584	sndbuf=4194304
+W	W-resume	read=8284133	fionread=78592	unsent_before=120859	unsent=25883	taken=8388608	sndbuf=4194304
+W	W-resume	read=8362725	fionread=25883	unsent_before=25883	unsent=25883	taken=8414491	sndbuf=4194304
+W	W-resume	answer=8388608	read_in_all=8388608
+W	W-resume	sndbuf32768	sndbuf=65536	rcvbuf(p)=131072
+W	W-resume	read=0	fionread=112970	unsent_before=94976	unsent=94976	taken=207946	sndbuf=65536
+W	W-resume	read=32768	fionread=128330	unsent_before=94976	unsent=94976	taken=256074	sndbuf=65536
+W	W-resume	read=49152	fionread=111946	unsent_before=94976	unsent=46848	taken=207946	sndbuf=65536
+W	W-resume	read=161098	fionread=46848	unsent_before=46848	unsent=46848	taken=254794	sndbuf=65536
+W	W-resume	read=207946	fionread=94976	unsent_before=46848	unsent=94976	taken=397898	sndbuf=65536
+W	W-resume	read=257098	fionread=126976	unsent_before=94976	unsent=94976	taken=479050	sndbuf=65536
+W	W-resume	read=384074	fionread=94976	unsent_before=94976	unsent=94976	taken=574026	sndbuf=65536
+W	W-resume	read=479050	fionread=94976	unsent_before=94976	unsent=94976	taken=669002	sndbuf=65536
+W	W-resume	read=574026	fionread=94976	unsent_before=94976	unsent=94976	taken=763978	sndbuf=65536
+W	W-resume	read=669002	fionread=94976	unsent_before=94976	unsent=94976	taken=858954	sndbuf=65536
+W	W-resume	read=763978	fionread=94976	unsent_before=94976	unsent=94976	taken=953930	sndbuf=65536
+W	W-resume	read=858954	fionread=94976	unsent_before=94976	unsent=94976	taken=1048906	sndbuf=65536
+W	W-resume	read=875338	fionread=78592	unsent_before=94976	unsent=94646	taken=1048576	sndbuf=65536
+W	W-resume	read=953930	fionread=94646	unsent_before=94646	unsent=94646	taken=1143222	sndbuf=65536
+W	W-resume	read=970314	fionread=78262	unsent_before=94646	unsent=0	taken=1048576	sndbuf=65536
+W	W-resume	answer=1048576	read_in_all=1048576
+W	W-partial	filled_first=0	peer_fionread=128257	unsent=3803904	taken_by_call_before=3932160	after=3932160	drained=-1	then=3932160	sigusr1=1	sigpipe=0	so_error=0
+W	W-partial-restart	filled_first=0	peer_fionread=128257	unsent=3803904	taken_by_call_before=3932160	after=3932160	drained=-1	then=3932160	sigusr1=1	sigpipe=0	so_error=0
+W	W-empty	filled_first=4194304	peer_fionread=128257	unsent=4066048	taken_by_call_before=0	after=-1 EINTR	drained=-1	then=-1 EINTR	sigusr1=1	sigpipe=0	so_error=0
+W	W-empty-restart	filled_first=4194304	peer_fionread=128257	unsent=4066048	taken_by_call_before=0	after=1000	drained=-1	then=1000	sigusr1=1	sigpipe=0	so_error=0
+W	W-reset-partial	filled_first=0	peer_fionread=128257	unsent=3803904	taken_by_call_before=3932160	after=3932160	drained=-1	then=3932160	sigusr1=0	sigpipe=0	so_error=ECONNRESET
+W	W-reset-empty	filled_first=4194304	peer_fionread=128257	unsent=4066048	taken_by_call_before=0	after=-1 ECONNRESET	drained=-1	then=-1 ECONNRESET	sigusr1=0	sigpipe=0	so_error=0
+W	W-close	filled_first=0	peer_fionread=128257	unsent=3803904	taken_by_call_before=3932160	after=asleep	drained=8388609	then=8388608	sigusr1=0	sigpipe=0	so_error=-
+D	D-read	ready-first	wrote_more_or_read=20	partial_only=0	eintr=0	other=0
+D	D-read	signal-first	wrote_more_or_read=20	partial_only=0	eintr=0	other=0
+D	D-write	ready-first	wrote_more_or_read=0	partial_only=20	eintr=0	other=0
+D	D-write	signal-first	wrote_more_or_read=0	partial_only=20	eintr=0	other=0
