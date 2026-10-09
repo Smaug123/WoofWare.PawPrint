@@ -87,6 +87,7 @@
         <Compile Include="UnixPoll.fs" />
         <Compile Include="UnixKqueue.fs" />
         <Compile Include="UnixTaskLifecycle.fs" />
+        <Compile Include="UnixScheduling.fs" />
         <Compile Include="UnixDescriptor.fs" />
         <Compile Include="UnixPathResolution.fs" />
         <Compile Include="UnixReadWrite.fs" />
