@@ -648,7 +648,7 @@ module NativeThreading =
             // one tick at a time; the actual wait is implemented by parking
             // the thread in `BlockedOnSleep` with an absolute deadline
             // (or `None` for `Timeout.Infinite`) and letting
-            // `Program.fireExpiredDeadlines` route through
+            // `RunningProgram.fireExpiredDeadlines` route through
             // `Scheduler.fireSleepTimeout` once the virtual clock crosses
             // the deadline. `Thread.Sleep(0)` is a no-op (BCL uses it as a
             // yield hint; we have no preemption to invoke).

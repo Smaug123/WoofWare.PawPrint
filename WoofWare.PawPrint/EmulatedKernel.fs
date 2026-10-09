@@ -255,9 +255,10 @@ module ClockJitter =
         float (h >>> 11) / float (1UL <<< 53)
 
     /// Reject a strategy whose numbers cannot mean anything. Called both by
-    /// `EmulatedKernel.withClockJitter`, so a misconfigured host finds out
-    /// before any guest code runs, and by `chooseJump`, which a kernel assembled
-    /// by record-copy reaches without having passed through that setter.
+    /// `MachineConfig.clock`, so a misconfigured host finds out before any guest
+    /// code runs, and by `chooseJump`, which a caller holding a strategy no
+    /// `MachineClock` vouched for reaches without having passed through that
+    /// check.
     let validate (strategy : ClockJitterStrategy) : unit =
         match strategy with
         | ClockJitterStrategy.Disabled
@@ -656,12 +657,6 @@ type EmulatedKernel =
         /// the two condvar primitives separately. Defaults to `Disabled` so
         /// existing runs are bit-for-bit unchanged.
         SyncBlockSpuriousWakeup : SyncBlockSpuriousWakeupStrategy
-        /// Deterministic strategy governing whether the driver jumps the virtual
-        /// clock onto an outstanding deadline as part of a tick. Defaults to
-        /// `Disabled` so existing runs are bit-for-bit unchanged. See
-        /// `ClockJitterStrategy` for what it buys and `ClockJitter.chooseJump`
-        /// for how it is interpreted.
-        ClockJitter : ClockJitterStrategy
         /// Monotonically-advancing scheduler tick consumed by
         /// `SpuriousWakeupStrategy`. The driver loop applies the strategy
         /// against the current value and then increments by 1 before
@@ -670,17 +665,6 @@ type EmulatedKernel =
         /// pure model self-contained and means tests can drive the strategy
         /// without spinning up a real driver.
         StepCounter : int64
-        /// Virtual time charged for one retired IL instruction, in 100 ns ticks — how fast the
-        /// simulated machine is. Must be >= 1; a cost of zero would freeze the clock and make
-        /// every guest polling loop diverge.
-        ///
-        /// Kernel state rather than a constant because it is guest-observable: a guest can
-        /// measure it by counting work against `Environment.TickCount64`, and it decides which
-        /// BCL paths run — at a coarse enough rate `SpinWait` exhausts its spin budget in a
-        /// couple of iterations and drops to the blocking path. So it belongs to the replay
-        /// contract, alongside `WallClockEpochMs` and `ProcessorCount`, both of which are here
-        /// for the same reason. See `EmulatedKernel.defaultInstructionCostTicks`.
-        InstructionCostTicks : int64
         /// Number reported by `Thread.OptimalMaxSpinWaitsPerSpinIteration` (an
         /// `internal` property, reached only via `SpinWait.SpinOnce()` /
         /// `LowLevelSpinWaiter` in ordinary guest code). Deliberately a value
@@ -769,9 +753,9 @@ type EmulatedKernel =
     /// with this one, so PawPrint's instruction cost and deadlines are the reason a
     /// file's nanosecond part is always a multiple of 100.
     ///
-    /// The driver loop advances it by `InstructionCostTicks` each time it
-    /// increments `StepCounter`; see that field for the rate and what it means
-    /// as a machine speed. Elapsed-time polling loops such as
+    /// The driver loop advances it by `MachineClock.InstructionCostTicks` each
+    /// time it increments `StepCounter`; see that field for the rate and what it
+    /// means as a machine speed. Elapsed-time polling loops such as
     /// `while (TickCount64 - start < N)` therefore terminate in
     /// `N * ClockPal.ticksPerMillisecond / InstructionCostTicks` scheduler ticks,
     /// which is the cost to keep in mind when choosing the rate: it buys sleep
@@ -1148,7 +1132,6 @@ module EmulatedKernel =
                         $"%s{context}: libSystem's getentropy(32) into storage it owns did not answer 32 bytes: %A{other} (this is a bug in the kernel library)."
 
         {
-            InstructionCostTicks = defaultInstructionCostTicks
             LastPInvokeError = Map.empty
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
@@ -1164,7 +1147,6 @@ module EmulatedKernel =
             NextEventPipeId = 1L
             SpuriousWakeup = SpuriousWakeupStrategy.Disabled
             SyncBlockSpuriousWakeup = SyncBlockSpuriousWakeupStrategy.Disabled
-            ClockJitter = ClockJitterStrategy.Disabled
             StepCounter = 0L
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             System = system
@@ -1312,31 +1294,6 @@ module EmulatedKernel =
             CLibrary = library
         }
 
-    /// Set the virtual time charged per retired instruction. See
-    /// `EmulatedKernel.InstructionCostTicks` for what the number means and why it is
-    /// configurable; `defaultInstructionCostTicks` for how the default was calibrated.
-    let withInstructionCostTicks (cost : int64) (kernel : EmulatedKernel) : EmulatedKernel =
-        if cost < 1L then
-            failwith
-                $"InstructionCostTicks must be at least 1; got %d{cost}. A cost of zero freezes the virtual clock, so any guest waiting for time to pass would spin forever."
-
-        { kernel with
-            InstructionCostTicks = cost
-        }
-
-    /// Install the clock-jitter strategy the driver applies each tick. See
-    /// `ClockJitterStrategy` for what the variants mean.
-    ///
-    /// A malformed `EagerDeadlines` probability is rejected here rather than at
-    /// the first tick that consults it, so a host that misconfigures a run finds
-    /// out before any guest code has executed.
-    let withClockJitter (strategy : ClockJitterStrategy) (kernel : EmulatedKernel) : EmulatedKernel =
-        ClockJitter.validate strategy
-
-        { kernel with
-            ClockJitter = strategy
-        }
-
     /// Boot the machine's realtime clock at `epochMs` milliseconds since the Unix
     /// epoch. Rejects a value outside `[0, ClockPal.maxWallClockEpochMs]` at the
     /// boundary, rather than letting it reach a guest that would receive a silently
@@ -1432,22 +1389,22 @@ module EmulatedKernel =
         |> mapUnix (UnixSystem.advanceClock ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick))
 
     /// Retire one interpreted instruction: bump `StepCounter` by one and charge
-    /// `InstructionCostTicks` of virtual time, subject to exactly the checks `withVirtualClockTicks`
+    /// `instructionCostTicks` of virtual time, subject to exactly the checks `withVirtualClockTicks`
     /// applies.
     ///
     /// Equivalent to bumping `StepCounter` by record-copy and piping the result through
     /// `withVirtualClockTicks`, and exists only because that spelling costs two copies of a
-    /// 31-field record where this costs one. The interpreter performs it once per retired IL
+    /// 18-field record where this costs one. The interpreter performs it once per retired IL
     /// instruction, which is what makes one record copy worth a named function.
-    let retireStep (kernel : EmulatedKernel) : EmulatedKernel =
-        let ticks = kernel.VirtualClockTicks + kernel.InstructionCostTicks
+    let retireStep (instructionCostTicks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+        let ticks = kernel.VirtualClockTicks + instructionCostTicks
 
-        // Through the same validation rather than trusting the arithmetic. `withInstructionCostTicks`
-        // rejects a cost below 1, and `KernelConfig.toKernel` is the only production path that sets
-        // the field, so a legally-assembled kernel cannot reach here with one — but a kernel built
-        // by record-copy bypasses that setter entirely, which is the same hole the monotonicity
-        // check below already exists to cover. Revalidating keeps this path's guarantee independent
-        // of how its caller's kernel was assembled.
+        // Through the same validation rather than trusting the arithmetic. `MachineConfig.clock`
+        // rejects a cost below 1, and the driver's `MachineClock` is the only production source of
+        // one, so a legally-assembled run cannot reach here with one — but a caller passing a raw
+        // cost bypasses that check entirely, which is the same hole the monotonicity check below
+        // already exists to cover. Revalidating keeps this path's guarantee independent of where
+        // its caller's cost came from.
         validateVirtualClockTicks ticks kernel
 
         { kernel with
@@ -1851,7 +1808,7 @@ module EmulatedKernel =
 /// `Program.prepare` before any guest code runs.
 ///
 /// This has to be a parameter of `prepare` rather than something a host applies
-/// to `PreparedProgram.State` afterwards: `prepare` pumps the entry type's
+/// to a `PreparedProgram`'s state afterwards: `prepare` pumps the entry type's
 /// `.cctor`, and several of these values are latched by CoreLib during static
 /// initialisation. `Environment.ProcessorCount` is the sharp case — CoreLib
 /// declares it as `public static int ProcessorCount { get; } = GetProcessorCount()`
@@ -1901,7 +1858,7 @@ type KernelConfig =
         UserAddressLimit : uint64 option
         /// Virtual time charged per retired IL instruction, in 100 ns ticks — the speed of the
         /// simulated machine. Must be at least 1. See
-        /// `EmulatedKernel.InstructionCostTicks` for why this is part of the replay contract,
+        /// `MachineClock.InstructionCostTicks` for why this is part of the replay contract,
         /// and `EmulatedKernel.defaultInstructionCostTicks` for the calibration behind the
         /// default of one tick (a 10 MIPS machine).
         InstructionCostTicks : int64
@@ -1909,8 +1866,8 @@ type KernelConfig =
         /// outstanding deadlines. Defaults to `Disabled`; see
         /// `ClockJitterStrategy` for what turning it on buys.
         ///
-        /// Configuration rather than something a host installs on
-        /// `PreparedProgram.State` afterwards, because class initialisers run
+        /// Configuration rather than something a host installs on a
+        /// `PreparedProgram` afterwards, because class initialisers run
         /// during `prepare` and are as entitled to have their waits jittered as
         /// anything in `Main` — a `.cctor` that starts a thread and waits on it
         /// with a timeout is exactly the shape this strategy exists to test.
@@ -2265,6 +2222,31 @@ type ProcessConfig =
         OptimalMaxSpinWaitsPerSpinIteration : int
     }
 
+/// How a simulated machine's clock moves as its programs run: what the driver
+/// that runs them charges for each retired instruction, and whether it jitters
+/// the clock onto outstanding deadlines. `MachineConfig.clock` makes one,
+/// having checked both.
+type MachineClock =
+    internal
+        {
+            /// Virtual time charged for one retired IL instruction, in 100 ns ticks — how
+            /// fast the simulated machine is. At least 1; a cost of zero would freeze the
+            /// clock and make every guest polling loop diverge.
+            ///
+            /// The machine's rather than a constant because it is guest-observable: a guest
+            /// can measure it by counting work against `Environment.TickCount64`, and it
+            /// decides which BCL paths run — at a coarse enough rate `SpinWait` exhausts its
+            /// spin budget in a couple of iterations and drops to the blocking path. So it
+            /// belongs to the replay contract, alongside `WallClockEpochMs` and
+            /// `ProcessorCount`, both of which are configuration for the same reason. See
+            /// `EmulatedKernel.defaultInstructionCostTicks`.
+            InstructionCostTicks : int64
+            /// Whether the driver jumps the virtual clock onto an outstanding deadline as
+            /// part of a tick. See `ClockJitterStrategy` for what it buys and
+            /// `ClockJitter.chooseJump` for how it is interpreted.
+            ClockJitter : ClockJitterStrategy
+        }
+
 [<RequireQualifiedAccess>]
 module ProcessConfig =
     /// The credentials `config` starts its process with, on a platform of
@@ -2326,6 +2308,24 @@ module ProcessConfig =
 
 [<RequireQualifiedAccess>]
 module MachineConfig =
+    /// How the clock of the machine `config` describes moves: its
+    /// `InstructionCostTicks` and `ClockJitter`, each checked here, so that a
+    /// host that misconfigures a run finds out before any guest code has
+    /// executed rather than at the first tick that consults it. A refusal
+    /// names the knob `knobs.X`, where `knobs` names the configuration record
+    /// that holds it.
+    let clock (knobs : string) (config : MachineConfig) : MachineClock =
+        if config.InstructionCostTicks < 1L then
+            failwith
+                $"%s{knobs}.InstructionCostTicks must be at least 1; got %d{config.InstructionCostTicks}. A cost of zero freezes the virtual clock, so any guest waiting for time to pass would spin forever."
+
+        ClockJitter.validate config.ClockJitter
+
+        {
+            InstructionCostTicks = config.InstructionCostTicks
+            ClockJitter = config.ClockJitter
+        }
+
     // Each applies one machine setter for `toImage`, failing on a refusal
     // with the knob the value came from, `knobs.X`: the library states what
     // is wrong with the value and has no name for the knob.
@@ -2543,8 +2543,6 @@ module MachineConfig =
             match firstProcess.CLibrary with
             | None -> kernel
             | Some library -> EmulatedKernel.withCLibrary $"%s{processKnobs}.CLibrary" library kernel
-        |> EmulatedKernel.withInstructionCostTicks machine.InstructionCostTicks
-        |> EmulatedKernel.withClockJitter machine.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration firstProcess.OptimalMaxSpinWaitsPerSpinIteration
 
 [<RequireQualifiedAccess>]
