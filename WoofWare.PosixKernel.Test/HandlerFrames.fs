@@ -2,9 +2,9 @@ namespace WoofWare.PosixKernel.Test
 
 open WoofWare.PosixKernel
 
-/// A task inside a signal handler, for a test that needs a task to block
-/// signals: a task's mask is its innermost handler frame's, and nothing else
-/// sets one.
+/// A task inside a signal handler, for a test of handler frames, or one that
+/// needs a task to block signals the way a handler's mask blocks them.
+/// (`UnixSignal.pthreadSigmask` blocks them without a handler.)
 [<RequireQualifiedAccess>]
 module HandlerFrames =
 

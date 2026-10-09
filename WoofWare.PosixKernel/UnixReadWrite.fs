@@ -29,9 +29,20 @@ type ReadAnswer =
 type ReadRefusal =
     /// The buffer has no answer at the step the read reached.
     | Buffer of BufferRefusal
-    /// A socket in `phase`, which has a peer or a refused connection's error:
-    /// what a read does there is not modelled.
+    /// A socket in `phase`, which has a datagram peer or a refused
+    /// connection's error: what a read does there is not modelled.
     | UnmodelledSocketPhase of socket : SocketId * domain : SocketDomain * kind : SocketKind * phase : SocketPhase
+    /// A read asleep on a connected socket, which finds nothing to answer
+    /// when it is finished (something woke it, and another read took what
+    /// there was), through a description that has become non-blocking while
+    /// it slept. Whether it then answers `EAGAIN` or sleeps on is unmeasured:
+    /// by their source, Linux decides whether a socket call may sleep once,
+    /// as it is made, and Darwin looks at the socket's flag again.
+    | ConnectionBecameNonBlocking of socket : SocketId
+    /// A read that would copy bytes from a connected socket into a buffer that
+    /// is not mapped. What the kernel does with the bytes it could not copy
+    /// is not measured.
+    | ConnectionFault of socket : SocketId
     /// A blocking read of a datagram socket with no peer, which sleeps until a
     /// datagram arrives. Nothing in this kernel sends one, and a sleep only a
     /// signal could end is not modelled.
@@ -42,8 +53,8 @@ type ReadRefusal =
     /// if position + count passes `INT64_MAX`; on Darwin, 0 if the position is
     /// `INT64_MAX`; EISDIR otherwise.
     | ScannedDirectoryPosition of inode : InodeNumber * fileSystem : EmulatedFileSystemType
-    /// A read asleep on a pipe has an answer, and the library will not say
-    /// whether that or a signal ends it.
+    /// A read asleep on a pipe or a connected socket has an answer, and the
+    /// library will not say whether that or a signal ends it.
     | Interruption of SyscallInterruptionRefusal
     /// A read of `count` bytes of `/dev/urandom`, more than a page, by a task
     /// with a signal pending that it would take on its return to user mode.
@@ -63,13 +74,17 @@ module ReadRefusal =
         match refusal with
         | ReadRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | ReadRefusal.UnmodelledSocketPhase (socket, domain, kind, phase) ->
-            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}), in phase %A{phase}. This kernel answers `read(2)` on a socket with no peer, but models no transfer of bytes between sockets, nor what a read reports of a refused connection's error, so it has no answer for a socket that has a peer or such an error."
+            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}), in phase %A{phase}. This kernel answers `read(2)` on a socket with no peer and on a connected stream socket, but models no datagram delivery, nor what a read reports of a refused connection's error, so it has no answer for a socket that has a datagram peer or such an error."
+        | ReadRefusal.ConnectionBecameNonBlocking socket ->
+            $"the read was asleep on socket %O{socket}, a connected stream socket, and was woken to find nothing to read, through a description that has become non-blocking while it slept. Whether the kernel then answers EAGAIN or sleeps again is unmeasured: Linux decides whether a socket call may sleep once, as it is made, and Darwin looks at the socket's flag again, by their source."
+        | ReadRefusal.ConnectionFault socket ->
+            $"the descriptor is socket %O{socket}, a connected stream socket with bytes to read, and the buffer is not mapped. The copy would fault, and whether the kernel then answers EFAULT, and whether it keeps the bytes it could not copy, has not been measured."
         | ReadRefusal.DatagramSleep (socket, domain) ->
             $"the descriptor is socket %O{socket} (%O{domain}, datagram), which has no peer, and the read is a blocking one. Such a read sleeps until a datagram arrives; nothing in this kernel sends one, and a sleep that only a signal could end is not modelled."
         | ReadRefusal.ScannedDirectoryPosition (inode, fileSystem) ->
             $"the descriptor is directory %O{inode} on %O{fileSystem}, which this description has read part of the way through. Ahead of a directory's EISDIR, Linux answers EINVAL when position + count passes INT64_MAX and Darwin answers 0 when the position is INT64_MAX, and the position after a partial scan is %O{fileSystem}'s own cookie (on an NFS mount, whatever the server chose, up to INT64_MAX), which is not a number this kernel's position corresponds to. So whether this read is EISDIR or the position's answer is unknown here."
         | ReadRefusal.Interruption refusal ->
-            $"the read was asleep on a pipe: %s{SyscallInterruptionRefusal.describe refusal}"
+            $"the read was asleep on a pipe or a connected socket: %s{SyscallInterruptionRefusal.describe refusal}"
         | ReadRefusal.SignalAtPageBoundary count -> describeSignalAtPageBoundary count
 
 /// Why this kernel will not answer a `pread`.
@@ -101,7 +116,8 @@ type ReadOutcome =
     /// The entry point returned.
     | Answered of ReadAnswer
     /// The call did not return: it is a blocking read of a pipe that holds
-    /// nothing while a write end is open. The calling task is parked, and
+    /// nothing while a write end is open, or of a connected socket with
+    /// nothing to answer. The calling task is parked, and
     /// sleeps until `UnixWait.wakes` wakes it; then `UnixReadWrite.finishRead`
     /// finishes the call.
     | WouldBlock of WakeCondition
@@ -150,24 +166,25 @@ type WriteAdmission =
     /// only part of it, the part the pipe takes, which is all `write` then
     /// answers.
     | Transfer of count : int
-    /// A blocking write of `total` bytes into a pipe with room for part of it:
-    /// extract the first `count` of them, which the pipe takes now, and pass
-    /// them to `UnixReadWrite.writeThenSleep`, which puts them in and sleeps
-    /// for the rest. The rest is read from the caller's buffer only as room
+    /// A blocking write of `total` bytes into a pipe, or to a connected
+    /// socket, with room for part of it: extract the first `count` of them,
+    /// which the object takes now, and pass them to
+    /// `UnixReadWrite.writeThenSleep`, which puts them in and sleeps for the
+    /// rest. The rest is read from the caller's buffer only as room
     /// appears, as a real kernel copies it.
     | TransferThenSleep of count : int * total : int
 
-/// Whether a blocking `write` into a pipe, asleep because the pipe had no room
-/// for the rest of it, reaches the point at which it reads more of the caller's
-/// buffer. `UnixReadWrite.admitFinishWrite` answers it, for the reason
+/// Whether a blocking `write` into a pipe or to a connected socket, asleep
+/// because it had no room for the rest of it, reaches the point at which it
+/// reads more of the caller's buffer. `UnixReadWrite.admitFinishWrite` answers it, for the reason
 /// `WriteAdmission` exists.
 [<RequireQualifiedAccess>]
 type WriteResumption =
     /// Answered without the buffer being read: what the call returns.
     | Answered of answer : WriteAnswer
-    /// The pipe has room: extract the `count` bytes of the caller's buffer that
+    /// There is room: extract the `count` bytes of the caller's buffer that
     /// start `offset` bytes in, and pass them to `UnixReadWrite.finishWrite`.
-    /// The bytes before `offset` are in the pipe already.
+    /// The bytes before `offset` are in the pipe or the connection already.
     | Transfer of offset : int * count : int
 
 /// What a write that answers `EPIPE` and raises `SIGPIPE` was writing to.
@@ -177,6 +194,9 @@ type BrokenWriteTarget =
     | Pipe of pipe : PipeId
     /// A Linux stream socket with no peer.
     | Socket of socket : SocketId
+    /// A connected stream socket whose connection was reset, or whose peer had
+    /// closed when the write that reset it was made.
+    | Connection of socket : SocketId
 
 [<RequireQualifiedAccess>]
 module BrokenWriteTarget =
@@ -185,15 +205,27 @@ module BrokenWriteTarget =
         match target with
         | BrokenWriteTarget.Pipe pipe -> $"the write end of pipe %O{pipe}, which has no reader"
         | BrokenWriteTarget.Socket socket -> $"socket %O{socket}, a stream socket with no peer"
+        | BrokenWriteTarget.Connection socket -> $"socket %O{socket}, a stream socket whose connection was reset"
 
 /// Why this kernel will not answer a `write`.
 [<RequireQualifiedAccess>]
 type WriteRefusal =
     /// The buffer has no answer at the step the write reached.
     | Buffer of BufferRefusal
-    /// A socket in `phase`, which has a peer or a refused connection's error:
-    /// what a write does there is not modelled.
+    /// A socket in `phase`, which has a datagram peer or a refused
+    /// connection's error: what a write does there is not modelled.
     | UnmodelledSocketPhase of socket : SocketId * domain : SocketDomain * kind : SocketKind * phase : SocketPhase
+    /// A write asleep on a connected socket, which finds no room when it is
+    /// finished, through a description that has become non-blocking while it
+    /// slept: woken to find another write took the room, or having filled the
+    /// room it was woken into with more of it left. Whether it then answers
+    /// (`EAGAIN`, or the count it has written) or sleeps on is unmeasured:
+    /// by their source, Linux decides whether a socket call may sleep once,
+    /// as it is made, and Darwin looks at the socket's flag again.
+    | ConnectionBecameNonBlocking of socket : SocketId
+    /// A write that would copy bytes into a connected socket from a buffer
+    /// that is not mapped. What the kernel does then is not measured.
+    | ConnectionFault of socket : SocketId
     /// A Unix-domain datagram socket with no peer, on Linux, where the answer
     /// depends on the size of the socket's send buffer, which is not modelled
     /// (see `UnconnectedSocketWrite.DependsOnSendBuffer`).
@@ -212,8 +244,8 @@ type WriteRefusal =
     /// What writing to the file at `inode` would do to its set-ID bits has not
     /// been measured for this writer.
     | UnmeasuredSetIdChange of inode : InodeNumber * refusal : SetIdChangeRefusal
-    /// A write asleep in a pipe has an answer, and the library will not say
-    /// whether that or a signal ends it.
+    /// A write asleep in a pipe or on a connected socket has an answer, and
+    /// the library will not say whether that or a signal ends it.
     | Interruption of SyscallInterruptionRefusal
     /// A write into a pipe with no reader, or a Linux stream socket with no
     /// peer, which answers `EPIPE` and raises `SIGPIPE`, when which task would
@@ -250,7 +282,11 @@ module WriteRefusal =
         match refusal with
         | WriteRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | WriteRefusal.UnmodelledSocketPhase (socket, domain, kind, phase) ->
-            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}), in phase %A{phase}. This kernel answers `write(2)` on a socket with no peer, but models no transfer of bytes between sockets, nor what a write reports of a refused connection's error, so it has no answer for a socket that has a peer or such an error."
+            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}), in phase %A{phase}. This kernel answers `write(2)` on a socket with no peer and on a connected stream socket, but models no datagram delivery, nor what a write reports of a refused connection's error, so it has no answer for a socket that has a datagram peer or such an error."
+        | WriteRefusal.ConnectionBecameNonBlocking socket ->
+            $"the write was asleep on socket %O{socket}, a connected stream socket, and finds no room for the rest of it, through a description that has become non-blocking while it slept. Whether the kernel then answers (EAGAIN, or the count it has written) or sleeps again is unmeasured: Linux decides whether a socket call may sleep once, as it is made, and Darwin looks at the socket's flag again, by their source."
+        | WriteRefusal.ConnectionFault socket ->
+            $"the descriptor is socket %O{socket}, a connected stream socket with room for the write, and the buffer is not mapped. The copy would fault, and what the kernel answers then, and what it keeps of the write, has not been measured."
         | WriteRefusal.Inet6Binding socket ->
             $"the descriptor is socket %O{socket}, an unbound IPv6 datagram socket with no peer. Linux binds it to an ephemeral port before it answers the write, and this kernel binds only IPv4 sockets, so it cannot record that binding."
         | WriteRefusal.EphemeralPortsExhausted (socket, low, high) ->
@@ -260,7 +296,7 @@ module WriteRefusal =
         | WriteRefusal.ExceedsRepresentableLength (inode, offset, count) ->
             describeExceedsRepresentableLength inode offset count
         | WriteRefusal.Interruption refusal ->
-            $"the write was asleep in a pipe: %s{SyscallInterruptionRefusal.describe refusal}"
+            $"the write was asleep in a pipe or on a connected socket: %s{SyscallInterruptionRefusal.describe refusal}"
         | WriteRefusal.InitProcess target ->
             $"the descriptor is %s{BrokenWriteTarget.describe target}, so the write raises SIGPIPE; but the process is process ID 1, and what an init process does with a signal it has no handler for is not modelled."
         | WriteRefusal.SignalReceiver (target, refusal) ->
@@ -290,8 +326,9 @@ type WriteOutcome<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler 
     /// which never returns from it. `EndedProcess.Termination` names the
     /// signal.
     | ProcessEnded of EndedProcess<'Task, 'Handler>
-    /// The call did not return: it is a blocking write into a pipe with no room
-    /// for the rest of it. The calling task is parked in `system`, and sleeps
+    /// The call did not return: it is a blocking write into a pipe, or to a
+    /// connected socket, with no room for the rest of it. The calling task is
+    /// parked in `system`, and sleeps
     /// until `UnixWait.wakes` wakes it; then `UnixReadWrite.admitFinishWrite`
     /// and `UnixReadWrite.finishWrite` finish the call.
     | WouldBlock of condition : WakeCondition * system : UnixSystem<'Task, 'Handler>
@@ -398,9 +435,18 @@ type private ReadTarget =
     | Pipe of pipe : PipeId * description : OpenFileDescriptionId * nonBlocking : bool
     /// A file, at the offset its open file description currently holds.
     | File of inode : InodeNumber * offset : int64
-    /// A socket, and whether the description it was reached through carries
-    /// `O_NONBLOCK`.
+    /// A socket that is not an end of a connection, and whether the
+    /// description it was reached through carries `O_NONBLOCK`.
     | Socket of socket : SocketId * nonBlocking : bool
+    /// A connected stream socket, the end of `connection` it is, the open file
+    /// description it was reached through, and whether that carries
+    /// `O_NONBLOCK`.
+    | Connection of
+        socket : SocketId *
+        connection : ConnectionId *
+        connectionEnd : ConnectionEnd *
+        description : OpenFileDescriptionId *
+        nonBlocking : bool
     /// A directory, which has no byte contents to read, at the position its
     /// open file description holds.
     | Directory of inode : InodeNumber * position : DirectoryPosition
@@ -438,9 +484,18 @@ type private WriteTarget =
     /// A file. The offset is the description's own, and the write advances it —
     /// which is the whole difference from `pwrite`.
     | File of inode : InodeNumber * offset : int64
-    /// A socket, which answers only once the buffer screen has had its say,
-    /// which on one flavour answers first.
+    /// A socket that is not an end of a connection, which answers only once
+    /// the buffer screen has had its say, which on one flavour answers first.
     | Socket of socket : SocketId
+    /// A connected stream socket, the end of `connection` it is, the open file
+    /// description it was reached through, and whether that carries
+    /// `O_NONBLOCK`.
+    | Connection of
+        socket : SocketId *
+        connection : ConnectionId *
+        connectionEnd : ConnectionEnd *
+        description : OpenFileDescriptionId *
+        nonBlocking : bool
     /// The write end of a pipe, the open file description it was reached
     /// through, and whether that description carries `O_NONBLOCK`.
     | Pipe of pipe : PipeId * description : OpenFileDescriptionId * nonBlocking : bool
@@ -468,6 +523,24 @@ type private PipeWriteStep =
     /// A blocking write that takes `taken` of the bytes offered, from the
     /// start, fewer than all of them, and sleeps for the rest.
     | TakesThenSleeps of taken : int
+
+/// How far a write to a connected socket gets before it needs the caller's
+/// bytes, each with the connection's transfer as the step leaves it.
+[<RequireQualifiedAccess>]
+type private ConnectionWriteStep =
+    /// The write is answered without the bytes.
+    | Answered of answer : WriteAnswer * transfer : TcpTransfer
+    /// The write answers `EPIPE` and raises `SIGPIPE`, taking nothing.
+    | Broken of transfer : TcpTransfer
+    /// The write takes `taken` of the bytes offered, from the start, and
+    /// answers that count.
+    | Takes of taken : int * transfer : TcpTransfer
+    /// A blocking write that takes nothing now, without reading the bytes, and
+    /// sleeps.
+    | Sleeps of transfer : TcpTransfer
+    /// A blocking write that takes `taken` of the bytes offered, from the
+    /// start, fewer than all of them, and sleeps for the rest.
+    | TakesThenSleeps of taken : int * transfer : TcpTransfer
 
 [<RequireQualifiedAccess>]
 module UnixReadWrite =
@@ -906,9 +979,10 @@ module UnixReadWrite =
             failwith
                 $"UnixReadWrite: generating %O{signal} for a write into %s{BrokenWriteTarget.describe target} stopped the process, but SIGPIPE's default is to terminate on every flavour (this is a bug in this library)."
 
-    /// A write by `task` of `count` bytes to `socketId`, past the buffer screen:
-    /// the socket's own answer, as `wrap` makes it the caller's. It never reads
-    /// the buffer, because no socket this kernel answers for takes bytes.
+    /// A write by `task` of `count` bytes to `socketId`, a socket that is not an
+    /// end of a connection, past the buffer screen: the socket's own answer, as
+    /// `wrap` makes it the caller's. It never reads the buffer, because no such
+    /// socket this kernel answers for takes bytes.
     let private socketWrite<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (wrap : WriteAnswer -> 'Answer)
         (task : 'Task)
@@ -997,7 +1071,9 @@ module UnixReadWrite =
                 broken (wrap (WriteAnswer.Failed UnixError.EPIPE)) task (BrokenWriteTarget.Socket socketId) system
             | UnconnectedSocketWrite.DependsOnSendBuffer -> Error (WriteRefusal.SendBuffer socketId)
         | SocketPhase.EstablishedPendingReport _
-        | SocketPhase.Established _
+        | SocketPhase.Established _ ->
+            failwith
+                $"UnixReadWrite: socket %O{socketId} is in %A{socket.Phase}, an end of a connection, which the write's target names as WriteTarget.Connection (this is a bug in this library)."
         | SocketPhase.DatagramPeer _
         | SocketPhase.Refused _ ->
             // A refused socket is here too: measured, its write is EPIPE and
@@ -1005,6 +1081,40 @@ module UnixReadWrite =
             // ENOTCONN (socket-unconnected-transfer-after.c), and what a
             // pending error does to it is unmeasured.
             Error (WriteRefusal.UnmodelledSocketPhase (socketId, socket.Domain, socket.Kind, socket.Phase))
+
+    /// What a write of `count` bytes, at most one call's worth, to the
+    /// connected socket `socketId` decides before it needs the bytes: its
+    /// answer without them, or how many it takes, each with the transfer after
+    /// (`TcpTransfer.admitWrite`, which takes a pending error and arms Linux's
+    /// send-space wake). Every answer is measured on both flavours
+    /// (`tcp-transfer.c`, section S).
+    let private connectionWriteStep
+        (connectionEnd : ConnectionEnd)
+        (nonBlocking : bool)
+        (count : int)
+        (transfer : TcpTransfer)
+        : ConnectionWriteStep
+        =
+        match TcpTransfer.admitWrite connectionEnd count transfer with
+        | TcpWriteAdmission.Answered (TcpWriteAnswer.Wrote written), after ->
+            ConnectionWriteStep.Answered (WriteAnswer.Completed (int64 written), after)
+        | TcpWriteAdmission.Answered TcpWriteAnswer.WouldBlock, after ->
+            if nonBlocking then
+                ConnectionWriteStep.Answered (WriteAnswer.Failed UnixError.EAGAIN, after)
+            else
+                ConnectionWriteStep.Sleeps after
+        | TcpWriteAdmission.Answered (TcpWriteAnswer.Failed TcpError.BrokenPipe), after ->
+            ConnectionWriteStep.Broken after
+        | TcpWriteAdmission.Answered (TcpWriteAnswer.Failed TcpError.ConnectionReset), after ->
+            ConnectionWriteStep.Answered (WriteAnswer.Failed UnixError.ECONNRESET, after)
+        // Measured on both (`tcp-blocking.c`, section W-resume): a blocking
+        // write returns only once every byte is taken, taking what fits and
+        // sleeping for the rest.
+        | TcpWriteAdmission.Take taken, after ->
+            if taken < count && not nonBlocking then
+                ConnectionWriteStep.TakesThenSleeps (taken, after)
+            else
+                ConnectionWriteStep.Takes (taken, after)
 
     /// Fails loudly unless `task` is one of `system`'s tasks and is not
     /// already asleep in a syscall: a task makes one call at a time, and a
@@ -1254,7 +1364,13 @@ module UnixReadWrite =
     /// A socket with no peer answers without the buffer, as
     /// `UnconnectedSocketRules.read` says, except that a blocking read of a
     /// datagram socket, which sleeps until a datagram arrives, is refused. A
-    /// socket with a peer, or with a refused connection's error, is refused,
+    /// connected stream socket answers from its connection
+    /// (`TcpTransfer.read`): the bytes waiting, end of file, a reset's error,
+    /// or `EAGAIN`; a blocking read with nothing to answer sleeps
+    /// (`ReadOutcome.WouldBlock`), and `finishRead` finishes it. One that would
+    /// copy bytes into an unmapped buffer is refused
+    /// (`ReadRefusal.ConnectionFault`). A socket
+    /// with a datagram peer, or with a refused connection's error, is refused,
     /// except for Linux's zero-length read, which is 0 in every phase.
     ///
     /// A read by `task` of a pipe that holds nothing while a write end is open,
@@ -1318,7 +1434,19 @@ module UnixReadWrite =
             // non-zero length, unlike a pipe's zero-return shortcut below.
             | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
             | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
-            | OpenFileTarget.Socket socketId -> Ok (ReadTarget.Socket (socketId, description.NonBlocking))
+            | OpenFileTarget.Socket socketId ->
+                match SocketPhase.connectionEnd (UnixMachineState.socket socketId system.Machine).Phase with
+                | Some (connectionId, connectionEnd) ->
+                    Ok (
+                        ReadTarget.Connection (
+                            socketId,
+                            connectionId,
+                            connectionEnd,
+                            descriptionId,
+                            description.NonBlocking
+                        )
+                    )
+                | None -> Ok (ReadTarget.Socket (socketId, description.NonBlocking))
             | OpenFileTarget.CharacterDevice (_, device) -> Ok (ReadTarget.CharacterDevice device)
             | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
             | OpenFileTarget.Directory (inode, position) -> Ok (ReadTarget.Directory (inode, position))
@@ -1403,13 +1531,59 @@ module UnixReadWrite =
                 | UnconnectedSocketRead.Fails error -> answered (ReadAnswer.Failed error) system
                 | UnconnectedSocketRead.Sleeps -> Error (ReadRefusal.DatagramSleep (socketId, socket.Domain))
             | SocketPhase.EstablishedPendingReport _
-            | SocketPhase.Established _
+            | SocketPhase.Established _ ->
+                failwith
+                    $"UnixReadWrite.read: socket %O{socketId} is in %A{socket.Phase}, an end of a connection, which the read's target names as ReadTarget.Connection (this is a bug in this library)."
             | SocketPhase.DatagramPeer _
             | SocketPhase.Refused _ ->
                 // A refused socket is here too: measured, its read is a pending
                 // ECONNREFUSED on Darwin and end-of-file once the error is
                 // reported, on both (socket-unconnected-transfer-after.c).
                 Error (ReadRefusal.UnmodelledSocketPhase (socketId, socket.Domain, socket.Kind, socket.Phase))
+        | ReadTarget.Connection (socketId, connectionId, connectionEnd, descriptionId, nonBlocking) ->
+            // Linux's zero-length read is 0 here too, whatever the connection
+            // holds, as for a socket with no connection above:
+            // `TcpTransfer.read` answers it so.
+            let count = oneCallsWorth platform count
+            let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+
+            let answer, wakes, after =
+                TcpTransfer.read connectionEnd TcpReceiveCall.Read count transfer
+
+            let committed () : UnixSystem<'Task, 'Handler> =
+                { system with
+                    Machine = UnixMachineState.withTransfer connectionId after system.Machine
+                }
+                |> SocketWake.signalTransfer connectionId wakes
+
+            // Every answer is measured on both flavours (`tcp-transfer.c`
+            // section S); `TcpTransfer.read` states the rules.
+            match answer with
+            | TcpReadAnswer.WouldBlock ->
+                if nonBlocking then
+                    answered (ReadAnswer.Failed UnixError.EAGAIN) (committed ())
+                else
+                    // Measured on both (`tcp-blocking.c`, section R): the read
+                    // sleeps until bytes, a FIN or a reset arrive, and returns
+                    // what a read would then.
+                    let parked =
+                        ParkedSyscall.ConnectionRead
+                            {
+                                Socket = SleepTarget.Waiting (descriptionId, fd)
+                                Buffer = buffer
+                                Count = count
+                            }
+
+                    Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parked), UnixWait.park task parked (committed ()))
+            | TcpReadAnswer.EndOfFile -> answered (ReadAnswer.Completed ImmutableArray.Empty) (committed ())
+            | TcpReadAnswer.Failed error -> answered (ReadAnswer.Failed (TcpError.toUnixError error)) (committed ())
+            | TcpReadAnswer.Bytes bytes when bytes.IsEmpty -> answered (ReadAnswer.Completed bytes) (committed ())
+            | TcpReadAnswer.Bytes bytes ->
+                match buffer with
+                | UserBuffer.Mapped -> answered (ReadAnswer.Completed bytes) (committed ())
+                | UserBuffer.Unmapped _ -> Error (ReadRefusal.ConnectionFault socketId)
+                | UserBuffer.Opaque -> Error (ReadRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+                | UserBuffer.Addressless -> Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | ReadTarget.Directory (inode, position) ->
             // A directory has a position too, and each flavour's position rule
             // answers ahead of EISDIR, exactly as for a file.
@@ -1561,21 +1735,120 @@ module UnixReadWrite =
         | SimulatedUnixFlavour.Darwin ->
             (OpenFileTable.get "UnixReadWrite" description system.Machine.OpenFiles).NonBlocking
 
-    let private finishReadHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// The socket the open file description `description`, which a task
+    /// parked in `syscall` holds, names, the connection it is an end of, and
+    /// which end.
+    let private parkedConnection<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (syscall : string)
         (task : 'Task)
+        (description : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SocketId * ConnectionId * ConnectionEnd
+        =
+        match OpenFileTable.tryFind description system.Machine.OpenFiles with
+        | None ->
+            failwith
+                $"UnixReadWrite.%s{syscall}: task %O{task} sleeps on open file description %O{description}, which is not in the table, but a park holds its description until the call returns (this is a bug in this library, or in a caller that ended a park without its finishing call or assembled the state by hand)."
+        | Some found ->
+            match found.Target with
+            | OpenFileTarget.Socket socketId ->
+                let phase = (UnixMachineState.socket socketId system.Machine).Phase
+
+                match SocketPhase.connectionEnd phase with
+                | Some (connectionId, connectionEnd) -> socketId, connectionId, connectionEnd
+                | None ->
+                    failwith
+                        $"UnixReadWrite.%s{syscall}: task %O{task} sleeps on socket %O{socketId}, which is in %A{phase} rather than an end of a connection. Nothing takes a socket out of a connection while a call holds it (this is a bug in the caller that recorded the park)."
+            | target ->
+                failwith
+                    $"UnixReadWrite.%s{syscall}: task %O{task} sleeps on open file description %O{description}, which names %A{target} rather than a connected socket (this is a bug in the caller that recorded the park)."
+
+    /// Whether the open file description `description` carries `O_NONBLOCK`.
+    let private nonBlockingNow<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (description : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        (OpenFileTable.get "UnixReadWrite" description system.Machine.OpenFiles).NonBlocking
+
+    let private finishConnectionRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (parked : ParkedConnectionRead)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
         =
-        let parked =
-            match UnixTaskTable.parkedFor task system.Tasks with
-            | Some (ParkedSyscall.PipeRead parked) -> parked
-            | Some other ->
-                failwith
-                    $"UnixReadWrite.finishRead: task %O{task} is parked in %A{other}, not in a read, so there is no read to finish (this is a bug in the client)."
-            | None ->
-                failwith
-                    $"UnixReadWrite.finishRead: task %O{task} is not parked, so there is no read to finish. Only a task `read` answered `WouldBlock` finishes here (this is a bug in the client)."
+        match parked.Socket with
+        | SleepTarget.EndedByClose _ ->
+            // Measured on Darwin 27.0.0 (`tcp-blocking.c`, section R-close):
+            // closing the descriptor the read was made through ends it with
+            // EBADF, unlike a pipe read's end of file.
+            Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EBADF), UnixParkState.unpark task system)
+        | SleepTarget.Waiting (reader, _) ->
 
+        let socketId, connectionId, connectionEnd =
+            parkedConnection "finishRead" task reader system
+
+        let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+        let finished = UnixParkState.unpark task system
+
+        if TcpTransfer.readAnswers connectionEnd transfer then
+            // Measured on Linux 6.18.5 (`tcp-blocking.c`, section D-read): a
+            // reader woken by bytes and signalled, held off the CPU until both
+            // had happened, answered the bytes in 40 trials of 40, whichever
+            // came first, as `tcp_recvmsg` looks at the queue before it looks
+            // for a signal. Darwin's sleeper takes whichever reached it first,
+            // which `beforeCompleting` refuses.
+            match SyscallInterruption.beforeCompleting task system with
+            | Error refusal -> Error (ReadRefusal.Interruption refusal)
+            | Ok () ->
+
+            let answer, wakes, after =
+                TcpTransfer.read connectionEnd TcpReceiveCall.Read parked.Count transfer
+
+            let committed () : UnixSystem<'Task, 'Handler> =
+                { finished with
+                    Machine = UnixMachineState.withTransfer connectionId after finished.Machine
+                }
+                |> SocketWake.signalTransfer connectionId wakes
+
+            let answered (answer : ReadAnswer) =
+                Ok (ReadOutcome.Answered answer, committed ())
+
+            // Measured on both (`tcp-blocking.c`, sections R-data, R-fin and
+            // R-reset): the bytes, end of file, and ECONNRESET, which the read
+            // takes, as a read made then answers.
+            match answer with
+            | TcpReadAnswer.WouldBlock ->
+                failwith
+                    $"UnixReadWrite.finishRead: socket %O{socketId} has an answer for a read by TcpTransfer.readAnswers, and TcpTransfer.read would sleep (this is a bug in this library)."
+            | TcpReadAnswer.EndOfFile -> answered (ReadAnswer.Completed ImmutableArray.Empty)
+            | TcpReadAnswer.Failed error -> answered (ReadAnswer.Failed (TcpError.toUnixError error))
+            | TcpReadAnswer.Bytes bytes when bytes.IsEmpty -> answered (ReadAnswer.Completed bytes)
+            | TcpReadAnswer.Bytes bytes ->
+                match parked.Buffer with
+                | UserBuffer.Mapped -> answered (ReadAnswer.Completed bytes)
+                | UserBuffer.Unmapped _ -> Error (ReadRefusal.ConnectionFault socketId)
+                | UserBuffer.Opaque -> Error (ReadRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+                | UserBuffer.Addressless -> Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        else
+
+        // Measured on both (`tcp-blocking.c`, sections R-eintr and
+        // R-restart): EINTR without SA_RESTART, and on sleeping with it.
+        match SyscallInterruption.ofPark task system with
+        | Error refusal -> Error (ReadRefusal.Interruption refusal)
+        | Ok (Some SyscallInterruption.Eintr) -> Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EINTR), finished)
+        | Ok (Some SyscallInterruption.Restart) -> Ok (ReadOutcome.Restarts, finished)
+        | Ok None when nonBlockingNow reader system -> Error (ReadRefusal.ConnectionBecameNonBlocking socketId)
+        | Ok None ->
+            let parkedAgain = ParkedSyscall.ConnectionRead parked
+            Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
+
+    let private finishPipeRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (parked : ParkedPipeRead)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        =
         match parked.Reader with
         | SleepTarget.EndedByClose _ ->
             // Measured on Darwin 27.0.0 (`close-ends-call.c`, sections P1, P5
@@ -1636,8 +1909,23 @@ module UnixReadWrite =
             let parkedAgain = ParkedSyscall.PipeRead parked
             Ok (ReadOutcome.WouldBlock (WakeCondition.ofPark parkedAgain), UnixWait.park task parkedAgain system)
 
-    /// Finish the `read` `task` is asleep in: look at the pipe again, as a woken
-    /// real read does, and answer.
+    let private finishReadHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadOutcome * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        =
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some (ParkedSyscall.PipeRead parked) -> finishPipeRead task parked system
+        | Some (ParkedSyscall.ConnectionRead parked) -> finishConnectionRead task parked system
+        | Some other ->
+            failwith
+                $"UnixReadWrite.finishRead: task %O{task} is parked in %A{other}, not in a read, so there is no read to finish (this is a bug in the client)."
+        | None ->
+            failwith
+                $"UnixReadWrite.finishRead: task %O{task} is not parked, so there is no read to finish. Only a task `read` answered `WouldBlock` finishes here (this is a bug in the client)."
+
+    /// Finish the `read` `task` is asleep in: look at the pipe or the
+    /// connection again, as a woken real read does, and answer.
     ///
     /// Bytes in the pipe are read, up to the count the call was made with, into
     /// the buffer it was made with: a buffer naming no storage answers `EFAULT`
@@ -1658,6 +1946,17 @@ module UnixReadWrite =
     /// A read a close has ended (`SleepTarget.EndedByClose`, under Darwin)
     /// answers end of file, whatever the pipe holds by now and whatever signal
     /// is pending: the close moved the timestamps and released the read end.
+    ///
+    /// A read of a connected socket answers, once there is something to
+    /// answer, what a read made then would: the bytes waiting, up to its
+    /// count, end of file, or a reset's error, which it takes; a buffer naming
+    /// no storage, with bytes to copy, is refused
+    /// (`ReadRefusal.ConnectionFault`). A signal is as for a pipe: under Linux
+    /// the answer beats it, and under Darwin both at once are refused; with
+    /// nothing to answer, it ends the read, `Restarts` or `Failed EINTR`. With
+    /// neither, the read sleeps again, refused instead if its description has
+    /// become non-blocking (`ReadRefusal.ConnectionBecameNonBlocking`). One a
+    /// close has ended, under Darwin, answers `EBADF`.
     ///
     /// `task` must be asleep in a `read`.
     let finishRead<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -1904,7 +2203,19 @@ module UnixReadWrite =
         // rather than EFAULT, and no length is a no-op.
         | OpenFileTarget.Epoll _ -> Error UnixError.EINVAL
         | OpenFileTarget.Kqueue _ -> Error UnixError.ENXIO
-        | OpenFileTarget.Socket socketId -> Ok (WriteTarget.Socket socketId)
+        | OpenFileTarget.Socket socketId ->
+            match SocketPhase.connectionEnd (UnixMachineState.socket socketId system.Machine).Phase with
+            | Some (connectionId, connectionEnd) ->
+                Ok (
+                    WriteTarget.Connection (
+                        socketId,
+                        connectionId,
+                        connectionEnd,
+                        descriptionId,
+                        description.NonBlocking
+                    )
+                )
+            | None -> Ok (WriteTarget.Socket socketId)
         | OpenFileTarget.CharacterDevice (_, device) -> Ok (WriteTarget.CharacterDevice device)
         | OpenFileTarget.File (inode, offset) -> Ok (WriteTarget.File (inode, offset))
         | OpenFileTarget.Pipe (pipeId, PipeEnd.Write) ->
@@ -1949,6 +2260,47 @@ module UnixReadWrite =
 
         WriteOutcome.WouldBlock (WakeCondition.ofPark parked, UnixWait.park task parked system)
 
+    /// `task` asleep in a write of `count` bytes to a connected socket through
+    /// `writer`, made through the descriptor `fd`, the first `written` of them
+    /// taken already.
+    let private parkConnectionWrite<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (writer : OpenFileDescriptionId)
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : int)
+        (written : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : WriteOutcome<'Answer, 'Task, 'Handler>
+        =
+        let parked =
+            ParkedSyscall.ConnectionWrite
+                {
+                    Socket = SleepTarget.Waiting (writer, fd)
+                    Buffer = buffer
+                    Count = count
+                    Written = written
+                }
+
+        WriteOutcome.WouldBlock (WakeCondition.ofPark parked, UnixWait.park task parked system)
+
+    /// `bytes`, which `writer` writes to `connectionId`, taken by the
+    /// connection, and the wakes they raise signalled.
+    let private intoConnection<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (connectionId : ConnectionId)
+        (writer : ConnectionEnd)
+        (bytes : ImmutableArray<byte>)
+        (transfer : TcpTransfer)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let wakes, transfer = TcpTransfer.write writer bytes transfer
+
+        { system with
+            Machine = UnixMachineState.withTransfer connectionId transfer system.Machine
+        }
+        |> SocketWake.signalTransfer connectionId wakes
+
     /// Every answer `write(2)` by `task` gives *without* reading the caller's
     /// buffer, and otherwise how many bytes to extract. See `WriteAdmission`
     /// for why this is a separate call rather than a `write` that takes the
@@ -1978,7 +2330,13 @@ module UnixReadWrite =
     /// A socket with no peer answers without the buffer, as
     /// `UnconnectedSocketRules.write` says, at every length including zero; on
     /// Linux a stream socket's `EPIPE` raises `SIGPIPE` as a pipe's does. A
-    /// socket with a peer, or with a refused connection's error, is refused.
+    /// connected stream socket answers from its connection
+    /// (`TcpTransfer.admitWrite`): how many bytes it takes now, `EAGAIN`, or a
+    /// reset's error, whose `EPIPE` raises `SIGPIPE`. A blocking write it has
+    /// no room for the whole of takes what fits and sleeps for the rest, as
+    /// one into a pipe does. One that would copy from an unmapped buffer is
+    /// refused (`WriteRefusal.ConnectionFault`). A socket with a datagram
+    /// peer, or with a refused connection's error, is refused.
     ///
     /// Fails loudly if `task` is not one of the process's tasks, or is already
     /// asleep in a syscall.
@@ -2025,10 +2383,50 @@ module UnixReadWrite =
         //
         // And the no-op does *not* precede it: measured on both for an
         // unconnected socket, `write(socket, buf, 0)` is the socket's own
-        // error rather than 0. (A connected stream socket's zero-length write
-        // is unmeasured here; it is refused with the rest of that phase.)
+        // error rather than 0, and for a connected one a reset's error
+        // (`tcp-transfer.c`, section S).
         match target with
         | WriteTarget.Socket socketId -> socketWrite (WriteAdmission.Answered) task socketId count system
+        | WriteTarget.Connection (socketId, connectionId, connectionEnd, descriptionId, nonBlocking) ->
+            let withTransfer (transfer : TcpTransfer) : UnixSystem<'Task, 'Handler> =
+                { system with
+                    Machine = UnixMachineState.withTransfer connectionId transfer system.Machine
+                }
+
+            let count = oneCallsWorth platform count
+
+            // The bytes taken now are read now; the rest only as room appears.
+            let reading (admission : WriteAdmission) (transfer : TcpTransfer) =
+                match buffer with
+                | UserBuffer.Mapped -> Ok (WriteOutcome.Returns (admission, withTransfer transfer))
+                | UserBuffer.Unmapped _ -> Error (WriteRefusal.ConnectionFault socketId)
+                | UserBuffer.Opaque -> Error (WriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+                | UserBuffer.Addressless -> Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+
+            match
+                connectionWriteStep
+                    connectionEnd
+                    nonBlocking
+                    count
+                    (UnixMachineState.connection connectionId system.Machine).Transfer
+            with
+            | ConnectionWriteStep.Answered (answer, transfer) ->
+                Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, withTransfer transfer))
+            | ConnectionWriteStep.Broken transfer ->
+                broken
+                    (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EPIPE))
+                    task
+                    (BrokenWriteTarget.Connection socketId)
+                    (withTransfer transfer)
+            | ConnectionWriteStep.Takes (taken, transfer) -> reading (WriteAdmission.Transfer taken) transfer
+            | ConnectionWriteStep.TakesThenSleeps (taken, transfer) ->
+                reading (WriteAdmission.TransferThenSleep (taken, count)) transfer
+            // Nothing is copied before the write sleeps, so the buffer is not
+            // looked at until there is room.
+            | ConnectionWriteStep.Sleeps transfer ->
+                withTransfer transfer
+                |> parkConnectionWrite task descriptionId fd buffer count 0
+                |> Ok
         | WriteTarget.CharacterDevice device ->
             // No position check, as for a read: a device's position is always
             // 0.
@@ -2128,6 +2526,45 @@ module UnixReadWrite =
             // `admitWrite` never reaches this: that call answered or refused
             // first.
             socketWrite id task socketId (uint64 bytes.Length) system
+        | Ok (WriteTarget.Connection (socketId, connectionId, connectionEnd, descriptionId, nonBlocking)) ->
+            let withTransfer (transfer : TcpTransfer) : UnixSystem<'Task, 'Handler> =
+                { system with
+                    Machine = UnixMachineState.withTransfer connectionId transfer system.Machine
+                }
+
+            let prefix (taken : int) =
+                if taken = bytes.Length then
+                    bytes
+                else
+                    ImmutableArray.Create (bytes, 0, taken)
+
+            match
+                connectionWriteStep
+                    connectionEnd
+                    nonBlocking
+                    bytes.Length
+                    (UnixMachineState.connection connectionId system.Machine).Transfer
+            with
+            | ConnectionWriteStep.Answered (answer, transfer) -> returns answer (withTransfer transfer)
+            | ConnectionWriteStep.Broken transfer ->
+                broken
+                    (WriteAnswer.Failed UnixError.EPIPE)
+                    task
+                    (BrokenWriteTarget.Connection socketId)
+                    (withTransfer transfer)
+            | ConnectionWriteStep.Takes (taken, transfer) ->
+                system
+                |> intoConnection connectionId connectionEnd (prefix taken) transfer
+                |> returns (WriteAnswer.Completed (int64 taken))
+            | ConnectionWriteStep.TakesThenSleeps (taken, transfer) ->
+                system
+                |> intoConnection connectionId connectionEnd (prefix taken) transfer
+                |> parkConnectionWrite task descriptionId fd UserBuffer.Mapped bytes.Length taken
+                |> Ok
+            | ConnectionWriteStep.Sleeps transfer ->
+                withTransfer transfer
+                |> parkConnectionWrite task descriptionId fd UserBuffer.Mapped bytes.Length 0
+                |> Ok
         // Both devices take every byte they are given and keep none of it.
         | Ok (WriteTarget.CharacterDevice CharacterDevice.URandom) when
             SyscallInterruption.stopsAtPageBoundary task bytes.Length system
@@ -2303,10 +2740,11 @@ module UnixReadWrite =
     /// `WriteAdmission.Transfer` says; a longer array is refused as the
     /// caller's mistake.
     ///
-    /// Short only for a non-blocking write into a pipe with room for part of
-    /// it: this kernel's filesystem cannot run out of space. A blocking write
-    /// into a pipe with room for part of it puts that part in and sleeps for
-    /// the rest (`WriteOutcome.WouldBlock`), as one with room for none does.
+    /// Short only for a non-blocking write into a pipe or to a connected
+    /// socket with room for part of it: this kernel's filesystem cannot run
+    /// out of space. A blocking write into either with room for part of it
+    /// puts that part in and sleeps for the rest (`WriteOutcome.WouldBlock`),
+    /// as one with room for none does.
     ///
     /// A write into a pipe the client drains is read by the client as it is
     /// written, and recorded in `UnixMachineState.Delivered`. A write into a
@@ -2362,8 +2800,14 @@ module UnixReadWrite =
         | Some (ParkedSyscall.PipeWrite {
                                             Writer = SleepTarget.Waiting (description, _)
                                             Written = written
-                                        }) -> Some (description, written)
+                                        })
+        | Some (ParkedSyscall.ConnectionWrite {
+                                                  Socket = SleepTarget.Waiting (description, _)
+                                                  Written = written
+                                              }) -> Some (description, written)
         | Some (ParkedSyscall.PipeWrite _)
+        | Some (ParkedSyscall.ConnectionWrite _)
+        | Some (ParkedSyscall.ConnectionRead _)
         | Some (ParkedSyscall.PipeRead _)
         | Some (ParkedSyscall.Accept _)
         | Some (ParkedSyscall.EpollWait _)
@@ -2371,6 +2815,7 @@ module UnixReadWrite =
         | Some (ParkedSyscall.Flock _)
         | Some (ParkedSyscall.Poll _)
         | Some (ParkedSyscall.KqueuePoll _)
+        | Some ParkedSyscall.SigSuspend
         | None -> None
 
     /// The write `task` is asleep in.
@@ -2416,11 +2861,190 @@ module UnixReadWrite =
             Ok (WriteOutcome.Returns (answered (WriteAnswer.Completed (int64 parked.Written)), finished))
         | Ok _ -> Ok (parkWrite task writer fd parked.Buffer parked.Count parked.Written system)
 
+    /// `admitFinishWrite` of a write asleep on a connected socket.
+    let private admitFinishConnectionWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (parked : ParkedConnectionWrite)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteResumption, 'Task, 'Handler>, WriteRefusal>
+        =
+        let answered (answer : WriteAnswer) (system : UnixSystem<'Task, 'Handler>) =
+            Ok (WriteOutcome.Returns (WriteResumption.Answered answer, system))
+
+        match parked.Socket with
+        | SleepTarget.EndedByClose _ ->
+            // Measured on Darwin 27.0.0 (`tcp-blocking.c`, section W-close):
+            // closing the descriptor the write was made through ends it with
+            // EBADF, whatever it had taken, and raises no SIGPIPE.
+            answered (WriteAnswer.Failed UnixError.EBADF) (UnixParkState.unpark task system)
+        | SleepTarget.Waiting (writer, fd) ->
+
+        let socketId, connectionId, connectionEnd =
+            parkedConnection "admitFinishWrite" task writer system
+
+        let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+        let finished = UnixParkState.unpark task system
+        let remaining = parked.Count - parked.Written
+
+        let withTransfer (transfer : TcpTransfer) (system : UnixSystem<'Task, 'Handler>) =
+            { system with
+                Machine = UnixMachineState.withTransfer connectionId transfer system.Machine
+            }
+
+        match (TcpTransfer.towards connectionEnd transfer).Receiver with
+        | TcpEndState.Reset _ ->
+            // Linux's `sk_stream_wait_memory` looks for the error before it
+            // looks for a signal; Darwin's sleeper takes whichever reached it
+            // first, which `beforeCompleting` refuses.
+            match SyscallInterruption.beforeCompleting task system with
+            | Error refusal -> Error (WriteRefusal.Interruption refusal)
+            | Ok () ->
+
+            // Measured (`tcp-blocking.c`, section W-reset): Linux's write
+            // returned the count it had taken, leaving the error pending, or,
+            // having taken nothing, took the error (ECONNRESET, no SIGPIPE);
+            // Darwin's answered EPIPE and raised SIGPIPE whatever it had taken,
+            // leaving the error pending. Each is what a write made now
+            // answers, but for Linux's count.
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux when parked.Written > 0 ->
+                answered (WriteAnswer.Completed (int64 parked.Written)) finished
+            | SimulatedUnixFlavour.Linux
+            | SimulatedUnixFlavour.Darwin ->
+
+            match connectionWriteStep connectionEnd false remaining transfer with
+            | ConnectionWriteStep.Broken after ->
+                broken
+                    (WriteResumption.Answered (WriteAnswer.Failed UnixError.EPIPE))
+                    task
+                    (BrokenWriteTarget.Connection socketId)
+                    (withTransfer after finished)
+            | ConnectionWriteStep.Answered (answer, after) -> answered answer (withTransfer after finished)
+            | step ->
+                failwith
+                    $"UnixReadWrite.admitFinishWrite: socket %O{socketId}'s end was reset, and a write there takes bytes (%A{step}) (this is a bug in this library)."
+        | TcpEndState.Closed ->
+            failwith
+                $"UnixReadWrite.admitFinishWrite: task %O{task} sleeps on socket %O{socketId}, whose end of the connection is closed, but the call holds the socket (this is a bug in this library)."
+        | TcpEndState.Open
+        | TcpEndState.FinQueued
+        | TcpEndState.FinReceived ->
+
+        let step = connectionWriteStep connectionEnd false remaining transfer
+
+        let room =
+            match step with
+            | ConnectionWriteStep.Takes (taken, _)
+            | ConnectionWriteStep.TakesThenSleeps (taken, _) -> Some taken
+            | ConnectionWriteStep.Sleeps _ -> None
+            | ConnectionWriteStep.Answered _
+            | ConnectionWriteStep.Broken _ ->
+                failwith
+                    $"UnixReadWrite.admitFinishWrite: socket %O{socketId}'s end can still send, and a write there answers %A{step} (this is a bug in this library)."
+
+        match SyscallInterruption.interrupts task system with
+        | Error refusal -> Error (WriteRefusal.Interruption refusal)
+        | Ok true ->
+            // Measured on Linux 6.18.5 (`tcp-blocking.c`, section D-write): a
+            // writer given room and signalled, held off the CPU until both had
+            // happened, took none of the room in 40 trials of 40, whichever
+            // came first, and returned the count it had taken, as
+            // `sk_stream_wait_memory` looks for a signal before it looks for
+            // room. Darwin's sleeper takes whichever reached it first, which is
+            // refused. With no room, measured on both (sections W-partial and
+            // W-empty): the count taken, under SA_RESTART or not, or with
+            // nothing taken EINTR, or a restart under SA_RESTART.
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, room with
+            | SimulatedUnixFlavour.Darwin, Some _ ->
+                Error (
+                    WriteRefusal.Interruption (
+                        SyscallInterruptionRefusal.SignalBesideCompletion SimulatedUnixFlavour.Darwin
+                    )
+                )
+            | _ when parked.Written > 0 -> answered (WriteAnswer.Completed (int64 parked.Written)) finished
+            | _ ->
+
+            match SyscallInterruption.ofPark task system with
+            | Error refusal -> Error (WriteRefusal.Interruption refusal)
+            | Ok (Some SyscallInterruption.Eintr) -> answered (WriteAnswer.Failed UnixError.EINTR) finished
+            | Ok (Some SyscallInterruption.Restart) -> Ok (WriteOutcome.Restarts finished)
+            | Ok None ->
+                failwith
+                    $"UnixReadWrite.admitFinishWrite: a signal interrupts task %O{task}'s write, and SyscallInterruption.ofPark says none does (this is a bug in this library)."
+        | Ok false ->
+
+        match room with
+        | Some taken ->
+            match parked.Buffer with
+            | UserBuffer.Mapped -> Ok (WriteOutcome.Returns (WriteResumption.Transfer (parked.Written, taken), system))
+            // Only a write that had taken nothing can hold such a buffer:
+            // taking bytes reads them.
+            | UserBuffer.Unmapped _ -> Error (WriteRefusal.ConnectionFault socketId)
+            | UserBuffer.Opaque -> Error (WriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+            | UserBuffer.Addressless -> Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | None when nonBlockingNow writer system -> Error (WriteRefusal.ConnectionBecameNonBlocking socketId)
+        | None ->
+            let after =
+                match step with
+                | ConnectionWriteStep.Sleeps after -> after
+                | _ -> transfer
+
+            // Woken and beaten to the room: asleep again, the write that found
+            // no room having marked Linux's socket out of space.
+            Ok (
+                parkConnectionWrite task writer fd parked.Buffer parked.Count parked.Written (withTransfer after system)
+            )
+
+    /// `finishWrite` of a write asleep on a connected socket.
+    let private finishConnectionWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (parked : ParkedConnectionWrite)
+        (bytes : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, WriteRefusal>
+        =
+        let writer, fd =
+            match parked.Socket with
+            | SleepTarget.Waiting (writer, fd) -> writer, fd
+            | SleepTarget.EndedByClose socketId ->
+                failwith
+                    $"UnixReadWrite.finishWrite: task %O{task}'s write to socket %O{socketId} has been ended by a close, so there are no bytes to give it: `admitFinishWrite` answers such a write without a transfer (this is a bug in the caller)."
+
+        let socketId, connectionId, connectionEnd =
+            parkedConnection "finishWrite" task writer system
+
+        let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+
+        let taking, transfer =
+            match connectionWriteStep connectionEnd false (parked.Count - parked.Written) transfer with
+            | ConnectionWriteStep.Takes (taken, after)
+            | ConnectionWriteStep.TakesThenSleeps (taken, after) when taken = bytes.Length -> taken, after
+            | step ->
+                failwith
+                    $"UnixReadWrite.finishWrite: task %O{task}'s write to socket %O{socketId} was given %d{bytes.Length} bytes, and a write there now comes to %A{step}. Pass the bytes `admitFinishWrite` named, against the system it answered with (this is a bug in the caller)."
+
+        let system = intoConnection connectionId connectionEnd bytes transfer system
+        let written = parked.Written + taking
+
+        // With more left, the room is gone, so the write sleeps again. No
+        // signal is pending to end it: `admitFinishWrite` answers one before it
+        // names any bytes.
+        if written = parked.Count then
+            Ok (WriteOutcome.Returns (WriteAnswer.Completed (int64 parked.Count), UnixParkState.unpark task system))
+        elif nonBlockingNow writer system then
+            Error (WriteRefusal.ConnectionBecameNonBlocking socketId)
+        else
+            Ok (parkConnectionWrite task writer fd parked.Buffer parked.Count written system)
+
     let private admitFinishWriteHolding<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<WriteOutcome<WriteResumption, 'Task, 'Handler>, WriteRefusal>
         =
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some (ParkedSyscall.ConnectionWrite parked) -> admitFinishConnectionWrite task parked system
+        | _ ->
+
         let parked = parkedWrite "admitFinishWrite" task system
 
         match parked.Writer with
@@ -2553,6 +3177,25 @@ module UnixReadWrite =
     /// on Darwin moves the pipe's timestamps, which do not move while the call
     /// sleeps.
     ///
+    /// A write asleep on a connected socket looks at the connection again:
+    ///
+    /// - **Its end was reset.** On Linux the call answers the count it had
+    ///   taken, leaving the error pending, or, having taken nothing, what a
+    ///   write made now answers: the pending error, which it takes, or `EPIPE`
+    ///   with `SIGPIPE`. On Darwin, `EPIPE` with `SIGPIPE` whatever it had
+    ///   taken. Under Darwin, a signal with a handler beside it is refused.
+    /// - **A signal with a handler is pending.** The count it had taken, or
+    ///   with nothing taken `Restarts` or `Failed EINTR`. Under Linux this
+    ///   beats room; under Darwin, room beside it is refused.
+    /// - **There is room**, as a write made now would take:
+    ///   `WriteResumption.Transfer` names the bytes to pass to `finishWrite`.
+    ///   A buffer naming no storage is refused (`WriteRefusal.ConnectionFault`).
+    /// - **Neither**: the task sleeps again, refused instead if its
+    ///   description has become non-blocking
+    ///   (`WriteRefusal.ConnectionBecameNonBlocking`).
+    /// - **A close has ended it**, under Darwin: `EBADF`, whatever it had
+    ///   taken.
+    ///
     /// `task` must be asleep in a `write`.
     let admitFinishWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
@@ -2590,6 +3233,10 @@ module UnixReadWrite =
         if bytes.IsDefault then
             failwith
                 "UnixReadWrite.finishWrite: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
+
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some (ParkedSyscall.ConnectionWrite parked) -> finishConnectionWrite task parked bytes system
+        | _ ->
 
         let parked = parkedWrite "finishWrite" task system
 
@@ -2638,12 +3285,17 @@ module UnixReadWrite =
             afterPartWritten task pipeId writer fd parked nonBlocking id system
 
     /// The `write` `task` is asleep in, given the bytes the caller extracted
-    /// after `admitFinishWrite` said to: they go into the pipe, and the call
+    /// after `admitFinishWrite` said to: they go into the pipe or the
+    /// connection, and the call
     /// returns its whole count if that was the last of it.
     ///
     /// Otherwise a signal with a handler pending for the task, or `O_NONBLOCK`
     /// set on the description while the call slept, ends it with the count it
-    /// has put in by now, and with neither, it sleeps again for the rest.
+    /// has put in by now, and with neither, it sleeps again for the rest. A
+    /// write to a connected socket sleeps again for the rest, or is refused if
+    /// its description has become non-blocking
+    /// (`WriteRefusal.ConnectionBecameNonBlocking`); a signal never reaches
+    /// it here, `admitFinishWrite` having answered one first.
     ///
     /// `bytes` must be exactly the ones `WriteResumption.Transfer` named, and
     /// the system the one it came with: anything else is the caller's mistake,
@@ -2671,8 +3323,8 @@ module UnixReadWrite =
 
 
     /// A blocking `write` of `total` bytes by `task`, given the first of them
-    /// that `WriteAdmission.TransferThenSleep` named: they go into the pipe, and
-    /// the call sleeps for the rest (`WriteOutcome.WouldBlock`), to be finished
+    /// that `WriteAdmission.TransferThenSleep` named: they go into the pipe or
+    /// the connection, and the call sleeps for the rest (`WriteOutcome.WouldBlock`), to be finished
     /// with `admitFinishWrite` and `finishWrite`.
     ///
     /// `bytes` must be exactly the ones the admission named, and the system the
@@ -2711,7 +3363,17 @@ module UnixReadWrite =
                 |> parkWrite task descriptionId fd UserBuffer.Mapped total taken
                 |> Ok
             | step -> mismatch $"is not the blocking write that puts in part of it and sleeps (%A{step})"
-        | other -> mismatch $"names %A{other} rather than the write end of a pipe"
+        | Ok (WriteTarget.Connection (_, connectionId, connectionEnd, descriptionId, nonBlocking)) ->
+            let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+
+            match connectionWriteStep connectionEnd nonBlocking total transfer with
+            | ConnectionWriteStep.TakesThenSleeps (taken, transfer) when taken = bytes.Length ->
+                system
+                |> intoConnection connectionId connectionEnd bytes transfer
+                |> parkConnectionWrite task descriptionId fd UserBuffer.Mapped total taken
+                |> Ok
+            | step -> mismatch $"is not the blocking write that takes part of it and sleeps (%A{step})"
+        | other -> mismatch $"names %A{other} rather than the write end of a pipe or a connected socket"
 
     /// What a `pwrite` will write into, once every question that precedes the
     /// buffer screen has been settled.

@@ -121,7 +121,10 @@ class Program
                 | Some (ParkedSyscall.KqueuePoll _)
                 | Some (ParkedSyscall.Accept _)
                 | Some (ParkedSyscall.PipeRead _)
+                | Some ParkedSyscall.SigSuspend
                 | Some (ParkedSyscall.PipeWrite _)
+                | Some (ParkedSyscall.ConnectionRead _)
+                | Some (ParkedSyscall.ConnectionWrite _)
                 | None -> None
         )
 

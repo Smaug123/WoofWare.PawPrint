@@ -311,6 +311,28 @@ module DebuggerServer =
 
                 writer.WriteNumber ("count", parked.Count)
                 writer.WriteNumber ("written", parked.Written)
+            | Some (ParkedSyscall.ConnectionRead parked) ->
+                writer.WriteString ("kind", "blockedInConnectionRead")
+
+                match parked.Socket with
+                | SleepTarget.Waiting (OpenFileDescriptionId reader, fd) ->
+                    writer.WriteNumber ("description", reader)
+                    writer.WriteNumber ("fd", fd)
+                | SleepTarget.EndedByClose (SocketId socket) -> writer.WriteNumber ("endedByCloseOnSocket", socket)
+
+                writer.WriteNumber ("count", parked.Count)
+            | Some (ParkedSyscall.ConnectionWrite parked) ->
+                writer.WriteString ("kind", "blockedInConnectionWrite")
+
+                match parked.Socket with
+                | SleepTarget.Waiting (OpenFileDescriptionId writerDescription, fd) ->
+                    writer.WriteNumber ("description", writerDescription)
+                    writer.WriteNumber ("fd", fd)
+                | SleepTarget.EndedByClose (SocketId socket) -> writer.WriteNumber ("endedByCloseOnSocket", socket)
+
+                writer.WriteNumber ("count", parked.Count)
+                writer.WriteNumber ("written", parked.Written)
+            | Some ParkedSyscall.SigSuspend -> writer.WriteString ("kind", "blockedInSigsuspend")
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

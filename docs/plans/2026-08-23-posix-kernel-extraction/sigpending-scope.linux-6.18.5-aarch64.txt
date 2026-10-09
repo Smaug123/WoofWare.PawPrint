@@ -1,0 +1,13 @@
+# ldd (Debian GLIBC 2.41-12+deb13u4) 2.41
+# Linux 6.18.5 aarch64, uid 0
+# flavour linux USR1 200 USR2 800 TERM 4000 CONT 20000 WINCH 8000000 URG 400000
+proc sender=main main=200 second=200 end=exit0
+proc sender=second main=200 second=200 end=exit0
+thread sender=main target=second main=0 second=800 end=exit0
+thread sender=second target=main main=800 second=0 end=exit0
+ignored USR1 SIG_IGN pending=200 after-unblock-reblock=0 end=exit0
+ignored WINCH SIG_DFL pending=8000000 after-unblock-reblock=0 end=exit0
+ignored URG SIG_DFL pending=400000 after-unblock-reblock=0 end=exit0
+ignored CONT SIG_IGN pending=20000 after-unblock-reblock=0 end=exit0
+cont SIG_DFL pending=20000 end=exit0
+handler in-handler pending=4200 mask=4200 after pending=0 ran=USR1,USR1,TERM end=exit0

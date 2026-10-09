@@ -337,6 +337,54 @@ module internal TcpTransfer =
         let queued = ByteQueue.length direction.Sending
         direction.SendCapacity - queued >= queued / 2
 
+    /// The free space in `sender`'s send buffer, in bytes: what Darwin's
+    /// `EVFILT_WRITE` reports as its event's `data`.
+    let sendSpace (sender : ConnectionEnd) (transfer : TcpTransfer) : int =
+        let outbound = towards (otherEnd sender) transfer
+        outbound.SendCapacity - ByteQueue.length outbound.Sending
+
+    /// How many bytes `sender` has written that are still in its send buffer,
+    /// because the peer's receive buffer has had no room for them yet.
+    let unsent (sender : ConnectionEnd) (transfer : TcpTransfer) : int =
+        ByteQueue.length (towards (otherEnd sender) transfer).Sending
+
+    /// Whether Linux's `tcp_poll` finds `sender` writable: its send buffer at
+    /// most two thirds full (`sk_stream_is_writeable`). Says nothing of an end
+    /// that was reset, which is writable whatever its buffer holds, since the
+    /// write fails at once.
+    let linuxSendable (sender : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        linuxWritable (towards (otherEnd sender) transfer)
+
+    /// The error a call on `receiver`'s socket would take now, if one is
+    /// pending.
+    let pendingError (receiver : ConnectionEnd) (transfer : TcpTransfer) : TcpError option =
+        match transfer.Rules, (towards receiver transfer).Receiver with
+        | TcpTransferRules.Linux _, TcpEndState.Reset (true, true) -> Some TcpError.BrokenPipe
+        | _, TcpEndState.Reset (_, true) -> Some TcpError.ConnectionReset
+        | _, TcpEndState.Reset (_, false)
+        | _, TcpEndState.Open
+        | _, TcpEndState.FinQueued
+        | _, TcpEndState.FinReceived
+        | _, TcpEndState.Closed -> None
+
+    /// A Linux `tcp_poll` of `sender`'s socket, by `poll(2)`, an epoll `ADD`
+    /// or `MOD`, or `epoll_wait`'s re-poll of a pending entry: one that finds
+    /// the socket open for sending but not writable marks it out of space
+    /// (`SOCK_NOSPACE`), so that its send buffer draining to two thirds full
+    /// raises `TcpWake.SendSpace`. Darwin's poll keeps no such mark.
+    let polled (sender : ConnectionEnd) (transfer : TcpTransfer) : TcpTransfer =
+        match transfer.Rules, (towards sender transfer).Receiver with
+        | TcpTransferRules.Darwin, _ -> transfer
+        | TcpTransferRules.Linux _, TcpEndState.Open
+        | TcpTransferRules.Linux _, TcpEndState.FinQueued
+        | TcpTransferRules.Linux _, TcpEndState.FinReceived ->
+            if linuxSendable sender transfer then
+                transfer
+            else
+                withArmed sender true transfer
+        | TcpTransferRules.Linux _, TcpEndState.Reset _
+        | TcpTransferRules.Linux _, TcpEndState.Closed -> transfer
+
     /// Move bytes on from the send buffer into the receive buffer as far as it
     /// has room: how many moved, and the direction after.
     let private deliver (direction : TcpDirection) : int * TcpDirection =
@@ -394,6 +442,75 @@ module internal TcpTransfer =
             elif space >= int64 darwinSendLowWater then Some (int space)
             else None
 
+    /// The room a write by `writer`, whose end may still send, has: the free
+    /// space in its send buffer, and in the peer's receive buffer while the
+    /// peer is there to drain it.
+    let private writeSpace (context : string) (writer : ConnectionEnd) (transfer : TcpTransfer) : int64 =
+        let outbound = towards (otherEnd writer) transfer
+
+        match outbound.Receiver with
+        | TcpEndState.Open ->
+            int64 (outbound.ReceiveCapacity - ByteQueue.length outbound.Receiving)
+            + int64 (outbound.SendCapacity - ByteQueue.length outbound.Sending)
+        // The peer has gone, so nothing drains the send buffer.
+        | TcpEndState.Closed -> int64 (outbound.SendCapacity - ByteQueue.length outbound.Sending)
+        | TcpEndState.FinQueued
+        | TcpEndState.FinReceived
+        | TcpEndState.Reset _ ->
+            failwith
+                $"TcpTransfer.%s{context}: the %A{writer} end has sent its FIN, which only its close does (this library models no shutdown), but it is still writing (this is a bug in this library)."
+
+    /// Whether a read by `receiver`, asleep because nothing was there to
+    /// answer it, has an answer now: bytes have arrived, or a FIN, or a reset.
+    /// A read wakes for any of them, needing only one byte to return
+    /// (measured, `tcp-blocking.c` sections R-data, R-fin and R-reset).
+    let readAnswers (receiver : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        let direction = towards receiver transfer
+
+        match direction.Receiver with
+        | TcpEndState.Closed ->
+            failwith
+                $"TcpTransfer.readAnswers: the %A{receiver} end is closed, so nothing can be asleep reading there (this is a bug in this library)."
+        | TcpEndState.FinReceived
+        | TcpEndState.Reset _ -> true
+        | TcpEndState.Open
+        | TcpEndState.FinQueued -> ByteQueue.length direction.Receiving > 0
+
+    /// Whether a write by `writer`, asleep with `remaining` of its bytes not
+    /// yet taken, is woken: by a reset at either flavour, and otherwise by
+    /// room. On Linux a sleeping writer is woken only once its send buffer
+    /// has drained to two thirds full (`sk_stream_write_space`), as an
+    /// edge-triggered waiter is, and has room; on Darwin, at every acknowledgement that
+    /// leaves room for a write of `remaining` to take something, by the low
+    /// water mark `admitWrite` applies.
+    ///
+    /// Measured (`tcp-blocking.c` section W-resume): Linux's writer, asleep
+    /// with 4194304 bytes queued, took nothing while the reader drained the
+    /// queue to 2765702, and refilled it to the full as it fell to two
+    /// thirds; Darwin's took the room as each read made it.
+    let writeResumes (writer : ConnectionEnd) (remaining : int) (transfer : TcpTransfer) : bool =
+        if remaining <= 0 then
+            failwith
+                $"TcpTransfer.writeResumes: a write asleep with %d{remaining} bytes left, but a write with nothing left has returned (this is a bug in this library)."
+
+        match (towards writer transfer).Receiver with
+        | TcpEndState.Closed ->
+            failwith
+                $"TcpTransfer.writeResumes: the %A{writer} end is closed, so nothing can be asleep writing there (this is a bug in this library)."
+        | TcpEndState.Reset _ -> true
+        | TcpEndState.Open
+        | TcpEndState.FinQueued
+        | TcpEndState.FinReceived ->
+
+        match transfer.Rules with
+        // The woken writer goes on only if the buffer is not full
+        // (`sk_stream_memory_free`), which a buffer of one byte holding one is
+        // while two thirds full.
+        | TcpTransferRules.Linux _ ->
+            linuxWritable (towards (otherEnd writer) transfer)
+            && writeSpace "writeResumes" writer transfer > 0L
+        | TcpTransferRules.Darwin -> (taking transfer remaining (writeSpace "writeResumes" writer transfer)).IsSome
+
     /// What a write of `count` bytes by `writer` decides before the caller's
     /// buffer is read, and the transfer after: a failed write takes a pending
     /// error on Linux, and a Linux write that runs out of space, whether it
@@ -404,7 +521,6 @@ module internal TcpTransfer =
             failwith $"TcpTransfer.admitWrite: a write of %d{count} bytes (this is a bug in this library)."
 
         let own = towards writer transfer
-        let outbound = towards (otherEnd writer) transfer
 
         match own.Receiver with
         | TcpEndState.Closed ->
@@ -443,20 +559,7 @@ module internal TcpTransfer =
             TcpWriteAdmission.Answered (TcpWriteAnswer.Wrote 0), transfer
         else
 
-        let space =
-            match outbound.Receiver with
-            | TcpEndState.Open ->
-                int64 (outbound.ReceiveCapacity - ByteQueue.length outbound.Receiving)
-                + int64 (outbound.SendCapacity - ByteQueue.length outbound.Sending)
-            // The peer has gone, so nothing drains the send buffer.
-            | TcpEndState.Closed -> int64 (outbound.SendCapacity - ByteQueue.length outbound.Sending)
-            | TcpEndState.FinQueued
-            | TcpEndState.FinReceived
-            | TcpEndState.Reset _ ->
-                failwith
-                    $"TcpTransfer.admitWrite: the %A{writer} end has sent its FIN, which only its close does (this library models no shutdown), but it is still writing (this is a bug in this library)."
-
-        match taking transfer count space with
+        match taking transfer count (writeSpace "admitWrite" writer transfer) with
         // `tcp_sendmsg` marks the socket out of space before it returns a
         // short count, as before it answers `EAGAIN`.
         | Some taken when taken < count -> TcpWriteAdmission.Take taken, withArmed writer true transfer
@@ -536,8 +639,8 @@ module internal TcpTransfer =
 
         wakes, keepingRules "write" (withTowards peer outbound transfer)
 
-    /// The error a pending one would make `call` fail with, for `receiver`.
-    let private pendingError (receiver : ConnectionEnd) (transfer : TcpTransfer) : TcpError =
+    /// The error a pending one would make a call by `receiver` fail with.
+    let private resetError (receiver : ConnectionEnd) (transfer : TcpTransfer) : TcpError =
         match transfer.Rules, (towards receiver transfer).Receiver with
         | TcpTransferRules.Linux _, TcpEndState.Reset (true, _) -> TcpError.BrokenPipe
         | _ -> TcpError.ConnectionReset
@@ -637,7 +740,7 @@ module internal TcpTransfer =
             | TcpEndState.FinReceived
             | TcpEndState.Reset (true, _)
             | TcpEndState.Reset (false, false) -> TcpReadAnswer.EndOfFile, [], transfer
-            | TcpEndState.Reset (false, true) -> TcpReadAnswer.Failed (pendingError receiver transfer), [], takeError ()
+            | TcpEndState.Reset (false, true) -> TcpReadAnswer.Failed (resetError receiver transfer), [], takeError ()
             | TcpEndState.FinQueued -> failwith unqueuedFin
             | TcpEndState.Closed -> failwith "TcpTransfer.read: unreachable, the closed end was refused above."
         else
@@ -652,7 +755,7 @@ module internal TcpTransfer =
                     | TcpReceiveCall.Read
                     | TcpReceiveCall.Receive -> takeError ()
 
-                TcpReadAnswer.Failed (pendingError receiver transfer), [], transfer
+                TcpReadAnswer.Failed (resetError receiver transfer), [], transfer
             | TcpEndState.Reset (_, false)
             | TcpEndState.FinReceived -> TcpReadAnswer.EndOfFile, [], transfer
             | TcpEndState.Open ->
@@ -673,7 +776,7 @@ module internal TcpTransfer =
             failwith
                 $"TcpTransfer.takeError: the %A{receiver} end is closed, so it has no socket to ask (this is a bug in this library)."
         | TcpEndState.Reset (afterFin, true) ->
-            Some (pendingError receiver transfer),
+            Some (resetError receiver transfer),
             withTowards
                 receiver
                 { direction with

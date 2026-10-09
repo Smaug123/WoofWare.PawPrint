@@ -1,0 +1,126 @@
+# Darwin 27.0.0 arm64, uid 501
+# flavour darwin SIG_BLOCK 1 SIG_UNBLOCK 2 SIG_SETMASK 3 sizeof(sigset_t) 4
+# start mask HUP|INT = 3, set INT|TERM = 4002
+how libc how=1 set=yes ret=0 errno=0 old=3 now=4003 end=exit0
+how libc how=1 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how libc how=2 set=yes ret=0 errno=0 old=3 now=1 end=exit0
+how libc how=2 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how libc how=3 set=yes ret=0 errno=0 old=3 now=4002 end=exit0
+how libc how=3 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how libc how=-1 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how libc how=-1 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how libc how=0 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how libc how=0 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how libc how=4 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how libc how=4 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how libc how=5 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how libc how=5 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how libc how=100 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how libc how=100 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how libc how=2147483647 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how libc how=2147483647 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how libc how=-2147483648 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how libc how=-2147483648 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=1 set=yes ret=0 errno=0 old=3 now=4003 end=exit0
+how pthread how=1 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=2 set=yes ret=0 errno=0 old=3 now=1 end=exit0
+how pthread how=2 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=3 set=yes ret=0 errno=0 old=3 now=4002 end=exit0
+how pthread how=3 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=-1 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how pthread how=-1 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=0 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how pthread how=0 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=4 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how pthread how=4 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=5 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how pthread how=5 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=100 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how pthread how=100 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=2147483647 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how pthread how=2147483647 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how pthread how=-2147483648 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how pthread how=-2147483648 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=1 set=yes ret=0 errno=0 old=3 now=4003 end=exit0
+how raw how=1 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=2 set=yes ret=0 errno=0 old=3 now=1 end=exit0
+how raw how=2 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=3 set=yes ret=0 errno=0 old=3 now=4002 end=exit0
+how raw how=3 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=-1 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how raw how=-1 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=0 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how raw how=0 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=4 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how raw how=4 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=5 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how raw how=5 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=100 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how raw how=100 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=2147483647 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how raw how=2147483647 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how raw how=-2147483648 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how raw how=-2147483648 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=1 set=yes ret=0 errno=0 old=3 now=4003 end=exit0
+how rawpthread how=1 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=2 set=yes ret=0 errno=0 old=3 now=1 end=exit0
+how rawpthread how=2 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=3 set=yes ret=0 errno=0 old=3 now=4002 end=exit0
+how rawpthread how=3 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=-1 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how rawpthread how=-1 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=0 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how rawpthread how=0 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=4 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how rawpthread how=4 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=5 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how rawpthread how=5 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=100 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how rawpthread how=100 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=2147483647 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how rawpthread how=2147483647 set=null ret=0 errno=0 old=3 now=3 end=exit0
+how rawpthread how=-2147483648 set=yes ret=-1 errno=22 old=untouched now=3 end=exit0
+how rawpthread how=-2147483648 set=null ret=0 errno=0 old=3 now=3 end=exit0
+full libc how=1 ret=0 errno=0 old=0 now=fffefeff end=exit0
+full libc how=3 ret=0 errno=0 old=0 now=fffefeff end=exit0
+full pthread how=1 ret=0 errno=0 old=0 now=fffefeff end=exit0
+full pthread how=3 ret=0 errno=0 old=0 now=fffefeff end=exit0
+full raw how=1 ret=0 errno=0 old=0 now=fffefeff end=exit0
+full raw how=3 ret=0 errno=0 old=0 now=fffefeff end=exit0
+full rawpthread how=1 ret=0 errno=0 old=0 now=fffefeff end=exit0
+full rawpthread how=3 ret=0 errno=0 old=0 now=fffefeff end=exit0
+bit libc how=1 set=80000000 ret=0 errno=0 old=0 now=80000000 end=exit0
+bit libc how=1 set=80000001 ret=0 errno=0 old=0 now=80000001 end=exit0
+bit libc how=3 set=80000000 ret=0 errno=0 old=0 now=80000000 end=exit0
+bit libc how=3 set=80000001 ret=0 errno=0 old=0 now=80000001 end=exit0
+bit pthread how=1 set=80000000 ret=0 errno=0 old=0 now=80000000 end=exit0
+bit pthread how=1 set=80000001 ret=0 errno=0 old=0 now=80000001 end=exit0
+bit pthread how=3 set=80000000 ret=0 errno=0 old=0 now=80000000 end=exit0
+bit pthread how=3 set=80000001 ret=0 errno=0 old=0 now=80000001 end=exit0
+bit raw how=1 set=80000000 ret=0 errno=0 old=0 now=80000000 end=exit0
+bit raw how=1 set=80000001 ret=0 errno=0 old=0 now=80000001 end=exit0
+bit raw how=3 set=80000000 ret=0 errno=0 old=0 now=80000000 end=exit0
+bit raw how=3 set=80000001 ret=0 errno=0 old=0 now=80000001 end=exit0
+bit rawpthread how=1 set=80000000 ret=0 errno=0 old=0 now=80000000 end=exit0
+bit rawpthread how=1 set=80000001 ret=0 errno=0 old=0 now=80000001 end=exit0
+bit rawpthread how=3 set=80000000 ret=0 errno=0 old=0 now=80000000 end=exit0
+bit rawpthread how=3 set=80000001 ret=0 errno=0 old=0 now=80000001 end=exit0
+threads libc second=20000000 main=20000000 end=exit0
+threads pthread second=20000000 main=0 end=exit0
+threads raw second=20000000 main=20000000 end=exit0
+threads rawpthread second=20000000 main=0 end=exit0
+spread libc how=1 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4001 second=4002 end=exit0
+spread libc how=2 set=3 (main 1, second 2) ret=0 errno=0 old=1 now=0 second=0 end=exit0
+spread libc how=3 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4000 second=4000 end=exit0
+spread pthread how=1 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4001 second=2 end=exit0
+spread pthread how=2 set=3 (main 1, second 2) ret=0 errno=0 old=1 now=0 second=2 end=exit0
+spread pthread how=3 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4000 second=2 end=exit0
+spread raw how=1 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4001 second=4002 end=exit0
+spread raw how=2 set=3 (main 1, second 2) ret=0 errno=0 old=1 now=0 second=0 end=exit0
+spread raw how=3 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4000 second=4000 end=exit0
+spread rawpthread how=1 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4001 second=2 end=exit0
+spread rawpthread how=2 set=3 (main 1, second 2) ret=0 errno=0 old=1 now=0 second=2 end=exit0
+spread rawpthread how=3 set=4000 (main 1, second 2) ret=0 errno=0 old=1 now=4000 second=2 end=exit0
+errno pthread how=100 errno-before=0 ret=22 errno-after=22 how=100 errno-before=1234 ret=22 errno-after=22 how=1 errno-before=0 ret=0 errno-after=0 how=1 errno-before=1234 ret=0 errno-after=1234 end=exit0
+unblock kill before=0 ret=0 at-return=3 order=USR1,TERM,ILL end=exit0
+unblock pthread_kill before=0 ret=0 at-return=3 order=USR1,TERM,ILL end=exit0

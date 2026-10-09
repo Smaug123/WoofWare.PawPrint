@@ -1,0 +1,52 @@
+R	R-data	after=100	then=100	second_read=-1 EAGAIN	sigusr1=0	sigpipe=0	so_error=0
+R	R-fin	after=0	then=0	second_read=0 	sigusr1=0	sigpipe=0	so_error=0
+R	R-reset	after=-1 ECONNRESET	then=-1 ECONNRESET	second_read=0 	sigusr1=0	sigpipe=0	so_error=0
+R	R-eintr	after=-1 EINTR	then=-1 EINTR	second_read=-1 EAGAIN	sigusr1=1	sigpipe=0	so_error=0
+R	R-restart	after=asleep	then=100	second_read=-1 EAGAIN	sigusr1=1	sigpipe=0	so_error=0
+R	R-close	close=0 0	after_close=-1 EBADF	after_peer_write(100)=-1 EBADF	after_peer_close=-1 EBADF
+R	R-order	012 012 012 021 012 012 012 012 021 021 
+W	W-resume	defaults	sndbuf=409132	rcvbuf(p)=408300
+W	W-resume	read=0	fionread=408300	unsent_before=409132	unsent=409132	taken=817432	sndbuf=409132
+W	W-resume	read=32768	fionread=636844	unsent_before=409132	unsent=409132	taken=1078744	sndbuf=409132
+W	W-resume	read=294912	fionread=636012	unsent_before=409132	unsent=409132	taken=1340056	sndbuf=409132
+W	W-resume	read=557056	fionread=635180	unsent_before=409132	unsent=409132	taken=1601368	sndbuf=409132
+W	W-resume	read=819200	fionread=634348	unsent_before=409132	unsent=409132	taken=1862680	sndbuf=409132
+W	W-resume	read=1081344	fionread=633516	unsent_before=409132	unsent=409132	taken=2123992	sndbuf=409132
+W	W-resume	read=1343488	fionread=632684	unsent_before=409132	unsent=409132	taken=2385304	sndbuf=409132
+W	W-resume	read=1605632	fionread=631852	unsent_before=409132	unsent=409132	taken=2646616	sndbuf=409132
+W	W-resume	read=1867776	fionread=631020	unsent_before=409132	unsent=409132	taken=2907928	sndbuf=409132
+W	W-resume	read=2129920	fionread=630188	unsent_before=409132	unsent=409132	taken=3169240	sndbuf=409132
+W	W-resume	read=2392064	fionread=629356	unsent_before=409132	unsent=409132	taken=3430552	sndbuf=409132
+W	W-resume	read=2654208	fionread=628524	unsent_before=409132	unsent=409132	taken=3691864	sndbuf=409132
+W	W-resume	read=2916352	fionread=627692	unsent_before=409132	unsent=409132	taken=3953176	sndbuf=409132
+W	W-resume	read=3178496	fionread=626860	unsent_before=409132	unsent=409132	taken=4214488	sndbuf=409132
+W	W-resume	read=3424256	fionread=642412	unsent_before=409132	unsent=409132	taken=4475800	sndbuf=409132
+W	W-resume	read=3686400	fionread=641580	unsent_before=409132	unsent=409132	taken=4737112	sndbuf=409132
+W	W-resume	read=3948544	fionread=640748	unsent_before=409132	unsent=409132	taken=4998424	sndbuf=409132
+W	W-resume	read=4210688	fionread=639916	unsent_before=409132	unsent=409132	taken=5259736	sndbuf=409132
+W	W-resume	read=4472832	fionread=639084	unsent_before=409132	unsent=409132	taken=5521048	sndbuf=409132
+W	W-resume	read=4734976	fionread=638252	unsent_before=409132	unsent=409132	taken=5782360	sndbuf=409132
+W	W-resume	read=4997120	fionread=637420	unsent_before=409132	unsent=409132	taken=6043672	sndbuf=409132
+W	W-resume	read=5259264	fionread=636588	unsent_before=409132	unsent=409132	taken=6304984	sndbuf=409132
+W	W-resume	read=5521408	fionread=635756	unsent_before=409132	unsent=409132	taken=6566296	sndbuf=409132
+W	W-resume	read=5783552	fionread=634924	unsent_before=409132	unsent=409132	taken=6827608	sndbuf=409132
+W	W-resume	read=6045696	fionread=634092	unsent_before=409132	unsent=409132	taken=7088920	sndbuf=409132
+W	W-resume	read=6307840	fionread=633260	unsent_before=409132	unsent=409132	taken=7350232	sndbuf=409132
+W	W-resume	read=6569984	fionread=632428	unsent_before=409132	unsent=409132	taken=7611544	sndbuf=409132
+W	W-resume	read=6832128	fionread=631596	unsent_before=409132	unsent=409132	taken=7872856	sndbuf=409132
+W	W-resume	read=7094272	fionread=630764	unsent_before=409132	unsent=409132	taken=8134168	sndbuf=409132
+W	W-resume	read=7356416	fionread=629932	unsent_before=409132	unsent=402260	taken=8388608	sndbuf=409132
+W	W-resume	answer=8388608	read_in_all=8388608
+W	W-resume	sndbuf32768	sndbuf=65328	rcvbuf(p)=408300
+W	W-resume	read=0	fionread=408300	unsent_before=65328	unsent=65328	taken=473628	sndbuf=65328
+W	W-resume	read=32768	fionread=636844	unsent_before=65328	unsent=65328	taken=734940	sndbuf=65328
+W	W-resume	read=294912	fionread=636012	unsent_before=65328	unsent=65328	taken=996252	sndbuf=65328
+W	W-resume	read=557056	fionread=491520	unsent_before=65328	unsent=0	taken=1048576	sndbuf=65328
+W	W-resume	answer=1048576	read_in_all=1048576
+W	W-partial	filled_first=0	peer_fionread=1095753	unsent=654892	taken_by_call_before=1750644	after=1750644	drained=-1	then=1750644	sigusr1=1	sigpipe=0	so_error=0
+W	W-partial-restart	filled_first=0	peer_fionread=1161185	unsent=654892	taken_by_call_before=1816076	after=1816076	drained=-1	then=1816076	sigusr1=1	sigpipe=0	so_error=0
+W	W-empty	filled_first=744483	peer_fionread=400888	unsent=343596	taken_by_call_before=0	after=-1 EINTR	drained=-1	then=-1 EINTR	sigusr1=1	sigpipe=0	so_error=0
+W	W-empty-restart	filled_first=833868	peer_fionread=400161	unsent=433708	taken_by_call_before=0	after=asleep	drained=834869	then=1000	sigusr1=1	sigpipe=0	so_error=0
+W	W-reset-partial	filled_first=0	peer_fionread=408300	unsent=433708	taken_by_call_before=842007	after=-1 EPIPE	drained=-1	then=-1 EPIPE	sigusr1=0	sigpipe=1	so_error=ECONNRESET
+W	W-reset-empty	filled_first=744483	peer_fionread=400888	unsent=343596	taken_by_call_before=0	after=-1 EPIPE	drained=-1	then=-1 EPIPE	sigusr1=0	sigpipe=1	so_error=ECONNRESET
+W	W-close	filled_first=0	peer_fionread=408300	unsent=433708	taken_by_call_before=842007	after=-1 EBADF	drained=-1	then=-1 EBADF	sigusr1=0	sigpipe=0	so_error=-

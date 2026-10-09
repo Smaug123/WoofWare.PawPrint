@@ -247,6 +247,42 @@ its `sosend` answers EPIPE once `SS_CANTSENDMORE` is set, without reading
   is: activated on each acknowledgement that frees space, and ready when
   `sbspace` is at least the low-water mark of 2048.
 
+### 2.5 Blocking transfers (stage 5)
+
+**Probe.** `2026-10-07-tcp-byte-transfer/tcp-blocking.c`, with each flavour's
+output beside it, measured as `tcp-transfer.c` was, twice on each.
+
+- **A sleeping read** returns what a read made then would: the bytes (it needs
+  only one), 0 at a FIN, and ECONNRESET at a reset, which it takes. Several
+  readers on one socket all wake and race (Linux returned the last to park
+  first, mostly; Darwin the first, mostly; neither always).
+- **A sleeping write** returns only once all its bytes are taken. Linux's
+  writer, asleep on a full queue of 4194304, took nothing while the reader
+  drained it to about two thirds (2765702), then refilled it: it is woken by
+  `sk_stream_write_space`, as an edge-triggered waiter is, and then takes all
+  the room. Darwin's took the room as each read made it.
+- **A signal** ends a read with nothing to answer, and a write that has taken
+  nothing, with EINTR, or restarts it under `SA_RESTART`; a write that has
+  taken some returns that count, either way. On Linux, held off the CPU until
+  both had happened, a reader with bytes answered them (40 of 40), and a writer
+  with room took none of it and returned its count (40 of 40), whichever came
+  first. Darwin answers whichever reached the sleeper first, which is refused.
+- **A reset** ends a sleeping write: on Linux with the count taken, leaving
+  ECONNRESET pending, or, with nothing taken, ECONNRESET, taken, and no
+  SIGPIPE; on Darwin with EPIPE and SIGPIPE whatever was taken, leaving
+  ECONNRESET pending.
+- **Closing the descriptor** a sleeping call was made through ends it with
+  EBADF on Darwin, whatever a write had taken, and raises nothing; on Linux the
+  call sleeps on, holding the socket, and answers what arrives.
+- `SO_RCVTIMEO` and `SO_SNDTIMEO`, which would bound the sleeps, cannot be set:
+  `setsockopt` refuses every option it does not model.
+
+What is not measured, and refused: a woken call that finds nothing to do
+(beaten to the bytes or the room) through a description made non-blocking
+while it slept, which Linux's source would leave asleep and Darwin's would
+end; and a Darwin close of the descriptor of a call something has already
+woken.
+
 ## 3. Design options
 
 ### 3.1 Which end of the connection a socket is
@@ -445,7 +481,8 @@ changing, so they wait for that to merge.
    becomes data-aware. `TestConnectedTransferAgainstHost` gains the kernel as a
    third column. A blocking read or write is still refused here.
 5. **Blocking `read` and `write`**: `WakeCondition` cases, park and finish, and
-   `TransferThenSleep` for sockets. Measure the resume rule first.
+   `TransferThenSleep` for sockets. Measure the resume rule first. Done:
+   section 2.5 has the measurements.
 6. **`recv` and `send` in the kernel**, with `MSG_PEEK`, `MSG_DONTWAIT` and
    `MSG_NOSIGNAL`. Every other flag is refused. This includes `recv(0)`'s
    divergence from `read(0)`.

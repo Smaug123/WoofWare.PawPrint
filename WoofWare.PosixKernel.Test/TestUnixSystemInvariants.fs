@@ -169,7 +169,11 @@ module TestUnixSystemInvariants =
                                                 InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 40000us
                                             ServerAddress =
                                                 InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us
-                                            Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet unlaunched.Machine
+                                            // No socket is the server end: it has closed.
+                                            Transfer =
+                                                TcpBufferSizing.newTransfer SocketDomain.Inet unlaunched.Machine
+                                                |> TcpTransfer.close ConnectionEnd.Server
+                                                |> snd
                                         }
                                     ]
                             NextConnectionId = connection
@@ -641,11 +645,36 @@ module TestUnixSystemInvariants =
         |> withTask None
         |> withSignals (inHandler 42)
         |> UnixSystem.checkInvariants
-        |> shouldEqual [ UnixSystemDefect.HandlerFramesWithoutTask 42 ]
+        |> shouldEqual
+            [
+                UnixSystemDefect.HandlerFramesWithoutTask 42
+                UnixSystemDefect.MaskWithoutTask 42
+            ]
 
         system
         |> withTask None
         |> withSignals (inHandler task)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+    [<Test>]
+    let ``a mask for a task the table does not hold is a defect`` () : unit =
+        let blocking (task : int) : SignalState<int, string> =
+            SignalState.initial SignalNumbering.Linux Set.empty
+            |> SignalState.changeMask
+                SignalMaskChange.Block
+                (SignalMask.ofSignals SignalNumbering.Linux (Set.singleton Signal.SIGINT))
+                task
+
+        system
+        |> withTask None
+        |> withSignals (blocking 42)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.MaskWithoutTask 42 ]
+
+        system
+        |> withTask None
+        |> withSignals (blocking task)
         |> UnixSystem.checkInvariants
         |> shouldEqual []
 

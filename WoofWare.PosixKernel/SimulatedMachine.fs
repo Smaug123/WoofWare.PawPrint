@@ -36,8 +36,8 @@ type SimulatedMachine<'Task, 'Handler when 'Task : comparison and 'Handler : equ
 /// `SimulatedMachine.checkInvariants` returns these.
 [<RequireQualifiedAccess>]
 type SimulatedMachineDefect<'Task> =
-    /// One of `UnixSystem.checkMachineInvariants`'s defects, read against every
-    /// process on the machine.
+    /// A defect in the clauses of `UnixSystem.checkInvariants` that concern
+    /// the machine, read against every process on it.
     | Machine of UnixSystemDefect<'Task>
     /// One of `UnixSystem.checkViewInvariants`'s defects, in the view of the
     /// process `processId`.
@@ -45,10 +45,11 @@ type SimulatedMachineDefect<'Task> =
     /// One of `FileDescriptorRegistry.checkDescriptorTableInvariants`'s
     /// defects, in the descriptor table of the process `processId`.
     | DescriptorTable of processId : ProcessId * defect : FileDescriptorRegistryDefect
-    /// One of `OpenFileTable.checkInvariants`'s defects, read against every
-    /// process's descriptor table: among them, a description whose count of
-    /// the descriptors naming it is not the number of descriptors in every
-    /// process that do.
+    /// A defect in the open file table's own rules, which
+    /// `FileDescriptorRegistry.checkInvariants` checks against one process's
+    /// descriptor table, read against every process's: among them, a
+    /// description whose count of the descriptors naming it is not the number
+    /// of descriptors in every process that do.
     | OpenFiles of defect : FileDescriptorRegistryDefect
     /// The process held under `key` has the process ID `recorded`. A view is
     /// focused by the key and written back by the process ID it records, so
@@ -95,7 +96,9 @@ type ProcessEndRefusal =
     /// Closing the process's descriptors releases an open file description
     /// this library will not release (`DescriptionReleaseRefusal`): so far,
     /// the last reference to a listener holding a connection another
-    /// process's open socket made, which a real kernel resets.
+    /// process's open socket made, which a real kernel resets, or to a
+    /// connected socket whose `SO_LINGER` would make its close reset the
+    /// connection or wait.
     | Release of DescriptionReleaseRefusal
 
 [<RequireQualifiedAccess>]
@@ -618,12 +621,12 @@ module SimulatedMachine =
         |> List.map (fun (processId, task, fired) -> (processId, task), fired)
 
     /// Every way `machine` fails to be a machine any kernel could be in: the
-    /// machine's clauses (`UnixSystem.checkMachineInvariants`) read against
-    /// every process on it; each process's view's clauses
+    /// clauses of `UnixSystem.checkInvariants` that concern the machine, read
+    /// against every process on it; each process's view's clauses
     /// (`UnixSystem.checkViewInvariants`) and its descriptor table's
     /// (`FileDescriptorRegistry.checkDescriptorTableInvariants`); the open
-    /// file table's (`OpenFileTable.checkInvariants`) read against every
-    /// process's descriptor table; and the clauses relating processes to one
+    /// file table's own rules, read against every process's descriptor table;
+    /// and the clauses relating processes to one
     /// another: each is held under its own process ID, and no two have one ID.
     ///
     /// The filesystem's own rules are `VirtualFileSystem.checkInvariants`'s,

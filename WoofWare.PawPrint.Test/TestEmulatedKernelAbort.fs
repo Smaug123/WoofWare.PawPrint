@@ -40,22 +40,37 @@ module TestEmulatedKernelAbort =
             |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
 
     [<Test>]
-    let ``an abort from inside a handler that blocks SIGABRT is refused`` () : unit =
-        // `abort(3)` unblocks SIGABRT before raising it, which would change the
-        // mask of the handler it is called from. The model holds a mask only as
-        // handler frames, and PawPrint never leaves one pushed between
-        // instructions, so this is a state only a test builds; the abort is
-        // refused rather than answered as if the signal were unblocked.
+    let ``an abort unblocks SIGABRT first, so a thread that blocks it still dies of it`` () : unit =
+        // `abort(3)` unblocks SIGABRT before raising it, whether the thread
+        // blocked it with a mask call or is inside a handler whose mask holds
+        // it.
         for platform in platforms do
-            let kernel =
-                kernelOn platform CoreDumps.Suppressed
-                |> SignalFrames.enter thread (Set.singleton Signal.SIGABRT)
+            let numbering = SimulatedUnixPlatform.signalNumbering platform
 
-            Assert.Throws (fun () ->
-                EmulatedKernel.abort thread kernel
-                |> ignore<EndedProcess<ThreadId, NativeSignalHandler>>
-            )
-            |> ignore<exn>
+            let block =
+                match numbering with
+                | SignalNumbering.Linux -> 0
+                | SignalNumbering.Darwin -> 1
+
+            let masked (kernel : EmulatedKernel) : EmulatedKernel =
+                match
+                    UnixSignal.pthreadSigmask
+                        thread
+                        block
+                        (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
+                        kernel.System
+                with
+                | Ok (_, system) -> EmulatedKernel.withUnix system kernel
+                | Error errno -> failwith $"pthread_sigmask failed with %O{errno}"
+
+            for blocked in [ masked ; SignalFrames.enter thread (Set.singleton Signal.SIGABRT) ] do
+                let kernel = kernelOn platform CoreDumps.Suppressed |> blocked
+
+                SignalMask.contains Signal.SIGABRT (SignalState.maskOf thread kernel.Signals)
+                |> shouldEqual true
+
+                (EmulatedKernel.abort thread kernel).Termination
+                |> shouldEqual (ProcessTermination.Signaled (Signal.SIGABRT, false))
 
     [<Test>]
     let ``an abort dumps core exactly when the process writes dumps`` () : unit =

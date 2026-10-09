@@ -68,10 +68,15 @@ module TestUnixTaskLifecycle =
 
     /// The per-task entries the process holds, each of which must name a live task.
     let private perTaskEntries (proc : UnixProcessState<int, string>) : string list =
-        let masks =
+        let frames =
             SignalState.tasksWithFrames proc.Signals
             |> Set.toList
             |> List.map (fun t -> $"frames of %d{t}")
+
+        let masks =
+            SignalState.tasksWithMasks proc.Signals
+            |> Set.toList
+            |> List.map (fun t -> $"mask of %d{t}")
 
         let pending =
             SignalState.pending proc.Signals
@@ -81,7 +86,7 @@ module TestUnixTaskLifecycle =
                 | ValueNone -> None
             )
 
-        masks @ pending
+        frames @ masks @ pending
 
     [<Test>]
     let ``a thread's own pending signals are discarded at its exit, and the process's stay`` () : unit =
@@ -331,6 +336,8 @@ module TestUnixTaskLifecycle =
         | Spawn of parent : int * child : int
         | Block of task : int * Signal
         | Unblock of task : int * Signal
+        /// `pthread_sigmask(SIG_BLOCK)` of the signal, by the task.
+        | Mask of task : int * Signal
         | EnqueueOnTask of task : int * Signal
         | EnqueueOnProcess of Signal
         | Park of task : int
@@ -374,6 +381,7 @@ module TestUnixTaskLifecycle =
                 4, Gen.zip task task |> Gen.map Op.Spawn
                 3, Gen.zip task signal |> Gen.map Op.Block
                 1, Gen.zip task signal |> Gen.map Op.Unblock
+                2, Gen.zip task signal |> Gen.map Op.Mask
                 3, Gen.zip task signal |> Gen.map Op.EnqueueOnTask
                 1, signal |> Gen.map Op.EnqueueOnProcess
                 1, task |> Gen.map Op.Park
@@ -400,7 +408,7 @@ module TestUnixTaskLifecycle =
             mutable ExitsKeepingProcessPending : int
             mutable RefusedParked : int
             mutable RefusedLeaderFirst : int
-            mutable SpawnsRefusedForAMask : int
+            mutable SpawnsInheritingAMask : int
             mutable RefusedLast : int
             mutable EndedByLastExit : int
             mutable EndedByExitGroup : int
@@ -411,10 +419,15 @@ module TestUnixTaskLifecycle =
     let private orphans (system : UnixSystem<int, string>) : string list =
         let tasks = system.Tasks |> Map.keys |> Set.ofSeq
 
-        let masks =
+        let frames =
             Set.difference (SignalState.tasksWithFrames system.Process.Signals) tasks
             |> Set.toList
             |> List.map (fun t -> $"frames of %d{t}")
+
+        let masks =
+            Set.difference (SignalState.tasksWithMasks system.Process.Signals) tasks
+            |> Set.toList
+            |> List.map (fun t -> $"mask of %d{t}")
 
         let pending =
             SignalState.pending system.Process.Signals
@@ -425,7 +438,7 @@ module TestUnixTaskLifecycle =
                 | ValueNone -> None
             )
 
-        masks @ pending
+        frames @ masks @ pending
 
     /// What the flavour keeps of an exit status, written out independently of
     /// `ExitStatus.ofExitArgument`.
@@ -474,26 +487,6 @@ module TestUnixTaskLifecycle =
             let after, model' =
                 match op with
                 | Op.Spawn (parent, child) when
-                    live parent
-                    && not (Set.contains parent model.Parked)
-                    && not (live child)
-                    && not (SignalMask.isEmpty (SignalState.maskOf parent system.Process.Signals))
-                    ->
-                    // A mask is held only as handler frames, which a new task
-                    // cannot inherit, so a spawn from a task that blocks
-                    // anything is refused. The refusal carries no system, so
-                    // the run goes on from this one: no task was added, and no
-                    // thread ID handed out.
-                    UnixTaskLifecycle.spawn parent child (CpuId 0) system
-                    |> shouldEqual (
-                        Error (
-                            SpawnRefusal.InheritedHandlerMask (parent, SignalState.maskOf parent system.Process.Signals)
-                        )
-                    )
-
-                    coverage.SpawnsRefusedForAMask <- coverage.SpawnsRefusedForAMask + 1
-                    system, model
-                | Op.Spawn (parent, child) when
                     live parent && not (Set.contains parent model.Parked) && not (live child)
                     ->
                     let after =
@@ -505,10 +498,16 @@ module TestUnixTaskLifecycle =
                             failwith
                                 $"spawning %d{child} from %d{parent} was refused: %s{SpawnRefusal.describe refusal}"
 
-                    // The child starts with its parent's mask, which is empty,
-                    // and nothing pending on it.
-                    SignalState.maskOf child after.Process.Signals |> shouldEqual SignalMask.empty
+                    // The child starts with its parent's mask, and nothing
+                    // pending on it.
+                    let parentMask = SignalState.maskOf parent system.Process.Signals
+
+                    SignalState.maskOf child after.Process.Signals |> shouldEqual parentMask
+                    SignalState.maskOf parent after.Process.Signals |> shouldEqual parentMask
                     SignalState.framesOf child after.Process.Signals |> shouldEqual []
+
+                    if not (SignalMask.isEmpty parentMask) then
+                        coverage.SpawnsInheritingAMask <- coverage.SpawnsInheritingAMask + 1
 
                     SignalState.pending after.Process.Signals
                     |> shouldEqual (SignalState.pending system.Process.Signals)
@@ -536,6 +535,23 @@ module TestUnixTaskLifecycle =
                     && not (List.isEmpty (SignalState.framesOf task system.Process.Signals))
                     ->
                     mapSignals (HandlerFrames.leave task) system, model
+                | Op.Mask (task, signal) when live task && not (Set.contains task model.Parked) ->
+                    let numbering = SignalState.numbering system.Process.Signals
+
+                    let block =
+                        match numbering with
+                        | SignalNumbering.Linux -> 0
+                        | SignalNumbering.Darwin -> 1
+
+                    match
+                        UnixSignal.pthreadSigmask
+                            task
+                            block
+                            (Some (SignalMask.ofSignals numbering (Set.singleton signal)))
+                            system
+                    with
+                    | Ok (_, after) -> after, model
+                    | Error errno -> failwith $"pthread_sigmask(SIG_BLOCK) failed with %O{errno}"
                 | Op.EnqueueOnTask (task, signal) when live task ->
                     mapSignals
                         (SignalState.enqueue
@@ -625,9 +641,15 @@ module TestUnixTaskLifecycle =
                         SignalState.tasksWithFrames signalsAfter
                         |> shouldEqual (Set.remove task (SignalState.tasksWithFrames signalsBefore))
 
+                        SignalState.tasksWithMasks signalsAfter
+                        |> shouldEqual (Set.remove task (SignalState.tasksWithMasks signalsBefore))
+
                         for other in Set.remove task model.Live do
                             SignalState.framesOf other signalsAfter
                             |> shouldEqual (SignalState.framesOf other signalsBefore)
+
+                            SignalState.maskOf other signalsAfter
+                            |> shouldEqual (SignalState.maskOf other signalsBefore)
 
                         SignalState.dispositions signalsAfter
                         |> shouldEqual (SignalState.dispositions signalsBefore)
@@ -653,7 +675,7 @@ module TestUnixTaskLifecycle =
                         }
                         |> shouldEqual system.Process
 
-                        if not (SignalState.maskOf task signalsBefore).IsEmpty then
+                        if not (SignalMask.isEmpty (SignalState.maskOf task signalsBefore)) then
                             coverage.ExitsDroppingAMask <- coverage.ExitsDroppingAMask + 1
 
                         if
@@ -677,6 +699,7 @@ module TestUnixTaskLifecycle =
                 | Op.Spawn _
                 | Op.Block _
                 | Op.Unblock _
+                | Op.Mask _
                 | Op.EnqueueOnTask _
                 | Op.Park _
                 | Op.Unpark _
@@ -716,7 +739,7 @@ module TestUnixTaskLifecycle =
                 ExitsKeepingProcessPending = 0
                 RefusedParked = 0
                 RefusedLeaderFirst = 0
-                SpawnsRefusedForAMask = 0
+                SpawnsInheritingAMask = 0
                 RefusedLast = 0
                 EndedByLastExit = 0
                 EndedByExitGroup = 0
@@ -728,15 +751,13 @@ module TestUnixTaskLifecycle =
         // Each floor sits at least four standard deviations below the count that
         // 1000 cases reach, so it fails when a generator change stops reaching the
         // path, not by chance. Measured over 30 runs per flavour, the rarest are
-        // `EndedWithParkedTask`, at a mean of 30 and a standard deviation of 7,
-        // and `ExitsDroppingAMask`, at 55 and 9: a task has a mask only while
-        // it is inside a handler, which takes a delivery to put it there.
+        // `EndedWithParkedTask`, at a mean of 30 and a standard deviation of 7.
         coverage.ExitsDroppingAMask |> shouldBeGreaterThan 20
         coverage.ExitsDroppingOwnPending |> shouldBeGreaterThan 20
         coverage.ExitsKeepingProcessPending |> shouldBeGreaterThan 20
         coverage.RefusedParked |> shouldBeGreaterThan 20
         coverage.RefusedLeaderFirst |> shouldBeGreaterThan 20
-        coverage.SpawnsRefusedForAMask |> shouldBeGreaterThan 20
+        coverage.SpawnsInheritingAMask |> shouldBeGreaterThan 20
         coverage.EndedByExitGroup |> shouldBeGreaterThan 50
         coverage.EndedWithParkedTask |> shouldBeGreaterThan 3
 
