@@ -1126,7 +1126,7 @@ module TestSyncBlockMonitor =
     // wait deadline plumbing
     //
     // `BlockedOnSyncBlockWait` carries an optional deadline. The
-    // scheduler in `Program.fireExpiredDeadlines` keys off this option to
+    // scheduler in `RunningProgram.fireExpiredDeadlines` keys off this option to
     // decide whether the thread is a `Monitor.Wait(obj, timeout)` waiter
     // (finite Some) or an untimed `Monitor.Wait(obj)` waiter (None).
     // -------------------------------------------------------------------
@@ -1377,7 +1377,7 @@ module TestSyncBlockMonitor =
 
     [<Test>]
     let ``fireTimeout in WaitQueue head-first order preserves FIFO across same-tick expiries`` () : unit =
-        // Pin the contract that `Program.fireExpiredDeadlines` must
+        // Pin the contract that `RunningProgram.fireExpiredDeadlines` must
         // respect: when two `Monitor.Wait` waiters on the same SyncBlock
         // expire in the same virtual-clock tick, firing them in
         // WaitQueue order gives ownership to the FIFO head. The bug we
@@ -1422,7 +1422,7 @@ module TestSyncBlockMonitor =
         // Companion to the test above: explicitly demonstrate that firing
         // in ThreadId order — which is what unsorted `Map.toSeq` dispatch
         // would do — violates FIFO. This is the bug
-        // `Program.fireExpiredDeadlines` must avoid by sorting its
+        // `RunningProgram.fireExpiredDeadlines` must avoid by sorting its
         // expired list by SyncBlock-WaitQueue position.
         let state = baseStateWithFrames () |> withRealThreads [ t1 ; t2 ]
         let addr, state = allocateHeapObject state
@@ -1623,7 +1623,7 @@ module TestSyncBlockMonitor =
     let ``fireAcquireTimeout fails loud when the thread is not in AcquireQueue`` () : unit =
         // t0 holds; t1 is NOT in the AcquireQueue. Reaching the fire path
         // for such a thread indicates a structural bug — the deadline-
-        // enumeration step in Program.fireExpiredDeadlines selects on
+        // enumeration step in RunningProgram.fireExpiredDeadlines selects on
         // BlockedOnSyncBlockAcquire status, so a thread in that status
         // must still be queued.
         let state = baseStateWithFrames () |> withRealThreads [ t0 ; t1 ]

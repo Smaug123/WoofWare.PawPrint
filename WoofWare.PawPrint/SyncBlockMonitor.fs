@@ -283,7 +283,7 @@ module SyncBlockMonitor =
     /// `Monitor.Wait(obj, timeout)` — mirroring CoreCLR's contract.
     ///
     /// Fails loud if `thread` is not in `addr`'s `WaitQueue`. The only
-    /// caller is `Program.fireExpiredDeadlines`, which enumerates
+    /// caller is `RunningProgram.fireExpiredDeadlines`, which enumerates
     /// `BlockedOnSyncBlockWait` statuses itself; a miss would mean a
     /// pulse/spurious wake raced our enumeration without flipping the
     /// status, or the deadline-firing path was reached for an untimed
@@ -349,7 +349,7 @@ module SyncBlockMonitor =
     /// `bool`: `Int32 0` ⇒ `false`, mirroring CoreCLR's contract.
     ///
     /// Fails loud if `thread` is not in `addr`'s `AcquireQueue`. The only
-    /// caller is `Program.fireExpiredDeadlines`, which selects threads
+    /// caller is `RunningProgram.fireExpiredDeadlines`, which selects threads
     /// in `BlockedOnSyncBlockAcquire (_, Some _)` status; by the time
     /// we are called, the thread is still parked, so it must still be
     /// in the queue. A miss means a structural invariant has been

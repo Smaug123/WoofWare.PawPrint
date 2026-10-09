@@ -43,7 +43,7 @@ namespace WoofWare.PawPrint
 /// `SystemNative_LowLevelMonitor_Wait` entry point; `Some ms` is the
 /// finite-deadline shape used by `TimedWait`. The deadline is recorded
 /// on the waiter's `BlockedOnMonitorWait` status, where the driver
-/// loop's deadline-firing pass (`Program.fireExpiredDeadlines`) picks
+/// loop's deadline-firing pass (`RunningProgram.fireExpiredDeadlines`) picks
 /// it up: when the clock reaches the deadline, `fireTimeout` (below)
 /// pulls the thread out of `WaitQueue` and routes it through the same
 /// reacquire path `signalRelease` uses, additionally rewriting the
@@ -418,7 +418,7 @@ module LowLevelMonitor =
     /// monitor — mirroring `pthread_cond_timedwait`'s contract.
     ///
     /// Fails loud if `thread` is not in `id`'s `WaitQueue`. The only
-    /// caller is `Program.fireExpiredDeadlines`, which enumerates
+    /// caller is `RunningProgram.fireExpiredDeadlines`, which enumerates
     /// `BlockedOnMonitorWait` statuses itself; a miss would mean a
     /// signal-wake raced our enumeration without flipping the status, or
     /// the deadline-firing path was reached for an untimed waiter — both

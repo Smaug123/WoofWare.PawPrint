@@ -868,7 +868,7 @@ module TestLowLevelMonitor =
     // ----- LowLevelMonitor.wait deadline plumbing -----
     //
     // `BlockedOnMonitorWait` carries an optional deadline. The
-    // scheduler in `Program.fireExpiredDeadlines` keys off this option to
+    // scheduler in `RunningProgram.fireExpiredDeadlines` keys off this option to
     // decide whether the thread is a TimedWait waiter (finite Some) or
     // an untimed `Wait` waiter (None). These tests pin that variant
     // payload.
@@ -1056,7 +1056,7 @@ module TestLowLevelMonitor =
 
     [<Test>]
     let ``fireTimeout in WaitQueue head-first order preserves FIFO across same-tick expiries`` () : unit =
-        // Pin the contract that `Program.fireExpiredDeadlines` must
+        // Pin the contract that `RunningProgram.fireExpiredDeadlines` must
         // respect: when two TimedWait waiters on the same monitor expire
         // in the same virtual-clock tick, firing them in WaitQueue order
         // gives ownership to the FIFO head. The bug we're guarding
@@ -1095,7 +1095,7 @@ module TestLowLevelMonitor =
         // Companion to the test above: explicitly demonstrate that firing
         // in ThreadId order — which is what the unsorted `Map.toSeq`
         // dispatch would do — violates FIFO. This is the bug
-        // `Program.fireExpiredDeadlines` must avoid by sorting its
+        // `RunningProgram.fireExpiredDeadlines` must avoid by sorting its
         // expired list by monitor-WaitQueue position. The assertion is
         // the *broken* outcome; if a future change accidentally drops
         // the sort, this test still passes but its sibling above starts
