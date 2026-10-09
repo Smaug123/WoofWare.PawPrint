@@ -11,7 +11,7 @@ type SignalPoll =
     /// A signal killed the process: one System.Native re-raised at its
     /// default, or the SIGABRT of an abort a native handler called. The state
     /// is the machine as it stood then, and `ended` the kernel's answer to the
-    /// signal, whose `Termination` is `ProcessTermination.Signaled`.
+    /// signal, whose `EndedProcess.termination` is `ProcessTermination.Signaled`.
     | ProcessKilled of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
 
 /// System.Native's signal handling, between two guest instructions: its native
@@ -249,7 +249,7 @@ module SignalDispatch =
             match outcome with
             | WriteOutcome.Returns (answer, _) -> $"%O{answer}"
             | WriteOutcome.ReturnsRaising (answer, raised, _) -> $"%O{answer}, raising %O{raised.Signal}"
-            | WriteOutcome.ProcessEnded ended -> $"the end of the process (%O{ended.Termination})"
+            | WriteOutcome.ProcessEnded ended -> $"the end of the process (%O{EndedProcess.termination ended})"
             | WriteOutcome.WouldBlock _ -> "that the write sleeps, the pipe being full"
             | WriteOutcome.Restarts _ -> "a restart"
 

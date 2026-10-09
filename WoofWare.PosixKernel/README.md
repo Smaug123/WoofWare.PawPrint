@@ -121,6 +121,8 @@ A call asleep in one process wakes for what another process's call does: a conne
 
 `SimulatedMachine.endProcess` ends a process on the machine, as the call that ended it (`exit_group`, the last thread's exit, a signal) answered it: it releases what only the process's calls held, then closes every descriptor in the order each kernel measurably does (Linux drops them lowest first and releases the last let go of first; Darwin closes them highest first), as `close` closes each: sending its peers their FINs, or resets where it left bytes unread, and letting its locks, pipes, listeners and event queues go, and removes the process. It refuses where a close would: a listener holding a connection another process's open socket made is not released, since what the reset does to that socket is not measured.
 
+A call that ends the process answers an `EndedProcess` instead of a system. `EndedProcess.termination` is how the process ended, which is what its parent's `wait` reads, and `EndedProcess.processId` is which process it was. Only such a call makes one, and `SimulatedMachine.endProcess` takes nothing else. A process alone on its machine is ended the same way, on the machine `SimulatedMachine.ofSystem (EndedProcess.endedIn ended)` makes of the view the process ended in.
+
 Nothing passes a descriptor from one process to another (no `fork`, no `SCM_RIGHTS`, and a launched pipe's other end is the client's), so no pipe, listener or epoll instance is shared, and `kill` of another process is refused.
 
 ### The syscalls

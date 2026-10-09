@@ -323,7 +323,7 @@ type WriteOutcome<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler 
     /// `EPIPE`.
     | ReturnsRaising of answer : 'Answer * signal : PendingSignal<'Task> * system : UnixSystem<'Task, 'Handler>
     /// The call generated a signal whose default action ended the process,
-    /// which never returns from it. `EndedProcess.Termination` names the
+    /// which never returns from it. `EndedProcess.termination` names the
     /// signal.
     | ProcessEnded of EndedProcess<'Task, 'Handler>
     /// The call did not return: it is a blocking write into a pipe, or to a

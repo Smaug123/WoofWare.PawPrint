@@ -117,7 +117,7 @@ type NonCanceledPosixSignal =
     | ContinuesWithErrno of IlMachineState * error : UnixError
     /// The shim re-raised the signal at its default, which killed the process;
     /// the state is the machine as it stood when the signal was re-raised, and
-    /// `ended` the kernel's answer to the re-raise, whose `Termination` is
+    /// `ended` the kernel's answer to the re-raise, whose `EndedProcess.termination` is
     /// `ProcessTermination.Signaled`.
     | Terminated of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
 
@@ -431,11 +431,11 @@ module NativeSystemNative =
             | Ok (Ok (KillOutcome.ProcessContinues after)) ->
                 NonCanceledPosixSignal.Continues (restored.MapKernel (EmulatedKernel.withUnix after))
             | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
-                match ended.Termination with
+                match EndedProcess.termination ended with
                 | ProcessTermination.Signaled _ -> NonCanceledPosixSignal.Terminated (restored, ended)
                 | ProcessTermination.Exited _ ->
                     failwith
-                        $"%s{operation}: re-raising %O{signal} ended the process with an exit status (%O{ended.Termination}), which only an exit can"
+                        $"%s{operation}: re-raising %O{signal} ended the process with an exit status (%O{EndedProcess.termination ended}), which only an exit can"
             | other ->
                 failwith
                     $"%s{operation}: re-raising %O{signal} under the %O{numbering} numbering at its default did not terminate or discard it: %O{other}"
@@ -1617,7 +1617,7 @@ module NativeSystemNative =
                     $"%s{operation}: writing the destination answered %A{answer} and raised %A{signal}, but a destination opened by path is never a pipe"
             | Ok (WriteOutcome.ProcessEnded ended) ->
                 failwith
-                    $"%s{operation}: writing the destination ended the process (%A{ended.Termination}), but a destination opened by path is never a pipe"
+                    $"%s{operation}: writing the destination ended the process (%A{EndedProcess.termination ended}), but a destination opened by path is never a pipe"
             | Ok (WriteOutcome.WouldBlock (condition, _)) ->
                 failwith
                     $"%s{operation}: writing the destination would sleep until %A{condition}, but a destination opened by path is never a pipe"
@@ -7365,14 +7365,14 @@ module NativeSystemNative =
                     let result, state = answered answer system state
                     returning result (effectOf system) state
                 | WriteOutcome.ProcessEnded ended ->
-                    match ended.Termination with
+                    match EndedProcess.termination ended with
                     | ProcessTermination.Signaled _ ->
                         ExecutionResult.SignalTerminated (state, ended)
                         |> NativeHandlerResult.ofExecutionResult
                         |> Some
                     | ProcessTermination.Exited _ ->
                         failwith
-                            $"%s{operation}: fd %d{fd}: a write ended the process with an exit status (%O{ended.Termination}), which only an exit can"
+                            $"%s{operation}: fd %d{fd}: a write ended the process with an exit status (%O{EndedProcess.termination ended}), which only an exit can"
 
             let noEffect (_ : UnixSystem<ThreadId, NativeSignalHandler>) = StepEffect.NoEffect
 

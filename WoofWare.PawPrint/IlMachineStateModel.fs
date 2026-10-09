@@ -468,7 +468,7 @@ type ExecutionResult =
     /// cancel. A parent's `wait` would report the process as killed by the
     /// signal, with the core flag set iff the signal dumped core. Carries no
     /// `ThreadId` because the whole process dies, not one thread. `ended` is
-    /// the kernel's answer to the `kill` that killed it: its `Termination` is
+    /// the kernel's answer to the `kill` that killed it: its `EndedProcess.termination` is
     /// `ProcessTermination.Signaled`.
     | SignalTerminated of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
     | Stepped of IlMachineState * WhatWeDid * StepEffect

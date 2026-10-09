@@ -399,7 +399,7 @@ module SimulatedMachine =
     /// it.
     ///
     /// What a real kernel does at exit, where another process can see it.
-    /// The process's tasks are gone already (`EndedProcess.Machine`), and with
+    /// The process's tasks are gone already, and with
     /// them the holds their calls in flight had; any description only those
     /// calls held, or that the call which ended the process let go of as it
     /// returned, is released now. Then every descriptor of the process is
@@ -424,7 +424,7 @@ module SimulatedMachine =
     /// was.
     ///
     /// Fails loudly, as `unfocus` does, if the view the process ended in
-    /// (`EndedProcess.EndedIn`) is not a view of `machine` as it stands.
+    /// (`EndedProcess.endedIn`) is not a view of `machine` as it stands.
     let endProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (ended : EndedProcess<'Task, 'Handler>)
         (machine : SimulatedMachine<'Task, 'Handler>)

@@ -287,7 +287,7 @@ module MultiProgram =
             match SimulatedMachine.endProcess ended driver.Machine with
             | Error refusal ->
                 failwith
-                    $"MultiProgram: process %O{pid} ended (%O{ended.Termination}), and the machine would not close what it held: %s{ProcessEndRefusal.describe refusal}"
+                    $"MultiProgram: process %O{pid} ended (%O{EndedProcess.termination ended}), and the machine would not close what it held: %s{ProcessEndRefusal.describe refusal}"
             | Ok (_, remaining) -> remaining
 
         let endedRuns = Map.add pid runEnd driver.Roster.Ended

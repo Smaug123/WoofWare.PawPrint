@@ -1,34 +1,66 @@
 namespace WoofWare.PosixKernel
 
-/// A process that has ended, and how.
+/// A process that has ended, and how. Only a syscall that ends the process makes
+/// one. `EndedProcess.termination` and `EndedProcess.processId` read it, and
+/// `SimulatedMachine.endProcess` ends the process on its machine, closing its
+/// descriptors.
 ///
 /// Not a `UnixSystem`: it has no tasks, so nothing can make a syscall in it, and no
 /// function that answers one accepts it.
 type EndedProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
-    {
-        /// How the process ended, which is what its parent's `wait` reads.
-        Termination : ProcessTermination
-        /// The machine the process ran on, as the process's end left it: its
-        /// tasks' thread IDs are no longer live, the holds its tasks' calls
-        /// in flight had on open file descriptions are let go of, so is the
-        /// hold its current directory had on its inode, and its process ID is
-        /// no live process's (no `wait` is modelled, so nothing keeps it).
-        ///
-        /// Its descriptors are not closed, so every description they name is
-        /// still counted as named, and a description no descriptor named,
-        /// which only a call held, is still in the table. On a
-        /// `SimulatedMachine`, `SimulatedMachine.endProcess` closes them, as a
-        /// real kernel does at exit, where another process can see it.
-        Machine : UnixMachineState
-        /// The process's own state as it stood when it ended. It holds nothing for
-        /// any task: no signal mask, and no signal pending on one task alone.
-        FinalProcess : UnixProcessState<'Task, 'Handler>
-        /// The process as the call that ended it found it, tasks and all: what
-        /// `SimulatedMachine.endProcess` checks against the machine it ends the
-        /// process on, as `SimulatedMachine.unfocus` checks a view, and reads
-        /// the calls the process's tasks had in flight from.
-        EndedIn : UnixSystem<'Task, 'Handler>
-    }
+    internal
+        {
+            /// How the process ended, which is what its parent's `wait` reads.
+            Termination : ProcessTermination
+            /// The machine the process ran on, as the process's end left it: its
+            /// tasks' thread IDs are no longer live, the holds its tasks' calls
+            /// in flight had on open file descriptions are let go of, so is the
+            /// hold its current directory had on its inode, and its process ID is
+            /// no live process's (no `wait` is modelled, so nothing keeps it).
+            ///
+            /// Its descriptors are not closed, so every description they name is
+            /// still counted as named, and a description no descriptor named,
+            /// which only a call held, is still in the table. On a
+            /// `SimulatedMachine`, `SimulatedMachine.endProcess` closes them, as a
+            /// real kernel does at exit, where another process can see it.
+            Machine : UnixMachineState
+            /// The process's own state as it stood when it ended. It holds nothing for
+            /// any task: no signal mask, and no signal pending on one task alone.
+            FinalProcess : UnixProcessState<'Task, 'Handler>
+            /// The process as the call that ended it found it, tasks and all: what
+            /// `SimulatedMachine.endProcess` checks against the machine it ends the
+            /// process on, as `SimulatedMachine.unfocus` checks a view, and reads
+            /// the calls the process's tasks had in flight from.
+            EndedIn : UnixSystem<'Task, 'Handler>
+        }
+
+[<RequireQualifiedAccess>]
+module EndedProcess =
+
+    /// How the process ended, which is what its parent's `wait` reads.
+    let termination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (ended : EndedProcess<'Task, 'Handler>)
+        : ProcessTermination
+        =
+        ended.Termination
+
+    /// The ID of the process that ended. The machine no longer counts it as
+    /// any live process's.
+    let processId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (ended : EndedProcess<'Task, 'Handler>)
+        : ProcessId
+        =
+        ended.FinalProcess.ProcessId
+
+    /// The process as the call that ended it found it, tasks and all: a view of
+    /// the machine the process ran on, from before it ended. For a process
+    /// alone on its machine, `SimulatedMachine.ofSystem` of it is the machine
+    /// to end the process on with `SimulatedMachine.endProcess`.
+    let endedIn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (ended : EndedProcess<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        ended.EndedIn
 
 /// What a syscall that can end the whole process did.
 [<RequireQualifiedAccess>]
