@@ -130,6 +130,7 @@ class LockAndPortWaiters
         | ParkedSyscall.KqueuePoll _
         | ParkedSyscall.Accept _
         | ParkedSyscall.PipeRead _
+        | ParkedSyscall.SigSuspend
         | ParkedSyscall.PipeWrite _ -> false
 
     /// The exit code a cleanly terminated guest latched.

@@ -1,0 +1,36 @@
+# Darwin 27.0.0 arm64, uid 501
+# flavour darwin; HUP=1 INT=2 QUIT=4 ILL=8 USR1=20000000 USR2=40000000 TERM=4000 URG=8000 CONT=40000
+during to=thread woke-after-TERM=0 woke-after-USR2=0 helper-mask=fffefeff ret=-1 errno=4 after=60000001 at-return=2 ran=USR1(saved=60000001,in=60004000),TERM(saved=60000001,in=60004001) took=>=50ms end=exit0
+during to=process woke-after-TERM=0 woke-after-USR2=0 helper-mask=fffefeff ret=-1 errno=4 after=60000001 at-return=2 ran=USR1(saved=60000001,in=60004000),TERM(saved=60000001,in=60004001) took=>=50ms end=exit0
+handler flags=0 ret=-1 errno=4 after=40000001 at-return=1 ran=USR1(saved=40000001,in=20000006) took=>=50ms end=exit0
+handler flags=NODEFER ret=-1 errno=4 after=40000001 at-return=1 ran=USR1(saved=40000001,in=6) took=>=50ms end=exit0
+handler flags=RESTART ret=-1 errno=4 after=40000001 at-return=1 ran=USR1(saved=40000001,in=20000006) took=>=50ms end=exit0
+pending to=thread pending-before=20000000 ret=-1 errno=4 after=20000001 at-return=1 ran=USR1(saved=20000001,in=20000002) took=<50ms end=exit0
+pending to=process pending-before=20000000 ret=-1 errno=4 after=20000001 at-return=1 ran=USR1(saved=20000001,in=20000002) took=<50ms end=exit0
+two to=thread pending-before=20004008 ret=-1 errno=4 after=20004009 at-return=3 ran=USR1(saved=400a,in=2000400a),TERM(saved=a,in=400a),ILL(saved=20004009,in=a) took=<50ms end=exit0
+two to=process pending-before=20004008 ret=-1 errno=4 after=20004009 at-return=3 ran=USR1(saved=400a,in=2000400a),TERM(saved=a,in=400a),ILL(saved=20004009,in=a) took=<50ms end=exit0
+ignored to=thread woke-after-USR2=0 woke-after-URG=0 ret=-1 errno=4 after=1 at-return=1 ran=USR1(saved=1,in=20000000) took=>=50ms end=exit0
+ignored to=process woke-after-USR2=0 woke-after-URG=0 ret=-1 errno=4 after=1 at-return=1 ran=USR1(saved=1,in=20000000) took=>=50ms end=exit0
+stale URG SIG_DFL pending-before=0 woke-before-handler=0 woke-after-handler=0 ret=-1 errno=4 after=8001 at-return=1 ran=USR1(saved=8001,in=20000000) took=>=50ms pending-after=0 end=exit0
+stale USR2 SIG_IGN pending-before=0 woke-before-handler=0 woke-after-handler=0 ret=-1 errno=4 after=40000001 at-return=1 ran=USR1(saved=40000001,in=20000000) took=>=50ms pending-after=0 end=exit0
+stale CONT SIG_DFL pending-before=40000 woke-before-handler=0 woke-after-handler=0 ret=-1 errno=4 after=40001 at-return=2 ran=USR1(saved=40000,in=20040000),CONT(saved=40001,in=40000) took=>=50ms pending-after=0 end=exit0
+stale CONT SIG_IGN pending-before=40000 woke-before-handler=0 woke-after-handler=0 ret=-1 errno=4 after=40001 at-return=2 ran=USR1(saved=40000,in=20040000),CONT(saved=40001,in=40000) took=>=50ms pending-after=0 end=exit0
+term during to=thread end=signal15
+term during to=process end=signal15
+term pending-unblocked pending-before=4000 end=signal15
+kill temp=all end=signal9
+killstop temp=all-but-USR1 ret=-1 errno=4 after=0 at-return=1 ran=USR1(saved=0,in=fffefeff) took=>=50ms end=exit0
+stopcont STOP cont-handler=0 stopped=1 returned-after-cont=0 ret=-1 errno=4 after=1 at-return=1 ran=USR1(saved=1,in=20000002) took=>=50ms end=exit0
+stopcont STOP cont-handler=1 stopped=1 returned-after-cont=1 ret=-1 errno=4 after=1 at-return=1 ran=CONT(saved=1,in=40002) took=>=50ms end=exit0
+spread SIG_BLOCK TERM helper-block-ret=0 helper-mask=fffefeff ret=-1 errno=4 after=1 at-return=1 ran=USR1(saved=1,in=20004002) took=>=50ms end=exit0
+spread SIG_UNBLOCK HUP helper-unblock-ret=0 helper-mask=fffefefe ret=-1 errno=4 after=1 at-return=1 ran=USR1(saved=1,in=20000002) took=>=50ms end=exit0
+pause-during to=thread woke-after-USR2=0 helper-mask=fffefeff ret=-1 errno=4 after=40000001 at-return=1 ran=USR1(saved=40000001,in=60000001) took=>=50ms end=exit0
+pause-during to=process woke-after-USR2=0 helper-mask=fffefeff ret=-1 errno=4 after=40000001 at-return=1 ran=USR1(saved=40000001,in=60000001) took=>=50ms end=exit0
+pause-handler flags=0 ret=-1 errno=4 after=40000001 at-return=1 ran=USR1(saved=40000001,in=60000005) took=>=50ms end=exit0
+pause-handler flags=NODEFER ret=-1 errno=4 after=40000001 at-return=1 ran=USR1(saved=40000001,in=40000005) took=>=50ms end=exit0
+pause-handler flags=RESTART ret=-1 errno=4 after=40000001 at-return=1 ran=USR1(saved=40000001,in=60000005) took=>=50ms end=exit0
+pause-ignored to=thread woke-after-USR2=0 woke-after-URG=0 ret=-1 errno=4 after=1 at-return=1 ran=USR1(saved=1,in=20000001) took=>=50ms end=exit0
+pause-stopcont STOP cont-handler=0 stopped=1 returned-after-cont=0 ret=-1 errno=4 after=1 at-return=1 ran=USR1(saved=1,in=20000001) took=>=50ms end=exit0
+pause-stopcont STOP cont-handler=1 stopped=1 returned-after-cont=1 ret=-1 errno=4 after=1 at-return=1 ran=CONT(saved=1,in=40001) took=>=50ms end=exit0
+pause-spread SIG_BLOCK TERM helper-block-ret=0 helper-mask=fffefeff ret=-1 errno=4 after=1 at-return=1 ran=USR1(saved=1,in=20004001) took=>=50ms end=exit0
+pause-spread SIG_UNBLOCK HUP helper-unblock-ret=0 helper-mask=fffefefe ret=-1 errno=4 after=1 at-return=1 ran=USR1(saved=1,in=20000000) took=>=50ms end=exit0
