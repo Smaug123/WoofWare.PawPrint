@@ -187,6 +187,131 @@ A woken task finishes its call through the family's finishing function (`UnixDes
 
 A parked call holds the open file descriptions it waits on (`ParkedSyscall.descriptions`), as a real one holds a reference to each file: a description goes when no descriptor names it and no call holds it, so one closed under a sleeping call goes when the call returns.
 
+## What the kernel leaves to the client
+
+A running process relies on more than its kernel, and this library is only the kernel.
+Each part below is something a real process has which this library does not do, so the client must.
+For each part, this section says what the part is, why it belongs to the client, and how the client and the library meet at that line.
+Where a part was placed by a decision, the decision is dated; where it is only how things stand today, that is said instead.
+
+### User memory
+
+**What.** The process's address space, and the calls that change it: `mmap`, `munmap`, `mprotect`, `brk`.
+A thread's stack and its thread-local storage are part of it.
+
+**Why the client's.** The client runs the process's code, so it already holds every byte that code loads and stores.
+A second copy in the kernel would have to agree with the client's after every store.
+A syscall needs only the bytes it moves, and the client can hand those over.
+
+**Where they meet.** This library never reads or writes user memory.
+A call that moves bytes takes them or returns them: `UnixReadWrite.read` returns the bytes it read, for the client to copy into the caller's buffer, and for a `write` the client asks `UnixReadWrite.admitWrite` how many bytes the call takes, copies that many out, and passes them to `UnixReadWrite.write`.
+Where a real kernel would check a buffer's address, the client describes the address as a `UserBuffer` (`Unmapped`, `Mapped`, `Opaque` or `Addressless`), and the library decides whether and when the call answers EFAULT, against the limit set by `UnixBootImage.withUserAddressLimit`.
+A pointer that the client's own foreign-function layer dereferences before making the call is the client's to answer for, since no kernel is involved.
+
+A mapping of a file is not modelled, and a client should refuse one rather than copy the file's bytes into memory of its own.
+Its pages are the file's bytes, and it holds the file's open file description as a descriptor does, so it crosses this line: a private copy would not see later writes through a descriptor, and the library would not count the mapping as holding the file open.
+Nothing here maps a file.
+
+### Blocks inside the process
+
+**What.** A thread that waits without asking the kernel to watch a descriptor or a clock: Linux's `futex`, Darwin's `__psynch_*` and `__ulock_*` calls, and the mutexes, condition variables and timed waits that the C library builds on them.
+
+**Why the client's, for now.** A `futex` wait is keyed by a user address and compares a word of user memory, which is the client's (see above).
+So today the client keeps these blocks itself.
+The long-term plan (#1726) is to model `futex` and `__psynch` in the kernel, so that every block happens there and the client has no blocked tasks of its own.
+That is larger work, separate from the rest, and not yet scheduled.
+
+**Where they meet.** A task the client holds blocked is parked in no call this library knows of, so as far as the library knows it could run.
+The client removes such tasks from the set this library would call runnable (see the next part).
+`UnixWait.wakes` decides only the parks this library recorded: whether a signal or a deadline ends one of the client's own blocks is the client's to decide.
+When nothing can run, the client advances the clock to the earlier of its own deadlines and those `UnixWait.deadlines` reports.
+
+### Which task runs
+
+**What.** Choosing the next task to run, and on which processor.
+
+**Why the client's.** Decided 2026-10-03 (#1726):
+
+> The kernel never chooses which task runs. It answers which tasks could run (not parked in the kernel; the client subtracts its own blocked threads), and records what the client says happened.
+
+Choosing is policy, and a client that explores schedules, or a harness that steers one from outside, must own it; the kernel keeps only the facts a choice is made from.
+
+**Where they meet.** `UnixSystem.tasks` lists the process's tasks, and `UnixTaskState.park` says which are parked in a syscall.
+The client keeps the set of tasks it holds asleep and passes it to `UnixWait.wakes`, which says which may wake now; it decides when a woken task finishes its call.
+A task's processor is named when the task is created (`ProcessLaunch.create`, `UnixTaskLifecycle.spawn`), and `UnixTaskTable.cpuOf` reports it.
+Not built yet: recording the client's reports of a dispatch ("task T is now running on processor c") and of the processor time a task used, and a default policy (round-robin, and PCT, probabilistic concurrency testing) as a module that knows nothing of the kernel.
+All three are planned in #1726.
+
+### When time passes
+
+**What.** How far the clock moves, and when.
+
+**Why the client's.** Only the client knows how long the process's code took to run, and how fast its simulated machine is.
+Nothing in this library moves the clock on its own.
+Decided 2026-10-07 (#1726): `UnixSystem.advanceClock` stays a function from one system to the next, with no other result.
+If clock-driven signals (`alarm`, `setitimer`, `timer_create`) are modelled later, an expiry will be written into the state as a pending signal, which the client finds through `UnixWait.wakes` as it finds a passed deadline.
+
+**Where they meet.** The client calls `UnixSystem.advanceClock` between syscalls, reads the time with `UnixSystem.nanosecondsSinceBoot`, and with nothing runnable asks `UnixWait.deadlines` how far it may jump.
+An administrator's write of Linux's `kernel.pid_max` is the outside world acting on the machine in the same way: `UnixSystem.writePidMaxSysctl`.
+
+### The errno slot
+
+**What.** The per-thread `errno` that a C program reads after a failed call.
+
+**Why the client's.** On a real Unix, `errno` lives in the C library rather than in the kernel: the kernel returns an error code, and the syscall wrapper stores it.
+The same goes for the C library's other state in user space, such as the copy of the environment that `setenv` and `putenv` change.
+
+**Where they meet.** A failed call answers `Failed` with a `UnixError`.
+The client converts it to a number with `UnixError.toRawErrnoUnder` and stores it wherever its C library would.
+The environment the library holds is the one the process was started with (`ProcessLaunch.withEnvironment`).
+
+### Running a signal handler
+
+**What.** Running the handler's code on the task, on some stack, with the arguments it expects.
+
+**Why the client's.** The handler is the process's code, and the client runs that code.
+The library never learns what a handler is: it stores whatever the client passes as `'Handler` and hands it back.
+
+**Where they meet.** Before a task runs its own code, the client asks `UnixSignal.onReturnToUser`.
+A `SignalDelivery.RunHandlers` answer is the frames the kernel pushed, innermost first, each with the signal, the disposition and the mask to restore.
+The client runs each handler, and when one returns it calls `UnixSignal.sigreturn` with that frame and asks `onReturnToUser` again.
+A `SignalCatch` holds only the flags that change what the kernel does (`SA_NODEFER`, `SA_RESETHAND`, `SA_RESTART`); `SA_SIGINFO` and `SA_ONSTACK` choose how and on which stack the client calls its handler, so a client that honours them keeps them with its `'Handler`.
+A handler that leaves by `siglongjmp` instead of returning has no operation yet.
+
+A signal whose default stops the process is reported (`KillOutcome.ProcessStopped`, `SignalDelivery.DefaultStop`) for the client to act on.
+The library holds no stopped state, and nothing here continues a stopped process, so a client should refuse a stop rather than carry on as if the process were still running.
+
+### The alternate signal stack
+
+**What.** `sigaltstack`, which names a region of memory for handlers to run on.
+
+**Why the client's.** The region is user memory, and the answers `sigaltstack` gives (`SS_ONSTACK`, and `EPERM` for changing the stack while on it) depend on the user stack pointer, which only the client knows.
+If a client needs it answered, a form that takes the client's stack pointer as an argument would be small.
+
+**Where they meet.** Nowhere yet: the library has no `sigaltstack`, and runs no handler, so it never chooses a stack.
+
+### Starting and ending processes
+
+**What.** Creating a process, choosing the program it runs, and collecting its exit status.
+
+**Why the client's.** There is no `fork`, `exec` or `wait`.
+Loading and running a program is the client's, as running any of the process's code is, and `fork`'s copy of the address space would be a copy of user memory.
+The descriptor table, signal dispositions, mask and credentials that `fork` and `exec` pass on are the kernel's, so those calls would be the library's to model; they are not modelled, and a client should refuse a process's request to create or replace a process.
+
+**Where they meet.** The client starts a process with `SimulatedMachine.launch` and a `ProcessLaunch`, which sets up what a launcher fixes before `exec`; the kernel chooses the process ID.
+When a call ends a process, its answer is an `EndedProcess`, which the client passes to `SimulatedMachine.endProcess`: that closes the process's descriptors, removes it, and answers how it ended, as a `ProcessTermination` holding the status a parent's `wait` would read.
+No `wait` is modelled, so nothing keeps the ended process for a parent to reap, and reporting its status is the client's.
+
+### The far end of a launched pipe
+
+**What.** Whatever sits outside the simulated machine at the other end of a process's launch descriptors, such as its standard streams.
+
+**Why the client's.** It is the outside world, which the client stands in for.
+The pipe itself is the kernel's: its capacity, atomic writes and `EPIPE` are measured rules that the library holds and tests.
+So the client chooses only what its end does: supply bytes (`LaunchDescriptor.Supplied`), read every byte (`LaunchDescriptor.Drained`), or be closed already (`LaunchDescriptor.Gone`).
+
+**Where they meet.** The client reads what the process wrote from `UnixSystem.delivered`.
+
 ## Flavours and divergence from host platforms
 
 WoofWare.PosixKernel's behaviour does not depend on the host platform; indeed, it probably works on Windows.
