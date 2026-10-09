@@ -208,8 +208,8 @@ A call that moves bytes takes them or returns them: `UnixReadWrite.read` returns
 Where a real kernel would check a buffer's address, the client describes the address as a `UserBuffer` (`Unmapped`, `Mapped`, `Opaque` or `Addressless`), and the library decides whether and when the call answers EFAULT, against the limit set by `UnixBootImage.withUserAddressLimit`.
 A pointer that the client's own foreign-function layer dereferences before making the call is the client's to answer for, since no kernel is involved.
 
-Not yet decided: a mapping of a file.
-Its pages are the file's bytes, and it holds the file's open file description as a descriptor does, so it would cross this line.
+A mapping of a file is not modelled, and a client should refuse one rather than copy the file's bytes into memory of its own.
+Its pages are the file's bytes, and it holds the file's open file description as a descriptor does, so it crosses this line: a private copy would not see later writes through a descriptor, and the library would not count the mapping as holding the file open.
 Nothing here maps a file.
 
 ### Blocks inside the process
@@ -279,14 +279,13 @@ A `SignalCatch` holds only the flags that change what the kernel does (`SA_NODEF
 A handler that leaves by `siglongjmp` instead of returning has no operation yet.
 
 A signal whose default stops the process is reported (`KillOutcome.ProcessStopped`, `SignalDelivery.DefaultStop`) for the client to act on.
-The library holds no stopped state, and nothing here continues a stopped process; whether that should be the kernel's is not decided.
+The library holds no stopped state, and nothing here continues a stopped process, so a client should refuse a stop rather than carry on as if the process were still running.
 
 ### The alternate signal stack
 
 **What.** `sigaltstack`, which names a region of memory for handlers to run on.
 
-**Why the client's.** This is the current position (#1726), not a confirmed decision.
-The region is user memory, and the answers `sigaltstack` gives (`SS_ONSTACK`, and `EPERM` for changing the stack while on it) depend on the user stack pointer, which only the client knows.
+**Why the client's.** The region is user memory, and the answers `sigaltstack` gives (`SS_ONSTACK`, and `EPERM` for changing the stack while on it) depend on the user stack pointer, which only the client knows.
 If a client needs it answered, a form that takes the client's stack pointer as an argument would be small.
 
 **Where they meet.** Nowhere yet: the library has no `sigaltstack`, and runs no handler, so it never chooses a stack.
@@ -297,7 +296,7 @@ If a client needs it answered, a form that takes the client's stack pointer as a
 
 **Why the client's.** There is no `fork`, `exec` or `wait`.
 Loading and running a program is the client's, as running any of the process's code is, and `fork`'s copy of the address space would be a copy of user memory.
-The descriptor table, signal dispositions and credentials that `fork` and `exec` pass on are the kernel's, and whether to model those calls is not decided.
+The descriptor table, signal dispositions, mask and credentials that `fork` and `exec` pass on are the kernel's, so those calls would be the library's to model; they are not modelled, and a client should refuse a process's request to create or replace a process.
 
 **Where they meet.** The client starts a process with `SimulatedMachine.launch` and a `ProcessLaunch`, which sets up what a launcher fixes before `exec`; the kernel chooses the process ID.
 When a call ends a process, its answer is an `EndedProcess`, which the client passes to `SimulatedMachine.endProcess`: that closes the process's descriptors, removes it, and answers how it ended, as a `ProcessTermination` holding the status a parent's `wait` would read.
