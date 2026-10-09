@@ -25,14 +25,14 @@ type SymlinkRules =
 
 /// What `symlink(2)` should do, now that the link's pathname has resolved.
 [<RequireQualifiedAccess>]
-type SymlinkVerdict =
+type internal SymlinkVerdict =
     /// Answer the caller with this errno.
     | Refuse of error : UnixError
     /// Bind a new link under `name` in `directory`.
     | Create of directory : InodeNumber * name : DirectoryEntryName
 
 [<RequireQualifiedAccess>]
-module SymlinkRules =
+module internal SymlinkRules =
 
     /// Decide what a `symlink(2)` owes, given how its link's pathname resolved.
     ///

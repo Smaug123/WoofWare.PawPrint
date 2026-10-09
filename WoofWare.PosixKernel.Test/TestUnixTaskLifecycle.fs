@@ -141,6 +141,7 @@ module TestUnixTaskLifecycle =
             |> shouldEqual (Set.singleton 2)
 
             SignalState.maskOf 2 after.Process.Signals
+            |> SignalMask.signals
             |> shouldEqual (Set.singleton Signal.SIGUSR2)
 
             UnixSystem.checkInvariants after |> shouldEqual []
@@ -476,7 +477,7 @@ module TestUnixTaskLifecycle =
                     live parent
                     && not (Set.contains parent model.Parked)
                     && not (live child)
-                    && not (Set.isEmpty (SignalState.maskOf parent system.Process.Signals))
+                    && not (SignalMask.isEmpty (SignalState.maskOf parent system.Process.Signals))
                     ->
                     // A mask is held only as handler frames, which a new task
                     // cannot inherit, so a spawn from a task that blocks
@@ -506,7 +507,7 @@ module TestUnixTaskLifecycle =
 
                     // The child starts with its parent's mask, which is empty,
                     // and nothing pending on it.
-                    SignalState.maskOf child after.Process.Signals |> shouldEqual Set.empty
+                    SignalState.maskOf child after.Process.Signals |> shouldEqual SignalMask.empty
                     SignalState.framesOf child after.Process.Signals |> shouldEqual []
 
                     SignalState.pending after.Process.Signals

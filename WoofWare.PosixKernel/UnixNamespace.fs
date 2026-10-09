@@ -252,7 +252,7 @@ module ReadDirectoryRefusal =
 ///
 /// See `RenameWalkOrder`, whose two cases these mirror.
 [<RequireQualifiedAccess>]
-type RenameSourceProgress =
+type internal RenameSourceProgress =
     /// The source's parent is walked and its final component not yet looked up:
     /// Linux, which walks both parents before either final lookup.
     | ParentWalked of parent : PausedResolution

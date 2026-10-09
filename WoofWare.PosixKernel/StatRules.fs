@@ -1,7 +1,7 @@
 namespace WoofWare.PosixKernel
 
 /// The flag word of `fstatat(2)`, once this kernel has screened it.
-type StatArguments =
+type internal StatArguments =
     {
         /// Whether a symbolic link in the final position is followed:
         /// `AT_SYMLINK_NOFOLLOW` says not.
@@ -13,7 +13,7 @@ type StatArguments =
 
 /// What screening `fstatat(2)`'s flag word came to.
 [<RequireQualifiedAccess>]
-type StatScreen =
+type internal StatScreen =
     /// The word is one this kernel accepts, and this is what it says.
     | Screened of StatArguments
     /// The call fails with this errno before its path is copied in.
@@ -23,7 +23,7 @@ type StatScreen =
     | Unmodelled of flags : int
 
 [<RequireQualifiedAccess>]
-module StatRules =
+module internal StatRules =
 
     // `<fcntl.h>`'s numbering, measured by `at-dirfd.c` (FLAGS) on Linux
     // 6.18.5 and Darwin 27.0.

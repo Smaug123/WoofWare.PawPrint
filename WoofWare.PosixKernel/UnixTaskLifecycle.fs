@@ -86,7 +86,7 @@ type SpawnRefusal<'Task> =
     /// starts with its creator's mask, but this library holds a mask only as a
     /// task's handler frames, and a new task has none, so it cannot give the new
     /// task that mask.
-    | InheritedHandlerMask of parent : 'Task * mask : Set<Signal>
+    | InheritedHandlerMask of parent : 'Task * mask : SignalMask
     /// Unmeasured. Darwin's 64-bit thread ID counter has reached the top of its
     /// range, and what Darwin does when a thread is created then has not been
     /// measured.
@@ -99,9 +99,7 @@ module SpawnRefusal =
     let describe<'Task> (refusal : SpawnRefusal<'Task>) : string =
         match refusal with
         | SpawnRefusal.InheritedHandlerMask (parent, mask) ->
-            let signals = mask |> Seq.map string |> String.concat ", "
-
-            $"task %O{parent} creates a thread from inside a signal handler, whose mask (%s{signals}) the new thread would inherit; this library holds a mask only as a task's handler frames, so it cannot give the new thread one"
+            $"task %O{parent} creates a thread from inside a signal handler, whose mask (%O{mask}) the new thread would inherit; this library holds a mask only as a task's handler frames, so it cannot give the new thread one"
         | SpawnRefusal.ThreadIdCounterExhausted ->
             "Darwin's thread ID counter has reached the top of its 64-bit range, and what Darwin does when a thread is created then has not been measured"
 
@@ -261,7 +259,7 @@ module UnixTaskLifecycle =
         // creator has when that has no frame.
         let mask = SignalState.maskOf parent system.Process.Signals
 
-        if not (Set.isEmpty mask) then
+        if not (SignalMask.isEmpty mask) then
             Error (SpawnRefusal.InheritedHandlerMask (parent, mask))
         else
 

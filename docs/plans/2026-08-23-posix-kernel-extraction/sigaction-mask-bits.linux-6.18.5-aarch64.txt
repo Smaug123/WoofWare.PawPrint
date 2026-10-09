@@ -1,0 +1,9 @@
+# ldd (Debian GLIBC 2.41-12+deb13u4) 2.41
+# Linux 6.18.5 aarch64, uid 0
+# flavour linux USR1 bit 200
+libc sa_mask=ffffffffffffffff ret=0 stored=fffffffffffbfeff in-handler=fffffffffffbfeff after=0 end=exit0
+libc sa_mask=80000000 ret=0 stored=80000000 in-handler=80000200 after=0 end=exit0
+libc sa_mask=180000000 ret=0 stored=180000000 in-handler=180000200 after=0 end=exit0
+raw sa_mask=ffffffffffffffff ret=0 stored=fffffffffffbfeff in-handler=fffffffffffbfeff after=0 end=exit0
+raw sa_mask=80000000 ret=0 stored=80000000 in-handler=80000200 after=0 end=exit0
+raw sa_mask=180000000 ret=0 stored=180000000 in-handler=180000200 after=0 end=exit0

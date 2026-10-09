@@ -235,7 +235,7 @@ type UnixPath =
 /// Linux's <c>nameidata</c>).
 /// </remarks>
 [<Struct>]
-type PathCursor =
+type internal PathCursor =
     private
         {
             /// <summary>
@@ -258,7 +258,7 @@ type PathCursor =
         }
 
 [<RequireQualifiedAccess>]
-module PathCursor =
+module internal PathCursor =
     /// <summary>
     /// Begin walking a path, at its first component.
     /// </summary>

@@ -69,7 +69,7 @@ type RemovalKind =
 
 /// What screening `unlinkat(2)`'s flag word came to.
 [<RequireQualifiedAccess>]
-type UnlinkAtScreen =
+type internal UnlinkAtScreen =
     /// A word this kernel accepts, and the removal it asks for.
     | Screened of RemovalKind
     /// The call fails with this errno before its path is copied in.
@@ -127,7 +127,7 @@ module UnlinkAtRules =
     /// carrying any other bit, even beside a flag it accepts; a word whose
     /// bits Darwin accepts and which carries one of the six is
     /// `UnlinkAtScreen.Unmodelled`.
-    let screen (flavour : SimulatedUnixFlavour) (flags : int) : UnlinkAtScreen =
+    let internal screen (flavour : SimulatedUnixFlavour) (flags : int) : UnlinkAtScreen =
         // Measured by `at-dirfd.c` (FLAGS, FLAGORDER: every single bit, and a
         // rejected bit against a NULL path, a bad dirfd and the empty path)
         // and by `unlinkat-rules.c` (FLAGS2: AT_REMOVEDIR, and each of
@@ -182,7 +182,7 @@ type UnlinkRules =
 /// What <c>unlink(2)</c> should do, now that its path has been resolved.
 /// </summary>
 [<RequireQualifiedAccess>]
-type UnlinkVerdict =
+type internal UnlinkVerdict =
     /// <summary>
     /// Answer the caller with this errno.
     /// </summary>
@@ -336,7 +336,7 @@ module private RemovalChecks =
                 $"RemovalChecks.isEmptyDirectory: the walk resolved a name to inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
 
 [<RequireQualifiedAccess>]
-module UnlinkRules =
+module internal UnlinkRules =
     /// Linux's `unlink(2)`, transcribed from the measured ordering. Each arm
     /// beats the ones below it, and each bullet is a measured row:
     ///
@@ -528,14 +528,14 @@ type RmDirRules =
 
 /// What `opendir(3)` should do next, once its path has been resolved.
 [<RequireQualifiedAccess>]
-type OpenDirVerdict =
+type internal OpenDirVerdict =
     /// Answer the caller with this errno, and a NULL `DIR*`.
     | Refuse of error : UnixError
     /// Open a stream over this directory.
     | Open of directory : InodeNumber
 
 [<RequireQualifiedAccess>]
-module OpenDirRules =
+module internal OpenDirRules =
     /// `opendir(3)`, transcribed from the measured ordering. Each arm beats the
     /// ones below it, and each bullet is a row measured on **both** kernels —
     /// there is no flavour parameter because there is no row they disagree on,
@@ -598,7 +598,7 @@ module OpenDirRules =
 
 /// What `rmdir(2)` should do next, once its path has been resolved.
 [<RequireQualifiedAccess>]
-type RmDirVerdict =
+type internal RmDirVerdict =
     /// Answer the caller with this errno.
     | Refuse of error : UnixError
     /// Remove `name` from `directory`, and — since no other name can point at a
@@ -611,7 +611,7 @@ type RmDirVerdict =
     | Remove of directory : InodeNumber * name : DirectoryEntryName
 
 [<RequireQualifiedAccess>]
-module RmDirRules =
+module internal RmDirRules =
     /// Linux's `rmdir(2)`, transcribed from the measured ordering. Each arm
     /// beats the ones below it, and each bullet is a measured row:
     ///

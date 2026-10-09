@@ -204,7 +204,7 @@ module Credentials =
 
     /// The groups `getgroups(2)` reports for a process with these credentials,
     /// under `report`, or `None` where `report` is `GroupListReport.Unmeasured`.
-    let reportedGroups (report : GroupListReport) (credentials : Credentials) : GroupId list option =
+    let internal reportedGroups (report : GroupListReport) (credentials : Credentials) : GroupId list option =
         match report with
         | GroupListReport.SortedSupplementaryGroups ->
             // Measured on Linux 6.18.5 (`getgroups.c`): `setgroups(30,10,20)`

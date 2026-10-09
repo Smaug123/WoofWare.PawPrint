@@ -32,7 +32,7 @@ type CallerPrivilege =
 /// rule.
 /// </remarks>
 [<RequireQualifiedAccess>]
-type AccessRequest =
+type internal AccessRequest =
     /// <summary>Read the object's contents: <c>R_OK</c>, the <c>0o400</c> bit.</summary>
     | Read
     /// <summary>Change the object's contents: <c>W_OK</c>, the <c>0o200</c> bit.</summary>
@@ -72,7 +72,7 @@ type Standing =
 /// What a directory's sticky bit (`S_ISVTX`) says about removing, renaming or
 /// replacing one of its entries.
 [<RequireQualifiedAccess>]
-type StickyRemoval =
+type internal StickyRemoval =
     /// The sticky bit forbids nothing: the directory does not carry it, or the
     /// caller owns the directory or the entry.
     | Unrestricted
@@ -314,7 +314,7 @@ type PrivilegedModeChange =
 
 /// What `chmod(2)` or `fchmod(2)` does to one inode's mode, for one caller.
 [<RequireQualifiedAccess>]
-type ModeChange =
+type internal ModeChange =
     /// The caller may not change this inode's mode: it neither owns the inode
     /// nor is privileged. The syscall answers `EPERM` and changes nothing.
     | Forbidden
@@ -397,7 +397,7 @@ module PermissionBits =
     /// A <c>CallerPrivilege.Privileged</c> caller is refused nothing that
     /// <c>AccessRequest</c> can express, whatever the mode says.
     /// </example>
-    let deniedTo (standing : Standing) (needed : AccessRequest) (bits : PermissionBits) : bool =
+    let internal deniedTo (standing : Standing) (needed : AccessRequest) (bits : PermissionBits) : bool =
         match standing.Privilege, needed with
         // Root bypasses each of these three. It does not bypass executing a
         // non-directory, which is why `AccessRequest` cannot ask that; see
@@ -428,7 +428,7 @@ module PermissionBits =
     /// <c>X_OK</c> on a directory is search, which root is never refused; ask
     /// <c>deniedTo</c> with <c>AccessRequest.SearchDirectory</c> for that.
     /// </remarks>
-    let executionDenied
+    let internal executionDenied
         (rule : PrivilegedExecution)
         (standing : Standing)
         (bits : PermissionBits)
@@ -455,7 +455,7 @@ module PermissionBits =
     /// judged exactly as <c>deniedTo</c> judges <c>AccessRequest.Read</c>, and a
     /// privileged one is refused an answer.
     /// </remarks>
-    let linkReadDenied
+    let internal linkReadDenied
         (rule : LinkReadRule)
         (standing : Standing)
         (bits : PermissionBits)
@@ -487,7 +487,12 @@ module PermissionBits =
     ///
     /// The two standings must be one caller's, so they must agree about its
     /// privilege; this throws if they do not.
-    let stickyRemoval (directory : Standing) (entry : Standing) (directoryBits : PermissionBits) : StickyRemoval =
+    let internal stickyRemoval
+        (directory : Standing)
+        (entry : Standing)
+        (directoryBits : PermissionBits)
+        : StickyRemoval
+        =
         if directory.Privilege <> entry.Privilege then
             failwith
                 $"PermissionBits.stickyRemoval: the standing towards the directory (%O{directory}) and the standing towards the entry (%O{entry}) disagree about the caller's privilege, so they cannot be one caller's."
@@ -572,7 +577,7 @@ module PermissionBits =
     /// Any bits above the permission word are dropped rather than rejected.
     /// For example, <c>mode</c> of <c>0o10777</c> creates <c>0o0755</c> on both kernels.
     /// </remarks>
-    let fromCreationMode (modeMask : PermissionBits) (umask : PermissionBits) (mode : int) : PermissionBits =
+    let internal fromCreationMode (modeMask : PermissionBits) (umask : PermissionBits) (mode : int) : PermissionBits =
         mode &&& toInt modeMask &&& ~~~(toInt umask)
         |> parseOrFail "PermissionBits.fromCreationMode"
 
@@ -593,7 +598,7 @@ module PermissionBits =
     ///
     /// What a privileged caller gets is <c>rule</c>'s to say; see <c>PrivilegedModeChange</c>.
     /// </remarks>
-    let afterModeChange
+    let internal afterModeChange
         (rule : PrivilegedModeChange)
         (standing : Standing)
         (mode : int)
@@ -679,7 +684,7 @@ module PermissionBits =
     /// <param name="bits">
     /// The original permissions of the file before the writer wrote to it.
     /// </param>
-    let afterContentChangingWrite
+    let internal afterContentChangingWrite
         (rule : SetGroupIdOnWrite)
         (standing : Standing)
         (bits : PermissionBits)
@@ -744,7 +749,7 @@ module PermissionBits =
     /// Answers <c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c> for a truncation whose answer
     /// under <c>SetIdBitsOnTruncation.Preserve</c> has not been measured; see that case.
     /// </remarks>
-    let afterTruncation
+    let internal afterTruncation
         (rule : SetIdBitsOnTruncation)
         (standing : Standing)
         (bits : PermissionBits)

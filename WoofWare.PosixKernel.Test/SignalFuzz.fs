@@ -288,7 +288,7 @@ module SignalFuzz =
                     | SignalDisposition.Ignore -> "i"
                     | SignalDisposition.Catch _ -> "c"
 
-                events.Add $"e%d{signo frame.Entry.Signal}.%x{bits frame.Mask}.%s{disposition}"
+                events.Add $"e%d{signo frame.Entry.Signal}.%x{SignalMask.toWord frame.Mask}.%s{disposition}"
 
                 match bodies with
                 | body :: rest ->
@@ -312,7 +312,7 @@ module SignalFuzz =
                         SignalDisposition.Catch
                             {
                                 Handler = ()
-                                Mask = mask |> Set.map signal
+                                Mask = mask |> Set.map signal |> SignalMask.ofSignals numbering
                                 NoDefer = noDefer
                                 ResetHand = resetHand
                                 Restart = false
