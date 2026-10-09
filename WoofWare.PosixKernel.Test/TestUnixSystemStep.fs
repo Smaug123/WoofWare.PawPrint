@@ -274,10 +274,9 @@ module TestUnixSystemStep =
 
     let private socketDescription : SocketDescription =
         {
-            Domain = SocketDomain.Inet
+            Addressing = SocketAddressing.Inet None
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
-            Binding = None
             Phase = SocketPhase.Idle
             ReuseAddress = false
             Options = SocketOptions.initial
@@ -653,10 +652,9 @@ module TestUnixSystemStep =
 
         let socket : SocketDescription =
             {
-                Domain = SocketDomain.Inet
+                Addressing = SocketAddressing.Inet None
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
-                Binding = None
                 Phase = refused
                 ReuseAddress = false
                 Options = SocketOptions.initial
@@ -757,10 +755,9 @@ module TestUnixSystemStep =
 
         let socket : SocketDescription =
             {
-                Domain = SocketDomain.Inet
+                Addressing = SocketAddressing.Inet None
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
-                Binding = None
                 Phase = SocketPhase.Idle
                 ReuseAddress = false
                 Options = SocketOptions.initial
@@ -4876,13 +4873,15 @@ module TestUnixSystemStep =
 
         let bound =
             { socketDescription with
-                Binding =
-                    Some
-                        {
-                            Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us
-                            LockedAddress = Some InternetEndpoint.LoopbackAddress
-                            LockedPort = true
-                        }
+                Addressing =
+                    SocketAddressing.replaceBinding
+                        (Some
+                            {
+                                Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us
+                                LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                LockedPort = true
+                            })
+                        socketDescription.Addressing
             }
 
         fd,
@@ -5061,7 +5060,7 @@ module TestUnixSystemStep =
                                     [
                                         socketZero,
                                         { socketDescription with
-                                            Domain = domain
+                                            Addressing = SocketAddressing.initial domain false
                                         }
                                     ]
                         }

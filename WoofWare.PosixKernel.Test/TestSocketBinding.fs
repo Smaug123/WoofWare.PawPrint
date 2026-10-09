@@ -345,10 +345,9 @@ module TestSocketBinding =
     /// on behalf of.
     let private unboundStream : SocketDescription =
         {
-            Domain = SocketDomain.Inet
+            Addressing = SocketAddressing.Inet None
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
-            Binding = None
             ReuseAddress = false
             Options = SocketOptions.initial
             Phase = SocketPhase.Idle
@@ -360,7 +359,7 @@ module TestSocketBinding =
     /// wildcard bind of the same port conflicts with on both flavours.
     let private occupant (port : uint16) : SocketDescription =
         { unboundStream with
-            Binding = Some (binding wildcard port)
+            Addressing = SocketAddressing.replaceBinding (Some (binding wildcard port)) unboundStream.Addressing
         }
 
     /// A machine on which every port in `taken` is held by a socket.

@@ -269,7 +269,10 @@ module TestDatagramDissolve =
                             |> Map.add
                                 socketId
                                 { UnixMachineState.socket socketId system.Machine with
-                                    Binding = Some halfBound
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (Some halfBound)
+                                            (UnixMachineState.socket socketId system.Machine).Addressing
                                     Phase = phase
                                 }
                     }

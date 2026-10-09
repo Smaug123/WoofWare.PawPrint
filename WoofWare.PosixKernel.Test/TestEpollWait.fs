@@ -67,20 +67,21 @@ module TestEpollWait =
 
         let socket =
             {
-                Domain = SocketDomain.Inet
+                Addressing =
+                    SocketAddressing.Inet (
+                        Some
+                            {
+                                Endpoint =
+                                    {
+                                        Address = 0x7F000001u
+                                        Port = 40000us
+                                    }
+                                LockedAddress = Some 0x7F000001u
+                                LockedPort = true
+                            }
+                    )
                 Kind = SocketKind.Stream
                 Protocol = SocketProtocol.Tcp
-                Binding =
-                    Some
-                        {
-                            Endpoint =
-                                {
-                                    Address = 0x7F000001u
-                                    Port = 40000us
-                                }
-                            LockedAddress = Some 0x7F000001u
-                            LockedPort = true
-                        }
                 ReuseAddress = false
                 Options = SocketOptions.initial
                 Phase =

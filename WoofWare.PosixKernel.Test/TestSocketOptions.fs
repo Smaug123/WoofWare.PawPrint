@@ -638,7 +638,10 @@ module TestSocketOptions =
                             Map.add
                                 socketId
                                 { UnixMachineState.socket socketId system.Machine with
-                                    Binding = binding
+                                    Addressing =
+                                        SocketAddressing.replaceBinding
+                                            (binding)
+                                            (UnixMachineState.socket socketId system.Machine).Addressing
                                     Phase = phase
                                 }
                                 system.Machine.Sockets

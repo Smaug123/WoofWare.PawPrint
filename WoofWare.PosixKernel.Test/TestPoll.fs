@@ -105,14 +105,13 @@ module TestPoll =
 
         let socket =
             {
-                Domain = domain
+                Addressing = SocketAddressing.initial domain false
                 Kind = kind
                 Protocol =
                     match domain, kind with
                     | SocketDomain.Unix, _ -> SocketProtocol.Default
                     | _, SocketKind.Stream -> SocketProtocol.Tcp
                     | _, _ -> SocketProtocol.Udp
-                Binding = None
                 ReuseAddress = false
                 Options = SocketOptions.initial
                 Phase = phase
