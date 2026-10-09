@@ -675,10 +675,9 @@ module TestTransferCounts =
                                 [
                                     socketId,
                                     {
-                                        Domain = SocketDomain.Inet
+                                        Addressing = SocketAddressing.Inet None
                                         Kind = SocketKind.Stream
                                         Protocol = SocketProtocol.Tcp
-                                        Binding = None
                                         Phase = SocketPhase.Idle
                                         ReuseAddress = false
                                         Options = SocketOptions.initial

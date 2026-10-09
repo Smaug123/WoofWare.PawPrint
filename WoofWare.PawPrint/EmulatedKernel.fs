@@ -1545,16 +1545,25 @@ module EmulatedKernel =
     /// Placement policy: which simulated logical processor the `rotation`-th
     /// guest-visible thread is pinned to. The only producer of `CpuId` for
     /// threads a guest can observe, so "every `CpuId` a guest can read names a
-    /// processor it also counts" is established here once rather than
+    /// processor the machine has" is established here once rather than
     /// re-checked at every read. (`IlMachineState.allocateParkedThread` also
     /// mints a `CpuId`, but a fixed core 0 for PawPrint-internal threads no
     /// guest can name; see there.)
     ///
-    /// Round-robin over `effectiveProcessorCount`. That is a *placement*
-    /// decision, not a measurement: PawPrint's scheduler runs one thread at a
-    /// time and never migrates a thread between cores, so the core a thread is
-    /// pinned to is also the core it is running on whenever it is running, and
-    /// one value answers both questions `sched_getcpu` could be asked.
+    /// Round-robin over the machine's processors, `EmulatedKernel.ProcessorCount`.
+    /// That is a *placement* decision, not a measurement: PawPrint's scheduler
+    /// runs one thread at a time and never migrates a thread between cores, so
+    /// the core a thread is pinned to is also the core it is running on
+    /// whenever it is running, and one value answers both questions
+    /// `sched_getcpu` could be asked.
+    ///
+    /// The count is the machine's, not `effectiveProcessorCount`, even though
+    /// that is the count the guest reads from `Environment.ProcessorCount`. A
+    /// real kernel never reports a processor the machine lacks, whatever
+    /// `DOTNET_PROCESSOR_COUNT` says, and CoreLib reduces every processor ID
+    /// modulo its own count before indexing a shard (`SharedArrayPool`,
+    /// `TimerQueue.Instances`, `PoolingAsyncValueTaskMethodBuilder`), so no
+    /// guest needs the two counts to agree.
     ///
     /// Spreading threads over the available cores (rather than reporting a
     /// constant 0) is what makes a host-configured `ProcessorCount` mean
@@ -1562,8 +1571,7 @@ module EmulatedKernel =
     /// `TimerQueue.Instances`, and `PoolingAsyncValueTaskMethodBuilder`'s cache
     /// by this value, so a constant would leave every one of those multi-shard
     /// paths permanently unexercised. With the default `ProcessorCount` of 1 it
-    /// collapses to a constant 0 anyway, so existing runs are bit-for-bit
-    /// unchanged.
+    /// collapses to a constant 0 anyway.
     ///
     /// `rotation` deliberately is *not* the thread's `ThreadId`. `ThreadId`s
     /// are also consumed by PawPrint-internal auxiliary threads that never run
@@ -1579,16 +1587,13 @@ module EmulatedKernel =
             failwith
                 $"CPU rotation cursor must be non-negative (it counts guest-visible threads created so far); got %d{rotation}"
 
-        let count = effectiveProcessorCount kernel
+        let count = kernel.ProcessorCount
 
         // Unreachable: `UnixBootImage.withProcessorCount` refuses a count
-        // below 1, and `effectiveProcessorCount` only ever returns a positive
-        // configured value or that count. Asserted rather than dividing by
-        // zero, mirroring what `NativeEnvironment` does before handing the
-        // count to the guest.
+        // below 1. Asserted rather than dividing by zero.
         if count < 1 then
             failwith
-                $"effective ProcessorCount is %d{count}, but must be at least 1 for a simulated thread to be placed on a processor"
+                $"the machine's ProcessorCount is %d{count}, but must be at least 1 for a simulated thread to be placed on a processor"
 
         CpuId (rotation % count)
 

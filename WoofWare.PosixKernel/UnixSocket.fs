@@ -888,15 +888,11 @@ module UnixSocket =
 
         let socket =
             {
-                Domain = domain
+                Addressing = SocketAddressing.initial domain system.Machine.Ipv6OnlyByDefault
                 Kind = kind
                 Protocol = protocol
-                Binding = None
                 ReuseAddress = false
-                Options =
-                    { SocketOptions.initial with
-                        Ipv6Only = domain = SocketDomain.Inet6 && system.Machine.Ipv6OnlyByDefault
-                    }
+                Options = SocketOptions.initial
                 Phase = SocketPhase.Idle
             }
 
@@ -1190,7 +1186,7 @@ module UnixSocket =
             }
             |> withSocket
                 { socket with
-                    Binding = Some bound
+                    Addressing = SocketAddressing.replaceBinding (Some bound) socket.Addressing
                 }
 
         Ok (BindAnswer.Bound bound.Endpoint, system)
@@ -1347,7 +1343,7 @@ module UnixSocket =
                             Map.add
                                 socketId
                                 { socket with
-                                    Binding = Some bound
+                                    Addressing = SocketAddressing.replaceBinding (Some bound) socket.Addressing
                                     Phase = listenPhase
                                 }
                                 machine.Sockets
@@ -1957,16 +1953,23 @@ module UnixSocket =
                            | SocketPhase.Refused _
                            | SocketPhase.DatagramPeer _ -> true
 
-                    if hasAddress then
-                        Error (Ok UnixError.EINVAL)
-                    else
+                    match socket.Addressing with
+                    | SocketAddressing.Inet6DualMode _
+                    | SocketAddressing.Inet6V6Only when hasAddress -> Error (Ok UnixError.EINVAL)
+                    | SocketAddressing.Inet6DualMode _
+                    | SocketAddressing.Inet6V6Only ->
                         Ok
                             { socket with
-                                Options =
-                                    { socket.Options with
-                                        Ipv6Only = field 0 <> 0
-                                    }
+                                Addressing =
+                                    if field 0 <> 0 then
+                                        SocketAddressing.Inet6V6Only
+                                    else
+                                        SocketAddressing.Inet6DualMode None
                             }
+                    | SocketAddressing.Inet _
+                    | SocketAddressing.Unix ->
+                        failwith
+                            $"UnixSocket.setsockopt: IPV6_V6ONLY reached socket %O{socketId}, which is %A{socket.Addressing}, though the option applies to no such socket and its errno is answered first (this is a bug in this library)."
                 | ModelledOption.Linger
                 | ModelledOption.LingerSeconds ->
                     let onOff = field 0
@@ -2244,7 +2247,7 @@ module UnixSocket =
                         | SimulatedUnixFlavour.Darwin -> 4
 
                     ints [ flag socket.Options.NoDelay whenSet ], system
-                | ModelledOption.Ipv6Only -> ints [ flag socket.Options.Ipv6Only 1 ], system
+                | ModelledOption.Ipv6Only -> ints [ flag (socket.Addressing = SocketAddressing.Inet6V6Only) 1 ], system
                 | ModelledOption.Linger ->
                     match flavour with
                     | SimulatedUnixFlavour.Linux -> ints [ enabled ; int (linger.Hundredths / 100L) ], system

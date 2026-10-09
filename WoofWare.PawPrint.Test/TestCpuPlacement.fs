@@ -13,9 +13,9 @@ open WoofWare.PosixKernel
 /// n-th guest-visible thread is pinned to. It is the only producer of `CpuId`
 /// for threads a guest can observe (`allocateParkedThread` mints a fixed core 0
 /// for PawPrint-internal threads no guest can name), so the invariant "every
-/// `CpuId` a guest can read names a processor it also counts through
-/// `Environment.ProcessorCount`" is established here and nowhere else — which
-/// makes it worth establishing by property rather than by example.
+/// `CpuId` a guest can read names a processor the machine has" is established
+/// here and nowhere else — which makes it worth establishing by property rather
+/// than by example.
 ///
 /// `TestEffectiveProcessorCount` covers how the count itself is resolved; this
 /// module takes that as given and covers the rotation over it.
@@ -58,11 +58,8 @@ module TestCpuPlacement =
         Check.One (propertyConfig, Prop.forAll ints property)
 
     [<Test>]
-    let ``every placement names a processor the guest counts`` () =
-        // BCL callers index per-CPU shards sized off
-        // `Environment.ProcessorCount` with this value
-        // (`SharedArrayPool`, `TimerQueue.Instances`), so a placement outside
-        // the range would be an out-of-bounds shard index in guest code.
+    let ``every placement names a processor the machine has`` () =
+        // A real kernel never reports a processor the machine lacks.
         let property (countSeed : int, rotationSeed : int) : bool =
             let count = countFrom countSeed
             let kernel = kernelWith count
@@ -70,7 +67,7 @@ module TestCpuPlacement =
             let cpu =
                 cpuIndex (EmulatedKernel.cpuForRotation (rotationFrom rotationSeed) kernel)
 
-            cpu >= 0 && cpu < EmulatedKernel.effectiveProcessorCount kernel
+            cpu >= 0 && cpu < kernel.ProcessorCount
 
         Check.One (propertyConfig, Prop.forAll intPairs property)
 
@@ -106,18 +103,23 @@ module TestCpuPlacement =
         Check.One (propertyConfig, Prop.forAll intPairs property)
 
     [<Test>]
-    let ``the environment knob moves placement, not just the reported count`` () =
+    let ``the environment knob changes the reported count, not placement`` () =
         // `DOTNET_PROCESSOR_COUNT` overrides `KernelConfig.ProcessorCount` for
-        // `Environment.ProcessorCount`, and placement has to follow it: a guest
-        // that shards by the count it observes must not be handed CPU indices
-        // drawn from a different count.
-        let property (countSeed : int, rotationSeed : int) : bool =
-            let configured = countFrom countSeed
+        // `Environment.ProcessorCount`, but placement ignores it: a real kernel
+        // never reports a processor the machine lacks, whatever the knob says.
+        // No guest needs the two counts to agree, because CoreLib reduces
+        // every processor ID modulo its own count before indexing a shard
+        // (`SharedArrayPool`, `TimerQueue.Instances`,
+        // `PoolingAsyncValueTaskMethodBuilder`).
+        let property ((machineSeed : int, knobSeed : int), rotationSeed : int) : bool =
+            let machineCount = countFrom machineSeed
+            let configured = countFrom knobSeed
+            let rotation = rotationFrom rotationSeed
 
-            let kernel =
+            let withKnob =
                 EmulatedKernel.initialImage
                 |> KernelImage.mapMachine (fun image ->
-                    UnixBootImage.withProcessorCount 1 image
+                    UnixBootImage.withProcessorCount machineCount image
                     |> Result.defaultWith (fun refusal ->
                         failwith $"test bug: %s{ProcessorCountRefusal.describe refusal}"
                     )
@@ -125,12 +127,14 @@ module TestCpuPlacement =
                 |> EmulatedKernel.withEnvironment "test" [ $"DOTNET_PROCESSOR_COUNT=%d{configured}" ]
                 |> EmulatedKernel.boot
 
-            let cpu =
-                cpuIndex (EmulatedKernel.cpuForRotation (rotationFrom rotationSeed) kernel)
+            // The knob took effect for the reported count, so the comparison
+            // below is not between two kernels that agree for a duller reason.
+            EmulatedKernel.effectiveProcessorCount withKnob = configured
+            && EmulatedKernel.cpuForRotation rotation withKnob = EmulatedKernel.cpuForRotation
+                rotation
+                (kernelWith machineCount)
 
-            cpu >= 0 && cpu < configured
-
-        Check.One (propertyConfig, Prop.forAll intPairs property)
+        Check.One (propertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<(int * int) * int>) property)
 
     /// Did the thunk complete, rather than failing the way PawPrint reports a
     /// violated kernel invariant?

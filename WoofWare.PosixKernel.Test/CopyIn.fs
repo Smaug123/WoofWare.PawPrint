@@ -37,6 +37,44 @@ module CopyIn =
         BinaryPrimitives.WriteUInt32BigEndian (System.Span<byte> (blob, 4, 4), endpoint.Address)
         blob
 
+    /// A caller's sockaddr buffer holding `family`, `port` and the sixteen
+    /// bytes of `address` as a `struct sockaddr_in6` laid out for `platform`,
+    /// with `sin6_flowinfo` and `sin6_scope_id` zero, then zeros to `Length`.
+    /// Darwin's `sa_len` byte holds 28. Laid out by hand, as `blob` is.
+    let blob6 (platform : SimulatedUnixPlatform) (family : int) (address : byte[]) (port : uint16) : byte[] =
+        if address.Length <> 16 then
+            failwith $"CopyIn.blob6: an IPv6 address is 16 bytes, not %d{address.Length}"
+
+        let blob = Array.zeroCreate<byte> Length
+
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            BinaryPrimitives.WriteUInt16LittleEndian (System.Span<byte> (blob, 0, 2), uint16 family)
+        | SimulatedUnixFlavour.Darwin ->
+            blob.[0] <- 28uy
+            blob.[1] <- byte family
+
+        BinaryPrimitives.WriteUInt16BigEndian (System.Span<byte> (blob, 2, 2), port)
+        address.CopyTo (blob, 8)
+        blob
+
+    /// The sixteen bytes of `::ffff:a.b.c.d`, the IPv4 address `address` (host
+    /// order) mapped into IPv6.
+    let mappedAddress (address : uint32) : byte[] =
+        let bytes = Array.zeroCreate<byte> 16
+        bytes.[10] <- 0xFFuy
+        bytes.[11] <- 0xFFuy
+        BinaryPrimitives.WriteUInt32BigEndian (System.Span<byte> (bytes, 12, 4), address)
+        bytes
+
+    /// `blob6` holding `AF_INET6` and `endpoint` mapped into IPv6.
+    let inet6Mapped (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
+        blob6
+            platform
+            (SimulatedUnixPlatform.internetV6AddressFamily platform)
+            (mappedAddress endpoint.Address)
+            endpoint.Port
+
     /// `blob` holding `AF_INET` and `endpoint`.
     let inet (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
         blob platform SimulatedUnixPlatform.internetAddressFamily endpoint

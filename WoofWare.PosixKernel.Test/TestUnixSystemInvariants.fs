@@ -98,10 +98,9 @@ module TestUnixSystemInvariants =
                                     [
                                         SocketId 0L,
                                         {
-                                            Domain = SocketDomain.Inet
+                                            Addressing = SocketAddressing.Inet None
                                             Kind = kind
                                             Protocol = SocketProtocol.Tcp
-                                            Binding = None
                                             ReuseAddress = false
                                             Options = SocketOptions.initial
                                             Phase = phase
@@ -150,10 +149,9 @@ module TestUnixSystemInvariants =
                                     [
                                         SocketId 0L,
                                         {
-                                            Domain = SocketDomain.Inet
+                                            Addressing = SocketAddressing.Inet None
                                             Kind = SocketKind.Stream
                                             Protocol = SocketProtocol.Tcp
-                                            Binding = None
                                             ReuseAddress = false
                                             Options = SocketOptions.initial
                                             Phase = SocketPhase.Established (connection, ConnectionEnd.Client)
@@ -552,10 +550,9 @@ module TestUnixSystemInvariants =
 
     let private streamSocket (binding : SocketBinding option) (phase : SocketPhase) : SocketDescription =
         {
-            Domain = SocketDomain.Inet
+            Addressing = SocketAddressing.Inet binding
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
-            Binding = binding
             ReuseAddress = false
             Options = SocketOptions.initial
             Phase = phase
@@ -606,6 +603,31 @@ module TestUnixSystemInvariants =
         // The control: a bound listener is sound.
         let _, sound = withSocket (streamSocket (boundAt 5000us) listening)
         UnixSystem.checkInvariants sound |> shouldEqual []
+
+    /// A socket that can hold no address cannot have reached a phase only an
+    /// addressed socket reaches.
+    [<Test>]
+    let ``an unaddressable socket with a latched refusal is a defect`` () : unit =
+        let refused = SocketPhase.Refused RefusalError.Pending
+
+        for addressing in [ SocketAddressing.Inet6V6Only ; SocketAddressing.Unix ] do
+            let socketId, faulty =
+                withSocket
+                    { streamSocket None refused with
+                        Addressing = addressing
+                    }
+
+            UnixSystem.checkInvariants faulty
+            |> shouldEqual [ UnixSystemDefect.UnaddressableSocketInPhase (socketId, addressing, refused) ]
+
+            // The control: idle, it is sound.
+            let _, sound =
+                withSocket
+                    { streamSocket None SocketPhase.Idle with
+                        Addressing = addressing
+                    }
+
+            UnixSystem.checkInvariants sound |> shouldEqual []
 
     [<Test>]
     let ``a socket bound to port 0 is a defect`` () : unit =

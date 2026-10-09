@@ -342,14 +342,18 @@ module SocketFuzz =
                                 Map.add
                                     socketId
                                     { sock with
-                                        Binding =
-                                            Some
-                                                {
-                                                    Endpoint =
-                                                        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
-                                                    LockedAddress = None
-                                                    LockedPort = false
-                                                }
+                                        Addressing =
+                                            SocketAddressing.replaceBinding
+                                                (Some
+                                                    {
+                                                        Endpoint =
+                                                            InternetEndpoint.ofParts
+                                                                InternetEndpoint.LoopbackAddress
+                                                                port
+                                                        LockedAddress = None
+                                                        LockedPort = false
+                                                    })
+                                                sock.Addressing
                                         Phase =
                                             SocketPhase.Listening
                                                 {

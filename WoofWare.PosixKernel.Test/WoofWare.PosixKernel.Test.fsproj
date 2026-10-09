@@ -162,6 +162,7 @@
     <Compile Include="TestSockOpt.fs" />
     <Compile Include="TestSockOptAgainstHost.fs" />
     <Compile Include="TestSocketOptions.fs" />
+    <Compile Include="TestSocketAddressing.fs" />
     <Compile Include="TestSocketErrorOption.fs" />
     <Compile Include="TestSocketErrorAgainstHost.fs" />
     <Compile Include="TestPeerName.fs" />

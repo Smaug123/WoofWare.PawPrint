@@ -78,16 +78,17 @@ module TestAccept =
     /// A stream socket in the IPv4 domain, in `phase`.
     let private streamSocket (phase : SocketPhase) : SocketDescription =
         {
-            Domain = SocketDomain.Inet
+            Addressing =
+                SocketAddressing.Inet (
+                    Some
+                        {
+                            Endpoint = serverAddress
+                            LockedAddress = None
+                            LockedPort = false
+                        }
+                )
             Kind = SocketKind.Stream
             Protocol = SocketProtocol.Tcp
-            Binding =
-                Some
-                    {
-                        Endpoint = serverAddress
-                        LockedAddress = None
-                        LockedPort = false
-                    }
             ReuseAddress = false
             Options = SocketOptions.initial
             Phase = phase
@@ -448,7 +449,7 @@ module TestAccept =
         for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
             let socket =
                 { streamSocket SocketPhase.Idle with
-                    Domain = domain
+                    Addressing = SocketAddressing.initial domain false
                 }
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)

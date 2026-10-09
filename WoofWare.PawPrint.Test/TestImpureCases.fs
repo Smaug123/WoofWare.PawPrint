@@ -4208,6 +4208,44 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `DOTNET_PROCESSOR_COUNT` above the machine's count: the guest
+                // reads 8 from `Environment.ProcessorCount`, but every thread is
+                // placed on one of the machine's two processors, because a real
+                // kernel never reports a processor the machine lacks. CoreLib
+                // reduces every processor ID modulo its own count, so
+                // `ArrayPool<byte>.Shared`'s per-core partitions still
+                // round-trip. Exit code 8 * 10 + 1: the knob's count, and the
+                // largest processor ID any of nine threads saw.
+                FileName = "ProcessorIdWithinMachine.cs"
+                ExpectedReturnCode = 81
+                KernelConfig =
+                    { KernelConfig.Default with
+                        ProcessorCount = 2
+                        Environment = [ "DOTNET_PROCESSOR_COUNT=8" ]
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The other way round: a knob below the machine's count lowers
+                // `Environment.ProcessorCount` to 2, and nine threads still
+                // spread over all eight of the machine's processors, so IDs up
+                // to 7 appear. Exit code 2 * 10 + 7.
+                FileName = "ProcessorIdWithinMachine.cs"
+                ExpectedReturnCode = 27
+                KernelConfig =
+                    { KernelConfig.Default with
+                        ProcessorCount = 8
+                        Environment = [ "DOTNET_PROCESSOR_COUNT=2" ]
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // The same entry point under the Darwin flavour, whose libc has
                 // no `sched_getcpu`: the shim answers -1, and CoreLib falls back
                 // to the managed thread id. Four processors, as above, so that a

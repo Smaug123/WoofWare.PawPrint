@@ -435,6 +435,11 @@ type UnixSystemDefect<'Task> =
     /// before it listens, and a connect looks listeners up by their binding,
     /// so this one can never be reached.
     | ListenerWithoutBinding of socket : SocketId
+    /// A socket whose `SocketAddressing` can hold no address -- an IPv6 one
+    /// with `IPV6_V6ONLY` on, or a Unix-domain one -- is listening, connected
+    /// or latched by a refusal, each of which only a socket with an address
+    /// reaches.
+    | UnaddressableSocketInPhase of socket : SocketId * addressing : SocketAddressing * phase : SocketPhase
     /// A bound socket holds port 0, which is how a process *asks* for a port and
     /// never one it is given, with one exception: a datagram socket whose
     /// Linux `connect(AF_UNSPEC)` kept a locked concrete address and dropped
@@ -1619,6 +1624,13 @@ module UnixSystem =
                     | SocketPhase.Listening _, None -> [ UnixSystemDefect.ListenerWithoutBinding socketId ]
                     | _ -> []
 
+                let unaddressable =
+                    match socket.Addressing, socket.Phase with
+                    | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix), SocketPhase.Idle
+                    | (SocketAddressing.Inet _ | SocketAddressing.Inet6DualMode _), _ -> []
+                    | (SocketAddressing.Inet6V6Only | SocketAddressing.Unix) as addressing, phase ->
+                        [ UnixSystemDefect.UnaddressableSocketInPhase (socketId, addressing, phase) ]
+
                 let portZero =
                     match socket.Binding with
                     | Some binding when binding.Endpoint.Port = 0us ->
@@ -1642,7 +1654,7 @@ module UnixSystem =
                             [ UnixSystemDefect.BoundToPortZero socketId ]
                     | _ -> []
 
-                unboundListener @ portZero
+                unboundListener @ unaddressable @ portZero
             )
 
         let fileSystemType =

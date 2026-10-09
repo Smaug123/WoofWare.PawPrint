@@ -604,7 +604,8 @@ module UnixConnection =
                                     |> Map.add
                                         socketId
                                         { sock with
-                                            Binding = Some clientBinding
+                                            Addressing =
+                                                SocketAddressing.replaceBinding (Some clientBinding) sock.Addressing
                                             Phase = clientPhase
                                         }
                                     |> Map.add
@@ -707,7 +708,10 @@ module UnixConnection =
                                         Map.add
                                             socketId
                                             { sock with
-                                                Binding = Some (bindingAfterRefusalDelivery flavour binding)
+                                                Addressing =
+                                                    SocketAddressing.replaceBinding
+                                                        (Some (bindingAfterRefusalDelivery flavour binding))
+                                                        sock.Addressing
                                                 Phase = phase
                                             }
                                             system.Machine.Sockets
@@ -734,7 +738,8 @@ module UnixConnection =
                                         Map.add
                                             socketId
                                             { sock with
-                                                Binding = Some binding
+                                                Addressing =
+                                                    SocketAddressing.replaceBinding (Some binding) sock.Addressing
                                                 Phase = SocketPhase.Refused RefusalError.Pending
                                             }
                                             system.Machine.Sockets
@@ -821,11 +826,13 @@ module UnixConnection =
                                         Map.add
                                             socketId
                                             { sock with
-                                                Binding =
-                                                    sock.Binding
-                                                    |> Option.map (
-                                                        bindingAfterRefusalDelivery SimulatedUnixFlavour.Linux
-                                                    )
+                                                Addressing =
+                                                    SocketAddressing.replaceBinding
+                                                        (sock.Binding
+                                                         |> Option.map (
+                                                             bindingAfterRefusalDelivery SimulatedUnixFlavour.Linux
+                                                         ))
+                                                        sock.Addressing
                                                 Phase = SocketPhase.Idle
                                             }
                                             system.Machine.Sockets
@@ -959,7 +966,10 @@ module UnixConnection =
                                                 Map.add
                                                     socketId
                                                     { sock with
-                                                        Binding = Some binding
+                                                        Addressing =
+                                                            SocketAddressing.replaceBinding
+                                                                (Some binding)
+                                                                sock.Addressing
                                                     }
                                                     machine.Sockets
                                         }
@@ -1015,14 +1025,16 @@ module UnixConnection =
                                     Map.add
                                         socketId
                                         { sock with
-                                            Binding =
-                                                Some
-                                                    { binding with
-                                                        Endpoint =
-                                                            { binding.Endpoint with
-                                                                Address = InternetEndpoint.WildcardAddress
-                                                            }
-                                                    }
+                                            Addressing =
+                                                SocketAddressing.replaceBinding
+                                                    (Some
+                                                        { binding with
+                                                            Endpoint =
+                                                                { binding.Endpoint with
+                                                                    Address = InternetEndpoint.WildcardAddress
+                                                                }
+                                                        })
+                                                    sock.Addressing
                                             Phase = SocketPhase.Idle
                                         }
                                         system.Machine.Sockets
@@ -1088,7 +1100,8 @@ module UnixConnection =
                                             Map.add
                                                 socketId
                                                 { sock with
-                                                    Binding = dissolved
+                                                    Addressing =
+                                                        SocketAddressing.replaceBinding dissolved sock.Addressing
                                                     Phase = SocketPhase.Idle
                                                 }
                                                 system.Machine.Sockets
@@ -1164,7 +1177,10 @@ module UnixConnection =
                                                 Map.add
                                                     socketId
                                                     { sock with
-                                                        Binding = Some binding
+                                                        Addressing =
+                                                            SocketAddressing.replaceBinding
+                                                                (Some binding)
+                                                                sock.Addressing
                                                     }
                                                     machine.Sockets
                                         }
@@ -1247,7 +1263,7 @@ module UnixConnection =
                                 Map.add
                                     socketId
                                     { sock with
-                                        Binding = Some binding
+                                        Addressing = SocketAddressing.replaceBinding (Some binding) sock.Addressing
                                         Phase = SocketPhase.DatagramPeer dest
                                     }
                                     system.Machine.Sockets
@@ -1418,19 +1434,21 @@ module UnixConnection =
 
             let accepted =
                 {
-                    Domain = listener.Domain
+                    // The listener's domain, and its IPV6_V6ONLY with it.
+                    Addressing =
+                        SocketAddressing.replaceBinding
+                            (Some
+                                {
+                                    Endpoint = tcpConnection.ServerAddress
+                                    // Nothing reads this on an accepted socket:
+                                    // its phase is Established for life, so no
+                                    // refusal delivery can ever revert it.
+                                    LockedAddress = None
+                                    LockedPort = false
+                                })
+                            listener.Addressing
                     Kind = SocketKind.Stream
                     Protocol = listener.Protocol
-                    Binding =
-                        Some
-                            {
-                                Endpoint = tcpConnection.ServerAddress
-                                // Nothing reads this on an accepted socket:
-                                // its phase is Established for life, so no
-                                // refusal delivery can ever revert it.
-                                LockedAddress = None
-                                LockedPort = false
-                            }
                     // Both kernels copy the listener's socket options onto
                     // the new socket when the connection completes
                     // (inet_csk_clone_lock; sonewconn), not at accept.
