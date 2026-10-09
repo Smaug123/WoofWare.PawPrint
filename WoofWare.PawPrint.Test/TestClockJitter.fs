@@ -28,6 +28,15 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestClockJitter =
 
+    /// The clock of a default machine with `strategy` as its jitter, through the check every
+    /// run's clock goes through.
+    let private clockOf (strategy : ClockJitterStrategy) : MachineClock =
+        MachineConfig.clock
+            "KernelConfig"
+            { fst (KernelConfig.split KernelConfig.Default) with
+                ClockJitter = strategy
+            }
+
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     /// Fold an arbitrary int64 into `[0, bound]`. Deliberately not `abs`, which
@@ -482,20 +491,16 @@ module TestClockJitter =
             Assert.Throws<Exception> (TestDelegate choose) |> ignore<Exception>
 
             let install () =
-                EmulatedKernel.initial
-                |> EmulatedKernel.withClockJitter (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, bad))
-                |> ignore<EmulatedKernel>
+                clockOf (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, bad))
+                |> ignore<MachineClock>
 
             Assert.Throws<Exception> (TestDelegate install) |> ignore<Exception>
 
         // The boundary itself is legal, so the check is `>` and not `>=` — and
         // the draw really does reach it there, which is the whole reason the
         // limit sits at 2^53 - 1 rather than anywhere rounder.
-        EmulatedKernel.initial
-        |> EmulatedKernel.withClockJitter (
-            ClockJitterStrategy.EagerDeadlines (1UL, 1.0, ClockJitter.maxOvershootBoundTicks)
-        )
-        |> ignore<EmulatedKernel>
+        clockOf (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, ClockJitter.maxOvershootBoundTicks))
+        |> ignore<MachineClock>
 
         let atBound =
             [ 0L .. 199L ]
@@ -529,9 +534,8 @@ module TestClockJitter =
             // before any guest code runs rather than at whichever tick first
             // consults the strategy.
             let install () =
-                EmulatedKernel.initial
-                |> EmulatedKernel.withClockJitter (ClockJitterStrategy.EagerDeadlines (1UL, bad, 0L))
-                |> ignore<EmulatedKernel>
+                clockOf (ClockJitterStrategy.EagerDeadlines (1UL, bad, 0L))
+                |> ignore<MachineClock>
 
             Assert.Throws<Exception> (TestDelegate install) |> ignore<Exception>
 
@@ -635,17 +639,22 @@ module TestClockJitter =
 
     [<Test>]
     let ``jitter is off by default and installed through KernelConfig`` () : unit =
-        // It has to be `KernelConfig` rather than a record-copy onto
-        // `PreparedProgram.State`: class initialisers run during `prepare`, and
-        // a `.cctor` that waits with a timeout is exactly the shape this
+        // It has to be `KernelConfig` rather than something installed on a
+        // `PreparedProgram` afterwards: class initialisers run during `prepare`,
+        // and a `.cctor` that waits with a timeout is exactly the shape this
         // strategy exists to test.
         KernelConfig.Default.ClockJitter |> shouldEqual ClockJitterStrategy.Disabled
-        EmulatedKernel.initial.ClockJitter |> shouldEqual ClockJitterStrategy.Disabled
+
+        let clockOfKernelConfig (config : KernelConfig) : MachineClock =
+            MachineConfig.clock "KernelConfig" (fst (KernelConfig.split config))
+
+        (clockOfKernelConfig KernelConfig.Default).ClockJitter
+        |> shouldEqual ClockJitterStrategy.Disabled
 
         let strategy = ClockJitterStrategy.EagerDeadlines (42UL, 0.25, 0L)
 
         let configured =
-            KernelConfig.toKernel
+            clockOfKernelConfig
                 { KernelConfig.Default with
                     ClockJitter = strategy
                 }

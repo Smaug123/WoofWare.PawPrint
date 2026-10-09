@@ -217,10 +217,15 @@ what it is today.
 
 `InstructionCostTicks` and `ClockJitter` describe the machine, and govern
 the clock advance and the jitter, which move to the driver. So in 5c they
-move off `EmulatedKernel` with them, onto the `MachineConfig` the driver
-holds, if every reader moves too. If one must stay per program, every
-program's copy is set from the one `MachineConfig`, and the driver asserts
-they agree. 5b leaves them where they are.
+move off `EmulatedKernel` with them: every reader moved, and the driver
+holds them as a `MachineClock`, which `MachineConfig.clock` checks and
+makes.
+
+5c built the driver for one program: `MultiProgram = { Machine; Current;
+Clock }`, with `Current` a `RunningProgram` (what `PreparedProgram` held).
+The phases of startup stay in `Program`'s `Startup`, which holds a driver,
+as `PreparedProgram` does. `Idle`, `Ended`, `ProgramSlot` and the program
+choice come with several programs, in 5d.
 
 ### 1. What stays per program, and what moves to the driver
 
@@ -445,7 +450,7 @@ it is needed, since it changes which interleavings can be reached.
   and make `fireExpiredDeadlines` take `now`. A property test: for
   generated `KernelConfig`s, booting through `split` gives the kernel that
   every setter applied to one image gives. 5a and 5b are one PR.
-- **5c.** The driver core, with one program running through it.
+- **5c.** Done. The driver core, with one program running through it.
   `advanceToDecision`, `stepTick` and their per-program jump and deadlock
   are deleted. The tick wakes through `SimulatedMachine.wakes`, and
   `endProcess` runs at every end. The oracles are the whole suite, Guest

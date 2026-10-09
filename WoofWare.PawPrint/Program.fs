@@ -9,52 +9,43 @@ open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module Program =
-    /// What `Main` returns, which decides whether its return writes the latched exit code:
-    /// CoreCLR's `RunMain` copies an `int Main`'s return value to `IlMachineState.LatchedExitCode`
-    /// the moment `Main` returns, and a `void Main` leaves the latch as the guest left it.
-    [<RequireQualifiedAccess>]
-    type MainReturn =
-        /// The exit code is whatever the guest last wrote to `Environment.ExitCode`, 0 if nothing did.
-        | Void
-        /// The return value becomes the latched exit code as `Main` returns, overwriting any
-        /// earlier `Environment.ExitCode` write and overwritten by any later one.
-        | Int32
-
-    /// What the entry thread is running, which decides what its bottom frame returning means.
-    [<RequireQualifiedAccess>]
-    type EntryFrameKind =
-        /// One of the calls startup pumps to completion: the AppContext seed, the command-line
-        /// initialiser, a class initialiser. Its return ends the phase, and the entry thread is
-        /// left as it is for startup to give it its next frame.
-        | StartupCall
-        /// `Main`. Its return latches the exit code if `Main` returns one, and does not end the
-        /// run: the entry thread goes to `ThreadStatus.WaitingForForegroundThreads` (and
-        /// background), and the run ends with `NormalExit` once `shutdownSignalled` — CoreCLR's
-        /// `ThreadStore::WaitForOtherThreads`, which `RunMainPost` blocks in after `Main`.
-        ///
-        /// `shutdownSignalled` is CoreCLR's `m_TerminationEvent`, a manual-reset event that
-        /// `CheckForEEShutdown` sets at the first moment, once `Main` is running, at which no
-        /// foreground thread is alive, and which nothing resets. It is set *before* `Main`
-        /// returns if `Main` makes itself background while it is the only foreground thread —
-        /// and then `WaitForOtherThreads` returns at once whatever `Main` started afterwards
-        /// (measured on real .NET 10: `Main` goes background, starts a foreground worker that
-        /// sleeps for ever, returns 3; the process exits 3). So it is carried as state rather
-        /// than recomputed from the thread table when `Main` returns.
-        ///
-        /// CoreCLR arms this (`g_fWeControlLifetime`) in `RunMainPre`, which is also before
-        /// the entry type's class initialiser runs; PawPrint arms it only once `Main` itself is
-        /// installed, so a `.cctor` that sends the entry thread background and starts a
-        /// foreground worker is waited for here where real .NET would abandon it.
-        | Main of returns : MainReturn * shutdownSignalled : bool
-
+    /// A program ready to run `Main`, or running it: an opaque handle on the driver
+    /// (`MultiProgram`) of the one program, which owns the machine the program's process runs
+    /// on. `stepPrepared` steps it.
+    [<Struct>]
     type PreparedProgram =
-        {
-            State : IlMachineState
-            BaseClassTypes : BaseClassTypes<DumpedAssembly>
-            EntryThread : ThreadId
-            EntryFrame : EntryFrameKind
-            LastRan : ThreadId
-        }
+        internal
+            {
+                Driver : MultiProgram
+            }
+
+        /// The program's interpreter state as it currently stands.
+        member this.State : IlMachineState = this.Driver.Current.State
+
+        /// The base class types of the CoreLib the program runs against.
+        member this.BaseClassTypes : BaseClassTypes<DumpedAssembly> =
+            this.Driver.Current.BaseClassTypes
+
+        /// The thread `Main` runs on.
+        member this.EntryThread : ThreadId = this.Driver.Current.EntryThread
+
+        /// The thread that retired the program's most recent step, which the scheduler's
+        /// round-robin choice starts from.
+        member this.LastRan : ThreadId = this.Driver.Current.LastRan
+
+        /// The program with `state` in place of its interpreter state. `state`'s view of the
+        /// machine must descend from `this.State`'s, as any state a step or a syscall made from
+        /// it does: the driver writes it back into the machine the program runs on, and fails
+        /// loudly at the program's end if it cannot.
+        member this.WithState (state : IlMachineState) : PreparedProgram =
+            {
+                Driver =
+                    MultiProgram.withCurrent
+                        { this.Driver.Current with
+                            State = state
+                        }
+                        this.Driver
+            }
 
     type ProgramStartResult =
         | Ready of PreparedProgram
@@ -107,9 +98,9 @@ module Program =
         /// already in hand.
         | InitialisingClasses of mainArgs : ImmutableArray<CliType>
 
-    /// Startup in progress. Holds the machine state as a `PreparedProgram`, so the same
-    /// scheduler tick drives startup as drives `Main`, plus what remains to be done at each
-    /// phase boundary.
+    /// Startup in progress. Holds the driver of the program, as a `PreparedProgram` does, so
+    /// the same scheduler tick drives startup as drives `Main`, plus what remains to be done at
+    /// each phase boundary.
     ///
     /// This exists so a driver can *step* startup rather than having it run to completion
     /// behind a single call. Guest code runs here — a static initialiser may print, block, or
@@ -124,15 +115,15 @@ module Program =
     type Startup =
         private
             {
-                Prepared : PreparedProgram
+                Driver : MultiProgram
                 Phase : StartupPhase
                 /// Installs the `Main` frame once class initialisation has returned.
-                InstallMain : IlMachineState -> ImmutableArray<CliType> -> ProgramStartResult
+                InstallMain : MultiProgram -> ImmutableArray<CliType> -> ProgramStartResult
             }
 
         /// The machine state as it currently stands. A driver streaming guest output reads
         /// `Kernel.OutputLog` from here when startup ends without a `ProgramStartResult`.
-        member this.State : IlMachineState = this.Prepared.State
+        member this.State : IlMachineState = this.Driver.Current.State
 
     /// The result of stepping startup once. Mirrors `ProgramStepOutcome`, and for the same
     /// reason carries the step's `StepEffect`: a driver consumes it to stream guest writes as
@@ -147,922 +138,10 @@ module Program =
         | Completed of ProgramStartResult
         | Deadlocked of Startup * stuckThreads : string
 
-    /// Where each live thread is, for the deadlock reports below and for every host that
-    /// consumes a `Deadlocked` outcome. The status alone does not locate a guest — every thread
-    /// blocked on a monitor looks alike — so this names the frame each thread is in and, where
-    /// the guest was built with debug information, the source line it is on.
-    let private deadlockDescription (state : IlMachineState) : string = GuestLocation.describe state
-
-    /// Discriminator for a fired wait deadline: which subsystem owns the
-    /// parked thread, and therefore which `fireTimeout` implementation
-    /// must be called to wake it.
+    /// Advance the machine by one scheduler tick (`MultiProgram.step`).
     ///
-    /// Each subsystem reaches its waiters through a different queue and
-    /// each has its own contract for how the optimistic park-time eval
-    /// stack push is rewritten on timeout.
-    [<RequireQualifiedAccess>]
-    type private FiredDeadline =
-        | WaitHandle of handle : WaitHandleId
-        | MonitorWait of monitor : LowLevelMonitorId
-        | SyncBlockWait of lockObject : ManagedHeapAddress
-        /// `Monitor.TryEnter(obj, ms)` slowpath park on a contended
-        /// SyncBlock with a finite positive timeout. The waiter sits on
-        /// the SyncBlock's `AcquireQueue` (not its `WaitQueue`), and
-        /// `SyncBlockMonitor.fireAcquireTimeout` dequeues + rewrites the
-        /// optimistic `Int32 1` push to `Int32 0`.
-        | SyncBlockAcquire of lockObject : ManagedHeapAddress
-        /// `Thread.Join(int)` with a positive finite timeout. Carries no
-        /// payload because there is no per-primitive wait queue to
-        /// reference: the joiner is identified by the outer `(tid, kind)`
-        /// pair, and `Scheduler.fireJoinTimeout` reads its state directly
-        /// from the thread's status.
-        | JoinTimeout
-        /// `Thread.Sleep(int)` with a positive finite timeout. Carries no
-        /// payload because sleep has no per-primitive wait queue and no
-        /// optimistic eval-stack push to rewrite (Sleep returns `void`).
-        /// `Scheduler.fireSleepTimeout` reads state directly from the
-        /// thread's status and flips it back to `Runnable`.
-        | SleepTimeout
-        /// `WaitHandle.WaitAny` / `WaitAll` with a positive finite timeout.
-        /// Carries no payload because the waiter sits on *several* queues at
-        /// once, so no single primitive identifies it;
-        /// `WaitHandle.fireMultipleTimeout` reads the handle list from the
-        /// thread's status and dequeues it from every one of them.
-        | WaitHandlesTimeout
-
-    /// Project a thread status into its finite-timeout deadline against
-    /// the virtual clock, if any. Threads with no deadline (Runnable,
-    /// non-timed blocks, infinite waits) return `None`; threads parked
-    /// with a finite timeout return `Some (kind, absoluteVirtualClockTicks)`.
-    /// The `kind` is what tells the deadline-firing path which
-    /// subsystem's fire function to invoke.
-    let private waitDeadline (status : ThreadStatus) : (FiredDeadline * int64) option =
-        match status with
-        | ThreadStatus.BlockedOnWaitHandle (handle, Some deadline, _) ->
-            Some (FiredDeadline.WaitHandle handle, deadline)
-        | ThreadStatus.BlockedOnMonitorWait (monitor, Some deadline) ->
-            Some (FiredDeadline.MonitorWait monitor, deadline)
-        | ThreadStatus.BlockedOnSyncBlockWait (lockObject, Some deadline) ->
-            Some (FiredDeadline.SyncBlockWait lockObject, deadline)
-        | ThreadStatus.BlockedOnSyncBlockAcquire (lockObject, Some deadline) ->
-            Some (FiredDeadline.SyncBlockAcquire lockObject, deadline)
-        | ThreadStatus.BlockedOnJoin (_, Some deadline) -> Some (FiredDeadline.JoinTimeout, deadline)
-        | ThreadStatus.BlockedOnSleep (Some deadline) -> Some (FiredDeadline.SleepTimeout, deadline)
-        | ThreadStatus.BlockedOnWaitHandles (_, _, Some deadline) -> Some (FiredDeadline.WaitHandlesTimeout, deadline)
-        | ThreadStatus.BlockedOnWaitHandles (_, _, None)
-        | ThreadStatus.BlockedOnWaitHandle (_, None, _)
-        | ThreadStatus.BlockedOnMonitorWait (_, None)
-        | ThreadStatus.BlockedOnSyncBlockWait (_, None)
-        | ThreadStatus.BlockedOnSyncBlockAcquire (_, None)
-        | ThreadStatus.BlockedOnJoin (_, None)
-        | ThreadStatus.BlockedOnSleep None
-        // A call parked in the kernel keeps its deadline in its wake condition, where
-        // `syscallDeadlines` reads it, and it fires through `fireSyscallWakes`, which asks
-        // the kernel. There is deliberately no `FiredDeadline` case for one.
-        | ThreadStatus.BlockedInSyscall
-        | ThreadStatus.Runnable
-        | ThreadStatus.NotStarted _
-        | ThreadStatus.BlockedOnClassInit _
-        | ThreadStatus.BlockedOnMonitorAcquire _
-        | ThreadStatus.Terminated
-        | ThreadStatus.WaitingForForegroundThreads
-        | ThreadStatus.Parked -> None
-
-    /// Fire a timeout wake for every blocked-with-deadline thread whose
-    /// deadline is `<= now`, a reading of the virtual clock in its ticks.
-    ///
-    /// `now` is an argument rather than read from the state's kernel because
-    /// the clock is the machine's, and a process's view of a machine other
-    /// processes share holds a stale copy of it once another has moved it on.
-    /// Nothing here reads the kernel's POSIX half, so a state whose view is
-    /// stale in that way may be passed with the machine's clock. Each fire routes
-    /// through a per-subsystem fire function (WaitHandle dequeues from
-    /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
-    /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
-    /// — granting ownership directly if the monitor is unowned — and
-    /// rewrites `Int32 1 → Int32 0`; `SyncBlockMonitor.fireWaitTimeout`
-    /// does the same against the managed-heap object's SyncBlock,
-    /// preserving the snapshot reentrancy depth carried in `WaitQueue`;
-    /// `SyncBlockMonitor.fireAcquireTimeout` dequeues a slowpath
-    /// `TryEnter(obj, ms)` waiter from the SyncBlock's `AcquireQueue`
-    /// and rewrites `Int32 1 → Int32 0` without changing ownership).
-    ///
-    /// Fire order matters for `LowLevelMonitor` and `SyncBlockMonitor`
-    /// wait-timeout fires. When two waiters on the same primitive expire
-    /// in the same tick, the fire grants ownership to whichever fires
-    /// first against the unowned primitive, so the head of the owning
-    /// primitive's queue fires first, matching the FIFO contract enforced
-    /// everywhere else in the state machines (release, signalRelease,
-    /// pulse/pulseAll, applySpuriousWakeups AlwaysAll).
-    let private fireExpiredDeadlines (now : int64) (state : IlMachineState) : IlMachineState =
-        // `Map.foldBack` visits keys in descending order, so the resulting list is sorted by
-        // thread ID.
-        let expired =
-            (state.ThreadState, [])
-            ||> Map.foldBack (fun tid ts acc ->
-                match waitDeadline ts.Status with
-                | Some (kind, deadline) when deadline <= now -> (tid, kind) :: acc
-                | _ -> acc
-            )
-
-        let monitorQueuePosition (LowLevelMonitorId mid as monitorId : LowLevelMonitorId) (thread : ThreadId) : int =
-            let monitor = Map.find monitorId state.Kernel.LowLevelMonitors
-
-            match List.tryFindIndex (fun t -> t = thread) monitor.WaitQueue with
-            | Some i -> i
-            | None ->
-                failwith
-                    $"fireExpiredDeadlines: thread %O{thread} has BlockedOnMonitorWait status against monitor #%i{mid} but is not in its WaitQueue %A{monitor.WaitQueue}; structural invariant violated."
-
-        let syncBlockWaitQueuePosition (addr : ManagedHeapAddress) (thread : ThreadId) : int =
-            let block = IlMachineState.getSyncBlock addr state
-
-            match List.tryFindIndex (fun (t, _) -> t = thread) block.WaitQueue with
-            | Some i -> i
-            | None ->
-                failwith
-                    $"fireExpiredDeadlines: thread %O{thread} has BlockedOnSyncBlockWait status against object %O{addr} but is not in its WaitQueue %A{block.WaitQueue}; structural invariant violated."
-
-        let syncBlockAcquireQueuePosition (addr : ManagedHeapAddress) (thread : ThreadId) : int =
-            let block = IlMachineState.getSyncBlock addr state
-
-            match block.Lock with
-            | SyncBlockLock.Free ->
-                failwith
-                    $"fireExpiredDeadlines: thread %O{thread} has BlockedOnSyncBlockAcquire status against object %O{addr} but its SyncBlock is Free; structural invariant violated (acquire queue only exists when Held)."
-            | SyncBlockLock.Held locked ->
-                match List.tryFindIndex (fun (t, _) -> t = thread) locked.AcquireQueue with
-                | Some i -> i
-                | None ->
-                    failwith
-                        $"fireExpiredDeadlines: thread %O{thread} has BlockedOnSyncBlockAcquire status against object %O{addr} but is not in its AcquireQueue %A{locked.AcquireQueue}; structural invariant violated."
-
-        // Iterating `state.ThreadState` (a Map keyed on ThreadId) would let a
-        // later-parked waiter with a smaller thread id steal the lock from the
-        // FIFO head, so entries are sorted by their position in the owning
-        // primitive's `WaitQueue` (or `AcquireQueue`, for acquire-timeouts).
-        // Cross-primitive ordering is irrelevant — each fire touches a
-        // disjoint primitive/thread — so `WaitHandle` entries are ordered
-        // last and by ThreadId, which is deterministic; order is
-        // unobservable for that subsystem.
-        // Queue positions are computed against the input state, before any
-        // fires mutate `WaitQueue`s.
-        //
-        // Sort key: LowLevelMonitor entries first (group=0), then
-        // SyncBlock wait entries (group=1), then SyncBlock acquire
-        // entries (group=2), then WaitHandle entries (group=3), then
-        // Join entries (group=4), then Sleep entries (group=5). Within
-        // each subsystem-group, entries are keyed first by their
-        // primitive id (so distinct primitives are ordered
-        // deterministically but independently) and then by FIFO position
-        // in the primitive's queue (so the head of any contested
-        // primitive fires before its successors). For WaitHandle, queue
-        // order is unobservable for timeout fires, so ThreadId is used
-        // as a stable deterministic break. Join and Sleep have no
-        // per-primitive queue (the "primitive" is the target thread's
-        // status for Join, and the virtual clock itself for Sleep), so
-        // ThreadId is the only deterministic break.
-        let sortKey ((tid, kind) : ThreadId * FiredDeadline) : int * int * int =
-            match kind with
-            | FiredDeadline.MonitorWait monitorId ->
-                let (LowLevelMonitorId mid) = monitorId
-                0, mid, monitorQueuePosition monitorId tid
-            | FiredDeadline.SyncBlockWait addr ->
-                let (ManagedHeapAddress aid) = addr
-                1, aid, syncBlockWaitQueuePosition addr tid
-            | FiredDeadline.SyncBlockAcquire addr ->
-                let (ManagedHeapAddress aid) = addr
-                2, aid, syncBlockAcquireQueuePosition addr tid
-            | FiredDeadline.WaitHandle handleId ->
-                let (WaitHandleId hid) = handleId
-                let (ThreadId t) = tid
-                3, hid, t
-            | FiredDeadline.JoinTimeout ->
-                let (ThreadId t) = tid
-                4, t, 0
-            | FiredDeadline.SleepTimeout ->
-                let (ThreadId t) = tid
-                5, t, 0
-            | FiredDeadline.WaitHandlesTimeout ->
-                let (ThreadId t) = tid
-                6, t, 0
-
-        let expired = expired |> List.sortBy sortKey
-
-        expired
-        |> List.fold
-            (fun s (tid, kind) ->
-                match kind with
-                | FiredDeadline.WaitHandle handleId -> WaitHandle.fireTimeout tid handleId s
-                | FiredDeadline.WaitHandlesTimeout -> WaitHandle.fireMultipleTimeout tid s
-                | FiredDeadline.MonitorWait monitorId -> LowLevelMonitor.fireTimeout tid monitorId s
-                | FiredDeadline.SyncBlockWait addr -> SyncBlockMonitor.fireWaitTimeout tid addr s
-                | FiredDeadline.SyncBlockAcquire addr -> SyncBlockMonitor.fireAcquireTimeout tid addr s
-                | FiredDeadline.JoinTimeout -> Scheduler.fireJoinTimeout tid s
-                | FiredDeadline.SleepTimeout -> Scheduler.fireSleepTimeout tid s
-            )
-            state
-
-
-    /// Wake every thread whose syscall could get further now.
-    ///
-    /// One sweep for every parking syscall rather than one each, because the
-    /// question is the same for all of them, and the kernel answers it:
-    /// `UnixWait.wakes` reads each park's wake condition and decides which
-    /// waiters it wakes, so a new parking syscall needs no sweep here at all.
-    ///
-    /// Every park is re-entrant — the native frame stays and the caller's
-    /// program counter still names the call — so waking is exactly a flip to
-    /// `Runnable`, and the re-entered handler finishes the call from the caller's
-    /// own frame.
-    ///
-    /// Runs every tick beside `fireExpiredDeadlines` rather than being pushed by
-    /// the syscalls that make conditions true: a sweep asks the same question of
-    /// the same state each time, so a new producer cannot forget to wake anyone —
-    /// where a push from each producer would fail silently, as a deadlock, on the
-    /// first one that did. That matters most for `flock`, whose lock is released
-    /// by more than the obvious call: the holder's last `close` drops it too, and
-    /// nothing about `close` knows that somebody is waiting.
-    ///
-    /// A wake is not a promise. Two threads can be woken for one lock and only
-    /// one of them get it; the loser re-enters, finds it taken, and parks again
-    /// on the record it still holds. Of several threads waiting on one socket
-    /// event port, the kernel wakes one per event.
-    ///
-    /// The signal dispatcher, asleep in its read of the signal pipe, is asked
-    /// about with the rest (see `Scheduler.asleepInSyscall`) but never flipped:
-    /// `SignalDispatch.poll` finishes its read at the next tick.
-    let private fireSyscallWakes (state : IlMachineState) : IlMachineState =
-        // Before projecting the kernel, which allocates a `UnixSystem`: this runs
-        // on every tick of every workload, and almost none of them ever park.
-        // With no thread in `BlockedInSyscall` there is nothing to flip, whatever
-        // the dispatcher is doing.
-        match Scheduler.syscallWaiters state with
-        | [] -> state
-        | _ ->
-
-        (state, UnixWait.wakes (Scheduler.asleepInSyscall state) state.Kernel.System)
-        ||> List.fold (fun s (tid, _) ->
-            match (Map.find tid s.ThreadState).Status with
-            | ThreadStatus.Parked -> s
-            | _ -> Scheduler.wakeFromSyscall tid s
-        )
-
-    /// Every deadline a thread parked in a syscall is waiting for, as the first
-    /// tick of the virtual clock at or after it.
-    let private syscallDeadlines (state : IlMachineState) : int64 list =
-        match Scheduler.syscallWaiters state with
-        | [] -> []
-        | asleep ->
-            UnixWait.deadlines (Set.ofList asleep) state.Kernel.System
-            |> List.map ClockPal.firstTickAtOrAfter
-
-    /// Every finite wait deadline currently outstanding, in no particular order
-    /// and with duplicates where two threads are parked on the same instant:
-    /// the runtime-level waits' own deadlines, and those of the calls parked in
-    /// the kernel. The candidate set `ClockJitterStrategy.EagerDeadlines` draws
-    /// from, which is why it is the whole collection and not just the minimum
-    /// `nextDeadline` reports.
-    let private pendingDeadlines (state : IlMachineState) : int64 list =
-        let threadDeadlines =
-            state.ThreadState
-            |> Map.toList
-            |> List.choose (fun (_, ts) -> waitDeadline ts.Status |> Option.map snd)
-
-        threadDeadlines @ syscallDeadlines state
-
-    /// The minimum of `pendingDeadlines`, or `None` if no thread is parked with a
-    /// finite timeout. Used by the driver loop's jump-to-deadline fallback: if no
-    /// thread is Runnable but at least one has a finite-timeout wait outstanding,
-    /// advance `VirtualClockTicks` to the nearest such deadline so the wait can
-    /// resolve on the next pass.
-    ///
-    /// The clock-jump must not bump `StepCounter` — the spurious-wakeup
-    /// schedules are keyed on `StepCounter`, and a jump-driven tick is
-    /// deliberately *not* a real scheduler tick. Keeping the two clocks
-    /// separate is exactly why `VirtualClockTicks` is its own clock rather
-    /// than derived from `StepCounter`.
-    let private nextDeadline (state : IlMachineState) : int64 option =
-        match pendingDeadlines state with
-        | [] -> None
-        | deadlines -> Some (List.min deadlines)
-
-    let private logStepOutcome
-        (logger : ILogger)
-        (state : IlMachineState)
-        (thread : ThreadId)
-        (whatWeDid : WhatWeDid)
-        : unit
-        =
-        // Called once per interpreted IL instruction. `ActiveAssembly` is a by-name lookup over
-        // the loaded assemblies, and the parameterised `LogTrace` overload boxes its argument
-        // into an `obj[]` before the level is consulted, so both stay behind the check.
-        if not (logger.IsEnabled LogLevel.Trace) then
-            ()
-        else
-
-        match whatWeDid with
-        | WhatWeDid.Executed ->
-            logger.LogTrace (
-                "Executed one step; active assembly: {ActiveAssembly}",
-                state.ActiveAssembly(thread).Name.Name
-            )
-        | WhatWeDid.VoluntaryYield _ ->
-            logger.LogTrace (
-                "Executed one step (voluntary yield requested); active assembly: {ActiveAssembly}",
-                state.ActiveAssembly(thread).Name.Name
-            )
-        | WhatWeDid.Aborted fatal ->
-            logger.LogTrace (
-                "Step aborted the process ({FatalErrorCode}): {FatalErrorMessage}",
-                fatal.Code,
-                (fatal.Message |> Option.defaultValue "<no message>")
-            )
-        | WhatWeDid.UnhandledException exn ->
-            logger.LogTrace (
-                "Step ended the thread with an unhandled exception at {ExceptionObject}",
-                exn.ExceptionObject
-            )
-        | WhatWeDid.SuspendedForClassInit ->
-            logger.LogTrace "Suspended execution of current method for class initialisation."
-        | WhatWeDid.SuspendedForManagedCall ->
-            logger.LogTrace "Suspended execution of native handler for a managed call continuation."
-        | WhatWeDid.BlockedOnClassInit _ -> logger.LogTrace "Unable to execute because class has not yet initialised."
-        | WhatWeDid.ThrowingTypeInitializationException ->
-            logger.LogTrace "TypeInitializationException dispatched due to failed .cctor."
-
-    /// The run's end, `outcome`, of which `ended` is the kernel's account: the process's end
-    /// on a machine of its own, which closes every descriptor it held as a real exit does.
-    ///
-    /// Fails loudly if the machine will not end the process (`ProcessEndRefusal`). What the
-    /// process delivered to its standard streams stays readable from `outcome`'s state, which
-    /// is the machine as it stood before.
-    let private ending (ended : EndedProcess<ThreadId, NativeSignalHandler>) (outcome : RunOutcome) : RunOutcome =
-        match SimulatedMachine.endProcess ended (SimulatedMachine.ofSystem ended.EndedIn) with
-        | Error refusal ->
-            failwith
-                $"Program: the process ended (%O{ended.Termination}), and the machine would not close what it held: %s{ProcessEndRefusal.describe refusal}"
-        | Ok _ -> outcome
-
-    /// The run's end when a signal killed the process: `ended` is the kernel's answer to
-    /// the signal, and `state` the machine as it stood when the signal was sent.
-    let private signalTerminated
-        (state : IlMachineState)
-        (ended : EndedProcess<ThreadId, NativeSignalHandler>)
-        : RunOutcome
-        =
-        match ended.Termination with
-        | ProcessTermination.Signaled (signal, coreDumped) ->
-            RunOutcome.SignalTerminated (state, signal, coreDumped) |> ending ended
-        | ProcessTermination.Exited _ as other ->
-            failwith
-                $"Program: a signal was reported to have killed the process, but the kernel ended it by %O{other} (this is an interpreter bug)."
-
-    /// Where a tick's preamble leaves the program: at the scheduling decision, or ended.
-    [<RequireQualifiedAccess>]
-    type private Advanced =
-        /// The program, ready for the scheduler to pick a thread.
-        | Decide of PreparedProgram
-        /// The run ended between instructions, with this outcome.
-        | Ended of RunOutcome
-
-    /// The first half of a scheduler tick: everything that happens before the policy is asked
-    /// which thread runs next. Advancing the clocks, firing wait deadlines, letting the signal
-    /// dispatcher wake, and jumping the virtual clock forward if nothing is Runnable.
-    ///
-    /// Split out from `stepPrepared` because *this* is the moment at which "how many threads are
-    /// Runnable" becomes the answer the policy will act on. Every phase here can create
-    /// contention within the tick — a deadline firing, a spurious wake, the dispatcher becoming
-    /// Runnable — so a fork detector that probed the inter-tick state instead would miss forks
-    /// and hand a schedule-sweeping harness a prefix that is not actually forced. See
-    /// `runToNextFork`.
-    ///
-    /// Deliberately policy-independent: nothing here reads `state.Scheduling`, and a stochastic
-    /// policy's RNG is not advanced by a probe. That
-    /// is what makes it safe to run this, look at the result, and then run it again from the
-    /// original state on a later resume.
-    ///
-    /// Not idempotent: it advances `StepCounter` and the virtual clock. Callers hold the
-    /// *inter-tick* value if they want to be able to replay the tick.
-    ///
-    /// Ends the run instead if System.Native's dispatcher, handling a signal between
-    /// instructions, re-raises it at a default that kills the process.
-    let private advanceToDecision (prepared : PreparedProgram) : Advanced =
-        // Apply the spurious-wakeup strategies at the current tick, then
-        // advance the counter so the next iteration sees a fresh tick.
-        // For the default (`Disabled`) strategy each application is a fold
-        // over the identity and a single integer add. The two layers
-        // (LowLevel and SyncBlock) are independent waiters on disjoint
-        // primitive types, so the order between them at a given tick is
-        // unobservable; LowLevel is applied first.
-        let state =
-            LowLevelMonitor.applySpuriousWakeups
-                prepared.State.Kernel.SpuriousWakeup
-                prepared.State.Kernel.StepCounter
-                prepared.State
-
-        let state =
-            SyncBlockMonitor.applySpuriousWakeups state.Kernel.SyncBlockSpuriousWakeup state.Kernel.StepCounter state
-
-        // The tick this preamble is running, captured before the counter moves on so that clock
-        // jitter is keyed on the same number the two spurious-wakeup strategies just used. All
-        // three are fuzz dials a caller scripts by tick, and they would be treacherous to script
-        // against each other if "tick N" meant a different moment to each.
-        let tick = state.Kernel.StepCounter
-
-        // Threaded as a state rather than rebuilding `prepared` at each stage below: every stage
-        // from here to the return touches only `State`, so each rebuilt `PreparedProgram` existed
-        // only for the next stage to read `.State` straight back out of it. This function runs
-        // once per interpreted instruction, which is what made those wrappers worth removing.
-
-        // `EmulatedKernel.InstructionCostTicks` of virtual time per scheduler
-        // tick — see that constant for the rate and why it is what it is.
-        // Bumping in lock-step with `StepCounter` keeps both clocks pure
-        // functions of "how many scheduler ticks have elapsed", which is what
-        // tests rely on when driving the strategies without a real driver.
-        //
-        // `retireStep` rather than a record-copy piped through
-        // `withVirtualClockTicks`: it applies the same validation — so the horizon
-        // is still enforced at the writer, which this path cannot realistically
-        // reach (it would take ~9.2e12 retired instructions) but which should not
-        // hold only by coincidence — while costing one copy of a 31-field record
-        // instead of two. This runs once per interpreted instruction, where the
-        // second copy was ~8% of everything the interpreter allocated.
-        let state = state.WithKernel (EmulatedKernel.retireStep state.Kernel)
-
-        // Clock jitter: with the configured strategy's blessing, jump the clock
-        // onto a deadline some thread is already parked on, so that the timeout
-        // fires while other threads still had work left in the window rather
-        // than at the instruction count the guest's own arithmetic implies. Off
-        // by default, in which case this is one match on a DU case.
-        //
-        // Applied after the ordinary advance and before the expiry pass below,
-        // so a jitter-reached deadline fires in the very same pass as one that
-        // came due on its own: the rest of the tick cannot tell the two apart,
-        // which is the point.
-        //
-        // `StepCounter` is deliberately not bumped, exactly as the
-        // jump-to-deadline fallback below does not bump it: the jitter schedule
-        // and the spurious-wakeup schedules are both keyed on that counter, and
-        // a jump is the resolution of a timeout rather than a retired step.
-        let state =
-            match state.Kernel.ClockJitter with
-            // Taken before `pendingDeadlines`, which walks every thread and
-            // allocates: F# evaluates arguments eagerly, so passing it to
-            // `chooseJump` unconditionally would charge that walk to every tick
-            // of every run, in exchange for an answer that is `None` by
-            // definition. Only the disabled case is special-cased here — any
-            // future variant falls through to the full decision below rather
-            // than silently inheriting a fast path meant for "switched off".
-            | ClockJitterStrategy.Disabled -> state
-            | strategy ->
-
-            match ClockJitter.chooseJump strategy tick state.Kernel.VirtualClockTicks (pendingDeadlines state) with
-            | None -> state
-            // Through the validating setter, which is what faults if a guest's
-            // own timeout arithmetic has run the clock off the representable
-            // range; `chooseJump` guarantees the target is ahead of the clock,
-            // so the monotonicity half of that check cannot fire here.
-            | Some target -> state.MapKernel (EmulatedKernel.withVirtualClockTicks target)
-
-        // After advancing `VirtualClockTicks`, fire any wait deadlines that
-        // are now in the past. This runs every tick (not just on
-        // deadlock) so a timeout against a thread holding a release lock
-        // can still expire while other threads make progress: e.g.
-        // thread A is parked with a 50 ms timeout on a semaphore, and
-        // thread B is busy computing something else — A's deadline still
-        // fires when the clock reaches it, even though B keeps the
-        // scheduler from ever stalling.
-        let state = fireExpiredDeadlines state.Kernel.VirtualClockTicks state
-
-        // Run System.Native's signal handling before the scheduler picks its
-        // next thread: its native handler writes whatever the kernel delivers
-        // to the leader into the signal pipe, and a Parked dispatcher with a
-        // signal in the pipe reads it and is flipped to Runnable onto the
-        // managed callback, so the scheduler can pick it on the same tick.
-        // Before the syscall wakes, because writing to the pipe and reading
-        // from it change what a syscall parked on it is waiting for.
-        match SignalDispatch.poll prepared.BaseClassTypes state with
-        | SignalPoll.ProcessKilled (state, ended) -> Advanced.Ended (signalTerminated state ended)
-        | SignalPoll.Continues state ->
-
-        // Wake anything parked in a syscall whose wake condition now holds — a
-        // port that has become deliverable, a lock that has become available.
-        // Before the jump-to-deadline fallback below, so neither is mistaken for
-        // quiescence.
-        let state = fireSyscallWakes state
-
-        // Jump-to-deadline fallback: if no thread is Runnable but at
-        // least one is parked with a finite-timeout wait outstanding,
-        // advance `VirtualClockTicks` to the nearest pending deadline and
-        // fire it. This is what keeps a guest like `WaitOne(50)` against
-        // an unsignalled handle from deadlocking — without the jump, the
-        // clock would advance only when there's something to step, and
-        // there is nothing to step.
-        //
-        // The fallback loops because a single fire may not make any
-        // thread Runnable: `LowLevelMonitor.fireTimeout` moves a waiter
-        // out of `WaitQueue`, but if the monitor is still owned by a
-        // separate thread (which itself may be parked on a *later*
-        // deadline), the waiter becomes `BlockedOnMonitorAcquire` rather
-        // than `Runnable`. Stopping after one jump in that shape would
-        // declare deadlock even though the owner's later finite wait can
-        // still resolve and release the monitor. Each iteration either
-        // produces a Runnable thread (terminating the loop) or strictly
-        // advances `VirtualClockTicks` to the next outstanding deadline; the
-        // set of finite-deadline threads is finite and monotonically
-        // shrinks (no fire creates a new deadline), so the loop
-        // terminates.
-        //
-        // Each iteration sweeps the syscall waiters as well as firing the
-        // runtime-level deadlines, because a jump to a kernel park's deadline
-        // is resolved only by the kernel's wake: without the sweep that
-        // deadline would stay outstanding and be jumped to forever.
-        //
-        // Only `VirtualClockTicks` is advanced (not `StepCounter`), so the
-        // spurious-wakeup schedule is untouched. A jump-driven wake is
-        // not a scheduler tick — it is the resolution of a timeout that
-        // would otherwise be invisible.
-        let rec advanceUntilRunnableOrQuiescent (state : IlMachineState) : IlMachineState =
-            // Use the policy-independent existence check rather than calling
-            // `chooseNext` and discarding its returned state: a stochastic
-            // policy would otherwise advance its RNG once per deadline-jump
-            // probe, perturbing the scheduling stream without ever observing
-            // the result.
-            if Scheduler.hasAnyRunnable state then
-                state
-            else
-                match nextDeadline state with
-                | None -> state
-                | Some target ->
-                    let state =
-                        // The path that *can* reach the horizon: this jumps the clock straight
-                        // to a deadline without retiring a step, so a guest looping on
-                        // `Thread.Sleep(Int32.MaxValue)` advances it ~2.1e13 ticks per cheap
-                        // iteration. `withVirtualClockTicks` faults here, naming the wait that
-                        // ran time off the end, instead of letting the addition wrap and hand
-                        // some later sleeper a negative deadline that fires immediately.
-                        state.MapKernel (
-                            EmulatedKernel.withVirtualClockTicks (max state.Kernel.VirtualClockTicks target)
-                        )
-
-                    let state = fireExpiredDeadlines state.Kernel.VirtualClockTicks state
-                    advanceUntilRunnableOrQuiescent (fireSyscallWakes state)
-
-        { prepared with
-            State = advanceUntilRunnableOrQuiescent state
-        }
-        |> Advanced.Decide
-
-    /// True iff the process waits for `thread` before it can exit: what CoreCLR's
-    /// `ThreadStore::OtherThreadsComplete` counts, a foreground thread that has been started and
-    /// has not finished.
-    let private holdsProcessOpen (thread : ThreadState) : bool =
-        not thread.IsBackground && ThreadStatus.keepsProcessAlive thread.Status
-
-    /// How the process ends when the runtime aborts it on `thread`: CoreCLR's `PROCAbort`
-    /// ends in `abort()`, which the kernel answers with a death by SIGABRT.
-    let private abortTermination
-        (thread : ThreadId)
-        (state : IlMachineState)
-        : EndedProcess<ThreadId, NativeSignalHandler>
-        =
-        EmulatedKernel.abort thread state.Kernel
-
-    /// What one scheduler tick did. `Stepped` is every outcome a caller of `stepPrepared`
-    /// sees; `StartupCallReturned` is the entry thread's `EntryFrameKind.StartupCall`
-    /// returning, which ends a phase of startup rather than the process, and which only
-    /// `stepStartup` meets.
-    [<Struct>]
-    [<RequireQualifiedAccess>]
-    type private Tick =
-        | Stepped of outcome : ProgramStepOutcome
-        | StartupCallReturned of state : IlMachineState
-
-    /// `RunMain`'s `SetLatchedExitCode(*piRetVal)`: the moment an `int Main` returns, its return
-    /// value — which its `ret` left as the only value on the entry thread's eval stack — becomes
-    /// the latched exit code. A `void Main` latches nothing.
-    ///
-    /// The eval stack is exactly what the signature says by the time this runs:
-    /// `returnStackFrame` has already refused, as invalid CIL, a `Main` that returned with any
-    /// other number of values on it.
-    let private latchMainReturnValue
-        (returns : MainReturn)
-        (entry : ThreadId)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        match returns, state.ThreadState.[entry].MethodState.EvaluationStack.Values with
-        | MainReturn.Void, [] -> state
-        | MainReturn.Int32, [ EvalStackValue.Int32 (Int32Source.Verbatim code) ] ->
-            { state with
-                LatchedExitCode = code
-            }
-        | MainReturn.Int32, [ other ] ->
-            failwith
-                $"an int Main returned %O{other}, which is not a verbatim int32; PawPrint cannot report it as an exit code"
-        | MainReturn.Void, stack
-        | MainReturn.Int32, stack ->
-            failwith
-                $"logic error: Main (%O{returns}) returned with %d{List.length stack} values on its eval stack, which returnStackFrame should have refused as invalid CIL"
-
-    /// Finish a tick that did not end the run by itself: CoreCLR's `CheckForEEShutdown`, then
-    /// the exit `WaitForOtherThreads` is waiting for.
-    ///
-    /// `CheckForEEShutdown` runs whenever a component of `OtherThreadsComplete` changes — a
-    /// thread dying, a thread flipping to background — and latches `shutdownSignalled` if no
-    /// foreground thread is alive. It is run here after every continuing outcome rather than
-    /// only where those changes are known to happen, so that no handler that makes one can
-    /// forget it; the latch only ever goes one way, so checking more often than CoreCLR does
-    /// changes nothing. While `Main` is running and the entry thread is itself foreground, it
-    /// holds the process open on its own and the tick costs one map lookup, no scan.
-    ///
-    /// Once the entry thread is `WaitingForForegroundThreads` and the latch is set, the run
-    /// ends with `NormalExit`; otherwise `continuing` builds the tick's outcome from the
-    /// program with the latch brought up to date — which is `prepared` itself unless the latch
-    /// has just flipped, so the usual tick allocates nothing here. Inlined for the same reason
-    /// `annotating` is: this runs once per interpreted instruction.
-    let inline private afterStep
-        (prepared : PreparedProgram)
-        ([<InlineIfLambda>] continuing : PreparedProgram -> ProgramStepOutcome)
-        : ProgramStepOutcome
-        =
-        match prepared.EntryFrame with
-        | EntryFrameKind.StartupCall -> continuing prepared
-        | EntryFrameKind.Main (returns, shutdownSignalled) ->
-
-        let entry = prepared.State.ThreadState.[prepared.EntryThread]
-
-        let nowSignalled =
-            shutdownSignalled
-            || (not (holdsProcessOpen entry)
-                && not (prepared.State.ThreadState |> Map.exists (fun _ ts -> holdsProcessOpen ts)))
-
-        match entry.Status with
-        | ThreadStatus.WaitingForForegroundThreads when nowSignalled ->
-            // The host passes the latched exit code to `exit`, which ends in `exit_group`.
-            let ended =
-                EmulatedKernel.exitGroup prepared.EntryThread prepared.State.LatchedExitCode prepared.State.Kernel
-
-            RunOutcome.NormalExit (prepared.State, prepared.EntryThread, ended.Termination)
-            |> ending ended
-            |> ProgramStepOutcome.Completed
-        | _ ->
-            // The latch goes one way, so this rebuilds the program at most once per run; every
-            // other tick hands `prepared` on as it is.
-            if nowSignalled = shutdownSignalled then
-                continuing prepared
-            else
-                continuing
-                    { prepared with
-                        EntryFrame = EntryFrameKind.Main (returns, nowSignalled)
-                    }
-
-    /// The second half of a scheduler tick: ask the policy which thread runs next, run it, and
-    /// fold the outcome back into the thread states. `prepared` must already have been through
-    /// `advanceToDecision`; running this against an inter-tick value would consult the policy
-    /// about a Runnable set that a deadline or a spurious wake was about to change.
-    let private stepDecided (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : Tick =
-        let scheduledState, scheduledChoice =
-            Scheduler.chooseNext prepared.LastRan prepared.State
-
-        // Adopt the scheduler-updated state before stepping so that any RNG
-        // advancement the policy performed is reflected in the run-forward
-        // state — otherwise replaying the same seed would diverge on the
-        // first stochastic decision.
-        let prepared =
-            { prepared with
-                State = scheduledState
-            }
-
-        match scheduledChoice with
-        | None ->
-            // No Runnable threads and the entry thread didn't hit its ret. Every
-            // remaining thread is blocked, so progress is impossible.
-            Tick.Stepped (ProgramStepOutcome.Deadlocked (prepared, deadlockDescription prepared.State))
-        | Some nextThread ->
-            // `nextThread` has now retired a step, and that is true of *every* outcome below —
-            // including the ones that do not look like ordinary progress: a thread's final
-            // `Ret` arrives as `Terminated`, and the entry thread's synthetic `onlyRet` frame
-            // arrives as a `NormalExit` that the pre-`Main` pump then continues past. So the
-            // per-step scheduler bookkeeping that holds regardless of outcome is applied here,
-            // once, before we look at which outcome we got.
-            //
-            // Doing it here rather than in the individual arms is what makes it hard to get
-            // wrong: `mapState` is exhaustive over `ExecutionResult`, so a new outcome cannot
-            // quietly skip it. Outcome-*specific* consequences still belong in the arms, via
-            // `Scheduler.onStepOutcome` and `Scheduler.onThreadTerminated`.
-            let stepResult =
-                AbstractMachine.executeOneStep loggerFactory prepared.BaseClassTypes prepared.State nextThread
-                |> ExecutionResult.mapState (Scheduler.dischargeYieldDebts nextThread)
-
-            match stepResult with
-            | ExecutionResult.Terminated (state, terminatingThread) ->
-                if terminatingThread = prepared.EntryThread then
-                    match prepared.EntryFrame with
-                    | EntryFrameKind.StartupCall -> Tick.StartupCallReturned state
-                    | EntryFrameKind.Main (returns, _) ->
-                        // `Main` has returned. Its return value, if it has one, is latched as the
-                        // exit code now, and the entry thread keeps its final frame and waits for
-                        // the other foreground threads; the run ends below if there are none.
-                        logger.LogDebug (
-                            "Main returned on {Thread}; the process now waits for its other foreground threads",
-                            prepared.EntryThread
-                        )
-
-                        let state =
-                            state
-                            |> latchMainReturnValue returns prepared.EntryThread
-                            |> Scheduler.onMainReturned prepared.EntryThread
-
-                        // The `ret` retired a step, reported here as `WhatWeDid.Executed`, so it
-                        // gets that outcome's consequences — as the dispatcher's final `ret`
-                        // does below.
-                        let state = Scheduler.onStepOutcome prepared.EntryThread WhatWeDid.Executed state
-
-                        let prepared =
-                            { prepared with
-                                State = state
-                                LastRan = prepared.EntryThread
-                            }
-
-                        afterStep
-                            prepared
-                            (fun prepared ->
-                                ProgramStepOutcome.InstructionStepped (
-                                    prepared,
-                                    prepared.EntryThread,
-                                    WhatWeDid.Executed,
-                                    // `ExecutionResult.Terminated` carries no effect: a `ret`
-                                    // performs no I/O of its own.
-                                    StepEffect.NoEffect
-                                )
-                            )
-                        |> Tick.Stepped
-                elif PosixSignalShim.signalThread state.Kernel.PosixSignalShim = Some terminatingThread then
-                    // The shim's signal-dispatch thread's handler frame
-                    // has returned past its bottom; `Ret` surfaces that as a
-                    // `Terminated` outcome because the bottom frame has no
-                    // `ReturnState`. Reset the dispatcher to its idle Parked
-                    // shape so the next deliverable signal can wake it again,
-                    // and let the loop continue: this thread isn't *really*
-                    // terminated, the dispatcher is just between handler
-                    // invocations.
-                    match SignalDispatch.reParkAfterHandler terminatingThread state with
-                    | SignalPoll.ProcessKilled (state, ended) ->
-                        // The callback reported the signal unhandled, and the loop's
-                        // `SystemNative_HandleNonCanceledPosixSignal` re-raised it at a
-                        // default that kills the process.
-                        Tick.Stepped (ProgramStepOutcome.Completed (signalTerminated state ended))
-                    | SignalPoll.Continues state ->
-
-                    // The dispatcher retired a step and this branch reports it as
-                    // `WhatWeDid.Executed`, so give it that outcome's consequences — waking
-                    // anything parked BlockedOnClassInit behind it. (The yield-debt half of
-                    // the bookkeeping has already happened, in the discharge above.)
-                    let state = Scheduler.onStepOutcome terminatingThread WhatWeDid.Executed state
-
-                    let prepared =
-                        { prepared with
-                            State = state
-                            LastRan = terminatingThread
-                        }
-
-                    afterStep
-                        prepared
-                        (fun prepared ->
-                            ProgramStepOutcome.InstructionStepped (
-                                prepared,
-                                terminatingThread,
-                                WhatWeDid.Executed,
-                                // The signal dispatcher's handler frame returning past its
-                                // bottom arrives as `ExecutionResult.Terminated`, which carries
-                                // no effect: the step performed no I/O of its own.
-                                StepEffect.NoEffect
-                            )
-                        )
-                    |> Tick.Stepped
-                else
-                    let state = Scheduler.onThreadTerminated terminatingThread state
-
-                    let prepared =
-                        { prepared with
-                            State = state
-                            LastRan = terminatingThread
-                        }
-
-                    afterStep
-                        prepared
-                        (fun prepared -> ProgramStepOutcome.WorkerTerminated (prepared, terminatingThread))
-                    |> Tick.Stepped
-            | ExecutionResult.ProcessExit (state, exitingThread) ->
-                // `Environment.Exit` passes the latched exit code to `exit`, which ends in
-                // `exit_group`.
-                let ended =
-                    EmulatedKernel.exitGroup exitingThread state.LatchedExitCode state.Kernel
-
-                RunOutcome.ProcessExit (state, exitingThread, ended.Termination)
-                |> ending ended
-                |> ProgramStepOutcome.Completed
-                |> Tick.Stepped
-            | ExecutionResult.Aborted (state, abortingThread, message) ->
-                let ended = abortTermination abortingThread state
-
-                RunOutcome.Aborted (state, abortingThread, message, ended.Termination)
-                |> ending ended
-                |> ProgramStepOutcome.Completed
-                |> Tick.Stepped
-            | ExecutionResult.SignalTerminated (state, ended) ->
-                Tick.Stepped (ProgramStepOutcome.Completed (signalTerminated state ended))
-            | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
-                let ended = abortTermination terminatingThread state
-
-                RunOutcome.GuestUnhandledException (state, terminatingThread, exn, ended.Termination)
-                |> ending ended
-                |> ProgramStepOutcome.Completed
-                |> Tick.Stepped
-            | ExecutionResult.Stepped (state, whatWeDid, effect) ->
-                logStepOutcome logger state nextThread whatWeDid
-
-                let state = Scheduler.onStepOutcome nextThread whatWeDid state
-
-                let prepared =
-                    { prepared with
-                        State = state
-                        LastRan = nextThread
-                    }
-
-                afterStep
-                    prepared
-                    (fun prepared -> ProgramStepOutcome.InstructionStepped (prepared, nextThread, whatWeDid, effect))
-                |> Tick.Stepped
-
-    /// <summary>
-    /// Run <paramref name="tick" />, annotating any host failure with where the guest was at
-    /// <paramref name="state" />.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// PawPrint fails by <c>failwith</c> in some 2,400 places, and almost none of them can name
-    /// the guest: the least informative messages of all come from pure helpers inside the opcode
-    /// implementations, which have no <c>IlMachineState</c> to consult and should not grow one
-    /// just to describe a failure. Annotating at the tick covers all of them at once.
-    /// </para>
-    /// <para>
-    /// A *whole* tick must be inside, not just the instruction. Work that can fail sits on both
-    /// sides of it: <c>advanceToDecision</c> applies spurious wakeups and moves the virtual
-    /// clock — which faults at its horizon — before the instruction, and
-    /// <c>dischargeYieldDebts</c>, <c>onStepOutcome</c> and <c>onThreadTerminated</c> run after.
-    /// Those failures are every bit as guest-provoked: <c>onThreadTerminated</c> refusing a
-    /// worker that exited still holding a monitor is a diagnostic *about the guest*, and is far
-    /// less useful without knowing which guest code let go of it.
-    /// </para>
-    /// <para>
-    /// Hence the invariant this combinator exists to make checkable: <c>advanceToDecision</c> and
-    /// <c>stepDecided</c> are both private, and *every* call to either is inside an
-    /// <c>annotating</c>. There are three such sites — <c>stepTick</c>, and the two in the
-    /// fork-prefix sweep — and grepping for the two names finds exactly them. Adding a fourth
-    /// call site outside a wrapper is the one way to reintroduce the gap.
-    /// </para>
-    /// <para>
-    /// The state described is the one the tick *started* from. The failure happened partway
-    /// through, so there is no consistent later state to report.
-    /// </para>
-    /// <para>
-    /// <c>inline</c> with <c>InlineIfLambda</c> because <c>stepPrepared</c> is per-tick: taking
-    /// the body as a first-class function would allocate an <c>FSharpFunc</c> capturing the
-    /// logger and the program state on every interpreted instruction — some 20 million of them
-    /// in a bounded run — purely to serve a path that normally never fires. Inlined, the caller
-    /// keeps the exception region and nothing else.
-    /// </para>
-    /// </remarks>
-    let inline private annotating (state : IlMachineState) ([<InlineIfLambda>] tick : unit -> 'a) : 'a =
-        try
-            tick ()
-        with
-        // Already annotated: a nested tick would otherwise repeat the thread summary once per
-        // level, and the outermost frame's guest position is the least specific of them.
-        | :? GuestFailureException -> reraise ()
-        | e ->
-            // `TryCreate` is total over both the lookup *and* the message construction, so a
-            // failure to annotate reraises the original rather than replacing it.
-            match GuestFailureException.TryCreate (e, state) with
-            | Some annotated -> raise annotated
-            | None -> reraise ()
-
-    /// One scheduler tick, inside `annotating`: `stepDecided` after `advanceToDecision`.
-    let private stepTick (loggerFactory : ILoggerFactory) (logger : ILogger) (prepared : PreparedProgram) : Tick =
-        annotating
-            prepared.State
-            (fun () ->
-                match advanceToDecision prepared with
-                | Advanced.Decide advanced -> stepDecided loggerFactory logger advanced
-                | Advanced.Ended outcome -> Tick.Stepped (ProgramStepOutcome.Completed outcome)
-            )
-
-    /// Advance the machine by one scheduler tick.
-    ///
-    /// What the entry thread's bottom frame returning means depends on `prepared.EntryFrame`:
+    /// What the entry thread's bottom frame returning means depends on what it is running
+    /// (`EntryFrameKind`):
     ///   * `StartupCall`: the pumped call is done, which ends a phase of startup rather than the
     ///     run, whatever the other threads are doing. `stepStartup` steps a program still
     ///     starting up, and moves it to its next phase then; this fails loudly. The entry thread
@@ -1084,9 +163,34 @@ module Program =
         (prepared : PreparedProgram)
         : ProgramStepOutcome
         =
-        match stepTick loggerFactory logger prepared with
-        | Tick.Stepped outcome -> outcome
-        | Tick.StartupCallReturned _ ->
+        match MultiProgram.step loggerFactory logger prepared.Driver with
+        | DriverTick.InstructionStepped (driver, ranThread, whatWeDid, effect) ->
+            ProgramStepOutcome.InstructionStepped (
+                {
+                    Driver = driver
+                },
+                ranThread,
+                whatWeDid,
+                effect
+            )
+        | DriverTick.WorkerTerminated (driver, terminatingThread) ->
+            ProgramStepOutcome.WorkerTerminated (
+                {
+                    Driver = driver
+                },
+                terminatingThread
+            )
+        // The machine the process's end leaves holds no process, and a run of one program has
+        // nothing more to do with it.
+        | DriverTick.Ended (outcome, _) -> ProgramStepOutcome.Completed outcome
+        | DriverTick.Deadlocked (driver, stuck) ->
+            ProgramStepOutcome.Deadlocked (
+                {
+                    Driver = driver
+                },
+                stuck
+            )
+        | DriverTick.StartupCallReturned _ ->
             failwith
                 "Program.stepPrepared: the entry thread's startup call returned, which ends a phase of startup; a program still starting up is stepped by stepStartup"
 
@@ -1177,9 +281,20 @@ module Program =
                     // F# source can declare.
                     failwith $"Main method returns %O{returns}; only a void or int32 Main is supported"
 
+        // `KernelConfig.toKernel`, keeping the machine's part of the configuration for the
+        // driver, whose clock it describes. The clock is checked first, so that a host that
+        // misconfigured it finds out before anything boots.
+        let machineConfig, processConfig = KernelConfig.split kernelConfig
+        let clock = MachineConfig.clock "KernelConfig" machineConfig
+
+        let kernel =
+            MachineConfig.boot "KernelConfig" "KernelConfig" machineConfig processConfig
+
+        let machine, view = MultiProgram.ofBooted kernel.System
+
         let state =
             IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
-            |> fun s -> s.MapKernel (fun _ -> KernelConfig.toKernel kernelConfig)
+            |> fun s -> s.MapKernel (fun _ -> EmulatedKernel.withUnix view kernel)
             |> fun s ->
                 match pctSeed with
                 | None -> s
@@ -1451,8 +566,9 @@ module Program =
             =
             loadInitialState state, StartupPhase.InitialisingClasses mainArgs
 
-        let installMain (state : IlMachineState) (mainArgs : ImmutableArray<CliType>) : ProgramStartResult =
+        let installMain (driver : MultiProgram) (mainArgs : ImmutableArray<CliType>) : ProgramStartResult =
             logger.LogInformation "Main method class now initialised"
+            let state = driver.Current.State
 
             // Now that BCL initialisation has taken place and the user-code classes are constructed,
             // overwrite the main thread completely using the already-concretized method. The entry
@@ -1519,25 +635,33 @@ module Program =
 
             ProgramStartResult.Ready
                 {
-                    State = state
-                    BaseClassTypes = baseClassTypes
-                    EntryThread = mainThread
-                    // Nothing can have signalled shutdown yet: the entry thread is about to
-                    // run `Main` as a foreground thread, and only `Main` arms the latch.
-                    EntryFrame = EntryFrameKind.Main (mainReturn, false)
-                    LastRan = mainThread
+                    Driver =
+                        MultiProgram.withCurrent
+                            {
+                                State = state
+                                BaseClassTypes = baseClassTypes
+                                EntryThread = mainThread
+                                // Nothing can have signalled shutdown yet: the entry thread is about
+                                // to run `Main` as a foreground thread, and only `Main` arms the latch.
+                                EntryFrame = EntryFrameKind.Main (mainReturn, false)
+                                LastRan = mainThread
+                            }
+                            driver
                 }
 
         let atPhase (state : IlMachineState) (phase : StartupPhase) : Startup =
             {
-                Prepared =
-                    {
-                        State = state
-                        BaseClassTypes = baseClassTypes
-                        EntryThread = mainThread
-                        EntryFrame = EntryFrameKind.StartupCall
-                        LastRan = mainThread
-                    }
+                Driver =
+                    MultiProgram.create
+                        clock
+                        machine
+                        {
+                            State = state
+                            BaseClassTypes = baseClassTypes
+                            EntryThread = mainThread
+                            EntryFrame = EntryFrameKind.StartupCall
+                            LastRan = mainThread
+                        }
                 Phase = phase
                 InstallMain = installMain
             }
@@ -1642,50 +766,49 @@ module Program =
     /// Advance startup by one guest instruction, crossing a phase boundary when the entry
     /// thread's current frame returns.
     let stepStartup (loggerFactory : ILoggerFactory) (logger : ILogger) (startup : Startup) : StartupStepOutcome =
-        match stepTick loggerFactory logger startup.Prepared with
-        | Tick.StartupCallReturned state ->
+        match MultiProgram.step loggerFactory logger startup.Driver with
+        | DriverTick.StartupCallReturned driver ->
             match startup.Phase with
             | StartupPhase.SeedingAppContext onReturn
             | StartupPhase.InitialisingCommandLine onReturn ->
-                let state, phase = onReturn state
+                let state, phase = onReturn driver.Current.State
 
                 StartupStepOutcome.PhaseAdvanced
                     { startup with
-                        Prepared =
-                            { startup.Prepared with
-                                State = state
-                            }
+                        Driver =
+                            MultiProgram.withCurrent
+                                { driver.Current with
+                                    State = state
+                                }
+                                driver
                         Phase = phase
                     }
             | StartupPhase.InitialisingClasses mainArgs ->
-                StartupStepOutcome.Completed (startup.InstallMain state mainArgs)
-        | Tick.Stepped outcome ->
-
-        match outcome with
-        | ProgramStepOutcome.InstructionStepped (prepared, ran, whatWeDid, effect) ->
+                StartupStepOutcome.Completed (startup.InstallMain driver mainArgs)
+        | DriverTick.InstructionStepped (driver, ran, whatWeDid, effect) ->
             StartupStepOutcome.Stepped (
                 { startup with
-                    Prepared = prepared
+                    Driver = driver
                 },
                 ran,
                 whatWeDid,
                 effect
             )
-        | ProgramStepOutcome.WorkerTerminated (prepared, terminated) ->
+        | DriverTick.WorkerTerminated (driver, terminated) ->
             StartupStepOutcome.WorkerTerminated (
                 { startup with
-                    Prepared = prepared
+                    Driver = driver
                 },
                 terminated
             )
-        | ProgramStepOutcome.Deadlocked (prepared, stuck) ->
+        | DriverTick.Deadlocked (driver, stuck) ->
             StartupStepOutcome.Deadlocked (
                 { startup with
-                    Prepared = prepared
+                    Driver = driver
                 },
                 stuck
             )
-        | ProgramStepOutcome.Completed outcome ->
+        | DriverTick.Ended (outcome, _) ->
 
         // The process ended before `Main` was installed.
         match startup.Phase with
@@ -1780,7 +903,7 @@ module Program =
     /// and the choice: a mid-tick value would be a new kind of resumable
     /// thing, and handing it to the ordinary driver would run the preamble twice — advancing
     /// `StepCounter` twice and shifting the spurious-wakeup schedule. Resuming therefore re-runs
-    /// the contended tick's preamble, which is policy-independent (see `advanceToDecision`) and
+    /// the contended tick's preamble, which is policy-independent (see `MultiProgram.advance`) and
     /// so reproduces it exactly.
     ///
     /// Construct one only through `runToFirstFork` / `runToNextFork`: the representation is
@@ -1845,10 +968,10 @@ module Program =
     /// already run and contention has already occurred. But that is a chain of facts about wake
     /// paths rather than a structural property, so check the conclusion and crash rather than
     /// silently emit a snapshot that does not commute.
-    let private checkYieldDidNotStraddle (ran : ThreadId) (whatWeDid : WhatWeDid) (after : PreparedProgram) : unit =
+    let private checkYieldDidNotStraddle (ran : ThreadId) (whatWeDid : WhatWeDid) (after : IlMachineState) : unit =
         match whatWeDid with
         | WhatWeDid.VoluntaryYield _ ->
-            match Scheduler.tryContenders after.State with
+            match Scheduler.tryContenders after with
             | None -> ()
             | Some contenders ->
                 failwith
@@ -1878,11 +1001,12 @@ module Program =
         (prepared : PreparedProgram)
         : PrefixOutcome
         =
-        match annotating prepared.State (fun () -> advanceToDecision prepared) with
-        | Advanced.Ended outcome -> PrefixOutcome.NeverForked (RunEnd.Ended outcome)
+        match MultiProgram.annotating prepared.State (fun () -> MultiProgram.advance prepared.Driver) with
+        | Advanced.Ended (outcome, _) -> PrefixOutcome.NeverForked (RunEnd.Ended outcome)
+        | Advanced.Deadlocked (_, stuck) -> PrefixOutcome.DeadlockedBeforeFork stuck
         | Advanced.Decide advanced ->
 
-        match Scheduler.tryContenders advanced.State with
+        match Scheduler.tryContenders advanced.Current.State with
         | Some contenders ->
             PrefixOutcome.ForkedAt
                 {
@@ -1891,16 +1015,32 @@ module Program =
                 }
         | None ->
 
-        match annotating advanced.State (fun () -> stepDecided loggerFactory logger advanced) with
-        | Tick.StartupCallReturned _ ->
+        match
+            MultiProgram.annotating advanced.Current.State (fun () -> MultiProgram.decide loggerFactory logger advanced)
+        with
+        | DriverTick.StartupCallReturned _ ->
             failwith
                 "Program.runToNextFork: the entry thread's startup call returned, but a fork snapshot is taken only once Main is installed"
-        | Tick.Stepped (ProgramStepOutcome.Completed outcome) -> PrefixOutcome.NeverForked (RunEnd.Ended outcome)
-        | Tick.Stepped (ProgramStepOutcome.Deadlocked (_, stuck)) -> PrefixOutcome.DeadlockedBeforeFork stuck
-        | Tick.Stepped (ProgramStepOutcome.WorkerTerminated (next, _)) -> runToNextFork loggerFactory logger next
-        | Tick.Stepped (ProgramStepOutcome.InstructionStepped (next, ran, whatWeDid, _)) ->
-            checkYieldDidNotStraddle ran whatWeDid next
-            runToNextFork loggerFactory logger next
+        | DriverTick.Deadlocked _ ->
+            failwith
+                "Program.runToNextFork: the program deadlocked in the decision half of a tick, which only the preamble reports (this is an interpreter bug)."
+        | DriverTick.Ended (outcome, _) -> PrefixOutcome.NeverForked (RunEnd.Ended outcome)
+        | DriverTick.WorkerTerminated (next, _) ->
+            runToNextFork
+                loggerFactory
+                logger
+                {
+                    Driver = next
+                }
+        | DriverTick.InstructionStepped (next, ran, whatWeDid, _) ->
+            checkYieldDidNotStraddle ran whatWeDid next.Current.State
+
+            runToNextFork
+                loggerFactory
+                logger
+                {
+                    Driver = next
+                }
 
     /// Read the guest assembly and run it — startup and all — up to its first contended
     /// scheduling decision.
@@ -1930,10 +1070,11 @@ module Program =
             // `stepStartup`; that is a handful of map operations against `executeOneStep`, and it
             // is paid once for a whole sweep rather than once per seed.
             let contenders =
-                match annotating startup.Prepared.State (fun () -> advanceToDecision startup.Prepared) with
-                | Advanced.Decide probed -> Scheduler.tryContenders probed.State
-                // `stepStartup` runs the same preamble, and ends the same way.
-                | Advanced.Ended _ -> None
+                match MultiProgram.annotating startup.State (fun () -> MultiProgram.advance startup.Driver) with
+                | Advanced.Decide probed -> Scheduler.tryContenders probed.Current.State
+                // `stepStartup` runs the same preamble, and ends or deadlocks the same way.
+                | Advanced.Ended _
+                | Advanced.Deadlocked _ -> None
 
             match contenders with
             | Some contenders -> PrefixOutcome.ForkedDuringStartup contenders
@@ -1946,7 +1087,7 @@ module Program =
                 PrefixOutcome.NeverForked outcome
             | StartupStepOutcome.Deadlocked (_, stuck) -> PrefixOutcome.DeadlockedBeforeFork stuck
             | StartupStepOutcome.Stepped (startup, ran, whatWeDid, _) ->
-                checkYieldDidNotStraddle ran whatWeDid startup.Prepared
+                checkYieldDidNotStraddle ran whatWeDid startup.State
                 goStartup startup
             | StartupStepOutcome.WorkerTerminated (startup, _)
             | StartupStepOutcome.PhaseAdvanced startup -> goStartup startup
@@ -1989,6 +1130,4 @@ module Program =
             | None -> state
             | Some seed -> IlMachineState.withPctSeed seed state
 
-        { snapshot.Prepared with
-            State = state
-        }
+        snapshot.Prepared.WithState state
