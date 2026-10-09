@@ -181,7 +181,7 @@ module TestCpuPlacement =
         |> fun state -> state.MapKernel (fun _ -> kernelWith count)
 
     let private cpuOf (thread : ThreadId) (state : IlMachineState) : CpuId =
-        UnixTaskTable.cpuOf thread state.Kernel.Tasks
+        UnixTaskState.cpu (EmulatedKernel.taskOf thread state.Kernel.Tasks)
 
     /// The processor a constructed, unstarted thread will run on once started.
     let private constructedCpu (thread : ThreadId) (state : IlMachineState) : CpuId =

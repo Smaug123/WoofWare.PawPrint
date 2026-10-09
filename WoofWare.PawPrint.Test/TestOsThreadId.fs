@@ -40,7 +40,7 @@ module TestOsThreadId =
     let private machine () : IlMachineState = machineOn KernelConfig.Default
 
     let private idOf (thread : ThreadId) (state : IlMachineState) : uint64 =
-        OsThreadId.toUInt64 (UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks)
+        OsThreadId.toUInt64 (UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks))
 
     // --- What the shim reports of an id ---
 
@@ -53,7 +53,7 @@ module TestOsThreadId =
                     LeaderThreadId = Some id
                 }
 
-        UnixTaskTable.osThreadIdOf kernel.Leader kernel.Tasks
+        UnixTaskState.osThreadId (EmulatedKernel.taskOf kernel.Leader kernel.Tasks)
 
     [<Test>]
     let ``the 64-bit shim reports the id whole, and the 32-bit one its low half with 0 as the sentinel`` () =
@@ -188,7 +188,7 @@ module TestOsThreadId =
                 |> shouldEqual (Map.keys expected |> List.ofSeq)
 
                 for KeyValue (thread, expectedId) in expected do
-                    let id = UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
+                    let id = UnixTaskState.osThreadId (EmulatedKernel.taskOf thread state.Kernel.Tasks)
 
                     (thread, OsThreadIdPal.tryGetUInt32 id)
                     |> shouldEqual (thread, uint32 expectedId)

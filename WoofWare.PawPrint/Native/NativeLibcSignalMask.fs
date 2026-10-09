@@ -198,7 +198,7 @@ module NativeLibcSignalMask =
                 $"%s{operation}: thread %O{ctx.Thread} waits for a signal, but PawPrint delivers signals to the leader %O{state.Kernel.Leader} alone, so nothing could end the wait. Make the call on the main thread."
 
         let answered =
-            match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
+            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
             | Some ParkedSyscall.SigSuspend -> UnixSignal.finishSigsuspend ctx.Thread state.Kernel.System
             | Some other ->
                 // Unreachable: a task parked in another syscall is not running

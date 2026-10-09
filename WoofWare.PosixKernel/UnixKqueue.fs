@@ -127,7 +127,7 @@ type KeventOutcome =
     /// report, and for an `nevents` of zero or less.
     | Answered of events : Kevent list
     /// `kevent` did not return. The calling task is parked, and sleeps until
-    /// `WakeCondition.satisfied` of this condition is non-empty and
+    /// `UnixWait.satisfied` of the task is non-empty and
     /// `UnixWait.wakes` wakes it; then `UnixKqueue.finishKevent` finishes the
     /// call.
     | WouldBlock of WakeCondition

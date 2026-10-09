@@ -540,12 +540,29 @@ type UnixTaskState =
         }
 
 /// Reading one task.
+///
+/// A client gets a task's state by looking its name up in `UnixSystem.tasks`,
+/// which holds no entry for a name the process has no task by, so each reader
+/// here answers for every state it can be given.
 [<RequireQualifiedAccess>]
 module UnixTaskState =
+
+    /// The logical processor `task` runs on, as `sched_getcpu(3)` reports it.
+    /// See `UnixTaskState.Cpu`.
+    let cpu (task : UnixTaskState) : CpuId = task.Cpu
+
+    /// The OS thread ID `task` reports, as `gettid(2)` does. See
+    /// `UnixTaskState.OsThreadId`.
+    let osThreadId (task : UnixTaskState) : OsThreadId = task.OsThreadId
 
     /// The syscall `task` is blocked in, and where that park stands in park
     /// order, if it is blocked in one. See `UnixTaskState.Parked`.
     let park (task : UnixTaskState) : TaskPark option = task.Parked
+
+    /// The syscall `task` is blocked in, if it is blocked in one: `park`
+    /// without its place in park order.
+    let parkedIn (task : UnixTaskState) : ParkedSyscall option =
+        task.Parked |> Option.map (fun park -> park.Syscall)
 
 /// The tasks a simulated process owns, by whatever a client uses to name one.
 ///
@@ -590,21 +607,15 @@ module UnixTaskTable =
             }
             tasks
 
-    /// The logical processor `name` runs on, as `sched_getcpu` reports it.
-    let cpuOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : CpuId =
-        (get name tasks).Cpu
-
-    /// The OS thread id `name` reports to the process.
-    let osThreadIdOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : OsThreadId =
-        (get name tasks).OsThreadId
-
-    /// The syscall `name` is blocked in, if any.
-    let parkedFor<'Task when 'Task : comparison>
+    /// The syscall `name` is blocked in, if any. Fails loudly, as `get` does,
+    /// for a name that is not a task; a client reads `UnixTaskState.parkedIn`
+    /// of the state it looked up instead.
+    let internal parkedFor<'Task when 'Task : comparison>
         (name : 'Task)
         (tasks : Map<'Task, UnixTaskState>)
         : ParkedSyscall option
         =
-        (get name tasks).Parked |> Option.map (fun park -> park.Syscall)
+        UnixTaskState.parkedIn (get name tasks)
 
     /// The park `name` is in, with its place in park order, if it is parked.
     let internal parkOf<'Task when 'Task : comparison>

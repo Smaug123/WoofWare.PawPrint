@@ -304,7 +304,7 @@ module GuestLocation =
         |> Map.toList
         |> List.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
         |> List.map (fun (threadId, ts) ->
-            // Looked up rather than asked for through `UnixTaskTable.parkedFor`, which
+            // Looked up rather than asked for through `EmulatedKernel.taskOf`, which
             // raises for a thread with no task at all: this renderer runs while
             // diagnosing a stuck guest, and a diagnostic that throws replaces the
             // problem with itself. Both absences are reported below instead.

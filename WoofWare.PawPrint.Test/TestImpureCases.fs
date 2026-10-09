@@ -1348,7 +1348,9 @@ module TestImpureCases =
                     SignalState.pending state.Kernel.Signals |> shouldEqual []
 
                     state.Kernel.Tasks
-                    |> Map.forall (fun thread _ -> (UnixTaskTable.parkedFor thread state.Kernel.Tasks).IsNone)
+                    |> Map.forall (fun thread _ ->
+                        (UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
+                    )
                     |> shouldEqual true
                 )
         }
@@ -2638,7 +2640,9 @@ module TestImpureCases =
                 AssertTerminalState =
                     Some (fun state ->
                         state.Kernel.Tasks
-                        |> Map.forall (fun thread _ -> (UnixTaskTable.parkedFor thread state.Kernel.Tasks).IsNone)
+                        |> Map.forall (fun thread _ ->
+                            (UnixTaskState.parkedIn (EmulatedKernel.taskOf thread state.Kernel.Tasks)).IsNone
+                        )
                         |> shouldEqual true
                     )
             }

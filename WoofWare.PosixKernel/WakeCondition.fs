@@ -374,12 +374,9 @@ module WakeCondition =
     /// can tell *why* it woke — an event, or its deadline — which a real kernel
     /// reports differently.
     ///
-    /// Pure, and cheap enough to poll: a client that has parked a task asks this
-    /// of each candidate state until it is non-empty, then finishes the call
-    /// against the object the condition names — see `SyscallOutcome.WouldBlock`
-    /// for why that is not the same as re-issuing it against the descriptor it
-    /// was made through. It is never a promise that finishing succeeds: another
-    /// task can take the lock in between, and the caller then parks again.
+    /// Pure, and cheap enough to poll. It is never a promise that finishing
+    /// succeeds: another task can take the lock in between, and the caller
+    /// then parks again.
     ///
     /// **A condition is only ever asked of a system whose kernel objects it
     /// still names.** A waiter on a real kernel holds a reference to the open
@@ -391,10 +388,15 @@ module WakeCondition =
     /// "grantable", which wakes the task into an `EBADF` no kernel produces,
     /// and "not yet", which sleeps forever.
     ///
+    /// Internal because a condition built by hand, or kept from a park that
+    /// has since ended, can name a description that has gone. A client asks
+    /// `UnixWait.satisfied` about a task, which reads the condition from the
+    /// task's own park, and that park holds what it names.
+    ///
     /// A task whose call a close has ended (`WakePrimitive.EndedByClose`)
     /// answers that primitive alone: the call holds nothing any more, and the
     /// descriptions its other primitives name may have gone with the close.
-    let satisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal satisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (condition : WakeCondition)
         (system : UnixSystem<'Task, 'Handler>)
@@ -584,7 +586,7 @@ type SyscallOutcome =
     /// The entry point returned.
     | Answered of SyscallAnswer
     /// The entry point did not return. The calling task sleeps until
-    /// `WakeCondition.satisfied` of this condition is non-empty, and then
+    /// `UnixWait.satisfied` of the task is non-empty, and then
     /// finishes the call; what sleeping means, and when to re-ask, are the client's
     /// scheduler's business, which is why this library has no opinion on either.
     ///

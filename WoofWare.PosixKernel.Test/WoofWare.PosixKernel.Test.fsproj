@@ -86,6 +86,7 @@
     <Compile Include="TestSocketFuzz.fs" />
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestPublicSurface.fs" />
+    <Compile Include="TestTotalQueries.fs" />
     <Compile Include="TestXmlDocumentation.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestPathCopyIn.fs" />

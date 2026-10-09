@@ -106,7 +106,7 @@ module TestMultiProcess =
         let view = viewOf pid machine
         UnixSystem.processId view |> shouldEqual pid
 
-        UnixTaskTable.osThreadIdOf 0 view.Tasks
+        UnixTaskState.osThreadId (UnixTaskTable.get 0 view.Tasks)
         |> OsThreadId.toUInt64
         |> shouldEqual 4244UL
 
@@ -139,7 +139,10 @@ module TestMultiProcess =
         pids |> List.map ProcessId.toInt32 |> shouldEqual [ 501 ; 502 ]
 
         pids
-        |> List.map (fun pid -> UnixTaskTable.osThreadIdOf 0 (viewOf pid machine).Tasks |> OsThreadId.toUInt64)
+        |> List.map (fun pid ->
+            UnixTaskState.osThreadId (UnixTaskTable.get 0 (viewOf pid machine).Tasks)
+            |> OsThreadId.toUInt64
+        )
         |> shouldEqual [ 9001UL ; 9002UL ]
 
         assertClean machine
@@ -195,7 +198,7 @@ module TestMultiProcess =
             | Ok launched -> launched
             | Error refusal -> failwith $"launch: %s{ProcessCreationRefusal.describe refusal}"
 
-        UnixTaskTable.osThreadIdOf 0 (viewOf pid machine).Tasks
+        UnixTaskState.osThreadId (UnixTaskTable.get 0 (viewOf pid machine).Tasks)
         |> OsThreadId.toUInt64
         |> shouldEqual (System.UInt64.MaxValue - 1UL)
 

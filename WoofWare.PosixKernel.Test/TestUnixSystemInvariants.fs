@@ -831,7 +831,7 @@ module TestUnixSystemInvariants =
                     // Task 1's own ID, which the allocator still records, is
                     // held by no task now.
                     UnixSystemDefect.LiveThreadIdsMismatch (
-                        Set.singleton (UnixTaskTable.osThreadIdOf 1 system.Tasks),
+                        Set.singleton (UnixTaskState.osThreadId (UnixTaskTable.get 1 system.Tasks)),
                         Set.empty
                     )
                 ]
@@ -854,7 +854,7 @@ module TestUnixSystemInvariants =
             [
                 UnixSystemDefect.LeaderThreadIdNotProcessId (
                     0,
-                    UnixTaskTable.osThreadIdOf 0 linux.Tasks,
+                    UnixTaskState.osThreadId (UnixTaskTable.get 0 linux.Tasks),
                     ProcessId.parseOrFail "test" 17
                 )
             ]
@@ -881,9 +881,10 @@ module TestUnixSystemInvariants =
                  |> Launched.leaderThreadId id
                  |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0))
                     .Tasks
-                |> UnixTaskTable.osThreadIdOf 0
+                |> UnixTaskTable.get 0
+                |> UnixTaskState.osThreadId
 
-            let replaced = UnixTaskTable.osThreadIdOf 1 linux.Tasks
+            let replaced = UnixTaskState.osThreadId (UnixTaskTable.get 1 linux.Tasks)
 
             foreign,
             { linux with
@@ -936,7 +937,11 @@ module TestUnixSystemInvariants =
         |> UnixSystem.checkInvariants
         |> shouldEqual
             [
-                UnixSystemDefect.OsThreadIdNotMintable (1, UnixTaskTable.osThreadIdOf 1 darwin.Tasks, behind)
+                UnixSystemDefect.OsThreadIdNotMintable (
+                    1,
+                    UnixTaskState.osThreadId (UnixTaskTable.get 1 darwin.Tasks),
+                    behind
+                )
             ]
 
     [<Test>]

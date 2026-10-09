@@ -861,7 +861,7 @@ module TestSignalDispatch =
 
     /// The read the dispatcher's task sleeps in, if it sleeps in one.
     let private dispatcherRead (dispatcher : ThreadId) (state : IlMachineState) : ParkedPipeRead option =
-        match UnixTaskTable.parkedFor dispatcher state.Kernel.Tasks with
+        match UnixTaskState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
         | Some (ParkedSyscall.PipeRead read) -> Some read
         | None -> None
         | Some other -> failwith $"the dispatcher is parked in %A{other}"
@@ -1017,7 +1017,7 @@ module TestSignalDispatch =
         (state.ThreadState |> Map.find dispatcher).Status
         |> shouldEqual ThreadStatus.Runnable
 
-        UnixTaskTable.parkedFor reader state.Kernel.Tasks
+        UnixTaskState.parkedIn (EmulatedKernel.taskOf reader state.Kernel.Tasks)
         |> Option.isSome
         |> shouldEqual true
 

@@ -1,7 +1,6 @@
 namespace WoofWare.PosixKernel.Test
 
 open System.Collections.Immutable
-open System.Reflection
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -639,21 +638,3 @@ module TestDeviceFileSystem =
         match UnixPathResolution.chdir (PathArg.ofText "/dev") system with
         | Error (PathRefusal.UnmodelledFileSystem _) -> ()
         | other -> failwith $"chdir /dev on Darwin: expected a refusal, got %A{other}"
-
-    /// A refusal of a path into Darwin's devfs names the devfs root's inode,
-    /// and this library models nothing on that filesystem. So no public
-    /// function of `UnixPathResolution` takes a bare inode: a client reaches an
-    /// inode only through a path or a descriptor, every path into devfs is
-    /// refused, and so no descriptor names an inode on it.
-    [<Test>]
-    let ``no public path-resolution function takes a bare inode`` () : unit =
-        let resolution =
-            typeof<StatRefusal>.Assembly.GetType ("WoofWare.PosixKernel.UnixPathResolution", true)
-
-        resolution.GetMethods (BindingFlags.Public ||| BindingFlags.Static ||| BindingFlags.DeclaredOnly)
-        |> Array.filter (fun m ->
-            m.GetParameters ()
-            |> Array.exists (fun p -> p.ParameterType = typeof<InodeNumber>)
-        )
-        |> Array.map (fun m -> m.Name)
-        |> shouldBeEmpty

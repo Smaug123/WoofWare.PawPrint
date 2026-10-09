@@ -42,7 +42,7 @@ type AcceptOutcome =
     | DroppedConnection of error : UnixError
     /// The call did not return: the listener is blocking and its accept queue
     /// is empty. The calling task is parked, and sleeps until
-    /// `WakeCondition.satisfied` of this condition is non-empty and
+    /// `UnixWait.satisfied` of the task is non-empty and
     /// `UnixWait.wakes` wakes it; then `UnixConnection.finishAccept` finishes
     /// the call.
     | WouldBlock of WakeCondition
@@ -1393,17 +1393,16 @@ module UnixConnection =
     /// from the *description the call was made through*, and a `SocketId` does
     /// not name one. `accept` applies that, having the descriptor.
     ///
-    /// The state transition on its own, without the entry point's screens, for a
-    /// client that wants to put a kernel into a state where a connection has
-    /// been accepted. `accept` is what a syscall goes through.
+    /// The state transition on its own, without the entry point's screens.
+    /// `accept` is what a syscall goes through, and what a client calls.
     ///
     /// Partial: `socketId` must be a listening socket with a non-empty queue,
     /// and a descriptor below the bound (`SimulatedUnixPlatform.descriptorBound`)
     /// must be free. `accept` answers EAGAIN (or parks) for an empty one, and
     /// EINVAL/EOPNOTSUPP for a socket that is not a listening stream socket, and
     /// refuses a full table, so reaching this in any other state is a bug in
-    /// the caller.
-    let acceptConnection<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    /// the caller. Internal for that reason.
+    let internal acceptConnection<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (system : UnixSystem<'Task, 'Handler>)
         : int * TcpConnection * UnixSystem<'Task, 'Handler>
