@@ -612,7 +612,7 @@ module UnixMachineState =
     /// The socket that is the `connectionEnd` end of `connectionId`
     /// (`SocketPhase.connectionEnd`), if one is: none for a server end still
     /// in a listener's accept queue, nor for an end whose socket has closed.
-    let socketHoldingEnd
+    let internal socketHoldingEnd
         (connectionId : ConnectionId)
         (connectionEnd : ConnectionEnd)
         (machine : UnixMachineState)
@@ -763,7 +763,7 @@ module UnixMachineState =
     /// docs/plans/2026-10-07-tcp-byte-transfer): a fresh socket binds the
     /// survivor's exact endpoint once a reset has reached it, at either end,
     /// though `getsockname` still reports the port; after a FIN it cannot.
-    let resetReleasedPort (socket : SocketDescription) (machine : UnixMachineState) : bool =
+    let internal resetReleasedPort (socket : SocketDescription) (machine : UnixMachineState) : bool =
         match SocketPhase.connectionEnd socket.Phase with
         | None -> false
         | Some (connectionId, connectionEnd) ->
