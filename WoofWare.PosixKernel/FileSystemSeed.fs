@@ -24,7 +24,7 @@ open System.Collections.Immutable
 ///
 /// Every entry has an optional owner. `None` means the owner the seed is
 /// realised with, which whoever realises it states explicitly
-/// (`VirtualFileSystem.ofFileSystemSeed`'s `defaultOwner`); it does not mean
+/// (`UnixBootImage.withFileSystem`'s `defaultOwner`); it does not mean
 /// "the same owner as the directory holding this entry".
 [<RequireQualifiedAccess>]
 type SeedEntry =
@@ -61,8 +61,8 @@ module SeedEntry =
     /// The umask a seeded symbolic link was created under, which is the `umask
     /// 022` the other defaults here assume: a seed describes a tree some other
     /// process built, so the umask of the process the seed is booted into
-    /// never applied to it. Only Darwin's links are affected; see
-    /// `SimulatedUnixPlatform.symlinkCreationPermissions`.
+    /// never applied to it. Only Darwin's links are affected: Linux gives every
+    /// link 0o777 whatever the umask, and Darwin 0o777 less the umask.
     let symlinkCreatorsUmask : PermissionBits = PermissionBits 0o022
 
     /// A regular file with the mode a `umask 022` process's `open(O_CREAT)`

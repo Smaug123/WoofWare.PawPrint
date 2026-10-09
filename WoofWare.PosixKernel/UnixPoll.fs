@@ -15,11 +15,11 @@ type PollRefusal =
     /// targets it will accept, and `poll(2)` accepts any descriptor.
     | UnmodelledTarget of fd : int
     /// Under Darwin, the entry asks a socket of a kind whose kqueue filters
-    /// this kernel does not model (see `DarwinReadiness.modelsSocket`) for a
-    /// bit that registers one.
+    /// this kernel does not model (anything but a stream socket of `AF_INET`
+    /// or `AF_INET6`) for a bit that registers one.
     | UnmodelledSocket of fd : int * domain : SocketDomain * kind : SocketKind
     /// Under Linux, the entry names a socket of a kind whose readiness this
-    /// kernel does not model (see `LinuxReadiness.modelsSocket`), whatever was
+    /// kernel does not model, whatever was
     /// asked: `HUP` is reported unasked, so even `events = 0` reads the level.
     ///
     /// That is an `AF_UNIX` `SOCK_SEQPACKET` socket. Its `poll` row is
@@ -54,7 +54,7 @@ type PollRefusal =
     /// which this kernel does not record.
     | EventsBesideDeadline
     /// Nothing is ready, and the timeout ends past the last instant the
-    /// machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`,
+    /// machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`,
     /// an `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
     /// `timeoutMilliseconds` overflows it.
     | DeadlineBeyondClock of nanosecondsSinceBoot : int64 * timeoutMilliseconds : int
@@ -165,7 +165,7 @@ type EpollWaitRefusal =
     /// pending after a fault is unmeasured.
     | UnmeasuredCopyOutFault of epoll : OpenFileDescriptionId
     /// Nothing is deliverable, and the timeout ends past the last instant the
-    /// machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`, an
+    /// machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`, an
     /// `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus
     /// `timeoutMilliseconds` overflows it.
     | DeadlineBeyondClock of nanosecondsSinceBoot : int64 * timeoutMilliseconds : int
@@ -310,7 +310,7 @@ type EpollCtlRefusal =
     /// which events, is not measured.
     | PipeTarget of targetFd : int
     /// An `EPOLL_CTL_ADD` whose target is a socket of a kind whose readiness
-    /// this kernel does not model (see `LinuxReadiness.modelsSocket`): an
+    /// this kernel does not model: an
     /// `AF_UNIX` `SOCK_SEQPACKET` socket, which Linux registers. What a wait
     /// reports for one is unmeasured.
     | UnmeasuredSocketKind of targetFd : int * domain : SocketDomain * kind : SocketKind
@@ -431,8 +431,8 @@ module UnixPoll =
     /// `MOD` of an edge-triggered registration without `EPOLLEXCLUSIVE`,
     /// `EPOLLONESHOT` or `EPOLLWAKEUP`, whatever other bits it carries. The
     /// registration stores the caller's `events` with `EPOLLERR` and `EPOLLHUP`
-    /// added, and a wait reports the target's readiness masked by that (see
-    /// `LinuxReadiness`); an `ADD` or `MOD` whose target is ready under the new
+    /// added, and a wait reports the target's readiness masked by that; an
+    /// `ADD` or `MOD` whose target is ready under the new
     /// mask makes the registration pending at once, and a `MOD` of an entry
     /// already pending leaves its place alone. An `ADD` or `MOD` that would
     /// succeed with one of the modes this library does not model, and an
@@ -1296,7 +1296,7 @@ module UnixPoll =
     /// `IN|RDNORM|PRI|RDBAND|HUP`, `EVFILT_WRITE` for any of `OUT|WRBAND`, and
     /// `EVFILT_VNODE` for any of the vnode bits (see `DarwinPollEvents`); an
     /// entry whose registration fails answers `POLLNVAL`; and each filter's
-    /// report is folded into its entry by `KqueuePoll.callback`. So a request
+    /// report is folded into its entry's `revents`. So a request
     /// of none of those bits reports nothing, even for a descriptor that is not
     /// open; one descriptor named by several entries reports into the last of
     /// them alone; and a reported hang-up suppresses `POLLOUT`. A call with
@@ -1490,7 +1490,8 @@ module UnixPoll =
     ///
     /// Delivery walks the epoll instance's pending registrations in order, reporting each
     /// one whose target is still ready and consuming each one walked, stale or
-    /// not (see `EpollReadyList.drain`). A wait that finds something answers it
+    /// not; the entries a full `maxEvents` spared stay pending in order. A wait
+    /// that finds something answers it
     /// whatever the timeout. One that finds nothing answers no events at once
     /// for a timeout of 0; parks `task` for a positive timeout until an event is
     /// deliverable or `milliseconds` have passed on the machine's monotonic

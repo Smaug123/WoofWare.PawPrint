@@ -53,7 +53,7 @@ type internal AccessRequest =
 /// inode's group.
 ///
 /// Every rule that depends on who the caller is reads one of these rather
-/// than comparing IDs itself. `Standing.toward` derives it from a process's
+/// than comparing IDs itself. The kernel derives it from a process's
 /// credentials and the inode's owner.
 ///
 /// Any combination of the three is one some caller can be in: root can own an
@@ -123,8 +123,8 @@ type SetGroupIdOnWrite =
     ///
     /// Only a writer who owns the file has been measured, and only a writer in the file's
     /// group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID file
-    /// on behalf of any other writer, privileged or not, <c>PermissionBits.afterContentChangingWrite</c>
-    /// answers <c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c> rather than guess.
+    /// on behalf of any other writer, privileged or not, the write is refused
+    /// (<c>SetIdChangeRefusal.UnmeasuredDarwinWrite</c>) rather than guessed at.
     /// </remarks>
     /// <example>
     /// This is the case on Darwin.
@@ -158,8 +158,8 @@ type SetIdBitsOnTruncation =
     /// <remarks>
     /// Only a truncating process that owns the file has been measured, and only one in the
     /// file's group when the file is set-group-ID. Asked about a set-user-ID or set-group-ID
-    /// file on behalf of any other process, privileged or not, <c>PermissionBits.afterTruncation</c>
-    /// answers <c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c> rather than guess.
+    /// file on behalf of any other process, privileged or not, the truncation is refused
+    /// (<c>SetIdChangeRefusal.UnmeasuredDarwinTruncation</c>) rather than guessed at.
     /// </remarks>
     /// <example>
     /// Darwin behaves this way.
@@ -223,9 +223,8 @@ module SetIdChangeRefusal =
 /// What a privileged caller is granted when it asks to execute something that
 /// is not a directory: `X_OK` on a regular file or a symbolic link.
 ///
-/// An unprivileged caller's rule is the same on every modelled Unix, and is the
-/// one `PermissionBits.deniedTo` applies to the other questions: see
-/// `PermissionBits.executionDenied`.
+/// An unprivileged caller's rule is the same on every modelled Unix: it is
+/// refused unless the triple its standing selects has the execute bit.
 [<RequireQualifiedAccess>]
 type PrivilegedExecution =
     /// Granted exactly when at least one of the three execute bits is set,
@@ -234,9 +233,9 @@ type PrivilegedExecution =
     ///
     /// This is Linux.
     | NeedsAnExecuteBit
-    /// What a privileged caller is granted has not been measured, so
-    /// `PermissionBits.executionDenied` answers
-    /// `ExecutionRefusal.UnmeasuredPrivilegedCaller` rather than guess.
+    /// What a privileged caller is granted has not been measured, so a call
+    /// that asks is refused (`ExecutionRefusal.UnmeasuredPrivilegedCaller`)
+    /// rather than guessed at.
     ///
     /// This is Darwin, where measuring it needs root.
     | Unmeasured
@@ -268,10 +267,9 @@ type LinkReadRule =
     /// This is Linux, where no syscall gives a link any mode but 0777.
     | ModeIgnored
     /// An unprivileged caller is refused unless the triple its standing
-    /// selects has the read bit, as `PermissionBits.deniedTo` judges
-    /// `AccessRequest.Read`. What a privileged caller is granted has not been
-    /// measured, so `PermissionBits.linkReadDenied` answers
-    /// `LinkReadRefusal.UnmeasuredPrivilegedCaller` rather than guess.
+    /// selects has the read bit. What a privileged caller is granted has not
+    /// been measured, so a call that asks is refused
+    /// (`LinkReadRefusal.UnmeasuredPrivilegedCaller`) rather than guessed at.
     ///
     /// This is Darwin, where measuring the privileged caller needs root.
     | ReadBitOfSelectedTriple
@@ -297,7 +295,7 @@ module LinkReadRefusal =
 /// asks for.
 ///
 /// An unprivileged caller's rule is the same on every modelled Unix, so it is
-/// not a parameter: see `PermissionBits.afterModeChange`.
+/// not a parameter: see `UnixPathResolution.chmod`.
 [<RequireQualifiedAccess>]
 type PrivilegedModeChange =
     /// The inode gets exactly the twelve bits asked for, whether or not the
@@ -306,8 +304,8 @@ type PrivilegedModeChange =
     /// This is Linux.
     | SetsRequestedBits
     /// What a privileged caller's mode change does has not been measured, so
-    /// `PermissionBits.afterModeChange` answers
-    /// `ModeChangeRefusal.UnmeasuredPrivilegedCaller` rather than guess.
+    /// the change is refused (`ModeChangeRefusal.UnmeasuredPrivilegedCaller`)
+    /// rather than guessed at.
     ///
     /// This is Darwin, where measuring it needs root.
     | Unmeasured

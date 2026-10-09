@@ -37,15 +37,16 @@ type RenameWalkOrder =
     | ParentsThenFinals
     /// The source finished before the destination is looked at at all — its
     /// pathname included, and including the two refusals Darwin's source-side
-    /// `namei` makes for itself under rename semantics. See
-    /// `RenameRules.sourceScreen`.
+    /// `namei` makes for itself under rename semantics.
     | SourceThenDestination
 
+// The ordering half lives in `RenameRules.linuxVerdict` and
+// `RenameRules.darwinVerdict`, for the reason `UnlinkRules.verdict` gives.
 /// Everything a kernel does differently when `rename(2)` moves a name.
 ///
-/// Two fields, and the rest of the divergence — the *order* of the refusals and
-/// the errno vocabulary — lives in `RenameRules.linuxVerdict` and
-/// `RenameRules.darwinVerdict`, for the reason `UnlinkRules.verdict` gives.
+/// Two fields. The rest of the divergence — the *order* of the refusals and
+/// the errno vocabulary — follows from the platform's flavour alone, so it
+/// is not a field here.
 /// `rename` diverges more than any operation before it: the two flavours
 /// disagree about where the permission checks sit, about *which* directory's
 /// write bit a directory-over-directory rename even consults, and about where

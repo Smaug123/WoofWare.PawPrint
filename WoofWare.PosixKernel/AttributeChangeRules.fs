@@ -33,7 +33,7 @@ type SymlinkModeChange =
     /// a caller who could not have changed it anyway. Linux.
     | NotSupported
     /// The link's own mode changes, by the rule `chmod(2)` applies to a
-    /// regular file (`PermissionBits.afterModeChange`), set-ID and sticky bits
+    /// regular file (see `UnixPathResolution.chmod`), set-ID and sticky bits
     /// included, moving the link's `ctime` and nothing of its target's: this
     /// is `lchmod`. Darwin.
     | ChangesLink

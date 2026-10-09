@@ -47,7 +47,7 @@ type AcceptOutcome =
     /// the call.
     | WouldBlock of WakeCondition
     /// The call was asleep, a signal with a handler interrupted it, and the call
-    /// restarts (`SyscallInterruption.Restart`): it never returns. The task is
+    /// restarts: it never returns. The task is
     /// no longer parked. Once the handlers have run, the client issues the
     /// `accept` again with the arguments it was first made with.
     ///

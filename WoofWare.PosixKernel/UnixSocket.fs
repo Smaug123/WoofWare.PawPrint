@@ -21,12 +21,10 @@ type SockaddrCopySyscall =
 /// too short to reach `sa_family`, and Linux's `move_addr_to_kernel` reads at
 /// any positive length.
 ///
-/// Shared by `bind(2)` and `connect(2)`, which judge the length and the copy
-/// alike -- `SimulatedUnixPlatform.bindAddressLength` is named for the first and
-/// used by the second because the two were measured to agree exactly -- but not
-/// always in the same place: Linux's `connect` copies the sockaddr in before it
-/// asks whether the descriptor is a socket, where its `bind` and both of
-/// Darwin's ask first.
+/// Shared by `bind(2)` and `connect(2)`, which were measured to judge the
+/// length and the copy alike, but not always in the same place: Linux's
+/// `connect` copies the sockaddr in before it asks whether the descriptor is a
+/// socket, where its `bind` and both of Darwin's ask first.
 [<RequireQualifiedAccess>]
 type SockaddrCopyAdmission =
     /// Answered without the sockaddr being read at all -- a bad descriptor, a
@@ -100,7 +98,7 @@ type BindRefusal =
     /// Refused rather than recorded: this library models no group membership
     /// and no interface to receive or broadcast on, so nothing downstream could
     /// honour the binding. Every bind of such an address that fails is answered
-    /// with its measured errno; see `SimulatedUnixPlatform.bindGroupAddressRule`.
+    /// with its measured errno.
     | UnmodelledMulticast of socket : SocketId * address : uint32
     /// The bind asked for any free port and every port in the ephemeral range is
     /// taken.
@@ -1201,7 +1199,15 @@ module UnixSocket =
     ///
     /// Which existing bindings the new one conflicts with depends on
     /// `SO_REUSEADDR` as `setsockopt` last left it, on this socket and on the
-    /// others; see `SimulatedUnixPlatform.bindConflict`.
+    /// others. Both flavours answer `EADDRINUSE` for two sockets on one port
+    /// with overlapping addresses (the wildcard overlaps every address), and
+    /// relax that under `SO_REUSEADDR` in different ways. Linux relaxes it when
+    /// both sockets set the flag and the bound one is not listening. Darwin
+    /// relaxes it when the new socket sets the flag, whatever the bound one
+    /// does, for an address that differs from the bound one's (the wildcard
+    /// beside a specific address, listening or not) and for the exact endpoint
+    /// of an established connection. Linux's `listen` is judged by the same
+    /// rule.
     ///
     /// Answers where the socket ended up, which for a request of port 0 is a
     /// port this kernel chose.
@@ -2146,10 +2152,10 @@ module UnixSocket =
     ///   hundredths over 100, rounded toward zero).
     /// - `SO_ERROR` is the raw ECONNREFUSED of a refusal still pending
     ///   (`SocketPhase.Refused RefusalError.Pending`), the raw error a reset
-    ///   left pending on a connected socket (`TcpTransfer.pendingError`), and 0
+    ///   left pending on a connected socket, and 0
     ///   otherwise. Reading a pending error takes it: a refused socket is left
     ///   `Refused RefusalError.Reported`, and a connected one with nothing
-    ///   pending (`TcpTransfer.takeError`), whether the copy-out then succeeds
+    ///   pending, whether the copy-out then succeeds
     ///   or not. Only a call that fails before reading the option leaves the
     ///   error pending: one answered at the admission, or a Linux one
     ///   declaring a negative length.

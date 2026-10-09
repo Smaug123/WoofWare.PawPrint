@@ -41,22 +41,20 @@ type WakePrimitive =
     /// has ended every wait on it (see `KqueueState.Drained`).
     | KqueueDrained of kqueue : OpenFileDescriptionId
     /// A wait for events on the kqueue the open file description `kqueue`
-    /// names would report at least one now (`KqueueQueue.hasDeliverableEvent`).
+    /// names would report at least one now.
     ///
     /// Every waiter on one kqueue wakes for it, and the first to finish takes
     /// what it reports; the rest wait again.
     | KqueueEventDeliverable of kqueue : OpenFileDescriptionId
     /// The open file description `description` presents at least one of
-    /// `conditions`, in the numbering `<poll.h>` and `<sys/epoll.h>` share, as
-    /// `LinuxReadiness.ofDescription` reads its level.
+    /// `conditions`, in the numbering `<poll.h>` and `<sys/epoll.h>` share.
     ///
     /// What a `poll(2)` entry waits for, with `conditions` its request plus the
     /// `POLLERR` and `POLLHUP` a poll reports unasked. It never waits on a
     /// epoll instance, whose level is not modelled.
     | DescriptorReady of description : OpenFileDescriptionId * conditions : uint32
     /// The Darwin `poll` the waiting task is asleep in would report something
-    /// were it to scan the kqueue it made for itself now
-    /// (`KqueuePoll.reportable`).
+    /// were it to scan the kqueue it made for itself now.
     ///
     /// Names no kernel object, as `SignalDeliverable` names none: the kqueue
     /// is the waiter's own, named by its park (`ParkedKqueuePoll.Queue`). Holds only
@@ -86,7 +84,7 @@ type WakePrimitive =
     | PipeWriteEndClosed of reader : OpenFileDescriptionId
     /// The pipe whose write end the open file description `writer` names has
     /// room for a sleeping write of `count` bytes, the first `written` of them
-    /// already in, to put more in (`PipeBuffer.resumeTakes`).
+    /// already in, to put more in.
     ///
     /// What a blocking `write(2)` into a pipe with no room for the rest of it
     /// waits for, beside `PipeReadEndClosed`. Carries the write's progress
@@ -107,8 +105,7 @@ type WakePrimitive =
     /// of it, which `PipeHasRoom` is.
     | PipeReadWhileNonBlocking of writer : OpenFileDescriptionId * reads : int64
     /// The connected stream socket the open file description `reader` names
-    /// has an answer for a read: bytes, a FIN or a reset
-    /// (`TcpTransfer.readAnswers`).
+    /// has an answer for a read: bytes, a FIN or a reset.
     ///
     /// What a blocking `read(2)` of a connected socket with nothing to answer
     /// waits for. One primitive, unlike a pipe's two, because every reader
@@ -116,7 +113,7 @@ type WakePrimitive =
     | ConnectionReadable of reader : OpenFileDescriptionId
     /// The connected stream socket the open file description `writer` names
     /// wakes a write asleep with `remaining` of its bytes not yet taken: room,
-    /// by the flavour's rule, or a reset (`TcpTransfer.writeResumes`).
+    /// by the flavour's rule, or a reset.
     ///
     /// What a blocking `write(2)` to a connected socket with no room for the
     /// rest of it waits for. Carries what is left because Darwin's rule
@@ -133,7 +130,7 @@ type WakePrimitive =
     /// out as the call went to sleep still says when the close ends it. Never
     /// holds under Linux, whose close leaves such a call asleep.
     | EndedByClose
-    /// The machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`)
+    /// The machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`)
     /// has reached `nanosecondsSinceBoot`.
     ///
     /// Absolute rather than relative, so that it means the same instant however
@@ -143,12 +140,12 @@ type WakePrimitive =
     /// A signal with a handler is deliverable to the task that waits: were it to
     /// return to user mode now, it would run that handler. For a task in
     /// `sigsuspend`, any signal its temporary mask lets through that its
-    /// finishing call would act on (`SyscallInterruption.wakes`).
+    /// finishing call would act on.
     ///
     /// Names no kernel object, because what it asks about is the waiter itself:
     /// a condition is always some task's, and `satisfied` is told whose. Every
     /// park waits for it, since every sleep this library models is one a signal
-    /// interrupts; `SyscallInterruption.ofPark` says how the interrupted call
+    /// interrupts; `SyscallInterruption.ruleOf` says how the interrupted call
     /// then ends.
     | SignalDeliverable
 
@@ -606,7 +603,7 @@ type SyscallOutcome =
     /// rather than a refusal, which by design carries no system at all.
     | WouldBlock of WakeCondition
     /// The call was asleep, a signal with a handler interrupted it, and the call
-    /// restarts (`SyscallInterruption.Restart`): it never returns. The task is
+    /// restarts: it never returns. The task is
     /// no longer parked. Once the handlers have run, the client issues the call
     /// again with the arguments it was first made with, descriptor numbers
     /// included, as a real kernel re-executes it.

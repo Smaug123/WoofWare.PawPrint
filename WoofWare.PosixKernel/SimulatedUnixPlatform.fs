@@ -644,8 +644,8 @@ module SimulatedUnixPlatform =
     /// `CreatingOpenRules`-shaped record.
     ///
     /// Measured non-root on macOS 26.6 and Linux 6.18.5, for `ftruncate(2)`,
-    /// `O_TRUNC` and a no-op `ftruncate` alike; `PermissionBits.afterTruncation`
-    /// carries the table. Linux applies the same rule it applies to a write.
+    /// `O_TRUNC` and a no-op `ftruncate` alike. Linux applies the same rule it
+    /// applies to a write.
     /// **Darwin strips nothing at all**, and that is isolated rather than
     /// inferred: in one process, on one file, a one-byte `write` takes `04755` to
     /// `00755` there while `ftruncate` leaves it `04755`.
@@ -686,7 +686,7 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin -> SymlinkModeChange.ChangesLink
 
     /// What a privileged caller is granted when it asks to execute something
-    /// that is not a directory. See `PermissionBits.executionDenied`.
+    /// that is not a directory.
     let privilegedExecution (platform : SimulatedUnixPlatform) : PrivilegedExecution =
         // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/access-rules.c`:
         // on Linux 6.18.5 root's `access(X_OK)` on a regular file is granted
@@ -697,7 +697,7 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin -> PrivilegedExecution.Unmeasured
 
     /// Who may change an inode's owner and group on this platform, and which
-    /// set-ID bits a change clears. See `OwnerChangeRules.verdict`.
+    /// set-ID bits a change clears.
     let ownerChangeRule (platform : SimulatedUnixPlatform) : OwnerChangeRule =
         // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/chown-rules.c`
         // against exactly these two rules: Linux 6.18.5 (ext4 and tmpfs) for
@@ -721,8 +721,8 @@ module SimulatedUnixPlatform =
     ///
     /// Measured non-root on macOS 26.6 and Linux 6.18.5, one byte written over
     /// the front of a four-byte file, and since then on Linux by writers
-    /// standing in every relation to the file; `PermissionBits.afterContentChangingWrite`
-    /// carries the table. Linux applies to a write the same rule it applies to a
+    /// standing in every relation to the file. Linux applies to a write the same
+    /// rule it applies to a
     /// truncation, and **Darwin does not** — there a write strips `02644` to
     /// `00644` while an `ftruncate` on the same file leaves the whole mode alone,
     /// which is why the two rules are separate values rather than one.
@@ -827,7 +827,7 @@ module SimulatedUnixPlatform =
             }
 
     /// Where the group of an inode this platform's `open(O_CREAT)` or `mkdir(2)`
-    /// creates comes from. See `InodeOwner.ofNewInode` for the measurements.
+    /// creates comes from.
     ///
     /// A mount fact as well as a kernel one on Linux, whose `grpid` mount
     /// option makes every directory behave as if set-group-ID; this library
@@ -838,7 +838,7 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin -> NewInodeGroupRule.Parents
 
     /// Which groups this platform's `getgroups(2)` reports for a process's
-    /// credentials. See `Credentials.reportedGroups` for the measurements.
+    /// credentials.
     let groupListReport (platform : SimulatedUnixPlatform) : GroupListReport =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> GroupListReport.SortedSupplementaryGroups
@@ -867,8 +867,8 @@ module SimulatedUnixPlatform =
     /// permission bits, 0o7777, on Darwin. Every other bit of the argument is
     /// ignored on both.
     ///
-    /// The stored mask is applied in full wherever a mode is masked (see
-    /// `PermissionBits.fromCreationMode`). The special bits Darwin keeps are
+    /// The stored mask is applied in full wherever a mode is masked. The
+    /// special bits Darwin keeps are
     /// invisible to its `open(2)` and `mkdir(2)`, which drop those bits from the
     /// mode first, but `umask(2)` reports them.
     let umaskStoredBits (platform : SimulatedUnixPlatform) : PermissionBits =
@@ -882,8 +882,8 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Darwin -> PermissionBits.parseOrFail "SimulatedUnixPlatform.umaskStoredBits" 0o7777
 
     /// Everything this platform's `unlink(2)` does differently. See
-    /// `UnlinkRules`, whose one field this picks; the rest of the divergence is
-    /// in `UnlinkRules.verdict`, which takes the flavour directly.
+    /// `UnlinkRules`, whose one field this picks; the rest of the divergence
+    /// follows from the flavour alone.
     let unlinkRules (platform : SimulatedUnixPlatform) : UnlinkRules =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
@@ -896,8 +896,8 @@ module SimulatedUnixPlatform =
             }
 
     /// Everything this platform's `rmdir(2)` does differently. See `RmDirRules`,
-    /// whose two fields this picks; the ordering half of the divergence is in
-    /// `RmDirRules.verdict`, which takes the flavour directly.
+    /// whose two fields this picks; the ordering half of the divergence
+    /// follows from the flavour alone.
     let rmDirRules (platform : SimulatedUnixPlatform) : RmDirRules =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
@@ -913,8 +913,7 @@ module SimulatedUnixPlatform =
 
     /// Everything this platform's `rename(2)` does differently. See
     /// `RenameRules`, whose two fields this picks; the ordering of the refusals
-    /// — which is most of the divergence — is in `RenameRules.verdict`, which
-    /// takes the flavour directly.
+    /// — which is most of the divergence — follows from the flavour alone.
     let renameRules (platform : SimulatedUnixPlatform) : RenameRules =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
@@ -1012,8 +1011,7 @@ module SimulatedUnixPlatform =
 
     /// Whether this platform's `readlink(2)` consults the link's own
     /// permission bits: Linux never does, and Darwin refuses a caller the
-    /// read bit of the triple its standing selects. See
-    /// `PermissionBits.linkReadDenied`.
+    /// read bit of the triple its standing selects.
     let linkReadRule (platform : SimulatedUnixPlatform) : LinkReadRule =
         // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/readlink-mode.c`
         // on Linux 6.18.5 (root and uid 1000, links whose modes debugfs set

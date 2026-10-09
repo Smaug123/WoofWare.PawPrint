@@ -31,7 +31,8 @@ type RequestedGroup =
     | Other
 
 /// What a `chown(2)`-family call asks of one inode, as the kernel's rule reads
-/// it. `OwnerChangeRequest.classify` derives it from the IDs the call names.
+/// it. The kernel derives it from the IDs the call names, the caller's
+/// credentials and the inode's owner.
 type OwnerChangeRequest =
     {
         UserAsked : RequestedUser
@@ -51,7 +52,7 @@ type internal OwnerChangeTarget =
 /// `lchown(2)` and `fchown(2)`.
 ///
 /// The flavours disagree about every part of it, so each case is one flavour's
-/// whole rule; see `OwnerChangeRules.verdict`.
+/// whole rule, which `UnixPathResolution.chown` and its relatives apply.
 [<RequireQualifiedAccess>]
 type OwnerChangeRule =
     /// An unprivileged caller may name a user only if it owns the inode and
@@ -82,7 +83,7 @@ type OwnerChangeRule =
     ///
     /// What a privileged caller may do, and what a call clears where an
     /// ordinary user cannot set up the inode to ask, have not been measured;
-    /// `OwnerChangeRules.verdict` refuses those rows.
+    /// `chown` refuses those rows (`OwnerChangeRefusal`).
     ///
     /// This is Darwin.
     | ClearsSetIdWhenAnIdIsNamed

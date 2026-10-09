@@ -122,7 +122,7 @@ type ReadOutcome =
     /// finishes the call.
     | WouldBlock of WakeCondition
     /// The call was asleep, a signal with a handler interrupted it, and the call
-    /// restarts (`SyscallInterruption.Restart`): it never returns. The task is
+    /// restarts: it never returns. The task is
     /// no longer parked. Once the handlers have run, the client issues the
     /// `read` again with the arguments it was first made with.
     ///
@@ -227,12 +227,12 @@ type WriteRefusal =
     /// that is not mapped. What the kernel does then is not measured.
     | ConnectionFault of socket : SocketId
     /// A Unix-domain datagram socket with no peer, on Linux, where the answer
-    /// depends on the size of the socket's send buffer, which is not modelled
-    /// (see `UnconnectedSocketWrite.DependsOnSendBuffer`).
+    /// depends on the size of the socket's send buffer, which is not modelled:
+    /// `EMSGSIZE` for more bytes than the buffer holds less 32, and `ENOTCONN`
+    /// otherwise.
     | SendBuffer of socket : SocketId
     /// An IPv6 datagram socket with no peer and no port, on Linux, which a write
-    /// binds to an ephemeral port before it fails
-    /// (`UnconnectedSocketRules.writeBindsFirst`): this kernel binds only IPv4
+    /// binds to an ephemeral port before it fails: this kernel binds only IPv4
     /// sockets, so it cannot record the binding.
     | Inet6Binding of socket : SocketId
     /// A datagram socket with no peer and no port, on Linux, which a write
@@ -333,10 +333,9 @@ type WriteOutcome<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler 
     /// and `UnixReadWrite.finishWrite` finish the call.
     | WouldBlock of condition : WakeCondition * system : UnixSystem<'Task, 'Handler>
     /// The call was asleep with nothing written, a signal with a handler
-    /// interrupted it, and the call restarts (`SyscallInterruption.Restart`):
-    /// it never returns. The task is no longer parked in `system`. Once the
-    /// handlers have run, the client issues the `write` again with the
-    /// arguments it was first made with.
+    /// interrupted it, and the call restarts: it never returns. The task is no
+    /// longer parked in `system`. Once the handlers have run, the client issues
+    /// the `write` again with the arguments it was first made with.
     ///
     /// Only `admitFinishWrite` answers this.
     | Restarts of system : UnixSystem<'Task, 'Handler>
@@ -1362,11 +1361,11 @@ module UnixReadWrite =
     /// The buffer is consulted at three points and *not* consulted at three
     /// others, and both sets are measured; see the comments inline.
     ///
-    /// A socket with no peer answers without the buffer, as
-    /// `UnconnectedSocketRules.read` says, except that a blocking read of a
+    /// A socket with no peer (fresh from `socket(2)`, bound, or listening)
+    /// answers without the buffer, with the errno its flavour gives its domain
+    /// and kind, except that a blocking read of a
     /// datagram socket, which sleeps until a datagram arrives, is refused. A
-    /// connected stream socket answers from its connection
-    /// (`TcpTransfer.read`): the bytes waiting, end of file, a reset's error,
+    /// connected stream socket answers from its connection: the bytes waiting, end of file, a reset's error,
     /// or `EAGAIN`; a blocking read with nothing to answer sleeps
     /// (`ReadOutcome.WouldBlock`), and `finishRead` finishes it. One that would
     /// copy bytes into an unmapped buffer is refused
@@ -2328,11 +2327,11 @@ module UnixReadWrite =
     /// what fits and sleeps for the rest. `admitFinishWrite` and `finishWrite`
     /// finish a sleeping write.
     ///
-    /// A socket with no peer answers without the buffer, as
-    /// `UnconnectedSocketRules.write` says, at every length including zero; on
+    /// A socket with no peer (fresh from `socket(2)`, bound, or listening)
+    /// answers without the buffer, as its flavour does for its domain and
+    /// kind, at every length including zero; on
     /// Linux a stream socket's `EPIPE` raises `SIGPIPE` as a pipe's does. A
-    /// connected stream socket answers from its connection
-    /// (`TcpTransfer.admitWrite`): how many bytes it takes now, `EAGAIN`, or a
+    /// connected stream socket answers from its connection: how many bytes it takes now, `EAGAIN`, or a
     /// reset's error, whose `EPIPE` raises `SIGPIPE`. A blocking write it has
     /// no room for the whole of takes what fits and sleeps for the rest, as
     /// one into a pipe does. One that would copy from an unmapped buffer is
@@ -2748,7 +2747,7 @@ module UnixReadWrite =
     /// as one with room for none does.
     ///
     /// A write into a pipe the client drains is read by the client as it is
-    /// written, and recorded in `UnixMachineState.Delivered`. A write into a
+    /// written, and recorded in `UnixSystem.delivered`. A write into a
     /// pipe with no reader answers `EPIPE` and raises `SIGPIPE`, and a socket
     /// answers or is refused, as `admitWrite` describes.
     ///

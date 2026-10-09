@@ -209,8 +209,9 @@ type VirtualFileSystemDefect =
     /// reads as zero. A stored `Some 0` is reported even though it agrees in
     /// value, because only non-zero counts are stored.
     | BindingCountMismatch of inode : InodeNumber * stored : int option * counted : int
-    /// The names `VirtualFileSystem.nextDirectoryEntry` seeks in for
-    /// `directory` disagree with the names its entries bind.
+    /// The names that reading `directory` walks
+    /// (`UnixNamespace.readDirectoryEntry`) disagree with the names its
+    /// entries bind.
     ///
     /// `stored` is `None` where none are stored, which the filesystem reads as
     /// binding nothing. A stored `Some []` is reported even though it agrees
@@ -576,8 +577,8 @@ module VirtualFileSystem =
     /// contents being an `ImmutableArray<byte>`.
     ///
     /// Not any real filesystem's ceiling — ext4's is about 16 TiB and APFS's is
-    /// vastly larger — and reaching it is `FileWriteRefusal.WouldExceedMaxLength`
-    /// rather than an errno for that reason.
+    /// vastly larger — so a write that would pass it is refused rather than
+    /// answered with an errno.
     let maxFileLength : int64 = int64 System.Array.MaxLength
 
     /// How long a regular file becomes when `count` bytes are written at
@@ -1310,7 +1311,7 @@ module VirtualFileSystem =
     /// This is `st_nlink` as a regular file or a symbolic link reports it. A
     /// directory's `st_nlink` is a rule of the filesystem it is on, which
     /// counts some of its entries rather than the one that names it: see
-    /// `EmulatedFileSystemType.directoryLinkCount`.
+    /// `FileStatus.LinkCount`.
     ///
     /// Zero means the inode has no name: either it is the root, or its last link
     /// has gone and only a descriptor is keeping it alive. Zero too for an inode

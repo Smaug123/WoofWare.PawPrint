@@ -201,11 +201,9 @@ type internal BindLengthVerdict =
 [<RequireQualifiedAccess>]
 type BindFault =
     /// The declared `socketAddressLen` is not one this platform accepts for the
-    /// address family in the blob. Which errno that becomes is the
-    /// `BindLengthVerdict` the length classifier gave — `EINVAL`, or
-    /// `ENAMETOOLONG` past the greatest length the platform considers — but the
-    /// *position* in the order is the same either way, which is why the verdict
-    /// is not carried here.
+    /// address family in the blob: `EINVAL`, or `ENAMETOOLONG` past the
+    /// greatest length the platform considers. The *position* in the order is
+    /// the same either way.
     | Length
     /// The blob's address family is not the socket's. `EAFNOSUPPORT`.
     | Family

@@ -735,11 +735,11 @@ type EmulatedKernel =
 
 
     /// The environment the simulated process was started with: see
-    /// `UnixProcessState.Environment`.
+    /// `UnixSystem.environment`.
     member this.Environment : UnixByteString list = UnixSystem.environment this.System
 
     /// The path of the executable that started the simulated process: see
-    /// `UnixProcessState.ProcessPath`.
+    /// `UnixSystem.processPath`.
     member this.ProcessPath : AbsoluteUnixPath option = UnixSystem.processPath this.System
 
     /// The simulated process's signal state, which `SignalState`'s queries read.
@@ -777,7 +777,7 @@ type EmulatedKernel =
         nanoseconds / ClockPal.nanosecondsPerTick
 
     /// The number of logical processors the machine reports: see
-    /// `UnixMachineState.ProcessorCount`, and `EmulatedKernel.effectiveProcessorCount`
+    /// `UnixSystem.processorCount`, and `EmulatedKernel.effectiveProcessorCount`
     /// for the number the guest observes.
     member this.ProcessorCount : int = UnixSystem.processorCount this.System
 
@@ -1861,7 +1861,7 @@ type KernelConfig =
         /// `toKernel` fails for a `Some` that is not a limit machines of the
         /// platform's architecture have been observed with
         /// (`ObservedUserAddressLimit`), or on a platform that screens no buffer
-        /// up front; see `UnixMachineState.UserBufferCheck` for why this is
+        /// up front. `ObservedUserAddressLimit` also says why this is
         /// configuration rather than a property of the platform.
         UserAddressLimit : uint64 option
         /// Virtual time charged per retired IL instruction, in 100 ns ticks — the speed of the
@@ -2085,7 +2085,7 @@ type KernelConfig =
         /// whose default action dumps core kills it (`Signal.dumpsCoreUnder`),
         /// which a host sees as the core flag of `RunOutcome.termination`.
         /// Defaults to `Suppressed`, as under an `RLIMIT_CORE` of 0; see
-        /// `UnixProcessState.CoreDumps`.
+        /// `ProcessLaunch.withCoreDumps`.
         CoreDumps : CoreDumps
         /// Linux's `kernel.pid_max`: the thread IDs the process's threads get are
         /// below it, and once they reach it they start again from 300, skipping

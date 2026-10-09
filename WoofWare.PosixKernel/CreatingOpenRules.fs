@@ -38,8 +38,8 @@ type CreatingOpenRules =
         /// 0o2644 and 0o1644 all land as 0o644. Linux keeps all twelve bits.
         ModeMask : PermissionBits
         /// Whether a creating open that lands on an existing inode in a sticky
-        /// directory is screened by who owns the two, as
-        /// `ProtectedFiles.refusesCreatingOpen` describes. Linux screens; its
+        /// directory is screened by who owns the two (see `CreationProtection`).
+        /// Linux screens; its
         /// `fs.protected_*` sysctls decide only how far, and a symbolic link
         /// left unfollowed by `O_NOFOLLOW` is screened even with every one of
         /// them 0, so `open(l, O_CREAT|O_NOFOLLOW)` on another user's link in

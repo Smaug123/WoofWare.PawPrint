@@ -154,8 +154,8 @@ type KeventRefusal =
     /// Darwin, and what they report is not modelled.
     | UnmodelledTarget of change : Kevent * target : OpenFileTarget
     /// The changelist holds this `EV_ADD`, whose descriptor names a socket of
-    /// a kind whose filters this library does not model (see
-    /// `DarwinReadiness.modelsSocket`).
+    /// a kind whose filters this library does not model: anything but a
+    /// stream socket of `AF_INET` or `AF_INET6`.
     | UnmodelledSocket of change : Kevent * domain : SocketDomain * kind : SocketKind
     /// The eventlist reached a copy and has no address to copy to, or bytes
     /// the caller cannot produce.
@@ -166,7 +166,7 @@ type KeventRefusal =
     /// changelist echoed into such an eventlist is answered: `EFAULT`.)
     | UnmeasuredCopyOutFault of kqueue : OpenFileDescriptionId
     /// Nothing is reportable, and the timeout ends past the last instant the
-    /// machine's monotonic clock (`UnixMachineState.NanosecondsSinceBoot`, an
+    /// machine's monotonic clock (`UnixSystem.nanosecondsSinceBoot`, an
     /// `int64` of nanoseconds) can represent: `nanosecondsSinceBoot` plus the
     /// timeout overflows it.
     | DeadlineBeyondClock of nanosecondsSinceBoot : int64 * seconds : int64 * nanoseconds : int64
@@ -586,8 +586,12 @@ module UnixKqueue =
     ///
     /// Otherwise an `nevents` of zero or less returns no events at once; a
     /// kqueue a close has drained (see `KqueueState.Drained`) fails with
-    /// `EBADF`; and otherwise the call reports up to `nevents` events (see
-    /// `KqueueQueue.drain`). With nothing to report, a timeout of zero returns
+    /// `EBADF`; and otherwise the call reports up to `nevents` events. It walks
+    /// the kqueue's queue in order, reading each registration's filter again:
+    /// one no longer ready leaves the queue and reports nothing, and one that
+    /// reports leaves it if it was added with `EV_CLEAR` and otherwise goes
+    /// back to the tail; entries the walk did not reach stay queued in order.
+    /// With nothing to report, a timeout of zero returns
     /// no events at once; a positive one parks `task` until an event is
     /// reportable or that much time has passed on the machine's monotonic
     /// clock, and a null one parks it until an event is reportable. A parked
@@ -786,7 +790,7 @@ module UnixKqueue =
     /// Finish the `kevent` wait `task` is parked in, as a woken real wait does.
     ///
     /// Answers `EBADF` when a close has drained the kqueue; the events it has to
-    /// report (see `KqueueQueue.drain`), up to the call's `nevents`; no events
+    /// report (as `kevent` reports them), up to the call's `nevents`; no events
     /// when the deadline has passed; `EINTR` when a signal with a handler
     /// interrupts the wait; and otherwise re-parks the task on the same kqueue
     /// and deadline. Refused, since Darwin answers whichever reached the

@@ -93,7 +93,7 @@ module InternetEndpoint =
     /// This is the address half of a bind conflict, and deliberately not the
     /// whole of it: whether an overlap is *refused* depends on the flavour, on
     /// both sockets' `SO_REUSEADDR` and on whether either is listening. See
-    /// `SimulatedUnixPlatform.bindConflict`.
+    /// `UnixSocket.bind`.
     let addressesOverlap (a : InternetEndpoint) (b : InternetEndpoint) : bool =
         isWildcard a || isWildcard b || a.Address = b.Address
 

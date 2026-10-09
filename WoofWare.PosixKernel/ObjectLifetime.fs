@@ -53,9 +53,9 @@ module DescriptionReleaseRefusal =
 [<RequireQualifiedAccess>]
 module ObjectLifetime =
 
-    /// Every inode that must not be freed: `UnixMachineState.heldInodes`, which
-    /// holds every process's current directory as well as every open file
-    /// description's inode, closed under `DirectoryContent.Parent`.
+    /// Every inode that must not be freed: every process's current directory
+    /// and every open file description's inode, closed under
+    /// `DirectoryContent.Parent`.
     ///
     /// The closure is not caution — it is measured. `rmdir` can remove a
     /// directory something still holds, and that orphan keeps its "..": probed
@@ -66,10 +66,9 @@ module ObjectLifetime =
     /// would leave a `DirectoryContent.Parent` naming an inode the graph no
     /// longer contains.
     ///
-    /// This is the set `VirtualFileSystem.checkInvariants` takes as `pinned`,
-    /// and the check `forgetIfUnheld` makes before freeing an inode. Ancestors
-    /// that are still reachable from the root are in it too, harmlessly: both
-    /// callers only ever ask about an inode no name reaches.
+    /// This is the set `VirtualFileSystem.checkInvariants` takes as `pinned`.
+    /// Ancestors that are still reachable from the root are in it too,
+    /// harmlessly: its users only ever ask about an inode no name reaches.
     let pinnedInodes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : Set<InodeNumber>
