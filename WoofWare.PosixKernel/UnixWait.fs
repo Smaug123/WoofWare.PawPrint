@@ -63,7 +63,9 @@ module UnixWait =
     /// the one that parked *last* on an epoll instance and the one that
     /// parked *first* on a listener. Under Linux, so do the waiters in `read`
     /// for a pipe's bytes and those in `write` for its room, the one that
-    /// parked first waking; under Darwin every one of them wakes. Exclusive
+    /// parked first waking; under Darwin every one of them wakes. Waiters in
+    /// `read` or `write` on a connected socket all wake, under either
+    /// flavour. Exclusive
     /// queues wake none while any task parked on the same queue has been woken
     /// and has not yet finished its call (that is, is parked but not in
     /// `asleep`), since that task will take it. The end of a pipe closing
@@ -160,6 +162,17 @@ module UnixWait =
         // (`signal-interrupt-requeue.c`, section C), which is every sleeper
         // waking to race.
         //
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 (`tcp-blocking.c`,
+        // section R-order): three readers asleep on one connected socket, and
+        // three 1-byte writes, returned in no fixed order on either (Linux
+        // gave "201" in 8 trials of 10 and "210" in 2, the last to park
+        // first; Darwin "012" in 7 and "021" in 3). Both kernels queue a
+        // socket's sleepers non-exclusively, so every one wakes and they
+        // race, as Darwin's pipe waiters do. Writers asleep on a socket are
+        // queued the same way in both kernels' source (Linux's
+        // `sk_stream_wait_memory`, Darwin's `sbwait`), which no probe has
+        // measured.
+        //
         // Waiters on an `flock` are the opposite, deliberately: a release
         // wakes every blocker and they race, as `flock(2)` does, and which of
         // them wins is not observable from userspace on any platform. Waking
@@ -197,6 +210,8 @@ module UnixWait =
             | WakePrimitive.PipeWriteEndClosed _
             | WakePrimitive.PipeReadEndClosed _
             | WakePrimitive.PipeReadWhileNonBlocking _
+            | WakePrimitive.ConnectionReadable _
+            | WakePrimitive.ConnectionWritable _
             | WakePrimitive.FlockGrantable _
             | WakePrimitive.KqueueDrained _
             | WakePrimitive.KqueueEventDeliverable _
@@ -253,6 +268,12 @@ module UnixWait =
                        }
                 | Some {
                            Syscall = ParkedSyscall.PipeWrite _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.ConnectionRead _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.ConnectionWrite _
                        }
                 | Some {
                            Syscall = ParkedSyscall.SigSuspend

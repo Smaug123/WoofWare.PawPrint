@@ -1862,8 +1862,11 @@ module UnixSocket =
     /// (`DescriptionReleaseRefusal.AbortiveClose`); with a positive time, a
     /// wait for bytes still in the send buffer, on Linux whatever `O_NONBLOCK`
     /// is and on Darwin through a blocking description
-    /// (`DescriptionReleaseRefusal.LingeringClose`). Every other close is the
-    /// one it would be anyway: a FIN, or a reset if bytes were left unread.
+    /// (`DescriptionReleaseRefusal.LingeringClose`). So is any close of its
+    /// last descriptor while a call in flight that the close does not end
+    /// holds it, whatever the time (`CloseRefusal.LingeringCloseDeferredToCall`).
+    /// Every other close is the one it would be anyway: a FIN, or a reset if
+    /// bytes were left unread.
     ///
     /// An option persists until the next `setsockopt` of it, and no later
     /// failure of another call undoes it. A change on a listener with
