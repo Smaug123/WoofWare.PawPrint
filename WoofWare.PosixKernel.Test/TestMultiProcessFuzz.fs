@@ -24,7 +24,10 @@ open WoofWare.PosixKernel
 ///
 /// Calls block: sockets are blocking or not, `accept`, `epoll_wait`, `kevent`,
 /// `poll`, `flock` and pipe transfers sleep, and a sleeping task makes no call
-/// until a wake pass finishes its own.
+/// until a wake pass finishes its own. A connected socket's `read` and `write`
+/// move bytes between processes, through buffers small enough that writes
+/// fill them; one that would sleep is refused (`ConnectionSleep`), which must
+/// change nothing.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestMultiProcessFuzz =
@@ -37,6 +40,23 @@ module TestMultiProcessFuzz =
         | Listen of fd : int
         | Connect of fd : int * port : int
         | Accept of fd : int
+        /// A read of a connected socket, of `size` bytes: one whose
+        /// description is non-blocking when `nonBlocking` and there is one.
+        | Receive of fd : int * size : int * nonBlocking : bool
+        /// A write of `size` bytes to a connected socket, chosen as for
+        /// `Receive`.
+        | Send of fd : int * size : int * nonBlocking : bool
+        /// Set `O_NONBLOCK` on a connected socket's description.
+        | MakeNonBlocking of fd : int
+        /// A `Receive` on the process's end of the earliest connection it
+        /// holds whose server end is at `ports.[port]`, if it holds one, which
+        /// `Receive`'s index into every connected socket the process holds
+        /// seldom picks out.
+        | ReceiveThrough of port : int * size : int
+        /// A `Send` on the socket `ReceiveThrough` picks.
+        | SendThrough of port : int * size : int
+        /// A `close` of the socket `ReceiveThrough` picks.
+        | CloseThrough of port : int
         | Pipe
         | PipeRead of fd : int
         | PipeWrite of fd : int * size : int
@@ -51,9 +71,10 @@ module TestMultiProcessFuzz =
         | EpollAdd of epoll : int * fd : int
         | EpollWait of epoll : int * timeout : int
         | Kqueue
-        | KeventAdd of kqueue : int * fd : int
+        | KeventAdd of kqueue : int * fd : int * write : bool
         | KeventWait of kqueue : int * timeout : int
-        | Poll of fds : int list * timeout : int
+        /// A `poll` of `fds` for IN, and for OUT too unless `readOnly`.
+        | Poll of fds : int list * timeout : int * readOnly : bool
         /// `poll` for readability on the process's listener at
         /// `ports.[port]`, if it holds one, which `Poll`'s index into every
         /// socket the process holds seldom picks out.
@@ -95,6 +116,25 @@ module TestMultiProcessFuzz =
             3, Gen.map Op.Accept small
         ]
 
+    /// Transfers on connected sockets, weighted apart from `socketOps` so that
+    /// a case biased towards sockets is not one biased towards transfers.
+    let private transferOps : (int * Gen<Op>) list =
+        [
+            3,
+            Gen.map3
+                (fun f s n -> Op.Receive (f, s, n))
+                small
+                (Gen.elements [ 0 ; 1 ; 1000 ; 65536 ])
+                (Gen.elements [ true ; true ; true ; false ])
+            3,
+            Gen.map3
+                (fun f s n -> Op.Send (f, s, n))
+                small
+                (Gen.elements [ 0 ; 1 ; 1000 ; 70000 ; 300000 ])
+                (Gen.elements [ true ; true ; true ; false ])
+            1, Gen.map Op.MakeNonBlocking small
+        ]
+
     let private fileOps : (int * Gen<Op>) list =
         [
             2, Gen.constant Op.Pipe
@@ -111,7 +151,12 @@ module TestMultiProcessFuzz =
             2, Gen.map Op.MkDir small
             2, Gen.map Op.RmDir small
             2, Gen.map Op.ChDir small
-            5, Gen.map2 (fun fds t -> Op.Poll (fds, t)) (Gen.listOfLength 2 small) timeout
+            5,
+            Gen.map3
+                (fun fds t r -> Op.Poll (fds, t, r))
+                (Gen.listOfLength 2 small)
+                timeout
+                (Gen.elements [ false ; true ])
         ]
 
     let private epollOps : (int * Gen<Op>) list =
@@ -124,7 +169,7 @@ module TestMultiProcessFuzz =
     let private kqueueOps : (int * Gen<Op>) list =
         [
             2, Gen.constant Op.Kqueue
-            5, Gen.map2 (fun k f -> Op.KeventAdd (k, f)) small small
+            5, Gen.map3 (fun k f w -> Op.KeventAdd (k, f, w)) small small (Gen.elements [ false ; true ])
             4, Gen.map2 (fun k t -> Op.KeventWait (k, t)) small timeout
         ]
 
@@ -139,8 +184,8 @@ module TestMultiProcessFuzz =
             ops |> List.map (fun (weight, op) -> 3 * weight, op)
 
         match SimulatedUnixPlatform.flavour platform with
-        | SimulatedUnixFlavour.Linux -> Gen.frequency (common (sockets @ fileOps @ epollOps) @ exit)
-        | SimulatedUnixFlavour.Darwin -> Gen.frequency (common (sockets @ fileOps @ kqueueOps) @ exit)
+        | SimulatedUnixFlavour.Linux -> Gen.frequency (common (sockets @ transferOps @ fileOps @ epollOps) @ exit)
+        | SimulatedUnixFlavour.Darwin -> Gen.frequency (common (sockets @ transferOps @ fileOps @ kqueueOps) @ exit)
 
     type private Case =
         {
@@ -169,6 +214,21 @@ module TestMultiProcessFuzz =
 
             let byFirst (op : Op) : Step = Step.Call (first, firstTask, op)
             let bySecond (op : Op) : Step = Step.Call (second, secondTask, op)
+            // A prepared process holds the server end of the connection through
+            // `ports.[first]`, and the process before it the client end.
+            let byClient (op : Op) : Step =
+                Step.Call ((first + processes - 1) % processes, secondTask, op)
+
+            // The server end closes the connection the client end has closed,
+            // and the client end connects to `ports.[first]` afresh, so that a
+            // later scenario finds a connection there.
+            let reconnect : Step list =
+                [
+                    byFirst (Op.CloseThrough first)
+                    byClient (Op.Socket true)
+                    byClient (Op.Connect (0, first))
+                    byFirst (Op.Accept 0)
+                ]
 
             return!
                 Gen.frequency
@@ -185,8 +245,8 @@ module TestMultiProcessFuzz =
                         // The first sleeps on its event queue, which a prepared
                         // process has watching its listener at `ports.[first]`;
                         // the second connects to that port. Only a prepared case
-                        // has the queue, so this is drawn twice as often.
-                        2,
+                        // has the queue, so this is drawn three times as often.
+                        3,
                         Gen.constant
                             [
                                 match SimulatedUnixPlatform.flavour platform with
@@ -217,6 +277,38 @@ module TestMultiProcessFuzz =
                                 bySecond (Op.Flock (0, lockExclusive))
                                 byFirst (Op.Flock (0, unlock))
                             ]
+                        // The client end of the connection through
+                        // `ports.[first]` writes, and the server end, in another
+                        // process, reads what it wrote.
+                        4,
+                        Gen.constant
+                            [
+                                byClient (Op.SendThrough (first, 1000))
+                                byFirst (Op.ReceiveThrough (first, 65536))
+                            ]
+                        // The client end closes with nothing unread, a FIN, and
+                        // the server end reads what is left, then end of file.
+                        3,
+                        Gen.constant (
+                            [
+                                byClient (Op.ReceiveThrough (first, 65536))
+                                byClient (Op.CloseThrough first)
+                                byFirst (Op.ReceiveThrough (first, 65536))
+                                byFirst (Op.ReceiveThrough (first, 65536))
+                            ]
+                            @ reconnect
+                        )
+                        // The server end writes, the client end closes with that
+                        // unread, a reset, and the server end's read meets it.
+                        3,
+                        Gen.constant (
+                            [
+                                byFirst (Op.SendThrough (first, 1000))
+                                byClient (Op.CloseThrough first)
+                                byFirst (Op.ReceiveThrough (first, 65536))
+                            ]
+                            @ reconnect
+                        )
                     ]
         }
 
@@ -239,13 +331,13 @@ module TestMultiProcessFuzz =
                         let! kind = Gen.choose (0, 99)
 
                         match kind with
-                        | k when k < 3 ->
+                        | k when k < 10 ->
                             let! scenario = crossProcessScenario platform processes
                             return! steps (n - 1) current (List.rev scenario @ acc)
-                        | k when k < 13 ->
+                        | k when k < 20 ->
                             let! finishing = Gen.choose (1, 4)
                             return! steps (n - 1) current (Step.WakePass finishing :: acc)
-                        | k when k < 18 ->
+                        | k when k < 25 ->
                             let! milliseconds = Gen.elements [ 1 ; 5 ; 10 ]
                             return! steps (n - 1) current (Step.Advance milliseconds :: acc)
                         | _ ->
@@ -289,6 +381,17 @@ module TestMultiProcessFuzz =
             mutable KeventParks : int
             mutable Exits : int
             mutable ExitRefusals : int
+            /// A read that took bytes another process's socket had written.
+            mutable CrossReads : int
+            /// A write that took fewer bytes than offered, or none (`EAGAIN`).
+            mutable ShortWrites : int
+            /// A read or write that met a reset (`ECONNRESET` or `EPIPE`).
+            mutable Resets : int
+            /// A read that met end of file.
+            mutable EndsOfFile : int
+            /// A blocking transfer refused as one that would sleep, which is
+            /// expected and changes nothing.
+            mutable ConnectionSleeps : int
             mutable Refusals : int
             mutable Calls : int
         }
@@ -369,6 +472,80 @@ module TestMultiProcessFuzz =
         match socket.Phase with
         | SocketPhase.Listening _ -> true
         | _ -> false
+
+    let private connected (socket : SocketDescription) : bool =
+        (SocketPhase.connectionEnd socket.Phase).IsSome
+
+    /// The descriptors of `view` naming a connected socket, through a
+    /// non-blocking description if `nonBlocking` and `view` has one.
+    let private connectedFds (nonBlocking : bool) (view : UnixSystem<int, string>) : int list =
+        let all = socketsWhere connected view
+
+        let unblocked =
+            all
+            |> List.filter (fun fd ->
+                match FileDescriptorRegistry.tryFind fd (UnixSystemState.fileDescriptors view) with
+                | Some description -> description.NonBlocking
+                | None -> false
+            )
+
+        if nonBlocking && not unblocked.IsEmpty then
+            unblocked
+        else
+            all
+
+    /// The lowest descriptor of `view` naming its end of the earliest
+    /// connection it holds whose server end is at `ports.[port]`, if it holds
+    /// one; so the processes at a connection's two ends pick it alike, unless
+    /// one of them still holds an earlier connection there whose other end is
+    /// closed.
+    let private connectedThrough (port : int) (view : UnixSystem<int, string>) : int option =
+        let port = ports.[port % ports.Length]
+
+        fdsOf view
+        |> Map.toList
+        |> List.choose (fun (fd, target) ->
+            match target with
+            | OpenFileTarget.Socket socket ->
+                match SocketPhase.connectionEnd (UnixMachineState.socket socket view.Machine).Phase with
+                | Some (connection, _) when
+                    (UnixMachineState.connection connection view.Machine).ServerAddress.Port = port
+                    ->
+                    Some (connection, fd)
+                | _ -> None
+            | _ -> None
+        )
+        |> List.sort
+        |> List.tryHead
+        |> Option.map snd
+
+    /// The process whose descriptors name the socket at the other end of the
+    /// connected socket `socketId`, if one is.
+    let private peerOwner (socketId : SocketId) (machine : SimulatedMachine<int, string>) : ProcessId option =
+        let view =
+            SimulatedMachine.focus (Seq.head (SimulatedMachine.processIds machine)) machine
+            |> Option.get
+
+        match SocketPhase.connectionEnd (UnixMachineState.socket socketId view.Machine).Phase with
+        | None -> None
+        | Some (connection, connectionEnd) ->
+            let other =
+                match connectionEnd with
+                | ConnectionEnd.Client -> ConnectionEnd.Server
+                | ConnectionEnd.Server -> ConnectionEnd.Client
+
+            match UnixMachineState.socketHoldingEnd connection other view.Machine with
+            | None -> None
+            | Some peer ->
+                machine.Processes
+                |> Map.toSeq
+                |> Seq.tryPick (fun (pid, _) ->
+                    let names =
+                        fdsOf (SimulatedMachine.focus pid machine |> Option.get)
+                        |> Map.exists (fun _ target -> target = OpenFileTarget.Socket peer)
+
+                    if names then Some pid else None
+                )
 
     /// The process whose descriptors name a socket bound at `port` in the
     /// listening phase, if any.
@@ -468,6 +645,59 @@ module TestMultiProcessFuzz =
             | Ok (_, after) -> Made.Answered after
             | Error _ -> Made.Refused
 
+        // A read of `size` bytes from the connected socket `fd`.
+        let receive (fd : int) (size : int) : Made =
+            let socketId =
+                match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors view) with
+                | Some (OpenFileTarget.Socket socketId) -> socketId
+                | other -> failwith $"fd %d{fd} names %A{other}"
+
+            let writer = peerOwner socketId machine
+
+            match UnixReadWrite.read task fd UserBuffer.Mapped (uint64 size) view with
+            | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
+                if not bytes.IsEmpty && writer.IsSome && writer <> Some pid then
+                    coverage.CrossReads <- coverage.CrossReads + 1
+
+                if bytes.IsEmpty && size > 0 then
+                    coverage.EndsOfFile <- coverage.EndsOfFile + 1
+
+                Made.Answered after
+            | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.ECONNRESET), after)
+            | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EPIPE), after) ->
+                coverage.Resets <- coverage.Resets + 1
+                Made.Answered after
+            | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EAGAIN), after) -> Made.Answered after
+            | Ok (outcome, _) -> failwith $"a read of a connected socket answered %A{outcome}"
+            | Error (ReadRefusal.ConnectionSleep _) ->
+                coverage.ConnectionSleeps <- coverage.ConnectionSleeps + 1
+                Made.Answered view
+            | Error refusal -> failwith $"a read of a connected socket was refused: %s{ReadRefusal.describe refusal}"
+
+        // A write of `size` bytes to the connected socket `fd`.
+        let send (fd : int) (size : int) : Made =
+            let bytes = ImmutableArray.Create<byte> (Array.init size byte)
+
+            match WriteOutcomes.admitThenWrite task fd UserBuffer.Mapped bytes view with
+            | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, after)) ->
+                if written < int64 size then
+                    coverage.ShortWrites <- coverage.ShortWrites + 1
+
+                Made.Answered after
+            | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EAGAIN, after)) ->
+                coverage.ShortWrites <- coverage.ShortWrites + 1
+                Made.Answered after
+            | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.ECONNRESET, _))
+            | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, _))
+            | Ok (WriteOutcome.ProcessEnded _) as outcome ->
+                coverage.Resets <- coverage.Resets + 1
+                ofWrite outcome
+            | Ok outcome -> failwith $"a write to a connected socket answered %A{outcome}"
+            | Error (WriteRefusal.ConnectionSleep _) ->
+                coverage.ConnectionSleeps <- coverage.ConnectionSleeps + 1
+                Made.Answered view
+            | Error refusal -> failwith $"a write to a connected socket was refused: %s{WriteRefusal.describe refusal}"
+
         match op with
         | Op.Socket nonBlocking -> Made.Answered (KeventWorld.stream nonBlocking view |> snd)
         | Op.Bind (fd, port) ->
@@ -530,6 +760,30 @@ module TestMultiProcessFuzz =
                 | Ok (AcceptOutcome.WouldBlock _, after) -> Made.Sleeps after
                 | Ok (_, after) -> Made.Answered after
                 | Error _ -> Made.Refused
+        | Op.MakeNonBlocking fd ->
+            match pick fd (socketsWhere connected view) with
+            | None -> Made.Answered view
+            | Some fd -> Made.Answered (UnixDescriptor.setNonBlocking fd true view |> snd)
+        | Op.Receive (fd, size, nonBlocking) ->
+            match pick fd (connectedFds nonBlocking view) with
+            | None -> Made.Answered view
+            | Some fd -> receive fd size
+        | Op.Send (fd, size, nonBlocking) ->
+            match pick fd (connectedFds nonBlocking view) with
+            | None -> Made.Answered view
+            | Some fd -> send fd size
+        | Op.ReceiveThrough (port, size) ->
+            match connectedThrough port view with
+            | None -> Made.Answered view
+            | Some fd -> receive fd size
+        | Op.SendThrough (port, size) ->
+            match connectedThrough port view with
+            | None -> Made.Answered view
+            | Some fd -> send fd size
+        | Op.CloseThrough port ->
+            match connectedThrough port view with
+            | None -> Made.Answered view
+            | Some fd -> UnixDescriptor.close fd view |> answered
         | Op.Pipe -> UnixPipe.pipe2 0 UserBuffer.Mapped view |> answered
         | Op.PipeRead fd ->
             match pick fd (ofKind (isPipeEnd PipeEnd.Read) view) with
@@ -638,17 +892,17 @@ module TestMultiProcessFuzz =
                 | Ok (_, after) -> Made.Answered after
                 | Error _ -> Made.Refused
         | Op.Kqueue -> Made.Answered (KeventWorld.kqueue view |> snd)
-        | Op.KeventAdd (kqueue, fd) ->
+        | Op.KeventAdd (kqueue, fd, write) ->
             match pick kqueue (ofKind isKqueue view), pick fd sockets with
             | Some kqueue, Some fd ->
+                let filter = if write then KeventFilter.Write else KeventFilter.Read
+
                 match
                     UnixKqueue.kevent
                         task
                         kqueue
                         1
-                        [
-                            KeventWorld.change fd KeventFilter.Read (KeventFlags.Add ||| KeventFlags.Clear) 0UL
-                        ]
+                        [ KeventWorld.change fd filter (KeventFlags.Add ||| KeventFlags.Clear) 0UL ]
                         0
                         UserBuffer.Mapped
                         (KeventTimeout.Readable (0L, 0L))
@@ -677,14 +931,14 @@ module TestMultiProcessFuzz =
                     Made.Sleeps after
                 | Ok (_, after) -> Made.Answered after
                 | Error _ -> Made.Refused
-        | Op.Poll (fds, milliseconds) ->
+        | Op.Poll (fds, milliseconds, readOnly) ->
             let entries =
                 fds
                 |> List.choose (fun fd -> pick fd (if fd % 4 = 0 then any else sockets))
                 |> List.map (fun fd ->
                     {
                         Fd = fd
-                        Events = 0x0001s ||| 0x0004s
+                        Events = if readOnly then 0x0001s else 0x0001s ||| 0x0004s
                     }
                 )
 
@@ -754,6 +1008,11 @@ module TestMultiProcessFuzz =
             | Ok (WriteOutcome.Restarts after) -> Made.Answered after
             | Ok (WriteOutcome.WouldBlock (_, after)) -> Made.Sleeps after
             | Ok (WriteOutcome.ProcessEnded ended) -> Made.Ended ended
+        | Some ParkedSyscall.SigSuspend ->
+            match UnixSignal.finishSigsuspend task view with
+            | Ok (SigsuspendOutcome.WouldBlock _, after) -> Made.Sleeps after
+            | Ok (_, after) -> Made.Answered after
+            | Error _ -> Made.Refused
         | None -> failwith $"task %d{task} is woken, and parked in nothing"
 
     /// Everything the run tracks besides the machine.
@@ -1049,13 +1308,50 @@ module TestMultiProcessFuzz =
         | Ok (_, view) -> view
         | Error refusal -> failwith $"open: %A{refusal}"
 
+    /// TCP buffers far smaller than the defaults, so that a few writes fill
+    /// them: as small as each flavour admits.
+    let private smallBuffers (image : UnixBootImage<int, string>) : UnixBootImage<int, string> =
+        match SimulatedUnixPlatform.flavour (UnixBootImage.platform image) with
+        | SimulatedUnixFlavour.Linux ->
+            image
+            |> UnixBootImage.withTcpSendSpaceMax (Some 16384)
+            |> Configured.expectOk TcpSendSpaceMaxRefusal.describe
+            |> UnixBootImage.withTcpReceiveSpace (Some 8192)
+            |> Configured.expectOk TcpReceiveSpaceRefusal.describe
+        | SimulatedUnixFlavour.Darwin ->
+            image
+            |> UnixBootImage.withTcpSendSpace (Some UnixMachineState.darwinLoopbackSendPipe)
+            |> Configured.expectOk TcpSendSpaceRefusal.describe
+            |> UnixBootImage.withTcpReceiveSpace (Some UnixMachineState.darwinLoopbackReceivePipe)
+            |> Configured.expectOk TcpReceiveSpaceRefusal.describe
+
     let private run (coverage : Coverage) (case : Case) : unit =
-        let pids, machine = Machines.withTasks case.Platform case.Processes tasks
+        let pids, machine =
+            Machines.withTasksOn smallBuffers case.Platform case.Processes tasks
 
         let machine =
             if case.Prepared then
+                let machine =
+                    (machine, List.indexed pids)
+                    ||> List.fold (fun machine (i, pid) -> Machines.doIn pid (prepare ports.[i % ports.Length]) machine)
+
+                // Then each process connects to the next one's listener, and
+                // the next accepts, so that bytes cross between processes from
+                // the first step.
                 (machine, List.indexed pids)
-                ||> List.fold (fun machine (i, pid) -> Machines.doIn pid (prepare ports.[i % ports.Length]) machine)
+                ||> List.fold (fun machine (i, client) ->
+                    let next = (i + 1) % pids.Length
+                    let _, machine = Machines.inProcess client (KeventWorld.client ports.[next]) machine
+
+                    Machines.doIn
+                        pids.[next]
+                        (fun view ->
+                            let listener = socketsWhere listening view |> List.head
+                            let accepted, view = KeventWorld.accept listener view
+                            UnixDescriptor.setNonBlocking accepted true view |> snd
+                        )
+                        machine
+                )
             else
                 machine
 
@@ -1098,6 +1394,11 @@ module TestMultiProcessFuzz =
                 KeventParks = 0
                 Exits = 0
                 ExitRefusals = 0
+                CrossReads = 0
+                ShortWrites = 0
+                Resets = 0
+                EndsOfFile = 0
+                ConnectionSleeps = 0
                 Refusals = 0
                 Calls = 0
             }
@@ -1107,27 +1408,32 @@ module TestMultiProcessFuzz =
         // The paths the property exists for, each reached often enough that a
         // generator regression shows here rather than as a silently weaker
         // test: about a third of what 1000 cases reached when this was written.
-        coverage.CrossConnects |> shouldBeGreaterThan 350
-        coverage.CrossAddressInUse |> shouldBeGreaterThan 165
-        coverage.Accepts |> shouldBeGreaterThan 170
-        coverage.CrossRmDirOfStanding |> shouldBeGreaterThan 85
-        coverage.EpollAdds |> shouldBeGreaterThan 90
-        coverage.KeventAdds |> shouldBeGreaterThan 180
-        coverage.Parks |> shouldBeGreaterThan 1200
-        coverage.DarwinPollParks |> shouldBeGreaterThan 145
-        coverage.KeventParks |> shouldBeGreaterThan 150
-        coverage.Finishes |> shouldBeGreaterThan 330
-        coverage.Exits |> shouldBeGreaterThan 48
-        coverage.CrossWakes |> shouldBeGreaterThan 245
+        coverage.CrossConnects |> shouldBeGreaterThan 711
+        coverage.CrossAddressInUse |> shouldBeGreaterThan 147
+        coverage.Accepts |> shouldBeGreaterThan 435
+        coverage.CrossRmDirOfStanding |> shouldBeGreaterThan 92
+        coverage.EpollAdds |> shouldBeGreaterThan 126
+        coverage.KeventAdds |> shouldBeGreaterThan 173
+        coverage.Parks |> shouldBeGreaterThan 1180
+        coverage.DarwinPollParks |> shouldBeGreaterThan 128
+        coverage.KeventParks |> shouldBeGreaterThan 154
+        coverage.Finishes |> shouldBeGreaterThan 390
+        coverage.Exits |> shouldBeGreaterThan 46
+        coverage.CrossWakes |> shouldBeGreaterThan 397
+        coverage.CrossReads |> shouldBeGreaterThan 143
+        coverage.ShortWrites |> shouldBeGreaterThan 45
+        coverage.Resets |> shouldBeGreaterThan 99
+        coverage.EndsOfFile |> shouldBeGreaterThan 241
+        coverage.ConnectionSleeps |> shouldBeGreaterThan 90
 
         let crossWakes (kind : string) : int =
             Map.tryFind kind coverage.CrossWakeKinds |> Option.defaultValue 0
 
-        crossWakes "AcceptQueueNonEmpty" |> shouldBeGreaterThan 100
-        crossWakes "EpollEventDeliverable" |> shouldBeGreaterThan 37
-        crossWakes "KqueueEventDeliverable" |> shouldBeGreaterThan 42
-        crossWakes "KqueuePollReportable" |> shouldBeGreaterThan 44
-        crossWakes "FlockGrantable" |> shouldBeGreaterThan 33
-        crossWakes "DescriptorReady" |> shouldBeGreaterThan 41
+        crossWakes "AcceptQueueNonEmpty" |> shouldBeGreaterThan 178
+        crossWakes "EpollEventDeliverable" |> shouldBeGreaterThan 65
+        crossWakes "KqueueEventDeliverable" |> shouldBeGreaterThan 75
+        crossWakes "KqueuePollReportable" |> shouldBeGreaterThan 55
+        crossWakes "FlockGrantable" |> shouldBeGreaterThan 36
+        crossWakes "DescriptorReady" |> shouldBeGreaterThan 51
         // Refusals are steps that tested nothing; they must stay rare.
         coverage.Refusals * 10 |> shouldBeSmallerThan coverage.Calls

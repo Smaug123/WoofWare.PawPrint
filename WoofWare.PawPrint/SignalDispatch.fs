@@ -302,7 +302,17 @@ module SignalDispatch =
         // two instructions, so it answers without assembling the kernel's view.
         // No frame outlives a poll, so none is waiting for a sigreturn either.
         if List.isEmpty (SignalState.pending state.Kernel.Signals) then
-            SignalPoll.Continues state
+            // A leader whose `sigsuspend` has ended (it holds a mask to restore
+            // and is no longer parked) has a signal to take, which
+            // is what ended it, and its return is what gives back the mask the
+            // call replaced; nothing runs between the call's answer and this
+            // poll to take the signal away.
+            match SignalState.maskToRestore leader state.Kernel.Signals with
+            | Some mask when (UnixTaskTable.parkedFor leader state.Kernel.Tasks).IsNone ->
+                failwith
+                    $"SignalDispatch.poll: the leader %O{leader} returns from sigsuspend with nothing pending to take, so it would run on with the call's temporary mask rather than %O{mask} (this is an interpreter bug)."
+            | Some _
+            | None -> SignalPoll.Continues state
         elif (UnixTaskTable.parkedFor leader state.Kernel.Tasks).IsSome then
             SignalPoll.Continues state
         else
@@ -532,6 +542,12 @@ module SignalDispatch =
             // first takes the byte first. Its own wake condition is asked
             // first, alone, because this runs between every two instructions
             // and that answer is almost always no.
+            //
+            // Asked of this process's view alone (`UnixWait.wakes`) rather than
+            // of the machine (`SimulatedMachine.wakes`), which would choose the
+            // one reader the pipe wakes across every process: the process's own
+            // shim made the pipe, and nothing passes a descriptor to another
+            // process, so no other process can be asleep reading it.
             | Some (ParkedSyscall.PipeRead _ as parked) ->
                 if
                     not (Set.isEmpty (WakeCondition.satisfied dispatcher (WakeCondition.ofPark parked) system))
@@ -595,15 +611,15 @@ module SignalDispatch =
     /// System.Native's signal handling between two guest instructions: the
     /// native handler for whatever the kernel delivers to the leader now, and
     /// then the dispatcher, if it is idle and its pipe holds a signal. Polled
-    /// once per tick by `Program.stepPrepared`, immediately before the
-    /// scheduler picks its next thread, so a dispatcher it wakes can be picked
-    /// on the same tick.
+    /// once per tick by the driver's preamble (`MultiProgram.advance`), shortly
+    /// before the scheduler picks its next thread, so a dispatcher it wakes can
+    /// be picked on the same tick.
     let poll (baseClassTypes : BaseClassTypes<DumpedAssembly>) (state : IlMachineState) : SignalPoll =
         match deliverToLeader state with
         | SignalPoll.Continues state -> wakeDispatcher baseClassTypes state
         | killed -> killed
 
-    /// Called from `Program.stepPrepared` when `ExecutionResult.Terminated`
+    /// Called from `RunningProgram.stepDecided` when `ExecutionResult.Terminated`
     /// fires for the dispatcher's bottom frame (the callback `ret`urned past
     /// its own frame), with the callback's `int` result still on the
     /// dispatcher's evaluation stack. Resets the dispatcher to its idle shape

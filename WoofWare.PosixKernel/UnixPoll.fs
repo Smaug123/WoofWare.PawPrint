@@ -581,13 +581,16 @@ module UnixPoll =
         let pendIfReady (system : UnixSystem<'Task, 'Handler>) : UnixSystem<'Task, 'Handler> =
             let alreadyPending = List.contains key epollState.Ready
 
+            // The ADD's or MOD's poll of the target (`LinuxReadiness.polled`).
+            let polled = LinuxReadiness.polled targetId system
+
             if
                 not alreadyPending
                 && LinuxReadiness.ofDescription targetId system &&& stored <> 0u
             then
-                UnixSystemState.mapOpenFiles (OpenFileTable.appendEpollReady epollId key) system
+                UnixSystemState.mapOpenFiles (OpenFileTable.appendEpollReady epollId key) polled
             else
-                system
+                polled
 
         // A pipe the process was launched with is answered: its far end is the
         // client's, so every wake it can signal is one this kernel knows. The
@@ -796,6 +799,23 @@ module UnixPoll =
 
             Ok (reported, triggered)
 
+    /// What a Linux `poll` of `entries` does besides reporting: each open
+    /// descriptor's target is polled (`LinuxReadiness.polled`).
+    let private polledEntries<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (entries : PollEntry list)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        (system, entries)
+        ||> List.fold (fun system entry ->
+            if entry.Fd < 0 then
+                system
+            else
+                match FileDescriptorRegistry.tryFindId entry.Fd (UnixSystemState.fileDescriptors system) with
+                | Some description -> LinuxReadiness.polled description system
+                | None -> system
+        )
+
     let private nanosecondsPerMillisecond : int64 = 1_000_000L
 
     /// The deadline a relative timeout of `milliseconds` sets at `now`, as both
@@ -838,6 +858,8 @@ module UnixPoll =
         match scan system entries with
         | Error refusal -> Error refusal
         | Ok (reported, triggered) ->
+
+        let system = polledEntries entries system
 
         if triggered > 0 || milliseconds = 0 then
             Ok (PollOutcome.Answered (reported, triggered), system)
@@ -909,6 +931,8 @@ module UnixPoll =
         match scan system entries with
         | Error refusal -> Error refusal
         | Ok (reported, triggered) ->
+
+        let system = polledEntries entries system
 
         let timedOut =
             match parked.Deadline with

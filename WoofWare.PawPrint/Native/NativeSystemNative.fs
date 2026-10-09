@@ -518,6 +518,8 @@ module NativeSystemNative =
                 "Accept the connection or close the client before closing the listener."
             | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
                 "Model the reset a zero-linger close sends, or close the peer first."
+            | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
+                "Model a close that waits, on the virtual clock, for its unsent bytes to reach the peer, or let the peer read them before the close."
             | CloseRefusal.PolledDescriptor _ ->
                 "Model a sleeping poll's edge-triggered wake-ups, and its look-up of each descriptor again as it wakes, before closing one out from under it."
             | CloseRefusal.DarwinEndedWriteSignal _ ->
@@ -3945,9 +3947,9 @@ module NativeSystemNative =
             let request = NativeCall.int32Argument operation instruction.Arguments.[1]
 
             // Park re-entrantly: leave the native frame on the stack and the
-            // caller's program counter naming the call, so a wake —
-            // `Program.fireSyscallWakes` flipping this thread back to
-            // Runnable once the lock could be granted — re-enters this handler
+            // caller's program counter naming the call, so a wake — the
+            // driver's syscall wakes (`MultiProgram.advance`) flipping this thread back
+            // to Runnable once the lock could be granted — re-enters this handler
             // and finishes the acquisition from the caller's own frame.
             let park (system : UnixSystem<ThreadId, NativeSignalHandler>) =
                 // The library recorded the park in `system` when it answered
@@ -4004,7 +4006,8 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.PipeRead _ as other)
-            | Some (ParkedSyscall.PipeWrite _ as other) ->
+            | Some (ParkedSyscall.PipeWrite _ as other)
+            | Some (ParkedSyscall.SigSuspend as other) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
@@ -4289,6 +4292,8 @@ module NativeSystemNative =
                 match outcome with
                 | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
                 | Error (ReadRefusal.UnmodelledSocketPhase _ as refusal)
+                | Error (ReadRefusal.ConnectionSleep _ as refusal)
+                | Error (ReadRefusal.ConnectionFault _ as refusal)
                 | Error (ReadRefusal.DatagramSleep _ as refusal) ->
                     // The library says what it measured; PawPrint says which managed
                     // caller could have reached it, which is a fact about CoreLib.
@@ -5350,7 +5355,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.Poll _)
             | Some (ParkedSyscall.KqueuePoll _)
             | Some (ParkedSyscall.PipeRead _)
-            | Some (ParkedSyscall.PipeWrite _) ->
+            | Some (ParkedSyscall.PipeWrite _)
+            | Some ParkedSyscall.SigSuspend ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
@@ -6844,7 +6850,8 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.PipeRead _ as other)
-            | Some (ParkedSyscall.PipeWrite _ as other) ->
+            | Some (ParkedSyscall.PipeWrite _ as other)
+            | Some (ParkedSyscall.SigSuspend as other) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
@@ -7142,7 +7149,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.Flock _)
             | Some (ParkedSyscall.Accept _)
             | Some (ParkedSyscall.PipeRead _)
-            | Some (ParkedSyscall.PipeWrite _) ->
+            | Some (ParkedSyscall.PipeWrite _)
+            | Some ParkedSyscall.SigSuspend ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
@@ -7237,10 +7245,11 @@ module NativeSystemNative =
             // sleeps, and the kernel finishes it on a later re-entry; a signal
             // can end that sleep with EINTR, which the C retries, or with the
             // count already written. A socket with no peer answers its own
-            // errno; one with a peer moves bytes, which the kernel does not
-            // model and `UnixReadWrite.write` refuses rather than guesses. A
-            // write into a pipe with no reader, or into a Linux stream socket
-            // with no peer, answers EPIPE and raises SIGPIPE, which PawPrint's
+            // errno; a connected stream socket moves bytes, though a blocking
+            // write it has no room for is refused, as the kernel does not yet
+            // model a sleep on a connection. A write into a pipe with no
+            // reader, into a Linux stream socket with no peer, or into a
+            // connection that was reset, answers EPIPE and raises SIGPIPE, which PawPrint's
             // startup ignores, as CoreCLR's does, so the guest sees the EPIPE
             // alone unless it has given the signal a disposition of its own.
             let operation = "SystemNative_Write"
@@ -7253,6 +7262,8 @@ module NativeSystemNative =
                 let reachability =
                     match refusal with
                     | WriteRefusal.UnmodelledSocketPhase _
+                    | WriteRefusal.ConnectionSleep _
+                    | WriteRefusal.ConnectionFault _
                     | WriteRefusal.SendBuffer _
                     | WriteRefusal.Inet6Binding _
                     | WriteRefusal.EphemeralPortsExhausted _ ->

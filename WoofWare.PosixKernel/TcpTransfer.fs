@@ -337,6 +337,54 @@ module internal TcpTransfer =
         let queued = ByteQueue.length direction.Sending
         direction.SendCapacity - queued >= queued / 2
 
+    /// The free space in `sender`'s send buffer, in bytes: what Darwin's
+    /// `EVFILT_WRITE` reports as its event's `data`.
+    let sendSpace (sender : ConnectionEnd) (transfer : TcpTransfer) : int =
+        let outbound = towards (otherEnd sender) transfer
+        outbound.SendCapacity - ByteQueue.length outbound.Sending
+
+    /// How many bytes `sender` has written that are still in its send buffer,
+    /// because the peer's receive buffer has had no room for them yet.
+    let unsent (sender : ConnectionEnd) (transfer : TcpTransfer) : int =
+        ByteQueue.length (towards (otherEnd sender) transfer).Sending
+
+    /// Whether Linux's `tcp_poll` finds `sender` writable: its send buffer at
+    /// most two thirds full (`sk_stream_is_writeable`). Says nothing of an end
+    /// that was reset, which is writable whatever its buffer holds, since the
+    /// write fails at once.
+    let linuxSendable (sender : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        linuxWritable (towards (otherEnd sender) transfer)
+
+    /// The error a call on `receiver`'s socket would take now, if one is
+    /// pending.
+    let pendingError (receiver : ConnectionEnd) (transfer : TcpTransfer) : TcpError option =
+        match transfer.Rules, (towards receiver transfer).Receiver with
+        | TcpTransferRules.Linux _, TcpEndState.Reset (true, true) -> Some TcpError.BrokenPipe
+        | _, TcpEndState.Reset (_, true) -> Some TcpError.ConnectionReset
+        | _, TcpEndState.Reset (_, false)
+        | _, TcpEndState.Open
+        | _, TcpEndState.FinQueued
+        | _, TcpEndState.FinReceived
+        | _, TcpEndState.Closed -> None
+
+    /// A Linux `tcp_poll` of `sender`'s socket, by `poll(2)`, an epoll `ADD`
+    /// or `MOD`, or `epoll_wait`'s re-poll of a pending entry: one that finds
+    /// the socket open for sending but not writable marks it out of space
+    /// (`SOCK_NOSPACE`), so that its send buffer draining to two thirds full
+    /// raises `TcpWake.SendSpace`. Darwin's poll keeps no such mark.
+    let polled (sender : ConnectionEnd) (transfer : TcpTransfer) : TcpTransfer =
+        match transfer.Rules, (towards sender transfer).Receiver with
+        | TcpTransferRules.Darwin, _ -> transfer
+        | TcpTransferRules.Linux _, TcpEndState.Open
+        | TcpTransferRules.Linux _, TcpEndState.FinQueued
+        | TcpTransferRules.Linux _, TcpEndState.FinReceived ->
+            if linuxSendable sender transfer then
+                transfer
+            else
+                withArmed sender true transfer
+        | TcpTransferRules.Linux _, TcpEndState.Reset _
+        | TcpTransferRules.Linux _, TcpEndState.Closed -> transfer
+
     /// Move bytes on from the send buffer into the receive buffer as far as it
     /// has room: how many moved, and the direction after.
     let private deliver (direction : TcpDirection) : int * TcpDirection =
@@ -536,8 +584,8 @@ module internal TcpTransfer =
 
         wakes, keepingRules "write" (withTowards peer outbound transfer)
 
-    /// The error a pending one would make `call` fail with, for `receiver`.
-    let private pendingError (receiver : ConnectionEnd) (transfer : TcpTransfer) : TcpError =
+    /// The error a pending one would make a call by `receiver` fail with.
+    let private resetError (receiver : ConnectionEnd) (transfer : TcpTransfer) : TcpError =
         match transfer.Rules, (towards receiver transfer).Receiver with
         | TcpTransferRules.Linux _, TcpEndState.Reset (true, _) -> TcpError.BrokenPipe
         | _ -> TcpError.ConnectionReset
@@ -637,7 +685,7 @@ module internal TcpTransfer =
             | TcpEndState.FinReceived
             | TcpEndState.Reset (true, _)
             | TcpEndState.Reset (false, false) -> TcpReadAnswer.EndOfFile, [], transfer
-            | TcpEndState.Reset (false, true) -> TcpReadAnswer.Failed (pendingError receiver transfer), [], takeError ()
+            | TcpEndState.Reset (false, true) -> TcpReadAnswer.Failed (resetError receiver transfer), [], takeError ()
             | TcpEndState.FinQueued -> failwith unqueuedFin
             | TcpEndState.Closed -> failwith "TcpTransfer.read: unreachable, the closed end was refused above."
         else
@@ -652,7 +700,7 @@ module internal TcpTransfer =
                     | TcpReceiveCall.Read
                     | TcpReceiveCall.Receive -> takeError ()
 
-                TcpReadAnswer.Failed (pendingError receiver transfer), [], transfer
+                TcpReadAnswer.Failed (resetError receiver transfer), [], transfer
             | TcpEndState.Reset (_, false)
             | TcpEndState.FinReceived -> TcpReadAnswer.EndOfFile, [], transfer
             | TcpEndState.Open ->
@@ -673,7 +721,7 @@ module internal TcpTransfer =
             failwith
                 $"TcpTransfer.takeError: the %A{receiver} end is closed, so it has no socket to ask (this is a bug in this library)."
         | TcpEndState.Reset (afterFin, true) ->
-            Some (pendingError receiver transfer),
+            Some (resetError receiver transfer),
             withTowards
                 receiver
                 { direction with

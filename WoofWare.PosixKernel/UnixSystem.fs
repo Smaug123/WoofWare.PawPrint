@@ -140,9 +140,12 @@ type SyscallRefusal<'Task> =
 /// of those modules can see the other's: each is defined in a file that
 /// compiles before this one.
 ///
-/// `UnixSystem.checkMachineInvariants` reports the cases that concern the
-/// machine, and `UnixSystem.checkViewInvariants` those that concern one
-/// process's view of it.
+/// Some cases concern the machine, and read facts that every process on it
+/// contributes to: `UnixSystem.checkInvariants` reports those of a process
+/// alone on its machine, and `SimulatedMachine.checkInvariants` those of a
+/// machine holding several (as `SimulatedMachineDefect.Machine`). The rest
+/// concern one process's view of the machine, and
+/// `UnixSystem.checkViewInvariants` reports those.
 [<RequireQualifiedAccess>]
 type UnixSystemDefect<'Task> =
     /// A live open file description names a socket the socket table does not
@@ -204,6 +207,26 @@ type UnixSystemDefect<'Task> =
     /// `accept(2)`). `holders` names each, in socket-table order, and a
     /// listener once however often it queues the connection.
     | ConnectionEndHeldTwice of connection : ConnectionId * connectionEnd : ConnectionEnd * holders : SocketId list
+    /// A connection's bytes and end states break the rules `TcpTransfer`
+    /// keeps (`TcpTransfer.violations`, each stated in `violations`): a buffer
+    /// holding more than its capacity, bytes in flight to an end that was
+    /// reset or closed, a FIN arrived ahead of bytes sent before it, an end
+    /// told of an ending its peer never made, and so on.
+    | TcpTransferBroken of connection : ConnectionId * violations : string list
+    /// A connection's transfer rules are of `rules`, but the machine is
+    /// `flavour`-flavoured.
+    | TcpTransferNotOfFlavour of
+        connection : ConnectionId *
+        rules : SimulatedUnixFlavour *
+        flavour : SimulatedUnixFlavour
+    /// The socket `socket` is the `connectionEnd` end of `connection`, or is
+    /// the listener whose accept queue holds its server end, which the
+    /// connection records as closed.
+    | ConnectionEndClosedUnderSocket of connection : ConnectionId * connectionEnd : ConnectionEnd * socket : SocketId
+    /// The connection records its `connectionEnd` end as open, but no socket
+    /// is that end and, for a server end, no listener queues the connection:
+    /// its socket closed without the connection being told.
+    | ConnectionEndOpenWithoutHolder of connection : ConnectionId * connectionEnd : ConnectionEnd
     /// A socket's phase is one its kind cannot enter: a datagram socket
     /// listening or holding a stream connection, or a non-datagram socket
     /// holding a datagram peer.
@@ -402,6 +425,17 @@ type UnixSystemDefect<'Task> =
     | HandlerFramesWithoutTask of task : 'Task
     /// A task the table does not hold has a signal mask.
     | MaskWithoutTask of task : 'Task
+    /// A task the table does not hold has a mask for a `sigsuspend(2)` to
+    /// restore.
+    | MaskToRestoreWithoutTask of task : 'Task
+    /// A task asleep in a syscall other than `sigsuspend(2)` has a mask for a
+    /// `sigsuspend` to restore. A task has one only while it is in that call or
+    /// returning from it, and a task returns to user mode before it makes
+    /// another call.
+    | MaskToRestoreOutsideSigsuspend of task : 'Task * parked : ParkedSyscall
+    /// A task asleep in `sigsuspend(2)` has no mask to restore, so its return
+    /// would leave it with the call's temporary mask.
+    | SigsuspendWithoutMaskToRestore of task : 'Task
     /// A pending signal is directed at a task the table does not hold, so it
     /// can never be delivered and sits in the queue for the rest of the run.
     | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
@@ -1047,8 +1081,7 @@ module UnixSystem =
     /// machine, each of which reads facts that every process on it contributes
     /// to, so that no one process's view can check it.
     ///
-    /// `processes` is every process on the machine, each with its tasks. The
-    /// socket table and the pipe table against the open file descriptions,
+    /// The socket table and the pipe table against the open file descriptions,
     /// each pipe and the pipe device against the platform, the connection
     /// table against the sockets that reference it, the open file descriptions
     /// against the filesystem and the platform, each description against the
@@ -1057,19 +1090,14 @@ module UnixSystem =
     /// machine's counters, the thread ID allocator against every process's
     /// tasks, and the machine's filesystem type, buffer check and symbolic
     /// links against its platform.
-    let rec checkMachineInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (processes : (UnixProcessState<'Task, 'Handler> * Map<'Task, UnixTaskState>) list)
-        (machine : UnixMachineState)
-        : UnixSystemDefect<'Task> list
-        =
-        machineDefects true processes machine
-
-    /// `checkMachineInvariants`, when `complete`; otherwise only the clauses
-    /// `processes`, some of the processes on the machine, can check truthfully:
-    /// every clause that counts or collects across every process (the holds on
+    ///
+    /// When `complete`, `processes` is every process on the machine, each with
+    /// its tasks, and every clause is checked. Otherwise `processes` is some of
+    /// them, and only the clauses those can check truthfully are: every clause
+    /// that counts or collects across every process (the holds on
     /// descriptions, the live thread and process IDs, the current directory
     /// holds) is skipped.
-    and internal machineDefects<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal machineDefects<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (complete : bool)
         (processes : (UnixProcessState<'Task, 'Handler> * Map<'Task, UnixTaskState>) list)
         (machine : UnixMachineState)
@@ -1253,6 +1281,69 @@ module UnixSystem =
                     else
                         None
                 )
+            )
+
+        // Each connection's transfer against its own rules, the machine's
+        // flavour, and the sockets that are its ends: an end is closed exactly
+        // when no socket holds it, a queued server end counting as held.
+        let transferDefects =
+            machine.Connections
+            |> Map.toList
+            |> List.collect (fun (connection, tcp) ->
+                let broken =
+                    match TcpTransfer.violations tcp.Transfer with
+                    | [] -> []
+                    | violations -> [ UnixSystemDefect.TcpTransferBroken (connection, violations) ]
+
+                let rulesFlavour =
+                    match tcp.Transfer.Rules with
+                    | TcpTransferRules.Linux _ -> SimulatedUnixFlavour.Linux
+                    | TcpTransferRules.Darwin -> SimulatedUnixFlavour.Darwin
+
+                let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+                let ofFlavour =
+                    if rulesFlavour = flavour then
+                        []
+                    else
+                        [ UnixSystemDefect.TcpTransferNotOfFlavour (connection, rulesFlavour, flavour) ]
+
+                // An orphan has no holder of either end, which
+                // `OrphanConnection` reports alone.
+                let ends =
+                    if not (Set.contains connection referencedConnections) then
+                        []
+                    else
+
+                    [ ConnectionEnd.Client ; ConnectionEnd.Server ]
+                    |> List.collect (fun connectionEnd ->
+                        let holders =
+                            connectionReferences
+                            |> List.choose (fun (socketId, referenced, heldAs) ->
+                                let holdsThisEnd =
+                                    match heldAs with
+                                    | Some held -> held = connectionEnd
+                                    | None -> connectionEnd = ConnectionEnd.Server
+
+                                if referenced = connection && holdsThisEnd then
+                                    Some socketId
+                                else
+                                    None
+                            )
+                            |> List.distinct
+
+                        match (TcpTransfer.towards connectionEnd tcp.Transfer).Receiver, holders with
+                        | TcpEndState.Closed, [] -> []
+                        | TcpEndState.Closed, holders ->
+                            holders
+                            |> List.map (fun socketId ->
+                                UnixSystemDefect.ConnectionEndClosedUnderSocket (connection, connectionEnd, socketId)
+                            )
+                        | _, [] -> [ UnixSystemDefect.ConnectionEndOpenWithoutHolder (connection, connectionEnd) ]
+                        | _, _ -> []
+                    )
+
+                broken @ ofFlavour @ ends
             )
 
         let phaseKindMismatches =
@@ -1837,6 +1928,7 @@ module UnixSystem =
         @ orphanConnections
         @ duplicateQueued
         @ connectionEndsHeldTwice
+        @ transferDefects
         @ phaseKindMismatches
         @ drainedUnderLinux
         @ connectionFreshness
@@ -1947,6 +2039,8 @@ module UnixSystem =
             |> List.collect (fun (task, state) ->
                 match state.Parked |> Option.map (fun park -> park.Syscall) with
                 | None -> []
+                // Names no description.
+                | Some ParkedSyscall.SigSuspend -> []
                 | Some (ParkedSyscall.Flock parked) ->
                     if Map.containsKey parked.Requester descriptions then
                         []
@@ -2273,6 +2367,40 @@ module UnixSystem =
                 |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
                 |> List.map UnixSystemDefect.MaskWithoutTask
 
+            // A mask to restore exists from a `sigsuspend` until its task
+            // returns to user mode, so exactly while the task is parked in the
+            // call or has been answered and not yet returned; which of those
+            // two is true is the client's, so what is checked is that no task
+            // parked in anything else has one, and every task parked in it does.
+            let toRestore =
+                let restoring = SignalState.tasksWithMasksToRestore signals
+
+                let orphaned =
+                    restoring
+                    |> Set.toList
+                    |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
+                    |> List.map UnixSystemDefect.MaskToRestoreWithoutTask
+
+                let parked =
+                    system.Tasks
+                    |> Map.toList
+                    |> List.choose (fun (task, state) ->
+                        match UnixTaskState.park state with
+                        | Some {
+                                   Syscall = ParkedSyscall.SigSuspend
+                               } when not (Set.contains task restoring) ->
+                            Some (UnixSystemDefect.SigsuspendWithoutMaskToRestore task)
+                        | Some {
+                                   Syscall = ParkedSyscall.SigSuspend
+                               } -> None
+                        | Some park when Set.contains task restoring ->
+                            Some (UnixSystemDefect.MaskToRestoreOutsideSigsuspend (task, park.Syscall))
+                        | Some _
+                        | None -> None
+                    )
+
+                orphaned @ parked
+
             let targets =
                 SignalState.pending signals
                 |> List.choose (fun entry ->
@@ -2283,7 +2411,7 @@ module UnixSystem =
                     | ValueNone -> None
                 )
 
-            numberings @ frames @ masks @ targets
+            numberings @ frames @ masks @ toRestore @ targets
 
         let supplementaryGroups =
             let count = List.length system.Process.Credentials.SupplementaryGroups
@@ -2339,8 +2467,8 @@ module UnixSystem =
 
 
     /// Every way this system's tables disagree with each other: the machine's
-    /// clauses (`checkMachineInvariants`) and this process's view's
-    /// (`checkViewInvariants`).
+    /// clauses, which read facts every process on the machine contributes to,
+    /// and this process's view's (`checkViewInvariants`).
     ///
     /// On a machine holding other processes besides (a view a
     /// `SimulatedMachine` focused), only the machine's clauses this one

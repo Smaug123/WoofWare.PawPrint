@@ -371,6 +371,12 @@ type ParkedSyscall =
     | Accept of ParkedAccept
     | PipeRead of ParkedPipeRead
     | PipeWrite of ParkedPipeWrite
+    /// `sigsuspend(2)`, or `pause(2)`, which is `sigsuspend` with the mask the
+    /// task already has (`UnixSignal.pause`). Carries nothing: the temporary
+    /// mask is the task's mask while it sleeps, and the mask the call replaced
+    /// is the signal state's (`SignalState.maskToRestore`), because it outlives
+    /// the park, until the task returns to user mode.
+    | SigSuspend
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -408,6 +414,7 @@ module ParkedSyscall =
         | ParkedSyscall.Accept accept -> SleepTarget.description accept.Listener |> Option.toList
         | ParkedSyscall.PipeRead read -> SleepTarget.description read.Reader |> Option.toList
         | ParkedSyscall.PipeWrite write -> SleepTarget.description write.Writer |> Option.toList
+        | ParkedSyscall.SigSuspend -> []
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -601,6 +608,7 @@ module UnixTaskTable =
             | ParkedSyscall.PipeWrite _ -> 5
             | ParkedSyscall.Kevent _ -> 6
             | ParkedSyscall.KqueuePoll _ -> 7
+            | ParkedSyscall.SigSuspend -> 8
 
         let sameSyscall =
             match existing.Parked with

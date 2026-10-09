@@ -1464,17 +1464,18 @@ module UnixSocket =
     /// connected to.
     ///
     /// A connected stream socket reports the other end of its connection, and
-    /// keeps reporting it after that end closes; a connected datagram socket
-    /// reports its default peer. The answer and its length rules are exactly
-    /// `getsockname`'s, including that `declaredLength` does not bound what is
-    /// reported.
+    /// keeps reporting it after that end closes with a FIN; a connected
+    /// datagram socket reports its default peer. The answer and its length
+    /// rules are exactly `getsockname`'s, including that `declaredLength` does
+    /// not bound what is reported.
     ///
     /// A socket with no peer answers `ENOTCONN` -- one never connected, a
     /// listener, and a datagram socket connected to port 0, which Linux allows
     /// -- in every address family, and before the declared length is judged.
-    /// A refused connect leaves no peer either: `ENOTCONN` on Linux, and
-    /// `EINVAL` on Darwin, which answers that for any socket that can neither
-    /// send nor receive.
+    /// A refused connect leaves no peer either, nor does a reset that reached
+    /// a connected socket, whether or not its error has been taken: `ENOTCONN`
+    /// on Linux, and `EINVAL` on Darwin, which answers that for any socket
+    /// that can neither send nor receive.
     ///
     /// A connect this kernel answered `EINPROGRESS` has already completed, so
     /// the peer is reported at once. Darwin answers `ENOTCONN` there until the
@@ -1524,15 +1525,33 @@ module UnixSocket =
         // never connects a datagram socket to one.
         | SocketPhase.DatagramPeer peer when peer.Port = 0us -> notConnected
         | SocketPhase.DatagramPeer peer -> reportPeer peer
-        // Only `connect` enters the pending report, so its socket is the client.
-        | SocketPhase.EstablishedPendingReport connectionId ->
-            reportPeer (UnixMachineState.connection connectionId system.Machine).ServerAddress
-        | SocketPhase.Established (connectionId, connectionEnd) ->
+        | SocketPhase.EstablishedPendingReport _
+        | SocketPhase.Established _ ->
+            let connectionId, connectionEnd =
+                match SocketPhase.connectionEnd socket.Phase with
+                | Some held -> held
+                | None ->
+                    failwith
+                        $"UnixSocket.getpeername: socket %O{socketId} is in %A{socket.Phase}, which holds no connection end (this is a bug in this library)."
+
             let connection = UnixMachineState.connection connectionId system.Machine
 
-            match connectionEnd with
-            | ConnectionEnd.Client -> reportPeer connection.ServerAddress
-            | ConnectionEnd.Server -> reportPeer connection.ClientAddress
+            // A reset leaves no peer, whether or not its error has been taken:
+            // the measured rows T8 and T9. A FIN leaves the peer (T6, T7).
+            match (TcpTransfer.towards connectionEnd connection.Transfer).Receiver with
+            | TcpEndState.Reset _ ->
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> notConnected
+                | SimulatedUnixFlavour.Darwin -> Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
+            | TcpEndState.Open
+            | TcpEndState.FinQueued
+            | TcpEndState.FinReceived ->
+                match connectionEnd with
+                | ConnectionEnd.Client -> reportPeer connection.ServerAddress
+                | ConnectionEnd.Server -> reportPeer connection.ClientAddress
+            | TcpEndState.Closed ->
+                failwith
+                    $"UnixSocket.getpeername: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
 
     /// `sizeof(int)`: the size of every option's value here but `SO_LINGER`'s.
     let private optionIntSize : int = 4
@@ -1740,19 +1759,32 @@ module UnixSocket =
 
         let socket = UnixMachineState.socket socketId system.Machine
 
-        // Darwin refuses every option on a socket that can neither send nor
-        // receive any more, ahead of the length and the copy: measured EINVAL
-        // after a refused connect, whether or not the refusal is still pending,
-        // even through an unmapped value, for every option modelled here.
-        // Linux takes the option in every phase.
+        // Darwin refuses every option modelled here on a socket that can
+        // neither send nor receive any more, ahead of the length and the copy:
+        // measured EINVAL after a refused connect, whether or not the refusal
+        // is still pending, even through an unmapped value, and after a reset
+        // reached a connected socket, but not after a FIN, which shuts only
+        // the receive side (`reset-binding.c`). Linux takes the option in
+        // every phase.
         let darwinShutDown =
             flavour = SimulatedUnixFlavour.Darwin
             && match socket.Phase with
                | SocketPhase.Refused _ -> true
+               | SocketPhase.Established (connectionId, connectionEnd) ->
+                   match
+                       (TcpTransfer.towards
+                           connectionEnd
+                           (UnixMachineState.connection connectionId system.Machine).Transfer)
+                           .Receiver
+                   with
+                   | TcpEndState.Reset _ -> true
+                   | TcpEndState.Open
+                   | TcpEndState.FinQueued
+                   | TcpEndState.FinReceived
+                   | TcpEndState.Closed -> false
                | SocketPhase.Idle
                | SocketPhase.Listening _
                | SocketPhase.EstablishedPendingReport _
-               | SocketPhase.Established _
                | SocketPhase.DatagramPeer _ -> false
 
         if darwinShutDown then
@@ -1823,12 +1855,15 @@ module UnixSocket =
     ///   sixteen bits, whatever `l_onoff` is.
     ///
     /// `TCP_NODELAY` has no observable effect, since a loopback transfer is
-    /// delivered at once whatever its size. `SO_LINGER`'s effect on `close` --
-    /// a reset rather than an orderly shutdown when the time is zero -- belongs
-    /// with `close` and `shutdown`, which do not model it yet: such a close of
-    /// a connected socket is refused
-    /// (`DescriptionReleaseRefusal.AbortiveClose`), and every other close is
-    /// the orderly one it would be anyway.
+    /// delivered at once whatever its size. `SO_LINGER`'s effect on `close`
+    /// belongs with `close` and `shutdown`, which do not model it yet. A close
+    /// of a connected socket that it changes is refused: with a time of zero,
+    /// a reset rather than an orderly shutdown
+    /// (`DescriptionReleaseRefusal.AbortiveClose`); with a positive time, a
+    /// wait for bytes still in the send buffer, on Linux whatever `O_NONBLOCK`
+    /// is and on Darwin through a blocking description
+    /// (`DescriptionReleaseRefusal.LingeringClose`). Every other close is the
+    /// one it would be anyway: a FIN, or a reset if bytes were left unread.
     ///
     /// An option persists until the next `setsockopt` of it, and no later
     /// failure of another call undoes it. A change on a listener with
@@ -2095,12 +2130,14 @@ module UnixSocket =
     ///   on Darwin, and in seconds through Darwin's `SO_LINGER_SEC` (the
     ///   hundredths over 100, rounded toward zero).
     /// - `SO_ERROR` is the raw ECONNREFUSED of a refusal still pending
-    ///   (`SocketPhase.Refused RefusalError.Pending`), and 0 in every other
-    ///   phase. Reading a pending refusal takes it: the socket is left `Refused
-    ///   RefusalError.Reported`, whether the copy-out then succeeds or not. Only
-    ///   a call that fails before reading the option leaves the refusal
-    ///   pending: one answered at the admission, or a Linux one declaring a
-    ///   negative length.
+    ///   (`SocketPhase.Refused RefusalError.Pending`), the raw error a reset
+    ///   left pending on a connected socket (`TcpTransfer.pendingError`), and 0
+    ///   otherwise. Reading a pending error takes it: a refused socket is left
+    ///   `Refused RefusalError.Reported`, and a connected one with nothing
+    ///   pending (`TcpTransfer.takeError`), whether the copy-out then succeeds
+    ///   or not. Only a call that fails before reading the option leaves the
+    ///   error pending: one answered at the admission, or a Linux one
+    ///   declaring a negative length.
     ///
     /// Reading any option but `SO_ERROR` changes nothing.
     let getsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -2229,14 +2266,37 @@ module UnixSocket =
                             }
 
                         ints [ refusal ], system
-                    // A connection reset by its peer would read ECONNRESET once
-                    // (measured on both), but nothing here resets one: no data
-                    // path exists for a peer to close over unread bytes, and a
-                    // listener close that would reset a queued client is refused.
+                    // A connected socket's pending error is its connection's
+                    // (`TcpTransfer.takeError`): a reset's, which the read takes
+                    // before the copy-out as a refusal's is (measured,
+                    // `tcp-transfer.c` section S: ECONNRESET, or on Linux EPIPE
+                    // after a FIN, then 0).
+                    | SocketPhase.EstablishedPendingReport _
+                    | SocketPhase.Established _ ->
+                        match SocketPhase.connectionEnd socket.Phase with
+                        | None ->
+                            failwith
+                                $"UnixSocket.getsockopt: socket %O{socketId} is in %A{socket.Phase}, which holds no connection end (this is a bug in this library)."
+                        | Some (connectionId, connectionEnd) ->
+                            let error, transfer =
+                                TcpTransfer.takeError
+                                    connectionEnd
+                                    (UnixMachineState.connection connectionId system.Machine).Transfer
+
+                            let reported =
+                                match error with
+                                | None -> 0
+                                | Some error ->
+                                    UnixError.toRawErrnoUnder
+                                        (SimulatedUnixPlatform.rawErrnoNumbering platform)
+                                        (TcpError.toUnixError error)
+
+                            ints [ reported ],
+                            { system with
+                                Machine = UnixMachineState.withTransfer connectionId transfer system.Machine
+                            }
                     | SocketPhase.Idle
                     | SocketPhase.Listening _
-                    | SocketPhase.EstablishedPendingReport _
-                    | SocketPhase.Established _
                     | SocketPhase.Refused RefusalError.Reported
                     | SocketPhase.DatagramPeer _ -> ints [ 0 ], system
 

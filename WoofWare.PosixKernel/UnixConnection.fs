@@ -116,8 +116,10 @@ type AcceptRefusal =
     /// closes the connection's server end at once, and that end has the
     /// listener's `SO_LINGER`, on with a time of zero, while the client is
     /// still open. A real kernel resets the connection, and the client reads
-    /// ECONNRESET; this kernel models no reset. See
-    /// `DescriptionReleaseRefusal.AbortiveClose`.
+    /// ECONNRESET; this kernel models no abortive close. See
+    /// `DescriptionReleaseRefusal.AbortiveClose`. Under a positive linger time
+    /// the drop is the ordinary close, since the server end has written
+    /// nothing that could still be in its send buffer.
     | AbortiveDrop of listener : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
@@ -139,7 +141,7 @@ module AcceptRefusal =
         | AcceptRefusal.Release refusal ->
             $"the accept slept on a listener no descriptor names any more, which goes as the call returns: %s{DescriptionReleaseRefusal.describe refusal}"
         | AcceptRefusal.AbortiveDrop (listener, connection) ->
-            $"the accept fails having taken connection %O{connection} off socket %O{listener}'s queue, which closes its server end at once, and that end has the listener's SO_LINGER, on with a time of zero, while the client is open. A real kernel resets the connection, and the client reads ECONNRESET; this kernel models no reset, and would otherwise deliver an orderly end of stream instead."
+            $"the accept fails having taken connection %O{connection} off socket %O{listener}'s queue, which closes its server end at once, and that end has the listener's SO_LINGER, on with a time of zero, while the client is open. A real kernel resets the connection, and the client reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless the client had written to the server end."
         | AcceptRefusal.DarwinDrainedListener listener ->
             $"socket %O{listener} is a listener on which a close of the descriptor an accept was asleep through has ended every accept, and this accept would sleep on it. Measured on Darwin (close-ends-call.c section A7), such a sleep answers ECONNABORTED as soon as anything wakes it, a connection or a signal, and one connection wakes one such sleeper, the connection staying queued, so a second sleeper sleeps on through it. This kernel wakes a sleeping accept for as long as a connection is queued, so it would wake every such sleeper for one connection."
 
@@ -175,6 +177,11 @@ type ConnectRefusal =
     /// this destination, and how a kernel refuses the duplicate four-tuple is
     /// unmeasured.
     | DuplicateFourTuple of source : InternetEndpoint * destination : InternetEndpoint
+    /// A Linux socket whose non-blocking connect completed, and whose
+    /// connection was then reset before any connect reported the completion.
+    /// Linux's retry would answer the reset's pending error, or ECONNABORTED
+    /// once it is taken, and disconnect the socket; unmeasured.
+    | ResetBeforeReport of socket : SocketId
     /// The destination is the socket's own bound address with nothing
     /// listening: TCP simultaneous open, which is unmodelled.
     | SimultaneousOpen of destination : InternetEndpoint
@@ -219,6 +226,8 @@ module ConnectRefusal =
             $"the resolved source %s{InternetEndpoint.toString endpoint} equals the destination, with a listener present. What a real kernel does with this self-tuple (plausibly EINVAL on Darwin, a completed self-connect on Linux) is unmeasured, so measure it rather than guessing."
         | ConnectRefusal.DuplicateFourTuple (source, destination) ->
             $"a connection from %s{InternetEndpoint.toString source} to %s{InternetEndpoint.toString destination} already exists, and a real kernel refuses a duplicate four-tuple in ways that are unmeasured (plausibly EADDRINUSE at connect time). Measure it rather than guessing."
+        | ConnectRefusal.ResetBeforeReport socket ->
+            $"socket %O{socket}'s non-blocking connect completed, and its connection was reset before any connect reported the completion. Linux's retry finds the socket closed and answers the reset's pending error, or ECONNABORTED once an SO_ERROR read has taken it, and disconnects the socket, as for a refused connect; what that leaves of the socket's binding is unmeasured."
         | ConnectRefusal.SimultaneousOpen destination ->
             $"destination %s{InternetEndpoint.toString destination} is this socket's own bound address and nothing is listening there. A real kernel can complete this as a TCP simultaneous open -- connecting the socket to itself -- which this library does not model."
         | ConnectRefusal.DarwinSynDropped destination ->
@@ -544,11 +553,13 @@ module UnixConnection =
                     system.Machine.Connections
                     |> Map.exists (fun _ connection ->
                         // In either orientation: a connection's endpoint
-                        // pair occupies the tuple from both ends.
-                        (connection.ClientAddress = clientBinding.Endpoint
-                         && connection.ServerAddress = dest)
-                        || (connection.ClientAddress = dest
-                            && connection.ServerAddress = clientBinding.Endpoint)
+                        // pair occupies the tuple from both ends, until a
+                        // reset releases it.
+                        not (UnixMachineState.resetReleasedTuple connection)
+                        && ((connection.ClientAddress = clientBinding.Endpoint
+                             && connection.ServerAddress = dest)
+                            || (connection.ClientAddress = dest
+                                && connection.ServerAddress = clientBinding.Endpoint))
                     )
                 then
                     // Established tuples are unique in a real kernel; a second
@@ -771,6 +782,20 @@ module UnixConnection =
                 else
 
                 match sock.Phase with
+                | SocketPhase.EstablishedPendingReport connectionId when
+                    (match
+                        (TcpTransfer.towards
+                            ConnectionEnd.Client
+                            (UnixMachineState.connection connectionId system.Machine).Transfer)
+                            .Receiver
+                     with
+                     | TcpEndState.Reset _ -> true
+                     | TcpEndState.Open
+                     | TcpEndState.FinQueued
+                     | TcpEndState.FinReceived
+                     | TcpEndState.Closed -> false)
+                    ->
+                    Error (ConnectRefusal.ResetBeforeReport socketId)
                 | SocketPhase.EstablishedPendingReport connectionId ->
                     // The one completion-reporting SUCCESS (measured). The
                     // destination is ignored, as the state transition is.
@@ -1471,6 +1496,11 @@ module UnixConnection =
                 | _ -> None
             )
 
+        // The server end closes as `close` closes it: a FIN, or a reset if the
+        // client had written to it.
+        let wakes, transfer =
+            TcpTransfer.close ConnectionEnd.Server (UnixMachineState.connection connectionId system.Machine).Transfer
+
         let connections =
             if List.isEmpty clients then
                 Map.remove connectionId system.Machine.Connections
@@ -1486,10 +1516,15 @@ module UnixConnection =
                     }
             }
 
-        // The FIN's edge, raised once the tables reflect the close, as `close`
-        // raises it.
-        (system, clients)
-        ||> List.fold (fun system client -> SocketWake.signal client SocketWake.PeerFin system)
+        if List.isEmpty clients then
+            system
+        else
+            // The edge, raised once the tables reflect the close, as `close`
+            // raises it.
+            { system with
+                Machine = UnixMachineState.withTransfer connectionId transfer system.Machine
+            }
+            |> SocketWake.signalTransfer connectionId wakes
 
     /// Hand the oldest connection on `socketId`'s queue over to the caller: the
     /// half of `accept(2)` that follows the choice of a connection, shared by a

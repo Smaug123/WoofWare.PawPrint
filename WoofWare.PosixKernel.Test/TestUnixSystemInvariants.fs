@@ -169,7 +169,11 @@ module TestUnixSystemInvariants =
                                                 InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 40000us
                                             ServerAddress =
                                                 InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 80us
-                                            Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet unlaunched.Machine
+                                            // No socket is the server end: it has closed.
+                                            Transfer =
+                                                TcpBufferSizing.newTransfer SocketDomain.Inet unlaunched.Machine
+                                                |> TcpTransfer.close ConnectionEnd.Server
+                                                |> snd
                                         }
                                     ]
                             NextConnectionId = connection

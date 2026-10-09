@@ -251,6 +251,19 @@ module SocketPhase =
         | SocketPhase.Refused _
         | SocketPhase.DatagramPeer _ -> false
 
+    /// The connection a connected stream socket is one end of, and which end:
+    /// `EstablishedPendingReport` is the client end, as only `connect(2)`
+    /// enters it. `None` in every phase without a connection of its own, a
+    /// listener's among them, whose queued connections are not its own ends.
+    let connectionEnd (phase : SocketPhase) : (ConnectionId * ConnectionEnd) option =
+        match phase with
+        | SocketPhase.Established (connection, connectionEnd) -> Some (connection, connectionEnd)
+        | SocketPhase.EstablishedPendingReport connection -> Some (connection, ConnectionEnd.Client)
+        | SocketPhase.Idle
+        | SocketPhase.Listening _
+        | SocketPhase.Refused _
+        | SocketPhase.DatagramPeer _ -> None
+
 /// `SO_LINGER` as a socket holds it.
 type SocketLinger =
     {
@@ -277,11 +290,14 @@ type SocketOptions =
         /// IPv6 socket has it; it can change only while the socket has no
         /// address.
         Ipv6Only : bool
-        /// `SO_LINGER`. Stored only: what a close does with it -- with a
-        /// linger time of zero, a reset instead of an orderly shutdown --
-        /// belongs with `close` and `shutdown`, which do not model it yet, and
-        /// so refuse the close of a connected socket whose connection that
-        /// reset would reach (`DescriptionReleaseRefusal.AbortiveClose`).
+        /// `SO_LINGER`. Stored only: what a close does with it belongs with
+        /// `close` and `shutdown`, which do not model it yet, and so refuse the
+        /// close of a connected socket where it would differ from the ordinary
+        /// close. With a linger time of zero that close is a reset instead of
+        /// an orderly shutdown, refused while the connection is still
+        /// referenced (`DescriptionReleaseRefusal.AbortiveClose`); with a
+        /// positive time it waits for bytes still in the send buffer, refused
+        /// where a real kernel waits (`DescriptionReleaseRefusal.LingeringClose`).
         Linger : SocketLinger
     }
 
@@ -302,8 +318,6 @@ module internal SocketOptions =
         }
 
 /// A socket, as the emulated kernel's socket table holds it.
-///
-/// Carries no identity of its own:/// A socket, as the emulated kernel's socket table holds it.
 ///
 /// Carries no identity of its own: the table is keyed by `SocketId`, so a field
 /// here would be a second copy of the key, free to disagree with it.
@@ -1082,8 +1096,8 @@ type internal FlockError =
 
 /// A way in which a `FileDescriptorRegistry` fails to be a descriptor table any
 /// kernel could produce, or an `OpenFileTable` the open file descriptions of one.
-/// `FileDescriptorRegistry.checkInvariants` and `OpenFileTable.checkInvariants`
-/// return these.
+/// `FileDescriptorRegistry.checkInvariants` returns these, and
+/// `SimulatedMachine.checkInvariants` reports them for every process.
 [<RequireQualifiedAccess>]
 type FileDescriptorRegistryDefect =
     /// A live descriptor names a description that is not present. Every lookup
@@ -2082,7 +2096,7 @@ module OpenFileTable =
     ///
     /// The rules that relate a descriptor *number* to a description are one
     /// process's, so they are `FileDescriptorRegistry.checkInvariants`'s.
-    let checkInvariants
+    let internal checkInvariants
         (descriptorTables : DescriptorTable list)
         (table : OpenFileTable)
         : FileDescriptorRegistryDefect list
@@ -3018,10 +3032,10 @@ module FileDescriptorRegistry =
     /// registry built out of `ofLaunchedPipes`, `dup` and `close`; the property
     /// tests assert exactly that.
     ///
-    /// Includes `OpenFileTable.checkInvariants` of the machine's descriptions
-    /// against this process's descriptor table. On a machine running this one
-    /// process the table holds every descriptor, and each description's count
-    /// of the descriptors naming it must be exactly what the table names. On a
+    /// Includes the open file table's own rules, read against this process's
+    /// descriptor table. On a machine running this one process the table
+    /// holds every descriptor, and each description's count of the
+    /// descriptors naming it must be exactly what the table names. On a
     /// machine holding other processes besides (a registry of a view a
     /// `SimulatedMachine` focused), only what one table can tell is checked:
     /// that no description counts fewer descriptors than this table alone

@@ -209,36 +209,35 @@ class WaitsOnADuplicatedPort
         let thread, _ = parkedThread prepared.State
 
         let stripped =
-            { prepared with
-                State =
-                    prepared.State.MapKernel (fun kernel ->
-                        let numbering =
-                            SimulatedUnixPlatform.signalNumbering (UnixSystem.platform kernel.System)
+            prepared.WithState (
+                prepared.State.MapKernel (fun kernel ->
+                    let numbering =
+                        SimulatedUnixPlatform.signalNumbering (UnixSystem.platform kernel.System)
 
-                        let caught =
-                            kernel.System
-                            |> KernelSignals.setDisposition
-                                Signal.SIGUSR1
-                                (SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative))
+                    let caught =
+                        kernel.System
+                        |> KernelSignals.setDisposition
+                            Signal.SIGUSR1
+                            (SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative))
 
-                        let interrupted =
-                            match
-                                UnixSignal.pthreadKill thread (Signal.toRawSignoUnder numbering Signal.SIGUSR1) caught
-                            with
-                            | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
-                            | other -> failwith $"sending SIGUSR1 answered %A{other}"
+                    let interrupted =
+                        match
+                            UnixSignal.pthreadKill thread (Signal.toRawSignoUnder numbering Signal.SIGUSR1) caught
+                        with
+                        | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
+                        | other -> failwith $"sending SIGUSR1 answered %A{other}"
 
-                        match UnixPoll.finishEpollWait thread interrupted with
-                        | Ok (EpollWaitOutcome.Failed UnixError.EINTR, system) ->
-                            // The signal has done its work; ignoring it discards it, so the
-                            // step below meets the waiter rather than the signal.
-                            system
-                            |> KernelSignals.setDisposition Signal.SIGUSR1 SignalDisposition.Ignore
-                            |> KernelSignals.setDisposition Signal.SIGUSR1 SignalDisposition.Default
-                            |> fun system -> EmulatedKernel.withUnix system kernel
-                        | other -> failwith $"expected the wait to be interrupted, got %A{other}"
-                    )
-            }
+                    match UnixPoll.finishEpollWait thread interrupted with
+                    | Ok (EpollWaitOutcome.Failed UnixError.EINTR, system) ->
+                        // The signal has done its work; ignoring it discards it, so the
+                        // step below meets the waiter rather than the signal.
+                        system
+                        |> KernelSignals.setDisposition Signal.SIGUSR1 SignalDisposition.Ignore
+                        |> KernelSignals.setDisposition Signal.SIGUSR1 SignalDisposition.Default
+                        |> fun system -> EmulatedKernel.withUnix system kernel
+                    | other -> failwith $"expected the wait to be interrupted, got %A{other}"
+                )
+            )
 
         let _messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", "WaitsOnADuplicatedPort.cs" ]
@@ -488,6 +487,7 @@ class TwoPortsOneEdge
                 | Some (ParkedSyscall.KqueuePoll _)
                 | Some (ParkedSyscall.Accept _)
                 | Some (ParkedSyscall.PipeRead _)
+                | Some ParkedSyscall.SigSuspend
                 | Some (ParkedSyscall.PipeWrite _)
                 | None -> None
             | _ -> None

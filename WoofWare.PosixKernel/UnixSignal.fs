@@ -43,6 +43,29 @@ type KillOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality
     /// The signal killed the process.
     | ProcessEnded of EndedProcess<'Task, 'Handler>
 
+/// What became of a `sigsuspend(2)` or `pause(2)` this kernel could answer.
+[<RequireQualifiedAccess>]
+type SigsuspendOutcome =
+    /// The call failed with this errno.
+    ///
+    /// `EINTR` is how every call that began ends: a signal the task takes under
+    /// the temporary mask has ended it, and the task returns to user mode
+    /// (`UnixSignal.onReturnToUser`) before the call's -1 is seen. That return
+    /// runs the handlers, the first of whose frames saves the mask from before
+    /// the call, or applies a default that terminates the process, which then
+    /// never sees the -1 at all. Until that return the task's mask is still the
+    /// temporary one, with the mask to restore beside it
+    /// (`SignalState.maskToRestore`).
+    ///
+    /// Linux's `rt_sigsuspend` answers `EINVAL` for a set size other than 8,
+    /// having changed nothing.
+    | Failed of error : UnixError
+    /// The call did not return. The calling task is parked, with the temporary
+    /// mask in force, and sleeps until `WakeCondition.satisfied` of this
+    /// condition is non-empty; then `UnixSignal.finishSigsuspend` finishes the
+    /// call.
+    | WouldBlock of WakeCondition
+
 [<RequireQualifiedAccess>]
 module UnixSignal =
 
@@ -146,6 +169,9 @@ module UnixSignal =
     /// `SignalState.onReturnToUser` decides: `task` takes its own signals, and if
     /// it is the process's leader, the process's too. Asked before `task` next
     /// runs its own code, including after `sigreturn`.
+    ///
+    /// A task returning from `sigsuspend` or `pause` gets the mask the call
+    /// replaced back here (see `SignalState.onReturnToUser`).
     ///
     /// A task asleep in a syscall is not in user mode, and returns to it only
     /// once the syscall has answered. A signal ends that sleep through the
@@ -532,3 +558,164 @@ module UnixSignal =
                 $"UnixSignal.sigpending: task %O{task} is not one of the process's tasks (this is a bug in the client)."
 
         SignalState.pendingBlocked system.Leader task system.Process.Signals
+
+    /// `sigsuspend` with `temporary`, made by `task`.
+    let private suspendWith<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (operation : string)
+        (task : 'Task)
+        (temporary : SignalState<'Task, 'Handler> -> SignalMask)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SigsuspendOutcome * UnixSystem<'Task, 'Handler>, SigsuspendRefusal>
+        =
+        match Map.tryFind task system.Tasks with
+        | None ->
+            failwith
+                $"UnixSignal.%s{operation}: task %O{task} is not one of the process's tasks (this is a bug in the client)."
+        | Some {
+                   Parked = Some park
+               } ->
+            failwith
+                $"UnixSignal.%s{operation}: task %O{task} is asleep in %A{park.Syscall}, so it cannot be making this call (this is a bug in the client)."
+        | Some _ ->
+
+        let signals =
+            SignalState.suspend task (temporary system.Process.Signals) system.Process.Signals
+
+        // A signal the temporary mask lets through ends the call as it is made,
+        // without a sleep (the probe's "pending" and "two" rows answered within
+        // 50 ms), as a `poll` with something to report answers at once.
+        match SyscallInterruption.suspension task system signals with
+        | Error refusal -> Error refusal
+        | Ok (SyscallInterruption.Suspension.Ends signals) ->
+            Ok (SigsuspendOutcome.Failed UnixError.EINTR, withSignals signals system)
+        | Ok (SyscallInterruption.Suspension.Sleeps signals) ->
+            Ok (
+                SigsuspendOutcome.WouldBlock (WakeCondition.ofPark ParkedSyscall.SigSuspend),
+                UnixWait.park task ParkedSyscall.SigSuspend (withSignals signals system)
+            )
+
+    /// `sigsuspend(2)`, called by `task`: replace its mask with `mask` until a
+    /// signal it takes under that mask ends the call, and give it back the mask
+    /// it had as it returns.
+    ///
+    /// `mask` is stored as a kernel stores any mask: without SIGKILL and
+    /// SIGSTOP, which are dropped silently, and with every other bit, Linux's
+    /// 32 and 33 included, which the C library does not screen out of this
+    /// call as it does out of `pthreadSigmask`. Only `task`'s mask changes, on
+    /// both flavours.
+    ///
+    /// The call ends, failing with `EINTR`, once `task` would run a handler as
+    /// it returned to user mode, whatever `SA_RESTART` says: at once if a
+    /// signal `mask` lets through is already pending, and otherwise from the
+    /// sleep it parks in (`WouldBlock`, finished by `finishSigsuspend`). The
+    /// return to user mode runs every handler due before the call's -1 is seen;
+    /// the outermost frame saves the mask from before the call, so that its
+    /// `sigreturn` restores it (see `SignalState.onReturnToUser`). A signal at
+    /// its default that terminates the process ends the call the same way, and
+    /// the return to user mode then terminates the process.
+    ///
+    /// An ignored signal ends nothing. One sent during the call is discarded as
+    /// it is sent. Under Linux, one pending as the call is made, which `mask`
+    /// unblocks, is discarded then, as is a SIGCONT at its default, and the
+    /// call sleeps on; such a SIGCONT sent during the call is discarded as the
+    /// sleeping task is woken for it, and the call sleeps on, as Linux's does
+    /// after a stop and continue.
+    ///
+    /// Refuses (see `SigsuspendRefusal`): a signal whose default stops the
+    /// process, which the task would take; under Darwin, a SIGCONT the task
+    /// could take, ignored or at its default; and whatever
+    /// `SignalState.onReturnToUser` refuses. A refusal changes nothing.
+    ///
+    /// Measured by `docs/plans/2026-08-23-posix-kernel-extraction/sigsuspend-mask.c`
+    /// on Linux 6.18.5 (glibc 2.41) and Darwin 27.0.0.
+    ///
+    /// Fails loudly if `task` names no task, is asleep in a syscall, or has a
+    /// mask to restore from an earlier call (it has not returned to user mode
+    /// since), each of which is a bug in the client; and on a mask made under
+    /// another numbering.
+    let sigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (mask : SignalMask)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SigsuspendOutcome * UnixSystem<'Task, 'Handler>, SigsuspendRefusal>
+        =
+        suspendWith "sigsuspend" task (fun _ -> mask) system
+
+    /// `pause(2)`, called by `task`: `sigsuspend` with the mask it already has,
+    /// which is how Darwin's C library makes it.
+    ///
+    /// Linux's `pause` is a system call of its own that saves no mask, and
+    /// answers the same, since nothing but the task itself changes its mask on
+    /// Linux. Darwin's restores the mask it was called with, undoing what a
+    /// `sigprocmask` from another thread changed meanwhile, as `sigsuspend`
+    /// does: measured by `sigsuspend-mask.c`'s "pause-spread" rows.
+    let pause<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SigsuspendOutcome * UnixSystem<'Task, 'Handler>, SigsuspendRefusal>
+        =
+        suspendWith "pause" task (SignalState.maskOf task) system
+
+    /// Linux's `rt_sigsuspend(2)`, made as a system call rather than through
+    /// the C library, by `task`: as `sigsuspend`, except that it takes
+    /// `sigsetSize`, the size the caller says its set is.
+    ///
+    /// A `sigsetSize` other than 8 is `EINVAL`, before anything else is looked
+    /// at, and changes nothing: measured by `sigsuspend-mask.c` with every size
+    /// from 0 to 16 but 8, and 128.
+    ///
+    /// Fails loudly on a Darwin process, which has no such system call.
+    let rtSigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (mask : SignalMask)
+        (sigsetSize : uint64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SigsuspendOutcome * UnixSystem<'Task, 'Handler>, SigsuspendRefusal>
+        =
+        match SignalState.numbering system.Process.Signals with
+        | SignalNumbering.Darwin ->
+            failwith
+                "UnixSignal.rtSigsuspend: a Darwin process has no rt_sigsuspend system call; its sigsuspend is UnixSignal.sigsuspend (this is a bug in the client)."
+        | SignalNumbering.Linux ->
+
+        if sigsetSize <> 8UL then
+            Ok (SigsuspendOutcome.Failed UnixError.EINVAL, system)
+        else
+            sigsuspend task mask system
+
+    /// Finish the `sigsuspend(2)` or `pause(2)` `task` is parked in, once
+    /// `UnixWait.wakes` has woken it: `Failed EINTR` if a signal it takes under
+    /// the temporary mask ends the call, as `sigsuspend` describes; and
+    /// otherwise it parks again, as the call it was woken from, since what
+    /// woke it has gone. Under Linux a SIGCONT at its default that woke it is
+    /// discarded first.
+    ///
+    /// Until the task returns to user mode its mask is the temporary one, with
+    /// the mask to restore beside it: the client asks
+    /// `UnixSignal.onReturnToUser` before anything else runs on the task.
+    ///
+    /// Refuses as `sigsuspend` does, changing nothing. Fails loudly if `task` is
+    /// not parked in one of these calls.
+    let finishSigsuspend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SigsuspendOutcome * UnixSystem<'Task, 'Handler>, SigsuspendRefusal>
+        =
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some ParkedSyscall.SigSuspend -> ()
+        | Some other ->
+            failwith
+                $"UnixSignal.finishSigsuspend: task %O{task} is parked in %A{other}, not in sigsuspend, so there is no sigsuspend to finish (this is a bug in the client)."
+        | None ->
+            failwith
+                $"UnixSignal.finishSigsuspend: task %O{task} is not parked, so there is no sigsuspend to finish. Only a task `sigsuspend` or `pause` answered `WouldBlock` finishes here (this is a bug in the client)."
+
+        match SyscallInterruption.suspension task system system.Process.Signals with
+        | Error refusal -> Error refusal
+        | Ok (SyscallInterruption.Suspension.Ends signals) ->
+            Ok (SigsuspendOutcome.Failed UnixError.EINTR, withSignals signals (UnixParkState.unpark task system))
+        | Ok (SyscallInterruption.Suspension.Sleeps signals) ->
+            Ok (
+                SigsuspendOutcome.WouldBlock (WakeCondition.ofPark ParkedSyscall.SigSuspend),
+                UnixWait.park task ParkedSyscall.SigSuspend (withSignals signals system)
+            )
