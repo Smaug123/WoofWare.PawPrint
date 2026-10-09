@@ -56,6 +56,16 @@ type SockaddrCopyRefusal =
     /// not model, so there is no address to read out of the caller's sockaddr
     /// even if the call would otherwise succeed.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
+    /// The descriptor is an IPv6 socket of a kind other than a stream, whose
+    /// addresses this kernel does not model: it models an IPv6 socket only as
+    /// a TCP one talking IPv4 through v4-mapped addresses.
+    | UnmodelledInet6Kind of socket : SocketId * kind : SocketKind
+    /// An IPv6 socket on Darwin, and a length too short to reach the end of
+    /// `sin6_addr`. Darwin reads the address with the missing bytes as zero
+    /// rather than rejecting the length (measured: a v4-mapped loopback cut to
+    /// 23 bytes connects to `127.0.0.0`), and which lengths it rejects is not
+    /// measured.
+    | DarwinShortInet6Sockaddr of socket : SocketId * declaredLength : uint32
     /// The kernel copies the sockaddr in, and the buffer has no answer at that
     /// step.
     ///
@@ -74,7 +84,11 @@ module SockaddrCopyRefusal =
         match refusal with
         | SockaddrCopyRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | SockaddrCopyRefusal.UnmodelledDomain (socket, domain) ->
-            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a transport address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
+            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a transport address only for IPv4, which an IPv6 stream socket reaches through v4-mapped addresses; a Unix-domain socket's address is a *path* in the filesystem rather than a transport endpoint, so there is nothing to truncate or widen into an answer."
+        | SockaddrCopyRefusal.UnmodelledInet6Kind (socket, kind) ->
+            $"the descriptor is socket %O{socket}, an IPv6 %O{kind} socket. This kernel models an IPv6 socket only as a stream socket talking IPv4 through v4-mapped addresses; an IPv6 datagram socket's addresses are not modelled."
+        | SockaddrCopyRefusal.DarwinShortInet6Sockaddr (socket, declaredLength) ->
+            $"the descriptor is IPv6 socket %O{socket}, and the sockaddr is declared %d{declaredLength} bytes long, short of the 24 that reach the end of sin6_addr. Darwin reads such an address with its missing bytes as zero rather than rejecting the length, and which lengths it does reject is unmeasured."
 
 /// What a `bind(2)` answered.
 [<RequireQualifiedAccess>]
@@ -106,6 +120,14 @@ type BindRefusal =
     /// A real kernel reports `EADDRINUSE` here, but that has not been measured
     /// under this kernel's own allocator and inventing it would be a guess.
     | EphemeralPortsExhausted of range : uint16 * uint16
+    /// An IPv6 socket asked to bind an address this kernel cannot hold for
+    /// it, and nothing judged before the address answers: a native IPv6
+    /// address (`::`, `::1`, ...), which needs an IPv6 transport, or on a
+    /// socket with `IPV6_V6ONLY` off the v4-mapped wildcard `::ffff:0.0.0.0`,
+    /// whose conflicts with other sockets Darwin decides differently from the
+    /// IPv4 wildcard's (measured). `address` is the sixteen bytes of
+    /// `sin6_addr`.
+    | UnmodelledIpv6Address of socket : SocketId * address : ImmutableArray<byte>
 
 [<RequireQualifiedAccess>]
 module BindRefusal =
@@ -118,6 +140,9 @@ module BindRefusal =
             $"socket %O{socket} asked to bind %s{InternetEndpoint.toString (InternetEndpoint.ofParts address 0us)}, a broadcast or multicast address, and the bind would succeed. This kernel models no group membership and no interface to receive or broadcast on, so nothing could honour such a binding. Model multicast and broadcast before binding either."
         | BindRefusal.EphemeralPortsExhausted (low, high) ->
             $"every port in the ephemeral range %d{low}-%d{high} is taken, so this bind of port 0 has no answer. A real kernel reports EADDRINUSE, but that has not been measured under this allocator and inventing it would be a guess. Widen the range, or measure the real answer."
+        | BindRefusal.UnmodelledIpv6Address (socket, address) ->
+            let text = System.Net.IPAddress(address.AsSpan ()).ToString ()
+            $"IPv6 socket %O{socket} asked to bind [%s{text}]. This kernel has no IPv6 transport, so it binds an IPv6 socket only to a specific v4-mapped address (::ffff:a.b.c.d). A native address needs IPv6, and the mapped wildcard ::ffff:0.0.0.0 (and ::, which also takes it) conflicts with other sockets by rules Darwin does not share with the IPv4 wildcard."
 
 /// What a `listen(2)` answered.
 [<RequireQualifiedAccess>]
@@ -144,6 +169,11 @@ type ListenRefusal =
     /// The socket had no address, so this call binds it, and every port in the
     /// ephemeral range is taken.
     | EphemeralPortsExhausted of range : uint16 * uint16
+    /// An IPv6 socket. Measured, a listener with `IPV6_V6ONLY` off accepts
+    /// IPv4 connections and reports their peers v4-mapped, but this kernel
+    /// models no IPv6 listener: no accepted IPv6 socket, and no implicit bind
+    /// to `::`.
+    | Ipv6Listener of socket : SocketId
 
 [<RequireQualifiedAccess>]
 module ListenRefusal =
@@ -152,13 +182,15 @@ module ListenRefusal =
     let describe (refusal : ListenRefusal) : string =
         match refusal with
         | ListenRefusal.UnmodelledDomain (socket, domain) ->
-            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. A `listen` on an unbound socket binds it, and this kernel models a local address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint."
+            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. A `listen` on an unbound socket binds it, and a Unix-domain socket's address is a *path* in the filesystem rather than a transport endpoint, which this kernel does not model."
         | ListenRefusal.UnmeasuredKind (socket, kind) ->
             $"the descriptor is socket %O{socket}, which is a %O{kind} socket, and what `listen(2)` answers for one is unmeasured. Measure it rather than guessing: SOCK_SEQPACKET does accept connections, so a guess of EOPNOTSUPP there would be a wrong answer rather than an approximate one."
         | ListenRefusal.UnmeasuredPhase (socket, phase) ->
             $"the descriptor is socket %O{socket}, a stream socket in %A{phase}, and what `listen(2)` answers for one is unmeasured -- plausibly EISCONN for a connected socket. Measure it rather than guessing."
         | ListenRefusal.EphemeralPortsExhausted (low, high) ->
             $"this socket has no address, so `listen(2)` binds it, and every port in the ephemeral range %d{low}-%d{high} is taken. Widen the range, or measure what a real kernel says here."
+        | ListenRefusal.Ipv6Listener socket ->
+            $"socket %O{socket} is an IPv6 socket, and this kernel models no IPv6 listener. A dual-mode listener's accepted sockets and the v4-mapped peers accept reports for them are measured but not modelled, and an unbound one would bind to ::, which takes IPv6 addresses this kernel has no transport for."
 
 /// What `getsockname(2)` reports about a socket's own address, or
 /// `getpeername(2)` about its peer's: the two share every rule past the choice
@@ -192,6 +224,9 @@ type GetSockNameRefusal =
     /// `getpeername`. Not an errno: a real kernel in this family answers, and
     /// every value this one could report would be invented.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
+    /// An IPv6 socket of a kind other than a stream, whose addresses this
+    /// kernel does not model.
+    | UnmodelledInet6Kind of socket : SocketId * kind : SocketKind
 
 [<RequireQualifiedAccess>]
 module GetSockNameRefusal =
@@ -202,7 +237,9 @@ module GetSockNameRefusal =
         match refusal with
         | GetSockNameRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | GetSockNameRefusal.UnmodelledDomain (socket, domain) ->
-            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a socket address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
+            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a socket address only for IPv4, and for an IPv6 stream socket talking IPv4 through v4-mapped addresses; a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint, so there is nothing to truncate or widen into an answer."
+        | GetSockNameRefusal.UnmodelledInet6Kind (socket, kind) ->
+            $"the descriptor is socket %O{socket}, an IPv6 %O{kind} socket. This kernel models an IPv6 socket's address only for a stream socket talking IPv4 through v4-mapped addresses."
 
 /// Why this kernel will not answer a `setsockopt(2)` or a `getsockopt(2)`.
 [<RequireQualifiedAccess>]
@@ -433,17 +470,34 @@ module UnixSocket =
         | UserBuffer.Opaque -> SockaddrCopyStep.Copies (length, false)
         | UserBuffer.Mapped -> SockaddrCopyStep.Copies (length, true)
 
-    /// The domain screen every sockaddr-taking call makes of the socket it has
-    /// found: this kernel reads a sockaddr only for an IPv4 socket.
-    let internal screenSockaddrDomain
+    /// The screen every sockaddr-taking call makes of the socket it has found,
+    /// for a sockaddr declared `declaredLength` bytes long: this kernel reads a
+    /// sockaddr for an IPv4 socket, and for an IPv6 stream socket at a length
+    /// it has an answer for.
+    let internal screenSockaddrSocket
+        (platform : SimulatedUnixPlatform)
         (socketId : SocketId)
         (socket : SocketDescription)
+        (declaredLength : uint32)
         : Result<unit, SockaddrCopyRefusal>
         =
         match socket.Domain with
-        | SocketDomain.Inet6
         | SocketDomain.Unix -> Error (SockaddrCopyRefusal.UnmodelledDomain (socketId, socket.Domain))
         | SocketDomain.Inet -> Ok ()
+        | SocketDomain.Inet6 ->
+
+        match socket.Kind with
+        | SocketKind.Datagram
+        | SocketKind.SeqPacket -> Error (SockaddrCopyRefusal.UnmodelledInet6Kind (socketId, socket.Kind))
+        | SocketKind.Stream ->
+
+        match
+            SimulatedUnixPlatform.flavour platform,
+            SimulatedUnixPlatform.internetV6AddressLength platform declaredLength
+        with
+        | SimulatedUnixFlavour.Darwin, BindLengthVerdict.Invalid ->
+            Error (SockaddrCopyRefusal.DarwinShortInet6Sockaddr (socketId, declaredLength))
+        | _ -> Ok ()
 
     /// Everything `bind(2)` or `connect(2)` decides before the kernel copies the
     /// caller's sockaddr in, which is where a client that cannot always produce
@@ -506,7 +560,9 @@ module UnixSocket =
         | OpenFileTarget.Epoll _ -> answered (UnixError.ENOTSOCK)
         | OpenFileTarget.Socket socketId ->
 
-        match screenSockaddrDomain socketId (UnixMachineState.socket socketId system.Machine) with
+        match
+            screenSockaddrSocket platform socketId (UnixMachineState.socket socketId system.Machine) declaredLength
+        with
         | Error refusal -> Error refusal
         | Ok () ->
 
@@ -977,6 +1033,72 @@ module UnixSocket =
             else
                 Ok (Ok (fd, system))
 
+    /// The errno `bind(2)` answers for `fault` on `platform`.
+    let private bindFaultError (platform : SimulatedUnixPlatform) (fault : BindFault) : UnixError =
+        match fault with
+        // `RejectedBeforeCopy` never reaches the fault order: the admission
+        // answers it before anything is read.
+        | BindFault.Length -> UnixError.EINVAL
+        | BindFault.AlreadyBound -> UnixError.EINVAL
+        | BindFault.Family -> UnixError.EAFNOSUPPORT
+        | BindFault.AddressNotLocal -> UnixError.EADDRNOTAVAIL
+        | BindFault.PrivilegedPort -> UnixError.EACCES
+        | BindFault.AddressInUse -> UnixError.EADDRINUSE
+        | BindFault.Ipv6Only -> SimulatedUnixPlatform.ipv6OnlyBindError platform
+
+    /// `bind(2)` once every fault has been ruled out: give `socketId` the IPv4
+    /// `binding`, choosing a port for it if it asks for port 0.
+    let private bindAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (socket : SocketDescription)
+        (binding : SocketBinding)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
+        =
+        match
+            (if binding.Endpoint.Port > 0us then
+                 Some (binding, system.Machine)
+             else
+                 let candidate (port : uint16) : SocketBinding =
+                     { binding with
+                         Endpoint =
+                             { binding.Endpoint with
+                                 Port = port
+                             }
+                     }
+
+                 UnixMachineState.allocateEphemeralPort
+                     EphemeralPortUse.Reserve
+                     socketId
+                     socket
+                     candidate
+                     system.Machine)
+        with
+        | None -> Error (BindRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
+        | Some (bound, machine) ->
+
+        // From `machine` rather than `system.Machine`: the ephemeral allocator
+        // advanced the cursor, and that advance is part of this bind.
+        let system =
+            { system with
+                Machine = machine
+            }
+            |> fun system ->
+                { system with
+                    Machine =
+                        { system.Machine with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { socket with
+                                        Addressing = SocketAddressing.replaceBinding (Some bound) socket.Addressing
+                                    }
+                                    system.Machine.Sockets
+                        }
+                }
+
+        Ok (BindAnswer.Bound bound.Endpoint, system)
+
     /// `bind(2)` past the copy: what it answers for the sockaddr `copied`
     /// decodes to, on `fd`, which `admitSockaddrCopy` has taken as far as the
     /// copy.
@@ -1132,19 +1254,7 @@ module UnixSocket =
         | fault, _ ->
 
         match fault with
-        | Some fault ->
-            let error =
-                match fault with
-                // `RejectedBeforeCopy` never reaches the fault order: the
-                // admission answers it before anything is read.
-                | BindFault.Length -> UnixError.EINVAL
-                | BindFault.AlreadyBound -> UnixError.EINVAL
-                | BindFault.Family -> UnixError.EAFNOSUPPORT
-                | BindFault.AddressNotLocal -> UnixError.EADDRNOTAVAIL
-                | BindFault.PrivilegedPort -> UnixError.EACCES
-                | BindFault.AddressInUse -> UnixError.EADDRINUSE
-
-            Ok (BindAnswer.Failed error, system)
+        | Some fault -> Ok (BindAnswer.Failed (bindFaultError platform fault), system)
         | None ->
 
         let binding =
@@ -1154,40 +1264,148 @@ module UnixSocket =
                 failwith
                     $"UnixSocket.bind: no fault was reported for fd %d{fd} and yet the sockaddr was too short to read an address from (declared length %d{declaredLength}). The length fault should have fired (this is a bug in this library)."
 
-        match
-            (if binding.Endpoint.Port > 0us then
-                 Some (binding, system.Machine)
-             else
-                 let candidate (port : uint16) : SocketBinding =
-                     { binding with
-                         Endpoint =
-                             { binding.Endpoint with
-                                 Port = port
-                             }
-                     }
+        bindAt socketId socket binding system
 
-                 UnixMachineState.allocateEphemeralPort
-                     EphemeralPortUse.Reserve
-                     socketId
-                     socket
-                     candidate
-                     system.Machine)
-        with
-        | None -> Error (BindRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
-        | Some (bound, machine) ->
+    /// `bind(2)` past the copy on an IPv6 stream socket, for the
+    /// `struct sockaddr_in6` `copied` decodes to. The socket's binding is an
+    /// IPv4 one, which it presents v4-mapped; a v4-mapped binding conflicts
+    /// with other sockets exactly as the IPv4 address would, measured on both
+    /// flavours against every combination of `SO_REUSEADDR` and listening
+    /// (`docs/probes/dual-mode/dual-mode.c`, C).
+    let internal bindDecodedV6<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (declaredLength : uint32)
+        (copied : CopiedInternetV6Sockaddr)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
+        =
+        let socket = UnixMachineState.socket socketId system.Machine
+        let platform = system.Machine.UnixPlatform
+        let flavour = SimulatedUnixPlatform.flavour platform
+        let inet6 = SimulatedUnixPlatform.internetV6AddressFamily platform
 
-        // From `machine` rather than `system.Machine`: the ephemeral allocator
-        // advanced the cursor, and that advance is part of this bind.
-        let system =
-            { system with
-                Machine = machine
-            }
-            |> withSocket
-                { socket with
-                    Addressing = SocketAddressing.replaceBinding (Some bound) socket.Addressing
+        let mapped =
+            match copied.Destination with
+            | Some (Ipv6Destination.V4Mapped endpoint) -> Some endpoint
+            | Some (Ipv6Destination.Native _)
+            | None -> None
+
+        let port =
+            match copied.Destination with
+            | Some (Ipv6Destination.V4Mapped endpoint) -> Some endpoint.Port
+            | Some (Ipv6Destination.Native (_, port)) -> Some port
+            | None -> None
+
+        let lengthFault =
+            SimulatedUnixPlatform.internetV6AddressLength platform declaredLength
+            <> BindLengthVerdict.Accepted
+
+        let familyFault =
+            match flavour, copied.Family with
+            | _, None -> false
+            | SimulatedUnixFlavour.Linux, Some family -> family <> inet6
+            // Darwin reads `AF_UNSPEC` as `AF_INET6`, and rules a broadcast or
+            // multicast address out with the family, in every state and
+            // whatever `IPV6_V6ONLY` is (measured, B1, F4, F7 and F10).
+            | SimulatedUnixFlavour.Darwin, Some family ->
+                (family <> inet6 && family <> 0)
+                || mapped
+                   |> Option.exists (fun endpoint -> SimulatedUnixPlatform.isBroadcastOrMulticast endpoint.Address)
+
+        let privilegedPortFault =
+            match port with
+            | Some port ->
+                port > 0us
+                && port < SimulatedUnixPlatform.privilegedPortCeiling
+                && UnixProcessState.callerPrivilege system.Process = CallerPrivilege.Unprivileged
+            | None -> false
+
+        let ipv6OnlyFault =
+            socket.Addressing = SocketAddressing.Inet6V6Only && mapped.IsSome
+
+        let alreadyBoundFault =
+            socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us)
+
+        let addressNotLocalFault =
+            match mapped with
+            | Some endpoint ->
+                SimulatedUnixPlatform.bindAddressFaults
+                    platform
+                    socket.Kind
+                    system.Machine.LocalAddresses
+                    system.Machine.LocalRoutes
+                    endpoint.Address
+            | None -> false
+
+        let candidate =
+            mapped
+            |> Option.map (fun endpoint ->
+                {
+                    Endpoint = endpoint
+                    LockedAddress = Some endpoint.Address
+                    LockedPort = endpoint.Port <> 0us
                 }
+            )
 
-        Ok (BindAnswer.Bound bound.Endpoint, system)
+        let addressInUseFault =
+            match candidate with
+            | Some binding when binding.Endpoint.Port <> 0us ->
+                UnixMachineState.bindingConflicts socketId socket binding system.Machine
+            | Some _
+            | None -> false
+
+        let faults =
+            [
+                BindFault.Length, lengthFault
+                BindFault.Family, familyFault
+                BindFault.PrivilegedPort, privilegedPortFault
+                BindFault.Ipv6Only, ipv6OnlyFault
+                BindFault.AlreadyBound, alreadyBoundFault
+                BindFault.AddressNotLocal, addressNotLocalFault
+                BindFault.AddressInUse, addressInUseFault
+            ]
+            |> List.choose (fun (fault, holds) -> if holds then Some fault else None)
+            |> Set.ofList
+
+        let first =
+            SimulatedUnixPlatform.bindV6FaultOrder platform
+            |> List.tryFind (fun fault -> Set.contains fault faults)
+
+        // An address this kernel cannot bind the socket to, which only the
+        // faults judged before the address are known to precede.
+        let unmodelled =
+            match copied.Destination, socket.Addressing with
+            | Some (Ipv6Destination.Native (address, _)), _ -> Some address
+            | Some (Ipv6Destination.V4Mapped endpoint), SocketAddressing.Inet6DualMode _ when
+                endpoint.Address = InternetEndpoint.WildcardAddress
+                ->
+                // `::ffff:0.0.0.0`.
+                Some (ImmutableArray.CreateRange (Array.init 16 (fun i -> if i = 10 || i = 11 then 0xFFuy else 0uy)))
+            | Some (Ipv6Destination.V4Mapped _), _
+            | None, _ -> None
+
+        // The length and the family are judged before the address is looked
+        // at, measured on both; nothing else is known to precede the address
+        // of a bind this kernel cannot make.
+        let judgedBeforeTheAddress (fault : BindFault) : bool =
+            fault = BindFault.Length || fault = BindFault.Family
+
+        match first, unmodelled with
+        | Some fault, _ when judgedBeforeTheAddress fault ->
+            Ok (BindAnswer.Failed (bindFaultError platform fault), system)
+        | _, Some address -> Error (BindRefusal.UnmodelledIpv6Address (socketId, address))
+        | Some fault, None -> Ok (BindAnswer.Failed (bindFaultError platform fault), system)
+        | None, None ->
+
+        match candidate with
+        | None ->
+            failwith
+                $"UnixSocket.bind: no fault was reported for IPv6 socket %O{socketId} and yet the sockaddr was too short to read an address from (declared length %d{declaredLength}). The length fault should have fired (this is a bug in this library)."
+        // Linux binds a v4-mapped group address on a socket with IPV6_V6ONLY
+        // off (measured, B1 and F10), which this kernel cannot honour.
+        | Some binding when SimulatedUnixPlatform.isBroadcastOrMulticast binding.Endpoint.Address ->
+            Error (BindRefusal.UnmodelledMulticast (socketId, binding.Endpoint.Address))
+        | Some binding -> bindAt socketId socket binding system
 
     /// `bind(2)`: give `fd` a local address.
     ///
@@ -1227,11 +1445,29 @@ module UnixSocket =
         | Ok (SockaddrCopyAdmission.Transfer length) ->
             requireCopied "UnixSocket.bind" length copied
 
-            bindDecoded
-                fd
-                declaredLength
-                (SimulatedUnixPlatform.decodeInternetSockaddr system.Machine.UnixPlatform copied)
-                system
+            // The admission has classified the descriptor as a socket it reads
+            // a sockaddr for, or it would not have reached the copy.
+            let socketId =
+                match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+                | Some (OpenFileTarget.Socket socketId) -> socketId
+                | other ->
+                    failwith
+                        $"UnixSocket.bind: fd %d{fd} names %A{other}, yet the sockaddr admission reached the copy, which it does only for a socket (this is a bug in this library)."
+
+            match (UnixMachineState.socket socketId system.Machine).Domain with
+            | SocketDomain.Inet6 ->
+                bindDecodedV6
+                    socketId
+                    declaredLength
+                    (SimulatedUnixPlatform.decodeInternetV6Sockaddr system.Machine.UnixPlatform copied)
+                    system
+            | SocketDomain.Inet
+            | SocketDomain.Unix ->
+                bindDecoded
+                    fd
+                    declaredLength
+                    (SimulatedUnixPlatform.decodeInternetSockaddr system.Machine.UnixPlatform copied)
+                    system
 
     /// `listen(2)`: make `fd` a passive socket, and give it an address if it has
     /// none.
@@ -1266,7 +1502,7 @@ module UnixSocket =
         let socket = UnixMachineState.socket socketId system.Machine
 
         match socket.Domain with
-        | SocketDomain.Inet6
+        | SocketDomain.Inet6 -> Error (ListenRefusal.Ipv6Listener socketId)
         | SocketDomain.Unix -> Error (ListenRefusal.UnmodelledDomain (socketId, socket.Domain))
         | SocketDomain.Inet ->
 
@@ -1359,11 +1595,14 @@ module UnixSocket =
         Ok (ListenAnswer.Listening bound.Endpoint, system)
 
     /// The tail `getsockname(2)` and `getpeername(2)` share, once the call has
-    /// an IPv4 address to report: the declared length's screen, then the copy
-    /// out. Measured to agree between the two calls on both flavours
-    /// (`socket-address-length.c`, every row it asks both).
-    let private reportInternetAddress<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (endpoint : InternetEndpoint)
+    /// an address to report, `whole` being its whole `struct sockaddr_in` or
+    /// `struct sockaddr_in6`: the declared length's screen, then the copy out
+    /// of the first `min(declaredLength, whole.Length)` bytes. Measured to
+    /// agree between the two calls on both flavours
+    /// (`socket-address-length.c`, every row it asks both), and for an IPv6
+    /// socket at the lengths `docs/probes/dual-mode/dual-mode.c` asks (A).
+    let private reportAddress<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (whole : byte[])
         (destination : UserBuffer)
         (declaredLength : uint32)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1379,7 +1618,7 @@ module UnixSocket =
             Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
         else
 
-        let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
+        let reportedLength = whole.Length
 
         // A call that may write nothing never consults the destination at all,
         // so a declared length of zero succeeds through an address naming no
@@ -1390,7 +1629,7 @@ module UnixSocket =
         let reported () : Result<GetSockNameAnswer, GetSockNameRefusal> =
             Ok (
                 GetSockNameAnswer.Reported (
-                    SimulatedUnixPlatform.copyOutInternetSockaddr system.Machine.UnixPlatform endpoint declaredLength,
+                    ImmutableArray.Create<byte> (whole, 0, int (min declaredLength (uint32 whole.Length))),
                     reportedLength
                 )
             )
@@ -1410,6 +1649,38 @@ module UnixSocket =
 
             Ok (GetSockNameAnswer.Failed (UnixError.EFAULT, overwritten))
         | UserBuffer.Mapped -> reported ()
+
+    /// The whole socket address a `getsockname(2)` or `getpeername(2)` on
+    /// `socket` reports for the IPv4 `endpoint`: a `struct sockaddr_in` from an
+    /// IPv4 socket, and from an IPv6 stream socket a `struct sockaddr_in6`
+    /// holding the address as `SimulatedUnixPlatform.presentedIpv6Address`
+    /// presents it.
+    let private encodeName
+        (platform : SimulatedUnixPlatform)
+        (socketId : SocketId)
+        (socket : SocketDescription)
+        (endpoint : InternetEndpoint)
+        : Result<byte[], GetSockNameRefusal>
+        =
+        match socket.Domain, socket.Kind with
+        | SocketDomain.Unix, _ -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketDomain.Inet, _ -> Ok (SimulatedUnixPlatform.encodeInternetSockaddr platform endpoint)
+        | SocketDomain.Inet6, SocketKind.Stream ->
+            let refusalLatched =
+                match socket.Phase with
+                | SocketPhase.Refused _ -> true
+                | SocketPhase.Idle
+                | SocketPhase.Listening _
+                | SocketPhase.EstablishedPendingReport _
+                | SocketPhase.Established _
+                | SocketPhase.DatagramPeer _ -> false
+
+            let address =
+                SimulatedUnixPlatform.presentedIpv6Address platform refusalLatched endpoint.Address
+
+            Ok (SimulatedUnixPlatform.encodeInternetV6Sockaddr platform address endpoint.Port)
+        | SocketDomain.Inet6, (SocketKind.Datagram | SocketKind.SeqPacket) ->
+            Error (GetSockNameRefusal.UnmodelledInet6Kind (socketId, socket.Kind))
 
     /// `getsockname(2)`: report the local address the socket `fd` names.
     ///
@@ -1455,21 +1726,19 @@ module UnixSocket =
 
         let socket = UnixMachineState.socket socketId system.Machine
 
-        match socket.Domain with
-        | SocketDomain.Inet6
-        | SocketDomain.Unix -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.Inet ->
-
         // An unbound socket reports its family and nothing else: the wildcard
         // address and port zero. Measured on both flavours -- a fresh AF_INET
         // socket reads back sixteen bytes whose only content is the family, and
-        // on Darwin the `sa_len` byte its layout puts in front of it.
+        // on Darwin the `sa_len` byte its layout puts in front of it, and a
+        // fresh AF_INET6 one twenty-eight (`docs/probes/dual-mode/`, A1).
         let endpoint =
             match socket.Binding with
             | Some binding -> binding.Endpoint
             | None -> InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us
 
-        reportInternetAddress endpoint destination declaredLength system
+        match encodeName system.Machine.UnixPlatform socketId socket endpoint with
+        | Error refusal -> Error refusal
+        | Ok whole -> reportAddress whole destination declaredLength system
 
     /// `getpeername(2)`: report the address of the peer the socket `fd` is
     /// connected to.
@@ -1519,10 +1788,9 @@ module UnixSocket =
         let notConnected = Ok (GetSockNameAnswer.Failed (UnixError.ENOTCONN, None))
 
         let reportPeer (peer : InternetEndpoint) : Result<GetSockNameAnswer, GetSockNameRefusal> =
-            match socket.Domain with
-            | SocketDomain.Inet6
-            | SocketDomain.Unix -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
-            | SocketDomain.Inet -> reportInternetAddress peer destination declaredLength system
+            match encodeName system.Machine.UnixPlatform socketId socket peer with
+            | Error refusal -> Error refusal
+            | Ok whole -> reportAddress whole destination declaredLength system
 
         // Measured in `docs/probes/getpeername/getpeername.c` on both flavours.
         match socket.Phase with

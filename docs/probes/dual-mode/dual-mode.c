@@ -822,6 +822,77 @@ static void section_g(void) {
     close(l);
 }
 
+
+// H: connect's family and length screens against a dual-mode socket's phase.
+static void connect_raw(const char *label, int s, int family, int len, unsigned short port) {
+    unsigned char buf[64];
+    memset(buf, 0, sizeof buf);
+    if (family == AF_INET) {
+        struct sockaddr_in a = sin_of(INADDR_LOOPBACK, port);
+        memcpy(buf, &a, sizeof a);
+    } else {
+        struct sockaddr_in6 a = sin6_of(1, INADDR_LOOPBACK, port);
+        a.sin6_family = (sa_family_t)family;
+        memcpy(buf, &a, sizeof a);
+    }
+#ifdef __APPLE__
+    buf[1] = (unsigned char)family;
+#endif
+    errno = 0;
+    int e = result(timed_connect(s, (struct sockaddr *)buf, (socklen_t)len));
+    printf("%-60s -> %s\n", label, en(e));
+}
+
+static void section_h(void) {
+    printf("== H: connect screens by phase ==\n");
+    int l = listener4(INADDR_LOOPBACK);
+    // Non-blocking, so that an accept after a failed connect answers.
+    fcntl(l, F_SETFL, fcntl(l, F_GETFL) | O_NONBLOCK);
+    unsigned short closed = free_port();
+    struct { const char *name; int family; int len; } rows[] = {
+        {"AF_INET at 16", AF_INET, 16},
+        {"AF_INET at 28", AF_INET, 28},
+        {"AF_INET6 at 16", AF_INET6, 16},
+        {"AF_INET6 at 28", AF_INET6, 28},
+        {"family 99 at 28", 99, 28},
+        {"family 99 at 16", 99, 16},
+    };
+    int n = sizeof rows / sizeof rows[0];
+    char label[100];
+    for (int i = 0; i < n; i++) {
+        // Established.
+        int s = tcp6_v6only(0);
+        struct sockaddr_in6 to = sin6_of(1, INADDR_LOOPBACK, L);
+        connect(s, (struct sockaddr *)&to, sizeof to);
+        snprintf(label, sizeof label, "H1 established, %s", rows[i].name);
+        connect_raw(label, s, rows[i].family, rows[i].len, L);
+        int srv = accept(l, NULL, NULL); if (srv >= 0) close(srv); close(s);
+        // Refused, the error pending (non-blocking), and taken.
+        s = tcp6_v6only(0);
+        fcntl(s, F_SETFL, fcntl(s, F_GETFL) | O_NONBLOCK);
+        struct sockaddr_in6 shut = sin6_of(1, INADDR_LOOPBACK, closed);
+        connect(s, (struct sockaddr *)&shut, sizeof shut);
+        usleep(50000);
+        snprintf(label, sizeof label, "H2 refused pending, %s", rows[i].name);
+        connect_raw(label, s, rows[i].family, rows[i].len, closed);
+        close(s);
+        // Pending report: a non-blocking connect that completed.
+        s = tcp6_v6only(0);
+        fcntl(s, F_SETFL, fcntl(s, F_GETFL) | O_NONBLOCK);
+        connect(s, (struct sockaddr *)&to, sizeof to);
+        usleep(50000);
+        snprintf(label, sizeof label, "H3 completed, unreported, %s", rows[i].name);
+        connect_raw(label, s, rows[i].family, rows[i].len, L);
+        srv = accept(l, NULL, NULL); if (srv >= 0) close(srv); close(s);
+        // Idle.
+        s = tcp6_v6only(0);
+        snprintf(label, sizeof label, "H4 idle, %s", rows[i].name);
+        connect_raw(label, s, rows[i].family, rows[i].len, L);
+        srv = accept(l, NULL, NULL); if (srv >= 0) close(srv); close(s);
+    }
+    close(l);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     struct sigaction sa;
@@ -834,7 +905,7 @@ int main(int argc, char **argv) {
     printf("sizeof(struct sockaddr_in6)=%zu AF_INET6=%d\n", sizeof(struct sockaddr_in6), AF_INET6);
 #endif
     // `./p EFG` runs those sections only; no argument runs every one.
-    const char *only = argc > 1 ? argv[1] : "ANBCDEFG";
+    const char *only = argc > 1 ? argv[1] : "ANBCDEFGH";
     if (strchr(only, 'A')) section_a();
     if (strchr(only, 'N')) section_n();
     if (strchr(only, 'B')) section_b();
@@ -843,5 +914,6 @@ int main(int argc, char **argv) {
     if (strchr(only, 'E')) section_e();
     if (strchr(only, 'F')) section_f();
     if (strchr(only, 'G')) section_g();
+    if (strchr(only, 'H')) section_h();
     return 0;
 }

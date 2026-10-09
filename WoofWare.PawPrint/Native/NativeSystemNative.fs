@@ -4988,14 +4988,16 @@ module NativeSystemNative =
                     // about CoreLib rather than about any kernel.
                     let reachedBy =
                         match domain with
-                        | SocketDomain.Inet6 ->
-                            "A managed guest reaches this through any IPv6 or dual-mode `Socket`: `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket, which `SystemNative_SetSockOpt` answers, and what follows needs IPv6 transport, which is not modelled. Model it with IPV6_V6ONLY in view: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                         | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                        | SocketDomain.Inet ->
+                        | SocketDomain.Inet
+                        | SocketDomain.Inet6 ->
                             failwith
-                                $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
+                                $"%s{operation}: the library refused an internet socket's domain, which it reads a sockaddr for. This is an interpreter bug."
 
                     failwith $"%s{operation}: fd %d{fd}: %s{BindRefusal.describe refusal} %s{reachedBy}"
+                | BindRefusal.Copy (SockaddrCopyRefusal.UnmodelledInet6Kind _)
+                | BindRefusal.Copy (SockaddrCopyRefusal.DarwinShortInet6Sockaddr _)
+                | BindRefusal.UnmodelledIpv6Address _
                 | BindRefusal.UnmodelledMulticast _
                 | BindRefusal.EphemeralPortsExhausted _ ->
                     failwith $"%s{operation}: fd %d{fd}: %s{BindRefusal.describe refusal}"
@@ -5111,13 +5113,13 @@ module NativeSystemNative =
                 // CoreLib rather than about any kernel.
                 let reachedBy =
                     match refusal with
-                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.Inet6) ->
-                        " A managed guest reaches this through any IPv6 or dual-mode `Socket`, once `SocketPal.CreateSocket` has set its IPV6_V6ONLY: IPv6 transport is not modelled."
+                    | ListenRefusal.Ipv6Listener _ ->
+                        " A managed guest reaches this by listening on an IPv6 or dual-mode `Socket`, such as one bound to IPAddress.IPv6Any; one bound to an IPv4 address is an IPv4 socket, which listens."
                     | ListenRefusal.UnmodelledDomain (_, SocketDomain.Unix) ->
                         " That belongs with the filesystem work (issue #956), not here."
-                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.Inet) ->
+                    | ListenRefusal.UnmodelledDomain (_, (SocketDomain.Inet | SocketDomain.Inet6)) ->
                         failwith
-                            $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
+                            $"%s{operation}: the library refused an internet socket's domain, which it listens on or refuses otherwise. This is an interpreter bug."
                     | ListenRefusal.UnmeasuredKind _
                     | ListenRefusal.UnmeasuredPhase _
                     | ListenRefusal.EphemeralPortsExhausted _ -> ""
@@ -5218,7 +5220,7 @@ module NativeSystemNative =
                     let reachedBy =
                         match domain with
                         | SocketDomain.Inet6 ->
-                            "A managed guest reaches this through any IPv6 or dual-mode `Socket`: `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket, which `SystemNative_SetSockOpt` answers, and what follows needs IPv6 transport, which is not modelled. Model it with IPV6_V6ONLY in view: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                            "A managed guest reaches this by accepting on an IPv6 or dual-mode `Socket`, which cannot be listening here: `SystemNative_Listen` refuses an IPv6 socket."
                         | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
                         | SocketDomain.Inet ->
                             failwith
@@ -5470,14 +5472,16 @@ module NativeSystemNative =
                     // about CoreLib rather than about any kernel.
                     let reachedBy =
                         match domain with
-                        | SocketDomain.Inet6 ->
-                            "A managed guest reaches this through any IPv6 or dual-mode `Socket`: `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket, which `SystemNative_SetSockOpt` answers, and what follows needs IPv6 transport, which is not modelled. Model it with IPV6_V6ONLY in view: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                         | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                        | SocketDomain.Inet ->
+                        | SocketDomain.Inet
+                        | SocketDomain.Inet6 ->
                             failwith
-                                $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
+                                $"%s{operation}: the library refused an internet socket's domain, which it reads a sockaddr for. This is an interpreter bug."
 
                     failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal} %s{reachedBy}"
+                | SockaddrCopyRefusal.UnmodelledInet6Kind _
+                | SockaddrCopyRefusal.DarwinShortInet6Sockaddr _ ->
+                    failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal}"
 
             let answer (outcome : ConnectOutcome) (state : IlMachineState) : NativeHandlerResult option =
                 match outcome with
@@ -5596,14 +5600,16 @@ module NativeSystemNative =
                 // CoreLib rather than about any kernel.
                 let reachedBy =
                     match domain with
-                    | SocketDomain.Inet6 ->
-                        "A managed guest reaches this through any IPv6 or dual-mode `Socket`: `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket, which `SystemNative_SetSockOpt` answers, and what follows needs IPv6 transport, which is not modelled. Model it with IPV6_V6ONLY in view: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
                     | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
-                    | SocketDomain.Inet ->
+                    | SocketDomain.Inet
+                    | SocketDomain.Inet6 ->
                         failwith
-                            $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
+                            $"%s{operation}: the library refused an internet socket's domain, which it reports addresses for. This is an interpreter bug."
 
                 failwith $"%s{operation}: fd %d{fd}: %s{GetSockNameRefusal.describe refusal} %s{reachedBy}"
+            | Error (GetSockNameRefusal.UnmodelledInet6Kind _ as refusal) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{GetSockNameRefusal.describe refusal} A managed guest reaches this through an IPv6 `Socket` of `SocketType.Dgram`."
             | Ok (GetSockNameAnswer.Failed (error, _lengthOverwritten)) ->
                 // `lengthOverwritten` is dropped, and that is what the shim does
                 // rather than an omission: it passes the syscall a local

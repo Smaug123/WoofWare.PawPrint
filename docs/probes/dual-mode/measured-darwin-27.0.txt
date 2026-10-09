@@ -757,3 +757,28 @@ G7 established, connect AF_UNSPEC                            -> EISCONN
 G7 established, connect sockaddr_in at 28                    -> EISCONN
 G8 AF_INET client                                            -> OK SO_SNDBUF=146988 SO_RCVBUF=408300 TCP_MAXSEG=16332
 G8 dual-mode client                                          -> OK SO_SNDBUF=146988 SO_RCVBUF=408300 TCP_MAXSEG=16332
+== H: connect screens by phase ==
+H1 established, AF_INET at 16                                -> EISCONN
+H2 refused pending, AF_INET at 16                            -> EISCONN
+H3 completed, unreported, AF_INET at 16                      -> EISCONN
+H4 idle, AF_INET at 16                                       -> EAFNOSUPPORT
+H1 established, AF_INET at 28                                -> EISCONN
+H2 refused pending, AF_INET at 28                            -> EISCONN
+H3 completed, unreported, AF_INET at 28                      -> EISCONN
+H4 idle, AF_INET at 28                                       -> EAFNOSUPPORT
+H1 established, AF_INET6 at 16                               -> EISCONN
+H2 refused pending, AF_INET6 at 16                           -> EISCONN
+H3 completed, unreported, AF_INET6 at 16                     -> EISCONN
+H4 idle, AF_INET6 at 16                                      -> EINVAL
+H1 established, AF_INET6 at 28                               -> EISCONN
+H2 refused pending, AF_INET6 at 28                           -> EISCONN
+H3 completed, unreported, AF_INET6 at 28                     -> EISCONN
+H4 idle, AF_INET6 at 28                                      -> OK
+H1 established, family 99 at 28                              -> EISCONN
+H2 refused pending, family 99 at 28                          -> EISCONN
+H3 completed, unreported, family 99 at 28                    -> EISCONN
+H4 idle, family 99 at 28                                     -> EAFNOSUPPORT
+H1 established, family 99 at 16                              -> EISCONN
+H2 refused pending, family 99 at 16                          -> EISCONN
+H3 completed, unreported, family 99 at 16                    -> EISCONN
+H4 idle, family 99 at 16                                     -> EAFNOSUPPORT

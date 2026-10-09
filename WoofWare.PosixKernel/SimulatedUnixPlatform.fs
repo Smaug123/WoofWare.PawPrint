@@ -1070,6 +1070,16 @@ module SimulatedUnixPlatform =
     /// `sizeof(struct sockaddr_in)`: 16 on both flavours.
     let internetSocketAddressSize : int = 16
 
+    /// `sizeof(struct sockaddr_in6)`: 28 on both flavours. Measured.
+    let internetV6SocketAddressSize : int = 28
+
+    /// The shortest `struct sockaddr_in6` an IPv6 socket's `bind(2)` and
+    /// `connect(2)` take: 24 bytes, `SIN6_LEN_RFC2133`, which stops short of
+    /// `sin6_scope_id`. Measured on Linux, which answers `EINVAL` below it;
+    /// Darwin's lengths below it read a truncated address, and this library
+    /// does not answer them.
+    let minimumInternetV6SocketAddressLength : int = 24
+
     /// The order `bind(2)` reports its faults in, which is **not** the same on
     /// the two flavours.
     ///
@@ -1109,6 +1119,55 @@ module SimulatedUnixPlatform =
     /// The first fault in this platform's order that `faults` contains.
     let internal firstBindFault (platform : SimulatedUnixPlatform) (faults : Set<BindFault>) : BindFault option =
         bindFaultOrder platform |> List.tryFind (fun fault -> Set.contains fault faults)
+
+    /// The order an IPv6 socket's `bind(2)` reports its faults in, which is
+    /// neither flavour's IPv4 order. Measured pairwise
+    /// (`docs/probes/dual-mode/dual-mode.c`, B5 and F) with a v4-mapped
+    /// address: Linux judges the length, then the family, then an
+    /// unprivileged caller's port, then `IPV6_V6ONLY`, and only then whether
+    /// the socket is bound -- so a bound socket's rebind to an address it does
+    /// not hold is `EINVAL`, where an IPv4 socket's is `EADDRNOTAVAIL`. Darwin
+    /// judges the family (with a broadcast or multicast address), then whether
+    /// the socket is bound, then `IPV6_V6ONLY` and the address, then the port.
+    /// Darwin's length is not among them: this library does not answer the
+    /// lengths it would reject.
+    let bindV6FaultOrder (platform : SimulatedUnixPlatform) : BindFault list =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            [
+                BindFault.Length
+                BindFault.Family
+                BindFault.PrivilegedPort
+                BindFault.Ipv6Only
+                BindFault.AlreadyBound
+                BindFault.AddressNotLocal
+                BindFault.AddressInUse
+            ]
+        | SimulatedUnixFlavour.Darwin ->
+            [
+                BindFault.Family
+                BindFault.AlreadyBound
+                BindFault.Ipv6Only
+                BindFault.AddressNotLocal
+                BindFault.PrivilegedPort
+                BindFault.AddressInUse
+            ]
+
+    /// What an IPv6 socket's `bind(2)` answers for `BindFault.Ipv6Only`: a
+    /// socket with `IPV6_V6ONLY` on asked for a v4-mapped address. `EINVAL`
+    /// on Linux and `EADDRNOTAVAIL` on Darwin. Measured.
+    let ipv6OnlyBindError (platform : SimulatedUnixPlatform) : UnixError =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> UnixError.EINVAL
+        | SimulatedUnixFlavour.Darwin -> UnixError.EADDRNOTAVAIL
+
+    /// What an IPv6 socket's `connect(2)` answers when `IPV6_V6ONLY` is on
+    /// and the destination is v4-mapped: `ENETUNREACH` on Linux and
+    /// `EAFNOSUPPORT` on Darwin, binding nothing on either. Measured.
+    let ipv6OnlyConnectError (platform : SimulatedUnixPlatform) : UnixError =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> UnixError.ENETUNREACH
+        | SimulatedUnixFlavour.Darwin -> UnixError.EAFNOSUPPORT
 
     /// The greatest `socketAddressLen` Darwin's `bind(2)` will consider at all.
     /// Above it the answer is `ENAMETOOLONG` rather than `EINVAL`; measured, 255
@@ -1150,6 +1209,22 @@ module SimulatedUnixPlatform =
             if declared > uint32 maximumDarwinSocketAddressLength then
                 BindLengthVerdict.RejectedBeforeCopy UnixError.ENAMETOOLONG
             elif declared = uint32 exactSize then
+                BindLengthVerdict.Accepted
+            else
+                BindLengthVerdict.Invalid
+
+    /// How long `bind(2)` and `connect(2)` on an IPv6 socket insist its
+    /// `struct sockaddr_in6` is. Linux takes 24 through 128 and answers
+    /// `EINVAL` outside, the upper bound before the copy; Darwin takes 24
+    /// through 255 and answers `ENAMETOOLONG` above, before the copy. Measured
+    /// (`docs/probes/dual-mode/dual-mode.c`, A14 and B5). `Invalid` on Darwin
+    /// is a length this library refuses before any ladder reads it.
+    let internal internetV6AddressLength (platform : SimulatedUnixPlatform) (declared : uint32) : BindLengthVerdict =
+        match bindAddressLength platform minimumInternetV6SocketAddressLength declared with
+        | BindLengthVerdict.RejectedBeforeCopy error -> BindLengthVerdict.RejectedBeforeCopy error
+        | BindLengthVerdict.Accepted
+        | BindLengthVerdict.Invalid ->
+            if declared >= uint32 minimumInternetV6SocketAddressLength then
                 BindLengthVerdict.Accepted
             else
                 BindLengthVerdict.Invalid
@@ -1629,3 +1704,117 @@ module SimulatedUnixPlatform =
         =
         let whole = encodeInternetSockaddr platform endpoint
         ImmutableArray.Create<byte> (whole, 0, int (min declaredLength (uint32 whole.Length)))
+
+    /// What `copied`, every byte a `bind(2)` or `connect(2)` on an IPv6 socket
+    /// copied in, says when read as this platform's `struct sockaddr_in6`.
+    ///
+    /// The family sits where `decodeInternetSockaddr` reads it; the port is
+    /// network order at 2 and the address sixteen bytes at 8. A v4-mapped
+    /// address, `::ffff:a.b.c.d`, is read as the IPv4 endpoint it maps.
+    let internal decodeInternetV6Sockaddr
+        (platform : SimulatedUnixPlatform)
+        (copied : ImmutableArray<byte>)
+        : CopiedInternetV6Sockaddr
+        =
+        if copied.IsDefault then
+            failwith
+                "SimulatedUnixPlatform.decodeInternetV6Sockaddr: copied is the default ImmutableArray, whose underlying array is null. That is not an empty copy; pass ImmutableArray<byte>.Empty."
+
+        let family =
+            let field = sockaddrFamilyField platform
+
+            if SockaddrFamilyField.reachedBy field copied.Length then
+                Some (
+                    decodeSockaddrFamily
+                        platform
+                        (copied.Slice (SockaddrFamilyField.offset field, SockaddrFamilyField.width field))
+                )
+            else
+                None
+
+        let destination =
+            if
+                SockaddrField.reachedBy InternetV6Sockaddr.port copied.Length
+                && SockaddrField.reachedBy InternetV6Sockaddr.address copied.Length
+            then
+                let span = copied.AsSpan ()
+
+                let port =
+                    BinaryPrimitives.ReadUInt16BigEndian (
+                        span.Slice (InternetV6Sockaddr.port.Offset, InternetV6Sockaddr.port.Width)
+                    )
+
+                let address =
+                    copied.Slice (InternetV6Sockaddr.address.Offset, InternetV6Sockaddr.address.Width)
+
+                let mapped =
+                    Seq.forall (fun i -> address.[i] = 0uy) (seq { 0..9 })
+                    && address.[10] = 0xFFuy
+                    && address.[11] = 0xFFuy
+
+                if mapped then
+                    let v4 = BinaryPrimitives.ReadUInt32BigEndian (address.AsSpan().Slice (12, 4))
+                    Some (Ipv6Destination.V4Mapped (InternetEndpoint.ofParts v4 port))
+                else
+                    Some (Ipv6Destination.Native (address, port))
+            else
+                None
+
+        {
+            Family = family
+            Destination = destination
+        }
+
+    /// The sixteen bytes of `sin6_addr` an IPv6 socket whose transport is
+    /// IPv4 reports for the IPv4 `address`, in a socket whose connect's
+    /// refusal is latched or not.
+    ///
+    /// The wildcard is `::` on both flavours -- an IPv6 socket bound only by a
+    /// connect, or reverted by a refusal, reads back `[::]:port` -- and any
+    /// other address is `::ffff:a.b.c.d`, except that Darwin reports a socket
+    /// whose refusal is latched at the IPv4-compatible `::a.b.c.d`, the
+    /// `ffff` gone. Measured (`docs/probes/dual-mode/dual-mode.c`, A, E and
+    /// G).
+    let presentedIpv6Address (platform : SimulatedUnixPlatform) (refusalLatched : bool) (address : uint32) : byte[] =
+        let bytes = Array.zeroCreate<byte> 16
+
+        if address <> InternetEndpoint.WildcardAddress then
+            BinaryPrimitives.WriteUInt32BigEndian (System.Span<byte> (bytes, 12, 4), address)
+
+            match flavour platform with
+            | SimulatedUnixFlavour.Darwin when refusalLatched -> ()
+            | SimulatedUnixFlavour.Darwin
+            | SimulatedUnixFlavour.Linux ->
+                bytes.[10] <- 0xFFuy
+                bytes.[11] <- 0xFFuy
+
+        bytes
+
+    /// `struct sockaddr_in6` for the sixteen bytes `address` and `port`, as
+    /// this platform's kernel copies one out: the family, the port, a zero
+    /// `sin6_flowinfo`, the address and a zero `sin6_scope_id`, and on Darwin
+    /// 28 in the `sa_len` byte. Measured on both.
+    let encodeInternetV6Sockaddr (platform : SimulatedUnixPlatform) (address : byte[]) (port : uint16) : byte[] =
+        if address.Length <> InternetV6Sockaddr.address.Width then
+            failwith
+                $"SimulatedUnixPlatform.encodeInternetV6Sockaddr: an IPv6 address is %d{InternetV6Sockaddr.address.Width} bytes, and the caller passed %d{address.Length} (this is a bug in the caller)."
+
+        let realLength = internetV6SocketAddressSize
+        let blob = Array.zeroCreate<byte> realLength
+
+        BinaryPrimitives.WriteUInt16BigEndian (
+            System.Span<byte> (blob, InternetV6Sockaddr.port.Offset, InternetV6Sockaddr.port.Width),
+            port
+        )
+
+        address.CopyTo (blob, InternetV6Sockaddr.address.Offset)
+
+        let field = sockaddrFamilyField platform
+        let familyBytes = encodeSockaddrFamily platform (internetV6AddressFamily platform)
+        familyBytes.CopyTo (blob, SockaddrFamilyField.offset field)
+
+        match field with
+        | SockaddrFamilyField.OneByteAtOffsetOne -> blob.[0] <- byte realLength
+        | SockaddrFamilyField.TwoBytesAtOffsetZero -> ()
+
+        blob
