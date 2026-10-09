@@ -4558,6 +4558,99 @@ module TestImpureCases =
                     )
             }
             {
+                // libc's pthread_sigmask, sigprocmask and sigpending under the
+                // Linux flavour: a raised SIGTERM held back by the main
+                // thread's mask, pending, and delivered once unblocked.
+                FileName = "LibcSignalMaskLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.linuxX64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                        SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
+                        |> shouldEqual SignalMask.empty
+                    )
+            }
+            {
+                // The Darwin column of the same: its numbering of `how`, its
+                // 32-bit set, and the bit 31 it keeps, which the main thread
+                // still blocks at the end.
+                FileName = "LibcSignalMaskDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                        SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
+                        |> SignalMask.toWord
+                        |> shouldEqual 0x80000000UL
+                    )
+            }
+            {
+                // libc's sigsuspend and pause under the Linux flavour: a
+                // SIGTERM pending as sigsuspend is called, one sent during it,
+                // and one ending a pause. Each call fails with EINTR once the
+                // handler has run, and the mask is then what it was before.
+                FileName = "LibcSigsuspendLinux.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.linuxX64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                        SignalState.tasksWithMasksToRestore state.Kernel.Signals
+                        |> shouldEqual Set.empty
+
+                        SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
+                        |> SignalMask.toWord
+                        |> shouldEqual 0x1UL
+                    )
+            }
+            {
+                // The Darwin column of the same: its numbering of `how` and
+                // its 32-bit set.
+                FileName = "LibcSigsuspendDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                        SignalState.tasksWithMasksToRestore state.Kernel.Signals
+                        |> shouldEqual Set.empty
+
+                        SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
+                        |> SignalMask.toWord
+                        |> shouldEqual 0x1UL
+                    )
+            }
+            {
                 // libc's raise(3) under the Darwin flavour, from the main
                 // thread and another, on numbers that would end the run under
                 // Linux's numbering: the handler must read the signal under

@@ -229,7 +229,13 @@ module Program =
         | ThreadStatus.Parked -> None
 
     /// Fire a timeout wake for every blocked-with-deadline thread whose
-    /// deadline is `<= state.Kernel.VirtualClockTicks`. Each fire routes
+    /// deadline is `<= now`, a reading of the virtual clock in its ticks.
+    ///
+    /// `now` is an argument rather than read from the state's kernel because
+    /// the clock is the machine's, and a process's view of a machine other
+    /// processes share holds a stale copy of it once another has moved it on.
+    /// Nothing here reads the kernel's POSIX half, so a state whose view is
+    /// stale in that way may be passed with the machine's clock. Each fire routes
     /// through a per-subsystem fire function (WaitHandle dequeues from
     /// the handle's wait queue and rewrites `WAIT_OBJECT_0 → WAIT_TIMEOUT`;
     /// LowLevelMonitor moves the waiter from `WaitQueue` to `AcquireQueue`
@@ -248,9 +254,7 @@ module Program =
     /// primitive's queue fires first, matching the FIFO contract enforced
     /// everywhere else in the state machines (release, signalRelease,
     /// pulse/pulseAll, applySpuriousWakeups AlwaysAll).
-    let private fireExpiredDeadlines (state : IlMachineState) : IlMachineState =
-        let now = state.Kernel.VirtualClockTicks
-
+    let private fireExpiredDeadlines (now : int64) (state : IlMachineState) : IlMachineState =
         // `Map.foldBack` visits keys in descending order, so the resulting list is sorted by
         // thread ID.
         let expired =
@@ -487,6 +491,33 @@ module Program =
         | WhatWeDid.ThrowingTypeInitializationException ->
             logger.LogTrace "TypeInitializationException dispatched due to failed .cctor."
 
+    /// The run's end, `outcome`, of which `ended` is the kernel's account: the process's end
+    /// on a machine of its own, which closes every descriptor it held as a real exit does.
+    ///
+    /// Fails loudly if the machine will not end the process (`ProcessEndRefusal`). What the
+    /// process delivered to its standard streams stays readable from `outcome`'s state, which
+    /// is the machine as it stood before.
+    let private ending (ended : EndedProcess<ThreadId, NativeSignalHandler>) (outcome : RunOutcome) : RunOutcome =
+        match SimulatedMachine.endProcess ended (SimulatedMachine.ofSystem ended.EndedIn) with
+        | Error refusal ->
+            failwith
+                $"Program: the process ended (%O{ended.Termination}), and the machine would not close what it held: %s{ProcessEndRefusal.describe refusal}"
+        | Ok _ -> outcome
+
+    /// The run's end when a signal killed the process: `ended` is the kernel's answer to
+    /// the signal, and `state` the machine as it stood when the signal was sent.
+    let private signalTerminated
+        (state : IlMachineState)
+        (ended : EndedProcess<ThreadId, NativeSignalHandler>)
+        : RunOutcome
+        =
+        match ended.Termination with
+        | ProcessTermination.Signaled (signal, coreDumped) ->
+            RunOutcome.SignalTerminated (state, signal, coreDumped) |> ending ended
+        | ProcessTermination.Exited _ as other ->
+            failwith
+                $"Program: a signal was reported to have killed the process, but the kernel ended it by %O{other} (this is an interpreter bug)."
+
     /// Where a tick's preamble leaves the program: at the scheduling decision, or ended.
     [<RequireQualifiedAccess>]
     type private Advanced =
@@ -602,7 +633,7 @@ module Program =
         // thread B is busy computing something else — A's deadline still
         // fires when the clock reaches it, even though B keeps the
         // scheduler from ever stalling.
-        let state = fireExpiredDeadlines state
+        let state = fireExpiredDeadlines state.Kernel.VirtualClockTicks state
 
         // Run System.Native's signal handling before the scheduler picks its
         // next thread: its native handler writes whatever the kernel delivers
@@ -612,8 +643,7 @@ module Program =
         // Before the syscall wakes, because writing to the pipe and reading
         // from it change what a syscall parked on it is waiting for.
         match SignalDispatch.poll prepared.BaseClassTypes state with
-        | SignalPoll.ProcessKilled (state, signal, coreDumped) ->
-            Advanced.Ended (RunOutcome.SignalTerminated (state, signal, coreDumped))
+        | SignalPoll.ProcessKilled (state, ended) -> Advanced.Ended (signalTerminated state ended)
         | SignalPoll.Continues state ->
 
         // Wake anything parked in a syscall whose wake condition now holds — a
@@ -676,7 +706,7 @@ module Program =
                             EmulatedKernel.withVirtualClockTicks (max state.Kernel.VirtualClockTicks target)
                         )
 
-                    let state = fireExpiredDeadlines state
+                    let state = fireExpiredDeadlines state.Kernel.VirtualClockTicks state
                     advanceUntilRunnableOrQuiescent (fireSyscallWakes state)
 
         { prepared with
@@ -692,7 +722,11 @@ module Program =
 
     /// How the process ends when the runtime aborts it on `thread`: CoreCLR's `PROCAbort`
     /// ends in `abort()`, which the kernel answers with a death by SIGABRT.
-    let private abortTermination (thread : ThreadId) (state : IlMachineState) : ProcessTermination =
+    let private abortTermination
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : EndedProcess<ThreadId, NativeSignalHandler>
+        =
         EmulatedKernel.abort thread state.Kernel
 
     /// What one scheduler tick did. `Stepped` is every outcome a caller of `stepPrepared`
@@ -767,10 +801,12 @@ module Program =
         match entry.Status with
         | ThreadStatus.WaitingForForegroundThreads when nowSignalled ->
             // The host passes the latched exit code to `exit`, which ends in `exit_group`.
-            let termination =
+            let ended =
                 EmulatedKernel.exitGroup prepared.EntryThread prepared.State.LatchedExitCode prepared.State.Kernel
 
-            ProgramStepOutcome.Completed (RunOutcome.NormalExit (prepared.State, prepared.EntryThread, termination))
+            RunOutcome.NormalExit (prepared.State, prepared.EntryThread, ended.Termination)
+            |> ending ended
+            |> ProgramStepOutcome.Completed
         | _ ->
             // The latch goes one way, so this rebuilds the program at most once per run; every
             // other tick hands `prepared` on as it is.
@@ -873,13 +909,11 @@ module Program =
                     // terminated, the dispatcher is just between handler
                     // invocations.
                     match SignalDispatch.reParkAfterHandler terminatingThread state with
-                    | SignalPoll.ProcessKilled (state, signal, coreDumped) ->
+                    | SignalPoll.ProcessKilled (state, ended) ->
                         // The callback reported the signal unhandled, and the loop's
                         // `SystemNative_HandleNonCanceledPosixSignal` re-raised it at a
                         // default that kills the process.
-                        Tick.Stepped (
-                            ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal, coreDumped))
-                        )
+                        Tick.Stepped (ProgramStepOutcome.Completed (signalTerminated state ended))
                     | SignalPoll.Continues state ->
 
                     // The dispatcher retired a step and this branch reports it as
@@ -924,26 +958,29 @@ module Program =
             | ExecutionResult.ProcessExit (state, exitingThread) ->
                 // `Environment.Exit` passes the latched exit code to `exit`, which ends in
                 // `exit_group`.
-                let termination =
+                let ended =
                     EmulatedKernel.exitGroup exitingThread state.LatchedExitCode state.Kernel
 
-                Tick.Stepped (ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread, termination)))
+                RunOutcome.ProcessExit (state, exitingThread, ended.Termination)
+                |> ending ended
+                |> ProgramStepOutcome.Completed
+                |> Tick.Stepped
             | ExecutionResult.Aborted (state, abortingThread, message) ->
-                let termination = abortTermination abortingThread state
+                let ended = abortTermination abortingThread state
 
-                Tick.Stepped (
-                    ProgramStepOutcome.Completed (RunOutcome.Aborted (state, abortingThread, message, termination))
-                )
-            | ExecutionResult.SignalTerminated (state, signal, coreDumped) ->
-                Tick.Stepped (ProgramStepOutcome.Completed (RunOutcome.SignalTerminated (state, signal, coreDumped)))
+                RunOutcome.Aborted (state, abortingThread, message, ended.Termination)
+                |> ending ended
+                |> ProgramStepOutcome.Completed
+                |> Tick.Stepped
+            | ExecutionResult.SignalTerminated (state, ended) ->
+                Tick.Stepped (ProgramStepOutcome.Completed (signalTerminated state ended))
             | ExecutionResult.UnhandledException (state, terminatingThread, exn) ->
-                let termination = abortTermination terminatingThread state
+                let ended = abortTermination terminatingThread state
 
-                Tick.Stepped (
-                    ProgramStepOutcome.Completed (
-                        RunOutcome.GuestUnhandledException (state, terminatingThread, exn, termination)
-                    )
-                )
+                RunOutcome.GuestUnhandledException (state, terminatingThread, exn, ended.Termination)
+                |> ending ended
+                |> ProgramStepOutcome.Completed
+                |> Tick.Stepped
             | ExecutionResult.Stepped (state, whatWeDid, effect) ->
                 logStepOutcome logger state nextThread whatWeDid
 

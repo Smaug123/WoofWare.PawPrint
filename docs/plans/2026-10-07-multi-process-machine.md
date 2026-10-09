@@ -162,3 +162,310 @@ After that come the socket features rung M needs, each a stage of its own:
 - `shutdown`, with the reset that linger 0 causes.
 
 Then the Kestrel server and the `HttpClient` client run as two guests.
+
+## Stage 5 design
+
+Line numbers are those of the stage 4 tip (`c12d35cc`).
+
+### Measurements
+
+A Release build, a 100,000-iteration arithmetic loop as the guest, timed
+after a warm-up run:
+
+- One tick (`stepPrepared`) costs 860 ns and allocates 3,470 bytes.
+- One handover costs 169 ns and 944 bytes. That is `SimulatedMachine.focus`,
+  then `IlMachineState.MapKernel (EmulatedKernel.withUnix view)`, then
+  `unfocus`: 20% of a tick's time and 27% of its allocation.
+- `SimulatedMachine.ofSystem` costs 201 ns and 552 bytes.
+
+So nothing may hand over, or call `ofSystem`, on every tick of a run of one
+program.
+
+### The driver's state
+
+```
+MultiProgram =                        // opaque
+    { Machine : SimulatedMachine      // stale while a program is checked out
+      Current : ProcessId * ProgramSlot
+      Idle : Map<ProcessId, ProgramSlot>
+      Ended : (ProcessId * RunEnd) list
+      Choice : ProgramChoice
+      ... }
+ProgramSlot = Starting of StartingProgram | Running of RunningProgram
+```
+
+`RunningProgram` holds what `PreparedProgram` holds today: `State`,
+`BaseClassTypes`, `EntryThread`, `EntryFrame` and `LastRan`. `StartingProgram`
+holds what `Startup` holds today.
+
+Exactly one program is checked out: `Current`. Its `Kernel.System` is the
+authoritative view. `Machine` is the copy of the machine that view was
+focused from, so the `Origin` guard accepts the view when it comes back. An
+idle program holds a view whose process and tasks are current, because
+nothing but its own steps changes them, and whose machine is stale.
+
+The stored machine is only re-synchronised when the driver switches
+programs. To switch, it calls `unfocus` on the current view, then `focus`es
+the next program and puts that view into the next program's kernel. A
+program of one never switches.
+
+The step counter travels with the machine. The checked-out program's
+`Kernel.StepCounter` is the global tick. A switch copies it into the next
+program, as a switch carries the clock across inside the machine. So
+`StepCounter` stays where every test reads it, and for one program it is
+what it is today.
+
+`InstructionCostTicks` and `ClockJitter` describe the machine, and govern
+the clock advance and the jitter, which move to the driver. So in 5c they
+move off `EmulatedKernel` with them, onto the `MachineConfig` the driver
+holds, if every reader moves too. If one must stay per program, every
+program's copy is set from the one `MachineConfig`, and the driver asserts
+they agree. 5b leaves them where they are.
+
+### 1. What stays per program, and what moves to the driver
+
+The tick is now: the driver's preamble, then the program choice, then the
+chosen program's `stepDecided`.
+
+- **Spurious wakeups** (`Program.fs:527-534`). Per program, for every live
+  program, every tick, keyed on the global tick. They read no
+  `Kernel.System`, so they run on idle programs without a handover.
+- **The tick and the clock** (`Program.fs:540`, `560`;
+  `EmulatedKernel.retireStep`, `EmulatedKernel.fs:1365`). Moves to the
+  driver: once per global tick, on the checked-out program's kernel. That
+  program's fused one-record `retireStep` is kept.
+- **Clock jitter** (`Program.fs:577-595`). Moves to the driver: keyed on the
+  global tick, drawn from every program's `pendingDeadlines`
+  (`Program.fs:422`), and applied to the checked-out view. `pendingDeadlines`
+  reads thread statuses and the process's own parks (`UnixWait.deadlines`,
+  `UnixWait.fs:305`), both current on an idle view.
+- **Expired deadlines** (`Program.fs:605`, `fireExpiredDeadlines` at `251`).
+  Per program, every live program, every tick. It reads the clock at
+  `Program.fs:252`, which is a machine read and so stale on an idle view.
+  It will take `now` from the driver as an argument instead. The fire
+  functions it calls (`WaitHandle`, `LowLevelMonitor`, `SyncBlockMonitor`,
+  `Scheduler`) read no `Kernel.System`.
+- **Signal poll** (`Program.fs:614-617`; `SignalDispatch.poll`,
+  `SignalDispatch.fs:598`). Per program, and the only preamble phase that
+  needs the machine: it writes the signal pipe. The driver hands over to a
+  program only if its poll can do something, which it decides from
+  process-local facts: a signal is pending (`SignalState.pending`), or the
+  dispatcher is `Parked`. Otherwise the poll is the no-op its own fast path
+  (`SignalDispatch.fs:301`) already returns. If the poll ends the process,
+  that is one program ending (§4).
+- **Syscall wakes** (`Program.fs:623`, `fireSyscallWakes` at `391`). Moves to
+  the driver; see §2.
+- **The quiescence jump** (`Program.fs:656-684`). Moves to the driver. It
+  stops if any program has a runnable thread. Otherwise it jumps to the
+  minimum of every program's deadlines, fires expired deadlines in every
+  program, runs the global wakes, and repeats.
+- **The deadlock** (`Program.fs:803-806`, where `chooseNext` answers
+  `None`). Moves to the driver: if no program is runnable after the jump,
+  the driver reports `Deadlocked` with each live program's process ID and
+  `GuestLocation.describe`. The chosen program's `chooseNext` then always
+  answers `Some`, and that is asserted.
+- **Per program and unchanged:** `stepDecided`'s execution, `afterStep`,
+  `latchMainReturnValue`, and startup's phase changes.
+
+The operations the driver runs on idle programs are listed in one place:
+spurious wakeups, `fireExpiredDeadlines now`, `pendingDeadlines`,
+`hasAnyRunnable`, `asleepInSyscall`, `wakeFromSyscall`, and the poll
+pre-check. A Debug build asserts that none of them changed the program's
+`Kernel.System` by reference, which catches a write through a stale view.
+It cannot catch a read; the clock was the one machine read among them, and
+it is now an argument. When the driver focuses a program, a Debug build
+also asserts that the slot's process and tasks are the idle view's, by
+reference.
+
+### 2. Syscall wakes: `SimulatedMachine.wakes`
+
+The driver calls it once per tick, with each program's `asleepInSyscall`,
+and only when some program has a syscall waiter, which is today's fast
+path. It flips each woken `(pid, task)` in that task's program. It calls
+`wakes` on `unfocus currentView Machine`, a value it then throws away. That
+costs about one `Map.add` and the identity checks, and needs no handover.
+
+The alternative was each view's own `UnixWait.wakes`, relying on there being
+no exclusive wait queue across processes. Nothing enforces that: it holds
+only because nothing passes a descriptor to another process yet, and
+`241e564a` forges the state in which it fails. The first PR that adds `fork`
+or `SCM_RIGHTS` would leave PawPrint's wakes silently wrong. Stage 4 built
+the machine-wide wakes for exactly this. For one program the two agree,
+since `UnixWait.wakes` is `wakesAmong` of a single process.
+
+One per-view use remains. `SignalDispatch.fs:535` asks `UnixWait.wakes`
+whether the dispatcher's own read of the signal pipe wakes. The process's
+own shim creates that pipe, so this holds until descriptors can be inherited.
+The note at that call will say so.
+
+### 3. Startup, the host API, and the configuration split
+
+**Configuration.** `KernelConfig` splits into two parts.
+
+`MachineConfig` takes:
+- `ProcessorCount`, `UserAddressLimit` and `WallClockEpochMs`.
+- `UnixPlatform`, `FileSystem`, `FileSystemRootOwner` and `Mount`.
+- `EphemeralPortRange`, `SoMaxConn`, `TcpSendSpace`, `ProtectedFiles`,
+  `LocalAddresses` and `LocalRoutes`.
+- `PidMax`.
+- `InstructionCostTicks` and `ClockJitter`.
+- `ProcessId` and `LeaderThreadId`, which are now the first process's: later
+  processes' IDs are the kernel's choice.
+- A new `ProgramChoice`, which is `RoundRobin` or `Seeded of uint64`.
+
+`ProcessConfig` takes:
+- `Environment`, `CurrentDirectory`, `ProcessPath` and `StandardStreams`.
+- `UserId`, `GroupId`, `SupplementaryGroups` and `Umask`.
+- `InheritedSignalIgnores` and `CoreDumps`.
+- `CLibrary` and `OptimalMaxSpinWaitsPerSpinIteration`, both userspace.
+
+`KernelConfig` stays as the one-program sugar, and `KernelConfig.split`
+returns both parts. `toKernel`'s setters become `MachineConfig.toImage` and
+`ProcessConfig.toLaunch platform`, so each failure still names its knob.
+
+A launch carries a `ProcessConfig` rather than a library `ProcessLaunch`.
+PawPrint's environment seed, the standard-stream launch table and the named
+refusals are PawPrint's, and a launch built by hand would bypass them.
+`bootInheritingSignalIgnores` (`EmulatedKernel.fs:1065`) splits into the
+machine's boot and `EmulatedKernel.ofView`. `ofView` is the userspace set-up
+done in the process's focused view: the signal dispositions, Darwin's
+`getentropy(32)`, and the C library.
+
+**API.**
+
+```
+ProgramLaunch = { Image : Stream; OriginalPath; DotnetRuntimeDirs;
+                  Process : ProcessConfig; Argv; AssemblyPath; AppContext;
+                  PctSeed : uint64 option }
+MultiProgram.begin : ILoggerFactory -> MachineConfig -> ProgramLaunch list -> MultiProgram
+MultiProgram.step  : ILoggerFactory -> ILogger -> MultiProgram -> MultiStepOutcome
+    | Stepped of MultiProgram * ProcessId * ProgramEvent
+        // InstructionStepped (thread, whatWeDid, effect) | WorkerTerminated thread
+        // | PhaseAdvanced | Ended of RunEnd
+    | Finished of (ProcessId * RunEnd) list           // launch order
+    | Deadlocked of MultiProgram * (ProcessId * string) list
+MultiProgram.run   : ... -> (ProcessId * RunEnd) list // fails loudly on a deadlock, as pumpPrepared does
+```
+
+`begin` boots the machine with `UnixBootImage.boot` and `ofSystem`, applies
+`pid_max`, and launches the other processes with `SimulatedMachine.launch`,
+all in launch order. It then focuses each program in turn, builds its
+kernel with `ofView`, and runs `beginStartup`'s per-program core on that
+kernel. Entropy is drawn from the shared pool, so launch order is part of
+the replay contract.
+
+**Startup interleaving.** Startups interleave from the first tick, chosen as
+`Main` ticks are. The alternative was to run each startup to completion in
+turn, but a static initialiser that waits on another process would then
+deadlock where real processes would not.
+
+**Choosing a program.** The choice is made among programs with a runnable
+thread. `RoundRobin` takes the next such program after the last in launch
+order. `Seeded s` draws uniformly by a pure hash of `(s, tick)`, as
+`ClockJitter.draw` does, so there is no RNG state. With one candidate there
+is nothing to draw.
+
+### 4. A program ends while others run
+
+The program's step, or its poll, completes with a `RunOutcome`. The driver
+then calls `SimulatedMachine.endProcess` with that outcome's `EndedProcess`
+against `Machine`. The `EndedIn` view descends from the checkout, so its
+`Origin` holds. The driver records `(pid, RunEnd)`, then focuses the next
+live program from the machine that `endProcess` returned.
+
+Until 5a the `EndedProcess` was thrown away where the kernel produced it:
+at `EmulatedKernel.exitGroup` and `abort`, in `NativeLibc`'s kill, in the
+SIGPIPE path of `NativeSystemNative`'s write, and in `SignalDispatch`. Now
+`exitGroup` and `abort` answer it, and `ExecutionResult.SignalTerminated`,
+`SignalPoll.ProcessKilled` and `NativeSystemNative`'s
+`NonCanceledPosixSignal.Terminated` carry it to where `Program` makes the
+`RunOutcome`. `RunOutcome` keeps its shape: a host has no use for the
+view a process ended in, and about 300 matches on it would otherwise
+change. In 5c the driver takes the end from there.
+
+`Environment.Exit`, an unhandled exception, `FailFast` or a fatal signal
+ends that program alone. The others see only what the kernel shows them,
+such as a FIN or a lock let go of. Each program's exit code is its own
+`RunEnd`, and its output is its own `OutputLog`, keyed by its process ID.
+
+A `ProcessEndRefusal` fails the run loudly, naming the program, as a
+refused `close` does. A host failure, meaning a `failwith` in the
+interpreter, fails the whole run, because what the program would have done
+is unknown. Each program's step is still wrapped in `annotating` with its
+own state. A failure in a driver phase is annotated with every live
+program's `GuestLocation`.
+
+A run of one program also calls `endProcess`, once at the end, and discards
+its machine. That way the whole Guest suite exercises `endProcess` and the
+`Origin` guard.
+
+### 5. Fork snapshots and the debugger: one program, by type
+
+`PreparedProgram` and `Startup` become opaque handles on a `MultiProgram`
+of one. They get `State`, `EntryThread`, `LastRan` and `BaseClassTypes`
+members, and a `withState`; one test replaces the state by record copy
+(`TestScheduleFork.fs:480`).
+
+`stepPrepared`, `stepStartup`, `beginStartup`, `prepare`, `run`,
+`pumpPrepared`, `runToFirstFork`, `runToNextFork` and `resumeFork` keep
+their signatures and desugar to the driver. The fork prefix keeps its
+two-call probe: `advance` returns the driver's preamble, and then comes
+the choice.
+
+The fork snapshots and the debugger's `stepPrepared` take a `PreparedProgram`,
+so a run of several programs cannot reach them. No runtime refusal is
+needed. Allowing several programs there would require counting the choice
+between programs among the decisions that make a fork, which is out of
+scope.
+
+### 6. Risk to one program, and speed
+
+A program of one never switches, so it never hands over. Its tick does what
+it does today, plus one copy of the driver record. That is a few dozen bytes
+against 3,470. The `unfocus` for wakes runs only on ticks with a syscall
+waiter, in place of today's `UnixWait.wakes`. The `endProcess` at the end is
+new behaviour, and a guest whose end it refuses would now fail. The
+implementation PR reports the Performance benchmarks against `main`.
+
+With several programs, a switch costs 169 ns (20%), and it happens only
+when the chosen program is not the checked-out one. Under per-tick
+`RoundRobin` that is almost every tick. A quantum, which keeps a program for
+K ticks, would amortise the switches. It is not built until stage 6 shows
+it is needed, since it changes which interleavings can be reached.
+
+### 7. PRs
+
+- **5a.** Carry `EndedProcess` to where `Program` makes the `RunOutcome`,
+  and end every run's process on a machine of its own
+  (`SimulatedMachine.ofSystem`, then `endProcess`), failing loudly if it is
+  refused. The machine left is thrown away until 5c.
+- **5b.** Split `KernelConfig` into `MachineConfig` and `ProcessConfig`
+  (`KernelConfig.split`; `MachineConfig.boot` boots the machine with its
+  first process, and `toKernel` is the two), add `EmulatedKernel.ofView`,
+  and make `fireExpiredDeadlines` take `now`. A property test: for
+  generated `KernelConfig`s, booting through `split` gives the kernel that
+  every setter applied to one image gives. 5a and 5b are one PR.
+- **5c.** The driver core, with one program running through it.
+  `advanceToDecision`, `stepTick` and their per-program jump and deadlock
+  are deleted. The tick wakes through `SimulatedMachine.wakes`, and
+  `endProcess` runs at every end. The oracles are the whole suite, Guest
+  fixtures included; `TestScheduleFork`'s bit-identity; and `TestClockJitter`
+  and `TestRetireStep`. The PR reports the performance numbers.
+- **5d.** Several programs. New tests in `TestMultiProgram`, whose guests
+  write through `SystemNative_Write` so that they stay fast:
+  - **`two guests on one machine report distinct process IDs and keep
+    separate output logs`.** The first process has the configured ID and
+    the second has the kernel's next ID, and each log holds only its own
+    line.
+  - **`the clock does not jump to a sleeper's deadline while another
+    program is runnable`.** A sleeps 50 ms, and then the time it actually
+    slept must be in [50, 51) ms. B spins for 100 ms on
+    `Environment.TickCount64`, and the largest gap it sees between two reads
+    must be 1 ms or less. Making the jump per program again must turn this
+    red.
+  - **`both programs blocked forever is one deadlock naming both`.**
+  - **`one program's Environment.Exit, or its unhandled exception, leaves
+    the other running`.** The exit codes are per program.
+  - **`one launch through MultiProgram is the same run as Program.run`.**
+    The exit code, output, `StepCounter` and clock all match.
+  - **`the same program choice seed replays the same interleaving`.**

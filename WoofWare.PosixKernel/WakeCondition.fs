@@ -141,7 +141,9 @@ type WakePrimitive =
     /// the call parks.
     | DeadlinePassed of nanosecondsSinceBoot : int64
     /// A signal with a handler is deliverable to the task that waits: were it to
-    /// return to user mode now, it would run that handler.
+    /// return to user mode now, it would run that handler. For a task in
+    /// `sigsuspend`, any signal its temporary mask lets through that its
+    /// finishing call would act on (`SyscallInterruption.wakes`).
     ///
     /// Names no kernel object, because what it asks about is the waiter itself:
     /// a condition is always some task's, and `satisfied` is told whose. Every
@@ -263,6 +265,7 @@ module WakeCondition =
         | Some (ParkedSyscall.Flock _)
         | Some (ParkedSyscall.Poll _)
         | Some (ParkedSyscall.KqueuePoll _)
+        | Some ParkedSyscall.SigSuspend
         | None -> false
 
     // A primitive that names a description no longer in the table has had its
@@ -457,7 +460,7 @@ module WakeCondition =
     /// the event count its finishing call will copy out with, which no condition
     /// mentions — so record to condition is total where condition to record is
     /// not. A parked `poll` that watches no descriptor and has no deadline waits
-    /// for a signal alone.
+    /// for a signal alone, and so does a parked `sigsuspend`.
     ///
     /// Deriving rather than storing the condition beside the record is what stops
     /// the two disagreeing: a client cannot park a task on one object while
@@ -565,6 +568,8 @@ module WakeCondition =
                         WakeCondition.Primitive (WakePrimitive.ConnectionWritable (writer, write.Count - write.Written))
                         ended
                     ]
+            // A signal alone ends it.
+            | ParkedSyscall.SigSuspend -> []
 
         let signal = WakeCondition.Primitive WakePrimitive.SignalDeliverable
 

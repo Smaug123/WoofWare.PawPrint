@@ -332,6 +332,7 @@ module DebuggerServer =
 
                 writer.WriteNumber ("count", parked.Count)
                 writer.WriteNumber ("written", parked.Written)
+            | Some ParkedSyscall.SigSuspend -> writer.WriteString ("kind", "blockedInSigsuspend")
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()

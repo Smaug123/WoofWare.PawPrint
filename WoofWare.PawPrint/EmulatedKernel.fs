@@ -1010,6 +1010,31 @@ module EmulatedKernel =
 
 
 
+    /// How PawPrint starts a process on a machine of the given platform: its
+    /// standard streams launched as `standardStreams` says (see
+    /// `StandardStreams.launch`), its one task the thread `Main` will run on,
+    /// `ThreadId 0`, on processor 0, and the environment `defaultEnvironment`.
+    /// `image` is this beside a machine of the platform; see it for why the
+    /// environment is stated.
+    let processLaunch
+        (platform : SimulatedUnixPlatform)
+        (standardStreams : StandardStreamsConfig)
+        : ProcessLaunch<ThreadId>
+        =
+        // Processor 0 is where the CPU rotation puts the first thread it places
+        // (`cpuForRotation 0`), which is this one.
+        let launch =
+            match ProcessLaunch.create platform (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0) with
+            | Ok launch -> launch
+            | Error refusal ->
+                failwith
+                    $"EmulatedKernel.processLaunch: the standard streams' launch table was refused: %s{LaunchTableRefusal.describe refusal} (this is a bug in PawPrint)."
+
+        launch
+        |> ProcessLaunch.withEnvironment
+            "EmulatedKernel.defaultEnvironment"
+            (encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment)
+
     /// The boot image of a simulated process on a machine of the given
     /// platform, as PawPrint starts one: its standard streams launched as
     /// `standardStreams` says (see `StandardStreams.launch`), its one task the
@@ -1028,76 +1053,76 @@ module EmulatedKernel =
     /// contract, and PawPrint's tests pin it rather than a second copy of the
     /// value.
     let image (platform : SimulatedUnixPlatform) (standardStreams : StandardStreamsConfig) : KernelImage =
-        // Processor 0 is where the CPU rotation puts the first thread it places
-        // (`cpuForRotation 0`), which is this one.
-        let launch =
-            match ProcessLaunch.create platform (StandardStreams.launch standardStreams) (ThreadId 0) (CpuId 0) with
-            | Ok launch -> launch
-            | Error refusal ->
-                failwith
-                    $"EmulatedKernel.image: the standard streams' launch table was refused: %s{LaunchTableRefusal.describe refusal} (this is a bug in PawPrint)."
-
         {
             Machine = UnixSystem.initial platform
-            Process =
-                launch
-                |> ProcessLaunch.withEnvironment
-                    "EmulatedKernel.defaultEnvironment"
-                    (encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment)
+            Process = processLaunch platform standardStreams
         }
 
-    /// Boot `image` as PawPrint starts a process, as though its launcher had
-    /// left `inheritedIgnores` ignored (read under the platform's numbering),
-    /// as `nohup` leaves SIGHUP. A process's inherited ignores are fixed
-    /// before any of its own code runs.
+    /// Boot the machine `machine` describes with its first process, launched
+    /// as `launch` describes it: the POSIX system that process's syscalls are
+    /// made in.
     ///
     /// Crashes rather than answering when the process cannot start in the
-    /// directory it was given, naming the two `KernelConfig` knobs that have
-    /// to agree. A failure here is a host mistake with no honest errno — ENOENT
-    /// would blame a guest path that does not exist yet — and there is nothing
-    /// for the run to go on and do.
+    /// directory it was given, naming the two knobs that have to agree:
+    /// `machineKnobs`'s `FileSystem` and `processKnobs`'s `CurrentDirectory`
+    /// (each the name of the configuration record that holds the knob, such as
+    /// `"KernelConfig"`). A failure here is a host mistake with no honest errno
+    /// — ENOENT would blame a guest path that does not exist yet — and there is
+    /// nothing for the run to go on and do.
+    let bootSystem
+        (machineKnobs : string)
+        (processKnobs : string)
+        (launch : ProcessLaunch<ThreadId>)
+        (machine : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixSystem<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.boot launch machine with
+        | Ok system -> system
+        | Error (LaunchRefusal.CurrentDirectory (directory, fault)) ->
+            let described = AbsoluteUnixPath.toEscaped directory
+
+            match fault with
+            | CurrentDirectoryFault.DoesNotResolve error ->
+                failwith
+                    $"%s{processKnobs}.CurrentDirectory: \"%s{described}\" does not resolve in %s{machineKnobs}.FileSystem (%O{error}). A process cannot be started in a directory that does not exist; make %s{machineKnobs}.FileSystem contain %s{processKnobs}.CurrentDirectory."
+            | CurrentDirectoryFault.TooLong flavour ->
+                // Distinguished because the remedy is different, and the
+                // message above would send the reader looking for a missing
+                // directory that is in fact present.
+                //
+                // Both causes are named because the walk reports one errno
+                // for them: a host told only about NAME_MAX would shorten a
+                // path that was never the problem.
+                failwith
+                    $"%s{processKnobs}.CurrentDirectory: %O{flavour} refuses \"%s{described}\" as too long, so no process could have been started in it. Either a component is past NAME_MAX -- shorten %s{processKnobs}.CurrentDirectory -- or, on Darwin, a symbolic link it goes through expands past PATH_MAX, in which case shorten that link's target in %s{machineKnobs}.FileSystem."
+            | CurrentDirectoryFault.NotADirectory ->
+                failwith
+                    $"%s{processKnobs}.CurrentDirectory: \"%s{described}\" resolves in %s{machineKnobs}.FileSystem, but not to a directory. No process can be started anywhere else; point %s{processKnobs}.CurrentDirectory at a directory the seed contains."
+            | CurrentDirectoryFault.Path refusal ->
+                failwith
+                    $"%s{processKnobs}.CurrentDirectory: the kernel will not resolve \"%s{described}\": %s{PathRefusal.describe refusal} Start the process somewhere outside /dev."
+        | Error (LaunchRefusal.NotOfPlatform _ as refusal) ->
+            failwith
+                $"%s{processKnobs}: the process was described for another platform than its machine's: %s{LaunchRefusal.describe refusal} (this is a bug in PawPrint)."
+
+    /// The kernel of the PawPrint process `system` is the POSIX half of, newly
+    /// launched, as though its launcher had left `inheritedIgnores` ignored
+    /// (read under the platform's numbering), as `nohup` leaves SIGHUP. A
+    /// process's inherited ignores are fixed before any of its own code runs.
     ///
     /// What is added to the POSIX half here is what a CoreCLR process has done
     /// by the time `Main` runs: the signal dispositions it has installed
     /// (`StartupSignalDispositions.install`, which says which inherited ignores
     /// the runtime keeps, which it replaces, and which it refuses; `context`
-    /// prefixes that refusal), and its C runtime's random-number state.
-    let bootInheritingSignalIgnores
+    /// prefixes that refusal), and its C runtime's random-number state, which on
+    /// Darwin draws on the machine's entropy pool. So `system` must be the view
+    /// the process's syscalls are made in, and the machine in it is changed.
+    let ofView
         (context : string)
         (inheritedIgnores : Set<Signal>)
-        (image : KernelImage)
+        (system : UnixSystem<ThreadId, NativeSignalHandler>)
         : EmulatedKernel
         =
-        let system =
-            match UnixBootImage.boot image.Process image.Machine with
-            | Ok system -> system
-            | Error (LaunchRefusal.CurrentDirectory (directory, fault)) ->
-                let described = AbsoluteUnixPath.toEscaped directory
-
-                match fault with
-                | CurrentDirectoryFault.DoesNotResolve error ->
-                    failwith
-                        $"EmulatedKernel.CurrentDirectory: \"%s{described}\" does not resolve in KernelConfig.FileSystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
-                | CurrentDirectoryFault.TooLong flavour ->
-                    // Distinguished because the remedy is different, and the
-                    // message above would send the reader looking for a missing
-                    // directory that is in fact present.
-                    //
-                    // Both causes are named because the walk reports one errno
-                    // for them: a host told only about NAME_MAX would shorten a
-                    // path that was never the problem.
-                    failwith
-                        $"EmulatedKernel.CurrentDirectory: %O{flavour} refuses \"%s{described}\" as too long, so no process could have been started in it. Either a component is past NAME_MAX -- shorten KernelConfig.CurrentDirectory -- or, on Darwin, a symbolic link it goes through expands past PATH_MAX, in which case shorten that link's target in KernelConfig.FileSystem."
-                | CurrentDirectoryFault.NotADirectory ->
-                    failwith
-                        $"EmulatedKernel.CurrentDirectory: \"%s{described}\" resolves in KernelConfig.FileSystem, but not to a directory. No process can be started anywhere else; point KernelConfig.CurrentDirectory at a directory the seed contains."
-                | CurrentDirectoryFault.Path refusal ->
-                    failwith
-                        $"EmulatedKernel.CurrentDirectory: the kernel will not resolve \"%s{described}\": %s{PathRefusal.describe refusal} Start the process somewhere outside /dev."
-            | Error (LaunchRefusal.NotOfPlatform _ as refusal) ->
-                failwith
-                    $"%s{context}: the process was described for another platform than its machine's: %s{LaunchRefusal.describe refusal} (this is a bug in PawPrint)."
-
         let platform = UnixSystem.platform system
 
         let system =
@@ -1145,6 +1170,19 @@ module EmulatedKernel =
             System = system
         }
 
+    /// Boot `image` as PawPrint starts a process, as though its launcher had
+    /// left `inheritedIgnores` ignored (read under the platform's numbering):
+    /// `bootSystem`, naming `KernelConfig`'s knobs, then `ofView`, whose
+    /// refusals `context` prefixes.
+    let bootInheritingSignalIgnores
+        (context : string)
+        (inheritedIgnores : Set<Signal>)
+        (image : KernelImage)
+        : EmulatedKernel
+        =
+        bootSystem "KernelConfig" "KernelConfig" image.Process image.Machine
+        |> ofView context inheritedIgnores
+
     /// `bootInheritingSignalIgnores` for a process whose launcher left no
     /// signal ignored.
     let boot (image : KernelImage) : EmulatedKernel =
@@ -1169,10 +1207,10 @@ module EmulatedKernel =
     /// `initialImage`, booted.
     let initial : EmulatedKernel = boot initialImage
 
-    /// Set the environment the simulated process was started with: every
+    /// Set the environment the simulated process is launched with: every
     /// `defaultEnvironment` entry whose name no entry of `entries` supplies, in
     /// order, followed by `entries` exactly as given. This replaces whatever
-    /// environment the kernel held.
+    /// environment the launch held.
     ///
     /// An entry supplies the name a lookup finds it under (see
     /// `EnvironmentPal.entryName`), so `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=0`
@@ -1185,7 +1223,12 @@ module EmulatedKernel =
     /// from. Rejecting rather than dropping, because a variable that silently
     /// failed to arrive would show up as the guest taking a different branch much
     /// later.
-    let withEnvironment (context : string) (entries : string list) (image : KernelImage) : KernelImage =
+    let launchWithEnvironment
+        (context : string)
+        (entries : string list)
+        (launch : ProcessLaunch<ThreadId>)
+        : ProcessLaunch<ThreadId>
+        =
         let entries = encodeEnvironment context entries
         let supplied = entries |> List.map EnvironmentPal.entryName |> Set.ofList
 
@@ -1193,18 +1236,47 @@ module EmulatedKernel =
             encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment
             |> List.filter (fun entry -> not (Set.contains (EnvironmentPal.entryName entry) supplied))
 
-        image
-        |> KernelImage.mapProcess (ProcessLaunch.withEnvironment context (defaults @ entries))
+        ProcessLaunch.withEnvironment context (defaults @ entries) launch
 
-    /// Set the filesystem the guest sees (`UnixBootImage.withFileSystem`), and
-    /// the directory the simulated process starts in
-    /// (`ProcessLaunch.withCurrentDirectory`), together: the two `KernelConfig`
-    /// knobs that have to agree. The directory is resolved when the image
-    /// boots, which is where a directory the filesystem does not hold is
-    /// refused.
+    /// `launchWithEnvironment` of `image`'s process.
+    let withEnvironment (context : string) (entries : string list) (image : KernelImage) : KernelImage =
+        image |> KernelImage.mapProcess (launchWithEnvironment context entries)
+
+    /// Set the filesystem the guest sees (`UnixBootImage.withFileSystem`).
     ///
     /// Crashes rather than answering when the seed describes a filesystem no
-    /// kernel of the platform's flavour could have mounted, naming the knob.
+    /// kernel of the platform's flavour could have mounted, naming the knob
+    /// `knobs.FileSystem` (`knobs` names the configuration record that holds
+    /// it, such as `"KernelConfig"`).
+    ///
+    /// `owner` owns the root directory and every seed entry that states no
+    /// owner of its own; an entry that states one keeps it.
+    let machineWithFileSystem
+        (knobs : string)
+        (createdAt : UnixTimestamp)
+        (owner : InodeOwner)
+        (seed : Map<DirectoryEntryName, SeedEntry>)
+        (machine : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withFileSystem createdAt owner seed machine with
+        | Ok machine -> machine
+        | Error (FileSystemSeedFault.SeedNameTooLong (name, flavour)) ->
+            failwith
+                $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which is past %O{flavour}'s NAME_MAX, so no filesystem that flavour could mount holds it. Shorten the name in %s{knobs}.FileSystem, or configure the flavour whose limit admits it."
+        | Error (FileSystemSeedFault.SeedNameNotBindable (name, flavour)) ->
+            failwith
+                $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which %O{flavour}'s filesystem will not bind (on Darwin, a name that is not valid UTF-8), so no filesystem that flavour could mount holds it. Rename the entry in %s{knobs}.FileSystem, or configure the flavour that binds it."
+        | Error (FileSystemSeedFault.SeedCoversDeviceFileSystem name) ->
+            failwith
+                $"EmulatedKernel.FileSystem: %s{knobs}.FileSystem binds \"%s{DirectoryEntryName.toEscaped name}\" at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot. Remove that entry from %s{knobs}.FileSystem: the kernel supplies /dev itself."
+
+    /// Set the filesystem the guest sees (`machineWithFileSystem`, naming
+    /// `KernelConfig`'s knob), and the directory the simulated process starts
+    /// in (`ProcessLaunch.withCurrentDirectory`), together: the two
+    /// `KernelConfig` knobs that have to agree. The directory is resolved when
+    /// the image boots, which is where a directory the filesystem does not hold
+    /// is refused.
     ///
     /// `owner` owns the root directory and every seed entry that states no
     /// owner of its own; an entry that states one keeps it.
@@ -1222,21 +1294,8 @@ module EmulatedKernel =
         let directory =
             AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
 
-        let machine =
-            match UnixBootImage.withFileSystem createdAt owner seed image.Machine with
-            | Ok machine -> machine
-            | Error (FileSystemSeedFault.SeedNameTooLong (name, flavour)) ->
-                failwith
-                    $"EmulatedKernel.FileSystem: KernelConfig.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which is past %O{flavour}'s NAME_MAX, so no filesystem that flavour could mount holds it. Shorten the name in KernelConfig.FileSystem, or configure the flavour whose limit admits it."
-            | Error (FileSystemSeedFault.SeedNameNotBindable (name, flavour)) ->
-                failwith
-                    $"EmulatedKernel.FileSystem: KernelConfig.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which %O{flavour}'s filesystem will not bind (on Darwin, a name that is not valid UTF-8), so no filesystem that flavour could mount holds it. Rename the entry in KernelConfig.FileSystem, or configure the flavour that binds it."
-            | Error (FileSystemSeedFault.SeedCoversDeviceFileSystem name) ->
-                failwith
-                    $"EmulatedKernel.FileSystem: KernelConfig.FileSystem binds \"%s{DirectoryEntryName.toEscaped name}\" at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot. Remove that entry from KernelConfig.FileSystem: the kernel supplies /dev itself."
-
         {
-            Machine = machine
+            Machine = machineWithFileSystem "KernelConfig" createdAt owner seed image.Machine
             Process = ProcessLaunch.withCurrentDirectory directory image.Process
         }
 
@@ -1282,7 +1341,11 @@ module EmulatedKernel =
     /// epoch. Rejects a value outside `[0, ClockPal.maxWallClockEpochMs]` at the
     /// boundary, rather than letting it reach a guest that would receive a silently
     /// corrupt `DateTime` from `DateTime.UtcNow`'s unvalidated ctor.
-    let withWallClockEpochMs (epochMs : int64) (image : KernelImage) : KernelImage =
+    let machineWithWallClockEpochMs
+        (epochMs : int64)
+        (machine : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
         if epochMs < 0L then
             failwith
                 $"WallClockEpochMs must be non-negative (PawPrint does not model a simulated process booting before the Unix epoch); got %d{epochMs}"
@@ -1296,16 +1359,17 @@ module EmulatedKernel =
         // Each refusal is out of reach: the checks above keep the instant in
         // [0, 9999-12-31], far inside the range the library admits, and a whole
         // number of milliseconds is never finer than a microsecond.
-        image
-        |> KernelImage.mapMachine (fun image ->
-            match UnixBootImage.withBootTime bootTime image with
-            | Ok image -> image
-            | Error (BootTimeRefusal.BeforeEpoch _ as refusal)
-            | Error (BootTimeRefusal.PastMaxBootTime _ as refusal)
-            | Error (BootTimeRefusal.FinerThanMicrosecond _ as refusal) ->
-                failwith
-                    $"WallClockEpochMs: %d{epochMs} passed this function's own range check, but the kernel refused it as a boot time: %s{BootTimeRefusal.describe refusal} This is a bug in PawPrint."
-        )
+        match UnixBootImage.withBootTime bootTime machine with
+        | Ok machine -> machine
+        | Error (BootTimeRefusal.BeforeEpoch _ as refusal)
+        | Error (BootTimeRefusal.PastMaxBootTime _ as refusal)
+        | Error (BootTimeRefusal.FinerThanMicrosecond _ as refusal) ->
+            failwith
+                $"WallClockEpochMs: %d{epochMs} passed this function's own range check, but the kernel refused it as a boot time: %s{BootTimeRefusal.describe refusal} This is a bug in PawPrint."
+
+    /// `machineWithWallClockEpochMs` of `image`'s machine.
+    let withWallClockEpochMs (epochMs : int64) (image : KernelImage) : KernelImage =
+        image |> KernelImage.mapMachine (machineWithWallClockEpochMs epochMs)
 
 
 
@@ -1622,41 +1686,63 @@ module EmulatedKernel =
 
     /// `UnixTaskLifecycle.exitGroup` through this kernel: `thread` calls
     /// `exit(3)` with `status`, which ends in `exit_group(2)`, and the process
-    /// ends. How it ended is the answer; the kernel is left as it stood.
+    /// ends. The answer is the process's end (`EndedProcess`), whose
+    /// `Termination` is how it ended; the kernel is left as it stood.
     ///
     /// This is how a CoreCLR process that is not killed ends: the host passes the
     /// latched exit code to `exit`, once `Main` has returned and the foreground
     /// threads have finished, or at once from `Environment.Exit`.
-    let exitGroup (thread : ThreadId) (status : int32) (kernel : EmulatedKernel) : ProcessTermination =
-        (UnixTaskLifecycle.exitGroup thread status kernel.System).Termination
+    let exitGroup
+        (thread : ThreadId)
+        (status : int32)
+        (kernel : EmulatedKernel)
+        : EndedProcess<ThreadId, NativeSignalHandler>
+        =
+        UnixTaskLifecycle.exitGroup thread status kernel.System
 
     /// `abort(3)`, called by `thread` at the end of CoreCLR's `PROCAbort`, which is
     /// how the runtime ends a process that failed fast or let an exception escape.
-    /// How the process ended is the answer; the kernel is left as it stood.
+    /// The answer is the process's end (`EndedProcess`), whose `Termination` is
+    /// a death by SIGABRT; the kernel is left as it stood.
     ///
     /// Fails loudly if the process survives, or dies of anything but SIGABRT.
-    let abort (thread : ThreadId) (kernel : EmulatedKernel) : ProcessTermination =
+    let abort (thread : ThreadId) (kernel : EmulatedKernel) : EndedProcess<ThreadId, NativeSignalHandler> =
         let system = kernel.System
 
         // `PROCAbort` first restores the dispositions CoreCLR's own handlers
         // replaced (`SEHCleanupSignals`), and `abort` unblocks SIGABRT and raises
         // it, then resets it to the default and raises it again if the process
         // survived the first; either way the process meets SIGABRT at its default
-        // disposition, which is where this starts. The unblocking has nothing to
-        // do here: a thread's mask is its handler frames', and a PawPrint thread
-        // has none between instructions (`EmulatedKernel.checkInvariants`).
-        let signo =
-            Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform) Signal.SIGABRT
+        // disposition, unblocked, which is where this starts.
+        let numbering = SimulatedUnixPlatform.signalNumbering kernel.UnixPlatform
+        let signo = Signal.toRawSignoUnder numbering Signal.SIGABRT
 
         let system =
             match UnixSignal.sigaction signo (Some SignalDisposition.Default) system with
             | Ok (_, system) -> system
             | Error errno -> failwith $"EmulatedKernel.abort: restoring SIGABRT's default was refused (%O{errno})"
 
+        // `SIG_UNBLOCK`, as each `<signal.h>` numbers it.
+        let unblock =
+            match numbering with
+            | SignalNumbering.Linux -> 1
+            | SignalNumbering.Darwin -> 2
+
+        let system =
+            match
+                UnixSignal.pthreadSigmask
+                    thread
+                    unblock
+                    (Some (SignalMask.ofSignals numbering (Set.singleton Signal.SIGABRT)))
+                    system
+            with
+            | Ok (_, system) -> system
+            | Error errno -> failwith $"EmulatedKernel.abort: unblocking SIGABRT was refused (%O{errno})"
+
         match UnixSignal.pthreadKill thread signo system with
         | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
             match ended.Termination with
-            | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended.Termination
+            | ProcessTermination.Signaled (Signal.SIGABRT, _) -> ended
             | other -> failwith $"EmulatedKernel.abort: %O{thread} raised SIGABRT, but the process ended by %O{other}"
         | other ->
             failwith
@@ -2092,6 +2178,375 @@ type KernelConfig =
             LeaderThreadId = None
         }
 
+/// What a simulated machine is, apart from any one process on it: the part of
+/// a `KernelConfig` that every process on the machine shares. Each field means
+/// what the `KernelConfig` field of its name means, except where it says
+/// otherwise. `KernelConfig.split` makes one.
+type MachineConfig =
+    {
+        /// See `KernelConfig.ProcessorCount`.
+        ProcessorCount : int
+        /// See `KernelConfig.UserAddressLimit`.
+        UserAddressLimit : uint64 option
+        /// See `KernelConfig.InstructionCostTicks`.
+        InstructionCostTicks : int64
+        /// See `KernelConfig.ClockJitter`.
+        ClockJitter : ClockJitterStrategy
+        /// See `KernelConfig.WallClockEpochMs`.
+        WallClockEpochMs : int64
+        /// See `KernelConfig.UnixPlatform`.
+        UnixPlatform : SimulatedUnixPlatform
+        /// The machine's filesystem, as `KernelConfig.FileSystem` describes it,
+        /// except that an entry stating no owner is `FileSystemOwner`'s rather
+        /// than any process's.
+        FileSystem : Map<DirectoryEntryName, SeedEntry>
+        /// The owner of the root directory and of every `FileSystem` entry that
+        /// states no owner of its own. `None` is the platform flavour's default
+        /// user and group (`UnixSystem.defaultCredentials`).
+        FileSystemOwner : InodeOwner option
+        /// See `KernelConfig.Mount`.
+        Mount : EmulatedMount option
+        /// See `KernelConfig.EphemeralPortRange`.
+        EphemeralPortRange : (uint16 * uint16) option
+        /// See `KernelConfig.SoMaxConn`.
+        SoMaxConn : int option
+        /// See `KernelConfig.TcpSendSpace`.
+        TcpSendSpace : int option
+        /// See `KernelConfig.TcpReceiveSpace`.
+        TcpReceiveSpace : int option
+        /// See `KernelConfig.TcpSendSpaceMax`.
+        TcpSendSpaceMax : int option
+        /// See `KernelConfig.ProtectedFiles`.
+        ProtectedFiles : ProtectedFiles
+        /// See `KernelConfig.LocalAddresses`.
+        LocalAddresses : uint32 list
+        /// See `KernelConfig.LocalRoutes`.
+        LocalRoutes : Ipv4Prefix list
+        /// See `KernelConfig.PidMax`.
+        PidMax : int32 option
+        /// The process ID of the machine's first process, the one it boots
+        /// with: see `KernelConfig.ProcessId`. The kernel chooses every later
+        /// process's ID.
+        ProcessId : ProcessId
+        /// On Darwin, the thread ID the first process's leader reports: see
+        /// `KernelConfig.LeaderThreadId`.
+        LeaderThreadId : uint64 option
+    }
+
+/// How one process on a simulated machine starts: the part of a `KernelConfig`
+/// that is the process's own. Each field means what the `KernelConfig` field of
+/// its name means. `KernelConfig.split` makes one.
+type ProcessConfig =
+    {
+        /// See `KernelConfig.Environment`.
+        Environment : string list
+        /// See `KernelConfig.CurrentDirectory`. It must name a directory in the
+        /// machine's `MachineConfig.FileSystem`.
+        CurrentDirectory : AbsoluteUnixPath
+        /// See `KernelConfig.ProcessPath`.
+        ProcessPath : AbsoluteUnixPath option
+        /// See `KernelConfig.UserId`.
+        UserId : uint32 option
+        /// See `KernelConfig.GroupId`.
+        GroupId : uint32 option
+        /// See `KernelConfig.SupplementaryGroups`.
+        SupplementaryGroups : uint32 list
+        /// See `KernelConfig.Umask`.
+        Umask : PermissionBits
+        /// See `KernelConfig.InheritedSignalIgnores`.
+        InheritedSignalIgnores : Set<Signal>
+        /// See `KernelConfig.StandardStreams`.
+        StandardStreams : StandardStreamsConfig
+        /// See `KernelConfig.CoreDumps`.
+        CoreDumps : CoreDumps
+        /// See `KernelConfig.CLibrary`.
+        CLibrary : CLibrary option
+        /// See `KernelConfig.OptimalMaxSpinWaitsPerSpinIteration`.
+        OptimalMaxSpinWaitsPerSpinIteration : int
+    }
+
+[<RequireQualifiedAccess>]
+module ProcessConfig =
+    /// The credentials `config` starts its process with, on a platform of
+    /// `flavour`: the flavour's defaults for whatever it leaves unset. Refusals
+    /// name the knob `knobs.X`, where `knobs` names the configuration record
+    /// that holds it.
+    let credentials (knobs : string) (flavour : SimulatedUnixFlavour) (config : ProcessConfig) : Credentials =
+        Credentials.ofIds
+            (config.UserId
+             |> Option.map (UserId.parseOrFail $"%s{knobs}.UserId")
+             |> Option.defaultValue (UnixSystem.defaultUserId flavour))
+            (config.GroupId
+             |> Option.map (GroupId.parseOrFail $"%s{knobs}.GroupId")
+             |> Option.defaultValue (UnixSystem.defaultGroupId flavour))
+            (config.SupplementaryGroups
+             |> List.map (GroupId.parseOrFail $"%s{knobs}.SupplementaryGroups"))
+
+    /// How the process `config` describes is launched on a machine of
+    /// `platform`. Each setter's refusal fails loudly, naming the knob
+    /// `knobs.X`, where `knobs` names the configuration record that holds it.
+    let toLaunch
+        (knobs : string)
+        (platform : SimulatedUnixPlatform)
+        (config : ProcessConfig)
+        : ProcessLaunch<ThreadId>
+        =
+        let flavour = SimulatedUnixPlatform.flavour platform
+        let credentials = credentials knobs flavour config
+
+        let credentialsOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
+            match ProcessLaunch.withCredentials credentials launch with
+            | Ok launch -> launch
+            | Error (CredentialsRefusal.TooManySupplementaryGroups _ as refusal) ->
+                failwith $"%s{knobs}.SupplementaryGroups: %s{CredentialsRefusal.describe refusal}"
+            | Error (CredentialsRefusal.IdsDifferOnDarwin _ as refusal) ->
+                // `Credentials.ofIds` gives the real, effective and saved IDs
+                // one value each, so the configuration cannot reach this.
+                failwith
+                    $"%s{knobs}.UserId and %s{knobs}.GroupId: %s{CredentialsRefusal.describe refusal} (this is a bug in PawPrint)."
+
+        let umaskOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
+            match ProcessLaunch.withUmask config.Umask launch with
+            | Ok launch -> launch
+            | Error refusal -> failwith $"%s{knobs}.Umask: %s{UmaskRefusal.describe refusal}"
+
+        // Named for this knob before the library sees it, so a host that forged
+        // one is told which field it set rather than which library function
+        // received it.
+        let directory =
+            AbsoluteUnixPath.assertValid $"%s{knobs}.CurrentDirectory" config.CurrentDirectory
+
+        EmulatedKernel.processLaunch platform config.StandardStreams
+        |> ProcessLaunch.withCoreDumps config.CoreDumps
+        |> EmulatedKernel.launchWithEnvironment $"%s{knobs}.Environment" config.Environment
+        |> ProcessLaunch.withProcessPath $"%s{knobs}.ProcessPath" config.ProcessPath
+        |> ProcessLaunch.withCurrentDirectory directory
+        |> credentialsOrFail
+        |> umaskOrFail
+
+[<RequireQualifiedAccess>]
+module MachineConfig =
+    // Each applies one machine setter for `toImage`, failing on a refusal
+    // with the knob the value came from, `knobs.X`: the library states what
+    // is wrong with the value and has no name for the knob.
+
+    let private withProcessorCount
+        (knobs : string)
+        (count : int)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withProcessorCount count image with
+        | Ok image -> image
+        | Error (ProcessorCountRefusal.NotPositive _ as refusal) ->
+            failwith $"%s{knobs}.ProcessorCount: %s{ProcessorCountRefusal.describe refusal} Configure at least 1."
+
+    let private withUserAddressLimit
+        (knobs : string)
+        (limit : uint64)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withUserAddressLimit limit image with
+        | Ok image -> image
+        | Error (UserAddressLimitRefusal.NoUpFrontScreen _ as refusal) ->
+            failwith $"%s{knobs}.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Leave it None."
+        | Error (UserAddressLimitRefusal.NotObservedOn _ as refusal) ->
+            failwith
+                $"%s{knobs}.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Pick one of those, or None for the platform's own."
+
+    let private withMount
+        (knobs : string)
+        (mount : EmulatedMount option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withMount mount image with
+        | Ok image -> image
+        | Error (MountRefusal.NotReportableUnder (_, flavour) as refusal) ->
+            failwith
+                $"%s{knobs}.Mount: %s{MountRefusal.describe refusal} Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
+
+    let private withEphemeralPortRange
+        (knobs : string)
+        (range : uint16 * uint16)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withEphemeralPortRange range image with
+        | Ok image -> image
+        | Error (EphemeralPortRangeRefusal.LowIsZero _ as refusal)
+        | Error (EphemeralPortRangeRefusal.Empty _ as refusal) ->
+            failwith $"%s{knobs}.EphemeralPortRange: %s{EphemeralPortRangeRefusal.describe refusal}"
+
+    let private withSoMaxConn
+        (knobs : string)
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withSoMaxConn value image with
+        | Ok image -> image
+        | Error (SoMaxConnRefusal.NotPositive _ as refusal) ->
+            failwith
+                $"%s{knobs}.SoMaxConn: %s{SoMaxConnRefusal.describe refusal} Configure a positive value, or None for the flavour's default."
+
+    let private withTcpSendSpace
+        (knobs : string)
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpSendSpace value image with
+        | Ok image -> image
+        | Error (TcpSendSpaceRefusal.NotReadOn _ as refusal) ->
+            failwith $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Pass None."
+        | Error (TcpSendSpaceRefusal.AboveSocketBufferMax (_, max) as refusal) ->
+            failwith
+                $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at most %d{max}, or None for the default."
+        | Error (TcpSendSpaceRefusal.BelowLoopbackSendPipe (_, sendPipe) as refusal) ->
+            failwith
+                $"%s{knobs}.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at least %d{sendPipe}, or None for the default."
+
+    let private withTcpReceiveSpace
+        (knobs : string)
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpReceiveSpace value image with
+        | Ok image -> image
+        | Error refusal ->
+            failwith
+                $"%s{knobs}.TcpReceiveSpace: %s{TcpReceiveSpaceRefusal.describe refusal} Configure another size, or None for the default."
+
+    let private withTcpSendSpaceMax
+        (knobs : string)
+        (value : int option)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withTcpSendSpaceMax value image with
+        | Ok image -> image
+        | Error (TcpSendSpaceMaxRefusal.NotReadOn _ as refusal) ->
+            failwith $"%s{knobs}.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Pass None."
+        | Error (TcpSendSpaceMaxRefusal.NotPositive _ as refusal) ->
+            failwith
+                $"%s{knobs}.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Configure a positive size, or None for the default."
+
+    let private withProtectedFiles
+        (knobs : string)
+        (protection : ProtectedFiles)
+        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+        : UnixBootImage<ThreadId, NativeSignalHandler>
+        =
+        match UnixBootImage.withProtectedFiles protection image with
+        | Ok image -> image
+        | Error (ProtectedFilesRefusal.NoSuchSysctls _ as refusal) ->
+            failwith $"%s{knobs}.ProtectedFiles: %s{ProtectedFilesRefusal.describe refusal}"
+
+    /// The boot image of the machine `config` describes. Each setter's refusal
+    /// fails loudly, naming the knob `knobs.X`, where `knobs` names the
+    /// configuration record that holds it.
+    let toImage (knobs : string) (config : MachineConfig) : UnixBootImage<ThreadId, NativeSignalHandler> =
+        // Rejected here so a host that forged the platform is told which knob
+        // it set rather than which library function received it.
+        let platform =
+            SimulatedUnixPlatform.assertValid $"%s{knobs}.UnixPlatform" config.UnixPlatform
+
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        let owner =
+            config.FileSystemOwner
+            |> Option.defaultValue (InodeOwner.ofProcess (UnixSystem.defaultCredentials flavour))
+
+        let processIdOrFail
+            (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+            : UnixBootImage<ThreadId, NativeSignalHandler>
+            =
+            match UnixBootImage.withProcessId (ProcessId.assertValid $"%s{knobs}.ProcessId" config.ProcessId) image with
+            | Ok image -> image
+            | Error refusal -> failwith $"%s{knobs}.ProcessId: %s{ProcessIdRefusal.describe refusal}"
+
+        let leaderThreadIdOrFail
+            (image : UnixBootImage<ThreadId, NativeSignalHandler>)
+            : UnixBootImage<ThreadId, NativeSignalHandler>
+            =
+            match flavour, config.LeaderThreadId with
+            | SimulatedUnixFlavour.Linux, None -> image
+            | SimulatedUnixFlavour.Linux, Some _ ->
+                failwith
+                    $"%s{knobs}.LeaderThreadId: on Linux the leader's thread ID is the process ID; set %s{knobs}.ProcessId instead."
+            | SimulatedUnixFlavour.Darwin, id ->
+                let id = id |> Option.defaultValue (uint64 (ProcessId.toInt32 config.ProcessId))
+
+                match UnixBootImage.withLeaderThreadId id image with
+                | Ok image -> image
+                | Error refusal -> failwith $"%s{knobs}.LeaderThreadId: %s{LeaderThreadIdRefusal.describe refusal}"
+
+        UnixSystem.initial platform
+        |> withProcessorCount knobs config.ProcessorCount
+        |> fun image ->
+            match config.UserAddressLimit with
+            | None -> image
+            | Some limit -> withUserAddressLimit knobs limit image
+        |> EmulatedKernel.machineWithWallClockEpochMs config.WallClockEpochMs
+        |> withMount knobs config.Mount
+        |> EmulatedKernel.machineWithFileSystem
+            knobs
+            (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
+            owner
+            config.FileSystem
+        |> withEphemeralPortRange
+            knobs
+            (config.EphemeralPortRange
+             |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour))
+        |> withSoMaxConn knobs config.SoMaxConn
+        |> withTcpSendSpace knobs config.TcpSendSpace
+        |> withTcpReceiveSpace knobs config.TcpReceiveSpace
+        |> withTcpSendSpaceMax knobs config.TcpSendSpaceMax
+        |> withProtectedFiles knobs config.ProtectedFiles
+        |> UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes
+        |> processIdOrFail
+        |> leaderThreadIdOrFail
+
+    /// The kernel of the first process on the machine `machine` describes,
+    /// launched as `firstProcess` describes it: the machine booted with that
+    /// process, every setter's validation applied on the way. Refusals name
+    /// the knob `machineKnobs.X` or `processKnobs.X`, where each names the
+    /// configuration record that holds the knob.
+    ///
+    /// `pid_max`, which a sysctl may change on a running machine, is written
+    /// just after boot, before the process runs anything.
+    let boot
+        (machineKnobs : string)
+        (processKnobs : string)
+        (machine : MachineConfig)
+        (firstProcess : ProcessConfig)
+        : EmulatedKernel
+        =
+        let image = toImage machineKnobs machine
+        let launch = ProcessConfig.toLaunch processKnobs machine.UnixPlatform firstProcess
+
+        EmulatedKernel.bootSystem machineKnobs processKnobs launch image
+        // `pid_max` is a sysctl the machine's administrator writes, here before
+        // the process has run anything. The process ID was set before it: the
+        // machine boots with the largest `pid_max` Linux has, so any process ID
+        // a Linux kernel could have is admitted, and it keeps that ID whatever
+        // `pid_max` is then written.
+        |> fun system ->
+            match machine.PidMax with
+            | None -> system
+            | Some pidMax -> UnixSystem.writePidMaxSysctl $"%s{machineKnobs}.PidMax" pidMax system
+        |> EmulatedKernel.ofView $"%s{processKnobs}.InheritedSignalIgnores" firstProcess.InheritedSignalIgnores
+        |> fun kernel ->
+            match firstProcess.CLibrary with
+            | None -> kernel
+            | Some library -> EmulatedKernel.withCLibrary $"%s{processKnobs}.CLibrary" library kernel
+        |> EmulatedKernel.withInstructionCostTicks machine.InstructionCostTicks
+        |> EmulatedKernel.withClockJitter machine.ClockJitter
+        |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration firstProcess.OptimalMaxSpinWaitsPerSpinIteration
+
 [<RequireQualifiedAccess>]
 module KernelConfig =
     /// `entries`, with `owner` stated for every entry that states no owner of
@@ -2115,247 +2570,69 @@ module KernelConfig =
 
         go entries
 
-    // Each applies one machine setter for `toKernel`, failing on a refusal
-    // with the `KernelConfig` field the value came from: the library states
-    // what is wrong with the value and has no name for the knob.
-
-    let private withProcessorCount
-        (count : int)
-        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-        : UnixBootImage<ThreadId, NativeSignalHandler>
-        =
-        match UnixBootImage.withProcessorCount count image with
-        | Ok image -> image
-        | Error (ProcessorCountRefusal.NotPositive _ as refusal) ->
-            failwith $"KernelConfig.ProcessorCount: %s{ProcessorCountRefusal.describe refusal} Configure at least 1."
-
-    let private withUserAddressLimit
-        (limit : uint64)
-        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-        : UnixBootImage<ThreadId, NativeSignalHandler>
-        =
-        match UnixBootImage.withUserAddressLimit limit image with
-        | Ok image -> image
-        | Error (UserAddressLimitRefusal.NoUpFrontScreen _ as refusal) ->
-            failwith $"KernelConfig.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Leave it None."
-        | Error (UserAddressLimitRefusal.NotObservedOn _ as refusal) ->
-            failwith
-                $"KernelConfig.UserAddressLimit: %s{UserAddressLimitRefusal.describe refusal} Pick one of those, or None for the platform's own."
-
-    let private withMount
-        (mount : EmulatedMount option)
-        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-        : UnixBootImage<ThreadId, NativeSignalHandler>
-        =
-        match UnixBootImage.withMount mount image with
-        | Ok image -> image
-        | Error (MountRefusal.NotReportableUnder (_, flavour) as refusal) ->
-            failwith
-                $"KernelConfig.Mount: %s{MountRefusal.describe refusal} Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
-
-    let private withEphemeralPortRange
-        (range : uint16 * uint16)
-        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-        : UnixBootImage<ThreadId, NativeSignalHandler>
-        =
-        match UnixBootImage.withEphemeralPortRange range image with
-        | Ok image -> image
-        | Error (EphemeralPortRangeRefusal.LowIsZero _ as refusal)
-        | Error (EphemeralPortRangeRefusal.Empty _ as refusal) ->
-            failwith $"KernelConfig.EphemeralPortRange: %s{EphemeralPortRangeRefusal.describe refusal}"
-
-    let private withSoMaxConn
-        (value : int option)
-        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-        : UnixBootImage<ThreadId, NativeSignalHandler>
-        =
-        match UnixBootImage.withSoMaxConn value image with
-        | Ok image -> image
-        | Error (SoMaxConnRefusal.NotPositive _ as refusal) ->
-            failwith
-                $"KernelConfig.SoMaxConn: %s{SoMaxConnRefusal.describe refusal} Configure a positive value, or None for the flavour's default."
-
-    let private withTcpSendSpace
-        (value : int option)
-        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-        : UnixBootImage<ThreadId, NativeSignalHandler>
-        =
-        match UnixBootImage.withTcpSendSpace value image with
-        | Ok image -> image
-        | Error (TcpSendSpaceRefusal.NotReadOn _ as refusal) ->
-            failwith $"KernelConfig.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Pass None."
-        | Error (TcpSendSpaceRefusal.AboveSocketBufferMax (_, max) as refusal) ->
-            failwith
-                $"KernelConfig.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at most %d{max}, or None for the default."
-        | Error (TcpSendSpaceRefusal.BelowLoopbackSendPipe (_, sendPipe) as refusal) ->
-            failwith
-                $"KernelConfig.TcpSendSpace: %s{TcpSendSpaceRefusal.describe refusal} Configure at least %d{sendPipe}, or None for the default."
-
-    let private withTcpReceiveSpace
-        (value : int option)
-        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-        : UnixBootImage<ThreadId, NativeSignalHandler>
-        =
-        match UnixBootImage.withTcpReceiveSpace value image with
-        | Ok image -> image
-        | Error refusal ->
-            failwith
-                $"KernelConfig.TcpReceiveSpace: %s{TcpReceiveSpaceRefusal.describe refusal} Configure another size, or None for the default."
-
-    let private withTcpSendSpaceMax
-        (value : int option)
-        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-        : UnixBootImage<ThreadId, NativeSignalHandler>
-        =
-        match UnixBootImage.withTcpSendSpaceMax value image with
-        | Ok image -> image
-        | Error (TcpSendSpaceMaxRefusal.NotReadOn _ as refusal) ->
-            failwith $"KernelConfig.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Pass None."
-        | Error (TcpSendSpaceMaxRefusal.NotPositive _ as refusal) ->
-            failwith
-                $"KernelConfig.TcpSendSpaceMax: %s{TcpSendSpaceMaxRefusal.describe refusal} Configure a positive size, or None for the default."
-
-    let private withProtectedFiles
-        (protection : ProtectedFiles)
-        (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-        : UnixBootImage<ThreadId, NativeSignalHandler>
-        =
-        match UnixBootImage.withProtectedFiles protection image with
-        | Ok image -> image
-        | Error (ProtectedFilesRefusal.NoSuchSysctls _ as refusal) ->
-            failwith $"KernelConfig.ProtectedFiles: %s{ProtectedFilesRefusal.describe refusal}"
-
-    /// The kernel a host configuration describes: a boot image on the
-    /// configured platform, with every other field applied through its own
-    /// setter before it boots, so the validation those setters perform (e.g.
-    /// refusing a non-positive processor count) also guards the
-    /// configuration path, and fails naming the field a refused value came
-    /// from. `pid_max`, which a sysctl may change on a running
-    /// machine, is written just after boot, before the process runs anything.
+    /// `config` as the machine it describes and the one process on it.
     ///
-    /// The platform is the constructor's argument rather than a setter's,
-    /// because the fields it fixes (`SoMaxConn`'s, the TCP buffer sysctls' and `Mount`'s
-    /// defaults, the limits the current directory is admitted under) would
-    /// otherwise be stale for whichever platform was set last.
-    let toKernel (config : KernelConfig) : EmulatedKernel =
-        // Rejected here so a host that forged the platform is told which knob
-        // it set rather than which library function received it.
+    /// The one thing a `KernelConfig` says about the machine in terms of the
+    /// process is who owns the filesystem: a seed entry that states no owner
+    /// is the process's, and so is the root unless `FileSystemRootOwner` says
+    /// otherwise. The machine's part states those owners, so that it means the
+    /// same whichever processes are put on it.
+    let split (config : KernelConfig) : MachineConfig * ProcessConfig =
         let platform =
             SimulatedUnixPlatform.assertValid "KernelConfig.UnixPlatform" config.UnixPlatform
 
-        let flavour = SimulatedUnixPlatform.flavour platform
+        let proc : ProcessConfig =
+            {
+                Environment = config.Environment
+                CurrentDirectory = config.CurrentDirectory
+                ProcessPath = config.ProcessPath
+                UserId = config.UserId
+                GroupId = config.GroupId
+                SupplementaryGroups = config.SupplementaryGroups
+                Umask = config.Umask
+                InheritedSignalIgnores = config.InheritedSignalIgnores
+                StandardStreams = config.StandardStreams
+                CoreDumps = config.CoreDumps
+                CLibrary = config.CLibrary
+                OptimalMaxSpinWaitsPerSpinIteration = config.OptimalMaxSpinWaitsPerSpinIteration
+            }
 
-        let credentials =
-            Credentials.ofIds
-                (config.UserId
-                 |> Option.map (UserId.parseOrFail "KernelConfig.UserId")
-                 |> Option.defaultValue (UnixSystem.defaultUserId flavour))
-                (config.GroupId
-                 |> Option.map (GroupId.parseOrFail "KernelConfig.GroupId")
-                 |> Option.defaultValue (UnixSystem.defaultGroupId flavour))
-                (config.SupplementaryGroups
-                 |> List.map (GroupId.parseOrFail "KernelConfig.SupplementaryGroups"))
-
-        let machine = KernelImage.mapMachine
-        let launch = KernelImage.mapProcess
-
-        let credentialsOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
-            match ProcessLaunch.withCredentials credentials launch with
-            | Ok launch -> launch
-            | Error (CredentialsRefusal.TooManySupplementaryGroups _ as refusal) ->
-                failwith $"KernelConfig.SupplementaryGroups: %s{CredentialsRefusal.describe refusal}"
-            | Error (CredentialsRefusal.IdsDifferOnDarwin _ as refusal) ->
-                // `Credentials.ofIds` gives the real, effective and saved IDs
-                // one value each, so the configuration cannot reach this.
-                failwith
-                    $"KernelConfig.UserId and KernelConfig.GroupId: %s{CredentialsRefusal.describe refusal} (this is a bug in PawPrint)."
-
-        let umaskOrFail (launch : ProcessLaunch<ThreadId>) : ProcessLaunch<ThreadId> =
-            match ProcessLaunch.withUmask config.Umask launch with
-            | Ok launch -> launch
-            | Error refusal -> failwith $"KernelConfig.Umask: %s{UmaskRefusal.describe refusal}"
-
-        let processIdOrFail
-            (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-            : UnixBootImage<ThreadId, NativeSignalHandler>
-            =
-            match
-                UnixBootImage.withProcessId (ProcessId.assertValid "KernelConfig.ProcessId" config.ProcessId) image
-            with
-            | Ok image -> image
-            | Error refusal -> failwith $"KernelConfig.ProcessId: %s{ProcessIdRefusal.describe refusal}"
-
-        let leaderThreadIdOrFail
-            (image : UnixBootImage<ThreadId, NativeSignalHandler>)
-            : UnixBootImage<ThreadId, NativeSignalHandler>
-            =
-            match flavour, config.LeaderThreadId with
-            | SimulatedUnixFlavour.Linux, None -> image
-            | SimulatedUnixFlavour.Linux, Some _ ->
-                failwith
-                    "KernelConfig.LeaderThreadId: on Linux the leader's thread ID is the process ID; set KernelConfig.ProcessId instead."
-            | SimulatedUnixFlavour.Darwin, id ->
-                let id = id |> Option.defaultValue (uint64 (ProcessId.toInt32 config.ProcessId))
-
-                match UnixBootImage.withLeaderThreadId id image with
-                | Ok image -> image
-                | Error refusal -> failwith $"KernelConfig.LeaderThreadId: %s{LeaderThreadIdRefusal.describe refusal}"
-
-        EmulatedKernel.image platform config.StandardStreams
-        |> launch (ProcessLaunch.withCoreDumps config.CoreDumps)
-        |> EmulatedKernel.withEnvironment "KernelConfig.Environment" config.Environment
-        |> machine (withProcessorCount config.ProcessorCount)
-        |> machine (fun image ->
-            match config.UserAddressLimit with
-            | None -> image
-            | Some limit -> withUserAddressLimit limit image
-        )
-        |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
-        |> machine (withMount config.Mount)
-        |> launch (ProcessLaunch.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
-        // The configured user and group, named here rather than read back off
-        // the process, which only takes them below. Every entry is given its
-        // owner before the seed is realised, so that the library's default
-        // owner is left to mean the root's alone.
-        |> EmulatedKernel.withFileSystemAndCurrentDirectory
-            (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
-            (config.FileSystemRootOwner
-             |> Option.defaultValue (InodeOwner.ofProcess credentials))
-            (stateSeedOwners (InodeOwner.ofProcess credentials) config.FileSystem)
-            config.CurrentDirectory
-        |> launch credentialsOrFail
-        |> machine (
-            withEphemeralPortRange (
-                config.EphemeralPortRange
-                |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour)
+        let processOwner =
+            InodeOwner.ofProcess (
+                ProcessConfig.credentials "KernelConfig" (SimulatedUnixPlatform.flavour platform) proc
             )
-        )
-        |> machine (withSoMaxConn config.SoMaxConn)
-        |> machine (withTcpSendSpace config.TcpSendSpace)
-        |> machine (withTcpReceiveSpace config.TcpReceiveSpace)
-        |> machine (withTcpSendSpaceMax config.TcpSendSpaceMax)
-        |> machine (withProtectedFiles config.ProtectedFiles)
-        |> machine (UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes)
-        |> launch umaskOrFail
-        |> machine processIdOrFail
-        |> machine leaderThreadIdOrFail
-        |> EmulatedKernel.bootInheritingSignalIgnores
-            "KernelConfig.InheritedSignalIgnores"
-            config.InheritedSignalIgnores
-        // `pid_max` is a sysctl the machine's administrator writes, here before
-        // the process has run anything. The process ID was set before it: the
-        // machine boots with the largest `pid_max` Linux has, so any process ID
-        // a Linux kernel could have is admitted, and it keeps that ID whatever
-        // `pid_max` is then written.
-        |> EmulatedKernel.mapUnix (fun system ->
-            match config.PidMax with
-            | None -> system
-            | Some pidMax -> UnixSystem.writePidMaxSysctl "KernelConfig.PidMax" pidMax system
-        )
-        |> fun kernel ->
-            match config.CLibrary with
-            | None -> kernel
-            | Some library -> EmulatedKernel.withCLibrary "KernelConfig.CLibrary" library kernel
-        |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
-        |> EmulatedKernel.withClockJitter config.ClockJitter
-        |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
+
+        let machine : MachineConfig =
+            {
+                ProcessorCount = config.ProcessorCount
+                UserAddressLimit = config.UserAddressLimit
+                InstructionCostTicks = config.InstructionCostTicks
+                ClockJitter = config.ClockJitter
+                WallClockEpochMs = config.WallClockEpochMs
+                UnixPlatform = platform
+                FileSystem = stateSeedOwners processOwner config.FileSystem
+                FileSystemOwner = Some (config.FileSystemRootOwner |> Option.defaultValue processOwner)
+                Mount = config.Mount
+                EphemeralPortRange = config.EphemeralPortRange
+                SoMaxConn = config.SoMaxConn
+                TcpSendSpace = config.TcpSendSpace
+                TcpReceiveSpace = config.TcpReceiveSpace
+                TcpSendSpaceMax = config.TcpSendSpaceMax
+                ProtectedFiles = config.ProtectedFiles
+                LocalAddresses = config.LocalAddresses
+                LocalRoutes = config.LocalRoutes
+                PidMax = config.PidMax
+                ProcessId = config.ProcessId
+                LeaderThreadId = config.LeaderThreadId
+            }
+
+        machine, proc
+
+    /// The kernel a host configuration describes: `split`, then
+    /// `MachineConfig.boot` of the two parts, so that every field is applied
+    /// through its own setter before the machine boots and the validation
+    /// those setters perform (e.g. rejecting a non-positive processor count)
+    /// also guards the configuration path, naming `KernelConfig`'s knob.
+    let toKernel (config : KernelConfig) : EmulatedKernel =
+        let machine, proc = split config
+        MachineConfig.boot "KernelConfig" "KernelConfig" machine proc

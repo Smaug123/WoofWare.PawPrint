@@ -904,7 +904,7 @@ module UnixDescriptor =
     ///
     /// Not short-circuited when the file is already that length: unlike a write
     /// of no bytes, a truncation that moves no bytes still stamps the inode.
-    let truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (length : int64)
         (system : UnixSystem<'Task, 'Handler>)
@@ -1323,6 +1323,7 @@ module UnixDescriptor =
             | Some (ParkedSyscall.KqueuePoll _ as other)
             | Some (ParkedSyscall.PipeRead _ as other)
             | Some (ParkedSyscall.PipeWrite _ as other)
+            | Some (ParkedSyscall.SigSuspend as other)
             | Some (ParkedSyscall.ConnectionRead _ as other)
             | Some (ParkedSyscall.ConnectionWrite _ as other) ->
                 failwith
@@ -1743,6 +1744,7 @@ module UnixDescriptor =
                     | ParkedSyscall.ConnectionWrite _
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _
+                    | ParkedSyscall.SigSuspend
                     // A Darwin poll's filters go with the descriptor (below).
                     | ParkedSyscall.KqueuePoll _ -> None
                 )
@@ -1778,6 +1780,7 @@ module UnixDescriptor =
                 | ParkedSyscall.Accept _
                 | ParkedSyscall.PipeRead _
                 | ParkedSyscall.PipeWrite _
+                | ParkedSyscall.SigSuspend
                 | ParkedSyscall.ConnectionRead _
                 | ParkedSyscall.ConnectionWrite _ -> None
             )
@@ -1810,6 +1813,7 @@ module UnixDescriptor =
                    | ParkedSyscall.KqueuePoll _
                    | ParkedSyscall.PipeRead _
                    | ParkedSyscall.PipeWrite _
+                   | ParkedSyscall.SigSuspend
                    | ParkedSyscall.ConnectionRead _
                    | ParkedSyscall.ConnectionWrite _ -> false
                )
@@ -1881,6 +1885,7 @@ module UnixDescriptor =
             | ParkedSyscall.Kevent _
             | ParkedSyscall.Flock _
             | ParkedSyscall.Poll _
+            | ParkedSyscall.SigSuspend
             | ParkedSyscall.KqueuePoll _ -> None
 
         let endedCalls =
@@ -2015,6 +2020,7 @@ module UnixDescriptor =
                     | ParkedSyscall.Kevent _
                     | ParkedSyscall.Flock _
                     | ParkedSyscall.Poll _
+                    | ParkedSyscall.SigSuspend
                     | ParkedSyscall.KqueuePoll _ -> false
                 )
 
@@ -2114,6 +2120,7 @@ module UnixDescriptor =
                         | ParkedSyscall.Accept _
                         | ParkedSyscall.PipeRead _
                         | ParkedSyscall.PipeWrite _
+                        | ParkedSyscall.SigSuspend
                         | ParkedSyscall.ConnectionRead _
                         | ParkedSyscall.ConnectionWrite _ -> false
                     )

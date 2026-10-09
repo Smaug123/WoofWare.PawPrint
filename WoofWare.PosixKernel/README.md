@@ -14,7 +14,7 @@ It includes:
 * the filesystem, including permissions, with every name a string of bytes exactly as the kernel stores it, never decoded as text
 * file descriptors, the open file descriptions they name, and pipes
 * sockets and connections, `poll`, Linux's epoll, and Darwin's kqueue
-* signals: sending them, their dispositions, delivery to a handler, and a process ended by one
+* signals: sending them, their dispositions, each task's mask, delivery to a handler, and a process ended by one
 * the process's tasks (its threads), and the syscalls they block in
 * clock
 * entropy
@@ -57,6 +57,9 @@ How a process starts is a `ProcessLaunch`: `ProcessLaunch.create` takes the desc
 `UnixBootImage.boot` launches the machine's first process from one, to get the `UnixSystem` its first syscall takes.
 A setter that rejects a value, such as `withBootTime` or `withMount`, returns `Result`, with a refusal type of its own whose `describe` says why (see "Answers and refusals" below); only the caller knows what it called the value.
 Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
+A process's leader starts blocking no signal; a client launching one whose parent left signals blocked sets that mask with `UnixSignal.pthreadSigmask` before the leader's first instruction, as it installs inherited ignores with `UnixSignal.sigaction`.
+A signal mask crosses the API as a `SignalMask`, the bits of a `sigset_t` under one numbering (`SignalMask.ofWord`, `SignalMask.toWord`), because Darwin keeps a bit that names no signal.
+`UnixSignal.sigsuspend` replaces a task's mask until a signal ends the call, and keeps the mask it replaced in the signal state (`SignalState.maskToRestore`) rather than in the park, because the call's answer comes before the task's return to user mode, which is what restores it: the first handler frame that return pushes saves the mask from before the call.
 What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixSystem.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
 
 ```fsharp
@@ -136,7 +139,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixConnection` | `connect`, `accept` |
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
 | `UnixKqueue` | `kqueue`, `kevent` |
-| `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigreturn`, and the signals a task takes as it returns to user mode |
+| `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigprocmask`, `pthread_sigmask`, `rt_sigprocmask`, `sigpending`, `sigsuspend`, `rt_sigsuspend`, `pause`, `sigreturn`, and the signals a task takes as it returns to user mode |
 | `UnixClock` | `clock_gettime`, `gettimeofday` |
 | `UnixEntropy` | `getrandom`, `getentropy` |
 | `UnixCredentials` | `getresuid`, `getresgid`, `setresuid`, `setresgid`, `setgroups` |
@@ -178,7 +181,7 @@ That is the state the kernel sleeps in, which can differ from the one the call a
 
 The library has no scheduler, and does not want one.
 Waking is pulled rather than pushed: after each step, the client asks `UnixWait.wakes` which of the tasks it holds asleep may wake now, and with nothing runnable, `UnixWait.deadlines` says how far it may advance the clock.
-A woken task finishes its call through the family's finishing function (`UnixDescriptor.flockAcquire`, `UnixPoll.finishPoll`, `UnixReadWrite.finishRead`, and so on), which may answer, park again, or say the call restarts because a signal handler interrupted it.
+A woken task finishes its call through the family's finishing function (`UnixDescriptor.flockAcquire`, `UnixPoll.finishPoll`, `UnixReadWrite.finishRead`, `UnixSignal.finishSigsuspend`, and so on), which may answer, park again, or say the call restarts because a signal handler interrupted it.
 
 A parked call holds the open file descriptions it waits on (`ParkedSyscall.descriptions`), as a real one holds a reference to each file: a description goes when no descriptor names it and no call holds it, so one closed under a sleeping call goes when the call returns.
 

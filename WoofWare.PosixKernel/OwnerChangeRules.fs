@@ -41,7 +41,7 @@ type OwnerChangeRequest =
 /// What kind of inode a `chown(2)`-family call reached, as far as which bits it
 /// clears is concerned.
 [<RequireQualifiedAccess>]
-type OwnerChangeTarget =
+type internal OwnerChangeTarget =
     | Directory
     /// A regular file, a symbolic link or a pipe.
     | NonDirectory
@@ -89,7 +89,7 @@ type OwnerChangeRule =
 
 /// What a `chown(2)`-family call does to one inode, for one caller.
 [<RequireQualifiedAccess>]
-type OwnerChange =
+type internal OwnerChange =
     /// The caller may not make this change. The syscall answers `EPERM` and
     /// changes nothing.
     | Forbidden
@@ -132,7 +132,7 @@ module OwnerChangeRefusal =
             $"what Darwin's chown does for a caller standing %A{standing} towards an inode carrying %O{bits} and asking %A{request} has not been measured; setting that inode up needs root or a second user. %s{measured}"
 
 [<RequireQualifiedAccess>]
-module OwnerChangeRequest =
+module internal OwnerChangeRequest =
     /// How the rule reads a call naming `user` and `group` (`None` for
     /// `(uid_t)-1` and `(gid_t)-1`), made by a process with `credentials` of
     /// an inode owned by `owner`.
@@ -162,7 +162,7 @@ module OwnerChangeRequest =
         }
 
 [<RequireQualifiedAccess>]
-module OwnerChangeRules =
+module internal OwnerChangeRules =
 
     let private nothingAsked : OwnerChangeRequest =
         {

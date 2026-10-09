@@ -390,14 +390,14 @@ type DeliveryLog =
 module DeliveryLog =
 
     /// The log of a machine that has delivered nothing.
-    let empty : DeliveryLog =
+    let internal empty : DeliveryLog =
         {
             NewestFirst = []
             Count = 0
         }
 
     /// `log` with `delivery` after every delivery already in it.
-    let append (delivery : Delivery) (log : DeliveryLog) : DeliveryLog =
+    let internal append (delivery : Delivery) (log : DeliveryLog) : DeliveryLog =
         {
             NewestFirst = delivery :: log.NewestFirst
             Count = log.Count + 1

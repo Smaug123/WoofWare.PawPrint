@@ -117,9 +117,7 @@ module TestTaskState =
     [<Test>]
     let ``the thread that starts a thread creates its task`` () : unit =
         // The kernel's `clone` is made by the thread calling `Start`, so the new task inherits
-        // that thread's signal mask. A starter inside a signal handler is refused, because a
-        // mask is held only as handler frames here; so the refusal names the starter, and
-        // another thread can start a thread meanwhile.
+        // that thread's signal mask, and not another's.
         let state, starter =
             machine ()
             |> ThreadFixtures.constructAndStart (ThreadId 0) (ManagedHeapAddress 1)
@@ -133,15 +131,15 @@ module TestTaskState =
         let inHandler =
             state.MapKernel (SignalFrames.enter starter (Set.singleton Signal.SIGUSR1))
 
-        let exn =
-            Assert.Throws<exn> (fun () -> ThreadFixtures.start starter first inHandler |> ignore<IlMachineState>)
+        let started = ThreadFixtures.start starter first inHandler
 
-        exn.Message
-        |> shouldContainText $"task %O{starter} creates a thread from inside a signal handler"
+        SignalState.maskOf first started.Kernel.Signals
+        |> SignalMask.signals
+        |> shouldEqual (Set.singleton Signal.SIGUSR1)
 
-        ThreadFixtures.start (ThreadId 0) second inHandler
-        |> fun state -> Map.containsKey second state.Kernel.Tasks
-        |> shouldEqual true
+        let started = ThreadFixtures.start (ThreadId 0) second started
+
+        SignalState.maskOf second started.Kernel.Signals |> shouldEqual SignalMask.empty
 
     [<Test>]
     let ``a parked interpreter thread gets a task too`` () : unit =

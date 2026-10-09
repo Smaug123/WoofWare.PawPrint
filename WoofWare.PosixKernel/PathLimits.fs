@@ -215,7 +215,7 @@ module PathLimits =
     /// the unit separately would let a caller measure a name with the wrong one
     /// — and on a Mac the wrong one (`String.Length`) is right often enough to
     /// look correct.
-    let nameWithinLimit (limits : PathLimits) (name : DirectoryEntryName) : bool =
+    let internal nameWithinLimit (limits : PathLimits) (name : DirectoryEntryName) : bool =
         match limits.NameMax with
         | NameLengthLimit.Bytes bytes -> UnixByteString.length (DirectoryEntryName.toByteString name) <= bytes
         | NameLengthLimit.Utf16CodeUnitsOrBytes (units, fallbackBytes) ->
@@ -236,7 +236,7 @@ module PathLimits =
     /// where the mistakes are. Takes the target and the cursor rather than two
     /// byte counts, so that neither can be measured with the wrong function nor
     /// passed in the wrong order.
-    let spliceWithinLimit (limits : PathLimits) (target : SymlinkTarget) (remaining : PathCursor) : bool =
+    let internal spliceWithinLimit (limits : PathLimits) (target : SymlinkTarget) (remaining : PathCursor) : bool =
         match limits.SpliceRecheck with
         | SpliceLengthRecheck.NoRecheck -> true
         | SpliceLengthRecheck.Recheck ->
@@ -285,7 +285,7 @@ module PathLimits =
 /// What the bytes of a syscall's path argument name, once this kernel has
 /// copied them in.
 [<RequireQualifiedAccess>]
-type PathArgument =
+type internal PathArgument =
     | Parsed of path : UnixPath
     /// The entry point returns its failure sentinel, and the caller stores
     /// `error` wherever its libc keeps errno.
@@ -321,7 +321,7 @@ type PathArgumentBytes =
     | Bytes of bytes : UnixByteString
 
 [<RequireQualifiedAccess>]
-module PathArgument =
+module internal PathArgument =
 
     /// What path the kernel would look up, given a syscall's path argument:
     /// what `getname()` answers when it copies the argument in. `limits` is the

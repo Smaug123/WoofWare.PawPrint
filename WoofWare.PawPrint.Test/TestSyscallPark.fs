@@ -131,6 +131,7 @@ class LockAndPortWaiters
         | ParkedSyscall.Accept _
         | ParkedSyscall.PipeRead _
         | ParkedSyscall.PipeWrite _
+        | ParkedSyscall.SigSuspend
         | ParkedSyscall.ConnectionRead _
         | ParkedSyscall.ConnectionWrite _ -> false
 

@@ -10,8 +10,9 @@ type SignalPoll =
     | Continues of IlMachineState
     /// A signal killed the process: one System.Native re-raised at its
     /// default, or the SIGABRT of an abort a native handler called. The state
-    /// is the machine as it stood then.
-    | ProcessKilled of IlMachineState * signal : Signal * coreDumped : bool
+    /// is the machine as it stood then, and `ended` the kernel's answer to the
+    /// signal, whose `Termination` is `ProcessTermination.Signaled`.
+    | ProcessKilled of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
 
 /// System.Native's signal handling, between two guest instructions: its native
 /// handler, which the kernel runs on the leader when a caught signal is
@@ -55,11 +56,17 @@ type SignalPoll =
 /// `NativeLibc.raiseSignal` and `SystemNative_Write` when the signal would
 /// stay pending on a thread other than the leader.
 ///
+/// A thread's mask can now hold a signal back (`NativeLibcSignalMask`), and
+/// the leader is still the only task asked. A signal sent to the process that
+/// the leader blocks and another thread does not is refused by the kernel
+/// (`SignalReceiverRefusal.LeaderBlocks`), when it is sent or at this poll,
+/// and the refusal fails the run.
+///
 /// The `SignalDelivery.Default*` cases are refused loudly: a default that
 /// terminates or stops is applied when the signal is generated (see
 /// `NativeLibc.kill` and `NativeLibc.raiseSignal`), so one reaches this poll
-/// only by becoming receivable later, as a handler frame's mask is popped, and
-/// no frame survives a poll.
+/// only by becoming receivable later, as a handler frame's mask is popped or a
+/// mask call unblocks it, and applying a default at delivery is not modelled.
 [<RequireQualifiedAccess>]
 module SignalDispatch =
 
@@ -178,11 +185,7 @@ module SignalDispatch =
                     EmulatedKernel.withUnix (UnixSignal.sigreturn kernel.Leader frame.Id kernel.System) kernel
                 )
 
-            match EmulatedKernel.abort state.Kernel.Leader state.Kernel with
-            | ProcessTermination.Signaled (killedBy, coreDumped) ->
-                SignalPoll.ProcessKilled (state, killedBy, coreDumped)
-            | ProcessTermination.Exited _ as other ->
-                failwith $"SignalDispatch.poll: the PAL's abort for %O{signal} ended the process by %O{other}"
+            SignalPoll.ProcessKilled (state, EmulatedKernel.abort state.Kernel.Leader state.Kernel)
 
     /// System.Native's native handler for `frame`'s signal, run on the leader:
     /// write the signal's number into the shim's pipe, having first run the
@@ -299,7 +302,17 @@ module SignalDispatch =
         // two instructions, so it answers without assembling the kernel's view.
         // No frame outlives a poll, so none is waiting for a sigreturn either.
         if List.isEmpty (SignalState.pending state.Kernel.Signals) then
-            SignalPoll.Continues state
+            // A leader whose `sigsuspend` has ended (it holds a mask to restore
+            // and is no longer parked) has a signal to take, which
+            // is what ended it, and its return is what gives back the mask the
+            // call replaced; nothing runs between the call's answer and this
+            // poll to take the signal away.
+            match SignalState.maskToRestore leader state.Kernel.Signals with
+            | Some mask when (UnixTaskTable.parkedFor leader state.Kernel.Tasks).IsNone ->
+                failwith
+                    $"SignalDispatch.poll: the leader %O{leader} returns from sigsuspend with nothing pending to take, so it would run on with the call's temporary mask rather than %O{mask} (this is an interpreter bug)."
+            | Some _
+            | None -> SignalPoll.Continues state
         elif (UnixTaskTable.parkedFor leader state.Kernel.Tasks).IsSome then
             SignalPoll.Continues state
         else
@@ -374,10 +387,11 @@ module SignalDispatch =
                 // default is to terminate, stop or continue the process.
                 // `SignalState.generate` applies a terminating or stopping
                 // default at generation whenever some thread can receive the
-                // signal, so it is pending here only if none could then, which
-                // a mask held only by handler frames never arranges between
-                // instructions. Reaching this is therefore a test driving the
-                // queue by hand, and it is refused rather than half-modelled.
+                // signal, so it is pending here only if none could then: every
+                // thread blocked it, through a mask call, and one has since
+                // unblocked it. Applying a default at delivery is refused
+                // rather than half-modelled, SIGCONT's included, though the
+                // kernel discards that one as it is taken.
                 failwith
                     $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
 
@@ -470,8 +484,7 @@ module SignalDispatch =
 
             state.MapKernel (EmulatedKernel.withLastSystemError dispatcher (UnixError.toRawErrnoUnder numbering error))
             |> SignalPoll.Continues
-        | NonCanceledPosixSignal.Terminated (state, signal, coreDumped) ->
-            SignalPoll.ProcessKilled (state, signal, coreDumped)
+        | NonCanceledPosixSignal.Terminated (state, ended) -> SignalPoll.ProcessKilled (state, ended)
 
     /// The dispatcher's blocking `read(pipeFd, &signalCode, 1)`, if it is
     /// Parked there: made afresh if its task is not yet asleep in it, and

@@ -81,12 +81,6 @@ type SpawnAnswer =
 /// report.
 [<RequireQualifiedAccess>]
 type SpawnRefusal<'Task> =
-    /// Unmodelled. `parent` is running a signal handler, and `mask`, the mask in
-    /// force while the handler runs, blocks at least one signal. A new thread
-    /// starts with its creator's mask, but this library holds a mask only as a
-    /// task's handler frames, and a new task has none, so it cannot give the new
-    /// task that mask.
-    | InheritedHandlerMask of parent : 'Task * mask : Set<Signal>
     /// Unmeasured. Darwin's 64-bit thread ID counter has reached the top of its
     /// range, and what Darwin does when a thread is created then has not been
     /// measured.
@@ -98,10 +92,6 @@ module SpawnRefusal =
     /// A human-readable account of why the thread's creation was refused.
     let describe<'Task> (refusal : SpawnRefusal<'Task>) : string =
         match refusal with
-        | SpawnRefusal.InheritedHandlerMask (parent, mask) ->
-            let signals = mask |> Seq.map string |> String.concat ", "
-
-            $"task %O{parent} creates a thread from inside a signal handler, whose mask (%s{signals}) the new thread would inherit; this library holds a mask only as a task's handler frames, so it cannot give the new thread one"
         | SpawnRefusal.ThreadIdCounterExhausted ->
             "Darwin's thread ID counter has reached the top of its 64-bit range, and what Darwin does when a thread is created then has not been measured"
 
@@ -229,10 +219,8 @@ module UnixTaskLifecycle =
     /// EAGAIN instead once every thread ID from 300 up to the machine's
     /// `pid_max` is in use, leaving the system as it was.
     ///
-    /// Refuses a `parent` inside a signal handler whose mask blocks anything
-    /// (`SpawnRefusal.InheritedHandlerMask`), and a spawn on Darwin once the
-    /// machine's thread ID counter has reached the top of its range
-    /// (`SpawnRefusal.ThreadIdCounterExhausted`).
+    /// Refuses a spawn on Darwin once the machine's thread ID counter has
+    /// reached the top of its range (`SpawnRefusal.ThreadIdCounterExhausted`).
     ///
     /// Fails loudly if `parent` names no task or is parked in a syscall, or if
     /// `child` already names a task: each is a bug in the client.
@@ -253,18 +241,6 @@ module UnixTaskLifecycle =
             failwith
                 $"UnixTaskLifecycle.spawn: %O{child} already names a task. A task is created once, and creating it again would silently discard whatever the first creation recorded (this is a bug in the client)."
 
-        // Measured on Linux 6.18.5 (aarch64 and x86-64) and Darwin 27.0.0 by
-        // `docs/plans/2026-08-23-posix-kernel-extraction/thread-spawn-mask.c`: a new
-        // thread's mask is exactly its creator's, and nothing pending on the
-        // creator alone is pending on it. A task's mask is its handler frames'
-        // here, and a new task has none, so it starts with the empty mask its
-        // creator has when that has no frame.
-        let mask = SignalState.maskOf parent system.Process.Signals
-
-        if not (Set.isEmpty mask) then
-            Error (SpawnRefusal.InheritedHandlerMask (parent, mask))
-        else
-
         match ThreadIdAllocator.allocate system.Machine.ThreadIds with
         | ThreadIdAllocation.Failed error -> Ok (SpawnAnswer.Failed error, system)
         | ThreadIdAllocation.DarwinCounterExhausted -> Error SpawnRefusal.ThreadIdCounterExhausted
@@ -276,6 +252,15 @@ module UnixTaskLifecycle =
                 Machine =
                     { system.Machine with
                         ThreadIds = threadIds
+                    }
+                // Measured on Linux 6.18.5 (aarch64 and x86-64) and Darwin
+                // 27.0.0 by
+                // `docs/plans/2026-08-23-posix-kernel-extraction/thread-spawn-mask.c`:
+                // a new thread's mask is exactly its creator's current one, and
+                // nothing pending on the creator alone is pending on it.
+                Process =
+                    { system.Process with
+                        Signals = SignalState.inheritMask parent child system.Process.Signals
                     }
                 Tasks = UnixTaskTable.add child cpu id system.Tasks
             }

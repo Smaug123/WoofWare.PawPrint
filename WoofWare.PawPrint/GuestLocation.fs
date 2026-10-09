@@ -406,6 +406,7 @@ module GuestLocation =
                                 | None -> ""
 
                             Some $"in a poll of [%s{watched}]%s{until}"
+                        | Some ParkedSyscall.SigSuspend -> Some "in sigsuspend, for a signal"
                         | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }

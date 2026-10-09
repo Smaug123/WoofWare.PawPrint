@@ -56,7 +56,7 @@ type CreatingOpenRules =
 /// is then only the part that acts: allocating the inode and registering a
 /// descriptor.
 [<RequireQualifiedAccess>]
-type CreatingOpenVerdict =
+type internal CreatingOpenVerdict =
     /// Answer the caller with this errno.
     | Refuse of error : UnixError
     /// Bind a new empty regular file under `name` in `directory`.
@@ -67,7 +67,7 @@ type CreatingOpenVerdict =
     | OpenExisting of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
-module CreatingOpenRules =
+module internal CreatingOpenRules =
     /// Decide what an `open(2)` owes, given how its path resolved and whether it
     /// carried `O_CREAT` and `O_EXCL`.
     ///
