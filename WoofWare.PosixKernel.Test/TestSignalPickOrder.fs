@@ -91,7 +91,7 @@ module TestSignalPickOrder =
             | Consumer.FullMask ->
                 SignalDisposition.Catch
                     { SignalCatch.ofHandler handler with
-                        Mask = everyGenerated
+                        Mask = SignalMask.ofSignals numbering everyGenerated
                     }
             | Consumer.NoMask -> SignalDisposition.Catch (SignalCatch.ofHandler handler)
 

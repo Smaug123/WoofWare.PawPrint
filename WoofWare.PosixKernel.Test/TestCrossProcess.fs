@@ -724,6 +724,58 @@ module TestCrossProcess =
         error.Message
         |> shouldContainText "was not focused from the machine as it stands"
 
+    /// Every delivery `machine` has made, oldest first, with each one's bytes.
+    let private deliveries (machine : SimulatedMachine<int, string>) : (ExternalEndpoint * byte list) list =
+        DeliveryLog.toList machine.Machine.Delivered
+        |> List.map (fun delivery -> delivery.Endpoint, List.ofSeq delivery.Bytes)
+
+    /// `pid`'s task 0 writes `text` to its descriptor `fd`, which takes all of it.
+    let private writeIn
+        (pid : ProcessId)
+        (fd : int)
+        (text : string)
+        (machine : SimulatedMachine<int, string>)
+        : SimulatedMachine<int, string>
+        =
+        let bytes = ImmutableArray.CreateRange (System.Text.Encoding.ASCII.GetBytes text)
+
+        Machines.doIn
+            pid
+            (fun view ->
+                match UnixReadWrite.write 0 fd bytes view with
+                | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, view)) when int written = bytes.Length ->
+                    view
+                | other -> failwith $"write %d{fd} %s{text}: %A{other}"
+            )
+            machine
+
+    [<Test>]
+    let ``a process's end leaves what every process delivered to its launched pipes as it was`` () : unit =
+        // A client reads a process's standard output after the process has ended, from
+        // the deliveries its launched pipes made: closing those pipes at the end must not
+        // take any of them back, nor reorder them among another process's.
+        for platform in Machines.platforms do
+            let pids, machine = Machines.ofCount platform 2
+            let a, b = pids.[0], pids.[1]
+
+            let machine =
+                machine |> writeIn a 1 "a out" |> writeIn b 1 "b out" |> writeIn a 2 "a err"
+
+            let before = deliveries machine
+
+            before
+            |> List.map fst
+            |> shouldEqual [ ExternalEndpoint (a, 1) ; ExternalEndpoint (b, 1) ; ExternalEndpoint (a, 2) ]
+
+            let machine = exitedOk a machine
+            deliveries machine |> shouldEqual before
+
+            let machine = writeIn b 2 "b err" machine
+            let machine = exitedOk b machine
+
+            deliveries machine
+            |> shouldEqual (before @ [ ExternalEndpoint (b, 2), List.ofSeq "b err"B ])
+
     [<Test>]
     let ``a process's end sends each peer its FIN in the order each flavour releases them`` () : unit =
         // Replays `exit-close-order.c` sections O and D: the ending process

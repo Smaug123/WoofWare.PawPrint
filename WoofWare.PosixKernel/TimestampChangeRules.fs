@@ -35,7 +35,7 @@ type NullablePathArgument =
 /// What one of `utimensat(2)`'s two times asks for, as its flavour reads the
 /// `struct timespec`.
 [<RequireQualifiedAccess>]
-type TimestampRequest =
+type internal TimestampRequest =
     /// `UTIME_NOW`: the time now.
     | Now
     /// `UTIME_OMIT`: leave this time as it is.
@@ -49,7 +49,7 @@ type TimestampRequest =
     | Invalid of TimespecFields
 
 /// The flag word of `utimensat(2)`, once this kernel has screened it.
-type TimestampChangeArguments =
+type internal TimestampChangeArguments =
     {
         /// Whether a symbolic link in the final position is followed:
         /// `AT_SYMLINK_NOFOLLOW` says not.
@@ -61,7 +61,7 @@ type TimestampChangeArguments =
 
 /// What screening the flag word of `utimensat(2)` came to.
 [<RequireQualifiedAccess>]
-type TimestampChangeScreen =
+type internal TimestampChangeScreen =
     /// The word is one this kernel accepts, and this is what it says.
     | Screened of TimestampChangeArguments
     /// The call fails with this errno before its path is copied in.
@@ -87,7 +87,7 @@ type TimestampRange =
 
 /// Whether a caller may set an object's times as `utimensat(2)` asks.
 [<RequireQualifiedAccess>]
-type TimestampChangePermission =
+type internal TimestampChangePermission =
     /// It may.
     | Permitted
     /// It may not, and the call fails with this errno, changing nothing.
@@ -133,7 +133,7 @@ module TimestampChangeRules =
     /// `flavour`: `UTIME_NOW`, `UTIME_OMIT`, or a time. Linux answers EINVAL
     /// for any other nanosecond field outside `[0, 1e9)`; Darwin reads every
     /// other value as a time.
-    let decode (flavour : SimulatedUnixFlavour) (fields : TimespecFields) : TimestampRequest =
+    let internal decode (flavour : SimulatedUnixFlavour) (fields : TimespecFields) : TimestampRequest =
         // Measured by `utimensat-rules.c` (NSEC): Linux accepts 0 to 999999999
         // and its two markers, and answers EINVAL for 1e9, 1073741821,
         // 1073741824, -1, -2, -3 and the 32- and 64-bit extremes; Darwin
@@ -160,7 +160,7 @@ module TimestampChangeRules =
     /// no bit: it reads `AT_SYMLINK_NOFOLLOW` (0x20) and three flags this
     /// library does not model (see `TimestampChangeScreen.Unmodelled`), and
     /// ignores every other.
-    let screen (flavour : SimulatedUnixFlavour) (flags : int) : TimestampChangeScreen =
+    let internal screen (flavour : SimulatedUnixFlavour) (flags : int) : TimestampChangeScreen =
         // Measured by `at-dirfd.c` (FLAGS, FLAGORDER): each single bit with
         // AT_FDCWD and a regular file; Linux's rejected bit beats an
         // unreadable path, a bad dirfd, an empty path and a missing name.
@@ -220,7 +220,7 @@ module TimestampChangeRules =
     ///
     /// `fields` is an explicit time as `decode` leaves it: under `Seconds64`
     /// its nanoseconds must lie in `[0, 1e9)`, as Linux's decoding ensures.
-    let stored (range : TimestampRange) (fields : TimespecFields) : UnixTimestamp =
+    let internal stored (range : TimestampRange) (fields : TimespecFields) : UnixTimestamp =
         match range with
         | TimestampRange.Seconds64 ->
             if fields.Nanoseconds < 0L || fields.Nanoseconds >= nanosecondsPerSecond then
@@ -276,7 +276,7 @@ module TimestampChangeRules =
     ///
     /// Neither time may be `TimestampRequest.Invalid`, which the call answers
     /// before it asks this.
-    let permission
+    let internal permission
         (flavour : SimulatedUnixFlavour)
         (standing : Standing)
         (bits : PermissionBits)
@@ -349,7 +349,7 @@ module TimestampChangeRules =
     /// time pulls the birth time back to it, unless it is before the epoch.
     ///
     /// Neither time may be `TimestampRequest.Invalid`.
-    let changed
+    let internal changed
         (flavour : SimulatedUnixFlavour)
         (range : TimestampRange)
         (now : UnixTimestamp)

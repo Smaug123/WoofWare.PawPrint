@@ -19,7 +19,7 @@ namespace WoofWare.PosixKernel
 /// devices (which epoll will not register, but `poll` answers). An epoll
 /// instance is refused: what either waiter reports for one is not modelled.
 [<RequireQualifiedAccess>]
-module LinuxReadiness =
+module internal LinuxReadiness =
 
     /// Whether this kernel models the readiness `socket` presents to a
     /// Linux-flavoured waiter: any socket but a `SOCK_SEQPACKET` one.
@@ -190,7 +190,7 @@ module LinuxReadiness =
 /// that make those changes: `UnixPoll.epollCtl`, and the socket operations in
 /// `UnixConnection`.
 [<RequireQualifiedAccess>]
-module EpollReadyList =
+module internal EpollReadyList =
 
     /// Each pending entry of the epoll instance, in delivery order, with what it would
     /// report if `epoll_wait` re-polled it right now: the target's current
@@ -325,7 +325,7 @@ module EpollReadyList =
 /// `EVFILT_WRITE` the free space in the socket's send buffer
 /// (`DarwinReadiness.sendBufferSpace`).
 [<RequireQualifiedAccess>]
-type KqueueFilterReport =
+type internal KqueueFilterReport =
     /// The filter is ready, and reports `data`.
     | Ready of data : int64
     /// The filter is ready and reports `EV_EOF`: the socket can receive no
@@ -339,7 +339,7 @@ type KqueueFilterReport =
 /// Answers for the stream sockets of `AF_INET` and `AF_INET6` (see
 /// `modelsSocket`), and for both ends of a pipe.
 [<RequireQualifiedAccess>]
-module DarwinReadiness =
+module internal DarwinReadiness =
 
     /// Whether this kernel models what a kqueue filter reports of `socket`: a
     /// stream socket of `AF_INET` or `AF_INET6`.
@@ -559,7 +559,7 @@ module DarwinReadiness =
 
 /// One event a kqueue reports: the registration that reported it, and what its
 /// filter reported.
-type KqueueReport =
+type internal KqueueReport =
     {
         /// The descriptor the registration was made through.
         Fd : int
@@ -579,7 +579,7 @@ type KqueueReport =
 /// registration waits in its kqueue's `KqueueState.Active` queue until a wait
 /// reports it. A wait reads each filter again as it reaches it.
 [<RequireQualifiedAccess>]
-module KqueueQueue =
+module internal KqueueQueue =
 
     /// The kqueue state of the open file description `kqueue`. Loudly partial:
     /// every caller has just resolved it as a live kqueue.
@@ -859,7 +859,7 @@ module KqueueQueue =
 /// (`order3.c` rows N, O, P on Linux; `kevent-register.c` sections P and X on
 /// Darwin).
 [<RequireQualifiedAccess>]
-type SocketWake =
+type internal SocketWake =
     /// A completed connection joined the listening socket's accept queue.
     | AcceptQueuePush
     /// A connect on the socket resolved: it completed, or it was refused.
@@ -881,7 +881,7 @@ type SocketWake =
     | PeerReset
 
 [<RequireQualifiedAccess>]
-module SocketWake =
+module internal SocketWake =
 
     /// The key an epoll wake for `wake` carries, in Linux's `<sys/epoll.h>`
     /// numbering, or `None` for an unkeyed wake (see

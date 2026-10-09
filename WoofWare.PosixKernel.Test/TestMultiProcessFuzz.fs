@@ -1008,6 +1008,11 @@ module TestMultiProcessFuzz =
             | Ok (WriteOutcome.Restarts after) -> Made.Answered after
             | Ok (WriteOutcome.WouldBlock (_, after)) -> Made.Sleeps after
             | Ok (WriteOutcome.ProcessEnded ended) -> Made.Ended ended
+        | Some ParkedSyscall.SigSuspend ->
+            match UnixSignal.finishSigsuspend task view with
+            | Ok (SigsuspendOutcome.WouldBlock _, after) -> Made.Sleeps after
+            | Ok (_, after) -> Made.Answered after
+            | Error _ -> Made.Refused
         | None -> failwith $"task %d{task} is woken, and parked in nothing"
 
     /// Everything the run tracks besides the machine.

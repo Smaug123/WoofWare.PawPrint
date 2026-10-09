@@ -13,7 +13,7 @@ type SignalRestartRule =
 
 /// How a signal with a handler ends the syscall a task is asleep in.
 [<RequireQualifiedAccess>]
-type SyscallInterruption =
+type internal SyscallInterruption =
     /// The syscall fails with `EINTR`. The handlers run as the task returns
     /// from it.
     | Eintr
@@ -58,6 +58,43 @@ module SyscallInterruptionRefusal =
         | SyscallInterruptionRefusal.SignalBesideCompletion flavour ->
             $"a task asleep in a syscall has both the syscall's own answer and a signal with a handler waiting for it. Under the %O{flavour} flavour the kernel answers whichever of the two reached the sleeping task first, and this kernel does not record which did."
 
+/// Why this library will not answer a `sigsuspend(2)` or `pause(2)`, or the
+/// finishing of one: something it does not model, rather than an error a
+/// kernel would report.
+[<RequireQualifiedAccess>]
+type SigsuspendRefusal =
+    /// The library will not say what the task takes as it returns to user
+    /// mode.
+    | Receiver of SignalReceiverRefusal
+    /// The first signal the task would take under the temporary mask is
+    /// `signal`, at its default, which stops the process. Stopped and then
+    /// continued with no handler run, a real kernel restarts the call, so that
+    /// it sleeps on under the temporary mask (measured on both flavours); this
+    /// library models no stopped process for the call to sleep on in.
+    | DefaultStop of signal : Signal
+    /// Under Darwin, the task could take a pending SIGCONT under the temporary
+    /// mask, ignored or at its default. Darwin leaves one generated while the
+    /// task blocked it pending under such a mask, without ending the call, and
+    /// does not end it even once a handler is installed for the signal, until
+    /// another signal ends the call and both are delivered (measured). This
+    /// library wakes a sleeping task from the state alone, so cannot leave a
+    /// signal it could deliver undelivered; and what Darwin does with one
+    /// generated during the sleep is unmeasured.
+    | DarwinPendingContinue
+
+[<RequireQualifiedAccess>]
+module SigsuspendRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half: which call was made, and by which task.
+    let describe (refusal : SigsuspendRefusal) : string =
+        match refusal with
+        | SigsuspendRefusal.Receiver refusal ->
+            $"a task in sigsuspend would take a signal, and this kernel will not say what it takes as it returns to user mode: %A{refusal}."
+        | SigsuspendRefusal.DefaultStop signal ->
+            $"the first signal a task in sigsuspend would take is %O{signal}, at its default, which stops the process. A real kernel restarts the call once the process is continued, if no handler has run, and this kernel models no stopped process."
+        | SigsuspendRefusal.DarwinPendingContinue ->
+            "under Darwin, a task in sigsuspend could take a pending SIGCONT, ignored or at its default. Darwin was measured to leave such a signal pending without ending the call until another signal does, which this kernel cannot express: it wakes a sleeping task whenever the state holds something for it to take."
+
 [<RequireQualifiedAccess>]
 module SyscallInterruption =
 
@@ -93,6 +130,75 @@ module SyscallInterruption =
         | ParkedSyscall.Kevent _
         | ParkedSyscall.Poll _
         | ParkedSyscall.KqueuePoll _ -> SignalRestartRule.FailsWithEintr
+        // Measured on Linux 6.18.5 and Darwin 27.0.0 (`sigsuspend-mask.c`, the
+        // "handler" and "pause-handler" rows): EINTR under SA_RESTART too.
+        | ParkedSyscall.SigSuspend -> SignalRestartRule.FailsWithEintr
+
+    /// What a task in `sigsuspend` does now, its temporary mask in force.
+    [<RequireQualifiedAccess>]
+    type internal Suspension<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+        /// The call ends: the task's return to user mode runs a handler, or
+        /// applies a default that terminates the process. The signals are as
+        /// the call leaves them, for that return to take from.
+        | Ends of SignalState<'Task, 'Handler>
+        /// The call sleeps on, with these signals.
+        | Sleeps of SignalState<'Task, 'Handler>
+
+    /// What the `sigsuspend` `task` is in does, with `signals` holding its
+    /// temporary mask and the mask to restore: what the task would take as it
+    /// returned to user mode decides it.
+    let internal suspension<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (system : UnixSystem<'Task, 'Handler>)
+        (signals : SignalState<'Task, 'Handler>)
+        : Result<Suspension<'Task, 'Handler>, SigsuspendRefusal>
+        =
+        let tasks = system.Tasks |> Map.keys |> Set.ofSeq
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        let rec decide
+            (signals : SignalState<'Task, 'Handler>)
+            : Result<Suspension<'Task, 'Handler>, SigsuspendRefusal>
+            =
+            match SignalState.takeOnReturn system.Process.CoreDumps system.Leader tasks task signals with
+            | Error refusal -> Error (SigsuspendRefusal.Receiver refusal)
+            // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/sigsuspend-mask.c`
+            // on Linux 6.18.5 and Darwin 27.0.0: a caught signal ended the call
+            // with EINTR once its handler had run, whether it was pending as the
+            // call was made or sent during it, SA_RESTART or not; and a TERM at
+            // its default killed the process, sent during the call or pending
+            // before it and unblocked by the temporary mask.
+            | Ok (Some (SignalDelivery.RunHandlers _), _)
+            | Ok (Some (SignalDelivery.DefaultTerminate _), _) -> Ok (Suspension.Ends signals)
+            // Measured: stopped and continued with no handler run, the call slept
+            // on, on both flavours.
+            | Ok (Some (SignalDelivery.DefaultStop signal), _) -> Error (SigsuspendRefusal.DefaultStop signal)
+            | Ok (Some (SignalDelivery.DefaultContinue _), taken) ->
+                match flavour with
+                // Measured: a SIGCONT at its default, blocked and pending, which
+                // the temporary mask unblocked, ended nothing, and was never
+                // delivered to a handler installed afterwards: Linux takes and
+                // discards it, then restarts the call (`-ERESTARTNOHAND` with no
+                // handler run).
+                | SimulatedUnixFlavour.Linux -> decide taken
+                | SimulatedUnixFlavour.Darwin -> Error SigsuspendRefusal.DarwinPendingContinue
+            | Ok (None, walked) ->
+                match flavour with
+                // Measured: an ignored signal, blocked and pending, which the
+                // temporary mask unblocked, ended nothing, and was never delivered
+                // to a handler installed afterwards. The return to user mode
+                // discards it, as Linux's does, and the call restarts.
+                | SimulatedUnixFlavour.Linux -> Ok (Suspension.Sleeps walked)
+                // Darwin discards an ignored signal at generation, SIGCONT apart,
+                // so a walk that discards something has found a SIGCONT, which
+                // Darwin was measured to leave pending.
+                | SimulatedUnixFlavour.Darwin ->
+                    if walked = signals then
+                        Ok (Suspension.Sleeps signals)
+                    else
+                        Error SigsuspendRefusal.DarwinPendingContinue
+
+        decide signals
 
     /// The handler frames `task` would get, innermost first, were it to return
     /// to user mode now: empty when it would run no handler.
@@ -117,7 +223,9 @@ module SyscallInterruption =
 
     /// Whether `task`, asleep in a syscall, is woken by a signal now: it would
     /// run a handler as it returned to user mode, or this library refuses to say
-    /// what it would do, which the syscall's finishing call then reports.
+    /// what it would do, which the syscall's finishing call then reports. A task
+    /// in `sigsuspend` is woken also when what it could take would change the
+    /// signal state, which its finishing call commits before it sleeps again.
     let internal wakes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
@@ -129,6 +237,20 @@ module SyscallInterruption =
         if List.isEmpty (SignalState.pending system.Process.Signals) then
             false
         else
+
+        match UnixTaskTable.parkedFor task system.Tasks with
+        // A sigsuspend decides for itself what a signal it could take does to
+        // it: a woken one finishes, parks again having discarded what Linux
+        // discards, or refuses what this library cannot say. Only a call that
+        // would sleep on unchanged stays asleep, so that every refusal
+        // `UnixSignal.finishSigsuspend` makes is reached.
+        | Some ParkedSyscall.SigSuspend ->
+            match suspension task system system.Process.Signals with
+            | Ok (Suspension.Sleeps signals) -> signals <> system.Process.Signals
+            | Ok (Suspension.Ends _)
+            | Error _ -> true
+        | Some _
+        | None ->
 
         match framesOnReturn task system with
         | Ok [] -> false
@@ -161,7 +283,7 @@ module SyscallInterruption =
     /// put bytes into a pipe does. `Error` where this library will not say what
     /// the task takes as it returns to user mode, or where it is a signal's
     /// default action.
-    let interrupts<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal interrupts<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<bool, SyscallInterruptionRefusal>
@@ -175,7 +297,7 @@ module SyscallInterruption =
     /// Under Linux it may, whatever signal is pending: the handlers run as the
     /// task returns. Under Darwin it may only if no signal with a handler is
     /// deliverable to the task too.
-    let beforeCompleting<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal beforeCompleting<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<unit, SyscallInterruptionRefusal>
@@ -201,7 +323,7 @@ module SyscallInterruption =
     /// and the handlers run as it returns.
     ///
     /// Fails loudly if `task` is not asleep in a syscall.
-    let ofPark<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal ofPark<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallInterruption option, SyscallInterruptionRefusal>

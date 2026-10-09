@@ -248,7 +248,7 @@ type Resolution =
 /// It carries the rules the walk began under and the filesystem it began
 /// against, so a resumption cannot be given different ones.
 [<NoEquality ; NoComparison>]
-type PausedResolution =
+type internal PausedResolution =
     private
         {
             Limits : PathLimits
@@ -599,7 +599,7 @@ module PathWalk =
     /// caller is `rename`, which must ask *between* its two final lookups —
     /// measured, Linux reports an orphaned destination parent before it measures
     /// the destination's final name, and after it measures the source's.
-    let pausedParentIsOrphaned (paused : PausedResolution) : bool =
+    let internal pausedParentIsOrphaned (paused : PausedResolution) : bool =
         match box paused with
         | null ->
             failwith
@@ -616,7 +616,7 @@ module PathWalk =
     /// directory that component was taken from. Two paths whose parents answer
     /// differently are on different filesystems, which is the question
     /// `rename(2)` asks before either final name is looked up.
-    let pausedMountedRoot (paused : PausedResolution) : InodeNumber option =
+    let internal pausedMountedRoot (paused : PausedResolution) : InodeNumber option =
         match box paused with
         | null ->
             failwith
@@ -636,7 +636,7 @@ module PathWalk =
     /// `ResolvedTarget.Directory`. A kernel's parent walk reports that kind of
     /// last component itself, which `rename(2)` asks about before either
     /// final name is looked up.
-    let pausedNamesNoFinal (paused : PausedResolution) : bool =
+    let internal pausedNamesNoFinal (paused : PausedResolution) : bool =
         match box paused with
         | null ->
             failwith
@@ -713,7 +713,7 @@ module PathWalk =
     /// symlink, the lookup can splice a target into the pathname buffer and
     /// send the walk on to a different directory, so this re-enters the parent
     /// walk and finishes again.
-    let rec completeResolution (paused : PausedResolution) : Result<Resolution, PathFailure> =
+    let rec internal completeResolution (paused : PausedResolution) : Result<Resolution, PathFailure> =
         // The record is a reference type, so `Unchecked.defaultof` and C#
         // `default` give null rather than a record of zeroed fields — and a
         // field access on that reports a NullReferenceException from inside the
@@ -922,7 +922,7 @@ module PathWalk =
     /// screened. When that refusal falls on a traversal past half the budget,
     /// Linux's answer depends on its dentry cache, and the walk is refused
     /// instead (`PathRefusal.ProtectedSymlinkCacheDependent`).
-    let resolveParent
+    let internal resolveParent
         (limits : PathLimits)
         (credentials : Credentials)
         (symlinkProtection : SymlinkProtection)
@@ -979,7 +979,7 @@ module PathWalk =
     /// Resolve `path` all the way: `resolveParent` followed by
     /// `completeResolution`, which is what every caller resolving a single path
     /// wants. Only a caller interleaving two resolutions needs the halves.
-    let resolveFull
+    let internal resolveFull
         (limits : PathLimits)
         (credentials : Credentials)
         (symlinkProtection : SymlinkProtection)
@@ -996,7 +996,7 @@ module PathWalk =
     /// `resolveFull`, discarding the how-it-finished facts. For the lookup
     /// operations, which are unanimous across platforms and so need none of
     /// them.
-    let resolve
+    let internal resolve
         (limits : PathLimits)
         (credentials : Credentials)
         (symlinkProtection : SymlinkProtection)
@@ -1013,7 +1013,7 @@ module PathWalk =
     /// which is the one thing `resolve` deliberately does not do — so this is
     /// where "the file must already exist" is decided, once, for every caller
     /// that needs it.
-    let existingOf (target : ResolvedTarget) : Result<InodeNumber, UnixError> =
+    let internal existingOf (target : ResolvedTarget) : Result<InodeNumber, UnixError> =
         match target with
         | ResolvedTarget.Directory (inode, _) -> Ok inode
         | ResolvedTarget.Entry (_, _, Some inode) -> Ok inode

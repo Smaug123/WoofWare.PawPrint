@@ -325,6 +325,7 @@ module TestCallHolds =
         | ParkedSyscall.PipeWrite _ -> 5
         | ParkedSyscall.Kevent _ -> 6
         | ParkedSyscall.KqueuePoll _ -> 7
+        | ParkedSyscall.SigSuspend -> 8
 
     /// The recorded facts against the model: each description's holds, which
     /// descriptions exist, and which thread IDs are live.

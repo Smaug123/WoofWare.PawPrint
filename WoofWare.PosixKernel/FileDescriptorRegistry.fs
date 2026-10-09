@@ -302,7 +302,7 @@ type SocketOptions =
     }
 
 [<RequireQualifiedAccess>]
-module SocketOptions =
+module internal SocketOptions =
     /// What a socket starts with on both kernels, measured: every option off,
     /// and a linger time of zero. A new IPv6 socket's `Ipv6Only` is instead the
     /// machine's sysctl; see `UnixMachineState.Ipv6OnlyByDefault`.
@@ -1061,13 +1061,13 @@ module DescriptorLimitRefusal =
         $"the call would put a descriptor at %d{refusal.Descriptor}, at or above %d{refusal.Bound}. This kernel assumes the process's RLIMIT_NOFILE soft limit is at least %d{refusal.Bound}, the default a process starts with, and models no higher one: a process whose limit is %d{refusal.Bound} gets EMFILE, EINVAL or EBADF here, and one whose limit is higher gets the descriptor."
 
 [<RequireQualifiedAccess>]
-type FileDescriptorDupError =
+type internal FileDescriptorDupError =
     /// The supplied fd is not a live entry in the table. `dup(2)` reports
     /// this as `EBADF`.
     | BadFd
 
 [<RequireQualifiedAccess>]
-type FileDescriptorCloseError =
+type internal FileDescriptorCloseError =
     /// The supplied fd is not a live entry in the table. `close(2)` reports
     /// this as `EBADF`.
     | BadFd
@@ -1077,7 +1077,7 @@ type FileDescriptorCloseError =
 /// `LOCK_NB` is not part of this: the registry reports that the lock is
 /// unavailable, and `UnixDescriptor.flock` decides between failing and waiting.
 [<RequireQualifiedAccess>]
-type FlockRequest =
+type internal FlockRequest =
     /// `LOCK_SH` or `LOCK_EX`. Replaces whatever lock this description already
     /// held, which is how `flock(2)` spells conversion — there is no separate
     /// upgrade operation.
@@ -1086,7 +1086,7 @@ type FlockRequest =
     | Release
 
 [<RequireQualifiedAccess>]
-type FlockError =
+type internal FlockError =
     /// The supplied fd is not a live entry in the table; `EBADF`.
     | BadFd
     /// Another open file description holds a conflicting lock on the same file.
@@ -1429,7 +1429,7 @@ module OpenFileTable =
     /// For a holder that has just let go of `id`. Like
     /// `FileDescriptorRegistry.dropDescriptor`, it releases nothing the
     /// description referenced.
-    let destroyIfUnreferenced
+    let internal destroyIfUnreferenced
         (id : OpenFileDescriptionId)
         (table : OpenFileTable)
         : OpenFileTable * OpenFileDescription option
@@ -1465,7 +1465,7 @@ module OpenFileTable =
     /// the other: parking on a lock means waiting for exactly the condition the
     /// acquire tested, so the two must be one function rather than two that
     /// agree.
-    let flockConflicts
+    let internal flockConflicts
         (object : OpenFileObject)
         (requester : OpenFileDescriptionId)
         (mode : FlockMode)
@@ -1541,7 +1541,7 @@ module OpenFileTable =
     /// Mark the kqueue the open file description `kqueue` names as drained
     /// (see `KqueueState.Drained`). Loudly partial on a dead or non-kqueue
     /// description: the caller has just resolved it as a kqueue.
-    let drainKqueue (kqueue : OpenFileDescriptionId) (table : OpenFileTable) : OpenFileTable =
+    let internal drainKqueue (kqueue : OpenFileDescriptionId) (table : OpenFileTable) : OpenFileTable =
         match tryFind kqueue table with
         | Some {
                    Target = OpenFileTarget.Kqueue state
@@ -1569,7 +1569,12 @@ module OpenFileTable =
     ///
     /// Checks nothing about `state`; `FileDescriptorRegistry.checkInvariants`
     /// states what a kqueue's state must satisfy.
-    let setKqueueState (kqueue : OpenFileDescriptionId) (state : KqueueState) (table : OpenFileTable) : OpenFileTable =
+    let internal setKqueueState
+        (kqueue : OpenFileDescriptionId)
+        (state : KqueueState)
+        (table : OpenFileTable)
+        : OpenFileTable
+        =
         match tryFind kqueue table with
         | Some {
                    Target = OpenFileTarget.Kqueue _
@@ -2370,7 +2375,7 @@ module FileDescriptorRegistry =
     /// created, so the description's state is shared with `oldFd` rather than
     /// copied. When `oldFd` is not a live entry, returns `Error BadFd`,
     /// matching the `EBADF` behaviour of `dup(2)`.
-    let dup
+    let internal dup
         (oldFd : int)
         (registry : FileDescriptorRegistry)
         : Result<int * FileDescriptorRegistry, FileDescriptorDupError>
@@ -2562,7 +2567,7 @@ module FileDescriptorRegistry =
     /// so is whether a descriptor below the bound is free
     /// (`SimulatedUnixPlatform.descriptorBound`), which `UnixSystem.checkInvariants`
     /// holds every descriptor to.
-    let openFile
+    let internal openFile
         (inode : InodeNumber)
         (accessMode : FileAccessMode)
         (registry : FileDescriptorRegistry)
@@ -2658,7 +2663,7 @@ module FileDescriptorRegistry =
     /// anonymous file `O_RDWR`.
     ///
     /// Total, like `openFile` and for the same reason.
-    let createEpoll (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+    let internal createEpoll (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
         createAnonymous
             (OpenFileTarget.Epoll
                 {
@@ -2677,7 +2682,7 @@ module FileDescriptorRegistry =
     /// descriptor flags are `UnixKqueue.kqueue`'s to set.
     ///
     /// Total, like `createEpoll`.
-    let createKqueue (owner : ProcessId) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+    let internal createKqueue (owner : ProcessId) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
         createAnonymous
             (OpenFileTarget.Kqueue
                 {
@@ -2709,7 +2714,7 @@ module FileDescriptorRegistry =
     ///
     /// Total, like `openFile` and `createEpoll`: there is no resource a socket
     /// could exhaust, and the bound is the caller's to check.
-    let createSocket (socketId : SocketId) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
+    let internal createSocket (socketId : SocketId) (registry : FileDescriptorRegistry) : int * FileDescriptorRegistry =
         createDescription
             {
                 Target = OpenFileTarget.Socket socketId
@@ -3074,7 +3079,7 @@ module FileDescriptorRegistry =
         dangling @ kqueueRegistrations
 
     /// Fail loudly if `registry` is not sound, naming `context`.
-    let assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
+    let internal assertInvariants (context : string) (registry : FileDescriptorRegistry) : FileDescriptorRegistry =
         match checkInvariants registry with
         | [] -> registry
         | defects ->
@@ -3087,7 +3092,7 @@ module FileDescriptorRegistry =
     /// Exists so that `checkInvariants` can be tested. One greppable token;
     /// nothing outside tests should use it.
     [<RequireQualifiedAccess>]
-    module Unchecked =
+    module internal Unchecked =
         /// A registry whose descriptor table is `fds` and whose open file
         /// descriptions are `descriptions`, each counting the descriptors in
         /// `fds` that name it and no holds, with `nextId` the identity the next

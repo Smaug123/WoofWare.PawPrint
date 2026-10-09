@@ -420,6 +420,19 @@ type UnixSystemDefect<'Task> =
     | BoundToPortZero of socket : SocketId
     /// A task the table does not hold has handler frames.
     | HandlerFramesWithoutTask of task : 'Task
+    /// A task the table does not hold has a signal mask.
+    | MaskWithoutTask of task : 'Task
+    /// A task the table does not hold has a mask for a `sigsuspend(2)` to
+    /// restore.
+    | MaskToRestoreWithoutTask of task : 'Task
+    /// A task asleep in a syscall other than `sigsuspend(2)` has a mask for a
+    /// `sigsuspend` to restore. A task has one only while it is in that call or
+    /// returning from it, and a task returns to user mode before it makes
+    /// another call.
+    | MaskToRestoreOutsideSigsuspend of task : 'Task * parked : ParkedSyscall
+    /// A task asleep in `sigsuspend(2)` has no mask to restore, so its return
+    /// would leave it with the call's temporary mask.
+    | SigsuspendWithoutMaskToRestore of task : 'Task
     /// A pending signal is directed at a task the table does not hold, so it
     /// can never be delivered and sits in the queue for the rest of the run.
     | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
@@ -840,7 +853,7 @@ module UnixSystem =
         Map.tryFind queue system.Machine.PollQueues
 
     /// The pipe `pipeId` names. Loudly partial, as `UnixMachineState.pipe` is.
-    let pipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal pipe<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (pipeId : PipeId)
         (system : UnixSystem<'Task, 'Handler>)
         : PipeState
@@ -849,7 +862,7 @@ module UnixSystem =
 
     /// How ready the socket `socketId` is. See
     /// `UnixMachineState.socketReadinessLevel`.
-    let socketReadinessLevel<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal socketReadinessLevel<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (system : UnixSystem<'Task, 'Handler>)
         : ReadinessLevel
@@ -2029,6 +2042,8 @@ module UnixSystem =
             |> List.collect (fun (task, state) ->
                 match state.Parked |> Option.map (fun park -> park.Syscall) with
                 | None -> []
+                // Names no description.
+                | Some ParkedSyscall.SigSuspend -> []
                 | Some (ParkedSyscall.Flock parked) ->
                     if Map.containsKey parked.Requester descriptions then
                         []
@@ -2349,6 +2364,46 @@ module UnixSystem =
                 |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
                 |> List.map UnixSystemDefect.HandlerFramesWithoutTask
 
+            let masks =
+                SignalState.tasksWithMasks signals
+                |> Set.toList
+                |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
+                |> List.map UnixSystemDefect.MaskWithoutTask
+
+            // A mask to restore exists from a `sigsuspend` until its task
+            // returns to user mode, so exactly while the task is parked in the
+            // call or has been answered and not yet returned; which of those
+            // two is true is the client's, so what is checked is that no task
+            // parked in anything else has one, and every task parked in it does.
+            let toRestore =
+                let restoring = SignalState.tasksWithMasksToRestore signals
+
+                let orphaned =
+                    restoring
+                    |> Set.toList
+                    |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
+                    |> List.map UnixSystemDefect.MaskToRestoreWithoutTask
+
+                let parked =
+                    system.Tasks
+                    |> Map.toList
+                    |> List.choose (fun (task, state) ->
+                        match UnixTaskState.park state with
+                        | Some {
+                                   Syscall = ParkedSyscall.SigSuspend
+                               } when not (Set.contains task restoring) ->
+                            Some (UnixSystemDefect.SigsuspendWithoutMaskToRestore task)
+                        | Some {
+                                   Syscall = ParkedSyscall.SigSuspend
+                               } -> None
+                        | Some park when Set.contains task restoring ->
+                            Some (UnixSystemDefect.MaskToRestoreOutsideSigsuspend (task, park.Syscall))
+                        | Some _
+                        | None -> None
+                    )
+
+                orphaned @ parked
+
             let targets =
                 SignalState.pending signals
                 |> List.choose (fun entry ->
@@ -2359,7 +2414,7 @@ module UnixSystem =
                     | ValueNone -> None
                 )
 
-            numberings @ frames @ targets
+            numberings @ frames @ masks @ toRestore @ targets
 
         let supplementaryGroups =
             let count = List.length system.Process.Credentials.SupplementaryGroups

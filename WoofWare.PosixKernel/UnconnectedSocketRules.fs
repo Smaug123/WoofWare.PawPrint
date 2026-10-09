@@ -3,7 +3,7 @@ namespace WoofWare.PosixKernel
 /// What `read(2)` does on a socket with no peer: one that is fresh from
 /// `socket(2)`, bound, or listening.
 [<RequireQualifiedAccess>]
-type UnconnectedSocketRead =
+type internal UnconnectedSocketRead =
     /// The call returns 0, having read nothing.
     | Empty
     /// The call fails with `error`.
@@ -14,7 +14,7 @@ type UnconnectedSocketRead =
 /// What `write(2)` does on a socket with no peer: one that is fresh from
 /// `socket(2)`, bound, or listening.
 [<RequireQualifiedAccess>]
-type UnconnectedSocketWrite =
+type internal UnconnectedSocketWrite =
     /// The call fails with `error`, and raises no signal.
     | Fails of error : UnixError
     /// The call fails with `EPIPE` and raises `SIGPIPE`, at the writing task, as
@@ -28,7 +28,7 @@ type UnconnectedSocketWrite =
 
 /// How each flavour answers `read(2)` and `write(2)` on a socket with no peer.
 [<RequireQualifiedAccess>]
-module UnconnectedSocketRules =
+module internal UnconnectedSocketRules =
 
     /// What `read(2)` of `count` bytes does on an unconnected socket of this
     /// domain and kind, through a description that carries `O_NONBLOCK` if

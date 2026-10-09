@@ -116,8 +116,10 @@ type NonCanceledPosixSignal =
     /// a call the shim made failed, and the shim does not check.
     | ContinuesWithErrno of IlMachineState * error : UnixError
     /// The shim re-raised the signal at its default, which killed the process;
-    /// the state is the machine as it stood when the signal was re-raised.
-    | Terminated of IlMachineState * signal : Signal * coreDumped : bool
+    /// the state is the machine as it stood when the signal was re-raised, and
+    /// `ended` the kernel's answer to the re-raise, whose `Termination` is
+    /// `ProcessTermination.Signaled`.
+    | Terminated of IlMachineState * ended : EndedProcess<ThreadId, NativeSignalHandler>
 
 [<RequireQualifiedAccess>]
 module NativeSystemNative =
@@ -430,8 +432,7 @@ module NativeSystemNative =
                 NonCanceledPosixSignal.Continues (restored.MapKernel (EmulatedKernel.withUnix after))
             | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
                 match ended.Termination with
-                | ProcessTermination.Signaled (killedBy, coreDumped) ->
-                    NonCanceledPosixSignal.Terminated (restored, killedBy, coreDumped)
+                | ProcessTermination.Signaled _ -> NonCanceledPosixSignal.Terminated (restored, ended)
                 | ProcessTermination.Exited _ ->
                     failwith
                         $"%s{operation}: re-raising %O{signal} ended the process with an exit status (%O{ended.Termination}), which only an exit can"
@@ -4005,7 +4006,8 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.PipeRead _ as other)
-            | Some (ParkedSyscall.PipeWrite _ as other) ->
+            | Some (ParkedSyscall.PipeWrite _ as other)
+            | Some (ParkedSyscall.SigSuspend as other) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
@@ -5353,7 +5355,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.Poll _)
             | Some (ParkedSyscall.KqueuePoll _)
             | Some (ParkedSyscall.PipeRead _)
-            | Some (ParkedSyscall.PipeWrite _) ->
+            | Some (ParkedSyscall.PipeWrite _)
+            | Some ParkedSyscall.SigSuspend ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
@@ -6847,7 +6850,8 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in an accept. A task blocks in one syscall at a time, so the accept's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.PipeRead _ as other)
-            | Some (ParkedSyscall.PipeWrite _ as other) ->
+            | Some (ParkedSyscall.PipeWrite _ as other)
+            | Some (ParkedSyscall.SigSuspend as other) ->
                 // Unreachable, for the same reason.
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
@@ -7145,7 +7149,8 @@ module NativeSystemNative =
             | Some (ParkedSyscall.Flock _)
             | Some (ParkedSyscall.Accept _)
             | Some (ParkedSyscall.PipeRead _)
-            | Some (ParkedSyscall.PipeWrite _) ->
+            | Some (ParkedSyscall.PipeWrite _)
+            | Some ParkedSyscall.SigSuspend ->
                 // Unreachable: a task parked in another syscall is not running
                 // IL. Refused rather than treated as a first entry, which would
                 // park over the stale record and destroy the evidence.
@@ -7351,8 +7356,8 @@ module NativeSystemNative =
                     returning result (effectOf system) state
                 | WriteOutcome.ProcessEnded ended ->
                     match ended.Termination with
-                    | ProcessTermination.Signaled (signal, coreDumped) ->
-                        ExecutionResult.SignalTerminated (state, signal, coreDumped)
+                    | ProcessTermination.Signaled _ ->
+                        ExecutionResult.SignalTerminated (state, ended)
                         |> NativeHandlerResult.ofExecutionResult
                         |> Some
                     | ProcessTermination.Exited _ ->
@@ -7736,8 +7741,8 @@ module NativeSystemNative =
             | NonCanceledPosixSignal.Continues state -> NativeHandlerResult.completed state |> Some
             | NonCanceledPosixSignal.ContinuesWithErrno (state, error) ->
                 withErrnoOnly ctx error state |> NativeHandlerResult.completed |> Some
-            | NonCanceledPosixSignal.Terminated (state, signal, coreDumped) ->
-                ExecutionResult.SignalTerminated (state, signal, coreDumped)
+            | NonCanceledPosixSignal.Terminated (state, ended) ->
+                ExecutionResult.SignalTerminated (state, ended)
                 |> NativeHandlerResult.ofExecutionResult
                 |> Some
         | Some "SystemNative_DisablePosixSignalHandling",
