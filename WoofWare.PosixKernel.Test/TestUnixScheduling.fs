@@ -594,15 +594,15 @@ module TestUnixScheduling =
 
         printfn $"%A{reached}"
 
-        // Eight runs of 300 reached at least 3247 displaced getcpus, 61 woken
-        // dispatches (122 once `DispatchWoken` had its present weight), 554
-        // displacements across processes and 260 dispatches beyond the
-        // machine. Each floor is a third of that or less, so a generator change
-        // that starves one fails here rather than passing on the others.
+        // Thirteen runs of 300 reached at least 3278 displaced getcpus, 91
+        // woken dispatches, 544 displacements across processes and 256
+        // dispatches beyond the machine. Each floor is a third of that or less,
+        // so a generator change that starves one fails here rather than
+        // passing on the others.
         let floors =
             [
                 "a displaced task's getcpu", reached.DisplacedGetCpu, 1000
-                "a woken task dispatched while parked", reached.WokenDispatched, 40
+                "a woken task dispatched while parked", reached.WokenDispatched, 30
                 "a displacement across processes", reached.CrossProcessDisplacement, 180
                 "a dispatch beyond the machine", reached.BeyondDispatch, 85
             ]
