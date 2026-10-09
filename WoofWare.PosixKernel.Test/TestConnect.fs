@@ -182,6 +182,70 @@ module TestConnect =
             UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd UserBuffer.Mapped 16u system
             |> shouldEqual (Error (SockaddrCopyRefusal.UnmodelledDomain (SocketId 0L, domain)))
 
+    /// `connectSocket` skips the descriptor screens, but not the domain's: a
+    /// Unix-domain socket has no IPv4 destination to connect to, even with a
+    /// listener at the address its bytes would name as one.
+    [<TestCaseSource(nameof platforms)>]
+    let ``connectSocket refuses a Unix-domain socket as connect does`` (platform : SimulatedUnixPlatform) : unit =
+        let _, system = clientAndListener platform 5000us
+
+        let system =
+            { system with
+                Machine =
+                    { system.Machine with
+                        Sockets =
+                            Map.add
+                                (SocketId 0L)
+                                { streamSocket None SocketPhase.Idle with
+                                    Domain = SocketDomain.Unix
+                                }
+                                system.Machine.Sockets
+                    }
+            }
+
+        UnixConnection.connectSocket
+            (SocketId 0L)
+            false
+            16u
+            (CopyIn.mapped platform 16u (CopyIn.inet platform (loopback 5000us)))
+            system
+        |> shouldEqual (
+            Error (ConnectRefusal.Copy (SockaddrCopyRefusal.UnmodelledDomain (SocketId 0L, SocketDomain.Unix)))
+        )
+
+        // A length the copy-in rejects outright: Linux's connect answers it
+        // before anything about the socket, Darwin's after the domain.
+        let unixFd, unixSystem =
+            withSocket
+                (SocketId 9L)
+                ({ streamSocket None SocketPhase.Idle with
+                    Domain = SocketDomain.Unix
+                })
+                system
+
+        let overlong =
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux -> 129u
+            | SimulatedUnixFlavour.Darwin -> 256u
+
+        let viaSocket =
+            UnixConnection.connectSocket (SocketId 9L) false overlong ImmutableArray.Empty unixSystem
+
+        viaSocket
+        |> shouldEqual (
+            CopyIn.connect unixFd UserBuffer.Mapped overlong (CopyIn.inet platform (loopback 5000us)) unixSystem
+        )
+
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux ->
+            viaSocket
+            |> shouldEqual (Ok (ConnectOutcome.Failed UnixError.EINVAL, unixSystem))
+        | SimulatedUnixFlavour.Darwin ->
+            viaSocket
+            |> shouldEqual (
+                Error (ConnectRefusal.Copy (SockaddrCopyRefusal.UnmodelledDomain (SocketId 9L, SocketDomain.Unix)))
+            )
+
     /// Measured: Linux takes 16 through 128 and answers EINVAL above, Darwin
     /// insists on exactly 16, answers EINVAL up to 255, and ENAMETOOLONG beyond.
     /// Only the outright rejections are answers *before the copy*; the rest reach

@@ -1269,6 +1269,11 @@ module UnixConnection =
     /// storage: exactly as many as `admitSockaddrCopy` answers `Transfer` with
     /// for a mapped buffer, and none where it rejects the length before the
     /// copy. Passing any other number is refused, as a bug in the caller.
+    ///
+    /// The socket's domain is screened as `connect` screens it: a socket in a
+    /// domain whose addresses this kernel does not read is refused, after
+    /// Linux's rejection of a length its copy-in will not take, which comes
+    /// before anything about the socket.
     let internal connectSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (nonBlocking : bool)
@@ -1283,6 +1288,25 @@ module UnixConnection =
             "UnixConnection.connectSocket"
             (UnixSocket.mappedCopyLength platform declaredLength)
             copied
+
+        let rejectedBeforeTheSocket =
+            match
+                SimulatedUnixPlatform.flavour platform,
+                SimulatedUnixPlatform.bindAddressLength
+                    platform
+                    SimulatedUnixPlatform.internetSocketAddressSize
+                    declaredLength
+            with
+            | SimulatedUnixFlavour.Linux, BindLengthVerdict.RejectedBeforeCopy error -> Some error
+            | _ -> None
+
+        match rejectedBeforeTheSocket with
+        | Some error -> Ok (ConnectOutcome.Failed error, system)
+        | None ->
+
+        match UnixSocket.screenSockaddrDomain socketId (UnixMachineState.socket socketId system.Machine) with
+        | Error refusal -> Error (ConnectRefusal.Copy refusal)
+        | Ok () ->
 
         connectDecoded
             socketId

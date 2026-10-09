@@ -435,6 +435,18 @@ module UnixSocket =
         | UserBuffer.Opaque -> SockaddrCopyStep.Copies (length, false)
         | UserBuffer.Mapped -> SockaddrCopyStep.Copies (length, true)
 
+    /// The domain screen every sockaddr-taking call makes of the socket it has
+    /// found: this kernel reads a sockaddr only for an IPv4 socket.
+    let internal screenSockaddrDomain
+        (socketId : SocketId)
+        (socket : SocketDescription)
+        : Result<unit, SockaddrCopyRefusal>
+        =
+        match socket.Domain with
+        | SocketDomain.Inet6
+        | SocketDomain.Unix -> Error (SockaddrCopyRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketDomain.Inet -> Ok ()
+
     /// Everything `bind(2)` or `connect(2)` decides before the kernel copies the
     /// caller's sockaddr in, which is where a client that cannot always produce
     /// those bytes needs to be let off. See `SockaddrCopyAdmission`.
@@ -496,12 +508,9 @@ module UnixSocket =
         | OpenFileTarget.Epoll _ -> answered (UnixError.ENOTSOCK)
         | OpenFileTarget.Socket socketId ->
 
-        let socket = UnixMachineState.socket socketId system.Machine
-
-        match socket.Domain with
-        | SocketDomain.Inet6
-        | SocketDomain.Unix -> Error (SockaddrCopyRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.Inet ->
+        match screenSockaddrDomain socketId (UnixMachineState.socket socketId system.Machine) with
+        | Error refusal -> Error refusal
+        | Ok () ->
 
         match copy.Force () with
         | SockaddrCopyStep.Answered error -> answered error
