@@ -2741,13 +2741,12 @@ module NativeSystemNative =
             //
             // Under Linux the value is the calling task's placement, fixed at
             // thread creation by `EmulatedKernel.cpuForRotation` and stored in
-            // `ThreadState.Cpu`; see there for why round-robin, and why
-            // "pinned to" and "currently running on" coincide under a
-            // scheduler that never migrates threads. It is returned verbatim
-            // rather than re-derived here: `effectiveProcessorCount` reads the
-            // kernel's env table live, so if environment mutation is ever
-            // added, a re-derivation could silently turn a guest's shard index
-            // into an out-of-range one.
+            // the task's `Cpu`; see there for why round-robin over the
+            // machine's processors rather than the count the guest reads, and
+            // why "pinned to" and "currently running on" coincide under a
+            // scheduler that never migrates threads. It is a processor the
+            // machine has, and is returned verbatim rather than re-derived
+            // here.
             match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
             | SimulatedUnixFlavour.Darwin -> pushInt32 (-1) ctx |> Some
             | SimulatedUnixFlavour.Linux ->
