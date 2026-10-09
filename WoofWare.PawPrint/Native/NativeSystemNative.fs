@@ -2741,21 +2741,25 @@ module NativeSystemNative =
             // reads as "not supported" and replaces with
             // `Environment.CurrentManagedThreadId`.
             //
-            // Under Linux the value is the calling task's placement, fixed at
-            // thread creation by `EmulatedKernel.cpuForRotation` and stored in
-            // the task's `Cpu`; see there for why round-robin over the
-            // machine's processors rather than the count the guest reads, and
-            // why "pinned to" and "currently running on" coincide under a
-            // scheduler that never migrates threads. It is a processor the
-            // machine has, and is returned verbatim rather than re-derived
-            // here.
+            // Under Linux the shim calls `sched_getcpu`, which is the kernel's
+            // `getcpu`: the processor the kernel records the calling task as
+            // running on. The driver reports each thread it runs
+            // (`EmulatedKernel.dispatch`) to the processor it was placed on at
+            // creation (`EmulatedKernel.cpuForRotation`; see there for why
+            // round-robin over the machine's processors rather than the count
+            // the guest reads). The kernel's `getcpu` fails loudly if the
+            // calling thread is not running, which would mean the driver
+            // skipped that report.
             match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
             | SimulatedUnixFlavour.Darwin -> pushInt32 (-1) ctx |> Some
             | SimulatedUnixFlavour.Linux ->
-                let (CpuId.CpuId cpu) =
-                    UnixTaskState.cpu (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks)
-
-                pushInt32 cpu ctx |> Some
+                match UnixScheduling.getcpu ctx.Thread state.Kernel.System with
+                | Ok answer ->
+                    let (CpuId.CpuId cpu) = answer.Cpu
+                    pushInt32 cpu ctx |> Some
+                | Error refusal ->
+                    failwith
+                        $"SystemNative_SchedGetCpu: the Linux-flavoured kernel refused getcpu: %s{GetCpuRefusal.describe refusal} (this is a bug in PawPrint)."
         | Some "SystemNative_TryGetUInt32OSThreadId",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.UInt32) ->

@@ -4236,6 +4236,23 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // The kernel answers `sched_getcpu` only for a thread it records as
+                // running, and a park takes a thread off its processor, so this
+                // checks that the driver reports a thread again after it parks:
+                // once with another thread stepping before the wake, and once
+                // with none. Two processors, so the threads are not all on one.
+                FileName = "ProcessorIdAfterPark.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        ProcessorCount = 2
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `DOTNET_PROCESSOR_COUNT` above the machine's count: the guest
                 // reads 8 from `Environment.ProcessorCount`, but every thread is
                 // placed on one of the machine's two processors, because a real
