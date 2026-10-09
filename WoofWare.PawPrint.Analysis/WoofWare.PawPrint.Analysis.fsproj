@@ -18,6 +18,7 @@
 
     <ItemGroup>
         <Compile Include="AssemblyInfo.fs" />
+        <Compile Include="ResourceLookup.fs" />
         <Compile Include="Assumption.fs" />
         <Compile Include="Escapes.fs" />
         <Compile Include="StackValues.fs" />
