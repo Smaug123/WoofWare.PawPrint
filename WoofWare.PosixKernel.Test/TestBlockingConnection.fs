@@ -678,7 +678,11 @@ module TestBlockingConnection =
         let cover (label : string) =
             covered.AddOrUpdate (label, 1, (fun _ n -> n + 1)) |> ignore
 
-        let property (platform : SimulatedUnixPlatform, restart : bool, ops : BlockingConnectionOp list) : unit =
+        let property
+            (cover : string -> unit)
+            (platform : SimulatedUnixPlatform, restart : bool, ops : BlockingConnectionOp list)
+            : unit
+            =
             let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
             let flavourName = if linux then "Linux" else "Darwin"
             let client, server, start = pair (systemOn platform restart)
@@ -1130,7 +1134,34 @@ module TestBlockingConnection =
                 return platform, restart, opening @ ops
             }
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 400, Prop.forAll (Arb.fromGen gen) property)
+        let inParallel =
+            Some
+                {
+                    MaxDegreeOfParallelism = 4
+                }
+
+        // The floors below are a claim about the generator, so they are
+        // counted over a fixed sample: a run cannot miss one by chance.
+        let fixedSample =
+            Config.QuickThrowOnFailure
+                .WithMaxTest(400)
+                .WithReplay(
+                    Some
+                        {
+                            Rnd = Rnd 20261010UL
+                            Size = None
+                        }
+                )
+                .WithParallelRunConfig (inParallel)
+
+        Check.One (fixedSample, Prop.forAll (Arb.fromGen gen) (property cover))
+
+        // Fresh cases on every run, which the property checks and the floors
+        // do not count.
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest(400).WithParallelRunConfig (inParallel),
+            Prop.forAll (Arb.fromGen gen) (property ignore)
+        )
 
         let coverage (label : string) : int =
             match covered.TryGetValue label with
@@ -1145,12 +1176,13 @@ module TestBlockingConnection =
         for line in report do
             System.Console.WriteLine line
 
-        // Each reached in every one of sixty runs of 400 cases, the rarest
-        // made common by `openingGen`. Darwin's buffers are the larger, so its
-        // writers sleep less often, and those of its paths, like a finish's
-        // ECONNRESET and the non-blocking refusals, are reached only now and
-        // then: the rows below hold each of them, and the property checks
-        // every one it reaches.
+        // Each reached by the fixed sample, which is what the counts printed
+        // above are of; a change that loses one fails on every run, and wants
+        // an opening in `openingGen` rather than another seed. Darwin's buffers
+        // are the larger, so its writers sleep less often, and those of its
+        // paths, like a finish's ECONNRESET and the non-blocking refusals, are
+        // reached only now and then: the rows below hold each of them, and the
+        // property checks every one it reaches.
         for flavour in [ "Linux" ; "Darwin" ] do
             for what in
                 [
