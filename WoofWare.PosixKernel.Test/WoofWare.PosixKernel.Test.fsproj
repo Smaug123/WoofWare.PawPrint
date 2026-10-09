@@ -66,6 +66,7 @@
     <Compile Include="TestSyscallInterruption.fs" />
     <Compile Include="TestUnixTaskLifecycle.fs" />
     <Compile Include="TestThreadIds.fs" />
+    <Compile Include="TestCpuRange.fs" />
     <Compile Include="TestCallHolds.fs" />
     <Compile Include="TestProcessTermination.fs" />
     <Compile Include="TestProcessTerminationAgainstHost.fs" />

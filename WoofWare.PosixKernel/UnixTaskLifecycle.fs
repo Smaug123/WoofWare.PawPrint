@@ -254,8 +254,9 @@ module UnixTaskLifecycle =
     /// Refuses a spawn on Darwin once the machine's thread ID counter has
     /// reached the top of its range (`SpawnRefusal.ThreadIdCounterExhausted`).
     ///
-    /// Fails loudly if `parent` names no task or is parked in a syscall, or if
-    /// `child` already names a task: each is a bug in the client.
+    /// Fails loudly if `parent` names no task or is parked in a syscall, if
+    /// `child` already names a task, or if `cpu` is not one of the machine's
+    /// processors (`UnixSystem.processorCount`): each is a bug in the client.
     let spawn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (parent : 'Task)
         (child : 'Task)
@@ -272,6 +273,10 @@ module UnixTaskLifecycle =
         if Map.containsKey child system.Tasks then
             failwith
                 $"UnixTaskLifecycle.spawn: %O{child} already names a task. A task is created once, and creating it again would silently discard whatever the first creation recorded (this is a bug in the client)."
+
+        if not (UnixMachineState.hasProcessor cpu system.Machine) then
+            failwith
+                $"UnixTaskLifecycle.spawn: %O{child} would be created on %O{cpu}, but the machine has %d{system.Machine.ProcessorCount} logical processors, numbered from 0 (this is a bug in the client)."
 
         match ThreadIdAllocator.allocate system.Machine.ThreadIds with
         | ThreadIdAllocation.Failed error -> Ok (SpawnAnswer.Failed error, system)
