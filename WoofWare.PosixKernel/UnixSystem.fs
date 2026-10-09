@@ -207,6 +207,26 @@ type UnixSystemDefect<'Task> =
     /// `accept(2)`). `holders` names each, in socket-table order, and a
     /// listener once however often it queues the connection.
     | ConnectionEndHeldTwice of connection : ConnectionId * connectionEnd : ConnectionEnd * holders : SocketId list
+    /// A connection's bytes and end states break the rules `TcpTransfer`
+    /// keeps (`TcpTransfer.violations`, each stated in `violations`): a buffer
+    /// holding more than its capacity, bytes in flight to an end that was
+    /// reset or closed, a FIN arrived ahead of bytes sent before it, an end
+    /// told of an ending its peer never made, and so on.
+    | TcpTransferBroken of connection : ConnectionId * violations : string list
+    /// A connection's transfer rules are of `rules`, but the machine is
+    /// `flavour`-flavoured.
+    | TcpTransferNotOfFlavour of
+        connection : ConnectionId *
+        rules : SimulatedUnixFlavour *
+        flavour : SimulatedUnixFlavour
+    /// The socket `socket` is the `connectionEnd` end of `connection`, or is
+    /// the listener whose accept queue holds its server end, which the
+    /// connection records as closed.
+    | ConnectionEndClosedUnderSocket of connection : ConnectionId * connectionEnd : ConnectionEnd * socket : SocketId
+    /// The connection records its `connectionEnd` end as open, but no socket
+    /// is that end and, for a server end, no listener queues the connection:
+    /// its socket closed without the connection being told.
+    | ConnectionEndOpenWithoutHolder of connection : ConnectionId * connectionEnd : ConnectionEnd
     /// A socket's phase is one its kind cannot enter: a datagram socket
     /// listening or holding a stream connection, or a non-datagram socket
     /// holding a datagram peer.
@@ -405,6 +425,17 @@ type UnixSystemDefect<'Task> =
     | HandlerFramesWithoutTask of task : 'Task
     /// A task the table does not hold has a signal mask.
     | MaskWithoutTask of task : 'Task
+    /// A task the table does not hold has a mask for a `sigsuspend(2)` to
+    /// restore.
+    | MaskToRestoreWithoutTask of task : 'Task
+    /// A task asleep in a syscall other than `sigsuspend(2)` has a mask for a
+    /// `sigsuspend` to restore. A task has one only while it is in that call or
+    /// returning from it, and a task returns to user mode before it makes
+    /// another call.
+    | MaskToRestoreOutsideSigsuspend of task : 'Task * parked : ParkedSyscall
+    /// A task asleep in `sigsuspend(2)` has no mask to restore, so its return
+    /// would leave it with the call's temporary mask.
+    | SigsuspendWithoutMaskToRestore of task : 'Task
     /// A pending signal is directed at a task the table does not hold, so it
     /// can never be delivered and sits in the queue for the rest of the run.
     | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
@@ -1252,6 +1283,69 @@ module UnixSystem =
                 )
             )
 
+        // Each connection's transfer against its own rules, the machine's
+        // flavour, and the sockets that are its ends: an end is closed exactly
+        // when no socket holds it, a queued server end counting as held.
+        let transferDefects =
+            machine.Connections
+            |> Map.toList
+            |> List.collect (fun (connection, tcp) ->
+                let broken =
+                    match TcpTransfer.violations tcp.Transfer with
+                    | [] -> []
+                    | violations -> [ UnixSystemDefect.TcpTransferBroken (connection, violations) ]
+
+                let rulesFlavour =
+                    match tcp.Transfer.Rules with
+                    | TcpTransferRules.Linux _ -> SimulatedUnixFlavour.Linux
+                    | TcpTransferRules.Darwin -> SimulatedUnixFlavour.Darwin
+
+                let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
+
+                let ofFlavour =
+                    if rulesFlavour = flavour then
+                        []
+                    else
+                        [ UnixSystemDefect.TcpTransferNotOfFlavour (connection, rulesFlavour, flavour) ]
+
+                // An orphan has no holder of either end, which
+                // `OrphanConnection` reports alone.
+                let ends =
+                    if not (Set.contains connection referencedConnections) then
+                        []
+                    else
+
+                    [ ConnectionEnd.Client ; ConnectionEnd.Server ]
+                    |> List.collect (fun connectionEnd ->
+                        let holders =
+                            connectionReferences
+                            |> List.choose (fun (socketId, referenced, heldAs) ->
+                                let holdsThisEnd =
+                                    match heldAs with
+                                    | Some held -> held = connectionEnd
+                                    | None -> connectionEnd = ConnectionEnd.Server
+
+                                if referenced = connection && holdsThisEnd then
+                                    Some socketId
+                                else
+                                    None
+                            )
+                            |> List.distinct
+
+                        match (TcpTransfer.towards connectionEnd tcp.Transfer).Receiver, holders with
+                        | TcpEndState.Closed, [] -> []
+                        | TcpEndState.Closed, holders ->
+                            holders
+                            |> List.map (fun socketId ->
+                                UnixSystemDefect.ConnectionEndClosedUnderSocket (connection, connectionEnd, socketId)
+                            )
+                        | _, [] -> [ UnixSystemDefect.ConnectionEndOpenWithoutHolder (connection, connectionEnd) ]
+                        | _, _ -> []
+                    )
+
+                broken @ ofFlavour @ ends
+            )
+
         let phaseKindMismatches =
             machine.Sockets
             |> Map.toList
@@ -1834,6 +1928,7 @@ module UnixSystem =
         @ orphanConnections
         @ duplicateQueued
         @ connectionEndsHeldTwice
+        @ transferDefects
         @ phaseKindMismatches
         @ drainedUnderLinux
         @ connectionFreshness
@@ -1944,6 +2039,8 @@ module UnixSystem =
             |> List.collect (fun (task, state) ->
                 match state.Parked |> Option.map (fun park -> park.Syscall) with
                 | None -> []
+                // Names no description.
+                | Some ParkedSyscall.SigSuspend -> []
                 | Some (ParkedSyscall.Flock parked) ->
                     if Map.containsKey parked.Requester descriptions then
                         []
@@ -2270,6 +2367,40 @@ module UnixSystem =
                 |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
                 |> List.map UnixSystemDefect.MaskWithoutTask
 
+            // A mask to restore exists from a `sigsuspend` until its task
+            // returns to user mode, so exactly while the task is parked in the
+            // call or has been answered and not yet returned; which of those
+            // two is true is the client's, so what is checked is that no task
+            // parked in anything else has one, and every task parked in it does.
+            let toRestore =
+                let restoring = SignalState.tasksWithMasksToRestore signals
+
+                let orphaned =
+                    restoring
+                    |> Set.toList
+                    |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
+                    |> List.map UnixSystemDefect.MaskToRestoreWithoutTask
+
+                let parked =
+                    system.Tasks
+                    |> Map.toList
+                    |> List.choose (fun (task, state) ->
+                        match UnixTaskState.park state with
+                        | Some {
+                                   Syscall = ParkedSyscall.SigSuspend
+                               } when not (Set.contains task restoring) ->
+                            Some (UnixSystemDefect.SigsuspendWithoutMaskToRestore task)
+                        | Some {
+                                   Syscall = ParkedSyscall.SigSuspend
+                               } -> None
+                        | Some park when Set.contains task restoring ->
+                            Some (UnixSystemDefect.MaskToRestoreOutsideSigsuspend (task, park.Syscall))
+                        | Some _
+                        | None -> None
+                    )
+
+                orphaned @ parked
+
             let targets =
                 SignalState.pending signals
                 |> List.choose (fun entry ->
@@ -2280,7 +2411,7 @@ module UnixSystem =
                     | ValueNone -> None
                 )
 
-            numberings @ frames @ masks @ targets
+            numberings @ frames @ masks @ toRestore @ targets
 
         let supplementaryGroups =
             let count = List.length system.Process.Credentials.SupplementaryGroups

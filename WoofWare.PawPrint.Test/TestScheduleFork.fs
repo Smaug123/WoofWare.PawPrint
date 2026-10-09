@@ -476,10 +476,7 @@ module TestScheduleFork =
         |> Map.count
         |> shouldEqual 1
 
-        let prepared =
-            { prepared with
-                State = state
-            }
+        let prepared = prepared.WithState state
 
         match Program.runToNextFork loggerFactory logger prepared with
         | Program.PrefixOutcome.ForkedAt found ->

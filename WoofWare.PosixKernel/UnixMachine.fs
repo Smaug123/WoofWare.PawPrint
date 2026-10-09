@@ -588,26 +588,38 @@ module UnixMachineState =
             failwith
                 $"UnixMachineState.connection: %O{connectionId} names no connection in this kernel's connection table. UnixSystemDefect.DanglingConnection and DanglingQueuedConnection exist to make this unreachable, so the system breaks UnixSystem.checkInvariants: this is a bug in this library, or in a caller that assembled the state by hand."
 
-    /// Whether the other end of the connection `connectionId`, of which the
-    /// socket `socketId` is one end, is still open: some other socket holds
-    /// the connection established, or a listener holds it in its accept queue.
-    ///
-    /// Derived rather than stored: the connection object outlives its ends
-    /// exactly as long as something references it, so the scan is the truth.
-    let internal peerOpen (socketId : SocketId) (connectionId : ConnectionId) (machine : UnixMachineState) : bool =
+    /// `connectionId`'s entry in the connection table, with the bytes and end
+    /// states it carries replaced by `transfer`. Loudly partial, as
+    /// `connection` is.
+    let internal withTransfer
+        (connectionId : ConnectionId)
+        (transfer : TcpTransfer)
+        (machine : UnixMachineState)
+        : UnixMachineState
+        =
+        let existing = connection connectionId machine
+
+        { machine with
+            Connections =
+                Map.add
+                    connectionId
+                    { existing with
+                        Transfer = transfer
+                    }
+                    machine.Connections
+        }
+
+    /// The socket that is the `connectionEnd` end of `connectionId`
+    /// (`SocketPhase.connectionEnd`), if one is: none for a server end still
+    /// in a listener's accept queue, nor for an end whose socket has closed.
+    let socketHoldingEnd
+        (connectionId : ConnectionId)
+        (connectionEnd : ConnectionEnd)
+        (machine : UnixMachineState)
+        : SocketId option
+        =
         machine.Sockets
-        |> Map.exists (fun otherId other ->
-            otherId <> socketId
-            && (
-                match other.Phase with
-                | SocketPhase.Established (c, _)
-                | SocketPhase.EstablishedPendingReport c -> c = connectionId
-                | SocketPhase.Listening listenState -> List.contains connectionId listenState.Queue
-                | SocketPhase.Idle
-                | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> false
-            )
-        )
+        |> Map.tryFindKey (fun _ socket -> SocketPhase.connectionEnd socket.Phase = Some (connectionId, connectionEnd))
 
     /// The readiness a socket presents right now, before any waiter's interest
     /// mask is applied. Every row is measured on Linux 6.18.5 — `masks.c`
@@ -616,6 +628,10 @@ module UnixMachineState =
     /// (docs/plans/2026-08-23-socket-poll) through `poll(2)` with timeout 0,
     /// which agree on every phase, and `consumed-epoll.c` and `soerror.c`
     /// (docs/probes/so-error) for a refusal an `SO_ERROR` read has taken.
+    ///
+    /// A connected TCP socket's level is read off its connection's bytes and
+    /// end states (`TcpTransfer`), so on Linux alone: it uses Linux's
+    /// writability rule.
     ///
     /// Darwin has no measured rows and needs none: both waiters refuse that
     /// flavour before reaching here — epoll, which Darwin does not have, and
@@ -661,24 +677,49 @@ module UnixMachineState =
                 // `EpollCtlRefusal.UnmeasuredSocketKind`).
                 failwith
                     $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is %O{target.Kind}, whose readiness is measured for poll but not for epoll, so it is not modelled. `UnixPoll.poll` and `UnixPoll.epollCtl` both refuse such a socket (LinuxReadiness.modelsSocket) before asking, so this is a bug in this library, or in a caller that asked about a socket LinuxReadiness.modelsSocket rejects. Take an epoll measurement (an et.c-style probe on an AF_UNIX seqpacket socket) before modelling the kind."
-        | SocketPhase.EstablishedPendingReport connectionId
-        | SocketPhase.Established (connectionId, _) ->
-            // With the peer alive and no receive path modelled, both ends
-            // are exactly write-ready; once the peer is gone, the level is
-            // the measured half-closed one.
-            if peerOpen socketId connectionId machine then
+        | SocketPhase.EstablishedPendingReport _
+        | SocketPhase.Established _ ->
+            let connectionId, connectionEnd =
+                match SocketPhase.connectionEnd target.Phase with
+                | Some held -> held
+                | None ->
+                    failwith
+                        $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is in %A{target.Phase}, which holds no connection end (this is a bug in this library)."
+
+            let transfer = (connection connectionId machine).Transfer
+            let inbound = TcpTransfer.towards connectionEnd transfer
+            let unread = ByteQueue.length inbound.Receiving > 0
+
+            // `tcp_poll`, every row measured (`tcp-transfer.c`, section S, on
+            // Linux 6.18.5): IN with bytes unread, OUT while the send buffer
+            // is at most two thirds full, RDHUP once the peer's FIN has
+            // arrived (`order3.c` row Q), and a reset adds HUP, and ERR while
+            // its error is pending, and makes the socket writable whatever its
+            // buffer holds, since a write then fails at once.
+            match inbound.Receiver with
+            | TcpEndState.Open
+            | TcpEndState.FinQueued ->
                 { ReadinessLevel.none with
-                    Out = true
+                    In = unread
+                    Out = TcpTransfer.linuxSendable connectionEnd transfer
                 }
-            else
-                // The measured half-closed level (`order3.c` row Q).
+            | TcpEndState.FinReceived ->
+                { ReadinessLevel.none with
+                    In = true
+                    Out = TcpTransfer.linuxSendable connectionEnd transfer
+                    RdHup = true
+                }
+            | TcpEndState.Reset (_, errorPending) ->
                 {
                     In = true
                     Out = true
                     RdHup = true
-                    Hup = false
-                    Err = false
+                    Hup = true
+                    Err = errorPending
                 }
+            | TcpEndState.Closed ->
+                failwith
+                    $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
 
         | SocketPhase.Refused RefusalError.Pending ->
             {
@@ -699,8 +740,47 @@ module UnixMachineState =
                 Err = false
             }
 
+    /// Whether a reset has reached `connection`, which then no longer
+    /// occupies its four-tuple: measured on both (`reset-tuple.c` in
+    /// docs/plans/2026-10-07-tcp-byte-transfer), a fresh socket bound to the
+    /// surviving end's address connects to the same destination once a reset
+    /// has reached it, though not after a FIN.
+    let resetReleasedTuple (connection : TcpConnection) : bool =
+        [ ConnectionEnd.Client ; ConnectionEnd.Server ]
+        |> List.exists (fun connectionEnd ->
+            match (TcpTransfer.towards connectionEnd connection.Transfer).Receiver with
+            | TcpEndState.Reset _ -> true
+            | TcpEndState.Open
+            | TcpEndState.FinQueued
+            | TcpEndState.FinReceived
+            | TcpEndState.Closed -> false
+        )
+
+    /// Whether the connected socket `socket`'s binding stopped reserving its
+    /// port when its connection was reset: on Darwin always, and on Linux
+    /// unless the port was bound explicitly (`SocketBinding.LockedPort`).
+    /// Measured on both (`reset-binding.c` in
+    /// docs/plans/2026-10-07-tcp-byte-transfer): a fresh socket binds the
+    /// survivor's exact endpoint once a reset has reached it, at either end,
+    /// though `getsockname` still reports the port; after a FIN it cannot.
+    let resetReleasedPort (socket : SocketDescription) (machine : UnixMachineState) : bool =
+        match SocketPhase.connectionEnd socket.Phase with
+        | None -> false
+        | Some (connectionId, connectionEnd) ->
+            match (TcpTransfer.towards connectionEnd (connection connectionId machine).Transfer).Receiver with
+            | TcpEndState.Reset _ ->
+                match SimulatedUnixPlatform.flavour machine.UnixPlatform, socket.Binding with
+                | SimulatedUnixFlavour.Darwin, _ -> true
+                | SimulatedUnixFlavour.Linux, Some binding -> not binding.LockedPort
+                | SimulatedUnixFlavour.Linux, None -> true
+            | TcpEndState.Open
+            | TcpEndState.FinQueued
+            | TcpEndState.FinReceived
+            | TcpEndState.Closed -> false
+
     /// Whether any *other* socket's binding conflicts with `candidate`, taken
-    /// on behalf of `socket`.
+    /// on behalf of `socket`. A binding a reset released
+    /// (`resetReleasedPort`) conflicts with nothing.
     ///
     /// The relation `bind(2)` decides admission with, `listen(2)` asks again
     /// on the flavour that re-screens an already-bound socket, and every
@@ -714,7 +794,7 @@ module UnixMachineState =
         =
         machine.Sockets
         |> Map.exists (fun otherId (other : SocketDescription) ->
-            if otherId = socketId then
+            if otherId = socketId || resetReleasedPort other machine then
                 false
             else
 
@@ -746,7 +826,12 @@ module UnixMachineState =
     /// An endpoint is held while a socket references its connection from
     /// that end: an established socket bound at the endpoint, or a listener
     /// whose accept queue still holds the connection, which owns the server
-    /// end until `accept(2)` mints a socket for it.
+    /// end until `accept(2)` mints a socket for it. A connection a reset has
+    /// reached (`resetReleasedTuple`) occupies no port of an end whose socket
+    /// has gone: measured on both (`reset-closer.c` in
+    /// docs/plans/2026-10-07-tcp-byte-transfer), the endpoint of a socket
+    /// that closed over unread bytes is free to a fresh bind, where after a
+    /// FIN it is not.
     let private orphanedConnectionOccupies (endpoint : InternetEndpoint) (machine : UnixMachineState) : bool =
         let heldFrom (connectionId : ConnectionId) (held : InternetEndpoint) (isServerEnd : bool) : bool =
             machine.Sockets
@@ -764,16 +849,18 @@ module UnixMachineState =
 
         machine.Connections
         |> Map.exists (fun connectionId connection ->
-            [ connection.ClientAddress, false ; connection.ServerAddress, true ]
-            |> List.exists (fun (held, isServerEnd) ->
-                held.Port = endpoint.Port
-                && addressesOverlap held endpoint
-                && not (heldFrom connectionId held isServerEnd)
-            )
+            not (resetReleasedTuple connection)
+            && [ connection.ClientAddress, false ; connection.ServerAddress, true ]
+               |> List.exists (fun (held, isServerEnd) ->
+                   held.Port = endpoint.Port
+                   && addressesOverlap held endpoint
+                   && not (heldFrom connectionId held isServerEnd)
+               )
         )
 
     /// Whether a TCP connection occupies the four-tuple between `source` and
-    /// `destination`, in either orientation.
+    /// `destination`, in either orientation. One a reset has reached does
+    /// not (`resetReleasedTuple`).
     let private connectionOccupiesTuple
         (source : InternetEndpoint)
         (destination : InternetEndpoint)
@@ -782,8 +869,9 @@ module UnixMachineState =
         =
         machine.Connections
         |> Map.exists (fun _ connection ->
-            (connection.ClientAddress = source && connection.ServerAddress = destination)
-            || (connection.ClientAddress = destination && connection.ServerAddress = source)
+            not (resetReleasedTuple connection)
+            && ((connection.ClientAddress = source && connection.ServerAddress = destination)
+                || (connection.ClientAddress = destination && connection.ServerAddress = source))
         )
 
     /// Hands out the lowest free port at or after the cursor, sweeping the

@@ -123,8 +123,6 @@ module TestKernelConfigSplit =
             match config.CLibrary with
             | None -> kernel
             | Some library -> EmulatedKernel.withCLibrary "reference" library kernel
-        |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
-        |> EmulatedKernel.withClockJitter config.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
 
     let private ownerGen : Gen<InodeOwner> =
@@ -288,6 +286,18 @@ module TestKernelConfigSplit =
             KernelConfig.toKernel config |> shouldEqual (reference config)
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 200, Prop.forAll (Arb.fromGen configGen) property)
+
+    /// The two knobs that describe how the machine's clock moves are the driver's rather than
+    /// the kernel's, so the property above cannot see them: the split's machine part carries
+    /// them to `MachineConfig.clock` as the host set them.
+    [<Test>]
+    let ``the split's machine part carries the clock`` () : unit =
+        let property (config : KernelConfig) : unit =
+            let clock = MachineConfig.clock "KernelConfig" (fst (KernelConfig.split config))
+            clock.InstructionCostTicks |> shouldEqual config.InstructionCostTicks
+            clock.ClockJitter |> shouldEqual config.ClockJitter
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 100, Prop.forAll (Arb.fromGen configGen) property)
 
     [<Test>]
     let ``the split's two parts boot the kernel KernelConfig.toKernel boots`` () : unit =

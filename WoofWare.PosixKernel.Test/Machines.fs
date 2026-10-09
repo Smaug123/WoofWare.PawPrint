@@ -13,10 +13,11 @@ module internal Machines =
     let launchOn (platform : SimulatedUnixPlatform) : ProcessLaunch<int> =
         Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-    /// A machine of `platform` with `count` processes, the first booted and
-    /// the rest launched, each with tasks 0 to `tasks - 1`, and their process
-    /// IDs in that order.
-    let withTasks
+    /// A machine of `platform`, booted from an image `configure` configured,
+    /// with `count` processes, the first booted and the rest launched, each
+    /// with tasks 0 to `tasks - 1`, and their process IDs in that order.
+    let withTasksOn
+        (configure : UnixBootImage<int, string> -> UnixBootImage<int, string>)
         (platform : SimulatedUnixPlatform)
         (count : int)
         (tasks : int)
@@ -24,6 +25,7 @@ module internal Machines =
         =
         let first =
             UnixSystem.initial<int, string> platform
+            |> configure
             |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
         let pids, machine =
@@ -48,6 +50,15 @@ module internal Machines =
             )
 
         pids, machine
+
+    /// `withTasksOn` with the image as `UnixSystem.initial` makes it.
+    let withTasks
+        (platform : SimulatedUnixPlatform)
+        (count : int)
+        (tasks : int)
+        : ProcessId list * SimulatedMachine<int, string>
+        =
+        withTasksOn id platform count tasks
 
     /// `withTasks` with tasks 0 to 4 in each process, as `KeventWorld`'s
     /// helpers expect.

@@ -239,11 +239,11 @@ module Scheduler =
         }
 
     /// Does any thread currently have status `Runnable`? Used by the
-    /// deadline-advance loop in `Program.fs` to decide whether jumping the
-    /// virtual clock has made progress; that check is policy-independent
-    /// (every scheduler returns `None` from `chooseNext` iff no thread is
-    /// Runnable), so callers should reach for this helper instead of
-    /// invoking `chooseNext` and discarding its returned state.
+    /// driver's jump to the deadlines (`MultiProgram.advance`) to decide
+    /// whether jumping the virtual clock has made progress; that check is
+    /// policy-independent (every scheduler returns `None` from `chooseNext`
+    /// iff no thread is Runnable), so callers should reach for this helper
+    /// instead of invoking `chooseNext` and discarding its returned state.
     let hasAnyRunnable (state : IlMachineState) : bool =
         // Deliberately not `runnableThreads`: the caller only asks whether the set is empty, and
         // this is on the per-tick path, so answer without materialising the list at all.
@@ -418,7 +418,7 @@ module Scheduler =
     /// `deadlineTicks = None` is an infinite wait (`Thread.Join()` /
     /// `Thread.Join(-1)`); `Some ms` is a finite timeout, expressed as the
     /// absolute virtual-clock tick at which the wait expires. The
-    /// deadline-firing path in `Program.fireExpiredDeadlines` routes such
+    /// deadline-firing path in `RunningProgram.fireExpiredDeadlines` routes such
     /// threads through `fireJoinTimeout` below.
     let blockOnJoin
         (blocked : ThreadId)
@@ -457,7 +457,7 @@ module Scheduler =
     ///
     /// Fails loud if `thread` is not actually parked in `BlockedOnJoin`
     /// with a finite deadline: the only caller is
-    /// `Program.fireExpiredDeadlines`, which enumerates the statuses
+    /// `RunningProgram.fireExpiredDeadlines`, which enumerates the statuses
     /// itself, so a miss would indicate the deadline-firing path was
     /// reached for an untimed waiter — a structural bug worth surfacing
     /// here rather than silently popping a stack slot that doesn't
@@ -518,7 +518,7 @@ module Scheduler =
     /// sweep fails loudly on.
     ///
     /// Carries no deadline, unlike `blockOnJoin` and `blockOnSleep`: neither
-    /// wait can time out, so `Program.fireExpiredDeadlines` will never route a
+    /// wait can time out, so `RunningProgram.fireExpiredDeadlines` will never route a
     /// thread out of this status. A parking syscall that *does* take a timeout
     /// puts its deadline in its record.
     ///
@@ -638,7 +638,7 @@ module Scheduler =
     ///
     /// Fails loud if `thread` is not actually parked in `BlockedOnSleep`
     /// with a finite deadline: the only caller is
-    /// `Program.fireExpiredDeadlines`, which enumerates the statuses
+    /// `RunningProgram.fireExpiredDeadlines`, which enumerates the statuses
     /// itself, so a miss would indicate the deadline-firing path was
     /// reached for an infinite (or non-sleep) waiter — a structural bug
     /// worth surfacing here.

@@ -59,6 +59,7 @@ A setter that rejects a value, such as `withBootTime` or `withMount`, returns `R
 Since no setter takes a booted system, configuration can only describe the machine from the moment it booted.
 A process's leader starts blocking no signal; a client launching one whose parent left signals blocked sets that mask with `UnixSignal.pthreadSigmask` before the leader's first instruction, as it installs inherited ignores with `UnixSignal.sigaction`.
 A signal mask crosses the API as a `SignalMask`, the bits of a `sigset_t` under one numbering (`SignalMask.ofWord`, `SignalMask.toWord`), because Darwin keeps a bit that names no signal.
+`UnixSignal.sigsuspend` replaces a task's mask until a signal ends the call, and keeps the mask it replaced in the signal state (`SignalState.maskToRestore`) rather than in the park, because the call's answer comes before the task's return to user mode, which is what restores it: the first handler frame that return pushes saves the mask from before the call.
 What changes while it runs is a syscall's effect, or the outside world acting on it: `UnixSystem.advanceClock` (time passes) and `UnixSystem.writePidMaxSysctl` (the administrator writes `kernel.pid_max`).
 
 ```fsharp
@@ -116,9 +117,9 @@ A syscall is still made in a `UnixSystem`: `SimulatedMachine.focus` gives one pr
 
 Everything one process's call does to another goes through the machine they share: ports, connections, pipes, files and their locks, the open file descriptions, the directories processes stand in, and the thread and process IDs. `SimulatedMachine.checkInvariants` holds every process to the machine and to each other; `UnixSystem.checkInvariants` and `FileDescriptorRegistry.checkInvariants` of one view check only what one process can see truthfully.
 
-A call asleep in one process wakes for what another process's call does: a connection queued on its listener, a peer's FIN, a lock let go of. `SimulatedMachine.wakes` is `UnixWait.wakes` of every process at once: each sleeping task's condition is asked of its own process's view, and where a kernel wakes one waiter of a queue at a time, the one is chosen across every process by the machine's park order. A woken call is finished in its own process's view. A kqueue registration, and a filter a sleeping Darwin `poll` registered, is attached to the socket its descriptor named, as XNU attaches a knote to the socket, so an event on the socket reaches it whichever process caused the event; a sleeping Darwin poll's kqueue (`PollQueue`) is the machine's for as long as the call sleeps.
+A call asleep in one process wakes for what another process's call does: a connection queued on its listener, bytes arriving on its socket or room freed in its send buffer, a peer's FIN or reset, a lock let go of. `SimulatedMachine.wakes` is `UnixWait.wakes` of every process at once: each sleeping task's condition is asked of its own process's view, and where a kernel wakes one waiter of a queue at a time, the one is chosen across every process by the machine's park order. A woken call is finished in its own process's view. A kqueue registration, and a filter a sleeping Darwin `poll` registered, is attached to the socket its descriptor named, as XNU attaches a knote to the socket, so an event on the socket reaches it whichever process caused the event; a sleeping Darwin poll's kqueue (`PollQueue`) is the machine's for as long as the call sleeps.
 
-`SimulatedMachine.endProcess` ends a process on the machine, as the call that ended it (`exit_group`, the last thread's exit, a signal) answered it: it releases what only the process's calls held, then closes every descriptor in the order each kernel measurably does (Linux drops them lowest first and releases the last let go of first; Darwin closes them highest first), sending its peers their FINs and letting its locks, pipes, listeners and event queues go, and removes the process. It refuses where a close would: a listener holding a connection another process's open socket made is not released, since what the reset does to that socket is not measured.
+`SimulatedMachine.endProcess` ends a process on the machine, as the call that ended it (`exit_group`, the last thread's exit, a signal) answered it: it releases what only the process's calls held, then closes every descriptor in the order each kernel measurably does (Linux drops them lowest first and releases the last let go of first; Darwin closes them highest first), as `close` closes each: sending its peers their FINs, or resets where it left bytes unread, and letting its locks, pipes, listeners and event queues go, and removes the process. It refuses where a close would: a listener holding a connection another process's open socket made is not released, since what the reset does to that socket is not measured.
 
 Nothing passes a descriptor from one process to another (no `fork`, no `SCM_RIGHTS`, and a launched pipe's other end is the client's), so no pipe, listener or epoll instance is shared, and `kill` of another process is refused.
 
@@ -138,12 +139,14 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixConnection` | `connect`, `accept` |
 | `UnixPoll` | `poll`, `epoll_create1`, `epoll_ctl`, `epoll_wait` |
 | `UnixKqueue` | `kqueue`, `kevent` |
-| `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigprocmask`, `pthread_sigmask`, `rt_sigprocmask`, `sigpending`, `sigreturn`, and the signals a task takes as it returns to user mode |
+| `UnixSignal` | `kill`, `pthread_kill`, `sigaction`, `sigprocmask`, `pthread_sigmask`, `rt_sigprocmask`, `sigpending`, `sigsuspend`, `rt_sigsuspend`, `pause`, `sigreturn`, and the signals a task takes as it returns to user mode |
 | `UnixClock` | `clock_gettime`, `gettimeofday` |
 | `UnixEntropy` | `getrandom`, `getentropy` |
 | `UnixCredentials` | `getresuid`, `getresgid`, `setresuid`, `setresgid`, `setgroups` |
 | `UnixTaskLifecycle` | starting a thread, a thread exiting, `exit_group` |
 | `UnixSystem` | `getpid`, `umask` |
+
+A connected TCP socket's `read` and `write` move bytes through its connection (`TcpConnection.Transfer`), which holds each direction's bytes in the sender's send buffer and the receiver's receive buffer, sized from the machine's TCP sysctls, and each end's state: open, a FIN received, reset, or closed. A close over bytes left unread resets the peer; otherwise it sends a FIN behind what it had sent. `poll`, epoll and kqueue read a connected socket's readiness from the same state, and each transfer wakes the waiters each flavour wakes: every arrival of bytes, and room freed in a send buffer (on Linux once after a write ran out of room, when the buffer has drained to two thirds full; on Darwin as bytes leave it). `FIONREAD` reports what waits to be read, and `SO_ERROR` takes a reset's error. A blocking transfer that would sleep is refused for now.
 
 `UnixSystem.step` puts the syscalls whose answer is a single integer behind one entry point, as cases of the `Syscall` type, for a client that wants to log, replay or generate them.
 A syscall whose answer carries more than that, such as the bytes `read` returns, has no `Syscall` case, and is reached only through its own function.
@@ -180,7 +183,7 @@ That is the state the kernel sleeps in, which can differ from the one the call a
 
 The library has no scheduler, and does not want one.
 Waking is pulled rather than pushed: after each step, the client asks `UnixWait.wakes` which of the tasks it holds asleep may wake now, and with nothing runnable, `UnixWait.deadlines` says how far it may advance the clock.
-A woken task finishes its call through the family's finishing function (`UnixDescriptor.flockAcquire`, `UnixPoll.finishPoll`, `UnixReadWrite.finishRead`, and so on), which may answer, park again, or say the call restarts because a signal handler interrupted it.
+A woken task finishes its call through the family's finishing function (`UnixDescriptor.flockAcquire`, `UnixPoll.finishPoll`, `UnixReadWrite.finishRead`, `UnixSignal.finishSigsuspend`, and so on), which may answer, park again, or say the call restarts because a signal handler interrupted it.
 
 A parked call holds the open file descriptions it waits on (`ParkedSyscall.descriptions`), as a real one holds a reference to each file: a description goes when no descriptor names it and no call holds it, so one closed under a sleeping call goes when the call returns.
 
