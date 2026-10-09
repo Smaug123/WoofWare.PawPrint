@@ -429,7 +429,7 @@ module UnixMachineState =
 
     /// The kqueue `queue` of a sleeping Darwin `poll`. Loudly partial: the
     /// caller read the identity from a park, which holds it.
-    let pollQueue (queue : PollQueueId) (machine : UnixMachineState) : PollQueue =
+    let internal pollQueue (queue : PollQueueId) (machine : UnixMachineState) : PollQueue =
         match Map.tryFind queue machine.PollQueues with
         | Some found -> found
         | None ->

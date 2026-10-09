@@ -140,9 +140,12 @@ type SyscallRefusal<'Task> =
 /// of those modules can see the other's: each is defined in a file that
 /// compiles before this one.
 ///
-/// `UnixSystem.checkMachineInvariants` reports the cases that concern the
-/// machine, and `UnixSystem.checkViewInvariants` those that concern one
-/// process's view of it.
+/// Some cases concern the machine, and read facts that every process on it
+/// contributes to: `UnixSystem.checkInvariants` reports those of a process
+/// alone on its machine, and `SimulatedMachine.checkInvariants` those of a
+/// machine holding several (as `SimulatedMachineDefect.Machine`). The rest
+/// concern one process's view of the machine, and
+/// `UnixSystem.checkViewInvariants` reports those.
 [<RequireQualifiedAccess>]
 type UnixSystemDefect<'Task> =
     /// A live open file description names a socket the socket table does not
@@ -1078,8 +1081,7 @@ module UnixSystem =
     /// machine, each of which reads facts that every process on it contributes
     /// to, so that no one process's view can check it.
     ///
-    /// `processes` is every process on the machine, each with its tasks. The
-    /// socket table and the pipe table against the open file descriptions,
+    /// The socket table and the pipe table against the open file descriptions,
     /// each pipe and the pipe device against the platform, the connection
     /// table against the sockets that reference it, the open file descriptions
     /// against the filesystem and the platform, each description against the
@@ -1088,19 +1090,14 @@ module UnixSystem =
     /// machine's counters, the thread ID allocator against every process's
     /// tasks, and the machine's filesystem type, buffer check and symbolic
     /// links against its platform.
-    let rec checkMachineInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (processes : (UnixProcessState<'Task, 'Handler> * Map<'Task, UnixTaskState>) list)
-        (machine : UnixMachineState)
-        : UnixSystemDefect<'Task> list
-        =
-        machineDefects true processes machine
-
-    /// `checkMachineInvariants`, when `complete`; otherwise only the clauses
-    /// `processes`, some of the processes on the machine, can check truthfully:
-    /// every clause that counts or collects across every process (the holds on
+    ///
+    /// When `complete`, `processes` is every process on the machine, each with
+    /// its tasks, and every clause is checked. Otherwise `processes` is some of
+    /// them, and only the clauses those can check truthfully are: every clause
+    /// that counts or collects across every process (the holds on
     /// descriptions, the live thread and process IDs, the current directory
     /// holds) is skipped.
-    and internal machineDefects<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let internal machineDefects<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (complete : bool)
         (processes : (UnixProcessState<'Task, 'Handler> * Map<'Task, UnixTaskState>) list)
         (machine : UnixMachineState)
@@ -2470,8 +2467,8 @@ module UnixSystem =
 
 
     /// Every way this system's tables disagree with each other: the machine's
-    /// clauses (`checkMachineInvariants`) and this process's view's
-    /// (`checkViewInvariants`).
+    /// clauses, which read facts every process on the machine contributes to,
+    /// and this process's view's (`checkViewInvariants`).
     ///
     /// On a machine holding other processes besides (a view a
     /// `SimulatedMachine` focused), only the machine's clauses this one

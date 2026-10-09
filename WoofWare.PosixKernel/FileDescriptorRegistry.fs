@@ -1096,8 +1096,8 @@ type internal FlockError =
 
 /// A way in which a `FileDescriptorRegistry` fails to be a descriptor table any
 /// kernel could produce, or an `OpenFileTable` the open file descriptions of one.
-/// `FileDescriptorRegistry.checkInvariants` and `OpenFileTable.checkInvariants`
-/// return these.
+/// `FileDescriptorRegistry.checkInvariants` returns these, and
+/// `SimulatedMachine.checkInvariants` reports them for every process.
 [<RequireQualifiedAccess>]
 type FileDescriptorRegistryDefect =
     /// A live descriptor names a description that is not present. Every lookup
@@ -2096,7 +2096,7 @@ module OpenFileTable =
     ///
     /// The rules that relate a descriptor *number* to a description are one
     /// process's, so they are `FileDescriptorRegistry.checkInvariants`'s.
-    let checkInvariants
+    let internal checkInvariants
         (descriptorTables : DescriptorTable list)
         (table : OpenFileTable)
         : FileDescriptorRegistryDefect list
@@ -3032,10 +3032,10 @@ module FileDescriptorRegistry =
     /// registry built out of `ofLaunchedPipes`, `dup` and `close`; the property
     /// tests assert exactly that.
     ///
-    /// Includes `OpenFileTable.checkInvariants` of the machine's descriptions
-    /// against this process's descriptor table. On a machine running this one
-    /// process the table holds every descriptor, and each description's count
-    /// of the descriptors naming it must be exactly what the table names. On a
+    /// Includes the open file table's own rules, read against this process's
+    /// descriptor table. On a machine running this one process the table
+    /// holds every descriptor, and each description's count of the
+    /// descriptors naming it must be exactly what the table names. On a
     /// machine holding other processes besides (a registry of a view a
     /// `SimulatedMachine` focused), only what one table can tell is checked:
     /// that no description counts fewer descriptors than this table alone

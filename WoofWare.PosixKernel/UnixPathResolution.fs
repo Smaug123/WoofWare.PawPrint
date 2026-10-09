@@ -1649,7 +1649,7 @@ module UnixPathResolution =
         let asNow =
             match flavour with
             | SimulatedUnixFlavour.Linux -> now
-            | SimulatedUnixFlavour.Darwin -> UnixClock.gettimeofday system.Machine
+            | SimulatedUnixFlavour.Darwin -> UnixClock.gettimeofday system
 
         match object with
         | OpenFileObject.File inode ->
