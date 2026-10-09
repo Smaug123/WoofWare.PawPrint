@@ -745,7 +745,7 @@ module UnixMachineState =
     /// docs/plans/2026-10-07-tcp-byte-transfer), a fresh socket bound to the
     /// surviving end's address connects to the same destination once a reset
     /// has reached it, though not after a FIN.
-    let resetReleasedTuple (connection : TcpConnection) : bool =
+    let internal resetReleasedTuple (connection : TcpConnection) : bool =
         [ ConnectionEnd.Client ; ConnectionEnd.Server ]
         |> List.exists (fun connectionEnd ->
             match (TcpTransfer.towards connectionEnd connection.Transfer).Receiver with
