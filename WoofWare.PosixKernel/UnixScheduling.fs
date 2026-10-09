@@ -83,9 +83,7 @@ module UnixScheduling =
             failwith
                 $"UnixScheduling.dispatch: %O{task} was dispatched to %O{cpu}, but the machine has %d{system.Machine.ProcessorCount} logical processors, numbered from 0 (this is a bug in the client)."
 
-        let running = Map.tryFind cpu system.Machine.Occupants = Some state.OsThreadId
-
-        if state.Cpu = cpu && running then
+        if state.Cpu = cpu && UnixMachineState.runs cpu state.OsThreadId system.Machine then
             system
         else
 
@@ -122,7 +120,7 @@ module UnixScheduling =
         : CpuId option
         =
         match Map.tryFind task system.Tasks with
-        | Some state when Map.tryFind state.Cpu system.Machine.Occupants = Some state.OsThreadId -> Some state.Cpu
+        | Some state when UnixMachineState.runs state.Cpu state.OsThreadId system.Machine -> Some state.Cpu
         | Some _
         | None -> None
 

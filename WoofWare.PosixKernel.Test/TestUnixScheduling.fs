@@ -791,3 +791,38 @@ module TestUnixScheduling =
             [
                 SimulatedMachineDefect.Machine (UnixSystemDefect.OccupantOnAnotherCpu (0, CpuId 1, CpuId 0))
             ]
+
+    [<Test>]
+    let ``re-dispatching a running task allocates nothing`` () : unit =
+        // A client reports the thread it runs before every instruction, and almost every
+        // report names the thread already running, so that report must cost no garbage.
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            |> UnixBootImage.withProcessorCount 2
+            |> Configured.expectOk ProcessorCountRefusal.describe
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> Tasks.spawn 1
+            |> UnixScheduling.dispatch 0 (CpuId 0)
+            |> UnixScheduling.dispatch 1 (CpuId 1)
+
+        // Made once, as a client reads them off the task rather than constructing them.
+        let zero = CpuId 0
+        let one = CpuId 1
+
+        let redispatch () : bool =
+            obj.ReferenceEquals (UnixScheduling.dispatch 0 zero system, system)
+            && obj.ReferenceEquals (UnixScheduling.dispatch 1 one system, system)
+
+        // Warm up, so that nothing the first calls do once is counted.
+        for _ in 1..100 do
+            redispatch () |> shouldEqual true
+
+        let before = GC.GetAllocatedBytesForCurrentThread ()
+        let mutable unchanged = true
+
+        for _ in 1..1000 do
+            unchanged <- redispatch () && unchanged
+
+        let allocated = GC.GetAllocatedBytesForCurrentThread () - before
+        unchanged |> shouldEqual true
+        allocated |> shouldEqual 0L

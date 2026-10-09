@@ -585,9 +585,13 @@ module UnixTaskTable =
     /// when it is created and removed only when it exits, so a name that
     /// resolves to nothing is a client bug rather than anything a process did.
     let internal get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
-        match Map.tryFind name tasks with
-        | Some task -> task
-        | None ->
+        // `TryGetValue` rather than `Map.tryFind`, whose option a client that asks once per
+        // instruction (`UnixScheduling.dispatch`) would allocate every time.
+        let mutable task = Unchecked.defaultof<UnixTaskState>
+
+        if tasks.TryGetValue (name, &task) then
+            task
+        else
             failwith
                 $"UnixTaskTable.get: %O{name} names no task. Every task enters the table when its thread is created, by `UnixSystem.initial` or `UnixTaskLifecycle.spawn`, and leaves it when the thread exits, so this one was never created or has already exited (this is a bug in the client)."
 

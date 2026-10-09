@@ -413,17 +413,26 @@ module UnixMachineState =
         let (CpuId.CpuId index) = cpu
         index >= 0 && index < machine.ProcessorCount
 
+    /// Whether `cpu` is running the task whose thread ID is `occupant`. See
+    /// `UnixMachineState.Occupants`.
+    let internal runs (cpu : CpuId) (occupant : OsThreadId) (machine : UnixMachineState) : bool =
+        // Allocates nothing, unlike `Map.tryFind cpu machine.Occupants = Some occupant`, since
+        // a client dispatches once per instruction.
+        let mutable running = Unchecked.defaultof<OsThreadId>
+
+        machine.Occupants.TryGetValue (cpu, &running)
+        && OsThreadId.toUInt64 running = OsThreadId.toUInt64 occupant
+
     /// `machine` with the task whose thread ID is `occupant` taken off `cpu`,
     /// if it is running there, leaving the processor idle. See
     /// `UnixMachineState.Occupants`.
     let internal vacate (cpu : CpuId) (occupant : OsThreadId) (machine : UnixMachineState) : UnixMachineState =
-        match Map.tryFind cpu machine.Occupants with
-        | Some running when running = occupant ->
+        if runs cpu occupant machine then
             { machine with
                 Occupants = Map.remove cpu machine.Occupants
             }
-        | Some _
-        | None -> machine
+        else
+            machine
 
     /// Every write that has reached a client draining one of this machine's
     /// pipes, oldest first: what the outside world has received from the
