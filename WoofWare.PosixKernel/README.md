@@ -239,7 +239,7 @@ Choosing is policy, and a client that explores schedules, or a harness that stee
 
 **Where they meet.** `UnixSystem.tasks` lists the process's tasks, and `UnixTaskState.park` says which are parked in a syscall.
 The client keeps the set of tasks it holds asleep and passes it to `UnixWait.wakes`, which says which may wake now; it decides when a woken task finishes its call.
-A task's processor is named when the task is created (`ProcessLaunch.create`, `UnixTaskLifecycle.spawn`), and `UnixTaskTable.cpuOf` reports it.
+A task's processor is named when the task is created (`ProcessLaunch.create`, `UnixTaskLifecycle.spawn`), and `UnixTaskState.cpu` reports it, for a task found in `UnixSystem.tasks`.
 Not built yet: recording the client's reports of a dispatch ("task T is now running on processor c") and of the processor time a task used, and a default policy (round-robin, and PCT, probabilistic concurrency testing) as a module that knows nothing of the kernel.
 All three are planned in #1726.
 
