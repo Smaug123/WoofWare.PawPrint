@@ -545,12 +545,12 @@ type UnixTaskState =
 [<RequireQualifiedAccess>]
 module UnixTaskState =
 
-    /// The logical processor `task` runs on, as `sched_getcpu(3)` reports it.
-    /// See `UnixTaskState.Cpu`.
+    /// The logical processor `task` runs on, as `sched_getcpu(3)` reports it:
+    /// the one its creator named when it was created.
     let cpu (task : UnixTaskState) : CpuId = task.Cpu
 
-    /// The OS thread ID `task` reports, as `gettid(2)` does. See
-    /// `UnixTaskState.OsThreadId`.
+    /// The OS thread ID `task` reports, as `gettid(2)` does: fixed when the
+    /// task is created, and held by no other live task on the machine.
     let osThreadId (task : UnixTaskState) : OsThreadId = task.OsThreadId
 
     /// The syscall `task` is blocked in, and where that park stands in park

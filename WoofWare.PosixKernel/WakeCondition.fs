@@ -105,8 +105,7 @@ type WakePrimitive =
     /// of it, which `PipeHasRoom` is.
     | PipeReadWhileNonBlocking of writer : OpenFileDescriptionId * reads : int64
     /// The connected stream socket the open file description `reader` names
-    /// has an answer for a read: bytes, a FIN or a reset
-    /// (`TcpTransfer.readAnswers`).
+    /// has an answer for a read: bytes, a FIN or a reset.
     ///
     /// What a blocking `read(2)` of a connected socket with nothing to answer
     /// waits for. One primitive, unlike a pipe's two, because every reader
@@ -114,7 +113,7 @@ type WakePrimitive =
     | ConnectionReadable of reader : OpenFileDescriptionId
     /// The connected stream socket the open file description `writer` names
     /// wakes a write asleep with `remaining` of its bytes not yet taken: room,
-    /// by the flavour's rule, or a reset (`TcpTransfer.writeResumes`).
+    /// by the flavour's rule, or a reset.
     ///
     /// What a blocking `write(2)` to a connected socket with no room for the
     /// rest of it waits for. Carries what is left because Darwin's rule
@@ -141,7 +140,7 @@ type WakePrimitive =
     /// A signal with a handler is deliverable to the task that waits: were it to
     /// return to user mode now, it would run that handler. For a task in
     /// `sigsuspend`, any signal its temporary mask lets through that its
-    /// finishing call would act on (`SyscallInterruption.wakes`).
+    /// finishing call would act on.
     ///
     /// Names no kernel object, because what it asks about is the waiter itself:
     /// a condition is always some task's, and `satisfied` is told whose. Every

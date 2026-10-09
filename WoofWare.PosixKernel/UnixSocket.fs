@@ -2152,10 +2152,10 @@ module UnixSocket =
     ///   hundredths over 100, rounded toward zero).
     /// - `SO_ERROR` is the raw ECONNREFUSED of a refusal still pending
     ///   (`SocketPhase.Refused RefusalError.Pending`), the raw error a reset
-    ///   left pending on a connected socket (`TcpTransfer.pendingError`), and 0
+    ///   left pending on a connected socket, and 0
     ///   otherwise. Reading a pending error takes it: a refused socket is left
     ///   `Refused RefusalError.Reported`, and a connected one with nothing
-    ///   pending (`TcpTransfer.takeError`), whether the copy-out then succeeds
+    ///   pending, whether the copy-out then succeeds
     ///   or not. Only a call that fails before reading the option leaves the
     ///   error pending: one answered at the admission, or a Linux one
     ///   declaring a negative length.

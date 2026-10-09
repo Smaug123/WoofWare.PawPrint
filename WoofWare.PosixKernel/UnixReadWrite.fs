@@ -1365,8 +1365,7 @@ module UnixReadWrite =
     /// answers without the buffer, with the errno its flavour gives its domain
     /// and kind, except that a blocking read of a
     /// datagram socket, which sleeps until a datagram arrives, is refused. A
-    /// connected stream socket answers from its connection
-    /// (`TcpTransfer.read`): the bytes waiting, end of file, a reset's error,
+    /// connected stream socket answers from its connection: the bytes waiting, end of file, a reset's error,
     /// or `EAGAIN`; a blocking read with nothing to answer sleeps
     /// (`ReadOutcome.WouldBlock`), and `finishRead` finishes it. One that would
     /// copy bytes into an unmapped buffer is refused
@@ -2332,8 +2331,7 @@ module UnixReadWrite =
     /// answers without the buffer, as its flavour does for its domain and
     /// kind, at every length including zero; on
     /// Linux a stream socket's `EPIPE` raises `SIGPIPE` as a pipe's does. A
-    /// connected stream socket answers from its connection
-    /// (`TcpTransfer.admitWrite`): how many bytes it takes now, `EAGAIN`, or a
+    /// connected stream socket answers from its connection: how many bytes it takes now, `EAGAIN`, or a
     /// reset's error, whose `EPIPE` raises `SIGPIPE`. A blocking write it has
     /// no room for the whole of takes what fits and sleeps for the rest, as
     /// one into a pipe does. One that would copy from an unmapped buffer is

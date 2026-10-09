@@ -207,8 +207,8 @@ type UnixSystemDefect<'Task> =
     /// `accept(2)`). `holders` names each, in socket-table order, and a
     /// listener once however often it queues the connection.
     | ConnectionEndHeldTwice of connection : ConnectionId * connectionEnd : ConnectionEnd * holders : SocketId list
-    /// A connection's bytes and end states break the rules `TcpTransfer`
-    /// keeps (`TcpTransfer.violations`, each stated in `violations`): a buffer
+    /// A connection's bytes and end states break the rules its transfer keeps,
+    /// each stated in `violations`: a buffer
     /// holding more than its capacity, bytes in flight to an end that was
     /// reset or closed, a FIN arrived ahead of bytes sent before it, an end
     /// told of an ending its peer never made, and so on.
@@ -246,8 +246,8 @@ type UnixSystemDefect<'Task> =
     /// would have no measured order.
     | DuplicateEventRegistrationOrdinal of registeredAt : int64
     /// A task is parked on an open file description the table does not hold,
-    /// so its wait can never be satisfied, and asking `WakeCondition.satisfied`
-    /// about it crashes. A park holds what it names until the call returns, so
+    /// so its wait can never be satisfied, and asking `UnixWait.wakes` about
+    /// it crashes. A park holds what it names until the call returns, so
     /// this is a park recorded without the description, or one destroyed
     /// without the park being consulted.
     | ParkedOnAbsentDescription of task : 'Task * description : OpenFileDescriptionId
@@ -274,7 +274,7 @@ type UnixSystemDefect<'Task> =
     /// epoll instance, which no wait could have produced.
     | ParkedEpollWaitOnNonEpoll of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
     /// A task is parked in a `kevent` on a description that is not a kqueue,
-    /// which no wait could have produced and on which `WakeCondition.satisfied`
+    /// which no wait could have produced and on which `UnixWait.wakes`
     /// crashes.
     | ParkedKeventOnNonKqueue of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
     /// A task is parked in a `kevent` on a kqueue that has not been drained,
@@ -379,7 +379,7 @@ type UnixSystemDefect<'Task> =
     | PollQueueIdNotFresh of next : PollQueueId * existing : PollQueueId
     /// A task is parked in an `accept` on a description that is not a listening
     /// socket, which no accept could have produced and on which
-    /// `WakeCondition.satisfied` crashes.
+    /// `UnixWait.wakes` crashes.
     | ParkedAcceptOnNonListener of task : 'Task * description : OpenFileDescriptionId
     /// A task is asleep in an `accept` on a listener a close has drained
     /// (`ListenState.Drained`): the close that drains a listener ends every
@@ -405,7 +405,7 @@ type UnixSystemDefect<'Task> =
     | ListenerDrainedUnderLinux of socket : SocketId
     /// A task is asleep in a pipe `read` or `write` through a description that
     /// names something other than the pipe end the call needs, which no such
-    /// call could have produced and on which `WakeCondition.satisfied` crashes.
+    /// call could have produced and on which `UnixWait.wakes` crashes.
     | ParkedPipeTransferOnWrongTarget of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
     /// A task is asleep in a pipe transfer whose progress no call could have
     /// made: a read of nothing, or a write of `count` bytes with `written` of
@@ -415,7 +415,7 @@ type UnixSystemDefect<'Task> =
     /// A task is asleep in a `read` or `write` of a connected socket through a
     /// description that names something other than an end of a connection,
     /// which no such call could have produced and on which
-    /// `WakeCondition.satisfied` crashes.
+    /// `UnixWait.wakes` crashes.
     | ParkedConnectionTransferOnNonConnection of task : 'Task * description : OpenFileDescriptionId
     /// A task is asleep in a connection transfer whose progress no call could
     /// have made: a read of nothing, or a write of `count` bytes with
@@ -597,8 +597,8 @@ type CurrentDirectoryFault =
     /// `NAME_MAX` and — on a flavour that re-checks, which is Darwin — a
     /// symbolic link whose expansion would carry the whole path past
     /// `PATH_MAX`. A real kernel conflates them too. Splitting the case would
-    /// need `PathWalk.resolveExisting` to report which limit it hit,
-    /// which every other caller of that walk would pay for.
+    /// need the path walk to report which limit it hit, which every other
+    /// caller of the walk would pay for.
     ///
     /// Carries the flavour so that a fault which outlives the call still says
     /// whose limits were in force -- 255 CJK characters name a directory a

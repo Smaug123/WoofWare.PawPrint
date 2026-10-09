@@ -355,7 +355,7 @@ module SocketAddressing =
 
     /// What a new socket in `domain` starts with: no address, and on an IPv6
     /// socket the `IPV6_V6ONLY` the machine's sysctl gives
-    /// (`UnixMachineState.Ipv6OnlyByDefault`).
+    /// (`ipv6OnlyByDefault`, which `UnixBootImage.withIpv6OnlyByDefault` sets).
     let initial (domain : SocketDomain) (ipv6OnlyByDefault : bool) : SocketAddressing =
         match domain with
         | SocketDomain.Inet -> SocketAddressing.Inet None

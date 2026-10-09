@@ -61,8 +61,8 @@ type SigsuspendOutcome =
     /// having changed nothing.
     | Failed of error : UnixError
     /// The call did not return. The calling task is parked, with the temporary
-    /// mask in force, and sleeps until `WakeCondition.satisfied` of this
-    /// condition is non-empty; then `UnixSignal.finishSigsuspend` finishes the
+    /// mask in force, and sleeps until `UnixWait.wakes` wakes it for this
+    /// condition; then `UnixSignal.finishSigsuspend` finishes the
     /// call.
     | WouldBlock of WakeCondition
 
