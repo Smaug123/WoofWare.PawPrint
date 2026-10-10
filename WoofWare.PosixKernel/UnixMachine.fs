@@ -737,20 +737,20 @@ module UnixMachineState =
             // arrived (`order3.c` row Q), and a reset adds HUP, and ERR while
             // its error is pending, and makes the socket writable whatever its
             // buffer holds, since a write then fails at once.
-            match inbound.Receiver with
-            | TcpEndState.Open
-            | TcpEndState.FinQueued ->
+            match inbound.Receiver, inbound.Fin with
+            | TcpEndState.Open _, TcpFin.NotSent
+            | TcpEndState.Open _, TcpFin.Queued _ ->
                 { ReadinessLevel.none with
                     In = unread
                     Out = TcpTransfer.linuxSendable connectionEnd transfer
                 }
-            | TcpEndState.FinReceived ->
+            | TcpEndState.Open _, TcpFin.Arrived _ ->
                 { ReadinessLevel.none with
                     In = true
                     Out = TcpTransfer.linuxSendable connectionEnd transfer
                     RdHup = true
                 }
-            | TcpEndState.Reset (_, errorPending) ->
+            | TcpEndState.Reset errorPending, _ ->
                 {
                     In = true
                     Out = true
@@ -758,7 +758,7 @@ module UnixMachineState =
                     Hup = true
                     Err = errorPending
                 }
-            | TcpEndState.Closed ->
+            | TcpEndState.Closed, _ ->
                 failwith
                     $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
 
@@ -791,9 +791,7 @@ module UnixMachineState =
         |> List.exists (fun connectionEnd ->
             match (TcpTransfer.towards connectionEnd connection.Transfer).Receiver with
             | TcpEndState.Reset _ -> true
-            | TcpEndState.Open
-            | TcpEndState.FinQueued
-            | TcpEndState.FinReceived
+            | TcpEndState.Open _
             | TcpEndState.Closed -> false
         )
 
@@ -814,9 +812,7 @@ module UnixMachineState =
                 | SimulatedUnixFlavour.Darwin, _ -> true
                 | SimulatedUnixFlavour.Linux, Some binding -> not binding.LockedPort
                 | SimulatedUnixFlavour.Linux, None -> true
-            | TcpEndState.Open
-            | TcpEndState.FinQueued
-            | TcpEndState.FinReceived
+            | TcpEndState.Open _
             | TcpEndState.Closed -> false
 
     /// Whether any *other* socket's binding conflicts with `candidate`, taken

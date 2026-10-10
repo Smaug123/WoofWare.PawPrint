@@ -46,6 +46,9 @@ module internal TcpTransferReference =
             InFlight : byte list
             /// In the receiver's receive buffer.
             Arrived : byte list
+            /// Bytes a reset left in the sender's send buffer, which Darwin
+            /// goes on counting there and never delivers.
+            Stranded : int
             SendCap : int
             RecvCap : int
         }
@@ -83,6 +86,7 @@ module internal TcpTransferReference =
             {
                 InFlight = []
                 Arrived = []
+                Stranded = 0
                 SendCap = sendCap
                 RecvCap = recvCap
             }
@@ -173,7 +177,7 @@ module internal TcpTransferReference =
 
             let free =
                 if peerGone then
-                    toPeer.SendCap - List.length toPeer.InFlight
+                    toPeer.SendCap - List.length toPeer.InFlight - toPeer.Stranded
                 else
                     toPeer.RecvCap - List.length toPeer.Arrived + toPeer.SendCap
                     - List.length toPeer.InFlight
@@ -212,7 +216,7 @@ module internal TcpTransferReference =
                             toPeer
                         else
                             { toPeer with
-                                InFlight = toPeer.InFlight @ taken
+                                Stranded = toPeer.Stranded + n
                             }
 
                     TcpTransferSeen.Wrote n,
@@ -370,6 +374,7 @@ module internal TcpTransferReference =
                 { f with
                     InFlight = []
                     Arrived = []
+                    Stranded = 0
                 }
 
             [],
@@ -396,7 +401,8 @@ module internal TcpTransferReference =
                     c
                     { toMe with
                         Arrived = []
-                        InFlight = (if m.Linux then [] else toMe.InFlight)
+                        InFlight = []
+                        Stranded = (if m.Linux then 0 else toMe.Stranded + toMe.InFlight.Length)
                     }
                 |> setFlow
                     p
@@ -432,6 +438,11 @@ module TestTcpTransfer =
             {
                 InFlight = List.ofSeq (ByteQueue.peek (ByteQueue.length d.Sending) d.Sending)
                 Arrived = List.ofSeq (ByteQueue.peek (ByteQueue.length d.Receiving) d.Receiving)
+                Stranded =
+                    match transfer.Rules with
+                    | TcpTransferRules.Linux _ -> 0
+                    | TcpTransferRules.Darwin stranded ->
+                        Map.tryFind (TcpTransferReference.other e) stranded |> Option.defaultValue 0
                 SendCap = d.SendCapacity
                 RecvCap = d.ReceiveCapacity
             }
@@ -439,22 +450,29 @@ module TestTcpTransfer =
         let armed (e : ConnectionEnd) : bool =
             match transfer.Rules with
             | TcpTransferRules.Linux set -> Set.contains e set
-            | TcpTransferRules.Darwin -> false
+            | TcpTransferRules.Darwin _ -> false
 
         let endOf (e : ConnectionEnd) : TcpTransferReference.End =
-            let closed, finSent, reset, afterFin, waiting =
-                match (TcpTransfer.towards e transfer).Receiver with
-                | TcpEndState.Open -> false, false, false, false, false
-                | TcpEndState.FinQueued
-                | TcpEndState.FinReceived -> false, true, false, false, false
-                | TcpEndState.Reset (afterFin, pending) -> false, false, true, afterFin, pending
-                | TcpEndState.Closed -> true, false, false, false, false
+            let inbound = TcpTransfer.towards e transfer
+
+            let afterFin =
+                match inbound.Fin, (TcpTransfer.towards (TcpTransferReference.other e) transfer).Fin with
+                | TcpFin.Arrived _, TcpFin.NotSent -> true
+                | _ -> false
+
+            let finSent = inbound.Fin <> TcpFin.NotSent
+
+            let closed, reset, waiting =
+                match inbound.Receiver with
+                | TcpEndState.Open _ -> false, false, false
+                | TcpEndState.Reset pending -> false, true, pending
+                | TcpEndState.Closed -> true, false, false
 
             {
                 Closed = closed
                 FinSent = finSent
                 GotReset = reset
-                ResetAfterFin = afterFin
+                ResetAfterFin = reset && afterFin
                 ErrorWaiting = waiting
                 Armed = armed e
             }
@@ -463,7 +481,7 @@ module TestTcpTransfer =
             Linux =
                 (match transfer.Rules with
                  | TcpTransferRules.Linux _ -> true
-                 | TcpTransferRules.Darwin -> false)
+                 | TcpTransferRules.Darwin _ -> false)
             Flows = ends |> List.map (fun e -> e, flow e) |> Map.ofList
             Ends = ends |> List.map (fun e -> e, endOf e) |> Map.ofList
         }
@@ -763,8 +781,8 @@ module TestTcpTransfer =
         let wakes, transfer = TcpTransfer.close ConnectionEnd.Client transfer
         wakes |> shouldEqual []
 
-        (TcpTransfer.towards ConnectionEnd.Server transfer).Receiver
-        |> shouldEqual TcpEndState.FinQueued
+        (TcpTransfer.towards ConnectionEnd.Server transfer).Fin
+        |> shouldEqual (TcpFin.Queued false)
 
         let transfer =
             match TcpTransfer.admitWrite ConnectionEnd.Server 5 transfer with
@@ -778,7 +796,7 @@ module TestTcpTransfer =
             | other, _ -> failwith $"the write of 5 was %A{other}"
 
         (TcpTransfer.towards ConnectionEnd.Server transfer).Receiver
-        |> shouldEqual (TcpEndState.Reset (false, true))
+        |> shouldEqual (TcpEndState.Reset true)
 
         let answer, _, transfer =
             TcpTransfer.read ConnectionEnd.Server TcpReceiveCall.Read 100 transfer

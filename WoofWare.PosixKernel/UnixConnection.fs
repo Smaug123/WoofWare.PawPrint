@@ -834,9 +834,7 @@ module UnixConnection =
                             .Receiver
                      with
                      | TcpEndState.Reset _ -> true
-                     | TcpEndState.Open
-                     | TcpEndState.FinQueued
-                     | TcpEndState.FinReceived
+                     | TcpEndState.Open _
                      | TcpEndState.Closed -> false)
                     ->
                     Error (ConnectRefusal.ResetBeforeReport socketId)

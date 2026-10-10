@@ -1643,13 +1643,15 @@ module TestMultiProcessFuzz =
             let accepted =
                 (UnixMachineState.socketHoldingEnd queued.Connection ConnectionEnd.Server after.Machine).IsSome
                 || (
-                    match (TcpTransfer.towards ConnectionEnd.Client transfer).Receiver with
-                    | TcpEndState.FinQueued
-                    | TcpEndState.FinReceived -> true
-                    | TcpEndState.Open
-                    | TcpEndState.Reset _
-                    | TcpEndState.Closed -> false
-                )
+                    // The server end, accepted and closed, has made its FIN,
+                    // and the client is neither reset nor closed.
+                    let towardsClient = TcpTransfer.towards ConnectionEnd.Client transfer
+
+                    match towardsClient.Receiver, towardsClient.Fin with
+                    | TcpEndState.Open _, (TcpFin.Queued _ | TcpFin.Arrived _) -> true
+                    | TcpEndState.Open _, TcpFin.NotSent
+                    | TcpEndState.Reset _, _
+                    | TcpEndState.Closed, _ -> false)
 
             let stillQueued =
                 match Map.tryFind queued.Listener after.Machine.Sockets with

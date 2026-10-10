@@ -464,27 +464,26 @@ module internal DarwinReadiness =
                 TcpTransfer.pendingError connectionEnd transfer
                 |> Option.map TcpError.toUnixError
 
-            match filter, inbound.Receiver with
-            | _, TcpEndState.Closed ->
+            match filter, inbound.Receiver, inbound.Fin with
+            | _, TcpEndState.Closed, _ ->
                 failwith
                     $"DarwinReadiness.ofSocket: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
             // Ready with any byte unread (the receive low-water mark is 1),
             // reporting how many.
-            | KqueueFilter.Read, TcpEndState.Open
-            | KqueueFilter.Read, TcpEndState.FinQueued ->
+            | KqueueFilter.Read, TcpEndState.Open _, TcpFin.NotSent
+            | KqueueFilter.Read, TcpEndState.Open _, TcpFin.Queued _ ->
                 if unread > 0L then
                     Some (KqueueFilterReport.Ready unread)
                 else
                     None
-            | KqueueFilter.Read, TcpEndState.FinReceived -> Some (KqueueFilterReport.EndOfFile (unread, None))
-            | KqueueFilter.Read, TcpEndState.Reset _ -> Some (KqueueFilterReport.EndOfFile (unread, error))
-            | KqueueFilter.Write, TcpEndState.Reset _ ->
+            | KqueueFilter.Read, TcpEndState.Open _, TcpFin.Arrived _ ->
+                Some (KqueueFilterReport.EndOfFile (unread, None))
+            | KqueueFilter.Read, TcpEndState.Reset _, _ -> Some (KqueueFilterReport.EndOfFile (unread, error))
+            | KqueueFilter.Write, TcpEndState.Reset _, _ ->
                 Some (KqueueFilterReport.EndOfFile (sendBufferSpace socket machine, error))
             // Ready while at least the send low-water mark is free, reporting
             // how much is, and without EV_EOF after a FIN.
-            | KqueueFilter.Write, TcpEndState.Open
-            | KqueueFilter.Write, TcpEndState.FinQueued
-            | KqueueFilter.Write, TcpEndState.FinReceived ->
+            | KqueueFilter.Write, TcpEndState.Open _, _ ->
                 let space = sendBufferSpace socket machine
 
                 if space >= int64 TcpTransfer.darwinSendLowWater then
