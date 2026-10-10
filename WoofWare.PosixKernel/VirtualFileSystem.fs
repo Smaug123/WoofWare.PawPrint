@@ -290,7 +290,7 @@ type internal RenameOutcome =
 /// kernels, and there is no portable case to add. `UnixDescriptor.lseek`
 /// decodes a raw `whence` under the flavour and refuses them.
 [<RequireQualifiedAccess>]
-type SeekWhence =
+type internal SeekWhence =
     /// `SEEK_SET` (0): from the start of the file.
     | Set
     /// `SEEK_CUR` (1): from the description's current offset.

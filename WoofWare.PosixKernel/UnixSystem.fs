@@ -157,8 +157,8 @@ type UnixSystemDefect<'Task> =
     /// way to make a socket — `UnixSocket.socket`, or `UnixConnection.accept`
     /// materialising a queued connection — hands back a descriptor at once,
     /// so an unreferenced socket means a close forgot to clean up. A
-    /// connection awaiting accept is a `TcpConnection`, not a socket, which
-    /// is what lets this rule stay strict.
+    /// connection awaiting accept is held on its listener's queue, not as a
+    /// socket, which is what lets this rule stay strict.
     | UnreferencedSocket of socket : SocketId
     /// A socket in the table has an identity at or above the next one to
     /// allocate, so a future `socket(2)` would mint a duplicate.
