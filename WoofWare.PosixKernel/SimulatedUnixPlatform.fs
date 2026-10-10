@@ -1590,6 +1590,27 @@ module SimulatedUnixPlatform =
         else
             BinaryPrimitives.ReadInt32BigEndian span
 
+    /// A C `uint32_t` in the machine's own byte order, as `sin6_scope_id` is
+    /// stored, read from the four bytes of `span`.
+    let private readMachineUInt32 (platform : SimulatedUnixPlatform) (span : System.ReadOnlySpan<byte>) : uint32 =
+        if machineIsLittleEndian platform then
+            BinaryPrimitives.ReadUInt32LittleEndian span
+        else
+            BinaryPrimitives.ReadUInt32BigEndian span
+
+    /// `value` as a C `uint32_t` in the machine's own byte order, into the
+    /// four bytes of `span`.
+    let private writeMachineUInt32
+        (platform : SimulatedUnixPlatform)
+        (span : System.Span<byte>)
+        (value : uint32)
+        : unit
+        =
+        if machineIsLittleEndian platform then
+            BinaryPrimitives.WriteUInt32LittleEndian (span, value)
+        else
+            BinaryPrimitives.WriteUInt32BigEndian (span, value)
+
     /// What `copied`, every byte a `bind(2)` or `connect(2)` copied in, says
     /// when read as this platform's `struct sockaddr_in`.
     ///
@@ -1718,7 +1739,9 @@ module SimulatedUnixPlatform =
     ///
     /// The family sits where `decodeInternetSockaddr` reads it; the port is
     /// network order at 2 and the address sixteen bytes at 8. A v4-mapped
-    /// address, `::ffff:a.b.c.d`, is read as the IPv4 endpoint it maps.
+    /// address, `::ffff:a.b.c.d`, is read as the IPv4 endpoint it maps. Any
+    /// other is read with the flow info (network order at 4) and the scope id
+    /// (the machine's order at 24, or 0 if the copy stopped short of it).
     let internal decodeInternetV6Sockaddr
         (platform : SimulatedUnixPlatform)
         (copied : ImmutableArray<byte>)
@@ -1753,18 +1776,43 @@ module SimulatedUnixPlatform =
                     )
 
                 let address =
-                    copied.Slice (InternetV6Sockaddr.address.Offset, InternetV6Sockaddr.address.Width)
+                    match
+                        Ipv6Address.ofBytes (
+                            span.Slice (InternetV6Sockaddr.address.Offset, InternetV6Sockaddr.address.Width)
+                        )
+                    with
+                    | Some address -> address
+                    | None ->
+                        failwith
+                            $"SimulatedUnixPlatform.decodeInternetV6Sockaddr: sin6_addr is %d{InternetV6Sockaddr.address.Width} bytes wide, which is not an IPv6 address's sixteen (this is a bug in this library)."
 
-                let mapped =
-                    Seq.forall (fun i -> address.[i] = 0uy) (seq { 0..9 })
-                    && address.[10] = 0xFFuy
-                    && address.[11] = 0xFFuy
+                match Ipv6Address.tryV4Mapped address with
+                | Some v4 -> Some (Ipv6Destination.V4Mapped (Ipv4Endpoint.ofParts v4 port))
+                | None ->
+                    // `sin6_flowinfo` ends before `sin6_addr` begins, so a copy
+                    // that reached the address reached it too.
+                    let flowInfo =
+                        BinaryPrimitives.ReadUInt32BigEndian (
+                            span.Slice (InternetV6Sockaddr.flowInfo.Offset, InternetV6Sockaddr.flowInfo.Width)
+                        )
 
-                if mapped then
-                    let v4 = BinaryPrimitives.ReadUInt32BigEndian (address.AsSpan().Slice (12, 4))
-                    Some (Ipv6Destination.V4Mapped (Ipv4Endpoint.ofParts (Ipv4Address v4) port))
-                else
-                    Some (Ipv6Destination.Native (address, port))
+                    let scopeId =
+                        if SockaddrField.reachedBy InternetV6Sockaddr.scopeId copied.Length then
+                            readMachineUInt32
+                                platform
+                                (span.Slice (InternetV6Sockaddr.scopeId.Offset, InternetV6Sockaddr.scopeId.Width))
+                        else
+                            0u
+
+                    Some (
+                        Ipv6Destination.Native
+                            {
+                                Address = address
+                                Port = port
+                                FlowInfo = flowInfo
+                                ScopeId = scopeId
+                            }
+                    )
             else
                 None
 
@@ -1773,7 +1821,7 @@ module SimulatedUnixPlatform =
             Destination = destination
         }
 
-    /// The sixteen bytes of `sin6_addr` an IPv6 socket whose transport is
+    /// The address in `sin6_addr` that an IPv6 socket whose transport is
     /// IPv4 reports for the IPv4 `address`, in a socket whose connection has
     /// failed or not: its connect was refused, or a reset has reached it.
     ///
@@ -1791,41 +1839,40 @@ module SimulatedUnixPlatform =
         (platform : SimulatedUnixPlatform)
         (connectionFailed : bool)
         (address : Ipv4Address)
-        : byte[]
+        : Ipv6Address
         =
-        let bytes = Array.zeroCreate<byte> 16
-
-        if address <> Ipv4Address.any then
-            let (Ipv4Address bits) = address
-            BinaryPrimitives.WriteUInt32BigEndian (System.Span<byte> (bytes, 12, 4), bits)
-
+        if address = Ipv4Address.any then
+            Ipv6Address.any
+        else
             match flavour platform with
-            | SimulatedUnixFlavour.Darwin when connectionFailed -> ()
+            | SimulatedUnixFlavour.Darwin when connectionFailed -> Ipv6Address.v4Compatible address
             | SimulatedUnixFlavour.Darwin
-            | SimulatedUnixFlavour.Linux ->
-                bytes.[10] <- 0xFFuy
-                bytes.[11] <- 0xFFuy
+            | SimulatedUnixFlavour.Linux -> Ipv6Address.v4Mapped address
 
-        bytes
-
-    /// `struct sockaddr_in6` for the sixteen bytes `address` and `port`, as
-    /// this platform's kernel copies one out: the family, the port, a zero
-    /// `sin6_flowinfo`, the address and a zero `sin6_scope_id`, and on Darwin
-    /// 28 in the `sa_len` byte. Measured on both.
-    let encodeInternetV6Sockaddr (platform : SimulatedUnixPlatform) (address : byte[]) (port : uint16) : byte[] =
-        if address.Length <> InternetV6Sockaddr.address.Width then
-            failwith
-                $"SimulatedUnixPlatform.encodeInternetV6Sockaddr: an IPv6 address is %d{InternetV6Sockaddr.address.Width} bytes, and the caller passed %d{address.Length} (this is a bug in the caller)."
-
+    /// `struct sockaddr_in6` for `endpoint`, as this platform's kernel copies
+    /// one out: the family, the port and `sin6_flowinfo` in network order, the
+    /// address, `sin6_scope_id` in the machine's own order, and on Darwin 28
+    /// in the `sa_len` byte. The layout is measured on both.
+    let encodeInternetV6Sockaddr (platform : SimulatedUnixPlatform) (endpoint : Ipv6Endpoint) : byte[] =
         let realLength = internetV6SocketAddressSize
         let blob = Array.zeroCreate<byte> realLength
 
         BinaryPrimitives.WriteUInt16BigEndian (
             System.Span<byte> (blob, InternetV6Sockaddr.port.Offset, InternetV6Sockaddr.port.Width),
-            port
+            endpoint.Port
         )
 
-        address.CopyTo (blob, InternetV6Sockaddr.address.Offset)
+        BinaryPrimitives.WriteUInt32BigEndian (
+            System.Span<byte> (blob, InternetV6Sockaddr.flowInfo.Offset, InternetV6Sockaddr.flowInfo.Width),
+            endpoint.FlowInfo
+        )
+
+        (Ipv6Address.toBytes endpoint.Address).CopyTo (blob, InternetV6Sockaddr.address.Offset)
+
+        writeMachineUInt32
+            platform
+            (System.Span<byte> (blob, InternetV6Sockaddr.scopeId.Offset, InternetV6Sockaddr.scopeId.Width))
+            endpoint.ScopeId
 
         let field = sockaddrFamilyField platform
         let familyBytes = encodeSockaddrFamily platform (internetV6AddressFamily platform)
