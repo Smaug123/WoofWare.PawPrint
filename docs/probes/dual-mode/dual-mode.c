@@ -43,6 +43,8 @@ static const char *en(int e) {
     case ENAMETOOLONG: return "ENAMETOOLONG";
     case EINTR: return "EINTR(timed out after 3s)";
     case EAGAIN: return "EAGAIN";
+    case ECONNRESET: return "ECONNRESET";
+    case EPIPE: return "EPIPE";
     default: { static char b[32]; snprintf(b, sizeof b, "errno%d", e); return b; }
     }
 }
@@ -893,6 +895,88 @@ static void section_h(void) {
     close(l);
 }
 
+static void so_error(const char *label, int fd) {
+    int v = -1; socklen_t n = sizeof v;
+    int r = getsockopt(fd, SOL_SOCKET, SO_ERROR, &v, &n);
+    printf("%-60s -> %s value=%s\n", label, en(result(r)), en(v));
+}
+
+static void transfer(const char *label, ssize_t n) {
+    if (n < 0) printf("%-60s -> %s\n", label, en(errno));
+    else printf("%-60s -> %zd\n", label, n);
+}
+
+// A connected pair on the AF_INET listener `l`: `*c` the client, dual-mode or
+// AF_INET, and `*srv` the accepted end.
+static void pair_r(int l, int v4, int *c, int *srv) {
+    if (v4) {
+        *c = tcp4();
+        struct sockaddr_in a = sin_of(INADDR_LOOPBACK, L);
+        connect(*c, (struct sockaddr *)&a, sizeof a);
+    } else {
+        *c = tcp6_v6only(0);
+        struct sockaddr_in6 a = sin6_of(1, INADDR_LOOPBACK, L);
+        connect(*c, (struct sockaddr *)&a, sizeof a);
+    }
+    *srv = accept(l, NULL, NULL);
+}
+
+// The names a client reports once its connection has ended: reset by the
+// peer's close over a byte it had not read (R1), closed in order by the peer
+// and then reset by the client's write (R2), and reset by the peer's close
+// under SO_LINGER {1, 0} (R3). An AF_INET client alongside, for comparison.
+static void section_r(void) {
+    printf("== R: names once the connection has ended ==\n");
+    signal(SIGPIPE, SIG_IGN);
+    int l = listener4(INADDR_LOOPBACK);
+    for (int v4 = 0; v4 <= 1; v4++) {
+        const char *who = v4 ? "AF_INET" : "dual-mode";
+        char label[96];
+        int c, srv;
+        char x = 'x', d;
+
+        pair_r(l, v4, &c, &srv);
+        write(c, &x, 1);
+        usleep(50000);
+        close(srv);
+        usleep(50000);
+        snprintf(label, sizeof label, "R1 %s, reset: getsockname", who); sockname(label, c);
+        snprintf(label, sizeof label, "R1 %s, reset: getpeername", who); peername(label, c);
+        snprintf(label, sizeof label, "R1 %s, reset: SO_ERROR", who); so_error(label, c);
+        snprintf(label, sizeof label, "R1 %s, error taken: getsockname", who); sockname(label, c);
+        snprintf(label, sizeof label, "R1 %s, error taken: read", who); transfer(label, read(c, &d, 1));
+        snprintf(label, sizeof label, "R1 %s, after the read: getsockname", who); sockname(label, c);
+        close(c);
+
+        pair_r(l, v4, &c, &srv);
+        close(srv);
+        usleep(50000);
+        snprintf(label, sizeof label, "R2 %s, FIN: getsockname", who); sockname(label, c);
+        snprintf(label, sizeof label, "R2 %s, FIN: getpeername", who); peername(label, c);
+        snprintf(label, sizeof label, "R2 %s, FIN: read", who); transfer(label, read(c, &d, 1));
+        snprintf(label, sizeof label, "R2 %s, FIN: write", who); transfer(label, write(c, &x, 1));
+        usleep(50000);
+        snprintf(label, sizeof label, "R2 %s, write reset: getsockname", who); sockname(label, c);
+        snprintf(label, sizeof label, "R2 %s, write reset: getpeername", who); peername(label, c);
+        snprintf(label, sizeof label, "R2 %s, write reset: SO_ERROR", who); so_error(label, c);
+        snprintf(label, sizeof label, "R2 %s, error taken: getsockname", who); sockname(label, c);
+        snprintf(label, sizeof label, "R2 %s, error taken: write", who); transfer(label, write(c, &x, 1));
+        close(c);
+
+        pair_r(l, v4, &c, &srv);
+        struct linger lg = { 1, 0 };
+        setsockopt(srv, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
+        close(srv);
+        usleep(50000);
+        snprintf(label, sizeof label, "R3 %s, abortive close: getsockname", who); sockname(label, c);
+        snprintf(label, sizeof label, "R3 %s, abortive close: getpeername", who); peername(label, c);
+        snprintf(label, sizeof label, "R3 %s, abortive close: SO_ERROR", who); so_error(label, c);
+        snprintf(label, sizeof label, "R3 %s, error taken: getsockname", who); sockname(label, c);
+        close(c);
+    }
+    close(l);
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);
     struct sigaction sa;
@@ -905,7 +989,7 @@ int main(int argc, char **argv) {
     printf("sizeof(struct sockaddr_in6)=%zu AF_INET6=%d\n", sizeof(struct sockaddr_in6), AF_INET6);
 #endif
     // `./p EFG` runs those sections only; no argument runs every one.
-    const char *only = argc > 1 ? argv[1] : "ANBCDEFGH";
+    const char *only = argc > 1 ? argv[1] : "ANBCDEFGHR";
     if (strchr(only, 'A')) section_a();
     if (strchr(only, 'N')) section_n();
     if (strchr(only, 'B')) section_b();
@@ -915,5 +999,6 @@ int main(int argc, char **argv) {
     if (strchr(only, 'F')) section_f();
     if (strchr(only, 'G')) section_g();
     if (strchr(only, 'H')) section_h();
+    if (strchr(only, 'R')) section_r();
     return 0;
 }

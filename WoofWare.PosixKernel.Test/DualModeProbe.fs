@@ -61,15 +61,15 @@ module DualModeProbe =
     let private tcp4 (libc : Libc) : int = socket libc 2
     let private tcp6 (libc : Libc) : int = socket libc (af6 libc)
 
-    let private setInt (libc : Libc) (fd : int) (level : int) (name : int) (value : int) : Answer =
-        let bytes : byte[] = SimulatedUnixPlatform.encodeCInt libc.Platform value
+    let private setOption (libc : Libc) (fd : int) (level : int) (name : int) (bytes : byte[]) : Answer =
+        let length = uint32 bytes.Length
 
         let supplied =
-            match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped 4u libc.System with
+            match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped length libc.System with
             | Result.Ok (SetSockOptAdmission.Transfer count) -> Some (ImmutableArray.Create<byte> (bytes, 0, count))
             | _ -> None
 
-        match UnixSocket.setsockopt fd level name UserBuffer.Mapped 4u supplied libc.System with
+        match UnixSocket.setsockopt fd level name UserBuffer.Mapped length supplied libc.System with
         | Result.Ok (SetSockOptAnswer.Set, system) ->
             libc.System <- system
             Answer.Ok
@@ -77,6 +77,9 @@ module DualModeProbe =
             libc.System <- system
             Answer.Errno error
         | Result.Error refusal -> Answer.Refused (SocketOptionRefusal.describe refusal)
+
+    let private setInt (libc : Libc) (fd : int) (level : int) (name : int) (value : int) : Answer =
+        setOption libc fd level name (SimulatedUnixPlatform.encodeCInt libc.Platform value)
 
     let private getInt (libc : Libc) (fd : int) (level : int) (name : int) : Answer * int =
         let read =
@@ -338,6 +341,61 @@ module DualModeProbe =
         match accept libc l 0u with
         | Result.Ok (fd, _, _) -> close libc fd
         | Result.Error _ -> ()
+
+    /// `getsockopt(SO_ERROR)`: the call's answer, and the error it read as the
+    /// probe's `en` prints one, or the answer where it failed.
+    let private soError (libc : Libc) (fd : int) : Answer * string =
+        let answer, error =
+            getInt
+                libc
+                fd
+                (SimulatedUnixPlatform.socketOptionLevel libc.Platform)
+                (SimulatedUnixPlatform.socketErrorOption libc.Platform)
+
+        let text =
+            match answer with
+            | Answer.Ok ->
+                match UnixError.ofRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering libc.Platform) error with
+                | Some error -> $"%A{error}"
+                | None when error = 0 -> "OK"
+                | None -> $"errno%d{error}"
+            | other -> en other
+
+        answer, text
+
+    /// A one-byte `write` of `'x'`, as `transfer` prints it: the count, or the
+    /// errno.
+    let private writeByte (libc : Libc) (fd : int) : string =
+        match UnixReadWrite.write 0 fd (ImmutableArray.Create<byte> (byte 'x')) libc.System with
+        | Result.Ok (WriteOutcome.Returns (answer, system))
+        | Result.Ok (WriteOutcome.ReturnsRaising (answer, _, system)) ->
+            libc.System <- system
+
+            match answer with
+            | WriteAnswer.Completed count -> $"%d{count}"
+            | WriteAnswer.Failed error -> $"%A{error}"
+        | Result.Error _ -> "REFUSED"
+        | Result.Ok other -> failwith $"DualModeProbe: write(%d{fd}) answered %A{other}"
+
+    /// A one-byte `read`, as `transfer` prints it: the count, or the errno.
+    let private readByte (libc : Libc) (fd : int) : string =
+        match UnixReadWrite.read 0 fd UserBuffer.Mapped 1UL libc.System with
+        | Result.Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), system) ->
+            libc.System <- system
+            $"%d{bytes.Length}"
+        | Result.Ok (ReadOutcome.Answered (ReadAnswer.Failed error), system) ->
+            libc.System <- system
+            $"%A{error}"
+        | Result.Error _ -> "REFUSED"
+        | Result.Ok other -> failwith $"DualModeProbe: read(%d{fd}) answered %A{other}"
+
+    /// `close`, which the model may refuse; the probe prints nothing for it.
+    let private tryClose (libc : Libc) (fd : int) : bool =
+        match UnixDescriptor.close fd libc.System with
+        | Result.Ok (_, system) ->
+            libc.System <- system
+            true
+        | Result.Error _ -> false
 
     /// Section A: the fresh socket, and connect to a v4-mapped loopback.
     let private sectionA (libc : Libc) (ports : Ports) (output : StringBuilder) : unit =
@@ -763,23 +821,7 @@ module DualModeProbe =
         nameLine "E2 pending: getsockname" getsockname s 28
         nameLine "E2 pending: getpeername" getpeername s 28
 
-        let answer, error =
-            getInt
-                libc
-                s
-                (SimulatedUnixPlatform.socketOptionLevel libc.Platform)
-                (SimulatedUnixPlatform.socketErrorOption libc.Platform)
-
-        let errorText =
-            match answer with
-            | Answer.Ok ->
-                match UnixError.ofRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering libc.Platform) error with
-                | Some error -> $"%A{error}"
-                | None when error = 0 -> "OK"
-                | None -> $"errno%d{error}"
-            | other -> en other
-
-        output.AppendLine ($"E2 SO_ERROR -> %s{errorText}") |> ignore
+        output.AppendLine ($"E2 SO_ERROR -> %s{snd (soError libc s)}") |> ignore
         nameLine "E2 taken: getsockname" getsockname s 28
         close libc s
 
@@ -983,6 +1025,108 @@ module DualModeProbe =
 
         close libc l
 
+    /// `pair_r`: a client, dual-mode or `AF_INET`, connected to the listener
+    /// `l`, and the end `l` accepted.
+    let private pairR (libc : Libc) (ports : Ports) (l : int) (v4 : bool) : int * int =
+        let c, answer =
+            if v4 then
+                let c = tcp4 libc
+                c, connect libc c (sinOf libc inaddrLoopback ports.L) 16
+            else
+                let c = tcp6V6Only libc 0
+                c, connect libc c (sin6Of libc true inaddrLoopback ports.L) 28
+
+        match answer with
+        | Answer.Ok -> ()
+        | other -> failwith $"DualModeProbe: pair_r's connect answered %A{other}"
+
+        match accept libc l 0u with
+        | Result.Ok (srv, _, _) -> c, srv
+        | Result.Error answer -> failwith $"DualModeProbe: pair_r's accept answered %A{answer}"
+
+    /// Section R: the names a client reports once its connection has ended.
+    let private sectionR (libc : Libc) (ports : Ports) (output : StringBuilder) : unit =
+        output.AppendLine "== R: names once the connection has ended ==" |> ignore
+        let nameLine = nameLine libc ports output
+
+        libc.System <-
+            { libc.System with
+                Process =
+                    { libc.System.Process with
+                        Signals =
+                            SignalState.setDisposition
+                                Signal.SIGPIPE
+                                SignalDisposition.Ignore
+                                libc.System.Process.Signals
+                    }
+            }
+
+        let l = listener4 libc ports inaddrLoopback
+
+        for v4 in [ false ; true ] do
+            let who = if v4 then "AF_INET" else "dual-mode"
+
+            let soErrorLine (label : string) (fd : int) =
+                let answer, text = soError libc fd
+                output.AppendLine ($"%s{label} -> %s{en answer} value=%s{text}") |> ignore
+
+            let transferLine (label : string) (text : string) =
+                output.AppendLine ($"%s{label} -> %s{text}") |> ignore
+
+            let c, srv = pairR libc ports l v4
+            writeByte libc c |> ignore<string>
+
+            if not (tryClose libc srv) then
+                failwith "DualModeProbe: R1's close of the accepted end was refused"
+
+            nameLine $"R1 %s{who}, reset: getsockname" getsockname c 28
+            nameLine $"R1 %s{who}, reset: getpeername" getpeername c 28
+            soErrorLine $"R1 %s{who}, reset: SO_ERROR" c
+            nameLine $"R1 %s{who}, error taken: getsockname" getsockname c 28
+            transferLine $"R1 %s{who}, error taken: read" (readByte libc c)
+            nameLine $"R1 %s{who}, after the read: getsockname" getsockname c 28
+            close libc c
+
+            let c, srv = pairR libc ports l v4
+
+            if not (tryClose libc srv) then
+                failwith "DualModeProbe: R2's close of the accepted end was refused"
+
+            nameLine $"R2 %s{who}, FIN: getsockname" getsockname c 28
+            nameLine $"R2 %s{who}, FIN: getpeername" getpeername c 28
+            transferLine $"R2 %s{who}, FIN: read" (readByte libc c)
+            transferLine $"R2 %s{who}, FIN: write" (writeByte libc c)
+            nameLine $"R2 %s{who}, write reset: getsockname" getsockname c 28
+            nameLine $"R2 %s{who}, write reset: getpeername" getpeername c 28
+            soErrorLine $"R2 %s{who}, write reset: SO_ERROR" c
+            nameLine $"R2 %s{who}, error taken: getsockname" getsockname c 28
+            transferLine $"R2 %s{who}, error taken: write" (writeByte libc c)
+            close libc c
+
+            let c, srv = pairR libc ports l v4
+
+            setOption
+                libc
+                srv
+                (SimulatedUnixPlatform.socketOptionLevel libc.Platform)
+                (SimulatedUnixPlatform.lingerOption libc.Platform)
+                (Seq.toArray (OptionValue.ofLinger 1 0))
+            |> ignore<Answer>
+
+            // The model refuses this close while the client still holds the
+            // connection, so the rows after it read a connection still open.
+            let closed = tryClose libc srv
+            nameLine $"R3 %s{who}, abortive close: getsockname" getsockname c 28
+            nameLine $"R3 %s{who}, abortive close: getpeername" getpeername c 28
+            soErrorLine $"R3 %s{who}, abortive close: SO_ERROR" c
+            nameLine $"R3 %s{who}, error taken: getsockname" getsockname c 28
+            close libc c
+
+            if not closed then
+                close libc srv
+
+        close libc l
+
     /// The sections this replays, by the letter `main` runs them under.
     let run (platform : SimulatedUnixPlatform) (section : char) : string =
         let libc = Libc platform
@@ -1004,6 +1148,7 @@ module DualModeProbe =
         | 'F' -> sectionF libc ports output
         | 'G' -> sectionG libc ports output
         | 'H' -> sectionH libc ports output
+        | 'R' -> sectionR libc ports output
         | other -> failwith $"DualModeProbe.run: no section %c{other}"
 
         output.ToString ()

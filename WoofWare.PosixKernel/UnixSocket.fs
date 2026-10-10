@@ -1656,27 +1656,32 @@ module UnixSocket =
     /// holding the address as `SimulatedUnixPlatform.presentedIpv6Address`
     /// presents it.
     let private encodeName
-        (platform : SimulatedUnixPlatform)
+        (machine : UnixMachineState)
         (socketId : SocketId)
         (socket : SocketDescription)
         (endpoint : InternetEndpoint)
         : Result<byte[], GetSockNameRefusal>
         =
+        let platform = machine.UnixPlatform
+
         match socket.Domain, socket.Kind with
         | SocketDomain.Unix, _ -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
         | SocketDomain.Inet, _ -> Ok (SimulatedUnixPlatform.encodeInternetSockaddr platform endpoint)
         | SocketDomain.Inet6, SocketKind.Stream ->
-            let refusalLatched =
+            let resetReached (connection : ConnectionId) (connectionEnd : ConnectionEnd) : bool =
+                TcpTransfer.hasBeenReset connectionEnd (UnixMachineState.connection connection machine).Transfer
+
+            let connectionFailed =
                 match socket.Phase with
                 | SocketPhase.Refused _ -> true
+                | SocketPhase.Established (connection, connectionEnd) -> resetReached connection connectionEnd
+                | SocketPhase.EstablishedPendingReport connection -> resetReached connection ConnectionEnd.Client
                 | SocketPhase.Idle
                 | SocketPhase.Listening _
-                | SocketPhase.EstablishedPendingReport _
-                | SocketPhase.Established _
                 | SocketPhase.DatagramPeer _ -> false
 
             let address =
-                SimulatedUnixPlatform.presentedIpv6Address platform refusalLatched endpoint.Address
+                SimulatedUnixPlatform.presentedIpv6Address platform connectionFailed endpoint.Address
 
             Ok (SimulatedUnixPlatform.encodeInternetV6Sockaddr platform address endpoint.Port)
         | SocketDomain.Inet6, (SocketKind.Datagram | SocketKind.SeqPacket) ->
@@ -1736,7 +1741,7 @@ module UnixSocket =
             | Some binding -> binding.Endpoint
             | None -> InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us
 
-        match encodeName system.Machine.UnixPlatform socketId socket endpoint with
+        match encodeName system.Machine socketId socket endpoint with
         | Error refusal -> Error refusal
         | Ok whole -> reportAddress whole destination declaredLength system
 
@@ -1788,7 +1793,7 @@ module UnixSocket =
         let notConnected = Ok (GetSockNameAnswer.Failed (UnixError.ENOTCONN, None))
 
         let reportPeer (peer : InternetEndpoint) : Result<GetSockNameAnswer, GetSockNameRefusal> =
-            match encodeName system.Machine.UnixPlatform socketId socket peer with
+            match encodeName system.Machine socketId socket peer with
             | Error refusal -> Error refusal
             | Ok whole -> reportAddress whole destination declaredLength system
 

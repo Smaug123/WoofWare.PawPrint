@@ -1473,6 +1473,10 @@ module TestImpureCases =
     /// to an IPv4 listener through the managed `Socket` API, which exits 0 for
     /// Linux's answers where the flavours disagree and 100 for Darwin's
     /// (`docs/probes/dual-mode/`).
+    ///
+    /// `new Socket(SocketType.Stream, ProtocolType.Tcp)` makes an IPv4 socket
+    /// where `DOTNET_SYSTEM_NET_DISABLEIPV6` is set, so the case names it, and
+    /// the oracle does not take the test host's.
     let private socketDualModeCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
         {
             FileName = "SocketDualMode.cs"
@@ -1483,6 +1487,7 @@ module TestImpureCases =
             KernelConfig =
                 { KernelConfig.Default with
                     UnixPlatform = platform
+                    Environment = [ "DOTNET_SYSTEM_NET_DISABLEIPV6=0" ]
                 }
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour

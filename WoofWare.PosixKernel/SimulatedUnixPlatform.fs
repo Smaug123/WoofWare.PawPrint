@@ -1766,23 +1766,27 @@ module SimulatedUnixPlatform =
         }
 
     /// The sixteen bytes of `sin6_addr` an IPv6 socket whose transport is
-    /// IPv4 reports for the IPv4 `address`, in a socket whose connect's
-    /// refusal is latched or not.
+    /// IPv4 reports for the IPv4 `address`, in a socket whose connection has
+    /// failed or not: its connect was refused, or a reset has reached it.
     ///
     /// The wildcard is `::` on both flavours -- an IPv6 socket bound only by a
     /// connect, or reverted by a refusal, reads back `[::]:port` -- and any
     /// other address is `::ffff:a.b.c.d`, except that Darwin reports a socket
-    /// whose refusal is latched at the IPv4-compatible `::a.b.c.d`, the
-    /// `ffff` gone. Measured (`docs/probes/dual-mode/dual-mode.c`, A, E and
-    /// G).
-    let presentedIpv6Address (platform : SimulatedUnixPlatform) (refusalLatched : bool) (address : uint32) : byte[] =
+    /// whose connection has failed at the IPv4-compatible `::a.b.c.d`, the
+    /// `ffff` gone. That holds once a call has taken the error, and whichever
+    /// way the reset came: the peer's close over bytes it had not read, a
+    /// write after the peer's orderly close, or the peer's close under
+    /// `SO_LINGER` {1, 0}. The peer's orderly close alone leaves the address
+    /// v4-mapped. Measured (`docs/probes/dual-mode/dual-mode.c`, A, E, G and
+    /// R).
+    let presentedIpv6Address (platform : SimulatedUnixPlatform) (connectionFailed : bool) (address : uint32) : byte[] =
         let bytes = Array.zeroCreate<byte> 16
 
         if address <> InternetEndpoint.WildcardAddress then
             BinaryPrimitives.WriteUInt32BigEndian (System.Span<byte> (bytes, 12, 4), address)
 
             match flavour platform with
-            | SimulatedUnixFlavour.Darwin when refusalLatched -> ()
+            | SimulatedUnixFlavour.Darwin when connectionFailed -> ()
             | SimulatedUnixFlavour.Darwin
             | SimulatedUnixFlavour.Linux ->
                 bytes.[10] <- 0xFFuy

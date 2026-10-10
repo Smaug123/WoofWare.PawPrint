@@ -782,3 +782,42 @@ H1 established, family 99 at 16                              -> EISCONN
 H2 refused pending, family 99 at 16                          -> EISCONN
 H3 completed, unreported, family 99 at 16                    -> EISCONN
 H4 idle, family 99 at 16                                     -> EAFNOSUPPORT
+== R: names once the connection has ended ==
+R1 dual-mode, reset: getsockname                             cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+R1 dual-mode, reset: getpeername                             cell=28  -> EINVAL
+R1 dual-mode, reset: SO_ERROR                                -> OK value=ECONNRESET
+R1 dual-mode, error taken: getsockname                       cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+R1 dual-mode, error taken: read                              -> 0
+R1 dual-mode, after the read: getsockname                    cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+R2 dual-mode, FIN: getsockname                               cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+R2 dual-mode, FIN: getpeername                               cell=28  -> OK len=28 family=AF_INET6 [::ffff:127.0.0.1]:L flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ff ff 7f 00 00 01 00 00 00 00]
+R2 dual-mode, FIN: read                                      -> 0
+R2 dual-mode, FIN: write                                     -> 1
+R2 dual-mode, write reset: getsockname                       cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+R2 dual-mode, write reset: getpeername                       cell=28  -> EINVAL
+R2 dual-mode, write reset: SO_ERROR                          -> OK value=ECONNRESET
+R2 dual-mode, error taken: getsockname                       cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+R2 dual-mode, error taken: write                             -> EPIPE
+R3 dual-mode, abortive close: getsockname                    cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+R3 dual-mode, abortive close: getpeername                    cell=28  -> EINVAL
+R3 dual-mode, abortive close: SO_ERROR                       -> OK value=ECONNRESET
+R3 dual-mode, error taken: getsockname                       cell=28  -> OK len=28 family=AF_INET6 [::127.0.0.1]:eph flowinfo=0 scope=0 [1c 1e pp pp 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 7f 00 00 01 00 00 00 00]
+R1 AF_INET, reset: getsockname                               cell=28  -> OK len=16 family=AF_INET 127.0.0.1:eph [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+R1 AF_INET, reset: getpeername                               cell=28  -> EINVAL
+R1 AF_INET, reset: SO_ERROR                                  -> OK value=ECONNRESET
+R1 AF_INET, error taken: getsockname                         cell=28  -> OK len=16 family=AF_INET 127.0.0.1:eph [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+R1 AF_INET, error taken: read                                -> 0
+R1 AF_INET, after the read: getsockname                      cell=28  -> OK len=16 family=AF_INET 127.0.0.1:eph [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+R2 AF_INET, FIN: getsockname                                 cell=28  -> OK len=16 family=AF_INET 127.0.0.1:eph [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+R2 AF_INET, FIN: getpeername                                 cell=28  -> OK len=16 family=AF_INET 127.0.0.1:L [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+R2 AF_INET, FIN: read                                        -> 0
+R2 AF_INET, FIN: write                                       -> 1
+R2 AF_INET, write reset: getsockname                         cell=28  -> OK len=16 family=AF_INET 127.0.0.1:eph [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+R2 AF_INET, write reset: getpeername                         cell=28  -> EINVAL
+R2 AF_INET, write reset: SO_ERROR                            -> OK value=ECONNRESET
+R2 AF_INET, error taken: getsockname                         cell=28  -> OK len=16 family=AF_INET 127.0.0.1:eph [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+R2 AF_INET, error taken: write                               -> EPIPE
+R3 AF_INET, abortive close: getsockname                      cell=28  -> OK len=16 family=AF_INET 127.0.0.1:eph [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
+R3 AF_INET, abortive close: getpeername                      cell=28  -> EINVAL
+R3 AF_INET, abortive close: SO_ERROR                         -> OK value=ECONNRESET
+R3 AF_INET, error taken: getsockname                         cell=28  -> OK len=16 family=AF_INET 127.0.0.1:eph [10 02 pp pp 7f 00 00 01 00 00 00 00 00 00 00 00 aa aa aa aa aa aa aa aa aa aa aa aa]
