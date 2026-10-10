@@ -13,7 +13,8 @@ type EndedProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equalit
             /// How the process ended, which is what its parent's `wait` reads.
             Termination : ProcessTermination
             /// The machine the process ran on, as the process's end left it: its
-            /// tasks' thread IDs are no longer live, the holds its tasks' calls
+            /// tasks' thread IDs are no longer live, no processor runs one of its
+            /// tasks, the holds its tasks' calls
             /// in flight had on open file descriptions are let go of, so is the
             /// hold its current directory had on its inode, and its process ID is
             /// no live process's (no `wait` is modelled, so nothing keeps it).
@@ -134,8 +135,9 @@ module UnixTaskLifecycle =
     /// End the process `system` is, as `termination` says: every task goes, and
     /// with each everything the process and the machine held for that task
     /// alone: its signal mask and the signals pending on it alone, its thread
-    /// ID, and the holds its call in flight, if any, had. The machine lets go
-    /// of the process's current directory and its process ID.
+    /// ID, the processor it was running on, and the holds its call in flight,
+    /// if any, had. The machine lets go of the process's current directory and
+    /// its process ID.
     let internal endProcess<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (termination : ProcessTermination)
         (system : UnixSystem<'Task, 'Handler>)
@@ -153,6 +155,10 @@ module UnixTaskLifecycle =
             (unparked.Machine.ThreadIds, unparked.Tasks)
             ||> Map.fold (fun threadIds _ state -> ThreadIdAllocator.release state.OsThreadId threadIds)
 
+        let vacated =
+            (unparked.Machine, unparked.Tasks)
+            ||> Map.fold (fun machine _ state -> UnixMachineState.vacate state.Cpu state.OsThreadId machine)
+
         let cwd = system.Process.CurrentDirectoryInode
 
         // A directory the process had removed while standing in it is free once
@@ -160,7 +166,7 @@ module UnixTaskLifecycle =
         let released =
             { unparked with
                 Machine =
-                    { unparked.Machine with
+                    { vacated with
                         ThreadIds = threadIds
                         ProcessIds = ProcessIdTable.remove system.Process.ProcessId unparked.Machine.ProcessIds
                     }
@@ -185,7 +191,8 @@ module UnixTaskLifecycle =
     /// Removes `task` from the table, and with it everything the process holds for
     /// that task alone: its signal mask, and the signals pending on it alone, which
     /// are discarded rather than passed on to another task. Its thread ID is no
-    /// longer live, so the machine may hand it out again. The process carries on
+    /// longer live, so the machine may hand it out again, and the processor it
+    /// was running on, if any, is idle. The process carries on
     /// unless `task` was its last, in which case the process ends, on Linux, having
     /// exited with `status`. `status` is otherwise ignored.
     ///
@@ -230,7 +237,7 @@ module UnixTaskLifecycle =
             TaskOutcome.Continues
                 { system with
                     Machine =
-                        { system.Machine with
+                        { UnixMachineState.vacate state.Cpu state.OsThreadId system.Machine with
                             ThreadIds = ThreadIdAllocator.release state.OsThreadId system.Machine.ThreadIds
                         }
                     Process =
