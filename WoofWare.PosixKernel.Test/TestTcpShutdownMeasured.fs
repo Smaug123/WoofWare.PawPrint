@@ -229,7 +229,10 @@ module TestTcpShutdownMeasured =
 
         member _.Close (e : ConnectionEnd) : string =
             if not refused then
-                transfer <- snd (TcpTransfer.close e transfer)
+                if TcpTransfer.closeRefused e transfer then
+                    refused <- true
+                else
+                    transfer <- snd (TcpTransfer.close e transfer)
 
             "0"
 
@@ -739,6 +742,51 @@ module TestTcpShutdownMeasured =
                         $"T\t%s{name}\tat once c-read=%s{r1} soerr(c)=%s{e1}; 5 s later c-read=%s{r2} soerr(c)=%s{e2}"
 
                     yield! s.Lines
+            | "G" ->
+                // A FIN's state at the close: none, queued behind a full send
+                // buffer, or arrived.
+                let fins = [ "none" ; "queued" ; "arrived" ]
+
+                for cFin in fins do
+                    for pFin in fins do
+                        for cFirst in [ true ; false ] do
+                            if cFirst || (cFin <> "none" && pFin <> "none") then
+                                let s = Session flavour
+
+                                if pFin = "queued" then
+                                    s.Fill p |> ignore
+                                else
+                                    s.Write p 1 |> ignore
+
+                                if cFin = "queued" then
+                                    s.Fill c |> ignore
+
+                                let shutC () =
+                                    if cFin <> "none" then
+                                        s.Shutdown c TcpShutdownHow.Write |> ignore
+
+                                let shutP () =
+                                    if pFin <> "none" then
+                                        s.Shutdown p TcpShutdownHow.Write |> ignore
+
+                                if cFirst then
+                                    shutC ()
+                                    shutP ()
+                                else
+                                    shutP ()
+                                    shutC ()
+
+                                s.Close c |> ignore
+                                let e1 = s.SoError p
+                                let drained, last = s.Drain p
+                                let e2 = s.SoError p
+                                let r2 = s.Read p 4096
+                                let some = if drained > 0L then "some" else "none"
+
+                                s.Emit
+                                    $"G\tc-%s{cFin}\tp-%s{pFin}\t%s{order cFirst}\tsoerr(p)=%s{e1} p-drained=%s{some} last=%s{last}; 2 s later soerr(p)=%s{e2} p-read=%s{r2}"
+
+                                yield! s.Lines
             | other -> failwith $"tcp-shutdown-exchange.c has no section %s{other}"
         ]
 
@@ -812,7 +860,7 @@ module TestTcpShutdownMeasured =
     [<Test>]
     let ``once both ends have shut writing, as each flavour measured (tcp-shutdown-exchange.c)`` () : unit =
         for flavour in flavours do
-            for section in [ "K" ; "U" ; "Q" ; "V" ; "W" ; "T" ] do
+            for section in [ "K" ; "U" ; "Q" ; "V" ; "W" ; "T" ; "G" ] do
                 let probe = measuredBy Probe.Exchange flavour section
 
                 if probe.IsEmpty then
@@ -855,3 +903,16 @@ module TestTcpShutdownMeasured =
                 SimulatedUnixFlavour.Darwin, "R", 4
                 SimulatedUnixFlavour.Darwin, "L", 3
             ]
+
+        // And Darwin's close over unread bytes after its own FIN was queued
+        // and the peer's arrived, in either order.
+        [
+            for flavour in flavours do
+                let refused =
+                    sectionsExchange "G" flavour
+                    |> List.filter (fun line -> line = Modelled.Refused)
+                    |> List.length
+
+                flavour, refused
+        ]
+        |> shouldEqual [ SimulatedUnixFlavour.Linux, 0 ; SimulatedUnixFlavour.Darwin, 2 ]

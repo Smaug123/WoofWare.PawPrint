@@ -23,10 +23,25 @@
 //   W   as V, but p never shuts writing: c writes 1 byte (one) or fills
 //       (full), then shuts writing, and p closes over what it has not read.
 //   T   V's full-cfin and W's full, then 5 s later: c reads, SO_ERROR(c).
+//   G   c closes over bytes from p it has not read, for each state of each
+//       FIN: c's none, queued (c filled its send buffer and shut writing) or
+//       arrived (c shut writing with nothing pending), and p's likewise
+//       (queued: p filled and shut writing; otherwise p wrote 1 byte), the
+//       shutdowns in either order (c-first, p-first). Then SO_ERROR(p), what
+//       p reads until it is answered anything but bytes, and 2 s later
+//       SO_ERROR(p) and a read again. On Darwin a row where c's FIN is
+//       queued and p's has arrived is marked `~timing`: no reset comes, p
+//       reads what it holds and then EAGAIN, and c's remaining bytes and FIN
+//       never arrive, so a timer must end it; the model refuses that close.
+//       A Darwin row where both FINs are queued is marked `~timing` too: it
+//       usually resets, but in one of eight runs it hung as above, as if
+//       p's FIN had arrived (Darwin grows a receive buffer on its own).
+//
+// A line ending `~timing` is not to be replayed, as in tcp-shutdown.c.
 //
 // Measured 2026-10-10 on Linux 6.18.5 aarch64 (Apple's container VM, root)
-// and Darwin 27.0.0 arm64 (uid 501), twice each with identical output; one
-// run of each is tcp-shutdown-exchange.linux-6.18.5-aarch64.txt and
+// and Darwin 27.0.0 arm64 (uid 501), the whole probe twice each with
+// identical output; one run of each is tcp-shutdown-exchange.linux-6.18.5-aarch64.txt and
 // tcp-shutdown-exchange.darwin-27.0.txt.
 //
 // Build and run, from this directory:
@@ -293,5 +308,49 @@ int main(void)
         printf("T\t%s\tat once c-read=%s soerr(c)=%s; 5 s later c-read=%s soerr(c)=%s\n", v ? "W-full" : "V-full-cfin", r1, e1, r2, e2);
         close(c);
     }
+    const char *fin[3] = { "none", "queued", "arrived" };
+    for (int cf = 0; cf < 3; cf++)
+        for (int pf = 0; pf < 3; pf++)
+            for (int cfirst = 1; cfirst >= 0; cfirst--) {
+                if ((cf == 0 || pf == 0) && !cfirst) continue;
+                int c, p;
+                pair(&c, &p);
+                if (pf == 1) fill(p);
+                else {
+                    write(p, buf, 1);
+                    settle();
+                }
+                if (cf == 1) fill(c);
+                if (cfirst) {
+                    if (cf) { shutdown(c, SHUT_WR); settle(); }
+                    if (pf) { shutdown(p, SHUT_WR); settle(); }
+                } else {
+                    if (pf) { shutdown(p, SHUT_WR); settle(); }
+                    if (cf) { shutdown(c, SHUT_WR); settle(); }
+                }
+                close(c);
+                settle();
+                const char *e1 = do_soerr(p);
+                long got = 0;
+                const char *last = "";
+                for (;;) {
+                    long r = read(p, buf, sizeof buf);
+                    int e = errno;
+                    if (r > 0) { got += r; continue; }
+                    last = ans(r, e);
+                    break;
+                }
+                settle();
+                sleep(2);
+                const char *e2 = do_soerr(p);
+                const char *r2 = do_read(p);
+                const char *mark = "";
+#ifdef __APPLE__
+                if (cf == 1 && pf >= 1) mark = "\t~timing";
+#endif
+                printf("G\tc-%s\tp-%s\t%s\tsoerr(p)=%s p-drained=%s last=%s; 2 s later soerr(p)=%s p-read=%s%s\n", fin[cf],
+                       fin[pf], cfirst ? "c-first" : "p-first", e1, got ? "some" : "none", last, e2, r2, mark);
+                close(p);
+            }
     return 0;
 }

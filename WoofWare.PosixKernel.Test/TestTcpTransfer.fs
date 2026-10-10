@@ -615,6 +615,22 @@ module internal TcpTransferReference =
         else
             m
 
+    /// Whether Darwin refuses `c`'s ordinary close: it leaves bytes unread,
+    /// its own FIN still waits behind its bytes, and the peer's has arrived.
+    let closeRefused (c : ConnectionEnd) (m : Model) : bool =
+        let p = other c
+        let me = m.Ends.[c]
+        let peer = m.Ends.[p]
+        let toMe = m.Flows.[c]
+
+        not m.Linux
+        && not me.GotReset
+        && not peer.Closed
+        && (not toMe.Arrived.IsEmpty || not toMe.InFlight.IsEmpty)
+        && peer.FinSent
+        && not peer.FinArrived
+        && me.FinArrived
+
     /// `c` closes; with `abortive`, under `SO_LINGER` {1, 0}.
     let close (abortive : bool) (c : ConnectionEnd) (m : Model) : TcpWake list * Model =
         let p = other c
@@ -667,14 +683,15 @@ module internal TcpTransferReference =
             // ordinary close.
             let exchangeDone = m.Ends.[p].FinArrived && me.FinArrived
             // A close over unread bytes resets, but not on Linux once both
-            // FINs have arrived, nor on Darwin once both have been made.
+            // FINs have arrived, nor on Darwin once this end's FIN has
+            // arrived and the peer has made its own.
             let unreadResets =
                 unread
                 && not (
                     if m.Linux then
                         exchangeDone
                     else
-                        m.Ends.[p].FinSent && me.FinSent
+                        m.Ends.[p].FinArrived && me.FinSent
                 )
 
             if unreadResets || (abortive && not exchangeDone) then
@@ -844,8 +861,11 @@ module TestTcpTransfer =
             let error, transfer = TcpTransfer.takeError e transfer
             TcpTransferSeen.Error error, [], transfer
         | TcpTransferOp.Close e ->
-            let wakes, transfer = TcpTransfer.close e transfer
-            TcpTransferSeen.Closed, wakes, transfer
+            if TcpTransfer.closeRefused e transfer then
+                TcpTransferSeen.Refused, [], transfer
+            else
+                let wakes, transfer = TcpTransfer.close e transfer
+                TcpTransferSeen.Closed, wakes, transfer
         | TcpTransferOp.Abort e ->
             if TcpTransfer.abortRefused e transfer then
                 TcpTransferSeen.Refused, [], transfer
@@ -872,8 +892,11 @@ module TestTcpTransfer =
             let seen, model = TcpTransferReference.takeError e model
             seen, [], model
         | TcpTransferOp.Close e ->
-            let wakes, model = TcpTransferReference.close false e model
-            TcpTransferSeen.Closed, wakes, model
+            if TcpTransferReference.closeRefused e model then
+                TcpTransferSeen.Refused, [], model
+            else
+                let wakes, model = TcpTransferReference.close false e model
+                TcpTransferSeen.Closed, wakes, model
         | TcpTransferOp.Abort e ->
             if TcpTransferReference.abortRefused e model then
                 TcpTransferSeen.Refused, [], model
@@ -964,15 +987,20 @@ module TestTcpTransfer =
     let private openingGen (scale : Scale) : Gen<TcpTransferOp list> =
         gen {
             let! e = Gen.elements ends
-            let! abortNow = Gen.elements [ true ; false ]
+            let! peerSendsFirst = Gen.elements [ true ; false ]
+
+            let! last = Gen.elements [ [] ; [ TcpTransferOp.Abort e ] ; [ TcpTransferOp.Close e ] ]
 
             return
                 [
+                    // A byte `e` leaves unread, on which Darwin refuses its
+                    // close.
+                    if peerSendsFirst then
+                        TcpTransferOp.Write (TcpTransferReference.other e, 1)
                     TcpTransferOp.Write (e, scale.SendCap + scale.RecvCap)
                     TcpTransferOp.Shutdown (e, TcpShutdownHow.Write)
                     TcpTransferOp.Shutdown (TcpTransferReference.other e, TcpShutdownHow.Write)
-                    if abortNow then
-                        TcpTransferOp.Abort e
+                    yield! last
                 ]
         }
 
@@ -999,6 +1027,7 @@ module TestTcpTransfer =
         /// An abort after both FINs had arrived, which is the ordinary close.
         | AbortAfterExchange of SimulatedUnixFlavour
         | AbortRefused
+        | CloseRefused
         | WriteAfterShutdown of SimulatedUnixFlavour
         /// A FIN made after the opposite one had arrived.
         | PassiveFin of SimulatedUnixFlavour
@@ -1032,6 +1061,7 @@ module TestTcpTransfer =
                 Reached.Shutdown (flavour, how, answer)
             | TcpTransferOp.Shutdown _, TcpTransferSeen.Refused -> Reached.ShutdownRefused
             | TcpTransferOp.Abort _, TcpTransferSeen.Refused -> Reached.AbortRefused
+            | TcpTransferOp.Close _, TcpTransferSeen.Refused -> Reached.CloseRefused
             | TcpTransferOp.Abort e, TcpTransferSeen.Closed when
                 not before.Ends.[TcpTransferReference.other e].Closed
                 && not before.Ends.[e].GotReset
@@ -1186,6 +1216,7 @@ module TestTcpTransfer =
                 Reached.DarwinHalfApplied, 10
                 Reached.ShutdownRefused, 20
                 Reached.AbortRefused, 5
+                Reached.CloseRefused, 5
                 Reached.ResetInCloseWait, 20
                 Reached.PollOfFullShutSender, 10
                 Reached.UnreadCloseWithoutReset SimulatedUnixFlavour.Linux, 5

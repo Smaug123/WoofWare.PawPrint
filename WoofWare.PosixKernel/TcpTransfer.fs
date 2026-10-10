@@ -1224,10 +1224,31 @@ module internal TcpTransfer =
             | _ -> false
         | _ -> false
 
+    /// Whether this kernel refuses `closer`'s ordinary close, which `close`
+    /// must not then be asked to make.
+    ///
+    /// On Darwin, when `closer` leaves bytes unread, its own FIN still waits
+    /// behind its bytes, and the peer's FIN has arrived, the close sends no
+    /// reset, and neither the rest of its bytes nor its FIN reach the peer,
+    /// which reads what it holds and then `EAGAIN`, still 2 s later
+    /// (measured, `tcp-shutdown-exchange.c` section G): only a timer can end
+    /// that.
+    let closeRefused (closer : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        let peer = otherEnd closer
+        let own = towards closer transfer
+
+        match transfer.Rules, own.Receiver, (towards peer transfer).Receiver with
+        | TcpTransferRules.Darwin _, TcpEndState.Open _, TcpEndState.Open _ ->
+            match (towards peer transfer).Fin, own.Fin with
+            | TcpFin.Queued _, TcpFin.Arrived _ -> ByteQueue.length own.Receiving > 0
+            | _ -> false
+        | _ -> false
+
     /// `closer`'s socket closes, sending a FIN unless it made one already, or
     /// a reset: if bytes are left unread (but not on Linux once both FINs
-    /// have arrived, nor on Darwin once both ends have made theirs), or if
-    /// `abortive` and the exchange of FINs is not complete.
+    /// have arrived, nor on Darwin once the closer's has arrived and the peer
+    /// has made its own), or if `abortive` and the exchange of FINs is not
+    /// complete.
     let private closeWith
         (context : string)
         (abortive : bool)
@@ -1275,22 +1296,33 @@ module internal TcpTransfer =
             failwith
                 $"TcpTransfer.%s{context}: the %A{closer} end's close under linger zero is one TcpTransfer.abortRefused refuses (this is a bug in the caller)."
 
+        if not abortive && closeRefused closer transfer then
+            failwith
+                $"TcpTransfer.%s{context}: the %A{closer} end's close is one TcpTransfer.closeRefused refuses (this is a bug in the caller)."
+
         // Bytes still on their way to the closer count as unread too, but
         // they wait only while its receive buffer is full, so that test
         // covers them.
         let unread = ByteQueue.length own.Receiving > 0
 
         // A close over unread bytes resets, except on Linux once both FINs
-        // have arrived (`tcp_close` in `TCP_CLOSE`) and on Darwin once both
-        // ends have made theirs (measured, `tcp-shutdown-exchange.c`
-        // sections U, Q, V and W; on Darwin no reset came within 5 s).
+        // have arrived (`tcp_close` in `TCP_CLOSE`), and on Darwin once the
+        // closer's FIN has arrived and the peer has made its own, arrived or
+        // not (measured, `tcp-shutdown-exchange.c` sections U, Q, V, W and
+        // G; on Darwin no reset came within 5 s).
+        let closerFinArrived =
+            match outbound.Fin with
+            | TcpFin.Arrived _ -> true
+            | TcpFin.NotSent
+            | TcpFin.Queued _ -> false
+
         let unreadResets =
             unread
             && not (
                 if isLinux transfer then
                     exchangeComplete transfer
                 else
-                    sendShut closer transfer && sendShut peer transfer
+                    closerFinArrived && sendShut peer transfer
             )
 
         // Once both FINs have arrived, a close under linger zero is the
@@ -1337,8 +1369,9 @@ module internal TcpTransfer =
     /// to it, the close is a FIN, unless `shutdown(SHUT_WR)` made one
     /// already: the peer reads what was sent, then end of file. Otherwise it
     /// is a reset, and the peer gets a pending error; but once both FINs have
-    /// arrived on Linux, or both ends have made theirs on Darwin, bytes left
-    /// unread are discarded without a reset.
+    /// arrived on Linux, or on Darwin once the closer's has arrived and the
+    /// peer has made its own, bytes left unread are discarded without a
+    /// reset. Not to be asked where `closeRefused` holds.
     let close (closer : ConnectionEnd) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
         closeWith "close" false closer transfer
 

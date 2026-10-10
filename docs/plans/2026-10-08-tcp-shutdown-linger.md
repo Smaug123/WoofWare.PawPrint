@@ -366,11 +366,22 @@ output, for states stage 3's review found unmeasured:
 | the closer shut writing, the peer's FIN still queued behind its bytes, then the closer closes over them (Q, V `full-cfin`) | reset; the peer, whose own FIN is queued, reads 0 first (`SOCK_DONE` is tested before the error), and `SO_ERROR` is `ECONNRESET` | **no reset**, not even 5 s later (T): the peer reads 0, `SO_ERROR` 0 |
 | the closer shut writing, the peer did not, then a close over unread bytes (V `one`, `full`) | reset; the peer, in `CLOSE_WAIT`, reads 0 and has `EPIPE` pending | reset; `ECONNRESET` |
 | the peer shut writing, the closer did not (W) | reset; `ECONNRESET` | reset; `ECONNRESET` |
+| the closer's FIN queued behind its bytes, the peer's arrived (G) | reset | **no reset, and nothing more arrives**: the peer reads what it holds, then `EAGAIN`, still 2 s later |
+| every other combination of the two FINs (G) | reset unless both arrived | reset unless the closer's arrived and the peer made its own |
+
+Section G is the whole grid: each FIN not made, queued or arrived, in
+either order, the closer leaving bytes unread. Darwin's rows with the
+closer's FIN queued and the peer's made are marked `~timing`: with the
+peer's FIN arrived the close hangs as above, and with both queued it
+usually resets but hung in one run of eight, as if the peer's FIN had
+arrived.
 
 So a close over unread bytes resets except on Linux once both FINs have
-arrived, and on Darwin once both ends have made theirs; and on Linux a read
-of a reset end answers 0 rather than the error once the peer's FIN has
-arrived, whatever the end itself has sent.
+arrived, and on Darwin once the closer's FIN has arrived and the peer has
+made its own; Darwin's close with its own FIN queued and the peer's arrived
+is refused, since only a timer can end it. On Linux a read of a reset end
+answers 0 rather than the error once the peer's FIN has arrived, whatever
+the end itself has sent.
 
 ## 3. Design
 
@@ -735,8 +746,9 @@ been rebased onto main (with #1790).
      `shutdown` raises, until stage 4 maps it.
    - Section 2.9's rows, measured for this stage, are modelled: Linux's
      `ENOTCONN` after a complete exchange, the closes over unread bytes
-     that do not reset, and Linux's end of file before a reset's error once
-     the peer's FIN has arrived. Bytes still on their way to a closer that
+     that do not reset, Darwin's refused close (`TcpTransfer.closeRefused`,
+     which a caller asks first, as for `abortRefused`), and Linux's end of
+     file before a reset's error once the peer's FIN has arrived. Bytes still on their way to a closer that
      did not reset stay counted in the peer's send buffer on Darwin, as
      after a reset. Linux's `TCP_CLOSE` after a complete exchange also
      changes what `getpeername` answers there (`inet_getname`); that is the
