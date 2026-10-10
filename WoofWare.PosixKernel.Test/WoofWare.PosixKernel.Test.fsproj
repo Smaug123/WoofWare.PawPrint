@@ -90,7 +90,9 @@
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestPublicSurface.fs" />
     <Compile Include="TestTotalQueries.fs" />
+    <Compile Include="LibraryNames.fs" />
     <Compile Include="TestXmlDocumentation.fs" />
+    <Compile Include="TestReadme.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestPathCopyIn.fs" />
     <Compile Include="TestOpenFlagWord.fs" />
@@ -250,6 +252,13 @@
     <!-- What `epoll_ctl(2)` answered for every cell of the probe's ladder,
          measured on Linux; `TestEpollCtl` holds `UnixPoll.epollCtl` to it. -->
     <EmbeddedResource Include="epollCtl\linux-ladder.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The package's README, which `TestReadme` holds to the library: every name
+         it gives resolves, every signature it shows is the function's, and every
+         code block runs and prints what the README says it prints. -->
+    <EmbeddedResource Include="..\WoofWare.PosixKernel\README.md" LogicalName="WoofWare.PosixKernel.Test.README.md" />
   </ItemGroup>
 
   <ItemGroup>

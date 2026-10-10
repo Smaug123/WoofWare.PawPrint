@@ -242,6 +242,20 @@ type SignalReceiverRefusal =
     | PendingForProcessAndLeader of signal : Signal
 
 [<RequireQualifiedAccess>]
+module SignalReceiverRefusal =
+    /// What this kernel knows about why it cannot say what the signal does.
+    /// The client supplies its own half: which call or return reached it, and
+    /// in which task.
+    let describe (refusal : SignalReceiverRefusal) : string =
+        match refusal with
+        | SignalReceiverRefusal.LeaderBlocks signal ->
+            $"%O{signal} is sent to the process as a whole and caught, and the process's leader blocks it while another task does not, so a task other than the leader would take it. Which one differs between flavours, and on Linux depends on which tasks took earlier signals; this kernel delivers a process's own signals to its leader only."
+        | SignalReceiverRefusal.DefaultBehindHandlers signal ->
+            $"returning to user mode, a task would take %O{signal}, whose default stops or continues the process, after handler frames were pushed for other signals at the same return. What a stopped process does with frames already pushed has not been measured."
+        | SignalReceiverRefusal.PendingForProcessAndLeader signal ->
+            $"under Darwin, %O{signal} would be left pending on the process as a whole while an instance of it is pending on the leader alone, or the other way round. Darwin holds the two as one instance, and this kernel keeps the process's pending set apart from each task's."
+
+[<RequireQualifiedAccess>]
 module SignalState =
     /// Validate a signal at the operation boundary: a loud failure if it is
     /// not a signal under this numbering at all. A client can build a signal

@@ -50,7 +50,7 @@ module SyscallInterruptionRefusal =
     let describe (refusal : SyscallInterruptionRefusal) : string =
         match refusal with
         | SyscallInterruptionRefusal.Receiver refusal ->
-            $"a signal is pending for a task asleep in a syscall, and this kernel will not say what the task takes as it returns to user mode: %A{refusal}."
+            $"a signal is pending for a task asleep in a syscall, and this kernel will not say what the task takes as it returns to user mode: %s{SignalReceiverRefusal.describe refusal}"
         | SyscallInterruptionRefusal.DefaultAction signal ->
             $"the first signal a task asleep in a syscall would take is %O{signal}, at a default disposition that terminates, stops or continues the process, and what that does to the syscall is unmeasured."
         | SyscallInterruptionRefusal.MixedRestartFlags (restarting, failing) ->
@@ -90,7 +90,7 @@ module SigsuspendRefusal =
     let describe (refusal : SigsuspendRefusal) : string =
         match refusal with
         | SigsuspendRefusal.Receiver refusal ->
-            $"a task in sigsuspend would take a signal, and this kernel will not say what it takes as it returns to user mode: %A{refusal}."
+            $"a task in sigsuspend would take a signal, and this kernel will not say what it takes as it returns to user mode: %s{SignalReceiverRefusal.describe refusal}"
         | SigsuspendRefusal.DefaultStop signal ->
             $"the first signal a task in sigsuspend would take is %O{signal}, at its default, which stops the process. A real kernel restarts the call once the process is continued, if no handler has run, and this kernel models no stopped process."
         | SigsuspendRefusal.DarwinPendingContinue ->

@@ -109,6 +109,14 @@ type PosixFadviseRefusal =
     /// could have made the call and there is no answer to give.
     | NotProvided
 
+[<RequireQualifiedAccess>]
+module PosixFadviseRefusal =
+    /// What this kernel knows about why it cannot answer.
+    let describe (refusal : PosixFadviseRefusal) : string =
+        match refusal with
+        | PosixFadviseRefusal.NotProvided ->
+            "the simulated platform's C library has no posix_fadvise, so no program could have made the call and there is no answer to give."
+
 /// What `posix_fadvise(2)` answered.
 ///
 /// Not `SyscallAnswer`, because `posix_fadvise` reports failure differently from
@@ -157,6 +165,19 @@ type EndedWriteSignalRefusal =
     | InitProcess
     /// Which task would take the signal is not modelled.
     | Receiver of SignalReceiverRefusal
+
+[<RequireQualifiedAccess>]
+module EndedWriteSignalRefusal =
+    /// What this kernel knows about why it cannot say what the `SIGPIPE`
+    /// that the ended write raises does.
+    let describe (refusal : EndedWriteSignalRefusal) : string =
+        match refusal with
+        | EndedWriteSignalRefusal.TerminatesProcess ->
+            "SIGPIPE's disposition is the default, so the signal ends the process, which a close has no answer to report."
+        | EndedWriteSignalRefusal.InitProcess ->
+            "the process is process ID 1, and what an init process does with a signal it has no handler for is not modelled."
+        | EndedWriteSignalRefusal.Receiver refusal ->
+            $"which task would take the signal is not modelled: %s{SignalReceiverRefusal.describe refusal}"
 
 /// Why this kernel will not close a descriptor.
 ///
@@ -236,16 +257,7 @@ module CloseRefusal =
         | CloseRefusal.DarwinWokenTransfer (description, task) ->
             $"task %O{task} is asleep in a read or write of open file description %O{description}, a pipe end or a connected socket, made through this descriptor, and the call has something besides the close to answer: bytes, room, a FIN or a reset, a signal, or a read to give up at. Measured on Darwin (close-ends-call.c sections P1-P7, tcp-blocking.c sections R-close and W-close), closing the descriptor a sleeping read or write was made through ends it: a pipe read with end of file, a pipe write with EPIPE, and a socket's either with EBADF. Which of that and what had already woken the call a kernel answers is unmeasured: no probe has held a woken call off the CPU until a close, since Darwin has no SCHED_FIFO, and a woken call in a stopped process finishes in the kernel all the same (pipe-blocking.c section N4)."
         | CloseRefusal.DarwinEndedWriteSignal (task, refusal) ->
-            let why =
-                match refusal with
-                | EndedWriteSignalRefusal.TerminatesProcess ->
-                    "SIGPIPE's disposition is the default, so it ends the process, which a close has no answer to report"
-                | EndedWriteSignalRefusal.InitProcess ->
-                    "the process is process ID 1, and what an init process does with a signal it has no handler for is not modelled"
-                | EndedWriteSignalRefusal.Receiver refusal ->
-                    $"which task would take the signal is not modelled (%A{refusal})"
-
-            $"the close ends the pipe write task %O{task} is asleep in through this descriptor. Measured on Darwin (close-ends-call.c sections P2-P4), that write answers EPIPE and raises SIGPIPE for the process as it returns, which it does before the close does; but %s{why}."
+            $"the close ends the pipe write task %O{task} is asleep in through this descriptor. Measured on Darwin (close-ends-call.c sections P2-P4), that write answers EPIPE and raises SIGPIPE for the process as it returns, which it does before the close does; but %s{EndedWriteSignalRefusal.describe refusal}"
         | CloseRefusal.LingeringCloseDeferredToCall (socket, task) ->
             $"the descriptor is the last one onto connected socket %O{socket}, whose SO_LINGER is on, and task %O{task} is in a call that still holds it. Measured on Linux (tcp-blocking.c sections R-close and W-close), the close answers 0 and the socket is closed when that call returns. Under SO_LINGER that close would be abortive (a time of zero) or would wait for unsent bytes (a positive time), which this kernel refuses in some states, and the call can change the state before it returns; this kernel models no refusal at a call's return, nor a close deferred to one under SO_LINGER."
         | CloseRefusal.Release refusal -> DescriptionReleaseRefusal.describe refusal
