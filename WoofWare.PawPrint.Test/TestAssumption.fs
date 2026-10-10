@@ -19,7 +19,7 @@ module TestAssumption =
     let coreLibs : TestCaseData list = TestIntrinsicBody.coreLibs
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every assumption summarises one method of the CoreLib, the one it names`` (which : string) : unit =
+    let ``every assumption summarises the methods of the CoreLib it names`` (which : string) : unit =
         let corelib = TestIntrinsicBody.coreLib which
 
         let summarised =
@@ -31,22 +31,50 @@ module TestAssumption =
             ]
 
         summarised |> List.map fst |> Set.ofList |> shouldEqual Assumption.all
-        summarised.Length |> shouldEqual Assumption.all.Count
+
+        // Each stands in for one method, but the one about CoreLib's type initializers, which
+        // stands in for exactly those.
+        let initializers =
+            corelib.Methods.Values
+            |> Seq.filter (fun method -> method.IsStatic && method.Name = ".cctor")
+            |> Seq.length
+
+        for assumption in Assumption.all do
+            let count = summarised |> List.filter (fun (a, _) -> a = assumption) |> List.length
+
+            match assumption with
+            | Assumption.CoreLibTypeInitializers -> count |> shouldEqual initializers
+            | Assumption.NamedTypesLoad
+            | Assumption.StackTracePreserved -> count |> shouldEqual 1
 
         for assumption, method in summarised do
             let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
             let name = $"%s{declaringType.Namespace}.%s{declaringType.Name}::%s{method.Name}"
-            method.IsStatic |> shouldEqual true
 
             match assumption with
             | Assumption.NamedTypesLoad ->
                 name |> shouldEqual "System.RuntimeTypeHandle::GetConstraints"
+                method.IsStatic |> shouldEqual true
 
                 match method.Body, method.TryNativeImport with
                 | MethodBody.PInvoke, Some import ->
                     import.ModuleName |> shouldEqual "QCall"
                     import.EntryPointName |> shouldEqual "RuntimeTypeHandle_GetConstraints"
                 | other -> failwith $"%A{assumption} summarises a method that is not a QCall: %A{other}"
+            | Assumption.StackTracePreserved ->
+                // What CoreCLR's `ExceptionPreserveStackTrace` calls on an exception it throws again.
+                name |> shouldEqual "System.Exception::InternalPreserveStackTrace"
+                method.IsStatic |> shouldEqual false
+                method.IsVirtual |> shouldEqual false
+                method.Signature.ParameterTypes |> shouldEqual []
+                method.Signature.ReturnType |> shouldEqual MethodReturnType.Void
+
+                match method.Body with
+                | MethodBody.Il _ -> ()
+                | other -> failwith $"%A{assumption} summarises a method with no IL: %A{other}"
+            | Assumption.CoreLibTypeInitializers ->
+                method.Name |> shouldEqual ".cctor"
+                method.IsStatic |> shouldEqual true
 
     [<TestCaseSource(nameof coreLibs)>]
     let ``the resource lookup's contract stands in for one method of the CoreLib, the one it names``

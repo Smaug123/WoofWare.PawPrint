@@ -878,7 +878,8 @@ module UnixMachineState =
                 | SocketPhase.EstablishedPendingReport c ->
                     c = connectionId
                     && (socket.Binding |> Option.exists (fun binding -> binding.Endpoint = held))
-                | SocketPhase.Listening listenState -> isServerEnd && List.contains connectionId listenState.Queue
+                | SocketPhase.Listening listenState ->
+                    isServerEnd && List.contains connectionId (ListenState.connections listenState)
                 | SocketPhase.Idle
                 | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> false

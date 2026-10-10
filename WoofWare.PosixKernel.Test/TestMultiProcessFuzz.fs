@@ -1594,7 +1594,7 @@ module TestMultiProcessFuzz =
             | SocketPhase.Listening listenState ->
                 // A connection whose client has closed has nothing left to
                 // reset, and is left out.
-                listenState.Queue
+                ListenState.connections listenState
                 |> List.choose (fun connection ->
                     UnixMachineState.socketHoldingEnd connection ConnectionEnd.Client machine.Machine
                     |> Option.map (fun client ->
@@ -1657,7 +1657,8 @@ module TestMultiProcessFuzz =
                 match Map.tryFind queued.Listener after.Machine.Sockets with
                 | Some socket ->
                     match socket.Phase with
-                    | SocketPhase.Listening listenState -> List.contains queued.Connection listenState.Queue
+                    | SocketPhase.Listening listenState ->
+                        List.contains queued.Connection (ListenState.connections listenState)
                     | _ -> false
                 | None -> false
 

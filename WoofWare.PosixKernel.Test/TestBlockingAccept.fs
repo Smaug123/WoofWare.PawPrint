@@ -85,7 +85,7 @@ module TestBlockingAccept =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
             match (UnixMachineState.socket socketId system.Machine).Phase with
-            | SocketPhase.Listening listenState -> listenState.Queue
+            | SocketPhase.Listening listenState -> listenState.Queue |> List.map (fun queued -> queued.Connection)
             | phase -> failwith $"fd %d{fd} is %A{phase}, not listening"
         | other -> failwith $"fd %d{fd} names %A{other}, not a socket"
 
@@ -683,7 +683,7 @@ module TestBlockingAccept =
             |> Seq.pick (fun (_, socket) ->
                 match socket.Phase with
                 | SocketPhase.Listening listenState ->
-                    match listenState.Queue with
+                    match ListenState.connections listenState with
                     | [ taken ; left ] -> Some (taken, left)
                     | other -> failwith $"expected two connections queued, got %A{other}"
                 | _ -> None
@@ -903,6 +903,96 @@ module TestBlockingAccept =
     // Accepts, closes and dups, against a reference
     // ------------------------------------------------------------------
 
+    /// A `setsockopt(2)` of one of the listener's options. `SO_LINGER`'s time
+    /// is in seconds under Linux and in hundredths under Darwin, as each
+    /// flavour's `SO_LINGER` takes it.
+    [<RequireQualifiedAccess>]
+    type private OptionChange =
+        | ReuseAddress of bool
+        | NoDelay of bool
+        | Linger of onOff : bool * time : int
+
+    /// The options a socket holds that `accept(2)` gives the socket it makes.
+    type private HeldOptions =
+        {
+            ReuseAddress : bool
+            Options : SocketOptions
+        }
+
+    /// What a socket holds from `socket(2)`.
+    let private initialOptions : HeldOptions =
+        {
+            ReuseAddress = false
+            Options =
+                {
+                    NoDelay = false
+                    Linger =
+                        {
+                            Enabled = false
+                            Hundredths = 0L
+                        }
+                }
+        }
+
+    /// `held` once `change` is made: under Linux, turning lingering off keeps
+    /// the time, and turning it on takes the time in seconds; under Darwin
+    /// every set stores both. Measured (`docs/probes/sockopt-options/`).
+    let private changed (linux : bool) (change : OptionChange) (held : HeldOptions) : HeldOptions =
+        match change with
+        | OptionChange.ReuseAddress value ->
+            { held with
+                ReuseAddress = value
+            }
+        | OptionChange.NoDelay value ->
+            { held with
+                Options =
+                    { held.Options with
+                        NoDelay = value
+                    }
+            }
+        | OptionChange.Linger (onOff, time) ->
+            let linger =
+                match linux, onOff with
+                | true, false ->
+                    { held.Options.Linger with
+                        Enabled = false
+                    }
+                | true, true ->
+                    {
+                        Enabled = true
+                        Hundredths = int64 time * 100L
+                    }
+                | false, _ ->
+                    {
+                        Enabled = onOff
+                        Hundredths = int64 time
+                    }
+
+            { held with
+                Options =
+                    { held.Options with
+                        Linger = linger
+                    }
+            }
+
+    /// What the socket accepted for a connection holds, the connection having
+    /// completed while its listener held `held`: the same, except that under
+    /// Darwin a linger of no time is 120 seconds. Measured
+    /// (`docs/plans/2026-10-08-tcp-shutdown-linger/queued-options.c`).
+    let private completedUnder (linux : bool) (held : HeldOptions) : HeldOptions =
+        if not linux && held.Options.Linger.Enabled && held.Options.Linger.Hundredths = 0L then
+            { held with
+                Options =
+                    { held.Options with
+                        Linger =
+                            { held.Options.Linger with
+                                Hundredths = 12000L
+                            }
+                    }
+            }
+        else
+            held
+
     /// One step of the closing property. A task is named by its index, modulo
     /// their number, among those that can take the step: those making no call,
     /// for an accept; those in one, for a signal; those woken, for a finish.
@@ -915,6 +1005,7 @@ module TestBlockingAccept =
         | Signal of task : int
         | Wake
         | Finish of task : int
+        | SetOption of fd : int * change : OptionChange
 
     type private AcceptPark =
         {
@@ -950,6 +1041,11 @@ module TestBlockingAccept =
             Signalled : Set<int>
             /// The clients whose connections are queued, oldest first.
             Queue : int list
+            /// The listener's options.
+            ListenerOptions : HeldOptions
+            /// What the socket accepted for each queued client's connection
+            /// will hold.
+            Completed : Map<int, HeldOptions>
             /// Each client's descriptor, and what became of its connect.
             Clients : Map<int, ClientFate>
             Drained : bool
@@ -1003,7 +1099,7 @@ module TestBlockingAccept =
         | Some (_, ConnectionEnd.Server) -> failwith $"client fd %d{fd} is a connection's server end"
 
     /// The clients of the connections `queue` holds, in its order.
-    let private queuedClients (queue : ConnectionId list) (system : UnixSystem<int, string>) : int list =
+    let private queuedClients (queue : QueuedConnection list) (system : UnixSystem<int, string>) : int list =
         let clientOf (connection : ConnectionId) : int =
             match UnixMachineState.socketHoldingEnd connection ConnectionEnd.Client system.Machine with
             | None -> failwith $"queued connection %O{connection} has no client"
@@ -1016,7 +1112,7 @@ module TestBlockingAccept =
                     | _ -> None
                 )
 
-        queue |> List.map clientOf
+        queue |> List.map (fun queued -> clientOf queued.Connection)
 
     let private acceptTasks : int list = [ 1 ; 2 ; 3 ; 4 ]
 
@@ -1029,10 +1125,21 @@ module TestBlockingAccept =
             |> returnToUser task
         | other -> failwith $"returning task %d{task} to user mode: %A{other}"
 
+    let private optionChangeGen : Gen<OptionChange> =
+        let flag = ArbMap.defaults |> ArbMap.generate<bool>
+
+        Gen.oneof
+            [
+                Gen.map OptionChange.ReuseAddress flag
+                Gen.map OptionChange.NoDelay flag
+                Gen.map2 (fun onOff time -> OptionChange.Linger (onOff, time)) flag (Gen.choose (0, 3))
+            ]
+
     /// `weights` are the frequencies of an accept, a connect, a close, a dup, a
-    /// signal, a wake and a finish; descriptors are drawn from 3 to `highestFd`.
-    let private acceptOpGenWeighted (highestFd : int) (weights : int * int * int * int * int * int * int) =
-        let accepts, connects, closes, dups, signals, wakes, finishes = weights
+    /// signal, a wake, a finish and an option's change; descriptors are drawn
+    /// from 3 to `highestFd`.
+    let private acceptOpGenWeighted (highestFd : int) (weights : int * int * int * int * int * int * int * int) =
+        let accepts, connects, closes, dups, signals, wakes, finishes, sets = weights
         let task = Gen.elements acceptTasks
         let fd = Gen.choose (3, highestFd)
 
@@ -1045,23 +1152,26 @@ module TestBlockingAccept =
                 signals, Gen.map AcceptOp.Signal task
                 wakes, Gen.constant AcceptOp.Wake
                 finishes, Gen.map AcceptOp.Finish task
+                sets, Gen.map2 (fun fd change -> AcceptOp.SetOption (fd, change)) fd optionChangeGen
             ]
 
     let private acceptOpGen : Gen<AcceptOp> =
-        acceptOpGenWeighted 8 (6, 4, 3, 3, 2, 6, 8)
+        acceptOpGenWeighted 8 (6, 4, 3, 3, 2, 6, 8, 4)
 
     /// Weighted towards accepts asleep through several descriptors, and the
     /// closes that end them, which `acceptOpGen` reaches only now and then.
     let private closingAcceptOpGen : Gen<AcceptOp> =
-        acceptOpGenWeighted 6 (8, 1, 4, 5, 1, 4, 5)
+        acceptOpGenWeighted 6 (8, 1, 4, 5, 1, 4, 5, 1)
 
     /// Measured on Darwin (`close-ends-call.c`) and Linux (`blocking-accept.c`,
     /// `open-file-references.c`): several tasks accepting on one listener
-    /// through several descriptors onto it, with connections, closes, `dup`s
-    /// and signals between, against a reference that states each rule again.
-    /// Under Linux no close ends an accept; under Darwin a close of the
-    /// descriptor one was made through ends every accept on the listener and
-    /// drains it, whatever descriptor number is reused afterwards.
+    /// through several descriptors onto it, with connections, closes, `dup`s,
+    /// signals and changes to the listener's options between, against a
+    /// reference that states each rule again. Under Linux no close ends an
+    /// accept; under Darwin a close of the descriptor one was made through ends
+    /// every accept on the listener and drains it, whatever descriptor number
+    /// is reused afterwards. On both, an accepted socket holds the options its
+    /// listener held when its connection completed (`queued-options.c`).
     [<Test>]
     let ``accepts, closes and dups on one listener keep to the reference`` () : unit =
         let property
@@ -1103,6 +1213,8 @@ module TestBlockingAccept =
                     NextOrdinal = 0
                     Signalled = Set.empty
                     Queue = []
+                    ListenerOptions = initialOptions
+                    Completed = Map.empty
                     Clients = Map.empty
                     Drained = false
                     Alive = true
@@ -1114,12 +1226,81 @@ module TestBlockingAccept =
                     Signalled = Set.remove task r.Signalled
                 }
 
-            // The accepted socket is closed at once: the reference follows the
+            let setOption
+                (fd : int)
+                (change : OptionChange)
+                (system : UnixSystem<int, string>)
+                : Result<SetSockOptAnswer * UnixSystem<int, string>, SocketOptionRefusal>
+                =
+                let level, name, value =
+                    match change with
+                    | OptionChange.ReuseAddress value ->
+                        SimulatedUnixPlatform.socketOptionLevel platform,
+                        SimulatedUnixPlatform.reuseAddressOption platform,
+                        OptionValue.ofInt (if value then 1 else 0)
+                    | OptionChange.NoDelay value ->
+                        SimulatedUnixPlatform.tcpOptionLevel platform,
+                        SimulatedUnixPlatform.noDelayOption platform,
+                        OptionValue.ofInt (if value then 1 else 0)
+                    | OptionChange.Linger (onOff, time) ->
+                        SimulatedUnixPlatform.socketOptionLevel platform,
+                        SimulatedUnixPlatform.lingerOption platform,
+                        OptionValue.ofLinger (if onOff then 1 else 0) time
+
+                let supplied =
+                    match UnixSocket.admitSetSockOpt fd level name UserBuffer.Mapped (uint32 value.Length) system with
+                    | Ok (SetSockOptAdmission.Transfer count) ->
+                        Some (System.Collections.Immutable.ImmutableArray.Create (value, 0, count))
+                    | other -> failwith $"setsockopt of %A{change} through fd %d{fd} was admitted as %A{other}"
+
+                UnixSocket.setsockopt fd level name UserBuffer.Mapped (uint32 value.Length) supplied system
+
+            // The accepted socket must hold what its client's connection
+            // completed with, and is then closed at once, its linger turned off
+            // first so that the close is a FIN: the reference follows the
             // listener's descriptors and the clients', and nothing else.
-            let dropAccepted (fd : int) (system : UnixSystem<int, string>) =
+            let dropAccepted (where : string) (client : int) (fd : int) (system : UnixSystem<int, string>) =
+                let socket =
+                    match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+                    | Some (OpenFileTarget.Socket socket) -> UnixMachineState.socket socket system.Machine
+                    | other -> failwith $"%s{where}: the accepted fd %d{fd} names %A{other}"
+
+                let held =
+                    {
+                        ReuseAddress = socket.ReuseAddress
+                        Options = socket.Options
+                    }
+
+                let expected = reference.Completed.[client]
+
+                if held <> expected then
+                    failwith
+                        $"%s{where}: the socket accepted for client fd %d{client} holds %A{held}, expected %A{expected}"
+
+                if expected <> completedUnder linux reference.ListenerOptions then
+                    cover $"%s{flavourName} accept: an option changed since the connection completed"
+
+                if expected.Options.Linger.Hundredths = 12000L then
+                    cover "Darwin accept: a linger of no time made 120 seconds"
+
+                let system =
+                    match setOption fd (OptionChange.Linger (false, 0)) system with
+                    | Ok (SetSockOptAnswer.Set, system) -> system
+                    | other -> failwith $"%s{where}: turning the accepted fd %d{fd}'s linger off: %A{other}"
+
                 match UnixDescriptor.close fd system with
                 | Ok (SyscallAnswer.Completed 0L, system) -> system
-                | other -> failwith $"closing the accepted fd %d{fd}: %A{other}"
+                | other -> failwith $"%s{where}: closing the accepted fd %d{fd}: %A{other}"
+
+            /// `r` with its oldest queued client's connection accepted.
+            let acceptedHead (r : AcceptReference) : AcceptReference =
+                let client = List.head r.Queue
+
+                { r with
+                    Queue = List.tail r.Queue
+                    Completed = Map.remove client r.Completed
+                    Clients = Map.add client ClientFate.Accepted r.Clients
+                }
 
             for i, op in List.indexed ops do
                 let pick (eligible : int -> bool) (index : int) : int option =
@@ -1140,9 +1321,11 @@ module TestBlockingAccept =
                         |> Option.map (fun t -> AcceptOp.Accept (t, fd))
                     | AcceptOp.Close fd
                     | AcceptOp.Dup fd when onListenerOrClosed fd -> Some op
+                    | AcceptOp.SetOption (fd, _) when Map.tryFind fd reference.Fds = Some true -> Some op
                     | AcceptOp.Accept _
                     | AcceptOp.Close _
-                    | AcceptOp.Dup _ -> None
+                    | AcceptOp.Dup _
+                    | AcceptOp.SetOption _ -> None
                     | AcceptOp.Connect -> if reference.Queue.Length < 8 then Some op else None
                     | AcceptOp.Signal index ->
                         pick (fun t -> Map.containsKey t reference.Parks) index
@@ -1166,13 +1349,8 @@ module TestBlockingAccept =
                     | None, Ok (AcceptOutcome.Failed UnixError.EBADF, _) -> cover $"%s{flavourName} accept: EBADF"
                     | Some _, Ok (AcceptOutcome.Accepted (accepted, _, _), after) when not reference.Queue.IsEmpty ->
                         cover $"%s{flavourName} accept: a queued connection"
-                        system <- dropAccepted accepted after
-
-                        reference <-
-                            { reference with
-                                Queue = List.tail reference.Queue
-                                Clients = Map.add (List.head reference.Queue) ClientFate.Accepted reference.Clients
-                            }
+                        system <- dropAccepted where (List.head reference.Queue) accepted after
+                        reference <- acceptedHead reference
                     | Some _, Error (AcceptRefusal.DarwinDrainedListener _) when
                         reference.Drained && reference.Queue.IsEmpty
                         ->
@@ -1218,6 +1396,8 @@ module TestBlockingAccept =
                             { reference with
                                 Fds = Map.add client false reference.Fds
                                 Queue = reference.Queue @ [ client ]
+                                Completed =
+                                    Map.add client (completedUnder linux reference.ListenerOptions) reference.Completed
                                 Clients = Map.add client ClientFate.Queued reference.Clients
                             }
                     | Ok (ConnectOutcome.Failed UnixError.ECONNREFUSED, after) when not reference.Alive ->
@@ -1401,11 +1581,8 @@ module TestBlockingAccept =
                             cover $"%s{flavourName} finish: a connection"
 
                             settle
-                                { reference with
-                                    Queue = List.tail reference.Queue
-                                    Clients = Map.add (List.head reference.Queue) ClientFate.Accepted reference.Clients
-                                }
-                                (dropAccepted accepted after)
+                                (acceptedHead reference)
+                                (dropAccepted where (List.head reference.Queue) accepted after)
                         | other -> failwith $"%s{where}: %A{other}"
                     | Some _, Ok (AcceptOutcome.Failed UnixError.EINTR, after) when signalled && not restart ->
                         settle reference after
@@ -1426,6 +1603,19 @@ module TestBlockingAccept =
                                 NextOrdinal = reference.NextOrdinal + 1
                             }
                     | _, other -> failwith $"%s{where}: %A{other}"
+                | AcceptOp.SetOption (fd, change) ->
+                    match setOption fd change system with
+                    | Ok (SetSockOptAnswer.Set, after) ->
+                        if not reference.Queue.IsEmpty then
+                            cover $"%s{flavourName} set: an option changed with connections queued"
+
+                        system <- after
+
+                        reference <-
+                            { reference with
+                                ListenerOptions = changed linux change reference.ListenerOptions
+                            }
+                    | other -> failwith $"%s{where}: %A{other}"
 
                 match UnixSystem.checkInvariants system with
                 | [] -> ()
@@ -1520,6 +1710,8 @@ module TestBlockingAccept =
                 "Linux close: resets the queued clients"
                 "Linux finish: resets the clients left queued"
                 "Linux connect: refused, the listener gone"
+                "Linux set: an option changed with connections queued"
+                "Linux accept: an option changed since the connection completed"
                 "Darwin accept: sleeps"
                 "Darwin accept: a queued connection"
                 "Darwin accept: refused, the listener drained"
@@ -1534,6 +1726,9 @@ module TestBlockingAccept =
                 "Darwin finish: ECONNABORTED with a signal pending"
                 "Darwin finish: refused, a connection and a signal"
                 "Darwin finish: a connection"
+                "Darwin set: an option changed with connections queued"
+                "Darwin accept: an option changed since the connection completed"
+                "Darwin accept: a linger of no time made 120 seconds"
             ]
 
         let missing = required |> List.filter (fun label -> count label = 0)

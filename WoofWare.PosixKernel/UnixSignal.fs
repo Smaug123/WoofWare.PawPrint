@@ -20,6 +20,20 @@ type KillRefusal =
     /// receive it is not modelled.
     | Receiver of SignalReceiverRefusal
 
+[<RequireQualifiedAccess>]
+module KillRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half: which task made the call.
+    let describe (refusal : KillRefusal) : string =
+        match refusal with
+        | KillRefusal.OtherProcess pid ->
+            $"the signal is sent to process %d{pid}, which is not the calling process. A real kernel's answer depends on whether that process exists and on what the signal does to it, and sending a signal to another process is not modelled."
+        | KillRefusal.ProcessGroup pid ->
+            $"the signal is sent to process ID %d{pid}, which names a process group or every process the caller may signal, and neither is modelled."
+        | KillRefusal.InitProcess ->
+            "the calling process is process ID 1. An init process ignores, from inside its own PID namespace, every signal it has not installed a handler for, SIGKILL included, and this kernel does not model that."
+        | KillRefusal.Receiver refusal -> SignalReceiverRefusal.describe refusal
+
 /// Why this library will not answer a `pthread_kill(3)`: something it does not
 /// model, rather than an error a kernel would report.
 [<RequireQualifiedAccess>]
@@ -30,6 +44,16 @@ type ThreadKillRefusal =
     | InitProcess
     /// What the signal would do to the process is not modelled.
     | Receiver of SignalReceiverRefusal
+
+[<RequireQualifiedAccess>]
+module ThreadKillRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half: which task made the call, and at which task it aimed.
+    let describe (refusal : ThreadKillRefusal) : string =
+        match refusal with
+        | ThreadKillRefusal.InitProcess ->
+            "the calling process is process ID 1. An init process ignores, from inside its own PID namespace, every signal it has not installed a handler for, SIGKILL included, and this kernel does not model that."
+        | ThreadKillRefusal.Receiver refusal -> SignalReceiverRefusal.describe refusal
 
 /// Why this library will not answer a `sigprocmask(2)`: something it does not
 /// model, rather than an error a kernel would report.
