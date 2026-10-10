@@ -44,7 +44,7 @@ module SignalFrames =
             | other -> failwith $"expected the carrier to be left pending on %O{task}, got %A{other}"
 
         match UnixSignal.onReturnToUser task sent with
-        | Ok (Some (SignalDelivery.RunHandlers [ frame ]), system) when frame.Entry.Signal = carrier ->
+        | Ok (ReturnToUserOutcome.RunHandlers ([ frame ], system)) when frame.Entry.Signal = carrier ->
             KernelSignals.setDisposition carrier before system
         | other -> failwith $"expected the carrier alone to be delivered to %O{task}, got %A{other}"
 

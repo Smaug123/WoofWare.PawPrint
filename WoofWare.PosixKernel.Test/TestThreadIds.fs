@@ -513,7 +513,7 @@ module TestThreadIds =
 
             let frame, inHandler =
                 match UnixSignal.onReturnToUser 0 system with
-                | Ok (Some (SignalDelivery.RunHandlers [ frame ]), system) -> frame, system
+                | Ok (ReturnToUserOutcome.RunHandlers ([ frame ], system)) -> frame, system
                 | other -> failwith $"onReturnToUser answered %A{other}"
 
             let _, spawned = spawnOrFail 1 inHandler

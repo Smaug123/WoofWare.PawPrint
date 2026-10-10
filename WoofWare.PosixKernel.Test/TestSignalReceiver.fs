@@ -62,12 +62,17 @@ module TestSignalReceiver =
     let private self (system : UnixSystem<int, string>) : int32 =
         ProcessId.toInt32 (UnixSystem.processId system)
 
-    /// What each of the four tasks takes next, in task order.
-    let private takenBy (system : UnixSystem<int, string>) : SignalDelivery<int, string> option list =
+    /// The handler frames each of the four tasks takes next, in task order:
+    /// `None` for a task that takes nothing.
+    let private takenBy (system : UnixSystem<int, string>) : HandlerFrame<int, string> list option list =
         [ 0..3 ]
         |> List.map (fun task ->
             match UnixSignal.onReturnToUser task system with
-            | Ok (delivery, _) -> delivery
+            | Ok (ReturnToUserOutcome.Resumes _) -> None
+            | Ok (ReturnToUserOutcome.RunHandlers (frames, _)) -> Some frames
+            | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
+            | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other)
+            | Ok (ReturnToUserOutcome.ProcessEnded _ as other) -> failwith $"task %d{task} took %A{other}"
             | Error refusal -> failwith $"task %d{task} was refused: %O{refusal}"
         )
 
@@ -82,10 +87,7 @@ module TestSignalReceiver =
             |> List.indexed
             |> List.choose (fun (task, delivery) ->
                 match delivery with
-                | Some (SignalDelivery.RunHandlers [ frame ]) when
-                    frame.Entry.Signal = Signal.SIGUSR1 && frame.Action.Handler = "h"
-                    ->
-                    Some task
+                | Some [ frame ] when frame.Entry.Signal = Signal.SIGUSR1 && frame.Action.Handler = "h" -> Some task
                 | None -> None
                 | Some other -> failwith $"task %d{task} took %A{other}"
             )
@@ -266,7 +268,7 @@ module TestSignalReceiver =
                 }
 
             match takenBy system with
-            | [ None ; None ; Some (SignalDelivery.RunHandlers [ frame ]) ; None ] ->
+            | [ None ; None ; Some [ frame ] ; None ] ->
                 frame.Entry
                 |> shouldEqual
                     {

@@ -238,8 +238,8 @@ module TestPthreadKill =
 
             match UnixSignal.onReturnToUser task system with
             | Error refusal -> failwith $"onReturnToUser %O{task} refused: %O{refusal}"
-            | Ok (None, system) -> count, system
-            | Ok (Some (SignalDelivery.RunHandlers frames), system) ->
+            | Ok (ReturnToUserOutcome.Resumes system) -> count, system
+            | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
                 let ofSignal =
                     frames |> List.filter (fun frame -> frame.Entry.Signal = signal) |> List.length
 
@@ -248,7 +248,9 @@ module TestPthreadKill =
                     ||> List.fold (fun system frame -> UnixSignal.sigreturn task frame.Id system)
 
                 go (count + ofSignal) (rounds + 1) system
-            | Ok (Some other, _) -> failwith $"onReturnToUser %O{task} answered %A{other}"
+            | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
+            | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other)
+            | Ok (ReturnToUserOutcome.ProcessEnded _ as other) -> failwith $"onReturnToUser %O{task} answered %A{other}"
 
         go 0 0 system
 
