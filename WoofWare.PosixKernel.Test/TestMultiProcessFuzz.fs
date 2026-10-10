@@ -82,6 +82,13 @@ module TestMultiProcessFuzz =
         /// `ports.[port]`, if it holds one, which `Poll`'s index into every
         /// socket the process holds seldom picks out.
         | PollListener of port : int * timeout : int
+        /// Block `fatal.[signal]`, then `pthread_kill(3)` it to the calling
+        /// task, which leaves it pending there; the task returns to user mode
+        /// after each.
+        | BlockAndRaise of signal : int
+        /// Unblock `fatal.[signal]`, and return to user mode: the process
+        /// ends if the signal is pending on the calling task.
+        | Unblock of signal : int
         | Exit of status : int
 
     /// A step of the machine's own, or a call made by a task of a process.
@@ -96,6 +103,11 @@ module TestMultiProcessFuzz =
 
     let private ports : uint16 list = [ 8080us ; 8081us ; 8082us ]
     let private files : string list = [ "/f0" ; "/f1" ]
+
+    /// Signals whose default terminates the process. No process installs a
+    /// handler, and no other signal is sent but a write's SIGPIPE, which
+    /// nothing blocks, so it kills at once.
+    let private fatal : Signal list = [ Signal.SIGTERM ; Signal.SIGQUIT ]
     let private dirs : string list = [ "/d0" ; "/d1" ]
     let private standing : string list = "/" :: dirs
     let private tasks : int = 3
@@ -187,13 +199,22 @@ module TestMultiProcessFuzz =
             transferOps |> List.map (fun (weight, op) -> weight * transferBias, op)
 
         let exit = [ 1, Gen.map Op.Exit (Gen.choose (0, 3)) ]
-        // A process's end is rare, so that most of a run has several processes.
+
+        let signals =
+            [
+                1, Gen.map Op.BlockAndRaise (Gen.choose (0, fatal.Length - 1))
+                1, Gen.map Op.Unblock (Gen.choose (0, fatal.Length - 1))
+            ]
+        // A process's end is rare, so that most of a run has several processes,
+        // and so is a fatal signal held back.
         let common (ops : (int * Gen<Op>) list) =
             ops |> List.map (fun (weight, op) -> 3 * weight, op)
 
         match SimulatedUnixPlatform.flavour platform with
-        | SimulatedUnixFlavour.Linux -> Gen.frequency (common (sockets @ transferOps @ fileOps @ epollOps) @ exit)
-        | SimulatedUnixFlavour.Darwin -> Gen.frequency (common (sockets @ transferOps @ fileOps @ kqueueOps) @ exit)
+        | SimulatedUnixFlavour.Linux ->
+            Gen.frequency (common (sockets @ transferOps @ fileOps @ epollOps) @ exit @ signals)
+        | SimulatedUnixFlavour.Darwin ->
+            Gen.frequency (common (sockets @ transferOps @ fileOps @ kqueueOps) @ exit @ signals)
 
     type private Case =
         {
@@ -320,6 +341,17 @@ module TestMultiProcessFuzz =
                             ]
                             @ reconnect
                         )
+                        // The client end, blocking, reads, and sleeps if
+                        // nothing has arrived; the server end's process unblocks
+                        // a fatal signal pending on one of its tasks, which ends
+                        // it, and its end wakes the read.
+                        1,
+                        Gen.constant
+                            [
+                                byClient (Op.ReceiveThrough (first, 65536))
+                                byFirst (Op.BlockAndRaise first)
+                                byFirst (Op.Unblock first)
+                            ]
                         // The server end writes, the client end closes with that
                         // unread, a reset, and the server end's read meets it.
                         3,
@@ -406,6 +438,9 @@ module TestMultiProcessFuzz =
         | KeventPark
         | Exit
         | ExitRefusal
+        /// A process a fatal signal ended as one of its tasks returned to user
+        /// mode, having unblocked it.
+        | SignalDeath
         /// A read that took bytes another process's socket had written.
         | CrossRead
         /// A write that took fewer bytes than offered, or none (`EAGAIN`).
@@ -727,6 +762,59 @@ module TestMultiProcessFuzz =
             | Ok outcome -> failwith $"a write to a connected socket answered %A{outcome}"
             | Error refusal -> failwith $"a write to a connected socket was refused: %s{WriteRefusal.describe refusal}"
 
+        // `task` returns to user mode from a call that left the process as
+        // `after`. The only signals sent are `fatal`'s, at their defaults, and
+        // a SIGPIPE nothing blocks, so the process ends exactly when one of
+        // `fatal` is pending on `task` and it does not block it, and then by
+        // one of those signals.
+        let returnToUser (after : UnixSystem<int, string>) : Made =
+            let due =
+                SignalState.pending after.Process.Signals
+                |> List.filter (fun entry ->
+                    entry.Target = ValueSome task
+                    && not (SignalMask.contains entry.Signal (SignalState.maskOf task after.Process.Signals))
+                )
+                |> List.map (fun entry -> entry.Signal)
+                |> Set.ofList
+
+            match UnixSignal.onReturnToUser task after with
+            | Ok (ReturnToUserOutcome.Resumes after) ->
+                due |> shouldEqual Set.empty
+                Made.Answered after
+            | Ok (ReturnToUserOutcome.ProcessEnded ended) ->
+                match EndedProcess.termination ended with
+                | ProcessTermination.Signaled (signal, false) when Set.contains signal due ->
+                    cover FuzzLabel.SignalDeath
+                    Made.Ended ended
+                | termination ->
+                    failwith $"task %d{task}'s return ended the process with %O{termination}, with %O{due} due"
+            | Ok (ReturnToUserOutcome.RunHandlers _ as other)
+            | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
+            | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other) ->
+                failwith
+                    $"no handler is installed and only %O{fatal} is held back, but task %d{task}'s return took %A{other}"
+            | Error refusal -> failwith $"task %d{task}'s return was refused: %O{refusal}"
+
+        // `pthread_sigmask(2)` of `signal` alone, and the return from it.
+        let mask (change : SignalMaskChange) (signal : Signal) (view : UnixSystem<int, string>) : Made =
+            let block =
+                match SimulatedUnixPlatform.flavour view.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 1
+
+            let how =
+                match change with
+                | SignalMaskChange.Block -> block
+                | SignalMaskChange.Unblock -> block + 1
+                | SignalMaskChange.SetMask -> block + 2
+
+            let set =
+                SignalMask.ofSignals (SignalState.numbering view.Process.Signals) (Set.singleton signal)
+
+            match UnixSignal.pthreadSigmask task how (Some set) view with
+            | Ok (_, after) -> returnToUser after
+            | Error errno -> failwith $"pthread_sigmask of %O{signal} failed with %O{errno}"
+
         match op with
         | Op.Socket nonBlocking -> Made.Answered (KeventWorld.stream nonBlocking view |> snd)
         | Op.Bind (fd, port) ->
@@ -994,6 +1082,19 @@ module TestMultiProcessFuzz =
                         }
                     ]
                     milliseconds
+        | Op.BlockAndRaise signal ->
+            let signal = fatal.[signal % fatal.Length]
+
+            match mask SignalMaskChange.Block signal view with
+            | Made.Answered blocked ->
+                let signo =
+                    Signal.toRawSignoUnder (SignalState.numbering blocked.Process.Signals) signal
+
+                match UnixSignal.pthreadKill task signo blocked with
+                | Ok (Ok (KillOutcome.ProcessContinues raised)) -> returnToUser raised
+                | other -> failwith $"pthread_kill of a blocked %O{signal} answered %A{other}"
+            | made -> made
+        | Op.Unblock signal -> mask SignalMaskChange.Unblock fatal.[signal % fatal.Length] view
         | Op.Exit status -> Made.Ended (UnixTaskLifecycle.exitGroup task status view)
 
     /// The call `task` of the view `view` is asleep in, finished.
@@ -1472,6 +1573,7 @@ module TestMultiProcessFuzz =
         coverage.Count FuzzLabel.KeventPark |> shouldBeGreaterThan 196
         coverage.Count FuzzLabel.Finish |> shouldBeGreaterThan 569
         coverage.Count FuzzLabel.Exit |> shouldBeGreaterThan 74
+        coverage.Count FuzzLabel.SignalDeath |> shouldBeGreaterThan 118
         coverage.Count FuzzLabel.CrossWake |> shouldBeGreaterThan 610
         coverage.Count FuzzLabel.CrossRead |> shouldBeGreaterThan 418
         coverage.Count FuzzLabel.ShortWrite |> shouldBeGreaterThan 113

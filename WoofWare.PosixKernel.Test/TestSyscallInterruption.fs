@@ -607,8 +607,8 @@ module TestSyscallInterruption =
                     |> Set.ofList
 
                 match UnixSignal.onReturnToUser task after with
-                | Ok (None, _) -> caught |> shouldEqual Set.empty
-                | Ok (Some (SignalDelivery.RunHandlers frames), _) ->
+                | Ok (ReturnToUserOutcome.Resumes _) -> caught |> shouldEqual Set.empty
+                | Ok (ReturnToUserOutcome.RunHandlers (frames, _)) ->
                     frames
                     |> List.map (fun frame -> frame.Entry.Signal)
                     |> Set.ofList

@@ -122,7 +122,7 @@ A call asleep in one process wakes for what another process's call does: a conne
 
 `SimulatedMachine.endProcess` ends a process on the machine, as the call that ended it (`exit_group`, the last thread's exit, a signal) answered it: it releases what only the process's calls held, then closes every descriptor in the order each kernel measurably does (Linux drops them lowest first and releases the last let go of first; Darwin closes them highest first), as `close` closes each: sending its peers their FINs, or resets where it left bytes unread, and letting its locks, pipes, listeners and event queues go, and removes the process. It refuses where a close would: a listener holding a connection another process's open socket made is not released, since what the reset does to that socket is not measured.
 
-A call that ends the process answers an `EndedProcess` instead of a system. `EndedProcess.termination` is how the process ended, which is what its parent's `wait` reads, and `EndedProcess.processId` is which process it was. Only such a call makes one, and `SimulatedMachine.endProcess` takes nothing else. A process alone on its machine is ended the same way, on the machine `SimulatedMachine.ofSystem (EndedProcess.endedIn ended)` makes of the view the process ended in.
+A call that ends the process answers an `EndedProcess` instead of a system, and so does a task's return to user mode that applies a signal's default and terminates it (`UnixSignal.onReturnToUser`). `EndedProcess.termination` is how the process ended, which is what its parent's `wait` reads, and `EndedProcess.processId` is which process it was. Only such a call or return makes one, and `SimulatedMachine.endProcess` takes nothing else. A process alone on its machine is ended the same way, on the machine `SimulatedMachine.ofSystem (EndedProcess.endedIn ended)` makes of the view the process ended in.
 
 Nothing passes a descriptor from one process to another (no `fork`, no `SCM_RIGHTS`, and a launched pipe's other end is the client's), so no pipe, listener or epoll instance is shared, and `kill` of another process is refused.
 
@@ -288,14 +288,18 @@ The environment the library holds is the one the process was started with (`Proc
 The library never learns what a handler is: it stores whatever the client passes as `'Handler` and hands it back.
 
 **Where they meet.** Before a task runs its own code, the client asks `UnixSignal.onReturnToUser`.
-A `SignalDelivery.RunHandlers` answer is the frames the kernel pushed, innermost first, each with the signal, the disposition and the mask to restore.
+A `ReturnToUserOutcome.Resumes` answer means the task took nothing the client acts on, and runs its own code next.
+A `ReturnToUserOutcome.RunHandlers` answer is the frames the kernel pushed, innermost first, each with the signal, the disposition and the mask to restore.
 The client runs each handler, and when one returns it calls `UnixSignal.sigreturn` with that frame and asks `onReturnToUser` again.
 A `SignalCatch` holds only the flags that change what the kernel does (`SA_NODEFER`, `SA_RESETHAND`, `SA_RESTART`); `SA_SIGINFO` and `SA_ONSTACK` choose how and on which stack the client calls its handler, so a client that honours them keeps them with its `'Handler`.
 A handler that leaves by `siglongjmp` instead of returning has no operation yet.
 
-A signal whose default stops the process is reported (`KillOutcome.ProcessStopped`, `SignalDelivery.DefaultStop`) for the client to act on.
+A signal whose default terminates the process ends it where the library applies the default: at generation, when some task can take it (`KillOutcome.ProcessEnded`), and otherwise when a task that blocked it can take it, as the task returns to user mode (`ReturnToUserOutcome.ProcessEnded`): after a mask call or a `sigreturn` that unblocks it, or from a `sigsuspend` whose temporary mask lets it through.
+Either answer is the `EndedProcess`, killed by the signal (`ProcessTermination.Signaled`, with the core flag), and no handler runs, not even one whose frame was pushed at the same return; the client ends the process on its machine with `SimulatedMachine.endProcess`, as for an exit.
+
+A signal whose default stops the process is reported (`KillOutcome.ProcessStopped`, `ReturnToUserOutcome.ProcessStopped`) for the client to act on.
 The library holds no stopped state, and nothing here continues a stopped process, so a client should refuse a stop rather than carry on as if the process were still running.
-A SIGCONT at its default, on the other hand, has nothing to resume: `SignalDelivery.DefaultContinue` says the kernel discarded it as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
+A SIGCONT at its default, on the other hand, has nothing to resume: `ReturnToUserOutcome.ContinueDiscarded` says the kernel discarded it as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
 
 ### The alternate signal stack
 

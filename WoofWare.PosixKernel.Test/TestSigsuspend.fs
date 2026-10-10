@@ -186,12 +186,17 @@ module TestSigsuspend =
                 =
                 match UnixSignal.onReturnToUser main system with
                 | Error refusal -> failwith $"onReturnToUser refused: %A{refusal}"
-                | Ok (None, system) -> continuation system ran
-                | Ok (Some (SignalDelivery.RunHandlers frames), system) ->
+                | Ok (ReturnToUserOutcome.Resumes system) -> continuation system ran
+                | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
                     runFrames frames system ran
                     |> Result.bind (fun (system, ran) -> continuation system ran)
-                | Ok (Some (SignalDelivery.DefaultTerminate (signal, _)), _) -> Error (Stop.Killed (signal, r))
-                | Ok (Some other, _) -> failwith $"the main thread's return took %A{other}"
+                | Ok (ReturnToUserOutcome.ProcessEnded ended) ->
+                    match EndedProcess.termination ended with
+                    | ProcessTermination.Signaled (signal, _) -> Error (Stop.Killed (signal, r))
+                    | other -> failwith $"the main thread's return ended the process with %O{other}"
+                | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
+                | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other) ->
+                    failwith $"the main thread's return took %A{other}"
 
             and runFrames
                 (frames : HandlerFrame<int, string> list)
@@ -887,8 +892,8 @@ module TestSigsuspend =
 
             let returnToUser (system : UnixSystem<int, string>) : UnixSystem<int, string> =
                 match UnixSignal.onReturnToUser main system with
-                | Ok (None, system)
-                | Ok (Some (SignalDelivery.RunHandlers _), system) -> system
+                | Ok (ReturnToUserOutcome.Resumes system)
+                | Ok (ReturnToUserOutcome.RunHandlers (_, system)) -> system
                 | other -> failwith $"the main thread's return took %A{other}"
 
             let setmask = how flavour SignalMaskChange.SetMask
