@@ -570,6 +570,18 @@ type UnixSystemDefect<'Task> =
     /// the machine's `processorCount`, numbered from 0. See
     /// `UnixTaskState.cpu`.
     | CpuBeyondMachine of task : 'Task * cpu : CpuId * processorCount : int
+    /// The machine records the task with thread ID `occupant` as running on
+    /// the logical processor `cpu`, which is not one of its `processorCount`,
+    /// numbered from 0. See `UnixScheduling`.
+    | OccupiedCpuBeyondMachine of cpu : CpuId * occupant : OsThreadId * processorCount : int
+    /// The machine records the task with thread ID `occupant` as running on
+    /// the logical processor `cpu`, and no live task has that thread ID: a
+    /// task left the processor without the machine recording it.
+    | OccupantWithoutTask of cpu : CpuId * occupant : OsThreadId
+    /// The machine records `task` as running on the logical processor
+    /// `occupied`, and the task's own processor is `cpu`: a running task's
+    /// processor is the one it runs on (`UnixTaskState.cpu`).
+    | OccupantOnAnotherCpu of task : 'Task * occupied : CpuId * cpu : CpuId
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in (`ProcessLaunch.withCurrentDirectory`). Launching the process returns one
@@ -1140,8 +1152,8 @@ module UnixSystem =
     /// descriptors and calls that reference it and its holds against every
     /// process's parks, the park and event registration ordinals against the
     /// machine's counters, the thread ID allocator against every process's
-    /// tasks, and the machine's filesystem type, buffer check and symbolic
-    /// links against its platform.
+    /// tasks, each processor's occupant against the tasks, and the machine's
+    /// filesystem type, buffer check and symbolic links against its platform.
     ///
     /// When `complete`, `processes` is every process on the machine, each with
     /// its tasks, and every clause is checked. Otherwise `processes` is some of
@@ -1792,6 +1804,47 @@ module UnixSystem =
 
             allocatorFlavour @ duplicates @ unmintable @ live
 
+        // Each processor's occupant against the machine and the tasks: the
+        // processor is the machine's, the occupant is a live task, and that
+        // task's processor is the one it occupies. Short of every process, an
+        // occupant of no process given is checked against the thread IDs the
+        // machine records as live, which every process's tasks contribute to.
+        let occupants =
+            let byThreadId =
+                allTasks
+                |> List.map (fun (task, state) -> state.OsThreadId, (task, state))
+                |> Map.ofList
+
+            machine.Occupants
+            |> Map.toList
+            |> List.collect (fun (cpu, occupant) ->
+                let beyond =
+                    if UnixMachineState.hasProcessor cpu machine then
+                        []
+                    else
+                        [
+                            UnixSystemDefect.OccupiedCpuBeyondMachine (cpu, occupant, machine.ProcessorCount)
+                        ]
+
+                let task =
+                    match Map.tryFind occupant byThreadId with
+                    | Some (task, state) ->
+                        if state.Cpu = cpu then
+                            []
+                        else
+                            [ UnixSystemDefect.OccupantOnAnotherCpu (task, cpu, state.Cpu) ]
+                    | None ->
+                        if
+                            complete
+                            || not (Set.contains occupant (ThreadIdAllocator.live machine.ThreadIds))
+                        then
+                            [ UnixSystemDefect.OccupantWithoutTask (cpu, occupant) ]
+                        else
+                            []
+
+                beyond @ task
+            )
+
         // The process table against the processes: the counter is the
         // flavour's, Darwin's is past every live ID, and the live IDs are the
         // processes'.
@@ -2035,6 +2088,7 @@ module UnixSystem =
         @ symlinkPermissions
         @ userBufferCheck
         @ threadIds
+        @ occupants
         @ processIds
         @ currentDirectories
         @ kqueueOwners
@@ -2917,6 +2971,7 @@ module UnixSystem =
                     BootTime = UnixTimestamp.epoch
                     EntropyPool = EntropyPool.ofSeed defaultEntropySeed
                     ProcessorCount = defaultProcessorCount
+                    Occupants = Map.empty
                     UserBufferCheck = defaultUserBufferCheck platform
                     UnixPlatform = platform
                     FileSystem = filesystem

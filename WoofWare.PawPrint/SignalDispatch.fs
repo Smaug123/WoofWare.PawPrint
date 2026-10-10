@@ -62,11 +62,15 @@ type SignalPoll =
 /// (`SignalReceiverRefusal.LeaderBlocks`), when it is sent or at this poll,
 /// and the refusal fails the run.
 ///
-/// The `SignalDelivery.Default*` cases are refused loudly: a default that
-/// terminates or stops is applied when the signal is generated (see
-/// `NativeLibc.kill` and `NativeLibc.raiseSignal`), so one reaches this poll
-/// only by becoming receivable later, as a handler frame's mask is popped or a
-/// mask call unblocks it, and applying a default at delivery is not modelled.
+/// `SignalDelivery.DefaultTerminate` and `SignalDelivery.DefaultStop` are
+/// refused loudly: such a default is applied when the signal is generated
+/// (see `NativeLibc.kill` and `NativeLibc.raiseSignal`), so one reaches this
+/// poll only by becoming receivable later, as a handler frame's mask is popped
+/// or a mask call unblocks it, and applying it at delivery is not modelled.
+/// `SignalDelivery.DefaultContinue` is a SIGCONT at its default, which the
+/// kernel has discarded as the leader took it: the process was never stopped
+/// (PawPrint refuses a stop), so nothing happens, and the leader's return goes
+/// on to whatever else it takes.
 [<RequireQualifiedAccess>]
 module SignalDispatch =
 
@@ -386,20 +390,21 @@ module SignalDispatch =
                 match runFrames frames state with
                 | SignalPoll.Continues state -> continuation state
                 | killed -> killed
+            // The kernel has discarded it: the process was never stopped, so
+            // there is nothing to resume. The return goes on.
+            | Some (SignalDelivery.DefaultContinue _), state -> returnToUserThen continuation state
             | Some (SignalDelivery.DefaultTerminate (signal, _)), _
-            | Some (SignalDelivery.DefaultStop signal), _
-            | Some (SignalDelivery.DefaultContinue signal), _ ->
+            | Some (SignalDelivery.DefaultStop signal), _ ->
                 // A pending signal at its default disposition, whose kernel
-                // default is to terminate, stop or continue the process.
-                // `SignalState.generate` applies a terminating or stopping
-                // default at generation whenever some thread can receive the
-                // signal, so it is pending here only if none could then: every
-                // thread blocked it, through a mask call, and one has since
-                // unblocked it. Applying a default at delivery is refused
-                // rather than half-modelled, SIGCONT's included, though the
-                // kernel discards that one as it is taken.
+                // default is to terminate or stop the process.
+                // `SignalState.generate` applies such a default at generation
+                // whenever some thread can receive the signal, so it is
+                // pending here only if none could then: every thread blocked
+                // it, through a mask call, and one has since unblocked it.
+                // Applying a default at delivery is refused rather than
+                // half-modelled.
                 failwith
-                    $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
+                    $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is to terminate or stop the process; applying such a default at delivery rather than at generation is not modelled."
 
         returnToUserThen SignalPoll.Continues state
 

@@ -9,8 +9,9 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Analysis
 
-/// An `Assumption` summarises a CoreLib method by name and signature. These tests hold each to the
-/// CoreLibs: the method must be there, as the contract describes it.
+/// An `Assumption`, and the resource lookup's contract (`ResourceLookup`), each stand in for a
+/// CoreLib method they recognise by name and signature. These tests hold each to the CoreLibs: the
+/// method must be there, as the contract describes it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestAssumption =
@@ -38,18 +39,6 @@ module TestAssumption =
             method.IsStatic |> shouldEqual true
 
             match assumption with
-            | Assumption.CoreLibResourceLookup ->
-                name |> shouldEqual "System.SR::InternalGetResourceString"
-
-                method.Signature.ParameterTypes
-                |> shouldEqual [ TypeDefn.PrimitiveType PrimitiveType.String ]
-
-                method.Signature.ReturnType
-                |> shouldEqual (MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.String))
-
-                match method.Body with
-                | MethodBody.Il _ -> ()
-                | other -> failwith $"%A{assumption} summarises a method whose body is %A{other}, not IL"
             | Assumption.NamedTypesLoad ->
                 name |> shouldEqual "System.RuntimeTypeHandle::GetConstraints"
 
@@ -60,20 +49,59 @@ module TestAssumption =
                 | other -> failwith $"%A{assumption} summarises a method that is not a QCall: %A{other}"
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``every exception an assumption's contract raises is a CoreLib exception type`` (which : string) : unit =
+    let ``the resource lookup's contract stands in for one method of the CoreLib, the one it names``
+        (which : string)
+        : unit
+        =
         let corelib = TestIntrinsicBody.coreLib which
 
-        for assumption in Assumption.all do
-            for name in Assumption.raises assumption do
+        let recognised =
+            [
+                for KeyValue (handle, method) in corelib.Methods do
+                    if ResourceLookup.isLookup corelib handle then
+                        yield method
+            ]
+
+        let method = recognised |> List.exactlyOne
+        let declaringType = corelib.TypeDefs.[method.RequiredDeclaringType.Definition.Get]
+
+        $"%s{declaringType.Namespace}.%s{declaringType.Name}::%s{method.Name}"
+        |> shouldEqual "System.SR::InternalGetResourceString"
+
+        method.IsStatic |> shouldEqual true
+
+        method.Signature.ParameterTypes
+        |> shouldEqual [ TypeDefn.PrimitiveType PrimitiveType.String ]
+
+        method.Signature.ReturnType
+        |> shouldEqual (MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.String))
+
+        match method.Body with
+        | MethodBody.Il _ -> ()
+        | other -> failwith $"The resource lookup's contract stands in for a method whose body is %A{other}, not IL"
+
+    [<TestCaseSource(nameof coreLibs)>]
+    let ``every exception a contract raises is a CoreLib exception type`` (which : string) : unit =
+        let corelib = TestIntrinsicBody.coreLib which
+
+        let contracts =
+            [
+                for assumption in Assumption.all do
+                    yield $"%A{assumption}", Assumption.raises assumption
+                yield "The resource lookup", ResourceLookup.raises
+            ]
+
+        for contract, raises in contracts do
+            for name in raises do
                 match corelib.TryGetTopLevelTypeDef name.Namespace name.Name with
                 | Some _ -> ()
-                | None -> failwith $"%A{assumption} raises %O{name}, which this CoreLib does not declare"
+                | None -> failwith $"%s{contract} raises %O{name}, which this CoreLib does not declare"
 
                 // The host's CoreLib says what it derives from.
                 let hostType = typeof<obj>.Assembly.GetType name.FullName
 
                 if isNull hostType || not (typeof<Exception>.IsAssignableFrom hostType) then
-                    failwith $"%A{assumption} raises %O{name}, which is not an exception type of the host's CoreLib"
+                    failwith $"%s{contract} raises %O{name}, which is not an exception type of the host's CoreLib"
 
     /// What CoreLib's own caller of the QCall `RuntimeTypeHandle_GetConstraints` raises for the type
     /// `handle` names, on the real runtime: the full name of the exception's type, if it raises one.
@@ -127,7 +155,8 @@ module TestAssumption =
     let ``listing a type's constraints on the real runtime can raise what the resource lookup raises`` () : unit =
         // The runtime makes the ArgumentException it raises with its parameterless constructor,
         // which looks up its message under the current UI culture. So the contract alone does not
-        // say what escapes; following that constructor (`Assumption.constructs`) does.
+        // say what escapes; following that constructor (`Assumption.constructs`) does. (A culture
+        // like this one is outside what the lookup's own contract answers for.)
         let previous = CultureInfo.CurrentUICulture
 
         let raised =

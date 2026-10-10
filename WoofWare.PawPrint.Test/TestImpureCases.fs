@@ -4643,6 +4643,50 @@ module TestImpureCases =
                     )
             }
             {
+                // libc's kill(2) sending SIGCONT, at its default, to the
+                // process itself under the Linux flavour, and raise(3) raising
+                // it at the main thread while that blocks it, which then
+                // unblocks it: the process is not stopped, so the signal is
+                // consumed as it is taken, and the process carries on to its
+                // own exit code.
+                FileName = "LibcKillDefaultContinueLinux.cs"
+                ExpectedReturnCode = 42
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.linuxX64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                        SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
+                        |> shouldEqual SignalMask.empty
+                    )
+            }
+            {
+                // The Darwin column of the same, where SIGCONT is 19, which
+                // is SIGSTOP under Linux's numbering.
+                FileName = "LibcKillDefaultContinueDarwin.cs"
+                ExpectedReturnCode = 42
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+
+                        SignalState.maskOf state.Kernel.Leader state.Kernel.Signals
+                        |> shouldEqual SignalMask.empty
+                    )
+            }
+            {
                 // libc's sigsuspend and pause under the Linux flavour: a
                 // SIGTERM pending as sigsuspend is called, one sent during it,
                 // and one ending a pause. Each call fails with EINTR once the

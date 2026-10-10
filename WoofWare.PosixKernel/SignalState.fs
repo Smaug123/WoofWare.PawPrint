@@ -127,8 +127,14 @@ type SignalDelivery<'Task, 'Handler> =
     | DefaultStop of Signal
     /// No handler claims the signal and its kernel default is to resume a
     /// stopped process, and the task does not block it: the kernel discards
-    /// it as it is delivered. A blocked one stays pending, as any other
-    /// signal does, and `sigpending` reports it.
+    /// it as it is delivered, and nothing else happens. A blocked one stays
+    /// pending, as any other signal does, and `sigpending` reports it.
+    ///
+    /// The task's return to user mode is not over: the client asks
+    /// `onReturnToUser` again, and the task may take more signals, under the
+    /// temporary mask of a `sigsuspend(2)` it is returning from. A client
+    /// that let the task run its own code instead would leave it with that
+    /// temporary mask.
     ///
     /// On a real kernel the resumption itself happens at generation,
     /// whatever any mask says. This library has no stopped process to resume
@@ -1191,15 +1197,19 @@ module SignalState =
     ///
     /// A pending signal whose default is to continue the process, at its
     /// default, surfaces as `DefaultContinue` if `task` does not block it, and
-    /// stays pending if it does (see the case's own docstring).
+    /// stays pending if it does (see the case's own docstring). The task's
+    /// return is not over: the client asks again before the task runs its own
+    /// code, and that answer may take more signals.
     ///
     /// A task returning from `sigsuspend(2)` or `pause(2)` (`maskToRestore` is
     /// `Some`) takes its signals under the call's temporary mask, and gets the
     /// mask the call replaced back as it returns: the first frame pushed (the
     /// outermost) saves that mask rather than the temporary one, so the
     /// handler's `sigreturn` restores it, and a return that pushes no frame
-    /// restores it at once. Each frame after the first saves the mask the one
-    /// before it set, as for any other return.
+    /// restores it at once, unless it answers `DefaultContinue`, whose return
+    /// goes on under the temporary mask when the client asks again. Each frame
+    /// after the first saves the mask the one before it set, as for any other
+    /// return.
     ///
     /// Refuses, whichever task is asked, while any signal pending on the process
     /// could be received by a task other than the leader but not by the leader;
@@ -1233,10 +1243,19 @@ module SignalState =
                 // mask from before the call, and the mask after the call was that
                 // mask. A return that runs no handler restores it too (Linux's
                 // `restore_saved_sigmask`); the frames then hold it otherwise.
-                if after.NextFrame <> state.NextFrame then
-                    delivery, cleared
-                else
-                    delivery, withMask task restore cleared
+                // A default SIGCONT is no action, and Linux's `get_signal`
+                // goes on past it, under the temporary mask, to the next
+                // signal, which the client's next ask takes.
+                match delivery with
+                | Some (SignalDelivery.DefaultContinue _) -> delivery, after
+                | Some (SignalDelivery.RunHandlers _)
+                | Some (SignalDelivery.DefaultTerminate _)
+                | Some (SignalDelivery.DefaultStop _)
+                | None ->
+                    if after.NextFrame <> state.NextFrame then
+                        delivery, cleared
+                    else
+                        delivery, withMask task restore cleared
         )
 
     /// `sigreturn(2)`: `task`'s handler for the frame `frame` has returned, and
