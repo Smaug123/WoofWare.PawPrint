@@ -566,6 +566,10 @@ type UnixSystemDefect<'Task> =
         inode : InodeNumber *
         permissions : PermissionBits *
         flavour : SimulatedUnixFlavour
+    /// The task `task` is on the logical processor `cpu`, which is not one of
+    /// the machine's `processorCount`, numbered from 0. See
+    /// `UnixTaskState.cpu`.
+    | CpuBeyondMachine of task : 'Task * cpu : CpuId * processorCount : int
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in (`ProcessLaunch.withCurrentDirectory`). Launching the process returns one
@@ -2043,9 +2047,9 @@ module UnixSystem =
     /// descriptor against the bound and the flavour's descriptor flags, each
     /// task's park against the descriptor table and the machine, each kqueue
     /// a descriptor or a `kevent` wait names against its owner, the signal
-    /// state against the task table, the leader against the tasks, and the
-    /// process's supplementary groups and file-mode creation mask against its
-    /// platform.
+    /// state against the task table, the leader against the tasks, each task's
+    /// processor against the machine's, and the process's supplementary groups
+    /// and file-mode creation mask against its platform.
     let checkViewInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystemDefect<'Task> list
@@ -2582,6 +2586,13 @@ module UnixSystem =
                 | SimulatedUnixFlavour.Linux
                 | SimulatedUnixFlavour.Darwin -> []
 
+        let cpus =
+            system.Tasks
+            |> Map.toList
+            |> List.filter (fun (_, state) -> not (UnixMachineState.hasProcessor state.Cpu system.Machine))
+            |> List.map (fun (task, state) ->
+                UnixSystemDefect.CpuBeyondMachine (task, state.Cpu, system.Machine.ProcessorCount)
+            )
 
         currentDirectory
         @ beyondBound
@@ -2592,6 +2603,7 @@ module UnixSystem =
         @ supplementaryGroups
         @ umask
         @ leader
+        @ cpus
 
 
     /// Every way this system's tables disagree with each other: the machine's

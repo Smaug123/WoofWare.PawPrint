@@ -329,8 +329,9 @@ module UnixBootImage =
     ///
     /// The process has the ID `withProcessId` set, `UnixSystem.defaultProcessId`
     /// unless it was set, and its leader the thread ID the machine's counter
-    /// starts at. Refuses a launch described for another platform, and one
-    /// whose directory the machine's filesystem does not let it start in.
+    /// starts at. Refuses a launch described for another platform, one whose
+    /// leader is on a processor the machine does not have, and one whose
+    /// directory the machine's filesystem does not let it start in.
     let boot<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (launch : ProcessLaunch<'Task>)
         (image : UnixBootImage<'Task, 'Handler>)

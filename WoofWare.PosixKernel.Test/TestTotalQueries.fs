@@ -185,8 +185,11 @@ module TestTotalQueries =
         : unit
         =
         let property (cpu : NonNegativeInt) (unknown : int) : unit =
+            // A machine with the processor the child is created on.
             let system : UnixSystem<int, string> =
                 UnixSystem.initial SimulatedUnixPlatform.linuxX64
+                |> UnixBootImage.withProcessorCount (cpu.Get + 1)
+                |> Configured.expectOk ProcessorCountRefusal.describe
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let child = 1
