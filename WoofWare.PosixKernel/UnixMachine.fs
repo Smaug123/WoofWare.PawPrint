@@ -393,6 +393,12 @@ module UnixMachineState =
     /// `UnixMachineState.ProcessorCount`.
     let internal processorCount (machine : UnixMachineState) : int = machine.ProcessorCount
 
+    /// Whether the machine has the logical processor `cpu`: whether it is in
+    /// `[0, ProcessorCount)`.
+    let internal hasProcessor (cpu : CpuId) (machine : UnixMachineState) : bool =
+        let (CpuId.CpuId index) = cpu
+        index >= 0 && index < machine.ProcessorCount
+
     /// Every write that has reached a client draining one of this machine's
     /// pipes, oldest first: what the outside world has received from the
     /// process. See `UnixMachineState.Delivered`.

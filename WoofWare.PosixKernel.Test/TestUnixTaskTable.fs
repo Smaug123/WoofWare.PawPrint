@@ -15,9 +15,12 @@ module TestUnixTaskTable =
 
     let private empty : Map<int, UnixTaskState> = Map.empty
 
-    /// A Linux process whose leader is task 0, with process ID 4242.
+    /// A Linux process whose leader is task 0, with process ID 4242, on a
+    /// machine with four processors.
     let private initial : UnixSystem<int, string> =
         UnixSystem.initial SimulatedUnixPlatform.linuxX64
+        |> UnixBootImage.withProcessorCount 4
+        |> Configured.expectOk ProcessorCountRefusal.describe
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private withTask (name : int) (cpu : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
