@@ -11,6 +11,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -452,16 +453,20 @@ module TestNullaryIlOp =
             |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary NullaryIlOp.Neg))
         | other -> failwith $"Expected Neg to step, got %O{other}"
 
+    /// Whether an unsigned division's denominator has its top bit set, which is where signed and
+    /// unsigned division part ways.
+    [<RequireQualifiedAccess>]
+    type private DenominatorTopBit =
+        | Set
+        | Clear
+
     [<Test>]
     let ``Div_un on int32 follows unsigned 32-bit division`` () : unit =
-        let mutable highBitDenominators = 0
-        let mutable lowBitDenominators = 0
-
-        let property (case : Int32DivUnCase) : unit =
+        let property (cover : DenominatorTopBit -> unit) (case : Int32DivUnCase) : unit =
             if uint32 case.Denominator >= 0x80000000u then
-                highBitDenominators <- highBitDenominators + 1
+                cover DenominatorTopBit.Set
             else
-                lowBitDenominators <- lowBitDenominators + 1
+                cover DenominatorTopBit.Clear
 
             let expected = uint32 case.Numerator / uint32 case.Denominator |> int32<uint32>
 
@@ -473,7 +478,9 @@ module TestNullaryIlOp =
             | Ok (EvalStackValue.Int32 (Int32Source.Verbatim actual)) -> actual |> shouldEqual expected
             | other -> failwith $"Expected Int32 Div_un result, got %O{other}"
 
-        Check.One (config, Prop.forAll (Arb.fromGen genInt32DivUnCase) property)
+        let coverage = CoverageSample.check config (Arb.fromGen genInt32DivUnCase) property
+        let highBitDenominators = coverage.Count DenominatorTopBit.Set
+        let lowBitDenominators = coverage.Count DenominatorTopBit.Clear
 
         if highBitDenominators < 100 || lowBitDenominators < 100 then
             failwith
@@ -481,14 +488,11 @@ module TestNullaryIlOp =
 
     [<Test>]
     let ``Div_un on native int follows unsigned native-width division`` () : unit =
-        let mutable highBitDenominators = 0
-        let mutable lowBitDenominators = 0
-
-        let property (case : Int64DivUnCase) : unit =
+        let property (cover : DenominatorTopBit -> unit) (case : Int64DivUnCase) : unit =
             if case.Denominator < 0L then
-                highBitDenominators <- highBitDenominators + 1
+                cover DenominatorTopBit.Set
             else
-                lowBitDenominators <- lowBitDenominators + 1
+                cover DenominatorTopBit.Clear
 
             let expected =
                 uint64<int64> case.Numerator / uint64<int64> case.Denominator |> int64<uint64>
@@ -501,7 +505,9 @@ module TestNullaryIlOp =
             | Ok (EvalStackValue.NativeInt (NativeIntSource.Verbatim actual)) -> actual |> shouldEqual expected
             | other -> failwith $"Expected native int Div_un result, got %O{other}"
 
-        Check.One (config, Prop.forAll (Arb.fromGen genInt64DivUnCase) property)
+        let coverage = CoverageSample.check config (Arb.fromGen genInt64DivUnCase) property
+        let highBitDenominators = coverage.Count DenominatorTopBit.Set
+        let lowBitDenominators = coverage.Count DenominatorTopBit.Clear
 
         if highBitDenominators < 100 || lowBitDenominators < 100 then
             failwith
@@ -550,6 +556,13 @@ module TestNullaryIlOp =
                     return MixedWidthDivisionCase.NativeIntInt32 (dividend, divisor)
                 }
             ]
+
+    /// The sign of the int32 operand of a mixed-width division: only a negative one can tell a
+    /// sign extension from a zero extension.
+    [<RequireQualifiedAccess>]
+    type private Int32OperandSign =
+        | Negative
+        | NonNegative
 
     /// The host runs the mixed-width instruction for us, emitted into a `DynamicMethod` whose two
     /// parameters carry the operands' own stack types. Neither C# nor F# emits `div.un` or
@@ -601,26 +614,23 @@ module TestNullaryIlOp =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
-        let mutable negativeInt32s = 0
-        let mutable nonNegativeInt32s = 0
-
-        let property (case : MixedWidthDivisionCase) : unit =
+        let property (cover : Int32OperandSign -> unit) (case : MixedWidthDivisionCase) : unit =
             let val1, val2, expected =
                 match case with
                 | MixedWidthDivisionCase.Int32NativeInt (dividend, divisor) ->
                     if dividend < 0 then
-                        negativeInt32s <- negativeInt32s + 1
+                        cover Int32OperandSign.Negative
                     else
-                        nonNegativeInt32s <- nonNegativeInt32s + 1
+                        cover Int32OperandSign.NonNegative
 
                     EvalStackValue.Int32 (Int32Source.Verbatim dividend),
                     EvalStackValue.NativeInt (NativeIntSource.Verbatim divisor),
                     hostInt32NativeInt dividend (nativeint<int64> divisor)
                 | MixedWidthDivisionCase.NativeIntInt32 (dividend, divisor) ->
                     if divisor < 0 then
-                        negativeInt32s <- negativeInt32s + 1
+                        cover Int32OperandSign.Negative
                     else
-                        nonNegativeInt32s <- nonNegativeInt32s + 1
+                        cover Int32OperandSign.NonNegative
 
                     EvalStackValue.NativeInt (NativeIntSource.Verbatim dividend),
                     EvalStackValue.Int32 (Int32Source.Verbatim divisor),
@@ -637,7 +647,11 @@ module TestNullaryIlOp =
                 | other -> failwith $"Expected %s{opName} to leave one native int on the stack, got %O{other}"
             | other -> failwith $"Expected %s{opName} to step, got %O{other}"
 
-        Check.One (config, Prop.forAll (Arb.fromGen genMixedWidthDivisionCase) property)
+        let coverage =
+            CoverageSample.check config (Arb.fromGen genMixedWidthDivisionCase) property
+
+        let negativeInt32s = coverage.Count Int32OperandSign.Negative
+        let nonNegativeInt32s = coverage.Count Int32OperandSign.NonNegative
 
         if negativeInt32s < 100 || nonNegativeInt32s < 100 then
             failwith
@@ -989,32 +1003,38 @@ module TestNullaryIlOp =
             )
         ]
 
+    /// Whether a checked conversion overflowed or produced a value.
+    [<RequireQualifiedAccess>]
+    type private CheckedConversionOutcome =
+        | Overflow
+        | Success
+
     let private checkConvOvfICase (case : ConvOvfICase) : unit =
         NullaryIlOp.convOvfI (convOvfICaseInput case)
         |> shouldEqual (convOvfIExpected case)
 
     [<Test>]
     let ``Conv_ovf_i agrees with the host's checked conversion and preserves provenance`` () : unit =
-        let mutable overflows = 0
-        let mutable successes = 0
-
-        let property (case : ConvOvfICase) : unit =
+        let property (cover : CheckedConversionOutcome -> unit) (case : ConvOvfICase) : unit =
             match convOvfIExpected case with
-            | Ok _ -> successes <- successes + 1
-            | Error () -> overflows <- overflows + 1
+            | Ok _ -> cover CheckedConversionOutcome.Success
+            | Error () -> cover CheckedConversionOutcome.Overflow
 
             checkConvOvfICase case
 
         for case in convOvfIEdgeCases do
-            property case
+            property ignore case
 
-        Check.One (config, Prop.forAll (Arb.fromGen genConvOvfICase) property)
+        let coverage = CoverageSample.check config (Arb.fromGen genConvOvfICase) property
+        let overflows = coverage.Count CheckedConversionOutcome.Overflow
+        let successes = coverage.Count CheckedConversionOutcome.Success
 
         // Guard against a generator that silently stops exercising one side: on a
         // 64-bit interpreter only floats can overflow `conv.ovf.i`, so an unbalanced
-        // float generator would turn this into a success-path-only test. The generator
-        // is tuned to produce roughly 80 overflows in 500 draws, so 30 is a wide
-        // margin rather than a threshold the run can drift across.
+        // float generator would turn this into a success-path-only test. The count is
+        // over a fixed sample, not the edge list; the generator is tuned to produce
+        // roughly 80 overflows in 500 draws, so 30 is a wide margin rather than a
+        // threshold that a change reshuffling the sample could drift across.
         if overflows < 30 || successes < 30 then
             failwith $"Conv_ovf_i generator was unbalanced: %d{overflows} overflows, %d{successes} successes"
 
@@ -1262,21 +1282,20 @@ module TestNullaryIlOp =
 
     [<Test>]
     let ``Conv_ovf_i_un agrees with the host's unsigned checked conversion and preserves provenance`` () : unit =
-        let mutable overflows = 0
-        let mutable successes = 0
-
-        let property (case : ConvOvfIUnCase) : unit =
+        let property (cover : CheckedConversionOutcome -> unit) (case : ConvOvfIUnCase) : unit =
             match convOvfIUnExpected case with
-            | Ok _ -> successes <- successes + 1
-            | Error () -> overflows <- overflows + 1
+            | Ok _ -> cover CheckedConversionOutcome.Success
+            | Error () -> cover CheckedConversionOutcome.Overflow
 
             NullaryIlOp.convOvfIUn (convOvfIUnCaseInput case)
             |> shouldEqual (convOvfIUnExpected case)
 
         for case in convOvfIUnEdgeCases do
-            property case
+            property ignore case
 
-        Check.One (config, Prop.forAll (Arb.fromGen genConvOvfIUnCase) property)
+        let coverage = CoverageSample.check config (Arb.fromGen genConvOvfIUnCase) property
+        let overflows = coverage.Count CheckedConversionOutcome.Overflow
+        let successes = coverage.Count CheckedConversionOutcome.Success
 
         // Guard against a generator that silently stops exercising one side: roughly half
         // of the 64-bit draws should overflow, so a generator that had drifted to
@@ -3162,15 +3181,12 @@ module TestNullaryIlOp =
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
 
-        let mutable overflows = 0
-        let mutable successes = 0
-
-        let property (source : NumericSource) : unit =
+        let property (cover : CheckedConversionOutcome -> unit) (source : NumericSource) : unit =
             let expected = host source
 
             match expected with
-            | Ok _ -> successes <- successes + 1
-            | Error () -> overflows <- overflows + 1
+            | Ok _ -> cover CheckedConversionOutcome.Success
+            | Error () -> cover CheckedConversionOutcome.Overflow
 
             let actual =
                 match nullaryOutcome loggerFactory op (numericSourceInput source) with
@@ -3181,13 +3197,24 @@ module TestNullaryIlOp =
             if actual <> expected then
                 failwith $"%s{name} of %O{source}: PawPrint gave %O{actual}, the host %O{expected}"
 
+        let edgeOutcomes = ResizeArray<CheckedConversionOutcome> ()
+
         for source in checkedEdgeSources do
-            property source
+            property edgeOutcomes.Add source
 
-        Check.One (config, Prop.forAll (Arb.fromGen genNumericSource) property)
+        let coverage = CoverageSample.check config (Arb.fromGen genNumericSource) property
 
-        // Every target's range is crossed by the edge list from both sides, so each outcome has
-        // hundreds of instances; a floor this low fails only if one side stops being generated.
+        let count (outcome : CheckedConversionOutcome) : int =
+            (edgeOutcomes |> Seq.filter ((=) outcome) |> Seq.length)
+            + coverage.Count outcome
+
+        let overflows = count CheckedConversionOutcome.Overflow
+        let successes = count CheckedConversionOutcome.Success
+
+        // The floor counts the edge list together with the fixed sample, neither of which varies
+        // between runs. Every target's range is crossed by the edge list from both sides, so each
+        // outcome has hundreds of instances; a floor this low fails only if one side stops being
+        // generated.
         if overflows < 50 || successes < 50 then
             failwith $"%s{name} inputs were unbalanced: %d{overflows} overflows, %d{successes} successes"
 
