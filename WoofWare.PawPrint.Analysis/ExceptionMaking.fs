@@ -31,8 +31,7 @@ module internal ExceptionMaking =
         | OpcodeFault.ArrayTypeMismatch
         | OpcodeFault.InvalidCast
         | OpcodeFault.Overflow
-        | OpcodeFault.DivideByZero
-        | OpcodeFault.Arithmetic -> ExceptionMaking.ParameterlessConstructor
+        | OpcodeFault.DivideByZero -> ExceptionMaking.ParameterlessConstructor
         // `CLRException::GetBestOutOfMemoryException` and `GetPreallocatedStackOverflowException`.
         | OpcodeFault.OutOfMemory
         | OpcodeFault.StackOverflow -> ExceptionMaking.Preallocated
