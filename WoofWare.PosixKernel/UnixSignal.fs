@@ -94,6 +94,12 @@ type ReturnToUserOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : 
     /// one stays pending, as any other signal does, and `sigpending` reports
     /// it.
     ///
+    /// Such a signal is pending only if it was generated while the task it was
+    /// aimed at blocked it (for one sent to the process, every task that could
+    /// take it), and the task has since unblocked it. One generated otherwise
+    /// is discarded as it is sent, as an ignored signal is (see
+    /// `UnixSignal.kill`).
+    ///
     /// The task's return to user mode is not over: the client asks
     /// `onReturnToUser` again, and the task may take more signals, under the
     /// temporary mask of a `sigsuspend(2)` it is returning from. A client
