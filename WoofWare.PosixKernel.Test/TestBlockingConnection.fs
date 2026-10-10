@@ -673,11 +673,6 @@ module TestBlockingConnection =
 
     [<Test>]
     let ``blocking connection transfers park, wake and finish as the reference says`` () : unit =
-        let covered = System.Collections.Concurrent.ConcurrentDictionary<string, int> ()
-
-        let cover (label : string) =
-            covered.AddOrUpdate (label, 1, (fun _ n -> n + 1)) |> ignore
-
         let property
             (cover : string -> unit)
             (platform : SimulatedUnixPlatform, restart : bool, ops : BlockingConnectionOp list)
@@ -1134,50 +1129,16 @@ module TestBlockingConnection =
                 return platform, restart, opening @ ops
             }
 
-        let inParallel =
-            Some
-                {
-                    MaxDegreeOfParallelism = 4
-                }
-
         // The floors below are a claim about the generator, so they are
         // counted over a fixed sample: a run cannot miss one by chance.
-        let fixedSample =
-            Config.QuickThrowOnFailure
-                .WithMaxTest(400)
-                .WithReplay(
-                    Some
-                        {
-                            Rnd = Rnd 20261010UL
-                            Size = None
-                        }
-                )
-                .WithParallelRunConfig (inParallel)
+        let coverage =
+            CoverageSample.check
+                (CoverageSample.inParallel (Config.QuickThrowOnFailure.WithMaxTest 400))
+                (Arb.fromGen gen)
+                property
 
-        Check.One (fixedSample, Prop.forAll (Arb.fromGen gen) (property cover))
-
-        // Fresh cases on every run, which the property checks and the floors
-        // do not count.
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest(400).WithParallelRunConfig (inParallel),
-            Prop.forAll (Arb.fromGen gen) (property ignore)
-        )
-
-        let coverage (label : string) : int =
-            match covered.TryGetValue label with
-            | true, n -> n
-            | false, _ -> 0
-
-        let report =
-            covered
-            |> Seq.sortBy (fun kv -> kv.Key)
-            |> Seq.map (fun kv -> $"%s{kv.Key}: %d{kv.Value}")
-
-        for line in report do
-            System.Console.WriteLine line
-
-        // Each reached by the fixed sample, which is what the counts printed
-        // above are of; a change that loses one fails on every run, and wants
+        // Each reached by the fixed sample, whose counts `CoverageSample.check`
+        // prints; a change that loses one fails on every run, and wants
         // an opening in `openingGen` rather than another seed. Darwin's buffers
         // are the larger, so its writers sleep less often, and those of its
         // paths, like a finish's ECONNRESET and the non-blocking refusals, are
@@ -1203,7 +1164,7 @@ module TestBlockingConnection =
                     "wake: several"
                     "close: closes the socket"
                 ] do
-                if coverage $"%s{flavour} %s{what}" = 0 then
+                if coverage.Count $"%s{flavour} %s{what}" = 0 then
                     failwith $"never reached: %s{flavour} %s{what}"
 
         for label in
@@ -1232,7 +1193,7 @@ module TestBlockingConnection =
                 "Darwin close: close refused"
                 "Darwin finish read ended by a close: EBADF"
             ] do
-            if coverage label = 0 then
+            if coverage.Count label = 0 then
                 failwith $"never reached: %s{label}"
 
     // ------------------------------------------------------------------
