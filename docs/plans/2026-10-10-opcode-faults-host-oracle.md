@@ -93,7 +93,8 @@ There is one guest per instruction, so that one refusal stops only its own
 instruction, and the guests run in parallel. Measured on stage 1's grid, a call
 that raises nothing costs about 0.3 ms under PawPrint and one that raises about
 10 ms, so stage 1, about 110,000 calls with 5,000 faults, costs about 1.5
-minutes of CPU. That is affordable outside the `Guest` category.
+minutes of CPU, which is about 1.3 minutes of the default suite's wall time.
+Since each case runs a guest, the fixture is in the `Guest` category.
 
 An instruction whose first run disagrees with the host is parked
 (`TestCaseData.Explicit`) with the disagreement as the reason. The fix to the

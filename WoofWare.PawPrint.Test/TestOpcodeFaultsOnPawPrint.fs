@@ -22,6 +22,10 @@ open WoofWare.PawPrint
 /// Only faults are compared, not the values computed; `TestNullaryIlOp` checks those.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
+// Each case runs a guest under the interpreter, about 1.5 minutes of CPU across the fixture;
+// `Explicit` keeps it out of a bare `dotnet test`, and CI selects it by category. See AGENTS.md.
+[<Category("Guest")>]
+[<Explicit>]
 module TestOpcodeFaultsOnPawPrint =
 
     /// Instructions on which PawPrint is known to disagree with the host, with the disagreement.
