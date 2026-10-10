@@ -758,6 +758,9 @@ module UnixPathResolution =
                 Ok (int64 contents.Length, int64 (VirtualFileSystem.bindingCount inode fileSystem))
             // Measured 0 on both flavours, for every device.
             | InodeContent.CharacterDevice _ -> Ok (0L, int64 (VirtualFileSystem.bindingCount inode fileSystem))
+            | InodeContent.Socket _ ->
+                failwith
+                    $"UnixPathResolution.statOf: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
             | InodeContent.Directory _ when (VirtualFileSystem.mountOf inode fileSystem).IsSome ->
                 Error (StatRefusal.DeviceFileSystemRoot inode)
             // `readlink` reports the target's byte length as the link's size,
@@ -816,6 +819,9 @@ module UnixPathResolution =
                         | InodeContent.RegularFile _
                         | InodeContent.Directory _
                         | InodeContent.Symlink _ -> 0L
+                        | InodeContent.Socket _ ->
+                            failwith
+                                $"UnixPathResolution.statOf: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
                     FileFlags = newFileFlags system.Machine.UnixPlatform
                 }
         )
@@ -1125,6 +1131,7 @@ module UnixPathResolution =
                 | SymlinkModeChange.ChangesLink -> true
             | InodeContent.RegularFile _
             | InodeContent.Directory _
+            | InodeContent.Socket _
             | InodeContent.CharacterDevice _ -> true
 
         if changeable then
@@ -1270,7 +1277,8 @@ module UnixPathResolution =
         let target, bits =
             match entry.Content with
             | InodeContent.RegularFile (_, bits)
-            | InodeContent.CharacterDevice (_, bits) -> OwnerChangeTarget.NonDirectory, bits
+            | InodeContent.CharacterDevice (_, bits)
+            | InodeContent.Socket bits -> OwnerChangeTarget.NonDirectory, bits
             | InodeContent.Directory directory -> OwnerChangeTarget.Directory, directory.Permissions
             | InodeContent.Symlink (_, bits) -> OwnerChangeTarget.NonDirectory, bits
 
@@ -1661,6 +1669,7 @@ module UnixPathResolution =
                 | InodeContent.Symlink _ -> true
                 | InodeContent.RegularFile _
                 | InodeContent.Directory _
+                | InodeContent.Socket _
                 | InodeContent.CharacterDevice _ -> false
 
             match
@@ -2189,6 +2198,7 @@ module UnixPathResolution =
         // Reached by a symbolic link to a regular file as well as by a plain
         // one: `Follow` lands on the file, and only then is it a type error.
         | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.Socket _)
         | Some (InodeContent.CharacterDevice _) -> Ok (SyscallAnswer.Failed UnixError.ENOTDIR, system)
         | Some (InodeContent.Symlink _) ->
             // Unreachable, and asserted rather than answered: `Follow` traverses

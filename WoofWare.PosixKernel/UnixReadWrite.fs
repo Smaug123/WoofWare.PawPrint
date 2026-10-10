@@ -1400,6 +1400,9 @@ module UnixReadWrite =
         | InodeContent.Symlink _ ->
             failwith
                 $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what reading a link through a descriptor means (this is a bug in this library)."
+        | InodeContent.Socket _ ->
+            failwith
+                $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
         | InodeContent.RegularFile (contents, _) ->
 
         let transfer = VirtualFileSystem.readTransferCount offset count contents.Length

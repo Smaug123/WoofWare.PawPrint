@@ -144,6 +144,7 @@ module ProtectedFiles =
         let governing =
             match existing.Content with
             | InodeContent.RegularFile _ -> Some protection.RegularFiles
+            | InodeContent.Socket _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _
             | InodeContent.Directory _ -> None
@@ -194,4 +195,5 @@ module ProtectedFiles =
             || PermissionBits.deniedTo standing AccessRequest.Write bits
         | InodeContent.Directory _
         | InodeContent.Symlink _
+        | InodeContent.Socket _
         | InodeContent.CharacterDevice _ -> true

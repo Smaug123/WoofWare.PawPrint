@@ -1058,6 +1058,7 @@ module TestVirtualFileSystem =
                         vfs
                     |> shouldEqual (Ok inode)
             | InodeContent.RegularFile _
+            | InodeContent.Socket _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ ->
                 // Not a directory, so deliberately unanswerable: a hard-linked
@@ -1148,6 +1149,18 @@ module TestVirtualFileSystem =
                 VirtualFileSystemDefect.ParentIsNotDirectory (three, two)
                 VirtualFileSystemDefect.ParentMismatch (three, two, one)
             ]
+
+    [<Test>]
+    let ``ReservedContent: a socket inode, which nothing in this version makes`` () : unit =
+        VirtualFileSystem.Unchecked.ofParts
+            (Map.ofList
+                [
+                    one, dir one [ "s", two ]
+                    two, inodeOf (InodeContent.Socket (PermissionBits.parseOrFail "test" 0o755))
+                ])
+            one
+            three
+        |> shouldHaveDefects [ VirtualFileSystemDefect.ReservedContent two ]
 
     [<Test>]
     let ``ParentMismatch`` () : unit =
@@ -3631,6 +3644,7 @@ module TestVirtualFileSystem =
                     | true, None
                     | false, Some _ -> ()
                 | InodeContent.RegularFile _
+                | InodeContent.Socket _
                 | InodeContent.CharacterDevice _
                 | InodeContent.Symlink _ -> ()
 
@@ -3732,6 +3746,7 @@ module TestVirtualFileSystem =
             | Some (InodeContent.Directory _)
             | None -> ()
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Socket _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) ->
 

@@ -996,13 +996,6 @@ module NativeSystemNative =
     /// `sizeof(DirectoryEntry)`: a pointer, then two 32-bit fields.
     let private directoryEntrySize : int = 16
 
-    // `Interop.Sys.NodeType`, which is the platform's own `DT_*`; measured
-    // identical on both kernels for every inode kind PawPrint can represent.
-    let private directoryEntryTypeDirectory : int = 4
-    let private directoryEntryTypeRegular : int = 8
-    let private directoryEntryTypeSymlink : int = 10
-    let private directoryEntryTypeCharacterDevice : int = 2
-
     /// The native block a guest's `DIR*` names.
     ///
     /// Loudly partial: a `DIR*` is opaque, and the only legal values are the
@@ -3650,15 +3643,7 @@ module NativeSystemNative =
                 | DirectoryEntryNameLength.Reported -> nameBytes.Length
                 | DirectoryEntryNameLength.WalkToTerminator -> -1
 
-            // The PAL's own `DT_*` numbering, which is not the `S_IFMT` one
-            // `stat` reports — so the kind crosses as a kind and is encoded
-            // here.
-            let inodeType =
-                match kind with
-                | DirectoryEntryKind.RegularFile -> directoryEntryTypeRegular
-                | DirectoryEntryKind.Directory -> directoryEntryTypeDirectory
-                | DirectoryEntryKind.Symlink -> directoryEntryTypeSymlink
-                | DirectoryEntryKind.CharacterDevice -> directoryEntryTypeCharacterDevice
+            let inodeType = DirectoryEntryPal.nodeType kind
 
             // The name, then its terminator. The block was zero-filled at
             // allocation, so the terminator is already there for a first entry —
