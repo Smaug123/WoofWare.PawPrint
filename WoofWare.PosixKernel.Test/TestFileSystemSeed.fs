@@ -210,12 +210,16 @@ module TestFileSystemSeed =
             | SeedEntry.Symlink (_, _) -> [ here, entry ]
         )
 
+    /// What the declared paths of generated seeds resolve to.
+    [<RequireQualifiedAccess>]
+    type private DeclaredLabel =
+        | Directory
+        /// A file or a symlink.
+        | Leaf
+
     [<Test>]
     let ``every declared path resolves to what the seed declared there`` () : unit =
-        let mutable observedDirectories = 0
-        let mutable observedLeaves = 0
-
-        let property (seed : Map<DirectoryEntryName, SeedEntry>) : unit =
+        let property (cover : DeclaredLabel -> unit) (seed : Map<DirectoryEntryName, SeedEntry>) : unit =
             let vfs = realise seed
             let root = VirtualFileSystem.root vfs
 
@@ -237,17 +241,17 @@ module TestFileSystemSeed =
                     | Error error -> failwith $"%s{declaredPath} was declared but did not resolve: %O{error}"
 
                 match VirtualFileSystem.tryGetContent inode vfs, entry with
-                | Some (InodeContent.RegularFile _), SeedEntry.File _ -> observedLeaves <- observedLeaves + 1
-                | Some (InodeContent.Symlink _), SeedEntry.Symlink (_, _) -> observedLeaves <- observedLeaves + 1
-                | Some (InodeContent.Directory _), SeedEntry.Directory _ ->
-                    observedDirectories <- observedDirectories + 1
+                | Some (InodeContent.RegularFile _), SeedEntry.File _ -> cover DeclaredLabel.Leaf
+                | Some (InodeContent.Symlink _), SeedEntry.Symlink (_, _) -> cover DeclaredLabel.Leaf
+                | Some (InodeContent.Directory _), SeedEntry.Directory _ -> cover DeclaredLabel.Directory
                 | actual, _ -> failwith $"%s{declaredPath} was declared as %A{entry} but resolved to %A{actual}"
 
-        Check.One (config, Prop.forAll (Arb.fromGen seedGen) property)
+        let coverage = CoverageSample.check config (Arb.fromGen seedGen) property
 
-        // Without these the property is satisfied by an empty seed every time.
-        observedDirectories |> shouldBeGreaterThan 50
-        observedLeaves |> shouldBeGreaterThan 50
+        // Without these the property is satisfied by an empty seed every time;
+        // they are counted over the fixed sample.
+        coverage.Count DeclaredLabel.Directory |> shouldBeGreaterThan 50
+        coverage.Count DeclaredLabel.Leaf |> shouldBeGreaterThan 50
 
     [<Test>]
     let ``realising a seed is deterministic, down to the inode numbers`` () : unit =

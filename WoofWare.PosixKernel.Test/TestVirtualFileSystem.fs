@@ -15,7 +15,7 @@ module TestVirtualFileSystem =
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 300
 
     /// For the timestamp-ordering property alone, whose coverage guards count occurrences across
-    /// the whole check; see the comment at its `Check.One`.
+    /// the whole fixed sample; see the comment at its `CoverageSample.check`.
     let private timesConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
 
     let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
@@ -2240,15 +2240,20 @@ module TestVirtualFileSystem =
                     | Error refusal -> failwith $"%O{refusal}"
             )
 
+    /// The orders of an inode's times that generated filesystems must reach.
+    [<RequireQualifiedAccess>]
+    type private TimesLabel =
+        /// An inode modified after it was born.
+        | LateModification
+        /// An inode whose status changed after its last modification.
+        | CtimeAheadOfMtime
+
     [<Test>]
     let ``every inode's times respect the order a kernel would have moved them`` () : unit =
         // Each generated step happens at its own moment (see `tickOf`), so a
         // timestamp copied from the wrong inode, or never moved at all, shows up
         // here rather than being indistinguishable from the right answer.
-        let mutable observedLateModification = 0
-        let mutable observedCtimeAheadOfMtime = 0
-
-        let property (vfs : VirtualFileSystem) : unit =
+        let property (cover : TimesLabel -> unit) (vfs : VirtualFileSystem) : unit =
             for inode, entry in Map.toList (VirtualFileSystem.inodes vfs) do
                 let times = entry.Times
 
@@ -2264,21 +2269,20 @@ module TestVirtualFileSystem =
                     failwith $"inode %O{inode} changed contents after its inode last changed: %A{times}"
 
                 if times.Modification > times.Birth then
-                    observedLateModification <- observedLateModification + 1
+                    cover TimesLabel.LateModification
 
                 if times.StatusChange > times.Modification then
-                    observedCtimeAheadOfMtime <- observedCtimeAheadOfMtime + 1
+                    cover TimesLabel.CtimeAheadOfMtime
 
         // More cases than the fixture's shared `config` runs, because the two coverage guards
-        // below count occurrences across the whole check rather than asserting something about
-        // each case, and at 300 cases the rarer of the two counts is not concentrated enough for
-        // any useful threshold to be safe: sampled over 500 checks at 300 cases, the
-        // ctime-ahead-of-mtime count ran min=9 median=26, so a threshold of 10 failed a few
-        // percent of runs. Over 200 checks at 2000 cases it ran min=119 median=169 — the count
-        // scales with the case count while its spread does not, which is what buys a threshold
-        // both meaningful and reliable. The extra cases cost no measurable time, because most
-        // generated filesystems are tiny.
-        Check.One (timesConfig, Prop.forAll (Arb.fromGen filesystemGen) property)
+        // below count occurrences across the whole fixed sample rather than asserting something
+        // about each case, and at 300 cases the rarer of the two counts is not concentrated enough
+        // for any useful threshold to survive a change that reshuffles the sample: sampled over 500
+        // checks at 300 cases, the ctime-ahead-of-mtime count ran min=9 median=26. Over 200 checks
+        // at 2000 cases it ran min=119 median=169 — the count scales with the case count while its
+        // spread does not, which is what buys a threshold both meaningful and robust. The extra
+        // cases cost no measurable time, because most generated filesystems are tiny.
+        let coverage = CoverageSample.check timesConfig (Arb.fromGen filesystemGen) property
 
         // Without these the property is satisfied by a model that never moves a timestamp at all:
         // every inode would trivially have all four equal, and every comparison above would hold
@@ -2291,8 +2295,8 @@ module TestVirtualFileSystem =
         // respectively), so each has a margin of more than 2x against a tail the measurement
         // actually saw, rather than against a guess. Both counts fall to exactly 0 under the
         // regressions they guard against, so anything below those minima discriminates.
-        observedLateModification |> shouldBeGreaterThan 1000
-        observedCtimeAheadOfMtime |> shouldBeGreaterThan 50
+        coverage.Count TimesLabel.LateModification |> shouldBeGreaterThan 1000
+        coverage.Count TimesLabel.CtimeAheadOfMtime |> shouldBeGreaterThan 50
 
     // ------------------------------------------------------ unbind and forget
 
@@ -3485,19 +3489,30 @@ module TestVirtualFileSystem =
             sameInode || populatedDestination || intoOwnSubtree || intoAnOrphan
         | _ -> false
 
+    /// The classes of rename the sweep must reach.
+    [<RequireQualifiedAccess>]
+    type private RenameSweepLabel =
+        /// A rename that displaced the destination's inode.
+        | DisplacedSomething
+        /// A directory moved from one parent to another.
+        | MovedDirectoryAcrossParents
+        | MovedWithinOneDirectory
+        /// A rename refused loudly.
+        | Refused
+        /// A rename refused loudly whose destination directory is orphaned.
+        | RefusedForOrphan
+
     [<Test>]
     let ``rename either refuses loudly, errors without changing anything, or leaves a sound filesystem`` () : unit =
         // Total: no "legal quadruple" precondition hides the verdict inside the
         // property. The four loud refusals are what make it so, and asserting
         // that they fire *exactly* when the four graph predicates hold pins
         // them rather than merely tolerating an exception.
-        let mutable displacedSomething = 0
-        let mutable movedDirectoryAcrossParents = 0
-        let mutable movedWithinOneDirectory = 0
-        let mutable refusedCount = 0
-        let mutable refusedForOrphan = 0
-
-        let property (vfs : VirtualFileSystem, pinned : Set<InodeNumber>, case : RenameCase) : unit =
+        let property
+            (cover : RenameSweepLabel -> unit)
+            (vfs : VirtualFileSystem, pinned : Set<InodeNumber>, case : RenameCase)
+            : unit
+            =
             let attempt () =
                 VirtualFileSystem.rename
                     case.SourceDirectory
@@ -3508,10 +3523,10 @@ module TestVirtualFileSystem =
                     vfs
 
             if refusedLoudly vfs case then
-                refusedCount <- refusedCount + 1
+                cover RenameSweepLabel.Refused
 
                 if VirtualFileSystem.isOrphanedDirectory case.DestinationDirectory vfs then
-                    refusedForOrphan <- refusedForOrphan + 1
+                    cover RenameSweepLabel.RefusedForOrphan
 
                 let threw =
                     try
@@ -3532,10 +3547,10 @@ module TestVirtualFileSystem =
                 ()
             | Ok (outcome, renamed) ->
                 if outcome.Displaced.IsSome then
-                    displacedSomething <- displacedSomething + 1
+                    cover RenameSweepLabel.DisplacedSomething
 
                 if case.SourceDirectory = case.DestinationDirectory then
-                    movedWithinOneDirectory <- movedWithinOneDirectory + 1
+                    cover RenameSweepLabel.MovedWithinOneDirectory
                 else
                     let moved =
                         match VirtualFileSystem.tryGetContent case.DestinationDirectory renamed with
@@ -3543,7 +3558,7 @@ module TestVirtualFileSystem =
                         | other -> failwith $"destination is not a directory after the rename: %A{other}"
 
                     match VirtualFileSystem.tryGetContent moved renamed with
-                    | Some (InodeContent.Directory _) -> movedDirectoryAcrossParents <- movedDirectoryAcrossParents + 1
+                    | Some (InodeContent.Directory _) -> cover RenameSweepLabel.MovedDirectoryAcrossParents
                     | _ -> ()
 
                 // The displaced inode may have lost its last name, which is
@@ -3558,27 +3573,34 @@ module TestVirtualFileSystem =
                     renamed
                 |> shouldEqual []
 
-        Check.One (renameSweepConfig, Prop.forAll (Arb.fromGen renameScenarioGen) property)
+        let coverage =
+            CoverageSample.check renameSweepConfig (Arb.fromGen renameScenarioGen) property
 
-        // Not a coverage *threshold* in FsCheck's sense — those flake. These are
-        // sums over the whole run, and they exist so that a generator which
+        // Sums over the fixed sample, which exist so that a generator which
         // quietly stopped producing a class fails here rather than making every
         // property above vacuous. The classes each also have a hand-written test
         // above; this only guards the sweep.
         //
         // Every bound is a third of the *measured* minimum over 24 runs at this
-        // config, rather than a number that looked safe. Picking them by eye is
-        // what produced the flake this replaces: at `config`'s 300 cases the
-        // bounds were all 2, and the measured minima were 2 for the orphan class
-        // and 0 for the directory-across-parents class — the first was reported
-        // as a ~20% flake by review, and the second was worse and had not been
-        // noticed at all. Measured minima here: 268, 23, 544, 730, 200.
-        displacedSomething |> shouldBeGreaterThan 80
-        movedDirectoryAcrossParents |> shouldBeGreaterThan 7
-        movedWithinOneDirectory |> shouldBeGreaterThan 150
-        refusedCount |> shouldBeGreaterThan 200
-        // The class this sweep was blind to until `orphanGen` existed.
-        refusedForOrphan |> shouldBeGreaterThan 60
+        // config, so a change that reshuffles the sample keeps meeting it.
+        // Measured minima: 268, 23, 544, 730, 200.
+        coverage.Count RenameSweepLabel.DisplacedSomething |> shouldBeGreaterThan 80
+
+        coverage.Count RenameSweepLabel.MovedDirectoryAcrossParents
+        |> shouldBeGreaterThan 7
+
+        coverage.Count RenameSweepLabel.MovedWithinOneDirectory
+        |> shouldBeGreaterThan 150
+
+        coverage.Count RenameSweepLabel.Refused |> shouldBeGreaterThan 200
+        // The class `orphanGen` exists for.
+        coverage.Count RenameSweepLabel.RefusedForOrphan |> shouldBeGreaterThan 60
+
+    /// The directories the path-and-orphan equivalence must meet.
+    [<RequireQualifiedAccess>]
+    type private OrphanLabel =
+        /// An orphaned directory, before or after a rename.
+        | Orphan
 
     /// The equivalence `UnixPathResolution.getcwd` rests on, over a corpus that
     /// contains orphans and a rename that can move directories between parents.
@@ -3591,9 +3613,7 @@ module TestVirtualFileSystem =
     /// argument spans three modules and was not asserted anywhere.
     [<Test>]
     let ``a directory has no path exactly when it is orphaned`` () : unit =
-        let mutable orphansSeen = 0
-
-        let check (vfs : VirtualFileSystem) : unit =
+        let check (cover : OrphanLabel -> unit) (vfs : VirtualFileSystem) : unit =
             for inode, node in Map.toList (VirtualFileSystem.inodes vfs) do
                 match node.Content with
                 | InodeContent.Directory _ ->
@@ -3601,7 +3621,7 @@ module TestVirtualFileSystem =
                     let path = VirtualFileSystem.pathOfDirectory inode vfs
 
                     if orphaned then
-                        orphansSeen <- orphansSeen + 1
+                        cover OrphanLabel.Orphan
 
                     match orphaned, path with
                     | true, Some found ->
@@ -3614,8 +3634,12 @@ module TestVirtualFileSystem =
                 | InodeContent.CharacterDevice _
                 | InodeContent.Symlink _ -> ()
 
-        let property (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase) : unit =
-            check vfs
+        let property
+            (cover : OrphanLabel -> unit)
+            (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase)
+            : unit
+            =
+            check cover vfs
 
             if refusedLoudly vfs case then
                 ()
@@ -3631,14 +3655,15 @@ module TestVirtualFileSystem =
                     vfs
             with
             | Error _ -> ()
-            | Ok (_, renamed) -> check renamed
+            | Ok (_, renamed) -> check cover renamed
 
-        Check.One (config, Prop.forAll (Arb.fromGen renameScenarioGen) property)
+        let coverage = CoverageSample.check config (Arb.fromGen renameScenarioGen) property
 
         // With no orphan in the corpus both sides are false for every directory
         // and the property holds vacuously, so this is what makes it mean
-        // anything. Measured over eight runs: 64, 64, 65, 65, 67, 67, 71, 75.
-        orphansSeen |> shouldBeGreaterThan 30
+        // anything; counted over the fixed sample. Measured over eight runs:
+        // 64, 64, 65, 65, 67, 67, 71, 75.
+        coverage.Count OrphanLabel.Orphan |> shouldBeGreaterThan 30
 
     [<Test>]
     let ``a successful rename creates and destroys no inode`` () : unit =
@@ -3667,6 +3692,14 @@ module TestVirtualFileSystem =
 
         Check.One (config, Prop.forAll (Arb.fromGen renameScenarioGen) property)
 
+    /// The renames the composition oracle must compare.
+    [<RequireQualifiedAccess>]
+    type private CompositionLabel =
+        /// A rename both sides made.
+        | Compared
+        /// One of those that displaced the destination's inode.
+        | WithDisplacement
+
     [<Test>]
     let ``for a non-directory source, rename is exactly unbind-then-hardLink-then-unbind`` () : unit =
         // The reference-implementation oracle, over the half of the domain the
@@ -3677,10 +3710,11 @@ module TestVirtualFileSystem =
         // It cannot extend to a directory source — `bind` is private and
         // `hardLink` refuses a directory with EPERM — which is the whole reason
         // `rename` is a primitive rather than a composition.
-        let mutable compared = 0
-        let mutable withDisplacement = 0
-
-        let property (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase) : unit =
+        let property
+            (cover : CompositionLabel -> unit)
+            (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase)
+            : unit
+            =
             if refusedLoudly vfs case then
                 ()
             else
@@ -3752,18 +3786,27 @@ module TestVirtualFileSystem =
 
             match reference, actual with
             | Ok expected, Ok got ->
-                compared <- compared + 1
+                cover CompositionLabel.Compared
 
                 if displaced.IsSome then
-                    withDisplacement <- withDisplacement + 1
+                    cover CompositionLabel.WithDisplacement
 
                 VirtualFileSystem.inodes got |> shouldEqual (VirtualFileSystem.inodes expected)
             | _ -> ()
 
-        Check.One (config, Prop.forAll (Arb.fromGen renameScenarioGen) property)
+        let coverage = CoverageSample.check config (Arb.fromGen renameScenarioGen) property
 
-        compared |> shouldBeGreaterThan 20
-        withDisplacement |> shouldBeGreaterThan 2
+        // Counted over the fixed sample.
+        coverage.Count CompositionLabel.Compared |> shouldBeGreaterThan 20
+        coverage.Count CompositionLabel.WithDisplacement |> shouldBeGreaterThan 2
+
+    /// The pairs of directories the subtree oracle must compare.
+    [<RequireQualifiedAccess>]
+    type private SubtreeLabel =
+        /// A pair both of whose directories have a path.
+        | Agreement
+        /// One of those whose second directory is strictly inside the first.
+        | Inside
 
     [<Test>]
     let ``isWithinSubtree agrees with a component-wise path prefix`` () : unit =
@@ -3775,16 +3818,13 @@ module TestVirtualFileSystem =
         // Orphans are excluded rather than fudged: `pathOfDirectory` answers
         // `None` for a directory whose last name has gone, which is not "not
         // within" — it is "the oracle cannot see this one".
-        let mutable agreements = 0
-        let mutable insideCases = 0
-
         let components (absolute : AbsoluteUnixPath) : string list =
             PathText.ofAbsolute absolute
             |> fun s -> s.Split '/'
             |> Array.toList
             |> List.filter (fun s -> s <> "")
 
-        let property (vfs : VirtualFileSystem) : unit =
+        let property (cover : SubtreeLabel -> unit) (vfs : VirtualFileSystem) : unit =
             let directories =
                 VirtualFileSystem.inodes vfs
                 |> Map.toList
@@ -3809,18 +3849,19 @@ module TestVirtualFileSystem =
                                |> List.truncate (List.length rootComponents)
                                |> (=) rootComponents
 
-                        agreements <- agreements + 1
+                        cover SubtreeLabel.Agreement
 
                         if isPrefix && root <> candidate then
-                            insideCases <- insideCases + 1
+                            cover SubtreeLabel.Inside
 
                         VirtualFileSystem.isWithinSubtree root candidate vfs |> shouldEqual isPrefix
                     | _ -> ()
 
-        Check.One (config, Prop.forAll (Arb.fromGen filesystemGen) property)
+        let coverage = CoverageSample.check config (Arb.fromGen filesystemGen) property
 
-        agreements |> shouldBeGreaterThan 100
-        insideCases |> shouldBeGreaterThan 10
+        // Counted over the fixed sample.
+        coverage.Count SubtreeLabel.Agreement |> shouldBeGreaterThan 100
+        coverage.Count SubtreeLabel.Inside |> shouldBeGreaterThan 10
 
 /// `readTransferCount` decides the whole of what `pread(2)` returns once its
 /// error cases are out of the way, and getting it wrong is an off-by-one that
