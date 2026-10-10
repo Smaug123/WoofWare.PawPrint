@@ -80,8 +80,8 @@ method) may add more:
   (`!!0::Value`) exists or not depending on the instantiation, so binding it is "unknown";
 * binding a token into another assembly that has a module initializer runs it, which may throw
   `TypeInitializationException`, and so does a `constrained.` call that dispatch lands in another
-  assembly. The analysis follows a module initializer no further: what it raises, and what throwing
-  that again raises (below), are left out;
+  assembly. A module initializer is a type initializer, and the answer has what it raises and
+  what throwing that again raises, as for any other (below);
 * a synchronized method takes a monitor around its body, whose wait may throw
   `ThreadInterruptedException`, whose release throws `SynchronizationLockException` if the body
   has already released it, and which, for an instance method `call`ed on null, throws
