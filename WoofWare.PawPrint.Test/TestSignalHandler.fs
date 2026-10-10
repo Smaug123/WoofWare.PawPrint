@@ -92,6 +92,7 @@ module TestSignalHandler =
         {
             ReadEnd = 3
             WriteEnd = 4
+            ReadDescription = OpenFileDescriptionId 0L
         }
 
     [<Test>]

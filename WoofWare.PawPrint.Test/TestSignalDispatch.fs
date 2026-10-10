@@ -307,14 +307,17 @@ module TestSignalDispatch =
 
             // 0, 1 and 2 are the standard streams, so a fresh process's pipe is 3
             // and 4.
+            let descriptors = (UnixSystem.fileDescriptors state.Kernel.System)
+
             pipe
             |> shouldEqual
                 {
                     ReadEnd = 3
                     WriteEnd = 4
+                    ReadDescription =
+                        FileDescriptorRegistry.tryFindId 3 descriptors
+                        |> Option.defaultWith (fun () -> failwith "no descriptor 3")
                 }
-
-            let descriptors = (UnixSystem.fileDescriptors state.Kernel.System)
 
             let readEnd =
                 FileDescriptorRegistry.tryFind pipe.ReadEnd descriptors
@@ -875,23 +878,6 @@ module TestSignalDispatch =
         let exn = Assert.Throws (fun () -> poll nonBlocking |> ignore<IlMachineState>)
         exn.Message |> shouldContainText "EAGAIN"
 
-    [<Test>]
-    let ``the dispatcher refuses a read end the guest replaced before it first read`` () : unit =
-        // The loop reads the number it was given, which now names the write end
-        // of standard output's pipe: the read fails with EBADF, and the real
-        // SignalHandlerLoop closes the descriptor and exits.
-        let state, _dispatcher, _ = preparedState ()
-
-        let exn =
-            Assert.Throws (fun () ->
-                state
-                |> replacedByStdout (pipeOf state).ReadEnd
-                |> poll
-                |> ignore<IlMachineState>
-            )
-
-        exn.Message |> shouldContainText "EBADF"
-
     /// The read the dispatcher's task sleeps in, if it sleeps in one.
     let private dispatcherRead (dispatcher : ThreadId) (state : IlMachineState) : ParkedPipeRead option =
         match UnixTaskState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
@@ -909,6 +895,234 @@ module TestSignalDispatch =
 
         EmulatedKernel.checkInvariants state.Kernel
         @ EmulatedKernel.checkTaskInvariants threads state.Kernel
+
+    /// Assert that a poll of `state` refuses the dispatcher's read because its
+    /// descriptor no longer names the signal pipe's read end, and that the
+    /// refusal says it now names `names`.
+    let private refusesReplacedReadEnd (names : string) (state : IlMachineState) : unit =
+        let readEnd = (pipeOf state).ReadEnd
+        let exn = Assert.Throws (fun () -> poll state |> ignore<IlMachineState>)
+        exn.Message |> shouldContainText $"reads descriptor %d{readEnd}"
+        exn.Message |> shouldContainText "which no longer names that pipe's read end"
+        exn.Message |> shouldContainText names
+        exn.Message |> shouldNotContainText "interpreter bug"
+
+    /// `state` once the leader's `dup2(source, target)` has put the description
+    /// `source` names at `target`.
+    let private duplicatedOnto (source : int) (target : int) (state : IlMachineState) : IlMachineState =
+        state.MapKernel (fun kernel ->
+            match UnixDescriptor.dup2 source target kernel.System with
+            | Ok (SyscallAnswer.Completed fd, system) when fd = int64 target -> EmulatedKernel.withUnix system kernel
+            | other -> failwith $"dup2(%d{source}, %d{target}) answered %A{other}"
+        )
+
+    /// `state` with a blocking TCP connection over loopback, accepted and left
+    /// open at both ends with nothing sent: the connecting socket's descriptor,
+    /// a read of which sleeps.
+    let private withConnectedSocket (state : IlMachineState) : IlMachineState * int =
+        let platform = state.Kernel.UnixPlatform
+
+        let address =
+            InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
+            |> SimulatedUnixPlatform.encodeInternetSockaddr platform
+            |> ImmutableArray.Create<byte>
+
+        let length = uint32 address.Length
+
+        let socket (system : UnixSystem<ThreadId, NativeSignalHandler>) =
+            // SOCK_STREAM and IPPROTO_TCP are 1 and 6 under both flavours.
+            match UnixSocket.socket SimulatedUnixPlatform.internetAddressFamily 1 6 system with
+            | Ok (Ok created) -> created
+            | other -> failwith $"socket answered %A{other}"
+
+        let system = state.Kernel.System
+        let listener, system = socket system
+
+        let system =
+            match UnixSocket.bind listener UserBuffer.Mapped length address system with
+            | Ok (BindAnswer.Bound _, system) -> system
+            | other -> failwith $"bind answered %A{other}"
+
+        let system =
+            match UnixSocket.listen listener 1 system with
+            | Ok (ListenAnswer.Listening _, system) -> system
+            | other -> failwith $"listen answered %A{other}"
+
+        let client, system = socket system
+
+        let system =
+            match UnixConnection.connect client UserBuffer.Mapped length address system with
+            | Ok (ConnectOutcome.Completed, system) -> system
+            | other -> failwith $"connect answered %A{other}"
+
+        let system =
+            match UnixConnection.accept state.Kernel.Leader listener UserBuffer.Mapped 16u system with
+            | Ok (AcceptOutcome.Accepted _, system) -> system
+            | other -> failwith $"accept answered %A{other}"
+
+        state.MapKernel (EmulatedKernel.withUnix system), client
+
+    /// `state` with a second blocking pipe, empty and open at both ends: its
+    /// read end's descriptor.
+    let private withAnotherPipe (state : IlMachineState) : IlMachineState * int =
+        match UnixPipe.pipe2 0 UserBuffer.Mapped state.Kernel.System with
+        | Ok (Pipe2Answer.Created (readFd, _), system) -> state.MapKernel (EmulatedKernel.withUnix system), readFd
+        | other -> failwith $"pipe2 answered %A{other}"
+
+    /// `state` with an empty regular file open for reading: its descriptor.
+    let private withRegularFile (state : IlMachineState) : IlMachineState * int =
+        let path = UnixPath.parseOrFail "TestSignalDispatch" "/signal-source"
+        let pathBytes = PathArgumentBytes.Bytes (UnixPath.toByteString path)
+
+        let flags =
+            match OpenFlagsPal.decode state.Kernel.UnixPlatform (OpenFlagsPal.ReadOnly ||| OpenFlagsPal.Create) with
+            | Some word -> word
+            | None -> failwith "the shim refuses O_RDONLY | O_CREAT"
+
+        match UnixNamespace.openPath flags pathBytes 0o644 state.Kernel.System with
+        | Ok (SyscallAnswer.Completed fd, system) -> state.MapKernel (EmulatedKernel.withUnix system), int fd
+        | other -> failwith $"opening the file answered %A{other}"
+
+    [<Test>]
+    let ``the dispatcher refuses a read end the guest replaced with standard output before it first read`` () : unit =
+        // The loop reads the number it was given, which now names the write end
+        // of standard output's pipe.
+        let state, _dispatcher, _ = preparedState ()
+
+        state
+        |> replacedByStdout (pipeOf state).ReadEnd
+        |> refusesReplacedReadEnd "the Write end of pipe"
+
+    [<Test>]
+    let ``the dispatcher refuses a read end the guest replaced with a connected socket before it first read``
+        ()
+        : unit
+        =
+        // The loop's next read would sleep in the socket, and then take whatever
+        // the peer sends for signal numbers.
+        let state, _dispatcher, _ = preparedState ()
+        let state, socket = withConnectedSocket state
+
+        state
+        |> duplicatedOnto socket (pipeOf state).ReadEnd
+        |> refusesReplacedReadEnd "a socket"
+
+    [<Test>]
+    let ``the dispatcher refuses a read end the guest replaced with another pipe's before it first read`` () : unit =
+        let state, _dispatcher, _ = preparedState ()
+        let state, otherReadEnd = withAnotherPipe state
+
+        state
+        |> duplicatedOnto otherReadEnd (pipeOf state).ReadEnd
+        |> refusesReplacedReadEnd "the Read end of pipe"
+
+    [<Test>]
+    let ``the dispatcher refuses a read end the guest replaced with a regular file before it first read`` () : unit =
+        let state, _dispatcher, _ = preparedState ()
+        let state, file = withRegularFile state
+
+        state
+        |> duplicatedOnto file (pipeOf state).ReadEnd
+        |> refusesReplacedReadEnd "a regular file"
+
+    [<Test>]
+    let ``the dispatcher refuses a read end the guest closed before it first read`` () : unit =
+        let state, _dispatcher, _ = preparedState ()
+
+        let closed =
+            state.MapKernel (fun kernel ->
+                match UnixDescriptor.close (pipeOf state).ReadEnd kernel.System with
+                | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
+                | other -> failwith $"closing the read end answered %O{other}"
+            )
+
+        let exn = Assert.Throws (fun () -> poll closed |> ignore<IlMachineState>)
+        exn.Message |> shouldContainText $"reads descriptor %d{(pipeOf state).ReadEnd}"
+
+        exn.Message
+        |> shouldContainText "which the guest has closed, so the read fails with EBADF"
+
+    [<Test>]
+    let ``the dispatcher refuses a read end the guest closed and a new pipe reused before it first read`` () : unit =
+        // `pipe(2)` takes the lowest free descriptors, so the new pipe's read end
+        // gets the signal pipe's old number.
+        let state, _dispatcher, _ = preparedState ()
+        let readEnd = (pipeOf state).ReadEnd
+
+        let state =
+            state.MapKernel (fun kernel ->
+                match UnixDescriptor.close readEnd kernel.System with
+                | Ok (SyscallAnswer.Completed _, system) -> EmulatedKernel.withUnix system kernel
+                | other -> failwith $"closing the read end answered %O{other}"
+            )
+
+        let state, reused = withAnotherPipe state
+        reused |> shouldEqual readEnd
+        state |> refusesReplacedReadEnd "the Read end of pipe"
+
+    [<Test>]
+    let ``the dispatcher reads through a read end the guest moved away and back`` () : unit =
+        // `dup2` back onto the number puts the same description there, so the
+        // loop reads the signal pipe as it always did.
+        let state, dispatcher, _ = preparedState ()
+        let readEnd = (pipeOf state).ReadEnd
+
+        let state =
+            state.MapKernel (fun kernel ->
+                let system =
+                    match UnixDescriptor.dup2 readEnd 40 kernel.System with
+                    | Ok (SyscallAnswer.Completed 40L, system) -> system
+                    | other -> failwith $"dup2 away answered %A{other}"
+
+                let system =
+                    match UnixDescriptor.close readEnd system with
+                    | Ok (SyscallAnswer.Completed _, system) -> system
+                    | other -> failwith $"closing the read end answered %O{other}"
+
+                EmulatedKernel.withUnix system kernel
+            )
+            |> duplicatedOnto 40 readEnd
+            |> register Signal.SIGINT
+            |> poll
+
+        dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
+
+        let state = state |> sendToProcess Signal.SIGINT |> poll
+
+        (state.ThreadState |> Map.find dispatcher).Status
+        |> shouldEqual ThreadStatus.Runnable
+
+        callbackArguments dispatcher state |> List.head |> shouldEqual (int32Arg 2)
+
+    [<Test>]
+    let ``a dispatcher asleep in its read when the guest replaces the read end finishes it, and refuses the next``
+        ()
+        : unit
+        =
+        // Measured (open-file-references.c, section B): on Linux the sleeping
+        // read holds the pipe's description, so replacing the number under it
+        // leaves the read asleep on the pipe, and a signal written there
+        // finishes it. Only the loop's next read is made through the number.
+        let state, dispatcher, _ = preparedState ()
+        let state = state |> register Signal.SIGINT |> poll
+        dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
+
+        let state, socket = withConnectedSocket state
+        let state = state |> duplicatedOnto socket (pipeOf state).ReadEnd |> poll
+        dispatcherRead dispatcher state |> Option.isSome |> shouldEqual true
+
+        let state = state |> sendToProcess Signal.SIGINT |> poll
+
+        (state.ThreadState |> Map.find dispatcher).Status
+        |> shouldEqual ThreadStatus.Runnable
+
+        callbackArguments dispatcher state |> List.head |> shouldEqual (int32Arg 2)
+        defects state |> shouldEqual []
+
+        match finishCallback dispatcher 1 state with
+        | SignalPoll.Continues state -> state |> refusesReplacedReadEnd "a socket"
+        | SignalPoll.ProcessKilled (_, ended) ->
+            failwith $"the callback's return killed the process: %O{EndedProcess.termination ended}"
 
     [<Test>]
     let ``an idle dispatcher sleeps in the kernel in its read of the pipe`` () : unit =
@@ -1292,12 +1506,7 @@ module TestSignalDispatch =
                 { kernel with
                     PosixSignalShim =
                         PosixSignalShim.initial
-                        |> PosixSignalShim.markInitialized
-                            leader
-                            {
-                                ReadEnd = 3
-                                WriteEnd = 4
-                            }
+                        |> PosixSignalShim.markInitialized leader (pipeOf state)
                         |> PosixSignalShim.setHandler handler
                 }
             )

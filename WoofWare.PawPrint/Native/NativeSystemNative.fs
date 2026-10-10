@@ -483,6 +483,13 @@ module NativeSystemNative =
         | Ok (Pipe2Answer.Failed error, _) -> Error error
         | Ok (Pipe2Answer.Created (readFd, writeFd), system) ->
 
+        let readDescription =
+            match FileDescriptorRegistry.tryFindId readFd (UnixSystem.fileDescriptors system) with
+            | Some id -> id
+            | None ->
+                failwith
+                    $"%s{operation}: the kernel answered descriptor %d{readFd} as the signal pipe's read end, but no descriptor %d{readFd} is open (this is a bug in UnixPipe.pipe2)."
+
         let state, dispatcher =
             withAnswered system state |> IlMachineState.allocateParkedThread thread
 
@@ -498,6 +505,7 @@ module NativeSystemNative =
                         {
                             ReadEnd = readFd
                             WriteEnd = writeFd
+                            ReadDescription = readDescription
                         }
             }
         )
