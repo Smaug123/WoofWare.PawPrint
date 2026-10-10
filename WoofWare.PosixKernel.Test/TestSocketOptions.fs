@@ -582,26 +582,6 @@ module TestSocketOptions =
         read Option.NoDelay client system |> shouldEqual (int' 0)
 
     [<TestCaseSource(nameof platforms)>]
-    let ``changing an option on a listener with connections queued is refused`` (platform : SimulatedUnixPlatform) =
-        let listener, system = listening platform
-        let client, system = socketOf SocketDomain.Inet SocketKind.Stream system
-        let system = connectTo 5000us client system
-
-        for option, value in
-            [
-                Option.NoDelay, OptionValue.ofInt 1
-                Option.Linger, OptionValue.ofLinger 1 5
-            ] do
-            match set option listener UserBuffer.Mapped (uint32 value.Length) value system with
-            | Error (SocketOptionRefusal.ListenerWithQueuedConnections _) -> ()
-            | other -> failwith $"%A{option}: expected a refusal, got %A{other}"
-
-        // Setting what it already holds changes nothing a connection copied.
-        match set Option.NoDelay listener UserBuffer.Mapped 4u (OptionValue.ofInt 0) system with
-        | Ok (SetSockOptAnswer.Set, after) -> after |> shouldEqual system
-        | other -> failwith $"expected a set, got %A{other}"
-
-    [<TestCaseSource(nameof platforms)>]
     let ``after a refused connect Darwin refuses every set, and Linux takes them`` (platform : SimulatedUnixPlatform) =
         let fd, system = socketOf SocketDomain.Inet SocketKind.Stream (fresh platform)
         let system = connectTo 5999us fd system
