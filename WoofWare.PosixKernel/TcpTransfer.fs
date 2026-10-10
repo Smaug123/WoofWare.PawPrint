@@ -206,6 +206,16 @@ module internal TcpTransfer =
         | ConnectionEnd.Client -> transfer.ToClient
         | ConnectionEnd.Server -> transfer.ToServer
 
+    /// Whether a reset has reached `receiver`, whether or not a call has since
+    /// taken its error.
+    let hasBeenReset (receiver : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        match (towards receiver transfer).Receiver with
+        | TcpEndState.Reset _ -> true
+        | TcpEndState.Open
+        | TcpEndState.FinQueued
+        | TcpEndState.FinReceived
+        | TcpEndState.Closed -> false
+
     let private withTowards
         (receiver : ConnectionEnd)
         (direction : TcpDirection)

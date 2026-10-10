@@ -509,24 +509,31 @@ module TestSocketAddressLength =
                                 $"%O{platform} connect on fd %d{fd} through %A{destination} at 0x%08x{word}: expected %A{expected}, got %A{actual}"
             )
 
-    /// The same order on a socket whose domain this library does not model:
+    /// The same order on a socket whose addresses this library does not model:
     /// Linux's `connect` answers the length and the copy before anything about
     /// the socket (measured for `AF_UNIX` and `AF_INET6`), and only a copy that
-    /// succeeds reaches the domain, which is refused. Darwin's, and `bind` on
+    /// succeeds reaches the socket, which is refused. Darwin's, and `bind` on
     /// both, look at the socket first, so refuse at every length.
     [<Test>]
     let ``a socket in an unmodelled domain answers the copy-in's errors on Linux connect`` () : unit =
         for platform in platforms do
-            for domain in [ SocketDomain.Unix ; SocketDomain.Inet6 ] do
+            for domain, kind in
+                [
+                    SocketDomain.Unix, SocketKind.Stream
+                    SocketDomain.Inet6, SocketKind.Datagram
+                ] do
                 let fd, system =
-                    NewSocket.create domain SocketKind.Stream SocketProtocol.Default (systemOn platform)
+                    NewSocket.create domain kind SocketProtocol.Default (systemOn platform)
 
                 let socketId =
                     match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
                     | Some (OpenFileTarget.Socket socketId) -> socketId
                     | other -> failwith $"%A{other}"
 
-                let refused = Error (SockaddrCopyRefusal.UnmodelledDomain (socketId, domain))
+                let refused =
+                    match domain with
+                    | SocketDomain.Inet6 -> Error (SockaddrCopyRefusal.UnmodelledInet6Kind (socketId, kind))
+                    | _ -> Error (SockaddrCopyRefusal.UnmodelledDomain (socketId, domain))
 
                 everyLength (fun word ->
                     for destination in [ UserBuffer.Mapped ; UserBuffer.Unmapped 4096UL ] do

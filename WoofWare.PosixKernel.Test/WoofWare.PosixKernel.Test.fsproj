@@ -183,6 +183,9 @@
     <Compile Include="TestSocketAddressLength.fs" />
     <Compile Include="TestSockaddrDecoding.fs" />
     <Compile Include="SocketLadder.fs" />
+    <Compile Include="DualModeProbe.fs" />
+    <Compile Include="TestDualModeMeasured.fs" />
+    <Compile Include="TestDualMode.fs" />
     <Compile Include="TestConnectLadderMeasured.fs" />
     <Compile Include="TestBindLadderMeasured.fs" />
     <Compile Include="TestConnectDestinationMeasured.fs" />
@@ -255,6 +258,8 @@
          sockaddr-dgram-connect.c, embedded from beside them.
          `TestConnectLadderMeasured`, `TestBindLadderMeasured` and
          `TestConnectDestinationMeasured` replay every row. -->
+    <EmbeddedResource Include="..\docs\probes\dual-mode\measured-linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.dual-mode.linux.txt" />
+    <EmbeddedResource Include="..\docs\probes\dual-mode\measured-darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.dual-mode.darwin.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\sockaddr-decoding.linux-6.18.5-aarch64-root.txt" LogicalName="WoofWare.PosixKernel.Test.sockaddr-decoding.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\sockaddr-decoding.darwin-27.0-uid501.txt" LogicalName="WoofWare.PosixKernel.Test.sockaddr-decoding.darwin.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-08-23-posix-kernel-extraction\sockaddr-connect-ladder.linux-6.18.5-aarch64-root.txt" LogicalName="WoofWare.PosixKernel.Test.sockaddr-connect-ladder.linux.txt" />

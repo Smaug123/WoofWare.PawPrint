@@ -1,5 +1,7 @@
 namespace WoofWare.PosixKernel
 
+open System.Collections.Immutable
+
 /// Where a `struct sockaddr`'s address family sits and how wide it is — the only
 /// part of the socket-address layout the two Unixes lay out differently.
 ///
@@ -216,6 +218,10 @@ type BindFault =
     | AlreadyBound
     /// Another socket holds a conflicting address. `EADDRINUSE`.
     | AddressInUse
+    /// An IPv6 socket with `IPV6_V6ONLY` on was asked for a v4-mapped
+    /// address. `EINVAL` on Linux and `EADDRNOTAVAIL` on Darwin; an IPv4
+    /// socket never has this fault.
+    | Ipv6Only
 
 /// What the bytes a `bind(2)` or `connect(2)` copied in say, read as a
 /// `struct sockaddr_in`: each field the copy reached all of, and `None` for one
@@ -235,6 +241,31 @@ type internal CopiedInternetSockaddr =
         /// 5, is a multicast address to it. Measured
         /// (`sockaddr-bind-ladder.c`, M).
         ZeroFilledAddress : uint32
+    }
+
+/// Where an IPv6 socket's `bind(2)` or `connect(2)` was asked to go, read out
+/// of a `struct sockaddr_in6`.
+[<RequireQualifiedAccess>]
+type internal Ipv6Destination =
+    /// `::ffff:a.b.c.d`, an IPv4 address mapped into IPv6, which an IPv6
+    /// socket reaches through the IPv4 transport.
+    | V4Mapped of endpoint : InternetEndpoint
+    /// Any other IPv6 address: `::`, `::1` and every address that needs an
+    /// IPv6 transport, which this kernel does not have. The sixteen bytes of
+    /// `sin6_addr`, in order.
+    | Native of address : ImmutableArray<byte> * port : uint16
+
+/// What the bytes a `bind(2)` or `connect(2)` on an IPv6 socket copied in say,
+/// read as a `struct sockaddr_in6`: each field the copy reached all of, and
+/// `None` for one it did not. `sin6_flowinfo` and `sin6_scope_id` are not
+/// read: measured on both flavours, neither changes what a v4-mapped connect
+/// does.
+type internal CopiedInternetV6Sockaddr =
+    {
+        /// `sa_family`, in the platform's own `AF_*` numbering.
+        Family : int option
+        /// `sin6_addr` and `sin6_port`, present only when the copy reached both.
+        Destination : Ipv6Destination option
     }
 
 /// What this platform's `bind(2)` makes of a broadcast or multicast address,

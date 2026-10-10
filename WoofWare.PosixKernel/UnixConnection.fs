@@ -195,6 +195,10 @@ type ConnectRefusal =
     /// would succeed. This library models no group membership and no
     /// interface to broadcast on, so it does not record such a peer.
     | DatagramGroupDestination of socket : SocketId * destination : InternetEndpoint
+    /// An IPv6 socket would connect to an IPv6 address that is not v4-mapped,
+    /// which needs an IPv6 transport this kernel does not have. `address` is
+    /// the sixteen bytes of `sin6_addr`.
+    | Ipv6Destination of socket : SocketId * address : ImmutableArray<byte> * port : uint16
 
 [<RequireQualifiedAccess>]
 module ConnectRefusal =
@@ -234,8 +238,37 @@ module ConnectRefusal =
             $"destination %s{InternetEndpoint.toString destination} is bound but nothing is listening there, and Darwin *drops* such a SYN rather than answering RST: the connect pends on the client's retransmission schedule (a blocking one was measured to stall into ETIMEDOUT), which this library cannot honour deterministically. Listen on the destination socket, or connect to a fully closed port."
         | ConnectRefusal.LinuxUnspecOnPhase (socket, phase) ->
             $"AF_UNSPEC on stream socket %O{socket} in %A{phase} under Linux runs tcp_disconnect, whose consequences for this phase (a connected socket's peer, a listener's queue) are unmeasured and unmodelled."
+        | ConnectRefusal.Ipv6Destination (socket, address, port) ->
+            let text = System.Net.IPAddress(address.AsSpan ()).ToString ()
+            $"IPv6 socket %O{socket} would connect to [%s{text}]:%d{port}. This kernel has no IPv6 transport: an IPv6 socket reaches only IPv4 peers, through v4-mapped addresses (::ffff:a.b.c.d), with IPV6_V6ONLY off."
         | ConnectRefusal.DatagramGroupDestination (socket, destination) ->
             $"datagram socket %O{socket} would connect to %s{InternetEndpoint.toString destination}, a broadcast or multicast destination. This kernel models no group membership and no interface to broadcast on, so it does not record such a peer. Model multicast and broadcast before connecting to either."
+
+/// What `connect(2)`'s ladder reads out of the sockaddr it copied in, from a
+/// `struct sockaddr_in` on an IPv4 socket and a `struct sockaddr_in6` on an
+/// IPv6 one.
+type internal ConnectAddress =
+    {
+        /// `sa_family`, in the platform's own numbering, when the copy reached
+        /// it.
+        Family : int option
+        /// The family of the socket's own struct: `AF_INET` on an IPv4 socket
+        /// and `AF_INET6` on an IPv6 one.
+        OwnFamily : int
+        /// What the platform makes of the declared length for the socket's own
+        /// struct.
+        LengthVerdict : BindLengthVerdict
+        /// The IPv4 destination, a v4-mapped one on an IPv6 socket, when the
+        /// copy reached it.
+        Destination : InternetEndpoint option
+        /// On an IPv6 socket, a destination that is not v4-mapped: the sixteen
+        /// bytes of `sin6_addr` and the port.
+        NativeDestination : (ImmutableArray<byte> * uint16) option
+        /// The IPv4 address read with every byte past the copy as zero, which
+        /// Darwin judges a broadcast or multicast destination by; 0 for a
+        /// native IPv6 destination.
+        ZeroFilledAddress : uint32
+    }
 
 [<RequireQualifiedAccess>]
 module UnixConnection =
@@ -253,25 +286,34 @@ module UnixConnection =
         (socketId : SocketId)
         (nonBlocking : bool)
         (declaredLength : uint32)
-        (copied : CopiedInternetSockaddr)
+        (address : ConnectAddress)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
-        let family = copied.Family
-        let destination = copied.Endpoint
+        let family = address.Family
+        let destination = address.Destination
+        let ownFamily = address.OwnFamily
         let sock = UnixMachineState.socket socketId system.Machine
         let platform = system.Machine.UnixPlatform
         let flavour = SimulatedUnixPlatform.flavour platform
-        let exactSize = SimulatedUnixPlatform.internetSocketAddressSize
+        let lengthVerdict = address.LengthVerdict
 
-        // connect(2) copies the sockaddr in through the same helpers bind(2)
-        // uses (Linux's move_addr_to_kernel, Darwin's getsockaddr), and the
-        // measured lengths agree with bind's rule exactly: Linux takes 16
-        // through 128 and answers EINVAL outside, Darwin takes exactly 16,
-        // EINVAL otherwise and ENAMETOOLONG past 255. So the verdict function
-        // is shared.
-        let lengthVerdict =
-            SimulatedUnixPlatform.bindAddressLength platform exactSize declaredLength
+        // An IPv6 socket's connect to a native IPv6 address, which needs an
+        // IPv6 transport, refused at the point the ladder would use it.
+        let nativeDestination () : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> option =
+            address.NativeDestination
+            |> Option.map (fun (bytes, port) -> Error (ConnectRefusal.Ipv6Destination (socketId, bytes, port)))
+
+        // An IPv6 socket with IPV6_V6ONLY on reaches no IPv4 destination, and
+        // binds nothing on the way: measured on both, at every v4-mapped
+        // address including a group one and port 0 (`docs/probes/dual-mode/`,
+        // A3 and G).
+        let ipv6Only () : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> option =
+            match sock.Addressing, nativeDestination () with
+            | SocketAddressing.Inet6V6Only, None ->
+                Some (Ok (ConnectOutcome.Failed (SimulatedUnixPlatform.ipv6OnlyConnectError platform), system))
+            | SocketAddressing.Inet6V6Only, Some native -> Some native
+            | (SocketAddressing.Inet _ | SocketAddressing.Inet6DualMode _ | SocketAddressing.Unix), _ -> None
 
         let declaredLength = int declaredLength
 
@@ -577,7 +619,10 @@ module UnixConnection =
                     {
                         ClientAddress = clientBinding.Endpoint
                         ServerAddress = dest
-                        Transfer = TcpBufferSizing.newTransfer sock.Domain system.Machine
+                        // IPv4, whatever the socket's domain: it is the only
+                        // transport, and a dual-mode socket's connection over
+                        // it is sized as an IPv4 one (measured, G8).
+                        Transfer = TcpBufferSizing.newTransfer SocketDomain.Inet system.Machine
                     }
 
                 let clientPhase =
@@ -862,9 +907,17 @@ module UnixConnection =
                 | BindLengthVerdict.RejectedBeforeCopy _
                 | BindLengthVerdict.Accepted ->
 
-                if family <> SimulatedUnixPlatform.internetAddressFamily then
+                if family <> ownFamily then
                     fail UnixError.EAFNOSUPPORT
                 else
+
+                match ipv6Only () with
+                | Some answer -> answer
+                | None ->
+
+                match nativeDestination () with
+                | Some answer -> answer
+                | None ->
 
                 match destination with
                 // Measured (`sockaddr-dgram-connect.c`, D and M): a broadcast
@@ -905,9 +958,13 @@ module UnixConnection =
                 // is judged before the length, so any family but AF_UNSPEC and
                 // AF_INET is EAFNOSUPPORT at every length the copy takes, and
                 // binds nothing. AF_UNSPEC is then read exactly as AF_INET.
-                if family <> 0 && family <> SimulatedUnixPlatform.internetAddressFamily then
+                if family <> 0 && family <> ownFamily then
                     fail UnixError.EAFNOSUPPORT
                 else
+
+                match ipv6Only () with
+                | Some answer -> answer
+                | None ->
 
                 // A broadcast or multicast destination is EAFNOSUPPORT too,
                 // judged with the family and binding nothing: for AF_INET
@@ -917,9 +974,8 @@ module UnixConnection =
                 // `SimulatedUnixPlatform.bindGroupAddressRule` states for a
                 // stream socket's `bind(2)`.
                 let groupDestination =
-                    SimulatedUnixPlatform.isBroadcastOrMulticast copied.ZeroFilledAddress
-                    && (family = SimulatedUnixPlatform.internetAddressFamily
-                        || lengthVerdict = BindLengthVerdict.Accepted)
+                    SimulatedUnixPlatform.isBroadcastOrMulticast address.ZeroFilledAddress
+                    && (family = ownFamily || lengthVerdict = BindLengthVerdict.Accepted)
 
                 if groupDestination then
                     fail UnixError.EAFNOSUPPORT
@@ -979,6 +1035,10 @@ module UnixConnection =
                 | BindLengthVerdict.Invalid -> failBound UnixError.EINVAL
                 | BindLengthVerdict.RejectedBeforeCopy _
                 | BindLengthVerdict.Accepted ->
+
+                match nativeDestination () with
+                | Some answer -> answer
+                | None ->
 
                 match destination with
                 // Measured (`sockaddr-connect-ladder.c`, Z): a port of 0 is
@@ -1191,7 +1251,7 @@ module UnixConnection =
             | BindLengthVerdict.RejectedBeforeCopy _
             | BindLengthVerdict.Accepted ->
 
-            if family <> SimulatedUnixPlatform.internetAddressFamily then
+            if family <> ownFamily then
                 failPrepared UnixError.EAFNOSUPPORT
             else
 
@@ -1272,6 +1332,63 @@ module UnixConnection =
 
             completed system
 
+    /// What `connectDecoded` reads of `copied`, the bytes a connect on
+    /// `socket` copied in, declared `declaredLength` long.
+    let private connectAddress
+        (platform : SimulatedUnixPlatform)
+        (socket : SocketDescription)
+        (declaredLength : uint32)
+        (copied : ImmutableArray<byte>)
+        : ConnectAddress
+        =
+        match socket.Domain with
+        | SocketDomain.Inet ->
+            let decoded = SimulatedUnixPlatform.decodeInternetSockaddr platform copied
+
+            {
+                Family = decoded.Family
+                OwnFamily = SimulatedUnixPlatform.internetAddressFamily
+                // connect(2) copies the sockaddr in through the same helpers
+                // bind(2) uses (Linux's move_addr_to_kernel, Darwin's
+                // getsockaddr), and the measured lengths agree with bind's rule
+                // exactly: Linux takes 16 through 128 and answers EINVAL
+                // outside, Darwin takes exactly 16, EINVAL otherwise and
+                // ENAMETOOLONG past 255. So the verdict function is shared.
+                LengthVerdict =
+                    SimulatedUnixPlatform.bindAddressLength
+                        platform
+                        SimulatedUnixPlatform.internetSocketAddressSize
+                        declaredLength
+                Destination = decoded.Endpoint
+                NativeDestination = None
+                ZeroFilledAddress = decoded.ZeroFilledAddress
+            }
+        | SocketDomain.Inet6 ->
+            let decoded = SimulatedUnixPlatform.decodeInternetV6Sockaddr platform copied
+
+            let destination, native =
+                match decoded.Destination with
+                | Some (Ipv6Destination.V4Mapped endpoint) -> Some endpoint, None
+                | Some (Ipv6Destination.Native (address, port)) -> None, Some (address, port)
+                | None -> None, None
+
+            {
+                Family = decoded.Family
+                OwnFamily = SimulatedUnixPlatform.internetV6AddressFamily platform
+                // Measured (`docs/probes/dual-mode/`, A14 and H) to be bind's
+                // rule for a `struct sockaddr_in6` too.
+                LengthVerdict = SimulatedUnixPlatform.internetV6AddressLength platform declaredLength
+                Destination = destination
+                NativeDestination = native
+                ZeroFilledAddress =
+                    destination
+                    |> Option.map (fun endpoint -> endpoint.Address)
+                    |> Option.defaultValue 0u
+            }
+        | SocketDomain.Unix ->
+            failwith
+                "UnixConnection: a connect reached the ladder on a Unix-domain socket, which the sockaddr screen refuses first (this is a bug in this library)."
+
     /// `connect(2)` on the socket `socketId` past the descriptor screens: the
     /// ladder `connect` runs once it has looked the descriptor up, through a
     /// description whose `O_NONBLOCK` is `nonBlocking`. For a test that wants
@@ -1320,16 +1437,13 @@ module UnixConnection =
         | Some error -> Ok (ConnectOutcome.Failed error, system)
         | None ->
 
-        match UnixSocket.screenSockaddrDomain socketId (UnixMachineState.socket socketId system.Machine) with
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        match UnixSocket.screenSockaddrSocket platform socketId socket declaredLength with
         | Error refusal -> Error (ConnectRefusal.Copy refusal)
         | Ok () ->
 
-        connectDecoded
-            socketId
-            nonBlocking
-            declaredLength
-            (SimulatedUnixPlatform.decodeInternetSockaddr platform copied)
-            system
+        connectDecoded socketId nonBlocking declaredLength (connectAddress platform socket declaredLength copied) system
 
     /// `connect(2)`: point `fd` at the address in its sockaddr, or ask what
     /// pointing it there would answer.
@@ -1379,7 +1493,11 @@ module UnixConnection =
             socketId
             nonBlocking
             declaredLength
-            (SimulatedUnixPlatform.decodeInternetSockaddr system.Machine.UnixPlatform copied)
+            (connectAddress
+                system.Machine.UnixPlatform
+                (UnixMachineState.socket socketId system.Machine)
+                declaredLength
+                copied)
             system
 
     /// Dequeue the oldest completed connection from `socketId`'s accept queue

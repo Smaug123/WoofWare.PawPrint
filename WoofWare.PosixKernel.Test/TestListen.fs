@@ -329,7 +329,11 @@ module TestListen =
 
     [<TestCaseSource(nameof platforms)>]
     let ``a socket in an unmodelled domain is refused`` (platform : SimulatedUnixPlatform) : unit =
-        for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
+        for domain, refusal in
+            [
+                SocketDomain.Inet6, ListenRefusal.Ipv6Listener (SocketId 0L)
+                SocketDomain.Unix, ListenRefusal.UnmodelledDomain (SocketId 0L, SocketDomain.Unix)
+            ] do
             let socket =
                 { socketWith SocketKind.Stream None false SocketPhase.Idle with
                     Addressing = SocketAddressing.initial domain false
@@ -337,8 +341,7 @@ module TestListen =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixSocket.listen fd 8 system
-            |> shouldEqual (Error (ListenRefusal.UnmodelledDomain (SocketId 0L, domain)))
+            UnixSocket.listen fd 8 system |> shouldEqual (Error refusal)
 
     [<TestCaseSource(nameof platforms)>]
     let ``a socket of an unmeasured kind is refused`` (platform : SimulatedUnixPlatform) : unit =
