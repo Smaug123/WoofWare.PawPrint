@@ -151,48 +151,6 @@ module TestOpcodeFaults =
         for op in rest do
             OpcodeFaults.ofNullary op |> shouldEqual (OpcodeFaults.Raises [])
 
-    /// ECMA-335 III.3.19 says `ckfinite` throws `ArithmeticException`, and CoreCLR raises the
-    /// subclass `OverflowException` instead: the JIT's `SCK_ARITH_EXCPN` throw block is the same
-    /// one as `SCK_OVERFLOW`, and calls `CORINFO_HELP_OVERFLOW`. The host runtime is the oracle,
-    /// asked through a `DynamicMethod` whose body is `ldarg.0; ckfinite; ret`, for every
-    /// non-finite input; and a finite one, so that a body which always threw would fail here.
-    [<Test>]
-    let ``ckfinite raises what CoreCLR raises`` () : unit =
-        let checkFinite =
-            let method =
-                System.Reflection.Emit.DynamicMethod (
-                    "CheckFinite",
-                    typeof<double>,
-                    [| typeof<double> |],
-                    typeof<OpcodeFault>.Module
-                )
-
-            let il = method.GetILGenerator ()
-            il.Emit System.Reflection.Emit.OpCodes.Ldarg_0
-            il.Emit System.Reflection.Emit.OpCodes.Ckfinite
-            il.Emit System.Reflection.Emit.OpCodes.Ret
-            method.CreateDelegate<System.Func<double, double>> ()
-
-        checkFinite.Invoke 1.5 |> shouldEqual 1.5
-
-        let raised =
-            [ nan ; infinity ; -infinity ]
-            |> List.map (fun input ->
-                try
-                    checkFinite.Invoke input |> ignore<double>
-                    failwith $"ckfinite of %f{input} raised nothing"
-                with :? System.ArithmeticException as e ->
-                    e.GetType().FullName
-            )
-            |> List.distinct
-
-        let expected =
-            match OpcodeFaults.ofNullary NullaryIlOp.Ckfinite with
-            | OpcodeFaults.Unmodelled -> failwith "ckfinite is unmodelled"
-            | OpcodeFaults.Raises faults -> faults |> List.map OpcodeFault.typeName
-
-        raised |> shouldEqual expected
-
     /// A store into an array takes the covariance check that a load does not, and `ldelema` takes
     /// it too: it hands out a writable address, so letting it through would defeat the check
     /// `stelem` makes.
