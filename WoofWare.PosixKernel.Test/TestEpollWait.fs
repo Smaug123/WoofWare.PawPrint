@@ -73,10 +73,10 @@ module TestEpollWait =
                             {
                                 Endpoint =
                                     {
-                                        Address = 0x7F000001u
+                                        Address = Ipv4Address 0x7F000001u
                                         Port = 40000us
                                     }
-                                LockedAddress = Some 0x7F000001u
+                                LockedAddress = Some (Ipv4Address 0x7F000001u)
                                 LockedPort = true
                             }
                     )

@@ -2083,10 +2083,10 @@ type KernelConfig =
         /// They decide anything only where a seed gives some inode an owner
         /// other than the process (see `FileSystem`).
         ProtectedFiles : ProtectedFiles
-        /// The IPv4 addresses this machine holds, host order. See
-        /// `UnixSystem.defaultLocalAddresses`, and note the flavours read one
+        /// The IPv4 addresses this machine holds. See
+        /// `UnixSystem.defaultLocalIpv4Addresses`, and note the flavours read one
         /// list differently.
-        LocalAddresses : uint32 list
+        LocalIpv4Addresses : Ipv4Address list
         /// Prefixes this machine has a local route to. Linux binds any address
         /// inside one; Darwin ignores them. See
         /// `UnixSystem.defaultLocalRoutes`.
@@ -2162,7 +2162,7 @@ type KernelConfig =
             TcpReceiveSpace = None
             TcpSendSpaceMax = None
             ProtectedFiles = ProtectedFiles.off
-            LocalAddresses = UnixSystem.defaultLocalAddresses
+            LocalIpv4Addresses = UnixSystem.defaultLocalIpv4Addresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
             InheritedSignalIgnores = Set.empty
             StandardStreams = StandardStreamsConfig.piped
@@ -2287,8 +2287,8 @@ type MachineConfig =
         TcpSendSpaceMax : int option
         /// See `KernelConfig.ProtectedFiles`.
         ProtectedFiles : ProtectedFiles
-        /// See `KernelConfig.LocalAddresses`.
-        LocalAddresses : uint32 list
+        /// See `KernelConfig.LocalIpv4Addresses`.
+        LocalIpv4Addresses : Ipv4Address list
         /// See `KernelConfig.LocalRoutes`.
         LocalRoutes : Ipv4Prefix list
         /// See `KernelConfig.PidMax`.
@@ -2641,7 +2641,7 @@ module MachineConfig =
         |> withTcpReceiveSpace knobs config.TcpReceiveSpace
         |> withTcpSendSpaceMax knobs config.TcpSendSpaceMax
         |> withProtectedFiles knobs config.ProtectedFiles
-        |> UnixBootImage.withLocalAddresses config.LocalAddresses config.LocalRoutes
+        |> UnixBootImage.withLocalIpv4Addresses config.LocalIpv4Addresses config.LocalRoutes
         |> processIdOrFail
         |> leaderThreadIdOrFail
 
@@ -2762,7 +2762,7 @@ module KernelConfig =
                 TcpReceiveSpace = config.TcpReceiveSpace
                 TcpSendSpaceMax = config.TcpSendSpaceMax
                 ProtectedFiles = config.ProtectedFiles
-                LocalAddresses = config.LocalAddresses
+                LocalIpv4Addresses = config.LocalIpv4Addresses
                 LocalRoutes = config.LocalRoutes
                 PidMax = config.PidMax
                 ProcessId = config.ProcessId

@@ -20,8 +20,8 @@ module TestDualMode =
         UnixSystem.initial platform
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     let private socketIdOf (fd : int) (system : UnixSystem<int, string>) : SocketId =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
@@ -94,7 +94,7 @@ module TestDualMode =
 
             match socket.Addressing, socket.Phase with
             | SocketAddressing.Inet6DualMode (Some binding), SocketPhase.Established (connection, ConnectionEnd.Client) ->
-                binding.Endpoint.Address |> shouldEqual InternetEndpoint.LoopbackAddress
+                binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
                 let connection = UnixMachineState.connection connection system.Machine
                 connection.ServerAddress |> shouldEqual (loopback port)
                 connection.ClientAddress |> shouldEqual binding.Endpoint

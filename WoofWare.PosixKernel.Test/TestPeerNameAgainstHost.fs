@@ -169,13 +169,13 @@ module TestPeerNameAgainstHost =
 
     /// The scenario's named endpoints: the listener or receiver at 127.0.0.1
     /// and its port, and the client's own address.
-    type private Roles = Map<string, InternetEndpoint>
+    type private Roles = Map<string, Ipv4Endpoint>
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
-    let private wildcard (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+    let private wildcard (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.any port
 
     // ---------------------------------------------------------------- host
 
@@ -188,21 +188,21 @@ module TestPeerNameAgainstHost =
         check "socket" fd
         fd
 
-    let private hostBindTo (platform : SimulatedUnixPlatform) (fd : int) (endpoint : InternetEndpoint) : unit =
+    let private hostBindTo (platform : SimulatedUnixPlatform) (fd : int) (endpoint : Ipv4Endpoint) : unit =
         let address = SimulatedUnixPlatform.encodeInternetSockaddr platform endpoint
         check "bind" (hostBind (fd, address, uint32 address.Length))
 
-    let private hostName (fd : int) : InternetEndpoint =
+    let private hostName (fd : int) : Ipv4Endpoint =
         let name = Array.zeroCreate<byte> 16
         let mutable length = 16u
         check "getsockname" (hostGetSockName (fd, name, &length))
 
-        InternetEndpoint.ofParts
-            (Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian (ReadOnlySpan (name, 4, 4)))
+        Ipv4Endpoint.ofParts
+            (Ipv4Address (Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian (ReadOnlySpan (name, 4, 4))))
             (Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian (ReadOnlySpan (name, 2, 2)))
 
     /// The errno of a connect, 0 for success.
-    let private hostConnectTo (platform : SimulatedUnixPlatform) (fd : int) (endpoint : InternetEndpoint) : int =
+    let private hostConnectTo (platform : SimulatedUnixPlatform) (fd : int) (endpoint : Ipv4Endpoint) : int =
         let address = SimulatedUnixPlatform.encodeInternetSockaddr platform endpoint
         Marshal.SetLastPInvokeError 0
 
@@ -220,7 +220,7 @@ module TestPeerNameAgainstHost =
         if hostPoll (entry, 1un, 5000) <> 1 then
             failwith $"the host's connect on fd %d{fd} had no outcome after five seconds"
 
-    let private hostListener (platform : SimulatedUnixPlatform) (address : InternetEndpoint) : int * uint16 =
+    let private hostListener (platform : SimulatedUnixPlatform) (address : Ipv4Endpoint) : int * uint16 =
         let fd = hostNew AF_INET SOCK_STREAM
         hostBindTo platform fd address
         check "listen" (hostListen (fd, 16))
@@ -250,7 +250,7 @@ module TestPeerNameAgainstHost =
     /// Build `scenario` on the host: the descriptor to ask, its roles, and
     /// every descriptor to close afterwards.
     let private hostBuild (platform : SimulatedUnixPlatform) (scenario : Scenario) : int * Roles * int list =
-        let connected (listenerAddress : InternetEndpoint) (aimAt : uint16 -> InternetEndpoint) =
+        let connected (listenerAddress : Ipv4Endpoint) (aimAt : uint16 -> Ipv4Endpoint) =
             let listener, port = hostListener platform listenerAddress
             let client = hostNew AF_INET SOCK_STREAM
             let errno = hostConnectTo platform client (aimAt port)
@@ -368,7 +368,7 @@ module TestPeerNameAgainstHost =
 
     // --------------------------------------------------------------- model
 
-    let private modelName (fd : int) (system : UnixSystem<int, string>) : InternetEndpoint =
+    let private modelName (fd : int) (system : UnixSystem<int, string>) : Ipv4Endpoint =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
             match (UnixMachineState.socket socketId system.Machine).Binding with
@@ -388,7 +388,7 @@ module TestPeerNameAgainstHost =
         let create (domain : SocketDomain) (kind : SocketKind) (protocol : SocketProtocol) system =
             NewSocket.create domain kind protocol system
 
-        let bindTo (fd : int) (endpoint : InternetEndpoint) (system : UnixSystem<int, string>) =
+        let bindTo (fd : int) (endpoint : Ipv4Endpoint) (system : UnixSystem<int, string>) =
             match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"the model's bind of fd %d{fd} answered %A{other}"
@@ -398,7 +398,7 @@ module TestPeerNameAgainstHost =
             | Ok (_, system) -> system
             | Error refusal -> failwith $"the model refused a connect: %s{ConnectRefusal.describe refusal}"
 
-        let listener (address : InternetEndpoint) (system : UnixSystem<int, string>) =
+        let listener (address : Ipv4Endpoint) (system : UnixSystem<int, string>) =
             let fd, system =
                 create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
@@ -424,7 +424,7 @@ module TestPeerNameAgainstHost =
             | Ok (SyscallAnswer.Failed error, _) -> failwith $"the model's close answered %O{error}"
             | Error refusal -> failwith $"the model refused a close: %s{CloseRefusal.describe refusal}"
 
-        let connected (listenerAddress : InternetEndpoint) (aimAt : uint16 -> InternetEndpoint) system =
+        let connected (listenerAddress : Ipv4Endpoint) (aimAt : uint16 -> Ipv4Endpoint) system =
             let listenerFd, port, system = listener listenerAddress system
 
             let client, system =

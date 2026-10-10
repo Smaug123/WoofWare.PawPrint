@@ -497,9 +497,9 @@ module TestEpollCtl =
         let orphan = ConnectionId 8L
         let queued = ConnectionId 9L
 
-        let peer : InternetEndpoint =
+        let peer : Ipv4Endpoint =
             {
-                Address = 0x7F000001u
+                Address = Ipv4Address 0x7F000001u
                 Port = 5555us
             }
 

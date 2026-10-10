@@ -31,7 +31,7 @@ module TestCopyOutMeasured =
 
     let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         UnixSystem.initial platform
-        |> UnixBootImage.withLocalAddresses UnixSystem.defaultLocalAddresses []
+        |> UnixBootImage.withLocalIpv4Addresses UnixSystem.defaultLocalIpv4Addresses []
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
     let private stream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
@@ -66,7 +66,7 @@ module TestCopyOutMeasured =
         (platform : SimulatedUnixPlatform)
         (call : string)
         (declared : uint32)
-        : (ImmutableArray<byte> * int * InternetEndpoint) option
+        : (ImmutableArray<byte> * int * Ipv4Endpoint) option
         =
         let listener, client, system = connected platform
 

@@ -37,11 +37,11 @@ module TestEphemeralPorts =
     let private inetFamily : int option =
         Some SimulatedUnixPlatform.internetAddressFamily
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
-    let private wildcard (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+    let private wildcard (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.any port
 
     /// A fresh system whose ephemeral range is `low..high`, so that the
     /// allocator wraps within a test.
@@ -60,7 +60,7 @@ module TestEphemeralPorts =
     let private bindWithReuse
         (reuseAddress : bool)
         (fd : int)
-        (endpoint : InternetEndpoint)
+        (endpoint : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
         : Result<BindAnswer, BindRefusal> * UnixSystem<int, string>
         =
@@ -76,7 +76,7 @@ module TestEphemeralPorts =
 
     let private bindTo
         (fd : int)
-        (endpoint : InternetEndpoint)
+        (endpoint : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
         : Result<BindAnswer, BindRefusal> * UnixSystem<int, string>
         =
@@ -114,7 +114,7 @@ module TestEphemeralPorts =
 
     let private connectTo
         (fd : int)
-        (destination : InternetEndpoint)
+        (destination : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
@@ -389,7 +389,7 @@ module TestEphemeralPorts =
 
     /// Whether `connect` from the unbound socket behind `fd` towards
     /// `destination` would find a port to take.
-    let private implicitBindHasAPort (fd : int) (destination : InternetEndpoint) (run : Run) : bool =
+    let private implicitBindHasAPort (fd : int) (destination : Ipv4Endpoint) (run : Run) : bool =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors run.System) with
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId run.System.Machine

@@ -75,7 +75,7 @@ module TestWakeCondition =
             NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
         let inet = Some SimulatedUnixPlatform.internetAddressFamily
-        let loopback = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 5000us
+        let loopback = Ipv4Endpoint.ofParts Ipv4Address.loopback 5000us
 
         let system =
             match

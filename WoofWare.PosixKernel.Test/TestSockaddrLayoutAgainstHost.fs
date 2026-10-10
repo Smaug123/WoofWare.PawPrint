@@ -210,5 +210,5 @@ module TestSockaddrLayoutAgainstHost =
         // the address is the most significant.
         let address = (1u <<< 24) ||| (2u <<< 16) ||| (3u <<< 8) ||| 4u
 
-        SimulatedUnixPlatform.encodeInternetSockaddr (hostPlatform ()) (InternetEndpoint.ofParts address port)
+        SimulatedUnixPlatform.encodeInternetSockaddr (hostPlatform ()) (Ipv4Endpoint.ofParts (Ipv4Address address) port)
         |> shouldEqual (v4 ())

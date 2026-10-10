@@ -96,7 +96,7 @@ type BindAnswer =
     /// The socket is bound. `endpoint` is where -- which is not necessarily what
     /// the caller asked for: a request for port 0 asks for any free port, and
     /// this is the one allocated.
-    | Bound of endpoint : InternetEndpoint
+    | Bound of endpoint : Ipv4Endpoint
     /// The call failed with this errno. Nothing changed: the socket is bound,
     /// or not, exactly as it was.
     | Failed of error : UnixError
@@ -113,7 +113,7 @@ type BindRefusal =
     /// and no interface to receive or broadcast on, so nothing downstream could
     /// honour the binding. Every bind of such an address that fails is answered
     /// with its measured errno.
-    | UnmodelledMulticast of socket : SocketId * address : uint32
+    | UnmodelledMulticast of socket : SocketId * address : Ipv4Address
     /// The bind asked for any free port and every port in the ephemeral range is
     /// taken.
     ///
@@ -137,7 +137,7 @@ module BindRefusal =
         match refusal with
         | BindRefusal.Copy refusal -> SockaddrCopyRefusal.describe refusal
         | BindRefusal.UnmodelledMulticast (socket, address) ->
-            $"socket %O{socket} asked to bind %s{InternetEndpoint.toString (InternetEndpoint.ofParts address 0us)}, a broadcast or multicast address, and the bind would succeed. This kernel models no group membership and no interface to receive or broadcast on, so nothing could honour such a binding. Model multicast and broadcast before binding either."
+            $"socket %O{socket} asked to bind %s{Ipv4Address.toString address}, a broadcast or multicast address, and the bind would succeed. This kernel models no group membership and no interface to receive or broadcast on, so nothing could honour such a binding. Model multicast and broadcast before binding either."
         | BindRefusal.EphemeralPortsExhausted (low, high) ->
             $"every port in the ephemeral range %d{low}-%d{high} is taken, so this bind of port 0 has no answer. A real kernel reports EADDRINUSE, but that has not been measured under this allocator and inventing it would be a guess. Widen the range, or measure the real answer."
         | BindRefusal.UnmodelledIpv6Address (socket, address) ->
@@ -149,7 +149,7 @@ module BindRefusal =
 type ListenAnswer =
     /// The socket is listening. `endpoint` is where it is bound, which for a
     /// socket that had no address is the one this call gave it.
-    | Listening of endpoint : InternetEndpoint
+    | Listening of endpoint : Ipv4Endpoint
     /// The call failed with this errno, and nothing changed.
     | Failed of error : UnixError
 
@@ -1160,7 +1160,7 @@ module UnixSocket =
                 | SimulatedUnixFlavour.Darwin -> groupAddressRejectedWithTheFamily && not lengthFault
                 | SimulatedUnixFlavour.Linux ->
                     match endpoint with
-                    | Some endpoint -> endpoint.Address <> InternetEndpoint.WildcardAddress
+                    | Some endpoint -> endpoint.Address <> Ipv4Address.any
                     | None -> false
             // Darwin's datagram bind takes `AF_INET6`'s number on an IPv4
             // socket and reads the blob as a `sockaddr_in`, at every length and
@@ -1194,7 +1194,7 @@ module UnixSocket =
                 SimulatedUnixPlatform.bindAddressFaults
                     platform
                     socket.Kind
-                    system.Machine.LocalAddresses
+                    system.Machine.LocalIpv4Addresses
                     system.Machine.LocalRoutes
                     endpoint.Address
 
@@ -1321,7 +1321,7 @@ module UnixSocket =
                 SimulatedUnixPlatform.bindAddressFaults
                     platform
                     socket.Kind
-                    system.Machine.LocalAddresses
+                    system.Machine.LocalIpv4Addresses
                     system.Machine.LocalRoutes
                     endpoint.Address
             | None -> false
@@ -1366,7 +1366,7 @@ module UnixSocket =
             match copied.Destination, socket.Addressing with
             | Some (Ipv6Destination.Native (address, _)), _ -> Some address
             | Some (Ipv6Destination.V4Mapped endpoint), SocketAddressing.Inet6DualMode _ when
-                endpoint.Address = InternetEndpoint.WildcardAddress
+                endpoint.Address = Ipv4Address.any
                 ->
                 // `::ffff:0.0.0.0`.
                 Some (ImmutableArray.CreateRange (Array.init 16 (fun i -> if i = 10 || i = 11 then 0xFFuy else 0uy)))
@@ -1534,7 +1534,7 @@ module UnixSocket =
                  // an ephemeral port. Measured on both.
                  let candidate (port : uint16) : SocketBinding =
                      {
-                         Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                         Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any port
                          // This implicit bind runs no `bind(2)`, so nothing is
                          // locked.
                          LockedAddress = None
@@ -1648,7 +1648,7 @@ module UnixSocket =
         (machine : UnixMachineState)
         (socketId : SocketId)
         (socket : SocketDescription)
-        (endpoint : InternetEndpoint)
+        (endpoint : Ipv4Endpoint)
         : Result<byte[], GetSockNameRefusal>
         =
         let platform = machine.UnixPlatform
@@ -1728,7 +1728,7 @@ module UnixSocket =
         let endpoint =
             match socket.Binding with
             | Some binding -> binding.Endpoint
-            | None -> InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us
+            | None -> Ipv4Endpoint.ofParts Ipv4Address.any 0us
 
         match encodeName system.Machine socketId socket endpoint with
         | Error refusal -> Error refusal
@@ -1781,7 +1781,7 @@ module UnixSocket =
         let socket = UnixMachineState.socket socketId system.Machine
         let notConnected = Ok (GetSockNameAnswer.Failed (UnixError.ENOTCONN, None))
 
-        let reportPeer (peer : InternetEndpoint) : Result<GetSockNameAnswer, GetSockNameRefusal> =
+        let reportPeer (peer : Ipv4Endpoint) : Result<GetSockNameAnswer, GetSockNameRefusal> =
             match encodeName system.Machine socketId socket peer with
             | Error refusal -> Error refusal
             | Ok whole -> reportAddress whole destination declaredLength system

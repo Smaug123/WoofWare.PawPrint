@@ -163,8 +163,8 @@ module TestSocketErrorAgainstHost =
     let private errnoOf (platform : SimulatedUnixPlatform) (error : UnixError) : int =
         UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     let private hostSockaddr (platform : SimulatedUnixPlatform) (port : uint16) : byte[] =
         SimulatedUnixPlatform.encodeInternetSockaddr platform (loopback port)

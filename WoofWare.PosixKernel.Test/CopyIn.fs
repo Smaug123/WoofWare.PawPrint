@@ -23,7 +23,7 @@ module CopyIn =
     /// test of the library's decoding does not take its layout from the code
     /// under test. Darwin's `sa_len` byte holds 16, as a caller filling in a
     /// `sockaddr_in` would store; no kernel reads it.
-    let blob (platform : SimulatedUnixPlatform) (family : int) (endpoint : InternetEndpoint) : byte[] =
+    let blob (platform : SimulatedUnixPlatform) (family : int) (endpoint : Ipv4Endpoint) : byte[] =
         let blob = Array.zeroCreate<byte> Length
 
         match SimulatedUnixPlatform.flavour platform with
@@ -34,7 +34,8 @@ module CopyIn =
             blob.[1] <- byte family
 
         BinaryPrimitives.WriteUInt16BigEndian (System.Span<byte> (blob, 2, 2), endpoint.Port)
-        BinaryPrimitives.WriteUInt32BigEndian (System.Span<byte> (blob, 4, 4), endpoint.Address)
+        let (Ipv4Address address) = endpoint.Address
+        BinaryPrimitives.WriteUInt32BigEndian (System.Span<byte> (blob, 4, 4), address)
         blob
 
     /// A caller's sockaddr buffer holding `family`, `port` and the sixteen
@@ -68,20 +69,18 @@ module CopyIn =
         bytes
 
     /// `blob6` holding `AF_INET6` and `endpoint` mapped into IPv6.
-    let inet6Mapped (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
-        blob6
-            platform
-            (SimulatedUnixPlatform.internetV6AddressFamily platform)
-            (mappedAddress endpoint.Address)
-            endpoint.Port
+    let inet6Mapped (platform : SimulatedUnixPlatform) (endpoint : Ipv4Endpoint) : byte[] =
+        let (Ipv4Address address) = endpoint.Address
+
+        blob6 platform (SimulatedUnixPlatform.internetV6AddressFamily platform) (mappedAddress address) endpoint.Port
 
     /// `blob` holding `AF_INET` and `endpoint`.
-    let inet (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
+    let inet (platform : SimulatedUnixPlatform) (endpoint : Ipv4Endpoint) : byte[] =
         blob platform SimulatedUnixPlatform.internetAddressFamily endpoint
 
     /// The 16 bytes a copy-in of a `struct sockaddr_in` holding `AF_INET` and
     /// `endpoint`, declared 16 bytes long, takes on `platform`.
-    let inetCopy (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : ImmutableArray<byte> =
+    let inetCopy (platform : SimulatedUnixPlatform) (endpoint : Ipv4Endpoint) : ImmutableArray<byte> =
         ImmutableArray.Create<byte> (inet platform endpoint, 0, SimulatedUnixPlatform.internetSocketAddressSize)
 
     /// The first `length` bytes of `blob`.
@@ -150,19 +149,19 @@ module CopyOut =
 
     /// The endpoint in a copied-out `struct sockaddr_in` that reaches
     /// `sin_addr`: the port at 2 and the address at 4, both network order.
-    let endpoint (copiedOut : ImmutableArray<byte>) : InternetEndpoint =
+    let endpoint (copiedOut : ImmutableArray<byte>) : Ipv4Endpoint =
         if copiedOut.Length < 8 then
             failwith $"CopyOut.endpoint: %d{copiedOut.Length} bytes do not reach sin_addr"
 
         let span = copiedOut.AsSpan ()
 
-        InternetEndpoint.ofParts
-            (BinaryPrimitives.ReadUInt32BigEndian (span.Slice (4, 4)))
+        Ipv4Endpoint.ofParts
+            (Ipv4Address (BinaryPrimitives.ReadUInt32BigEndian (span.Slice (4, 4))))
             (BinaryPrimitives.ReadUInt16BigEndian (span.Slice (2, 2)))
 
     /// What a kernel copies out of `endpoint` to a caller that declared
     /// `declaredLength` bytes of room: the first `min(declaredLength, 16)` bytes
     /// of the `struct sockaddr_in` holding it, which on Darwin begins with an
     /// `sa_len` of 16 (`sockaddr-decoding.c`, T).
-    let expected (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) (declaredLength : uint32) =
+    let expected (platform : SimulatedUnixPlatform) (endpoint : Ipv4Endpoint) (declaredLength : uint32) =
         CopyIn.prefix (CopyIn.inet platform endpoint) (int (min declaredLength 16u))

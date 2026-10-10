@@ -29,8 +29,8 @@ module TestListen =
     let private platforms : SimulatedUnixPlatform list =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     let private socketWith
         (kind : SocketKind)
@@ -74,7 +74,7 @@ module TestListen =
         }
         |> UnixSystemState.withFileDescriptors registry
 
-    let private boundAt (endpoint : InternetEndpoint) : SocketBinding option =
+    let private boundAt (endpoint : Ipv4Endpoint) : SocketBinding option =
         Some
             {
                 Endpoint = endpoint
@@ -127,7 +127,7 @@ module TestListen =
             | ListenAnswer.Listening where -> where
             | ListenAnswer.Failed error -> failwith $"expected a listen, got %O{error}"
 
-        where.Address |> shouldEqual InternetEndpoint.WildcardAddress
+        where.Address |> shouldEqual Ipv4Address.any
 
         let low, high = system.Machine.EphemeralPortRange
         (where.Port >= low && where.Port <= high) |> shouldEqual true
@@ -417,7 +417,7 @@ module TestListen =
                     SocketKind.Stream
                     (Some
                         {
-                            Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 40000us
+                            Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any 40000us
                             LockedAddress = None
                             LockedPort = false
                         })

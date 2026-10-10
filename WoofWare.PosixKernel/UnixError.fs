@@ -340,9 +340,9 @@ type UnixError =
     /// Reported by <c>bind(2)</c> for an address this machine does not hold.
     ///
     /// What counts as "held" differs per Unix flavour, as follows:
-    /// the machine is configured with two lists of addresses, <c>LocalAddresses</c> (which configures interfaces),
+    /// the machine is configured with two lists of addresses, <c>LocalIpv4Addresses</c> (which configures interfaces),
     /// and <c>LocalRoutes</c> (the routing table).
-    /// Darwin reads only <c>LocalAddresses</c> when binding, while Linux will additionally
+    /// Darwin reads only <c>LocalIpv4Addresses</c> when binding, while Linux will additionally
     /// bind any address inside a prefix in <c>LocalRoutes</c>.
     ///
     /// So with the defaults - holding <c>127.0.0.1</c>, routing <c>127.0.0.0/8</c> -

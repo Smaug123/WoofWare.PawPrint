@@ -1,25 +1,32 @@
 namespace WoofWare.PosixKernel
 
 /// <summary>
-/// An IPv4 transport endpoint.
+/// An IPv4 address, stored in host order.
+/// The wire layout a process passes is network order.
+/// </summary>
+/// <remarks>
+/// Every 32-bit value is an address, so the case is public: build one with <c>Ipv4Address 0x7F000001u</c>
+/// and take it apart by matching on it.
+/// </remarks>
+/// <example>
+/// <c>127.0.0.1</c> is <c>Ipv4Address 0x7F000001u</c>.
+/// </example>
+[<Struct>]
+type Ipv4Address = | Ipv4Address of uint32
+
+/// <summary>
+/// An IPv4 transport endpoint: every field of <c>struct sockaddr_in</c> but the family and <c>sin_zero</c>.
 /// </summary>
 /// <remarks>
 /// This is what <c>bind(2)</c> associates a socket with, and what <c>getsockname(2)</c> reports back.
 ///
 /// Both fields are stored in host order.
 /// The wire layout a process passes is network order.
-///
-/// We currently only model IPv4.
 /// </remarks>
-type InternetEndpoint =
+type Ipv4Endpoint =
     {
-        /// <summary>
-        /// The address, host order.
-        /// </summary>
-        /// <example>
-        /// <c>127.0.0.1</c> is <c>0x7F000001</c>.
-        /// </example>
-        Address : uint32
+        /// The address.
+        Address : Ipv4Address
         /// The port, host order.
         Port : uint16
     }
@@ -48,7 +55,7 @@ type InternetEndpoint =
 /// <c>create</c> admits, so every value of this type is one.
 /// </remarks>
 [<Struct>]
-type Ipv4Prefix = private | Ipv4Prefix of network : uint32 * bits : int
+type Ipv4Prefix = private | Ipv4Prefix of network : Ipv4Address * bits : int
 
 /// Why `Ipv4Prefix.create` refuses a network address and length.
 ///
@@ -61,30 +68,52 @@ type Ipv4PrefixRefusal =
     | LengthOutOfRange of bits : int
     /// The network address has a bit set past its first `bits`, so it is not
     /// the network of a `bits`-long prefix. Contradictory.
-    | HostBitsSet of network : uint32 * bits : int
+    | HostBitsSet of network : Ipv4Address * bits : int
 
 [<RequireQualifiedAccess>]
-module InternetEndpoint =
+module Ipv4Address =
 
     /// <summary>
     /// <c>INADDR_ANY</c>: the address a socket binds to mean "every local address".
     /// </summary>
-    [<Literal>]
-    let WildcardAddress = 0u
+    let any : Ipv4Address = Ipv4Address 0u
 
     /// <summary>
     /// <c>INADDR_LOOPBACK</c>: localhost via the loopback device.
     /// </summary>
-    [<Literal>]
-    let LoopbackAddress = 0x7F000001u
+    let loopback : Ipv4Address = Ipv4Address 0x7F000001u
 
-    let ofParts (address : uint32) (port : uint16) : InternetEndpoint =
+    /// <summary>
+    /// <c>INADDR_BROADCAST</c>: the limited broadcast address, every bit set.
+    /// </summary>
+    let broadcast : Ipv4Address = Ipv4Address System.UInt32.MaxValue
+
+    /// <summary>
+    /// Format this address as a human-readable dotted quad.
+    /// </summary>
+    /// <example>
+    /// "192.168.0.1"
+    /// </example>
+    /// <remarks>
+    /// Not a rendering any process sees. (Nothing in the emulated kernel formats an address as a
+    /// string for a process to read.)
+    /// </remarks>
+    let toString (address : Ipv4Address) : string =
+        let (Ipv4Address a) = address
+
+        sprintf "%d.%d.%d.%d" ((a >>> 24) &&& 0xFFu) ((a >>> 16) &&& 0xFFu) ((a >>> 8) &&& 0xFFu) (a &&& 0xFFu)
+
+[<RequireQualifiedAccess>]
+module Ipv4Endpoint =
+
+    let ofParts (address : Ipv4Address) (port : uint16) : Ipv4Endpoint =
         {
             Address = address
             Port = port
         }
 
-    let isWildcard (endpoint : InternetEndpoint) : bool = endpoint.Address = WildcardAddress
+    /// Whether the endpoint's address is the wildcard, <c>INADDR_ANY</c>.
+    let isWildcard (endpoint : Ipv4Endpoint) : bool = endpoint.Address = Ipv4Address.any
 
     /// Do these two bindings claim any address in common? The wildcard covers
     /// every address, so it overlaps everything; two specific addresses overlap
@@ -94,11 +123,11 @@ module InternetEndpoint =
     /// whole of it: whether an overlap is *refused* depends on the flavour, on
     /// both sockets' `SO_REUSEADDR` and on whether either is listening. See
     /// `UnixSocket.bind`.
-    let addressesOverlap (a : InternetEndpoint) (b : InternetEndpoint) : bool =
+    let addressesOverlap (a : Ipv4Endpoint) (b : Ipv4Endpoint) : bool =
         isWildcard a || isWildcard b || a.Address = b.Address
 
     /// <summary>
-    /// Format this endpoint as a human-readable dotted quad.
+    /// Format this endpoint as a human-readable dotted quad and port.
     /// </summary>
     /// <example>
     /// "192.168.0.1:8080"
@@ -107,27 +136,11 @@ module InternetEndpoint =
     /// Not a rendering any process sees. (Nothing in the emulated kernel formats an address as a
     /// string for a process to read.)
     /// </remarks>
-    let toString (endpoint : InternetEndpoint) : string =
-        let a = endpoint.Address
-
-        sprintf
-            "%d.%d.%d.%d:%d"
-            ((a >>> 24) &&& 0xFFu)
-            ((a >>> 16) &&& 0xFFu)
-            ((a >>> 8) &&& 0xFFu)
-            (a &&& 0xFFu)
-            endpoint.Port
+    let toString (endpoint : Ipv4Endpoint) : string =
+        sprintf "%s:%d" (Ipv4Address.toString endpoint.Address) endpoint.Port
 
 [<RequireQualifiedAccess>]
 module Ipv4PrefixRefusal =
-    let private dottedQuad (address : uint32) : string =
-        sprintf
-            "%d.%d.%d.%d"
-            ((address >>> 24) &&& 0xFFu)
-            ((address >>> 16) &&& 0xFFu)
-            ((address >>> 8) &&& 0xFFu)
-            (address &&& 0xFFu)
-
     /// What this library knows about why it refused the prefix, for a client
     /// composing a diagnostic that names its own knob.
     let describe (refusal : Ipv4PrefixRefusal) : string =
@@ -135,30 +148,32 @@ module Ipv4PrefixRefusal =
         | Ipv4PrefixRefusal.LengthOutOfRange bits ->
             $"a prefix length of %d{bits} is not in [0, 32], the bits an IPv4 address has."
         | Ipv4PrefixRefusal.HostBitsSet (network, bits) ->
-            $"%s{dottedQuad network}/%d{bits} has a bit set past its first %d{bits}, so it is not a network address of that length; Linux refuses such a route with EINVAL."
+            $"%s{Ipv4Address.toString network}/%d{bits} has a bit set past its first %d{bits}, so it is not a network address of that length; Linux refuses such a route with EINVAL."
 
 [<RequireQualifiedAccess>]
 module Ipv4Prefix =
 
     /// <summary>
-    /// The prefix whose first <c>bits</c> bits are those of <c>network</c> (host order).
+    /// The prefix whose first <c>bits</c> bits are those of <c>network</c>.
     /// </summary>
     /// <returns>
     /// A refusal if <c>bits</c> is outside <c>[0, 32]</c>, or if <c>network</c> has a bit set
     /// past its first <c>bits</c>: <c>127.0.0.1/8</c> is refused, and <c>127.0.0.0/8</c> is the prefix.
     /// </returns>
-    let create (network : uint32) (bits : int) : Result<Ipv4Prefix, Ipv4PrefixRefusal> =
+    let create (network : Ipv4Address) (bits : int) : Result<Ipv4Prefix, Ipv4PrefixRefusal> =
+        let (Ipv4Address networkBits) = network
+
         if bits < 0 || bits > 32 then
             Error (Ipv4PrefixRefusal.LengthOutOfRange bits)
         // A shift by 32 is masked to a shift by 0 by the CLI, so length 32
         // (which has no host bits) cannot go through the shift.
-        elif bits < 32 && (network <<< bits) <> 0u then
+        elif bits < 32 && (networkBits <<< bits) <> 0u then
             Error (Ipv4PrefixRefusal.HostBitsSet (network, bits))
         else
             Ok (Ipv4Prefix (network, bits))
 
-    /// The network address, host order. Has no bit set past the first `bits`.
-    let network (prefix : Ipv4Prefix) : uint32 =
+    /// The network address. Has no bit set past the first `bits`.
+    let network (prefix : Ipv4Prefix) : Ipv4Address =
         match prefix with
         | Ipv4Prefix (network, _) -> network
 
@@ -170,14 +185,14 @@ module Ipv4Prefix =
     /// <summary>
     /// <c>127.0.0.0/8</c>, loopback's network (<c>IN_LOOPBACKNET</c>).
     /// </summary>
-    let loopbackNetwork : Ipv4Prefix = Ipv4Prefix (0x7F000000u, 8)
+    let loopbackNetwork : Ipv4Prefix = Ipv4Prefix (Ipv4Address 0x7F000000u, 8)
 
     /// <summary>
     /// True iff the given <c>address</c> has the given <c>prefix</c>.
     /// </summary>
-    let contains (address : uint32) (prefix : Ipv4Prefix) : bool =
+    let contains (address : Ipv4Address) (prefix : Ipv4Prefix) : bool =
         match prefix with
-        | Ipv4Prefix (network, bits) ->
+        | Ipv4Prefix (Ipv4Address network, bits) ->
 
         // A shift by 32 is masked to a shift by 0 by the CLI, so length 0
         // cannot go through the shift.
@@ -187,4 +202,5 @@ module Ipv4Prefix =
             else
                 System.UInt32.MaxValue <<< (32 - bits)
 
+        let (Ipv4Address address) = address
         address &&& mask = network

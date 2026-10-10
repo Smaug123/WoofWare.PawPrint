@@ -1728,8 +1728,7 @@ module UnixSystem =
                             && not binding.LockedPort
                             && (
                                 match binding.LockedAddress with
-                                | Some locked ->
-                                    locked <> InternetEndpoint.WildcardAddress && locked = binding.Endpoint.Address
+                                | Some locked -> locked <> Ipv4Address.any && locked = binding.Endpoint.Address
                                 | None -> false
                             )
 
@@ -2827,8 +2826,8 @@ module UnixSystem =
     ///
     /// `127.0.0.0/8` rather than `127.0.0.1/32` because that is what Linux
     /// assigns to `lo`, and the flavours read the list differently — see
-    /// `UnixBootImage.withLocalAddresses`.
-    let defaultLocalAddresses : uint32 list = [ InternetEndpoint.LoopbackAddress ]
+    /// `UnixBootImage.withLocalIpv4Addresses`.
+    let defaultLocalIpv4Addresses : Ipv4Address list = [ Ipv4Address.loopback ]
 
     /// The prefixes Linux's local routing table holds, which it will `bind(2)`
     /// any address inside. Loopback's `127.0.0.0/8` is the one every Linux has,
@@ -3028,7 +3027,7 @@ module UnixSystem =
                     Ipv6OnlyByDefault = false
                     TcpReceiveSpace = UnixMachineState.defaultTcpReceiveSpace flavour
                     TcpSendSpaceMax = UnixMachineState.defaultTcpSendSpaceMax flavour
-                    LocalAddresses = defaultLocalAddresses
+                    LocalIpv4Addresses = defaultLocalIpv4Addresses
                     LocalRoutes = defaultLocalRoutes
                     NanosecondsSinceBoot = 0L
                     BootTime = UnixTimestamp.epoch

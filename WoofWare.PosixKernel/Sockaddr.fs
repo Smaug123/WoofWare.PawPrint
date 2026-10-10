@@ -234,13 +234,13 @@ type internal CopiedInternetSockaddr =
         /// `sa_family`, in the platform's own `AF_*` numbering.
         Family : int option
         /// `sin_addr` and `sin_port`, present only when the copy reached both.
-        Endpoint : InternetEndpoint option
+        Endpoint : Ipv4Endpoint option
         /// `sin_addr` as a reader sees it that takes every byte past the copy
         /// as zero: what Darwin's stream `bind(2)` judges a broadcast or
         /// multicast address by, so that `224` in byte 4 alone, at a length of
         /// 5, is a multicast address to it. Measured
         /// (`sockaddr-bind-ladder.c`, M).
-        ZeroFilledAddress : uint32
+        ZeroFilledAddress : Ipv4Address
     }
 
 /// Where an IPv6 socket's `bind(2)` or `connect(2)` was asked to go, read out
@@ -249,7 +249,7 @@ type internal CopiedInternetSockaddr =
 type internal Ipv6Destination =
     /// `::ffff:a.b.c.d`, an IPv4 address mapped into IPv6, which an IPv6
     /// socket reaches through the IPv4 transport.
-    | V4Mapped of endpoint : InternetEndpoint
+    | V4Mapped of endpoint : Ipv4Endpoint
     /// Any other IPv6 address: `::`, `::1` and every address that needs an
     /// IPv6 transport, which this kernel does not have. The sixteen bytes of
     /// `sin6_addr`, in order.

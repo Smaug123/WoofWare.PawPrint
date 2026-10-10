@@ -29,17 +29,17 @@ module TestSocketErrorOption =
     /// read of a pending refusal writes.
     let private refusedErrno (platform : SimulatedUnixPlatform) : int = flavourColumn platform 111 61
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
-    let private wildcard (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+    let private wildcard (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.any port
 
     let private inetFamily : int option =
         Some SimulatedUnixPlatform.internetAddressFamily
 
     /// Nothing listens or is bound here in any system these tests build.
-    let private nobody : InternetEndpoint = loopback 5999us
+    let private nobody : Ipv4Endpoint = loopback 5999us
 
     let private listenerPort : uint16 = 5000us
 
@@ -57,7 +57,7 @@ module TestSocketErrorOption =
     let private phaseOf (fd : int) (system : UnixSystem<int, string>) : SocketPhase =
         (UnixMachineState.socket (socketIdOf fd system) system.Machine).Phase
 
-    let private endpointOf (fd : int) (system : UnixSystem<int, string>) : InternetEndpoint =
+    let private endpointOf (fd : int) (system : UnixSystem<int, string>) : Ipv4Endpoint =
         match (UnixMachineState.socket (socketIdOf fd system) system.Machine).Binding with
         | Some binding -> binding.Endpoint
         | None -> failwith $"fd %d{fd} is not bound"
@@ -73,14 +73,14 @@ module TestSocketErrorOption =
         | SetNonBlockingAnswer.Set, system -> system
         | other, _ -> failwith $"setting O_NONBLOCK on fd %d{fd} answered %A{other}"
 
-    let private bindAt (fd : int) (endpoint : InternetEndpoint) (system : UnixSystem<int, string>) =
+    let private bindAt (fd : int) (endpoint : Ipv4Endpoint) (system : UnixSystem<int, string>) =
         match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) endpoint) system with
         | Ok (BindAnswer.Bound _, system) -> system
         | other -> failwith $"binding fd %d{fd} to %O{endpoint} answered %A{other}"
 
     let private connect
         (fd : int)
-        (destination : InternetEndpoint)
+        (destination : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
@@ -335,11 +335,11 @@ module TestSocketErrorOption =
     /// to 0.0.0.0.
     [<Test>]
     let ``Linux: a connect after the read answers ECONNABORTED and resets the socket`` () : unit =
-        let provenances : (string * (int -> UnixSystem<int, string> -> UnixSystem<int, string>) * uint32) list =
+        let provenances : (string * (int -> UnixSystem<int, string> -> UnixSystem<int, string>) * Ipv4Address) list =
             [
-                "implicit", (fun _ system -> system), InternetEndpoint.WildcardAddress
-                "bound 127.0.0.1", (fun fd system -> bindAt fd (loopback 0us) system), InternetEndpoint.LoopbackAddress
-                "bound 0.0.0.0", (fun fd system -> bindAt fd (wildcard 0us) system), InternetEndpoint.WildcardAddress
+                "implicit", (fun _ system -> system), Ipv4Address.any
+                "bound 127.0.0.1", (fun fd system -> bindAt fd (loopback 0us) system), Ipv4Address.loopback
+                "bound 0.0.0.0", (fun fd system -> bindAt fd (wildcard 0us) system), Ipv4Address.any
             ]
 
         for label, prepare, addressAfter in provenances do
@@ -347,7 +347,7 @@ module TestSocketErrorOption =
                 let fd, system = refusedWith linux prepare
                 let _, system = listening system
                 let pendingEndpoint = endpointOf fd system
-                pendingEndpoint.Address |> shouldEqual InternetEndpoint.LoopbackAddress
+                pendingEndpoint.Address |> shouldEqual Ipv4Address.loopback
 
                 let _, system = readErrorPlainly fd system
                 endpointOf fd system |> shouldEqual pendingEndpoint
@@ -360,7 +360,7 @@ module TestSocketErrorOption =
                 phaseOf fd system |> shouldEqual SocketPhase.Idle
 
                 endpointOf fd system
-                |> shouldEqual (InternetEndpoint.ofParts addressAfter pendingEndpoint.Port)
+                |> shouldEqual (Ipv4Endpoint.ofParts addressAfter pendingEndpoint.Port)
 
                 UnixSystem.checkInvariants system |> shouldEqual []
 

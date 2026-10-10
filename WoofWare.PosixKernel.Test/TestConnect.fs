@@ -34,7 +34,7 @@ module TestConnect =
         : UnixSystem<int, string>
         =
         UnixSystem.initial platform
-        |> UnixBootImage.withLocalAddresses UnixSystem.defaultLocalAddresses []
+        |> UnixBootImage.withLocalIpv4Addresses UnixSystem.defaultLocalIpv4Addresses []
         |> configure
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
@@ -46,8 +46,8 @@ module TestConnect =
     let private platforms : SimulatedUnixPlatform list =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     let private withSocket
         (socketId : SocketId)
@@ -81,7 +81,7 @@ module TestConnect =
             Phase = phase
         }
 
-    let private boundAt (endpoint : InternetEndpoint) : SocketBinding option =
+    let private boundAt (endpoint : Ipv4Endpoint) : SocketBinding option =
         Some
             {
                 Endpoint = endpoint
@@ -126,7 +126,7 @@ module TestConnect =
     let private connectTo
         (fd : int)
         (declaredLength : uint32)
-        (destination : InternetEndpoint)
+        (destination : Ipv4Endpoint)
         (system : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
@@ -487,12 +487,7 @@ module TestConnect =
     /// The refusal `connect` answers, for the rows about what this kernel
     /// will not model. Each is a case a client can match on rather than a
     /// message it would have to read.
-    let private refusedBy
-        (fd : int)
-        (destination : InternetEndpoint)
-        (system : UnixSystem<int, string>)
-        : ConnectRefusal
-        =
+    let private refusedBy (fd : int) (destination : Ipv4Endpoint) (system : UnixSystem<int, string>) : ConnectRefusal =
         match CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet system.Machine.UnixPlatform destination) system with
         | Error refusal -> refusal
         | Ok answer -> failwith $"expected a refusal, got %A{answer}"
@@ -527,7 +522,7 @@ module TestConnect =
                     }
             }
 
-        let other = InternetEndpoint.ofParts 0x7F000002u 5000us
+        let other = Ipv4Endpoint.ofParts (Ipv4Address 0x7F000002u) 5000us
 
         refusedBy fd other system
         |> shouldEqual (ConnectRefusal.SourceForNonLoopbackDestination (SocketId 0L, other, false))
@@ -536,7 +531,7 @@ module TestConnect =
     let ``an implicit bind with no port left is refused, naming the range`` (platform : SimulatedUnixPlatform) : unit =
         // One port in the range, and a live socket already holding it.
         let holder =
-            streamSocket (boundAt (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 40000us)) SocketPhase.Idle
+            streamSocket (boundAt (Ipv4Endpoint.ofParts Ipv4Address.any 40000us)) SocketPhase.Idle
 
         let _, system =
             withSocket
@@ -571,20 +566,20 @@ module TestConnect =
     [<Test>]
     let ``a duplicate datagram four-tuple is refused`` () : unit =
         let platform = SimulatedUnixPlatform.macOsArm64
-        let iface = 0x0A000005u
+        let iface = Ipv4Address 0x0A000005u
 
         let system =
-            systemOnWith (UnixBootImage.withLocalAddresses [ InternetEndpoint.LoopbackAddress ; iface ] []) platform
+            systemOnWith (UnixBootImage.withLocalIpv4Addresses [ Ipv4Address.loopback ; iface ] []) platform
 
         let udp (system : UnixSystem<int, string>) =
             NewSocket.create SocketDomain.Inet SocketKind.Datagram SocketProtocol.Udp system
 
-        let bindTo fd (endpoint : InternetEndpoint) system =
+        let bindTo fd (endpoint : Ipv4Endpoint) system =
             match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
             | Ok (BindAnswer.Bound _, system) -> system
             | other -> failwith $"bind answered %A{other}"
 
-        let connectTo fd (endpoint : InternetEndpoint) system =
+        let connectTo fd (endpoint : Ipv4Endpoint) system =
             CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system
 
         let completes fd endpoint system =
@@ -601,10 +596,10 @@ module TestConnect =
 
         let system =
             system
-            |> bindTo second (InternetEndpoint.ofParts iface 5000us)
-            |> completes second (InternetEndpoint.ofParts iface 6000us)
+            |> bindTo second (Ipv4Endpoint.ofParts iface 5000us)
+            |> completes second (Ipv4Endpoint.ofParts iface 6000us)
 
-        match connectTo second (InternetEndpoint.ofParts 0u 6000us) system with
+        match connectTo second (Ipv4Endpoint.ofParts (Ipv4Address 0u) 6000us) system with
         | Error (ConnectRefusal.DuplicateFourTuple (source, destination)) ->
             (source, destination) |> shouldEqual (loopback 5000us, loopback 6000us)
         | other -> failwith $"expected the duplicate to be refused, got %A{other}"

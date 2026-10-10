@@ -27,21 +27,21 @@ module TestConnectDestinationMeasured =
             Kind : SocketKind
             State : State
             Family : int
-            Endpoint : InternetEndpoint
+            Endpoint : Ipv4Endpoint
             Length : uint32
             /// What the probe printed after the colon: the errno's name or
             /// `OK`, the local address and its port's class, and the peer.
             Expected : string
         }
 
-    let private address (text : string) : uint32 =
+    let private address (text : string) : Ipv4Address =
         match text with
-        | "0.0.0.0" -> 0u
-        | "127.0.0.1" -> InternetEndpoint.LoopbackAddress
-        | "127.0.0.2" -> 0x7F000002u
-        | "8.8.8.8" -> 0x08080808u
-        | "224.0.0.1" -> 0xE0000001u
-        | "255.255.255.255" -> System.UInt32.MaxValue
+        | "0.0.0.0" -> Ipv4Address 0u
+        | "127.0.0.1" -> Ipv4Address.loopback
+        | "127.0.0.2" -> Ipv4Address 0x7F000002u
+        | "8.8.8.8" -> Ipv4Address 0x08080808u
+        | "224.0.0.1" -> Ipv4Address 0xE0000001u
+        | "255.255.255.255" -> Ipv4Address System.UInt32.MaxValue
         | other -> failwith $"unknown address %s{other}"
 
     let private calls (flavour : string) : Call list =
@@ -97,7 +97,7 @@ module TestConnectDestinationMeasured =
                         kind
                         (parseState dm.Groups.["state"].Value)
                         SimulatedUnixPlatform.internetAddressFamily
-                        (InternetEndpoint.ofParts (address dm.Groups.["addr0"].Value) port)
+                        (Ipv4Endpoint.ofParts (address dm.Groups.["addr0"].Value) port)
                         16u
                         dm
                 ]
@@ -117,7 +117,7 @@ module TestConnectDestinationMeasured =
                         kind
                         State.Fresh
                         family
-                        (InternetEndpoint.ofParts (address mm.Groups.["addr0"].Value) (peerPort kind))
+                        (Ipv4Endpoint.ofParts (address mm.Groups.["addr0"].Value) (peerPort kind))
                         length
                         mm
                 )
@@ -154,7 +154,7 @@ module TestConnectDestinationMeasured =
     /// The peer `getpeername(2)` reads: a stream socket's connection's far
     /// end, or a datagram socket's peer filter with a port, since one of port
     /// 0 is one it answers ENOTCONN for.
-    let private peerOf (system : UnixSystem<int, string>) (socket : SocketDescription) : InternetEndpoint option =
+    let private peerOf (system : UnixSystem<int, string>) (socket : SocketDescription) : Ipv4Endpoint option =
         match socket.Phase with
         | SocketPhase.Established (connection, ConnectionEnd.Client)
         | SocketPhase.EstablishedPendingReport connection ->
@@ -292,7 +292,7 @@ module TestConnectDestinationMeasured =
     /// 127.0.0.1 on Darwin. The probe's interface address stands here as
     /// 10.0.0.5, an address the machine holds.
     let private reconnect (flavour : string) (platform : SimulatedUnixPlatform) : unit =
-        let iface = 0x0A000005u
+        let iface = Ipv4Address 0x0A000005u
 
         let row =
             Regex
@@ -305,13 +305,10 @@ module TestConnectDestinationMeasured =
 
         rows |> List.length |> shouldEqual 6
 
-        let name (address : uint32) : string =
-            if address = iface then
-                "iface"
-            elif address = InternetEndpoint.LoopbackAddress then
-                "127.0.0.1"
-            else
-                dotted address
+        let name (address : Ipv4Address) : string =
+            if address = iface then "iface"
+            elif address = Ipv4Address.loopback then "127.0.0.1"
+            else dotted address
 
         for line in rows do
             let m = row.Match line
@@ -321,7 +318,7 @@ module TestConnectDestinationMeasured =
 
             let system =
                 UnixSystem.initial<int, string> platform
-                |> UnixBootImage.withLocalAddresses [ InternetEndpoint.LoopbackAddress ; iface ] []
+                |> UnixBootImage.withLocalIpv4Addresses [ Ipv4Address.loopback ; iface ] []
                 |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
             let create (kind : SocketKind) (system : UnixSystem<int, string>) =
@@ -333,12 +330,12 @@ module TestConnectDestinationMeasured =
 
                 NewSocket.create SocketDomain.Inet kind protocol system
 
-            let bindTo fd (endpoint : InternetEndpoint) system =
+            let bindTo fd (endpoint : Ipv4Endpoint) system =
                 match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system with
                 | Ok (BindAnswer.Bound bound, system) -> bound, system
                 | other -> failwith $"%s{line}: bind answered %A{other}"
 
-            let connectTo fd (endpoint : InternetEndpoint) system =
+            let connectTo fd (endpoint : Ipv4Endpoint) system =
                 CopyIn.connect fd UserBuffer.Mapped 16u (CopyIn.inet platform endpoint) system
 
             let kind =
@@ -350,9 +347,9 @@ module TestConnectDestinationMeasured =
             // Somewhere to connect to at the interface address, and, at port
             // 6000 on the wildcard, a socket of the call's own kind.
             let peer, system = create SocketKind.Datagram system
-            let peerAt, system = bindTo peer (InternetEndpoint.ofParts iface 0us) system
+            let peerAt, system = bindTo peer (Ipv4Endpoint.ofParts iface 0us) system
             let target, system = create kind system
-            let _, system = bindTo target (InternetEndpoint.ofParts 0u 6000us) system
+            let _, system = bindTo target (Ipv4Endpoint.ofParts (Ipv4Address 0u) 6000us) system
 
             let system =
                 if kind = SocketKind.Stream then
@@ -363,7 +360,7 @@ module TestConnectDestinationMeasured =
                     system
 
             let fd, system = create kind system
-            let bound, system = bindTo fd (InternetEndpoint.ofParts iface 0us) system
+            let bound, system = bindTo fd (Ipv4Endpoint.ofParts iface 0us) system
 
             let system =
                 if m.Groups.["state"].Value = "connected" then
@@ -375,8 +372,8 @@ module TestConnectDestinationMeasured =
 
             let destination =
                 match m.Groups.["dest"].Value with
-                | "127.0.0.1" -> InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 6000us
-                | _ -> InternetEndpoint.ofParts 0u 6000us
+                | "127.0.0.1" -> Ipv4Endpoint.ofParts Ipv4Address.loopback 6000us
+                | _ -> Ipv4Endpoint.ofParts (Ipv4Address 0u) 6000us
 
             match connectTo fd destination system with
             | Ok (ConnectOutcome.Completed, after) ->

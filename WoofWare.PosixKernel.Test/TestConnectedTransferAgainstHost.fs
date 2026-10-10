@@ -331,9 +331,7 @@ module TestConnectedTransferAgainstHost =
         check "socket" listener
 
         let address =
-            SimulatedUnixPlatform.encodeInternetSockaddr
-                platform
-                (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 0us)
+            SimulatedUnixPlatform.encodeInternetSockaddr platform (Ipv4Endpoint.ofParts Ipv4Address.loopback 0us)
 
         check "bind" (hostBind (listener, address, uint32 address.Length))
         check "listen" (hostListen (listener, 8))
@@ -588,7 +586,7 @@ module TestConnectedTransferAgainstHost =
     let private kernelPort : uint16 = 5000us
 
     let private kernelLoopback (platform : SimulatedUnixPlatform) : byte[] =
-        CopyIn.inet platform (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress kernelPort)
+        CopyIn.inet platform (Ipv4Endpoint.ofParts Ipv4Address.loopback kernelPort)
 
     let private kernelClose (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixDescriptor.close fd system with

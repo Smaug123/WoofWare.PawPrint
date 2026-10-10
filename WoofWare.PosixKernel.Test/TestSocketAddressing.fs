@@ -141,7 +141,7 @@ module TestSocketAddressing =
         : Answer * UnixSystem<int, string>
         =
         let platform = system.Machine.UnixPlatform
-        let loopback = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 0us
+        let loopback = Ipv4Endpoint.ofParts Ipv4Address.loopback 0us
 
         let blob, length =
             match domain with

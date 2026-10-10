@@ -17,11 +17,11 @@ type internal TcpConnection =
     {
         /// The connecting side's address — what `accept(2)` reports as the
         /// peer.
-        ClientAddress : InternetEndpoint
+        ClientAddress : Ipv4Endpoint
         /// The accepted side's address: the destination the client connected
         /// to, with a wildcard destination already rewritten to loopback. The
         /// accepted socket's own `getsockname(2)` reports this.
-        ServerAddress : InternetEndpoint
+        ServerAddress : Ipv4Endpoint
         /// The bytes travelling each way, and what each end knows of the
         /// connection's ending.
         Transfer : TcpTransfer

@@ -112,7 +112,10 @@ module DualModeProbe =
     /// `sockaddr_in`, as `sin_of` lays it out, in a buffer of 300 bytes.
     let private sinOf (libc : Libc) (address : uint32) (port : uint16) : byte[] =
         let blob = Array.zeroCreate<byte> 300
-        let inet = CopyIn.inet libc.Platform (InternetEndpoint.ofParts address port)
+
+        let inet =
+            CopyIn.inet libc.Platform (Ipv4Endpoint.ofParts (Ipv4Address address) port)
+
         Array.blit inet 0 blob 0 16
         blob
 

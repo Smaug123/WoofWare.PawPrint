@@ -220,8 +220,8 @@ module internal FcntlWorld =
         | Ok (Pipe2Answer.Created (r, w), system) -> (r, w), system
         | other -> failwith $"pipe2(0x%x{flags}): %A{other}"
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     /// A listening IPv4 stream socket at `port`, non-blocking when
     /// `nonBlocking`.

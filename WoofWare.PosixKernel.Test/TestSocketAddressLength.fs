@@ -29,8 +29,8 @@ module TestSocketAddressLength =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 200
 
-    let private loopback (port : uint16) : InternetEndpoint =
-        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+    let private loopback (port : uint16) : Ipv4Endpoint =
+        Ipv4Endpoint.ofParts Ipv4Address.loopback port
 
     let private listenerPort : uint16 = 5000us
 
@@ -70,7 +70,7 @@ module TestSocketAddressLength =
     let private streamSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         NewSocket.create SocketDomain.Inet SocketKind.Stream SocketProtocol.Tcp system
 
-    let private bindAt (endpoint : InternetEndpoint) (fd : int) (system : UnixSystem<int, string>) =
+    let private bindAt (endpoint : Ipv4Endpoint) (fd : int) (system : UnixSystem<int, string>) =
         match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet system.Machine.UnixPlatform endpoint) system with
         | Ok (BindAnswer.Bound _, system) -> system
         | other -> failwith $"binding fd %d{fd} at %O{endpoint}: %A{other}"
@@ -107,7 +107,7 @@ module TestSocketAddressLength =
             | phase -> failwith $"fd %d{fd} is %A{phase}, not listening"
         | other -> failwith $"fd %d{fd} names %A{other}, not a socket"
 
-    let private localAddress (fd : int) (system : UnixSystem<int, string>) : InternetEndpoint =
+    let private localAddress (fd : int) (system : UnixSystem<int, string>) : Ipv4Endpoint =
         match UnixSocket.getsockname fd UserBuffer.Mapped 16u system with
         | Ok (GetSockNameAnswer.Reported (copiedOut, _)) -> CopyOut.endpoint copiedOut
         | other -> failwith $"getsockname of fd %d{fd}: %A{other}"
