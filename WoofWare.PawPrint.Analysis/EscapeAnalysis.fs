@@ -179,6 +179,9 @@ type internal Runs =
     | Primitive of IntrinsicPrimitive
     /// Native code whose behaviour `NativeMethod` describes, the whole of the method.
     | Native of NativeMethod
+    /// CoreLib's resource lookup, whose contract (`ResourceLookup.raises`) the analysis takes in
+    /// place of its body.
+    | ResourceLookup
     /// The method this assumption summarises, whose contract the analysis takes in place of its
     /// body.
     | Assumed of Assumption
@@ -304,6 +307,20 @@ type EscapeAnalysisState =
 /// be present and to export what its P/Invokes import, so that calling one of their functions
 /// raises nothing. Were one missing, the runtime would run the program's
 /// <c>ResolvingUnmanagedDll</c> handlers, which could throw anything.
+///
+/// CoreLib's lookup of its own resource strings, <c>SR.InternalGetResourceString</c>, which gives
+/// every CoreLib exception its message, is assumed to raise only <c>OutOfMemoryException</c>,
+/// <c>TypeInitializationException</c>, <c>NullReferenceException</c> (for a null key),
+/// <c>ThreadInterruptedException</c> (while it waits for its lock) and
+/// <c>StackOverflowException</c>. That holds when only CoreLib writes CoreLib's private static
+/// fields, so that the lookup's resource manager is CoreLib's own; when the runtime is installed
+/// completely and intact, so that its resources files read; and when every culture the lookup
+/// walks (the current UI culture and each one its <c>Parent</c> chain reaches) that is of a
+/// <c>CultureInfo</c> subclass the program defines behaves as CoreLib's own <c>CultureInfo</c>
+/// would for that culture: its overrides raise nothing, its <c>Name</c> is a valid culture name, its
+/// <c>Parent</c> chain ends at the invariant culture, and it changes no culture state. Reading the
+/// code could not establish these instead, and without them, constructing almost any CoreLib
+/// exception would be unknown.
 ///
 /// A caller may allow further assumptions (<c>Assumption</c>), each of which replaces a method's
 /// body with a contract; an answer lists those it relied on in <c>Escapes.Assumes</c>.
@@ -1726,6 +1743,7 @@ module EscapeAnalysis =
 
         match Assumption.summarises assembly key.Method.Get with
         | Some assumption when assumptions.Contains assumption -> Runs.Assumed assumption
+        | _ when ResourceLookup.isLookup assembly key.Method.Get -> Runs.ResourceLookup
         | _ ->
 
         match substituted, intrinsic with
@@ -1790,6 +1808,7 @@ module EscapeAnalysis =
         | Runs.Primitive primitive ->
             state, contracted (contractRaises state (IntrinsicPrimitive.contract primitive)) [] []
         | Runs.Native native -> state, contracted (exactly (NativeMethod.contract native).Raises) [] []
+        | Runs.ResourceLookup -> state, contracted (exactly ResourceLookup.raises) [] []
         | Runs.Assumed assumption ->
             state,
             contracted
