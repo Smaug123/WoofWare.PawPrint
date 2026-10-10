@@ -404,7 +404,7 @@ module SignalDispatch =
                 // Applying a default at delivery is refused rather than
                 // half-modelled.
                 failwith
-                    $"SignalDispatch.poll: pending %O{signal} is at its default disposition, which terminates or stops the process; applying such a default at delivery rather than at generation is not modelled."
+                    $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is to terminate or stop the process; applying such a default at delivery rather than at generation is not modelled."
 
         returnToUserThen SignalPoll.Continues state
 
