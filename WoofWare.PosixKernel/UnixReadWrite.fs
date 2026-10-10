@@ -3268,21 +3268,33 @@ module UnixReadWrite =
                 Machine = UnixMachineState.withTransfer connectionId transfer system.Machine
             }
 
-        match (TcpTransfer.towards connectionEnd transfer).Receiver with
-        | TcpEndState.Reset _ ->
-            // Linux's `sk_stream_wait_memory` looks for the error before it
-            // looks for a signal; Darwin's sleeper takes whichever reached it
-            // first, which `beforeCompleting` refuses.
+        // The end can send no more: a reset reached it, or its own
+        // `shutdown(SHUT_WR)` (or `SHUT_RDWR`) shut its send side.
+        let cannotSend =
+            match (TcpTransfer.towards connectionEnd transfer).Receiver with
+            | TcpEndState.Reset _ -> true
+            | TcpEndState.Open _ -> TcpTransfer.sendShut connectionEnd transfer
+            | TcpEndState.Closed ->
+                failwith
+                    $"UnixReadWrite.admitFinishWrite: task %O{task} sleeps on socket %O{socketId}, whose end of the connection is closed, but the call holds the socket (this is a bug in this library)."
+
+        if cannotSend then
+            // Linux's `sk_stream_wait_memory` looks for the error, and for
+            // the send side being shut, before it looks for a signal; Darwin's
+            // sleeper takes whichever reached it first, which
+            // `beforeCompleting` refuses.
             match SyscallInterruption.beforeCompleting task system with
             | Error refusal -> Error (WriteRefusal.Interruption refusal)
             | Ok () ->
 
-            // Measured (`tcp-blocking.c`, section W-reset): Linux's write
-            // returned the count it had taken, leaving the error pending, or,
-            // having taken nothing, took the error (ECONNRESET, no SIGPIPE);
-            // Darwin's answered EPIPE and raised SIGPIPE whatever it had taken,
-            // leaving the error pending. Each is what a write made now
-            // answers, but for Linux's count.
+            // Measured (`tcp-blocking.c`, section W-reset, and
+            // `tcp-shutdown.c`, section B): Linux's write returned the count
+            // it had taken, leaving any error pending and raising no SIGPIPE,
+            // or, having taken nothing, answered as a write made now does
+            // (a reset's ECONNRESET, no SIGPIPE; a shut send side's EPIPE and
+            // SIGPIPE); Darwin's answered EPIPE and raised SIGPIPE whatever it
+            // had taken, leaving any error pending. Each is what a write made
+            // now answers, but for Linux's count.
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
             | SimulatedUnixFlavour.Linux when parked.Written > 0 ->
                 answered (WriteAnswer.Completed (int64 parked.Written)) finished
@@ -3300,11 +3312,8 @@ module UnixReadWrite =
             | ConnectionWriteStep.Answered (answer, after) -> answered answer (withTransfer after finished)
             | step ->
                 failwith
-                    $"UnixReadWrite.admitFinishWrite: socket %O{socketId}'s end was reset, and a write there takes bytes (%A{step}) (this is a bug in this library)."
-        | TcpEndState.Closed ->
-            failwith
-                $"UnixReadWrite.admitFinishWrite: task %O{task} sleeps on socket %O{socketId}, whose end of the connection is closed, but the call holds the socket (this is a bug in this library)."
-        | TcpEndState.Open _ ->
+                    $"UnixReadWrite.admitFinishWrite: socket %O{socketId}'s end can send no more, and a write there takes bytes (%A{step}) (this is a bug in this library)."
+        else
 
         let step = connectionWriteStep connectionEnd false remaining transfer
 

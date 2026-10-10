@@ -139,6 +139,68 @@ module AcceptRefusal =
         | AcceptRefusal.DarwinDrainedListener listener ->
             $"socket %O{listener} is a listener on which a close of the descriptor an accept was asleep through has ended every accept, and this accept would sleep on it. Measured on Darwin (close-ends-call.c section A7), such a sleep answers ECONNABORTED as soon as anything wakes it, a connection or a signal, and one connection wakes one such sleeper, the connection staying queued, so a second sleeper sleeps on through it. This kernel wakes a sleeping accept for as long as a connection is queued, so it would wake every such sleeper for one connection."
 
+/// What `shutdown(2)` answered.
+[<RequireQualifiedAccess>]
+type ShutdownAnswer =
+    /// 0.
+    | Shut
+    /// -1, with this errno.
+    | Failed of error : UnixError
+
+/// Why this kernel will not answer a `shutdown(2)`.
+[<RequireQualifiedAccess>]
+type ShutdownRefusal =
+    /// The descriptor is a listening socket. Measured, Linux's `SHUT_RD` and
+    /// `SHUT_RDWR` reset every queued connection's client, wake a sleeping
+    /// `accept` with EINVAL and return the listener to an idle socket that
+    /// keeps its port, and Darwin answers ENOTCONN and changes nothing
+    /// (`tcp-shutdown.c` in docs/plans/2026-10-08-tcp-shutdown-linger,
+    /// sections U, B, E and Q); neither is modelled yet.
+    | Listener of socket : SocketId
+    /// The descriptor is a socket with no connection, under Linux. Linux
+    /// answers ENOTCONN, as Darwin does, but still marks the sides `how`
+    /// names shut, and they stay shut through a later `connect`: measured
+    /// (`tcp-shutdown.c`, section U, `fresh-then` and `udp-then`), a fresh
+    /// stream socket then polls IN|RDHUP after `SHUT_RD`, and its writes once
+    /// connected answer EPIPE after `SHUT_WR`. This kernel keeps no shut
+    /// sides on a socket without a connection.
+    | LinuxUnconnected of socket : SocketId
+    /// The descriptor is a datagram socket connected to a peer, whose
+    /// `shutdown(2)` is unmeasured.
+    | ConnectedDatagram of socket : SocketId
+    /// The descriptor is a socket in a domain this kernel models no
+    /// `shutdown(2)` for.
+    | UnmodelledDomain of socket : SocketId * domain : SocketDomain
+    /// The descriptor is a socket of a kind whose `shutdown(2)` is
+    /// unmeasured.
+    | UnmeasuredKind of socket : SocketId * kind : SocketKind
+    /// Under Darwin, the call would shut the receive side of `socket`, the
+    /// connection's end, while `unsent` bytes the peer wrote still wait in
+    /// the peer's send buffer. Measured, the peer is then reset only when a
+    /// TCP timer fires, at a time that varied between runs, or not within
+    /// 15 s (`tcp-shutdown.c`, sections R and X). This kernel delivers bytes
+    /// as soon as there is room, and keeps no timers.
+    | ReceiveShutBeforeUnsentBytes of socket : SocketId * unsent : int
+
+[<RequireQualifiedAccess>]
+module ShutdownRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half: which entry point, and which descriptor.
+    let describe (refusal : ShutdownRefusal) : string =
+        match refusal with
+        | ShutdownRefusal.Listener socket ->
+            $"the descriptor is socket %O{socket}, which is listening. Measured, Linux's SHUT_RD and SHUT_RDWR reset the clients of every queued connection, wake a sleeping accept with EINVAL and leave the socket idle with its port, while Darwin answers ENOTCONN and changes nothing; this kernel does not yet model either."
+        | ShutdownRefusal.LinuxUnconnected socket ->
+            $"the descriptor is socket %O{socket}, which has no connection. Linux answers ENOTCONN, but still marks the sides it was asked to shut, and they stay shut through a later connect: measured, a fresh stream socket then polls IN|RDHUP after SHUT_RD, and its writes once connected answer EPIPE after SHUT_WR. This kernel keeps no shut sides on a socket without a connection."
+        | ShutdownRefusal.ConnectedDatagram socket ->
+            $"the descriptor is socket %O{socket}, a datagram socket connected to a peer, and what shutdown(2) does to one is unmeasured."
+        | ShutdownRefusal.UnmodelledDomain (socket, domain) ->
+            $"the descriptor is socket %O{socket}, whose domain is %O{domain}, and this kernel models shutdown(2) only for IPv4 and IPv6 sockets."
+        | ShutdownRefusal.UnmeasuredKind (socket, kind) ->
+            $"the descriptor is socket %O{socket}, which is a %O{kind} socket, and what shutdown(2) does to one is unmeasured."
+        | ShutdownRefusal.ReceiveShutBeforeUnsentBytes (socket, unsent) ->
+            $"the call would shut the receive side of socket %O{socket} while %d{unsent} bytes its peer wrote still wait in the peer's send buffer. Measured on Darwin, the peer is then reset only when a TCP timer fires, at a time that varied between runs, or not within 15 s; this kernel delivers bytes as soon as there is room, and keeps no timers."
+
 /// Why this kernel will not answer a `connect(2)` at all: the call reached an
 /// input whose real answer is unmeasured, or a state this library does not
 /// model. The client decides what a refusal means for it; nothing here is
@@ -2082,3 +2144,126 @@ module UnixConnection =
         | Error refusal -> Error refusal
         | Ok (outcome, after) ->
             Ok (outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixConnection.finishAccept" held after)
+
+    /// `shutdown(2)` of `fd`, with `how` raw: `SHUT_RD` (0), `SHUT_WR` (1) or
+    /// `SHUT_RDWR` (2) on both flavours.
+    ///
+    /// Screened in the measured order (`tcp-shutdown.c` in
+    /// docs/plans/2026-10-08-tcp-shutdown-linger, section U): EBADF, then
+    /// ENOTSOCK, then EINVAL for any other `how`, then the socket's state.
+    /// An IPv4 or IPv6 socket with no connection answers ENOTCONN under
+    /// Darwin, and is refused under Linux (`ShutdownRefusal.LinuxUnconnected`).
+    ///
+    /// On a connected stream socket the call shuts the sides `how` names, by
+    /// each flavour's rules: shutting the send side
+    /// sends a FIN behind what is still unsent; shutting the receive side makes
+    /// reads answer end of file once what was queued is read, which Darwin
+    /// discards. Linux answers ENOTCONN once the connection was reset or both
+    /// FINs have arrived; Darwin answers ENOTCONN to a side already shut, and
+    /// of `SHUT_RDWR` applies the receive side alone if the send side was
+    /// already shut, and nothing if the receive side was. Every registration
+    /// the call's wakes reach is signalled: on Linux every one on the socket,
+    /// for every call; on Darwin the filter of each side it shut; and the
+    /// peer's, when the FIN reaches it. A Linux socket whose completed connect
+    /// had not been reported is reported by the call: a later `connect`
+    /// answers EISCONN (measured, section U, `connect-unreported`).
+    ///
+    /// A parked read or write on either end may have an answer afterwards;
+    /// `UnixWait.wakes` finds it.
+    let shutdown<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (how : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ShutdownAnswer * UnixSystem<'Task, 'Handler>, ShutdownRefusal>
+        =
+        match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+        | None -> Ok (ShutdownAnswer.Failed UnixError.EBADF, system)
+        | Some target ->
+
+        match target with
+        | OpenFileTarget.File _
+        | OpenFileTarget.Directory _
+        | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Pipe _
+        | OpenFileTarget.Kqueue _
+        | OpenFileTarget.Epoll _ -> Ok (ShutdownAnswer.Failed UnixError.ENOTSOCK, system)
+        | OpenFileTarget.Socket socketId ->
+
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        match socket.Domain with
+        | SocketDomain.Unix -> Error (ShutdownRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketDomain.Inet
+        | SocketDomain.Inet6 ->
+
+        match socket.Kind with
+        | SocketKind.SeqPacket -> Error (ShutdownRefusal.UnmeasuredKind (socketId, socket.Kind))
+        | SocketKind.Stream
+        | SocketKind.Datagram ->
+
+        let parsed =
+            match how with
+            | 0 -> Some TcpShutdownHow.Read
+            | 1 -> Some TcpShutdownHow.Write
+            | 2 -> Some TcpShutdownHow.Both
+            | _ -> None
+
+        match parsed with
+        | None -> Ok (ShutdownAnswer.Failed UnixError.EINVAL, system)
+        | Some how ->
+
+        let unconnected () : Result<ShutdownAnswer * UnixSystem<'Task, 'Handler>, ShutdownRefusal> =
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Darwin -> Ok (ShutdownAnswer.Failed UnixError.ENOTCONN, system)
+            | SimulatedUnixFlavour.Linux -> Error (ShutdownRefusal.LinuxUnconnected socketId)
+
+        match socket.Phase with
+        | SocketPhase.Listening _ -> Error (ShutdownRefusal.Listener socketId)
+        | SocketPhase.DatagramPeer _ -> Error (ShutdownRefusal.ConnectedDatagram socketId)
+        | SocketPhase.Idle
+        | SocketPhase.Refused _ -> unconnected ()
+        | SocketPhase.EstablishedPendingReport _
+        | SocketPhase.Established _ ->
+
+        let connectionId, connectionEnd =
+            match SocketPhase.connectionEnd socket.Phase with
+            | Some held -> held
+            | None ->
+                failwith
+                    $"UnixConnection.shutdown: socket %O{socketId} is in %A{socket.Phase}, which holds no connection end (this is a bug in this library)."
+
+        let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+
+        match TcpTransfer.shutdown connectionEnd how transfer with
+        | Error (TcpShutdownRefusal.DarwinReceiveShutBeforeUnsentBytes (_, unsent)) ->
+            Error (ShutdownRefusal.ReceiveShutBeforeUnsentBytes (socketId, unsent))
+        | Ok (answer, wakes, transfer) ->
+
+        // `inet_shutdown` moves a socket whose connect is still to be
+        // reported to `SS_CONNECTED`.
+        let phase =
+            match socket.Phase with
+            | SocketPhase.EstablishedPendingReport connection ->
+                SocketPhase.Established (connection, ConnectionEnd.Client)
+            | phase -> phase
+
+        let system =
+            { system with
+                Machine =
+                    { UnixMachineState.withTransfer connectionId transfer system.Machine with
+                        Sockets =
+                            Map.add
+                                socketId
+                                { socket with
+                                    Phase = phase
+                                }
+                                system.Machine.Sockets
+                    }
+            }
+
+        let answer =
+            match answer with
+            | TcpShutdownAnswer.Shut -> ShutdownAnswer.Shut
+            | TcpShutdownAnswer.NotConnected -> ShutdownAnswer.Failed UnixError.ENOTCONN
+
+        Ok (answer, SocketWake.signalTransfer connectionId wakes system)

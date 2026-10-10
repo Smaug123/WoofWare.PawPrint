@@ -287,7 +287,7 @@ type SocketOptions =
         /// back.
         NoDelay : bool
         /// `SO_LINGER`. Stored only: what a close does with it belongs with
-        /// `close` and `shutdown`, which do not model it yet, and so refuse the
+        /// `close`, which does not model it yet, and so refuses the
         /// close of a connected socket where it would differ from the ordinary
         /// close. With a linger time of zero that close is a reset instead of
         /// an orderly shutdown, refused while the connection is still
