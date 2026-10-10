@@ -990,15 +990,15 @@ module TestBlockingAccept =
         match SocketPhase.connectionEnd socket.Phase with
         | None -> ClientFate.Refused
         | Some (connection, ConnectionEnd.Client) ->
-            match
-                (TcpTransfer.towards
+            let towardsClient =
+                TcpTransfer.towards
                     ConnectionEnd.Client
-                    (UnixMachineState.connection connection system.Machine).Transfer)
-                    .Receiver
-            with
-            | TcpEndState.Open -> ClientFate.Queued
-            | TcpEndState.FinReceived -> ClientFate.Accepted
-            | TcpEndState.Reset _ -> ClientFate.Reset
+                    (UnixMachineState.connection connection system.Machine).Transfer
+
+            match towardsClient.Receiver, towardsClient.Fin with
+            | TcpEndState.Open _, TcpFin.NotSent -> ClientFate.Queued
+            | TcpEndState.Open _, TcpFin.Arrived _ -> ClientFate.Accepted
+            | TcpEndState.Reset _, _ -> ClientFate.Reset
             | other -> failwith $"client fd %d{fd}'s end of %O{connection} is in %A{other}"
         | Some (_, ConnectionEnd.Server) -> failwith $"client fd %d{fd} is a connection's server end"
 

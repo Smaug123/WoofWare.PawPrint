@@ -3138,7 +3138,7 @@ module TestBlockingConnection =
                 | WriteOutcome.Returns (WriteAnswer.Failed UnixError.EAGAIN, system) when linux ->
                     match (UnixMachineState.connection connection system.Machine).Transfer.Rules with
                     | TcpTransferRules.Linux armed -> Set.contains ConnectionEnd.Client armed |> shouldEqual true
-                    | TcpTransferRules.Darwin -> failwith "a Linux connection with Darwin's rules"
+                    | TcpTransferRules.Darwin _ -> failwith "a Linux connection with Darwin's rules"
 
                     system
                 | WriteOutcome.WouldBlock (_, system) when not linux ->

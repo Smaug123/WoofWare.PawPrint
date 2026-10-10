@@ -1365,7 +1365,7 @@ module UnixSystem =
                 let rulesFlavour =
                     match tcp.Transfer.Rules with
                     | TcpTransferRules.Linux _ -> SimulatedUnixFlavour.Linux
-                    | TcpTransferRules.Darwin -> SimulatedUnixFlavour.Darwin
+                    | TcpTransferRules.Darwin _ -> SimulatedUnixFlavour.Darwin
 
                 let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
