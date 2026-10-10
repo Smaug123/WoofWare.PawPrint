@@ -16,7 +16,8 @@ type Opacity =
     /// call whose type does not decide it: an instance method's on a class that may be derived from,
     /// or a type variable of a definition analysed for every instantiation at once.
     | VirtualCall
-    /// <c>calli</c>, or a call through a dynamic method's scope: no metadata names the target.
+    /// <c>calli</c>, or a call through a dynamic method's scope: no metadata names the target. So too
+    /// a field a dynamic method's scope names, whose type's initializer the access may run.
     | IndirectCall
     /// <c>ldvirtftn</c> of an interface method, which on an object implementing
     /// <c>IDynamicInterfaceCastable</c> asks that object's <c>GetInterfaceImplementation</c>.
@@ -75,13 +76,15 @@ type internal OutsideBodyFact =
 type internal CalleeSpelling =
     /// The callee has no type variables, so every call reaches the same method.
     | Fixed
-    /// The token names a generic definition rather than an instantiation of it: a MethodDef of a
-    /// generic type's method, or a MemberRef whose parent is a generic type named without
-    /// arguments. Nothing says which instantiation runs.
+    /// The token names a generic definition rather than an instantiation of it: a MethodDef or
+    /// FieldDef of a generic type's member, or a MemberRef whose parent is a generic type named
+    /// without arguments. Nothing says which instantiation runs.
     | Typical
     /// The token, of the calling body's assembly, whose type arguments, read against the calling
     /// body's instantiation, instantiate the callee: a MethodSpec, or a MemberRef whose parent is a
-    /// TypeSpec or a non-generic type with a generic ancestor.
+    /// TypeSpec or a non-generic type with a generic ancestor. For a type initializer that a field's
+    /// access runs, the token is the field's, and its declaring type's arguments are the
+    /// initializer's.
     | Spelled of MetadataToken
 
 /// A method a body calls, and how the call instantiates it.
@@ -104,10 +107,12 @@ type internal CallSite =
     /// object that is one of these (`LocalFacts.Spellings` spells them): each one's class decides
     /// what runs on it.
     | Virtual of receivers : Set<SpelledObject> * Callee
-    /// The parameterless constructor the runtime runs to make an exception that it raises by
-    /// itself at this instruction (`ExceptionMaking`). The instruction does not make this call, so
-    /// what the instruction leaves on the stack is not what the constructor returns.
-    | Constructor of MethodKey
+    /// A method the runtime runs by itself at this instruction: the parameterless constructor of an
+    /// exception it makes there (`ExceptionMaking`), a type initializer the instruction runs, or
+    /// what it runs to throw again a type initializer's own exception
+    /// (`Exception.InternalPreserveStackTrace`). The instruction does not make this call, so what
+    /// the instruction leaves on the stack is not what the method returns.
+    | Runtime of Callee
 
 /// What one method body does by itself: the exceptions it raises, the places it cannot see
 /// through, and the methods it calls, each at the IL offset where it happens, so that the body's
@@ -293,10 +298,19 @@ type EscapeAnalysisState =
 ///
 /// The runtime makes most of the exceptions it raises by itself by running the exception's
 /// parameterless constructor, which looks up its message, so what that constructor can raise is in
-/// the answer too. What it runs to make one with arguments is not followed: a failed binding's, a
-/// multidimensional array constructor's <c>ArgumentOutOfRangeException</c>, and a
-/// <c>TypeInitializationException</c>. Should the last's constructor fail, the runtime raises the
-/// type initializer's own exception instead, which the answer leaves out.
+/// the answer too. What it runs to make one with arguments is not followed: a failed binding's, and
+/// a multidimensional array constructor's <c>ArgumentOutOfRangeException</c>.
+///
+/// A type initializer runs where CoreCLR's <c>CEEInfo::initClass</c> runs it: at an access to a
+/// static field of its type, and at a call to a method of its type that is static, a constructor, or
+/// an instance method of a value type or an interface, unless the type is marked
+/// <c>beforefieldinit</c>. There, should it fail, the runtime raises a
+/// <c>TypeInitializationException</c>, or the initializer's own exception should making that fail,
+/// which it throws again, running <c>Exception.InternalPreserveStackTrace</c> on it. So the answer
+/// has the wrapper, what the initializer raises, and what that method raises. A module's
+/// initializer, which runs as code first binds into its module, is followed no further than the
+/// <c>TypeInitializationException</c>: what it raises, and what throwing that again raises, are left
+/// out.
 ///
 /// An interface cast or an array store calls <c>IDynamicInterfaceCastable.IsInterfaceImplemented</c>
 /// on an object whose class implements it. That is assumed to throw nothing but the
@@ -331,7 +345,11 @@ type EscapeAnalysisState =
 /// would for that culture: its overrides raise nothing, its <c>Name</c> is a valid culture name, its
 /// <c>Parent</c> chain ends at the invariant culture, and it changes no culture state. Reading the
 /// code could not establish these instead, and without them, constructing almost any CoreLib
-/// exception would be unknown.
+/// exception would be unknown. Constructing one runs type initializers, though, <c>SR</c>'s and
+/// those the lookup runs, and should one fail, the runtime may throw its exception again as above.
+/// <c>SR</c>'s initializer, and the stack trace that reads, are unknown unless the caller allows
+/// <c>Assumption.CoreLibTypeInitializers</c> and <c>Assumption.StackTracePreserved</c>; allowed no
+/// assumption, constructing almost any CoreLib exception is unknown still.
 ///
 /// A caller may allow further assumptions (<c>Assumption</c>), each of which replaces a method's
 /// body with a contract; an answer lists those it relied on in <c>Escapes.Assumes</c>.
@@ -469,12 +487,22 @@ module EscapeAnalysis =
 
         match making with
         | ExceptionMaking.ParameterlessConstructor -> thrown, Some (parameterlessConstructor state name)
-        | ExceptionMaking.Preallocated
-        | ExceptionMaking.InitializerFailure -> thrown, None
+        | ExceptionMaking.Preallocated -> thrown, None
+        | ExceptionMaking.InitializerFailure ->
+            failwith
+                $"BUG: %s{fullName} is raised for a type initializer, which the site running it accounts for (`initializerFailure`)"
 
     /// What the runtime raises for an `OpcodeFault` (`runtimeRaises`).
     let private faultRaises (state : EscapeAnalysisState) (fault : OpcodeFault) : ThrownType * MethodKey option =
         runtimeRaises state (OpcodeFault.typeName fault) (ExceptionMaking.ofOpcodeFault fault)
+
+    /// A method the runtime runs by itself, which has no type variables.
+    let private runtimeRuns (method : MethodKey) : CallSite =
+        CallSite.Runtime
+            {
+                Callee = method
+                Spelling = CalleeSpelling.Fixed
+            }
 
     /// What `runtimeRaises` says the runtime raises at `offset`, as raises and as calls to the
     /// constructors it runs.
@@ -489,10 +517,39 @@ module EscapeAnalysis =
             raised
             |> List.choose (fun (_, constructor) ->
                 constructor
-                |> Option.map (fun constructor -> offset, CallSite.Constructor constructor, [])
+                |> Option.map (fun constructor -> offset, runtimeRuns constructor, [])
             )
 
         raises, calls
+
+    /// What CoreCLR runs on an exception it throws again, to keep the stack trace it was thrown with
+    /// (`ExceptionPreserveStackTrace`): `Exception.InternalPreserveStackTrace`.
+    let private preserveStackTrace (state : EscapeAnalysisState) : MethodKey =
+        let corelib = state.BaseTypes.Corelib
+
+        let found =
+            corelib.TryGetTopLevelTypeDef "System" "Exception"
+            |> Option.toList
+            |> List.collect (fun ty -> List.ofSeq ty.Methods)
+            |> List.filter (fun m ->
+                m.Name = "InternalPreserveStackTrace"
+                && not m.IsStatic
+                && m.Signature.ParameterTypes.IsEmpty
+            )
+            |> List.choose (fun m -> m.TryMetadata)
+
+        match found with
+        | [ facts ] -> MethodKey.make corelib facts.Handle
+        | found ->
+            failwith
+                $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one Exception.InternalPreserveStackTrace(), found %d{found.Length}"
+
+    /// What a site running a type initializer raises besides what the initializer itself does
+    /// (`ExceptionMaking.InitializerFailure`): the `TypeInitializationException` wrapping that, and,
+    /// should making the wrapper fail, what the runtime runs to throw the initializer's own
+    /// exception again, which has no type variables.
+    let private initializerFailure (state : EscapeAnalysisState) : ThrownType * MethodKey =
+        ThrownType.Exactly (corelibException state "TypeInitializationException"), preserveStackTrace state
 
     /// What binding a type reference in `assembly` finds.
     let private bindTypeRef
@@ -926,9 +983,55 @@ module EscapeAnalysis =
             let _, declaring = definitionOf state (declaringTypeOf state key)
             not (declaring.TypeAttributes.HasFlag TypeAttributes.Sealed)
 
-    let private hasTypeInitializer (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) : bool =
+    /// The type initializer of a type definition, if it has one.
+    let private typeInitializer (state : EscapeAnalysisState) (identity : ResolvedTypeIdentity) : MethodKey option =
+        let assembly, ty = definitionOf state identity
+
+        ty.Methods
+        |> List.tryFind (fun m -> m.Name = ".cctor" && m.IsStatic)
+        |> Option.map (fun m -> MethodKey.make assembly (MethodInfo.requireMetadata ".cctor" m).Handle)
+
+    /// The type initializer that calling `key` runs first, as CoreCLR's `CEEInfo::initClass`
+    /// decides: its declaring type's, for a static method or a constructor, or for an instance
+    /// method of a value type or an interface. Not for an instance method of a class, whose
+    /// constructor has run the initializer already; nor for the initializer itself; nor where the
+    /// type is marked `beforefieldinit`, whose initializer waits for an access to one of its static
+    /// fields; nor for a module's `<Module>`, whose initializer runs as code first binds into it.
+    let private initializerOnCall
+        (state : EscapeAnalysisState)
+        (key : MethodKey)
+        : EscapeAnalysisState * MethodKey option
+        =
+        let _, method = methodOf state key
+        let identity = declaringTypeOf state key
         let _, ty = definitionOf state identity
-        ty.Methods |> List.exists (fun m -> m.Name = ".cctor" && m.IsStatic)
+
+        let isModule =
+            identity.TypeDefinition.Get = MetadataTokens.TypeDefinitionHandle 1
+            && ty.Name = "<Module>"
+
+        if
+            isModule
+            || ty.TypeAttributes.HasFlag TypeAttributes.BeforeFieldInit
+            || (method.IsStatic && method.Name = ".cctor")
+        then
+            state, None
+        elif method.IsStatic || method.Name = ".ctor" then
+            state, typeInitializer state identity
+        elif ty.TypeAttributes.HasFlag TypeAttributes.Interface then
+            state, typeInitializer state identity
+        else
+            let valueType = state.BaseTypes.ValueType.Identity
+            let state, derivesFromValueType = derivesFrom state identity valueType
+
+            if
+                derivesFromValueType
+                && identity <> valueType
+                && identity <> state.BaseTypes.Enum.Identity
+            then
+                state, typeInitializer state identity
+            else
+                state, None
 
     /// A static virtual method, which only a `constrained.` call reaches, and which the type that
     /// prefix names decides.
@@ -1837,19 +1940,12 @@ module EscapeAnalysis =
     let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
         let assembly, method = methodOf state key
 
-        let contracted
-            (raised : ThrownType list)
-            (assumed : Assumption list)
-            (constructors : MethodKey list)
-            : LocalFacts
-            =
+        let contracted (raised : ThrownType list) (assumed : Assumption list) (runs : MethodKey list) : LocalFacts =
             {
                 Raises = raised |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
                 Assumed = assumed |> List.map (fun assumption -> 0, assumption)
-                Calls =
-                    constructors
-                    |> List.map (fun constructor -> 0, CallSite.Constructor constructor, [])
+                Calls = runs |> List.map (fun method -> 0, runtimeRuns method, [])
                 Rethrows = []
                 Regions = []
                 OutsideBody = Set.empty
@@ -1868,7 +1964,10 @@ module EscapeAnalysis =
             let raised = contractRaises state (IntrinsicPrimitive.contract primitive)
             state, contracted (List.map fst raised) [] (List.choose snd raised)
         | Runs.Native native -> state, contracted (exactly (NativeMethod.contract native).Raises) [] []
-        | Runs.ResourceLookup -> state, contracted (exactly ResourceLookup.raises) [] []
+        | Runs.ResourceLookup ->
+            // A type initializer it runs may fail, and throwing that one's own exception again
+            // preserves its stack trace.
+            state, contracted (exactly ResourceLookup.raises) [] [ preserveStackTrace state ]
         | Runs.Assumed assumption ->
             state,
             contracted
@@ -1893,47 +1992,110 @@ module EscapeAnalysis =
             else
                 None
 
-        // Whether a `TypeInitializationException` from this instruction is impossible: the type it
-        // touches has no initializer to fail, or is the one this body is initializing. A
-        // `callvirt` names where dispatch starts rather than where it lands, so it is never pruned.
-        // Nor does a call of a static virtual name the type it lands on, but that type's
-        // initializer is the call site's to account for: `callsOf` does, for each instance whose
-        // dispatch it decides, and a call it does not decide is opaque.
-        let typeInitializationImpossible
+        // The type declaring the static field a token names, and how the token instantiates it;
+        // `None` for an instance field, and for a token that does not bind, whose instruction never
+        // runs.
+        let staticFieldOwner
+            (state : EscapeAnalysisState)
+            (token : MetadataToken)
+            : EscapeAnalysisState * (ResolvedTypeIdentity * CalleeSpelling) option
+            =
+            let owner (state : EscapeAnalysisState) (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) spelling =
+                if field.IsStatic then
+                    let identity = field.DeclaringType.Identity
+                    let _, ty = definitionOf state identity
+
+                    let spelling =
+                        if ty.Generics.IsEmpty then
+                            CalleeSpelling.Fixed
+                        else
+                            spelling
+
+                    state, Some (identity, spelling)
+                else
+                    state, None
+
+            match token with
+            | MetadataToken.FieldDefinition handle -> owner state assembly.Fields.[handle] CalleeSpelling.Typical
+            | MetadataToken.MemberReference handle ->
+                let assemblies, target =
+                    FieldReferenceResolution.resolve
+                        state.LoggerFactory
+                        state.RuntimeDirs
+                        state.BaseTypes
+                        state.TypeSystem._LoadedAssemblies
+                        assembly
+                        handle
+
+                let state = withAssemblies state assemblies
+
+                match target with
+                | FieldReferenceTarget.Defined (declaring, field) ->
+                    // Only a TypeSpec parent spells the declaring type's arguments.
+                    let spelling =
+                        match assembly.Members.[handle].Parent with
+                        | MetadataToken.TypeSpecification _ -> CalleeSpelling.Spelled token
+                        | _ -> CalleeSpelling.Typical
+
+                    owner state declaring.Fields.[field] spelling
+                | FieldReferenceTarget.Missing
+                | FieldReferenceTarget.DependsOnInstantiation
+                | FieldReferenceTarget.ParentTypeMissing _
+                | FieldReferenceTarget.ParentAssemblyUnavailable _ -> state, None
+            | other -> failwith $"A field instruction in %s{assembly.DefinitionFullName} names %O{other}"
+
+        // What this instruction raises by running a type initializer, which `OpcodeFaults` says it
+        // may (`initializerFailure`). An access to a static field runs its declaring type's, unless
+        // that is the type this body initializes; one to an instance field runs none. A call runs
+        // the initializer of what it reaches, which `callsOf` accounts for once dispatch decides
+        // that. Nothing names what `calli` reaches, which leaves its call opaque, so it raises only
+        // the wrapper here.
+        let initializerAt
             (state : EscapeAnalysisState)
             (op : IlOp)
-            (methodTarget : CallTarget option)
-            : EscapeAnalysisState * bool
+            (offset : int)
+            : EscapeAnalysisState *
+              (int * ThrownType) list *
+              (int * CallSite * StackValue list) list *
+              (int * Opacity * MethodKey option) list
             =
-            let owner (state : EscapeAnalysisState) : EscapeAnalysisState * ResolvedTypeIdentity option =
-                match op with
-                | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp),
-                                           _) ->
-                    match methodTarget with
-                    | Some (CallTarget.Method callee) -> state, Some (declaringTypeOf state callee.Callee)
-                    | _ -> state, None
-                | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Ldsfld | UnaryMetadataTokenIlOp.Stsfld | UnaryMetadataTokenIlOp.Ldsflda),
-                                           MetadataOperand.FromMetadata token) ->
-                    match token.Token with
-                    | MetadataToken.FieldDefinition handle ->
-                        state, Some assembly.Fields.[handle].DeclaringType.Identity
-                    | MetadataToken.MemberReference handle ->
-                        match assembly.Members.[handle].Parent with
-                        | MetadataToken.TypeDefinition parent -> state, Some assembly.TypeDefs.[parent].Identity
-                        | MetadataToken.TypeReference parent -> resolveTypeRef state assembly assembly.TypeRefs.[parent]
-                        | MetadataToken.TypeSpecification parent ->
-                            nominalIdentity state assembly assembly.TypeSpecs.[parent].Signature
-                        | _ -> state, None
-                    | _ -> state, None
-                | _ -> state, None
+            match op with
+            | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Ldsfld | UnaryMetadataTokenIlOp.Stsfld | UnaryMetadataTokenIlOp.Ldsflda | UnaryMetadataTokenIlOp.Ldfld | UnaryMetadataTokenIlOp.Ldflda | UnaryMetadataTokenIlOp.Stfld),
+                                       operand) ->
+                match operand with
+                // No metadata names the field, so nothing says whose initializer runs.
+                | MetadataOperand.FromDynamicScope _ -> state, [], [], [ offset, Opacity.IndirectCall, None ]
+                | MetadataOperand.FromMetadata token ->
 
-            match methodTarget with
-            | Some (CallTarget.Method callee) when isStaticVirtual state callee.Callee -> state, true
-            | _ ->
+                match staticFieldOwner state token.Token with
+                | state, None -> state, [], [], []
+                | state, Some (owner, _) when Some owner = initializing -> state, [], [], []
+                | state, Some (owner, spelling) ->
+                    match typeInitializer state owner with
+                    | None -> state, [], [], []
+                    | Some initializer ->
+                        let wrapper, preserve = initializerFailure state
 
-            match owner state with
-            | state, Some owner -> state, (Some owner = initializing || not (hasTypeInitializer state owner))
-            | state, None -> state, false
+                        let initializer : Callee =
+                            {
+                                Callee = initializer
+                                Spelling = spelling
+                            }
+
+                        state,
+                        [ offset, wrapper ],
+                        [ offset, CallSite.Runtime initializer, [] ; offset, runtimeRuns preserve, [] ],
+                        []
+            | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp),
+                                       _) -> state, [], [], []
+            | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, _) ->
+                state,
+                [
+                    offset, ThrownType.Exactly (corelibException state "TypeInitializationException")
+                ],
+                [],
+                []
+            | other -> failwith $"BUG: OpcodeFaults says %A{other} runs a type initializer, and nothing here says whose"
 
         // 0. Bind the token the instruction names, which the JIT does before the body runs. This
         // binds every instruction's, as the JIT does for code no run reaches unless a branch it
@@ -2052,23 +2214,16 @@ module EscapeAnalysis =
                     | IlOp.Nullary NullaryIlOp.Rethrow -> state, raises, opaque, calls
                     | _ -> state, raises, (offset, Opacity.UnmodelledOpcode, None) :: opaque, calls
                 | OpcodeFaults.Raises faults ->
-                    let state, raises, calls =
-                        ((state, raises, calls), faults)
-                        ||> List.fold (fun (state, raises, calls) fault ->
-                            let state, impossible =
-                                if fault = OpcodeFault.TypeInitialization then
-                                    typeInitializationImpossible state op methodTarget
-                                else
-                                    state, false
-
-                            if impossible then
-                                state, raises, calls
-                            else
-                                let raised, constructed = raisedAt offset [ faultRaises state fault ]
-                                state, raised @ raises, constructed @ calls
-                        )
-
-                    state, raises, opaque, calls
+                    ((state, raises, opaque, calls), faults)
+                    ||> List.fold (fun (state, raises, opaque, calls) fault ->
+                        match fault with
+                        | OpcodeFault.TypeInitialization ->
+                            let state, raised, ran, hidden = initializerAt state op offset
+                            state, raised @ raises, hidden @ opaque, ran @ calls
+                        | _ ->
+                            let raised, constructed = raisedAt offset [ faultRaises state fault ]
+                            state, raised @ raises, opaque, constructed @ calls
+                    )
 
             // 2. What the instruction throws explicitly: each object its operand may be. A null one
             // raises only the fault `OpcodeFaults` names for `throw`.
@@ -3124,13 +3279,12 @@ module EscapeAnalysis =
                 None
 
         let state, reached =
-            // The call the instruction makes, not a constructor the runtime runs there to make an
-            // exception the instruction raises.
+            // The call the instruction makes, not a method the runtime runs there by itself.
             let made =
                 facts.Calls
                 |> List.tryFind (fun (offset, site, _) ->
                     match site with
-                    | CallSite.Constructor _ -> false
+                    | CallSite.Runtime _ -> false
                     | CallSite.Direct _
                     | CallSite.Constrained _
                     | CallSite.Virtual _ -> offset = call
@@ -3138,8 +3292,8 @@ module EscapeAnalysis =
 
             match made with
             | None -> state, None
-            | Some (_, CallSite.Constructor constructor, _) ->
-                failwith $"BUG: looking for the call at %d{call}, the search found %O{constructor}, which it skips"
+            | Some (_, CallSite.Runtime ran, _) ->
+                failwith $"BUG: looking for the call at %d{call}, the search found %O{ran.Callee}, which it skips"
             | Some (_, CallSite.Direct callee, passes) ->
                 let state, reached = calleeInstance state assembly instance.Arguments callee
 
@@ -3243,20 +3397,58 @@ module EscapeAnalysis =
         let assembly = assemblyOf state instance.Definition.AssemblyFullName
 
         // What a dispatched call raises by landing on `reached` rather than on what the body names.
-        // A static method's call runs its declaring type's initializer, which may fail; the facts
-        // leave that to the type dispatch lands on. And no token of this body names the method
-        // dispatch lands on, so binding none of them runs its module's initializer: that runs when
-        // the method first binds into its own module, out of this call.
-        let landingRaises (state : EscapeAnalysisState) (callee : Callee) (reached : MethodInstance) : ThrownType list =
+        // No token of this body names the method dispatch lands on, so binding none of them runs
+        // its module's initializer: that runs when the method first binds into its own module, out
+        // of this call.
+        let landingRaises (state : EscapeAnalysisState) (reached : MethodInstance) : ThrownType list =
             if
-                (isStaticVirtual state callee.Callee
-                 && hasTypeInitializer state (declaringTypeOf state reached.Definition))
-                || (reached.Definition.AssemblyFullName <> instance.Definition.AssemblyFullName
-                    && hasModuleInitializer state reached.Definition.AssemblyFullName)
+                reached.Definition.AssemblyFullName <> instance.Definition.AssemblyFullName
+                && hasModuleInitializer state reached.Definition.AssemblyFullName
             then
                 [ ThrownType.Exactly (corelibException state "TypeInitializationException") ]
             else
                 []
+
+        // What a call at `offset` that reaches `reached` runs first: the type initializer CoreCLR
+        // runs on calling it (`initializerOnCall`), as `reached`'s type arguments instantiate it,
+        // and what running one runs and raises besides (`initializerFailure`). None inside that same
+        // initializer, which lets its own thread straight through (ECMA-335 I.8.9.5); of a generic
+        // one analysed for every instantiation at once, nothing says which it initializes.
+        let initializerOf
+            (state : EscapeAnalysisState)
+            (offset : int)
+            (reached : MethodInstance)
+            : EscapeAnalysisState * (int * MethodInstance) list * (int * ThrownType) list
+            =
+            match initializerOnCall state reached.Definition with
+            | state, None -> state, [], []
+            | state, Some initializer ->
+                let initializer =
+                    match reached.Arguments with
+                    | Instantiation.Closed (typeArguments, _) -> instanceOf state initializer typeArguments []
+                    | Instantiation.Open ->
+                        {
+                            Definition = initializer
+                            Arguments = Instantiation.Open
+                            Passed = Map.empty
+                        }
+
+                if
+                    initializer.Definition = instance.Definition
+                    && initializer.Arguments = instance.Arguments
+                    && instance.Arguments <> Instantiation.Open
+                then
+                    state, [], []
+                else
+                    let wrapper, preserve = initializerFailure state
+
+                    state, [ offset, initializer ; offset, instanceOf state preserve [] [] ], [ offset, wrapper ]
+
+        // `reached`, called at `offset`, among what the instance calls, with what calling it runs
+        // first.
+        let reaching (offset : int) (reached : MethodInstance) (state, callees, raises, undecided) =
+            let state, ran, raised = initializerOf state offset reached
+            state, (offset, reached) :: ran @ callees, raised @ raises, undecided
 
         // Fold the outcomes of dispatching one call into what the instance calls: undecided if any
         // receiver leaves it so.
@@ -3269,10 +3461,10 @@ module EscapeAnalysis =
                     match outcome with
                     | DispatchOutcome.Reaches reached ->
                         let raises =
-                            (landingRaises state callee reached |> List.map (fun thrown -> offset, thrown))
+                            (landingRaises state reached |> List.map (fun thrown -> offset, thrown))
                             @ raises
 
-                        state, (offset, reached) :: callees, raises, undecided
+                        reaching offset reached (state, callees, raises, undecided)
                     | DispatchOutcome.Raises thrown -> state, callees, (offset, thrown) :: raises, undecided
                     | DispatchOutcome.Undecided ->
                         state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
@@ -3287,17 +3479,11 @@ module EscapeAnalysis =
 
                     let state, reached = passedTo state Set.empty instance facts passes None reached
 
-                    state, (offset, reached) :: callees, raises, undecided
-                | CallSite.Constructor constructor ->
-                    let callee =
-                        {
-                            Callee = constructor
-                            Spelling = CalleeSpelling.Fixed
-                        }
-
+                    reaching offset reached (state, callees, raises, undecided)
+                | CallSite.Runtime callee ->
                     let state, reached = calleeInstance state assembly instance.Arguments callee
                     let state, reached = passedTo state Set.empty instance facts passes None reached
-                    state, (offset, reached) :: callees, raises, undecided
+                    reaching offset reached (state, callees, raises, undecided)
                 | CallSite.Constrained (constrainedType, callee) ->
                     let state, outcome =
                         constrainedInstance state assembly instance.Arguments constrainedType callee
