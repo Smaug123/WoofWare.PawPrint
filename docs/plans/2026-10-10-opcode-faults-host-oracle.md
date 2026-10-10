@@ -50,18 +50,26 @@ Each stage is one PR.
    be a subset of it. It replaces #1822's single `ckfinite` test. Before
    anything was written, a probe found the table already agreed with the host
    for this family.
-2. **Arrays, pointers and block operations**: `ldelem*`, `stelem*`, `ldlen`,
-   `ldind*`, `stind*`, `cpblk`, `initblk`, and `throw` of null, plus the
-   token-bearing `ldelem`, `stelem`, `ldelema`, `ldobj`, `stobj`, `cpobj` and
-   `initobj`. Inputs: null, a valid array or address, an index out of range
-   (including a negative one and a native int beyond int32), and an array whose
-   element type does not match what is stored.
-3. **The other instructions that take a metadata token**: `castclass`,
-   `isinst`, `unbox`, `unbox.any`, `box`, `newarr` (negative and too-long
-   lengths), `refanyval`, `mkrefany`, `ldvirtftn`, `callvirt` on null, and the
-   entries for a static constructor that throws (`ldsfld`, `ldsflda`, `stsfld`,
-   `call`, `newobj`, and `ldfld`, `ldflda` and `stfld` naming a static field)
-   through a type whose static constructor always throws.
+2. **Arrays, pointers and block operations** (`TestOpcodeFaultsOnHostMemory`):
+   `ldelem*`, `stelem*`, `ldlen`, `ldind*`, `stind*`, `cpblk`, `initblk`, and
+   `throw` of null, plus the token-bearing `ldelem`, `stelem`, `ldelema`,
+   `ldobj`, `stobj`, `cpobj` and `initobj`. Inputs: null, a valid array or
+   address, an index out of range (including a negative one and a native int
+   beyond int32), and an array whose element type does not match what is
+   stored. The host raised nothing the table omits. It never raised
+   `ArrayTypeMismatchException` from `stelem.<type>` of a primitive, which the
+   table listed, so those entries now leave it out. `Ldelem_u8`, `Ldind_u8` and
+   `Stelem_u1/u2/u4/u8` are not checked, because no IL encodes them.
+3. **The other instructions that take a metadata token**
+   (`TestOpcodeFaultsOnHostTokens`): `castclass`, `isinst`, `unbox`,
+   `unbox.any`, `box`, `newarr` (negative and too-long lengths), `refanyval`,
+   `mkrefany`, `ldvirtftn`, `callvirt` on null, `ldftn`, `ldtoken`, `sizeof`,
+   `ldstr`, and the entries for a static constructor that throws (`ldsfld`,
+   `ldsflda`, `stsfld`, `call`, `callvirt`, `newobj`, `jmp`, `calli`, and
+   `ldfld`, `ldflda` and `stfld` naming a static field), tested through types
+   whose static constructors always throw. Every entry agreed with the host.
+   A test requires every token-bearing instruction except the `constrained.`
+   prefix to be checked here or in stage 2.
 
 ## Not checkable in process
 

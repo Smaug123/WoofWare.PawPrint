@@ -223,13 +223,13 @@ public unsafe class TestIndirectMemoryOperations
         return 0;
     }
 
-    // Test Ldind_u8: Load uint64 indirect
+    // Test Ldind_i8 on a uint64: Load uint64 indirect
     public static int TestIndirectUInt64()
     {
         ulong value = 0xDEADBEEFCAFEBABE;
         ulong* ptr = &value;
 
-        // Ldind_u8: Load uint64
+        // Ldind_i8: Load uint64 (ldind.u8 is another name for it)
         ulong loaded = *ptr;
         if (loaded != 0xDEADBEEFCAFEBABE) return 80;
 
