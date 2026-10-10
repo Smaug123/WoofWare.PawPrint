@@ -2651,7 +2651,6 @@ module NullaryIlOp =
         | Ldind_u1 -> executeLdind loggerFactory corelib LdindTargetType.LdindU1 currentThread state
         | Ldind_u2 -> executeLdind loggerFactory corelib LdindTargetType.LdindU2 currentThread state
         | Ldind_u4 -> executeLdind loggerFactory corelib LdindTargetType.LdindU4 currentThread state
-        | Ldind_u8 -> failwith "TODO: Ldind_u8 unimplemented"
         | Ldind_r4 -> executeLdind loggerFactory corelib LdindTargetType.LdindR4 currentThread state
         | Ldind_r8 -> executeLdind loggerFactory corelib LdindTargetType.LdindR8 currentThread state
         | Rem ->
@@ -3084,7 +3083,6 @@ module NullaryIlOp =
                 arr
                 currentThread
                 state
-        | Ldelem_u8 -> failwith "TODO: Ldelem_u8 unimplemented"
         | Ldelem_r4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -3128,28 +3126,24 @@ module NullaryIlOp =
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem loggerFactory corelib value index arr currentThread state
-        | Stelem_u1 -> failwith "TODO: Stelem_u1 unimplemented"
         | Stelem_i2 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem loggerFactory corelib value index arr currentThread state
-        | Stelem_u2 -> failwith "TODO: Stelem_u2 unimplemented"
         | Stelem_i4 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem loggerFactory corelib value index arr currentThread state
-        | Stelem_u4 -> failwith "TODO: Stelem_u4 unimplemented"
         | Stelem_i8 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem loggerFactory corelib value index arr currentThread state
-        | Stelem_u8 -> failwith "TODO: Stelem_u8 unimplemented"
         | Stelem_r4 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
