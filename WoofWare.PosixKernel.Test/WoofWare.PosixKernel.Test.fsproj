@@ -220,6 +220,7 @@
     <Compile Include="TestSuppliedPipe.fs" />
     <Compile Include="TestBlockingPipe.fs" />
     <Compile Include="TestBlockingConnection.fs" />
+    <Compile Include="TestReceiveSendMeasured.fs" />
     <Compile Include="TestStreamReaderGone.fs" />
     <Compile Include="TestPipeAgainstHost.fs" />
     <Compile Include="TestSockaddrField.fs" />
@@ -406,6 +407,16 @@
          host to its flavour's rows. -->
     <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\tcp-transfer.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.tcpTransfer.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\tcp-transfer.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.tcpTransfer.darwin.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- What recv and send answered beyond tcp-transfer.c: the flag word's
+         numbering, the order of their checks, and MSG_PEEK, MSG_DONTWAIT and
+         MSG_NOSIGNAL on a blocking socket, measured per flavour by
+         docs/plans/2026-10-07-tcp-byte-transfer/tcp-recv-send.c, whose output
+         is embedded from beside it. `TestReceiveSendMeasured` replays it. -->
+    <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\tcp-recv-send.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.tcpRecvSend.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\tcp-recv-send.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.tcpRecvSend.darwin.txt" />
   </ItemGroup>
 
   <ItemGroup>

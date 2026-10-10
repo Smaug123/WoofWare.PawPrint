@@ -115,16 +115,6 @@ type internal TcpWake =
     /// `receiver`'s connection was reset.
     | PeerReset of receiver : ConnectionEnd
 
-/// Which call reads from a TCP connection.
-[<RequireQualifiedAccess>]
-type internal TcpReceiveCall =
-    /// `read(2)`.
-    | Read
-    /// `recv(2)` without `MSG_PEEK`.
-    | Receive
-    /// `recv(2)` with `MSG_PEEK`: the bytes stay queued.
-    | Peek
-
 /// What a non-blocking read of a TCP connection answers.
 [<RequireQualifiedAccess>]
 type internal TcpReadAnswer =

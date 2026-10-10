@@ -154,7 +154,7 @@ Convert the cluster of sites where the opcode dereferences a managed pointer tha
 
 **Files / sites**
 
-- `WoofWare.PawPrint/NullaryIlOp.fs:425, 455, 475` and nearby: `Div`, `Div_Un`, `Rem`, `Rem_Un` throw `DivideByZeroException`; `Add_Ovf`, `Sub_Ovf`, `Mul_Ovf` (signed+unsigned variants) throw `OverflowException`; `ckfinite` throws `ArithmeticException`.
+- `WoofWare.PawPrint/NullaryIlOp.fs:425, 455, 475` and nearby: `Div`, `Div_Un`, `Rem`, `Rem_Un` throw `DivideByZeroException`; `Add_Ovf`, `Sub_Ovf`, `Mul_Ovf` (signed+unsigned variants) throw `OverflowException`; `ckfinite` throws `OverflowException` (CoreCLR's choice; ECMA-335 III.3.19 names the base class `ArithmeticException`).
 
 **Verification**
 
