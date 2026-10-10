@@ -66,6 +66,8 @@ module TestThreadIds =
     let ``the leader is on the processor it was given`` () : unit =
         let system : UnixSystem<string, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxArm64
+            |> UnixBootImage.withProcessorCount 4
+            |> Configured.expectOk ProcessorCountRefusal.describe
             |> Launched.boot UnixSystem.pipedStandardStreams "main" (CpuId 3)
 
         system.Leader |> shouldEqual "main"

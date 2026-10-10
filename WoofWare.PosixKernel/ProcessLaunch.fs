@@ -73,6 +73,10 @@ type LaunchRefusal =
     | NotOfPlatform of launch : SimulatedUnixPlatform * machine : SimulatedUnixPlatform
     /// The process cannot start in `directory` on this machine's filesystem.
     | CurrentDirectory of directory : AbsoluteUnixPath * fault : CurrentDirectoryFault
+    /// The launch puts its leader on the logical processor `cpu`, and the
+    /// machine has `processorCount`, numbered from 0, which do not include it.
+    /// Contradictory: no kernel runs a task on a processor it does not have.
+    | LeaderCpuBeyondMachine of cpu : CpuId * processorCount : int
 
 [<RequireQualifiedAccess>]
 module LaunchRefusal =
@@ -94,6 +98,8 @@ module LaunchRefusal =
                 $"the process cannot start in \"%s{described}\", which resolves to something that is not a directory."
             | CurrentDirectoryFault.Path refusal ->
                 $"the kernel will not resolve \"%s{described}\": %s{PathRefusal.describe refusal}"
+        | LaunchRefusal.LeaderCpuBeyondMachine (cpu, processorCount) ->
+            $"the launch puts its leader on %O{cpu}, but the machine has %d{processorCount} logical processors, numbered from 0."
 
 /// How a process starts: everything about a process that is fixed before its
 /// first instruction, as its launcher sets it up before `exec`. Both the first
@@ -393,6 +399,8 @@ module ProcessLaunch =
 
         if launch.Platform <> platform then
             Error (LaunchRefusal.NotOfPlatform (launch.Platform, platform))
+        elif not (UnixMachineState.hasProcessor launch.LeaderCpu machine) then
+            Error (LaunchRefusal.LeaderCpuBeyondMachine (launch.LeaderCpu, machine.ProcessorCount))
         else
 
         match resolveCurrentDirectory launch.CurrentDirectory machine with

@@ -1102,6 +1102,11 @@ module EmulatedKernel =
         | Error (LaunchRefusal.NotOfPlatform _ as refusal) ->
             failwith
                 $"%s{processKnobs}: the process was described for another platform than its machine's: %s{LaunchRefusal.describe refusal} (this is a bug in PawPrint)."
+        | Error (LaunchRefusal.LeaderCpuBeyondMachine _ as refusal) ->
+            // PawPrint puts the leader on processor 0, and every machine has at
+            // least one.
+            failwith
+                $"%s{processKnobs}: the process's leader is on a processor its machine does not have: %s{LaunchRefusal.describe refusal} (this is a bug in PawPrint)."
 
     /// The kernel of the PawPrint process `system` is the POSIX half of, newly
     /// launched, as though its launcher had left `inheritedIgnores` ignored
