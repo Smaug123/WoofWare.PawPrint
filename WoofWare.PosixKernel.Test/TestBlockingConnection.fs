@@ -649,6 +649,13 @@ module TestBlockingConnection =
         /// its count, the second takes the `ECONNRESET` and the third answers
         /// `EPIPE`.
         | ResetWriters
+        /// `SO_LINGER` goes on for the calls' end with a time of `seconds`;
+        /// task 0 sleeps in a `recv` through it, and its only descriptor
+        /// closes. Linux's close would leave the `recv` holding a lingering
+        /// socket, and is refused, ending the case. Darwin's ends the `recv`,
+        /// and is the socket's own close: with a time of 0 that would reset
+        /// the connection, and is refused, ending the case; with 1 it closes.
+        | LingerUnderReceive of seconds : int
 
     /// A prefix of the property's steps that, from the connected pair the
     /// property starts on, reaches paths random steps reach too rarely to
@@ -796,6 +803,12 @@ module TestBlockingConnection =
                 BlockingConnectionOp.Finish 0
                 BlockingConnectionOp.Finish 0
                 BlockingConnectionOp.Finish 0
+            | ScenarioEnding.LingerUnderReceive seconds ->
+                BlockingConnectionOp.Linger (readEnd, true, seconds)
+                sleeper 0 TcpReceiveCall.Receive
+                BlockingConnectionOp.Close readEnd
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.Finish 0
         ]
 
     let private scenarioGen : Gen<Scenario> =
@@ -816,6 +829,7 @@ module TestBlockingConnection =
                         |> Gen.map ScenarioEnding.RefilledWriter
                         Gen.constant ScenarioEnding.NonBlockingWriter
                         Gen.constant ScenarioEnding.ResetWriters
+                        Gen.elements [ 0 ; 1 ] |> Gen.map ScenarioEnding.LingerUnderReceive
                     ]
 
             return
@@ -2205,26 +2219,43 @@ module TestBlockingConnection =
     // A close deferred to a sleeping call, under SO_LINGER
     // ------------------------------------------------------------------
 
-    /// A sleeping transfer on `fd`, one of each kind: a read with nothing to
-    /// read, and a write with its send buffer full behind a full peer, so that
-    /// bytes are unsent.
+    /// A sleeping transfer on `fd`, one of each kind: a read or a `recv` with
+    /// nothing to read, and a write or a `send` with its send buffer full
+    /// behind a full peer, so that bytes are unsent.
     let private asleepIn (kind : string) (task : int) (fd : int) (system : UnixSystem<int, string>) =
         match kind with
         | "read" -> asleepReading task fd 4096 system
         | "write" -> asleepWriting task fd (payload 7 600000) system
+        | "recv" ->
+            match UnixReadWrite.recv task fd UserBuffer.Mapped 4096UL 0 system with
+            | Ok (ReadOutcome.WouldBlock _, system) -> system
+            | other -> failwith $"expected task %d{task}'s recv to sleep, got %A{other}"
+        | "send" ->
+            match
+                WriteOutcomes.admitThenSend
+                    task
+                    fd
+                    UserBuffer.Mapped
+                    (ImmutableArray.CreateRange (payload 7 600000))
+                    0
+                    system
+            with
+            | Ok (WriteOutcome.WouldBlock (_, system)) -> system
+            | other -> failwith $"expected task %d{task}'s send to sleep, got %A{other}"
         | other -> failwith $"no such transfer: %s{other}"
 
     /// Under Linux a close of the last descriptor onto a socket a call sleeps
     /// on leaves the call holding it (R-close, W-close), so the socket's own
     /// close happens when the call returns. Under `SO_LINGER`, whose either
     /// time this kernel refuses a close under in some state the call can
-    /// change, that close is refused at the descriptor's close, through
-    /// `close`, `dup2` and `dup3` alike, naming the socket and the call.
+    /// change, that close is refused at the descriptor's close, whether the
+    /// call is a read, a `recv`, a write or a `send`, through `close`, `dup2`
+    /// and `dup3` alike, naming the socket and the call.
     [<Test>]
     let ``Linux: the last close of a socket a call sleeps on under SO_LINGER is refused`` () : unit =
         let platform = SimulatedUnixPlatform.linuxX64
 
-        for kind in [ "read" ; "write" ] do
+        for kind in [ "read" ; "write" ; "recv" ; "send" ] do
             for seconds in [ 0 ; 1 ] do
                 for how in [ "close" ; "dup2" ; "dup3" ] do
                     let row = $"%s{kind}, linger {{1, %d{seconds}}}, %s{how}"
