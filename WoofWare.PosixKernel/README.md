@@ -131,7 +131,7 @@ A `SeedEntry` is a file, a directory or a symbolic link, each with an optional o
 `SeedEntry.file` and `SeedEntry.directory` give the modes a `umask 022` process would have created; the `SeedEntry.File` and `SeedEntry.Directory` cases take a mode and an owner of their own.
 It refuses (`FileSystemSeedFault`) a name the flavour could never have created, and anything at `/dev` but an empty directory.
 
-The filesystem's type is what `statfs(2)` and `fstatfs(2)` report, and it changes a directory's `st_size` and where `lseek(2)` with `SEEK_END` lands on one.
+The filesystem's type is what `fstatfs(2)` reports for a file, and it changes a directory's `st_size` and where `lseek(2)` with `SEEK_END` lands on one.
 It is tmpfs on Linux and APFS on Darwin unless `UnixBootImage.withMount` says otherwise: `Some (EmulatedMount.defaultOf EmulatedFileSystemType.Nfs)`, for example, or `EmulatedMount.Tmpfs` and `EmulatedMount.Apfs` with their fields set.
 A type the flavour could not report is refused (`MountRefusal`).
 Path resolution keeps its flavour's limits whichever type is chosen.
@@ -206,7 +206,7 @@ A call the process made through its C library and one it made as a raw system ca
 Where they do, the function says which it is, and the tables below mark it: (3) is the C library's function, and (2) the system call beneath it.
 
 * `UnixSignal.sigaction` is `sigaction(3)`, which on Linux refuses the C library's own signals 32 and 33 before the kernel sees them; `UnixSignal.sigactionSyscall` is the system call (Linux's `rt_sigaction`).
-* `UnixSignal.pthreadSigmask`, and on Linux `UnixSignal.sigprocmask`, drop 32 and 33 from a set as the C library does; `UnixSignal.rtSigprocmask` is Linux's `rt_sigprocmask(2)`, which can block them, and `UnixSignal.rtSigsuspend` its `rt_sigsuspend(2)`.
+* `UnixSignal.pthreadSigmask`, and on Linux `UnixSignal.sigprocmask`, drop 32 and 33 from a set as the C library does; `UnixSignal.rtSigprocmask` is Linux's `rt_sigprocmask(2)`, which can block them. `UnixSignal.rtSigsuspend` is Linux's `rt_sigsuspend(2)`, which differs from `UnixSignal.sigsuspend` only in taking the set's size.
 * `UnixSignal.pthreadKill` is `pthread_kill(3)` and `raise(3)`; the `tgkill(2)` beneath them is not modelled.
 * `UnixDescriptor.terminalAttributes` is `tcgetattr(3)`, `UnixPathResolution.getcwd` is `getcwd(3)` (a library routine on Darwin), and `UnixDescriptor.posixFadvise` returns its error as `posix_fadvise(3)` does, rather than setting errno.
 
@@ -456,7 +456,7 @@ A call that moves bytes takes them or returns them, and the client copies them t
    * `WriteAdmission.Answered` is the call's answer, with no bytes read.
    * `WriteAdmission.Transfer count`: copy exactly `count` bytes from the start of the caller's buffer and pass them to `UnixReadWrite.write`.
    * `WriteAdmission.TransferThenSleep (count, total)`: a blocking write of `total` bytes, of which only `count` fit now. Copy those `count` and pass them to `UnixReadWrite.writeThenSleep`, which puts them in and sleeps for the rest. A blocking write of more than a pipe holds (64 KiB on Linux) reaches this at once.
-2. A write that sleeps, from either function, answers `WriteOutcome.WouldBlock`. Once `UnixWait.wakes` wakes it, `UnixReadWrite.admitFinishWrite` answers a `WriteResumption`: the call's answer (`WriteResumption.Answered`), or `WriteResumption.Transfer (offset, count)`, the next `count` bytes of the caller's buffer from `offset` on, which the client passes to `UnixReadWrite.finishWrite`. That may sleep again, and the client repeats this step.
+2. A write that sleeps answers `WriteOutcome.WouldBlock`, from whichever of these functions it reached. Once `UnixWait.wakes` wakes it, `UnixReadWrite.admitFinishWrite` answers a `WriteResumption`: the call's answer (`WriteResumption.Answered`), or `WriteResumption.Transfer (offset, count)`, the next `count` bytes of the caller's buffer from `offset` on, which the client passes to `UnixReadWrite.finishWrite`. That may sleep again, and the client repeats this step.
 
 Every step answers a `WriteOutcome`, whose cases besides `WouldBlock` are:
 
