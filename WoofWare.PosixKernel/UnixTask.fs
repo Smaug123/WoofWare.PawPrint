@@ -501,14 +501,20 @@ type TaskPark =
 type UnixTaskState =
     internal
         {
-            /// The simulated logical processor this task is pinned to: what
-            /// `sched_getcpu(3)` reports while it runs.
+            /// The simulated logical processor this task last ran on, or, before
+            /// the client first dispatches it, the one its creator named to
+            /// `UnixTaskLifecycle.spawn`, or to `ProcessLaunch.create` for a
+            /// process's leader: Linux's `task_cpu`. Always one the machine has,
+            /// in `[0, UnixMachineState.ProcessorCount)`.
             ///
-            /// Assigned once, when the task is created: the processor its creator
-            /// names to `UnixTaskLifecycle.spawn`. This library has no scheduler:
-            /// under a client that runs one task at a time and never migrates one
-            /// between cores, "pinned to" and "currently executing on" coincide, and
-            /// a core-aware client would rewrite this.
+            /// Only `UnixScheduling.dispatch` changes it. A task keeps it when it
+            /// stops running, by parking or by another task's dispatch to the
+            /// processor, as a blocked Linux task keeps its last processor
+            /// (`docs/plans/2026-08-23-posix-kernel-extraction/cpu-placement.c`,
+            /// section `sleeper`). Whether the task is running there is the
+            /// machine's record (`UnixMachineState.Occupants`), which
+            /// `UnixScheduling.runningOn` reads; `sched_getcpu(3)` reports this
+            /// only while the task runs.
             Cpu : CpuId
             /// The OS thread identifier this task reports, as `gettid(2)` does.
             ///
@@ -545,8 +551,9 @@ type UnixTaskState =
 [<RequireQualifiedAccess>]
 module UnixTaskState =
 
-    /// The logical processor `task` runs on, as `sched_getcpu(3)` reports it:
-    /// the one its creator named when it was created.
+    /// The logical processor `task` last ran on, or, before the client first
+    /// dispatched it (`UnixScheduling.dispatch`), the one its creator named.
+    /// Whether it is running there now is `UnixScheduling.runningOn`'s answer.
     let cpu (task : UnixTaskState) : CpuId = task.Cpu
 
     /// The OS thread ID `task` reports, as `gettid(2)` does: fixed when the
@@ -578,9 +585,13 @@ module UnixTaskTable =
     /// when it is created and removed only when it exits, so a name that
     /// resolves to nothing is a client bug rather than anything a process did.
     let internal get<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : UnixTaskState =
-        match Map.tryFind name tasks with
-        | Some task -> task
-        | None ->
+        // `TryGetValue` rather than `Map.tryFind`, whose option a client that asks once per
+        // instruction (`UnixScheduling.dispatch`) would allocate every time.
+        let mutable task = Unchecked.defaultof<UnixTaskState>
+
+        if tasks.TryGetValue (name, &task) then
+            task
+        else
             failwith
                 $"UnixTaskTable.get: %O{name} names no task. Every task enters the table when its thread is created, by `UnixSystem.initial` or `UnixTaskLifecycle.spawn`, and leaves it when the thread exits, so this one was never created or has already exited (this is a bug in the client)."
 

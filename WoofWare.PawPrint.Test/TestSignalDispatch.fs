@@ -435,6 +435,38 @@ module TestSignalDispatch =
         exn.Message |> shouldContainText "kernel default"
 
     [<Test>]
+    let ``poll consumes a receivable default SIGCONT, and the leader goes on to take the next signal`` () : unit =
+        // Every task blocked SIGCONT, at its default, and a registered
+        // SIGWINCH when they were sent. Once both are receivable the leader
+        // takes SIGCONT first (18 or 19, before SIGWINCH's 28), which the
+        // kernel discards, the process never having stopped; the same poll
+        // goes on to take SIGWINCH, whose handler writes it into the pipe.
+        // The dispatcher is mid-callback, so the byte stays there.
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            let state, dispatcher, _ = preparedStateOn platform
+
+            let state =
+                state
+                |> withStatus dispatcher ThreadStatus.Runnable
+                |> register Signal.SIGWINCH
+                |> setDisposition Signal.SIGCONT SignalDisposition.Default
+                |> fun state ->
+                    state.MapKernel (fun kernel ->
+                        (kernel, UnixSystem.tasks kernel.System |> Map.keys)
+                        ||> Seq.fold (fun kernel task ->
+                            SignalFrames.enter task (Set.ofList [ Signal.SIGCONT ; Signal.SIGWINCH ]) kernel
+                        )
+                    )
+                |> sendToProcess Signal.SIGCONT
+                |> sendToProcess Signal.SIGWINCH
+                |> unblockEverywhere
+
+            let state' = poll state
+
+            pipeContents state' |> shouldEqual [ 28uy ]
+            SignalState.pending state'.Kernel.Signals |> shouldEqual []
+
+    [<Test>]
     let ``poll discards a receivable ignored signal and persists the discard`` () : unit =
         // SIGCHLD's kernel default is Ignore, but every task blocked it when
         // it was sent, so the non-registered entry survives generation, as

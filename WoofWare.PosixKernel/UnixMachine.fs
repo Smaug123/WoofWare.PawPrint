@@ -218,6 +218,20 @@ type UnixMachineState =
             /// different value with `UnixBootImage.withProcessorCount`, which
             /// refuses anything below 1, since programs divide by it.
             ProcessorCount : int
+            /// The task running on each busy logical processor, by its thread ID:
+            /// what Linux calls a run queue's current task. An idle processor is
+            /// absent.
+            ///
+            /// The client reports each task it runs with `UnixScheduling.dispatch`,
+            /// which puts it here, displacing whichever task the processor ran
+            /// before, whatever process that task belongs to. A task leaves it when
+            /// it is dispatched elsewhere, when it parks in a syscall
+            /// (`UnixWait.park`), and when it exits or its process ends. Keyed by
+            /// processor, so no processor runs two tasks; on the machine rather
+            /// than a process, because the machine's processes share its
+            /// processors; and by thread ID, which no two live tasks on the machine
+            /// share.
+            Occupants : Map<CpuId, OsThreadId>
             /// Whether this machine's kernel screens a read or write buffer before
             /// it performs the operation, and if so the greatest value
             /// `address + length` may take: the machine's `TASK_SIZE_MAX`.
@@ -392,6 +406,33 @@ module UnixMachineState =
     /// The number of logical processors this machine reports to a process. See
     /// `UnixMachineState.ProcessorCount`.
     let internal processorCount (machine : UnixMachineState) : int = machine.ProcessorCount
+
+    /// Whether the machine has the logical processor `cpu`: whether it is in
+    /// `[0, ProcessorCount)`.
+    let internal hasProcessor (cpu : CpuId) (machine : UnixMachineState) : bool =
+        let (CpuId.CpuId index) = cpu
+        index >= 0 && index < machine.ProcessorCount
+
+    /// Whether `cpu` is running the task whose thread ID is `occupant`. See
+    /// `UnixMachineState.Occupants`.
+    let internal runs (cpu : CpuId) (occupant : OsThreadId) (machine : UnixMachineState) : bool =
+        // Allocates nothing, unlike `Map.tryFind cpu machine.Occupants = Some occupant`, since
+        // a client dispatches once per instruction.
+        let mutable running = Unchecked.defaultof<OsThreadId>
+
+        machine.Occupants.TryGetValue (cpu, &running)
+        && OsThreadId.toUInt64 running = OsThreadId.toUInt64 occupant
+
+    /// `machine` with the task whose thread ID is `occupant` taken off `cpu`,
+    /// if it is running there, leaving the processor idle. See
+    /// `UnixMachineState.Occupants`.
+    let internal vacate (cpu : CpuId) (occupant : OsThreadId) (machine : UnixMachineState) : UnixMachineState =
+        if runs cpu occupant machine then
+            { machine with
+                Occupants = Map.remove cpu machine.Occupants
+            }
+        else
+            machine
 
     /// Every write that has reached a client draining one of this machine's
     /// pipes, oldest first: what the outside world has received from the
