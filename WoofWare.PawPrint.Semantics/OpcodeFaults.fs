@@ -252,7 +252,6 @@ module OpcodeFaults =
         | NullaryIlOp.Ldind_u1
         | NullaryIlOp.Ldind_u2
         | NullaryIlOp.Ldind_u4
-        | NullaryIlOp.Ldind_u8
         | NullaryIlOp.Ldind_r4
         | NullaryIlOp.Ldind_r8
         | NullaryIlOp.Stind_ref
@@ -273,7 +272,6 @@ module OpcodeFaults =
         | NullaryIlOp.Ldelem_i4
         | NullaryIlOp.Ldelem_u4
         | NullaryIlOp.Ldelem_i8
-        | NullaryIlOp.Ldelem_u8
         | NullaryIlOp.Ldelem_r4
         | NullaryIlOp.Ldelem_r8
         | NullaryIlOp.Ldelem_ref
@@ -283,13 +281,9 @@ module OpcodeFaults =
         // element type, which leaves correct CIL nothing to mismatch; and CoreCLR checks nothing.
         | NullaryIlOp.Stelem_i
         | NullaryIlOp.Stelem_i1
-        | NullaryIlOp.Stelem_u1
         | NullaryIlOp.Stelem_i2
-        | NullaryIlOp.Stelem_u2
         | NullaryIlOp.Stelem_i4
-        | NullaryIlOp.Stelem_u4
         | NullaryIlOp.Stelem_i8
-        | NullaryIlOp.Stelem_u8
         | NullaryIlOp.Stelem_r4
         | NullaryIlOp.Stelem_r8 -> uncheckedElementAccess
         | NullaryIlOp.Stelem_ref -> covariantElementAccess
