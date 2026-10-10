@@ -144,6 +144,7 @@
     <Compile Include="TestNativeMemoryPool.fs" />
     <Compile Include="TestSeedForOracle.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
+    <Compile Include="TestRealRuntimeConcurrent.fs" />
     <Compile Include="TestRealRuntimeStandardInput.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />
@@ -426,6 +427,7 @@
     <Compile Include="TestMultiProgram.fs" />
     <Compile Include="TestProgramChoice.fs" />
     <Compile Include="TestSeveralPrograms.fs" />
+    <Compile Include="TestAspNetTwoProcess.fs" />
     <Compile Include="TestFinallyChain.fs" />
   </ItemGroup>
   <ItemGroup>
@@ -474,6 +476,7 @@
     <EmbeddedResource Include="sourcesSignalTerminated\*.cs" />
     <EmbeddedResource Include="sources\*.cs" />
     <EmbeddedResource Include="sourcesConcurrencyBugs\*.cs" />
+    <EmbeddedResource Include="sourcesAspNet\*.cs" />
     <!-- This project's own F# sources, which TestFrameworkLocatorRatchet scans. -->
     <EmbeddedResource Include="@(Compile)" LogicalName="PawPrintTestSource/%(Filename)%(Extension)" />
   </ItemGroup>

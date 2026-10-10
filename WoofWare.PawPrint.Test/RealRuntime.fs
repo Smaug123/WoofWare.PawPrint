@@ -53,6 +53,39 @@ type RealRuntimeResult =
     /// itself raised. The payload is the runtime's stderr report, banner included.
     | Aborted of observed : ObservedFatalError * report : string
 
+/// The shared frameworks a guest's generated `runtimeconfig.json` names. Each is named at the
+/// framework under test's version, with roll-forward disabled.
+[<RequireQualifiedAccess>]
+type OracleFrameworks =
+    /// `Microsoft.NETCore.App` alone: a guest that references nothing past the base class library.
+    | NetCoreApp
+    /// `Microsoft.NETCore.App` and `Microsoft.AspNetCore.App` (from
+    /// `FrameworkUnderTest.aspNetCoreFrameworkDirectory`), as an app built with the Web SDK
+    /// names them.
+    | NetCoreAppAndAspNetCoreApp
+
+/// One of the programs `RealRuntime.executeConcurrently` runs side by side.
+type ConcurrentGuest =
+    {
+        /// The guest's image. The oracle names its file after the assembly, so no two guests of
+        /// one run may share an assembly name.
+        Image : byte[]
+        /// The guest's arguments, after the path of its image.
+        Args : string list
+    }
+
+/// How a program ended on the real runtime, with everything it wrote.
+type CapturedRun =
+    {
+        Result : RealRuntimeResult
+        /// Standard output, as lines, each ended by `Environment.NewLine`, a last unterminated line
+        /// included.
+        Stdout : string
+        /// Standard error, as lines, each ended by `Environment.NewLine`, a last unterminated line
+        /// included.
+        Stderr : string
+    }
+
 [<RequireQualifiedAccess>]
 module RealRuntime =
 
@@ -124,28 +157,67 @@ module RealRuntime =
                 $"Could not locate the dotnet muxer needed to run guests out of process. Tried: %s{tried}. The framework under test is %s{frameworkDirectory}."
 
     /// A guest is a framework-dependent console app, so it needs a runtimeconfig naming the
-    /// framework to run on. Generating a minimal one rather than copying the test host's keeps the
+    /// frameworks to run on, `frameworks`, and the AppContext properties to start with,
+    /// `configProperties`. Generating a minimal one rather than copying the test host's keeps the
     /// guest off the test host's own config properties (the GC heap cap, the ASP.NET Core
     /// framework reference), which a real guest process would not have. Roll-forward is disabled
-    /// because the version is by construction the framework under test's, the one PawPrint runs
+    /// because each version is by construction the framework under test's, the one PawPrint runs
     /// the guest on, so any roll-forward would silently be a mismatch rather than a convenience.
-    let private runtimeConfig : string =
+    let private runtimeConfigFor (frameworks : OracleFrameworks) (configProperties : AppContextProperties) : string =
         // Derived rather than hardcoded so this does not quietly start lying when the projects move
         // to a later target framework.
         let tfm =
             "net" + frameworkVersion.Substring (0, frameworkVersion.IndexOf '.') + ".0"
 
-        $"""{{
-  "runtimeOptions": {{
-    "tfm": "%s{tfm}",
-    "rollForward": "Disable",
-    "framework": {{
-      "name": "Microsoft.NETCore.App",
-      "version": "%s{frameworkVersion}"
-    }}
-  }}
-}}
-"""
+        let named =
+            match frameworks with
+            | OracleFrameworks.NetCoreApp -> [ "Microsoft.NETCore.App", frameworkVersion ]
+            | OracleFrameworks.NetCoreAppAndAspNetCoreApp ->
+                [
+                    "Microsoft.NETCore.App", frameworkVersion
+                    "Microsoft.AspNetCore.App", Path.GetFileName (FrameworkUnderTest.aspNetCoreFrameworkDirectory ())
+                ]
+
+        use buffer = new MemoryStream ()
+
+        do
+            use writer =
+                new Text.Json.Utf8JsonWriter (buffer, Text.Json.JsonWriterOptions (Indented = true))
+
+            writer.WriteStartObject ()
+            writer.WriteStartObject "runtimeOptions"
+            writer.WriteString ("tfm", tfm)
+            writer.WriteString ("rollForward", "Disable")
+            writer.WriteStartArray "frameworks"
+
+            for frameworkName, version in named do
+                writer.WriteStartObject ()
+                writer.WriteString ("name", frameworkName)
+                writer.WriteString ("version", version)
+                writer.WriteEndObject ()
+
+            writer.WriteEndArray ()
+
+            let properties = AppContextProperties.toMap configProperties
+
+            if not properties.IsEmpty then
+                writer.WriteStartObject "configProperties"
+
+                // As strings, which is what hostpolicy hands AppContext whatever JSON type the
+                // file used, and what PawPrint seeds from the same properties.
+                for KeyValue (key, value) in properties do
+                    writer.WriteString (key, value)
+
+                writer.WriteEndObject ()
+
+            writer.WriteEndObject ()
+            writer.WriteEndObject ()
+
+        Encoding.UTF8.GetString (buffer.ToArray ())
+
+    /// `runtimeConfigFor` a guest of the base class library alone, with no properties.
+    let private runtimeConfig : string =
+        runtimeConfigFor OracleFrameworks.NetCoreApp AppContextProperties.empty
 
     /// A seed name as the host path component `System.IO` needs. `validateSeedForOracle`
     /// refuses a name that is not valid UTF-8, since it has no `string` to hand the
@@ -221,7 +293,9 @@ module RealRuntime =
     /// so that whichever comes first, they meet EPIPE. A child whose standard
     /// error is gone cannot show the runtime's fatal-error banners, so its end
     /// is classified by its exit code alone.
-    let private runToCompletion
+    ///
+    /// Echoes nothing: see `runToCompletion` for the echoing variant.
+    let private runCapturing
         (timeout : TimeSpan)
         (exePath : string)
         (arguments : string list)
@@ -229,7 +303,7 @@ module RealRuntime =
         (environment : Map<string, string>)
         (standardStreams : StandardStreamsConfig)
         (description : string)
-        : RealRuntimeResult
+        : CapturedRun
         =
         let startInfo = ProcessStartInfo exePath
 
@@ -359,21 +433,45 @@ module RealRuntime =
             else
                 RealRuntimeResult.NormalExit exitCode
 
-        // Emit the text on the calling thread so that NUnit attributes it to the correct test.
-        if outputText.Length > 0 then
-            Console.Out.Write outputText
+        {
+            Result = result
+            Stdout = outputText
+            Stderr = errorText
+        }
 
-        // Standard error only when it is not already the payload above. Cases that are *expected*
-        // to crash are passing tests, and echoing their stack traces would fill a green run with
-        // alarming output; when such a case genuinely fails, the caller prints the payload instead.
-        match result with
+    /// Write what `run` wrote to this thread's console, so that NUnit attributes it to the test
+    /// running on this thread.
+    let private echo (run : CapturedRun) : unit =
+        if run.Stdout.Length > 0 then
+            Console.Out.Write run.Stdout
+
+        // Standard error only when it is not already the payload of `run.Result`. Cases that are
+        // *expected* to crash are passing tests, and echoing their stack traces would fill a green
+        // run with alarming output; when such a case genuinely fails, the caller prints the
+        // payload instead.
+        match run.Result with
         | RealRuntimeResult.NormalExit _ ->
-            if errorText.Length > 0 then
-                Console.Error.Write errorText
+            if run.Stderr.Length > 0 then
+                Console.Error.Write run.Stderr
         | RealRuntimeResult.UnhandledException _
         | RealRuntimeResult.Aborted _ -> ()
 
-        result
+    /// `runCapturing`, echoing what the guest wrote on the calling thread.
+    let private runToCompletion
+        (timeout : TimeSpan)
+        (exePath : string)
+        (arguments : string list)
+        (workingDirectory : string)
+        (environment : Map<string, string>)
+        (standardStreams : StandardStreamsConfig)
+        (description : string)
+        : RealRuntimeResult
+        =
+        let run =
+            runCapturing timeout exePath arguments workingDirectory environment standardStreams description
+
+        echo run
+        run.Result
 
     /// Reject a seed the real filesystem cannot faithfully stand in for.
     ///
@@ -917,3 +1015,97 @@ module RealRuntime =
             Map.empty
             StandardStreamsConfig.piped
             (Path.GetFileName executablePath)
+
+    /// Run `guests` on the real runtime at the same time, each as its own process, and report how
+    /// each terminated and what it wrote, in the order of `guests`. This is the oracle for
+    /// several programs that talk to one another, which must run concurrently to do so.
+    ///
+    /// Every guest's working directory is one scratch directory this owns. So the guests can hand
+    /// each other files under **relative** names, as they can on PawPrint's side, where the
+    /// programs share one filesystem and run with `/` as their current directory. Each guest's
+    /// image and runtimeconfig sit in a subdirectory of its own, named by its position, so that
+    /// no two guests' files can alias, whatever their assembly names and however the host's
+    /// filesystem folds them.
+    ///
+    /// Each guest's runtimeconfig names `frameworks` and holds `configProperties`; `environment`
+    /// holds `KernelConfig.Environment`-style entries, overlaid on the test host's environment as
+    /// for `executeWithSeed`. Each guest gets the standard guest time limit, and a guest that
+    /// outlives it fails the run once every guest has ended.
+    ///
+    /// What the guests wrote is echoed on the calling thread, each under a line naming it by its
+    /// position and assembly, after all of them have ended.
+    let executeConcurrently
+        (frameworks : OracleFrameworks)
+        (configProperties : AppContextProperties)
+        (environment : string list)
+        (guests : ConcurrentGuest list)
+        : CapturedRun list
+        =
+        let environment = oracleEnvironment environment
+        let runtimeConfig = runtimeConfigFor frameworks configProperties
+
+        let tempDir =
+            Path.Combine (Path.GetTempPath (), "pawprint-oracle-" + Path.GetRandomFileName ())
+
+        Directory.CreateDirectory tempDir |> ignore
+
+        try
+            let launches =
+                guests
+                |> List.mapi (fun index guest ->
+                    let assemblyName = assemblyNameOf guest.Image
+                    let guestDir = Path.Combine (tempDir, string<int> index)
+                    Directory.CreateDirectory guestDir |> ignore
+                    let dllPath = Path.Combine (guestDir, assemblyName + ".dll")
+                    File.WriteAllBytes (dllPath, guest.Image)
+                    File.WriteAllText (Path.Combine (guestDir, assemblyName + ".runtimeconfig.json"), runtimeConfig)
+                    $"%d{index} (%s{assemblyName})", dllPath :: guest.Args
+                )
+
+            // Dedicated threads rather than pool ones, as `DifferentialOracle.alongsideInterpreted`
+            // explains: each spends its life blocked on a child process.
+            let runs =
+                launches
+                |> List.map (fun (description, arguments) ->
+                    description,
+                    Tasks.Task.Factory.StartNew (
+                        (fun () ->
+                            runCapturing
+                                guestTimeout
+                                muxerPath
+                                arguments
+                                tempDir
+                                environment
+                                StandardStreamsConfig.piped
+                                description
+                        ),
+                        Tasks.TaskCreationOptions.LongRunning
+                    )
+                )
+
+            // Every run is awaited before any failure is reported, so that no child process
+            // outlives this call or the scratch directory it runs in.
+            (try
+                runs
+                |> List.map snd
+                |> Seq.cast<Tasks.Task>
+                |> Seq.toArray
+                |> Tasks.Task.WaitAll
+             with _ ->
+                 ())
+
+            runs
+            |> List.map (fun (description, run) ->
+                // Not `.Result`, which would wrap a failure in an AggregateException and bury the
+                // oracle's own message.
+                let run = run.GetAwaiter().GetResult ()
+                Console.Out.WriteLine $"--- guest %s{description} under the real runtime ---"
+                echo run
+                run
+            )
+        finally
+            try
+                deleteScratchTree tempDir
+            with
+            | :? IOException
+            | :? UnauthorizedAccessException -> ()
