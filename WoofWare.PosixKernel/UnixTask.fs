@@ -513,7 +513,7 @@ type TaskPark =
 /// What the emulated kernel knows about one task — one scheduling entity, what
 /// `gettid(2)` names.
 ///
-/// A process starts with one (`UnixSystem.initial`), every thread it creates adds
+/// A process starts with one, its leader (`ProcessLaunch.create`), every thread it creates adds
 /// one (`UnixTaskLifecycle.spawn`), and the thread's exit removes it
 /// (`UnixTaskLifecycle.exitThread`), so the table holds a task for each thread
 /// from its creation until its exit. That is what makes the record total:
@@ -619,12 +619,12 @@ module UnixTaskTable =
             task
         else
             failwith
-                $"UnixTaskTable.get: %O{name} names no task. Every task enters the table when its thread is created, by `UnixSystem.initial` or `UnixTaskLifecycle.spawn`, and leaves it when the thread exits, so this one was never created or has already exited (this is a bug in the client)."
+                $"UnixTaskTable.get: %O{name} names no task. Every task enters the table when its thread is created, as its process's leader or by `UnixTaskLifecycle.spawn`, and leaves it when the thread exits, so this one was never created or has already exited (this is a bug in the client)."
 
     /// Add the task for a newly-created scheduling entity.
     ///
     /// Internal so that the only routes by which a task enters the table are
-    /// `UnixSystem.initial` and `UnixTaskLifecycle.spawn`, which mint its id.
+    /// a process's launch and `UnixTaskLifecycle.spawn`, which mint its id.
     let internal add<'Task when 'Task : comparison>
         (name : 'Task)
         (cpu : CpuId)

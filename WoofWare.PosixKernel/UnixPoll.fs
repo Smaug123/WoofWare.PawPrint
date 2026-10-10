@@ -74,7 +74,7 @@ type PollOutcome =
     /// signal with a handler interrupts it.
     | Failed of error : UnixError
     /// `poll` did not return. The calling task is parked, and sleeps until
-    /// `UnixWait.satisfied` of the task is non-empty; then
+    /// `UnixWait.wakes` wakes it; then
     /// `UnixPoll.finishPoll` finishes the call.
     | WouldBlock of WakeCondition
 
