@@ -973,12 +973,11 @@ module TestBlockingAccept =
     /// drains it, whatever descriptor number is reused afterwards.
     [<Test>]
     let ``accepts, closes and dups on one listener keep to the reference`` () : unit =
-        let covered = System.Collections.Concurrent.ConcurrentDictionary<string, int> ()
-
-        let cover (label : string) =
-            covered.AddOrUpdate (label, 1, (fun _ n -> n + 1)) |> ignore
-
-        let property (platform : SimulatedUnixPlatform, restart : bool, ops : AcceptOp list) : unit =
+        let property
+            (cover : string -> unit)
+            (platform : SimulatedUnixPlatform, restart : bool, ops : AcceptOp list)
+            : unit
+            =
             let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
             let flavourName = if linux then "Linux" else "Darwin"
             let listenerFd, system = world platform
@@ -1390,7 +1389,8 @@ module TestBlockingAccept =
                 return platform, restart, ops
             }
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
+        let config = CoverageSample.inParallel (Config.QuickThrowOnFailure.WithMaxTest 1000)
+        let coverage = CoverageSample.check config (Arb.fromGen gen) property
 
         let closingGen =
             Gen.zip
@@ -1399,7 +1399,10 @@ module TestBlockingAccept =
                  |> Gen.bind (fun length -> Gen.listOfLength length closingAcceptOpGen))
             |> Gen.map (fun (restart, ops) -> SimulatedUnixPlatform.macOsArm64, restart, ops)
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen closingGen) property)
+        let closingCoverage = CoverageSample.check config (Arb.fromGen closingGen) property
+
+        let count (label : string) : int =
+            coverage.Count label + closingCoverage.Count label
 
         let required =
             [
@@ -1424,10 +1427,11 @@ module TestBlockingAccept =
                 "Darwin finish: a connection"
             ]
 
-        let missing = required |> List.filter (fun label -> not (covered.ContainsKey label))
+        let missing = required |> List.filter (fun label -> count label = 0)
 
         if not (List.isEmpty missing) then
-            failwith $"the property never reached %A{missing}; it reached %A{List.ofSeq covered.Keys |> List.sort}"
+            failwith
+                $"the property never reached %A{missing}; it reached %A{coverage.Reached |> List.sort} and, weighted towards closes, %A{closingCoverage.Reached |> List.sort}"
 
     // ------------------------------------------------------------------
     // What the park may name
