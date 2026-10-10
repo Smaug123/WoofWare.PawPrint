@@ -106,9 +106,39 @@ module UnixSignal =
     /// the process's own signal numbering.
     ///
     /// The signal is pending on the process as a whole, so its leader receives
-    /// it unless it blocks the signal. See `SignalState.generate` for what the
-    /// signal then does. A signal that kills the process ends it, and the answer
-    /// is then the ended process rather than a system to make another call in.
+    /// it unless it blocks the signal. A signal that kills the process ends it,
+    /// and the answer is then the ended process rather than a system to make
+    /// another call in.
+    ///
+    /// What a signal does as it is generated, here and wherever else this
+    /// library generates one (`pthreadKill`, and the `SIGPIPE` a write raises):
+    ///   * at its default disposition, where some task could receive it, it
+    ///     takes that default at once: it terminates the process
+    ///     (`KillOutcome.ProcessEnded`, with the core flag set if its default
+    ///     dumps core and the process's `CoreDumps` allows a dump), stops it
+    ///     (`KillOutcome.ProcessStopped`), or, if the default is to discard it,
+    ///     is discarded. One whose default is to continue the process is
+    ///     pending instead (see `SignalDelivery.DefaultContinue`);
+    ///   * ignored, where some task could receive it, it is discarded;
+    ///   * otherwise it is pending, including when every task that could
+    ///     receive it blocks it, and a task takes it as it returns to user mode
+    ///     (`onReturnToUser`) once it can. A standard signal already pending in
+    ///     the same pending set is not added again; a real-time one is.
+    ///
+    /// Before any of that, under Darwin's numbering an ignored signal other
+    /// than SIGCONT is discarded, whatever any mask says; under Linux's, an
+    /// ignored signal that every receiver blocks stays pending until one can
+    /// take it (`Signal.blockedIgnoredSignalStaysPendingUnder`, and see
+    /// `onReturnToUser`). A stop signal that is not discarded discards any
+    /// pending SIGCONT, and SIGCONT discards every pending stop signal, on
+    /// every task and on the process.
+    ///
+    /// Refuses (`KillRefusal.Receiver`) a caught signal sent to the process
+    /// that only a task other than the leader could receive; and, under
+    /// Darwin's numbering, a standard signal it would leave pending on the
+    /// process while an instance is pending on the leader alone, or the other
+    /// way round, which Darwin holds as one instance where this library holds
+    /// two.
     ///
     /// Only a signal to the calling process itself is answered. Signal number 0
     /// sends nothing, and a number that is neither 0 nor a signal is `EINVAL`.
@@ -192,13 +222,64 @@ module UnixSignal =
                 }
         }
 
-    /// What `task` takes as it returns to user mode, as
-    /// `SignalState.onReturnToUser` decides: `task` takes its own signals, and if
-    /// it is the process's leader, the process's too. Asked before `task` next
-    /// runs its own code, including after `sigreturn`.
+    /// What `task` takes as it returns to user mode: its own signals, and if it
+    /// is the process's leader, the process's too. A client asks this before
+    /// `task` next runs its own code: after every system call it makes,
+    /// `sigreturn` included.
     ///
-    /// A task returning from `sigsuspend` or `pause` gets the mask the call
-    /// replaced back here (see `SignalState.onReturnToUser`).
+    /// Returns the possibly-updated system in every case, because an answer can
+    /// change the state without producing an action (see the Ignore rule
+    /// below), and a client that dropped the no-action system would replay
+    /// those discards forever.
+    ///
+    /// The signals are walked in the order a task takes them, skipping any
+    /// that `task`'s mask blocks, and what happens to each is its disposition
+    /// *now*, not at generation:
+    ///   * caught — a handler frame is pushed for it, and the walk goes on
+    ///     under the mask the frame says, so that every caught signal the task
+    ///     can take gets a frame before any handler runs. Their handlers run
+    ///     innermost first, the reverse of the order they were taken in.
+    ///     Under `SA_RESETHAND` the disposition returns to the default as the
+    ///     frame is pushed;
+    ///   * ignored, whether by `SIG_IGN` or by a default of Ignore — it is
+    ///     discarded silently, the walk continuing past it. Under Linux's
+    ///     numbering an ignored signal that was blocked as it was generated
+    ///     stayed pending (see `kill`), and this is what un-pends it: it
+    ///     becomes receivable while still ignored and is dropped, or a handler
+    ///     arrives first and it is delivered;
+    ///   * the default, where that is to terminate or stop — surfaced as its
+    ///     case for the client to act on, a termination with its core flag as
+    ///     the process's `CoreDumps` decides.
+    ///
+    /// Within one pending set, Darwin takes the lowest-numbered signal first,
+    /// and Linux takes SIGILL, SIGTRAP, SIGBUS, SIGFPE, SIGSEGV and SIGSYS
+    /// first and then the lowest-numbered; several instances of one real-time
+    /// signal come in the order they were generated. Linux takes every signal
+    /// of the task's own set before any of the process's; Darwin takes the two
+    /// as one set.
+    ///
+    /// A pending signal whose default is to continue the process, at its
+    /// default, surfaces as `SignalDelivery.DefaultContinue` if `task` does not
+    /// block it, and stays pending if it does. The task's return is not over:
+    /// the client asks again before the task runs its own code, and that answer
+    /// may take more signals.
+    ///
+    /// A task returning from `sigsuspend` or `pause` (`SignalState.maskToRestore`
+    /// is `Some`) takes its signals under the call's temporary mask, and gets
+    /// the mask the call replaced back as it returns: the first frame pushed
+    /// (the outermost) saves that mask rather than the temporary one, so the
+    /// handler's `sigreturn` restores it, and a return that pushes no frame
+    /// restores it at once, unless it answers `DefaultContinue`, whose return
+    /// goes on under the temporary mask when the client asks again. Each frame
+    /// after the first saves the mask the one before it set, as for any other
+    /// return.
+    ///
+    /// Refuses, whichever task is asked, while any signal pending on the
+    /// process could be received by a task other than the leader but not by
+    /// the leader; the refusal names the first such signal in
+    /// `SignalState.pending`'s order. Refuses a stop or continue default
+    /// reached after frames were pushed. A refusal changes nothing, a mask to
+    /// restore included.
     ///
     /// A task asleep in a syscall is not in user mode, and returns to it only
     /// once the syscall has answered. A signal ends that sleep through the
@@ -226,8 +307,14 @@ module UnixSignal =
         SignalState.onReturnToUser system.Process.CoreDumps system.Leader (tasksOf system) task system.Process.Signals
         |> Result.map (fun (delivery, signals) -> delivery, withSignals signals system)
 
-    /// `sigreturn(2)`: the handler for `task`'s innermost frame, `frame`, has
-    /// returned. See `SignalState.sigreturn`.
+    /// `sigreturn(2)`: `task`'s handler for the frame `frame` has returned, and
+    /// the frame is popped, restoring the mask that was in force before it was
+    /// pushed (`HandlerFrame.SavedMask`), whatever the handler did to the mask
+    /// meanwhile. The client then asks `onReturnToUser` again, since signals
+    /// the frame blocked may now be deliverable.
+    ///
+    /// Fails loudly unless `frame` is `task`'s innermost frame: handlers return
+    /// innermost first, so anything else is a bug in the client.
     let sigreturn<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (frame : HandlerFrameId)
@@ -241,10 +328,10 @@ module UnixSignal =
     /// `raise(3)` is this, aimed at the calling task.
     ///
     /// The signal is pending on `target` alone: no other task takes it, even
-    /// while `target` blocks it and another task does not. See
-    /// `SignalState.generate` for what the signal then does: a caught one that
-    /// `target` does not block is delivered as `target` next returns to user
-    /// mode, which for `raise(3)` is before the call returns. A signal that
+    /// while `target` blocks it and another task does not. See `kill` for what
+    /// the signal then does: a caught one that `target` does not block is
+    /// delivered as `target` next returns to user mode, which for `raise(3)` is
+    /// before the call returns. A signal that
     /// kills the process ends it, and the answer is then the ended process
     /// rather than a system to make another call in.
     ///
@@ -686,9 +773,9 @@ module UnixSignal =
     /// sleep it parks in (`WouldBlock`, finished by `finishSigsuspend`). The
     /// return to user mode runs every handler due before the call's -1 is seen;
     /// the outermost frame saves the mask from before the call, so that its
-    /// `sigreturn` restores it (see `SignalState.onReturnToUser`). A signal at
-    /// its default that terminates the process ends the call the same way, and
-    /// the return to user mode then terminates the process.
+    /// `sigreturn` restores it (see `onReturnToUser`). A signal at its default
+    /// that terminates the process ends the call the same way, and the return
+    /// to user mode then terminates the process.
     ///
     /// An ignored signal ends nothing. One sent during the call is discarded as
     /// it is sent. Under Linux, one pending as the call is made, which `mask`
@@ -699,8 +786,8 @@ module UnixSignal =
     ///
     /// Refuses (see `SigsuspendRefusal`): a signal whose default stops the
     /// process, which the task would take; under Darwin, a SIGCONT the task
-    /// could take, ignored or at its default; and whatever
-    /// `SignalState.onReturnToUser` refuses. A refusal changes nothing.
+    /// could take, ignored or at its default; and whatever `onReturnToUser`
+    /// refuses. A refusal changes nothing.
     ///
     /// Measured by `docs/plans/2026-08-23-posix-kernel-extraction/sigsuspend-mask.c`
     /// on Linux 6.18.5 (glibc 2.41) and Darwin 27.0.0.

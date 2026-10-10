@@ -316,7 +316,8 @@ type WriteOutcome<'Answer, 'Task, 'Handler when 'Task : comparison and 'Handler 
     | Returns of answer : 'Answer * system : UnixSystem<'Task, 'Handler>
     /// The call answers `answer`, having generated `signal`, and the process
     /// carries on as `system`: the signal is pending there, or was discarded as
-    /// it was generated (see `SignalState.generate`).
+    /// it was generated (see `UnixSignal.kill` for what generating a signal
+    /// does).
     ///
     /// The one signal a write raises is `SIGPIPE`, for a write into a pipe
     /// with no reader or into a Linux stream socket with no peer, which answers
@@ -2317,9 +2318,9 @@ module UnixReadWrite =
     /// ahead of `EAGAIN`, `EFAULT` and a short count, and raises `SIGPIPE`
     /// before it returns. That is a zero-length write too, except on Linux,
     /// where one answers 0 and raises nothing. The signal is `task`'s own on
-    /// Linux and the process's on Darwin; what it does is then
-    /// `SignalState.generate`'s to say, and if its disposition is the
-    /// default, it ends the process.
+    /// Linux and the process's on Darwin; what it does is then what any
+    /// generated signal does (see `UnixSignal.kill`), and if its disposition
+    /// is the default, it ends the process.
     ///
     /// A blocking write into a pipe with no room for any of it sleeps
     /// (`WriteOutcome.WouldBlock`) without reading the buffer; one with room
