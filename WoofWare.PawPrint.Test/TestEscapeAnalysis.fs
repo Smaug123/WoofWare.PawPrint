@@ -451,6 +451,11 @@ public class Dog : Animal
     public override string Echo() => Speak();
 }
 
+public sealed class Kennel
+{
+    public Animal Make() => new Dog();
+}
+
 public sealed class Puppy : Animal
 {
     public override string Speak() => throw new Bark();
@@ -503,6 +508,9 @@ public static class ContextCases
     static Animal Identity(Animal a) => a;
 
     public static string ReturnsWhatItIsPassed() => Identity(new Dog()).Speak();
+
+    // The call returning the dog is on a receiver that may be null, so it can fault too.
+    public static string ReturnsWhatItMakes(Kennel kennel) => kennel.Make().Speak();
 
     static string Forwards(Animal a) => Cases.CallsVirtual(a);
 
@@ -996,6 +1004,11 @@ public static class SR
                 Unknown = Some false
             }
             { expect "Fixture.ContextCases" "ReturnsWhatItIsPassed" with
+                Contains = [ "=Fixture.Bark" ]
+                Excludes = [ "=Fixture.Hiss" ]
+                Unknown = Some false
+            }
+            { expect "Fixture.ContextCases" "ReturnsWhatItMakes" with
                 Contains = [ "=Fixture.Bark" ]
                 Excludes = [ "=Fixture.Hiss" ]
                 Unknown = Some false

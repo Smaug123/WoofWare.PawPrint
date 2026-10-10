@@ -104,6 +104,10 @@ type internal CallSite =
     /// object that is one of these (`LocalFacts.Spellings` spells them): each one's class decides
     /// what runs on it.
     | Virtual of receivers : Set<SpelledObject> * Callee
+    /// The parameterless constructor the runtime runs to make an exception that it raises by
+    /// itself at this instruction (`ExceptionMaking`). The instruction does not make this call, so
+    /// what the instruction leaves on the stack is not what the constructor returns.
+    | Constructor of MethodKey
 
 /// What one method body does by itself: the exceptions it raises, the places it cannot see
 /// through, and the methods it calls, each at the IL offset where it happens, so that the body's
@@ -485,15 +489,7 @@ module EscapeAnalysis =
             raised
             |> List.choose (fun (_, constructor) ->
                 constructor
-                |> Option.map (fun callee ->
-                    offset,
-                    CallSite.Direct
-                        {
-                            Callee = callee
-                            Spelling = CalleeSpelling.Fixed
-                        },
-                    []
-                )
+                |> Option.map (fun constructor -> offset, CallSite.Constructor constructor, [])
             )
 
         raises, calls
@@ -1841,22 +1837,19 @@ module EscapeAnalysis =
     let private factsOf (state : EscapeAnalysisState) (key : MethodKey) : EscapeAnalysisState * LocalFacts =
         let assembly, method = methodOf state key
 
-        let contracted (raised : ThrownType list) (assumed : Assumption list) (calls : MethodKey list) : LocalFacts =
+        let contracted
+            (raised : ThrownType list)
+            (assumed : Assumption list)
+            (constructors : MethodKey list)
+            : LocalFacts
+            =
             {
                 Raises = raised |> List.map (fun thrown -> 0, thrown)
                 Opaque = []
                 Assumed = assumed |> List.map (fun assumption -> 0, assumption)
                 Calls =
-                    calls
-                    |> List.map (fun callee ->
-                        0,
-                        CallSite.Direct
-                            {
-                                Callee = callee
-                                Spelling = CalleeSpelling.Fixed
-                            },
-                        []
-                    )
+                    constructors
+                    |> List.map (fun constructor -> 0, CallSite.Constructor constructor, [])
                 Rethrows = []
                 Regions = []
                 OutsideBody = Set.empty
@@ -3131,8 +3124,22 @@ module EscapeAnalysis =
                 None
 
         let state, reached =
-            match facts.Calls |> List.tryFind (fun (offset, _, _) -> offset = call) with
+            // The call the instruction makes, not a constructor the runtime runs there to make an
+            // exception the instruction raises.
+            let made =
+                facts.Calls
+                |> List.tryFind (fun (offset, site, _) ->
+                    match site with
+                    | CallSite.Constructor _ -> false
+                    | CallSite.Direct _
+                    | CallSite.Constrained _
+                    | CallSite.Virtual _ -> offset = call
+                )
+
+            match made with
             | None -> state, None
+            | Some (_, CallSite.Constructor constructor, _) ->
+                failwith $"BUG: looking for the call at %d{call}, the search found %O{constructor}, which it skips"
             | Some (_, CallSite.Direct callee, passes) ->
                 let state, reached = calleeInstance state assembly instance.Arguments callee
 
@@ -3280,6 +3287,16 @@ module EscapeAnalysis =
 
                     let state, reached = passedTo state Set.empty instance facts passes None reached
 
+                    state, (offset, reached) :: callees, raises, undecided
+                | CallSite.Constructor constructor ->
+                    let callee =
+                        {
+                            Callee = constructor
+                            Spelling = CalleeSpelling.Fixed
+                        }
+
+                    let state, reached = calleeInstance state assembly instance.Arguments callee
+                    let state, reached = passedTo state Set.empty instance facts passes None reached
                     state, (offset, reached) :: callees, raises, undecided
                 | CallSite.Constrained (constrainedType, callee) ->
                     let state, outcome =
