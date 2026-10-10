@@ -3304,9 +3304,7 @@ module UnixReadWrite =
         | TcpEndState.Closed ->
             failwith
                 $"UnixReadWrite.admitFinishWrite: task %O{task} sleeps on socket %O{socketId}, whose end of the connection is closed, but the call holds the socket (this is a bug in this library)."
-        | TcpEndState.Open
-        | TcpEndState.FinQueued
-        | TcpEndState.FinReceived ->
+        | TcpEndState.Open _ ->
 
         let step = connectionWriteStep connectionEnd false remaining transfer
 

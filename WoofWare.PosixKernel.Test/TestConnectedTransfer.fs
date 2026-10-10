@@ -802,13 +802,19 @@ module TestConnectedTransfer =
 
             let connection = system.Machine.Connections |> Map.toList |> List.exactlyOne |> snd
 
-            let expectedUnsent =
+            let expectedStranded =
                 match SimulatedUnixPlatform.flavour platform with
                 | SimulatedUnixFlavour.Linux -> false
                 | SimulatedUnixFlavour.Darwin -> true
 
-            TcpTransfer.unsent ConnectionEnd.Client connection.Transfer > 0
-            |> shouldEqual expectedUnsent
+            // Stranded bytes take send space, but will never be sent.
+            let capacity =
+                (TcpTransfer.towards ConnectionEnd.Server connection.Transfer).SendCapacity
+
+            TcpTransfer.unsent ConnectionEnd.Client connection.Transfer |> shouldEqual 0
+
+            TcpTransfer.sendSpace ConnectionEnd.Client connection.Transfer < capacity
+            |> shouldEqual expectedStranded
 
             match UnixDescriptor.close c system with
             | Ok (SyscallAnswer.Completed 0L, system) -> assertClean system
@@ -1272,7 +1278,7 @@ module TestConnectedTransfer =
             // The other flavour's rules.
             let other =
                 match flavour with
-                | SimulatedUnixFlavour.Linux -> TcpTransferRules.Darwin
+                | SimulatedUnixFlavour.Linux -> TcpTransferRules.Darwin Map.empty
                 | SimulatedUnixFlavour.Darwin -> TcpTransferRules.Linux Set.empty
 
             let otherFlavour =

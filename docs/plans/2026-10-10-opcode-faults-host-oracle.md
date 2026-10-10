@@ -58,8 +58,9 @@ Each stage is one PR.
    beyond int32), and an array whose element type does not match what is
    stored. The host raised nothing the table omits. It never raised
    `ArrayTypeMismatchException` from `stelem.<type>` of a primitive, which the
-   table listed, so those entries now leave it out. `Ldelem_u8`, `Ldind_u8` and
-   `Stelem_u1/u2/u4/u8` are not checked, because no IL encodes them.
+   table listed, so those entries now leave it out. `cpblk` and `initblk`
+   through a null address raise `NullReferenceException` at every length tried,
+   up to 64 KiB, on x64 as on arm64.
 3. **The other instructions that take a metadata token**
    (`TestOpcodeFaultsOnHostTokens`): `castclass`, `isinst`, `unbox`,
    `unbox.any`, `box`, `newarr` (negative and too-long lengths), `refanyval`,

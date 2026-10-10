@@ -68,8 +68,11 @@ method) may add more:
 * an object thrown that is not an exception is named as itself; a `catch` sees it as a
   `RuntimeWrappedException` if its method's assembly wraps such throws (C# and Visual Basic
   assemblies do, F# ones do not), and as itself if not;
-* a `TypeInitializationException` from a type initializer is left out wherever the type a call
-  touches has none;
+* a type initializer runs where CoreCLR's `CEEInfo::initClass` runs it: at an access to a static
+  field of its type, other than from that type's own initializer, and at a call to a method of its
+  type that is static, a constructor, or an instance method of a value type or an interface, unless
+  the type is marked `beforefieldinit`. A generic type's initializer runs for the instantiation
+  the access or call names;
 * every token a body names, the type of every local and `catch` clause it declares, and the
   signature of every method it calls, directly or through `calli`, is bound against the assemblies actually loaded, and a member
   or type that is not there contributes the `MissingMethodException`, `MissingFieldException` or
@@ -77,7 +80,8 @@ method) may add more:
   (`!!0::Value`) exists or not depending on the instantiation, so binding it is "unknown";
 * binding a token into another assembly that has a module initializer runs it, which may throw
   `TypeInitializationException`, and so does a `constrained.` call that dispatch lands in another
-  assembly;
+  assembly. The analysis follows a module initializer no further: what it raises, and what throwing
+  that again raises (below), are left out;
 * a synchronized method takes a monitor around its body, whose wait may throw
   `ThreadInterruptedException`, whose release throws `SynchronizationLockException` if the body
   has already released it, and which, for an instance method `call`ed on null, throws
@@ -94,11 +98,15 @@ check's, a failed cast's, an overflow's) by running the exception's parameterles
 which looks up its message, so what that constructor can raise is in the answer too:
 `ThreadInterruptedException`, for one, from the lookup's lock. `OutOfMemoryException` and
 `StackOverflowException` it allocated in advance, and makes without running anything. What the
-runtime runs to make an exception with arguments is not followed: a failed binding's, a
-multidimensional array constructor's `ArgumentOutOfRangeException`, and a
-`TypeInitializationException`. For the last, that leaves something out: should its constructor
-fail, the runtime raises the type initializer's own exception instead, and the answer does not
-include what a type initializer raises.
+runtime runs to make an exception with arguments is not followed: a failed binding's, and a
+multidimensional array constructor's `ArgumentOutOfRangeException`.
+
+Where a type initializer fails, the runtime runs `TypeInitializationException`'s
+`(string, Exception)` constructor around what the initializer raised. Should that constructor fail,
+the runtime raises the initializer's own exception instead, throwing it again, which runs
+`Exception.InternalPreserveStackTrace` on it, and what that raises escapes in its place. So where an
+initializer runs, the answer has the `TypeInitializationException`, what the initializer raises, and
+what `InternalPreserveStackTrace` raises, but nothing the constructor does.
 
 `EscapeAnalysis.unknownSources` says why an answer is "unknown". It lists the places (`OpaqueSite`)
 where something the analysis cannot name may arise and then escape the method, past every handler
@@ -154,13 +162,19 @@ field by reflection is undecidable, and any code can make an object of any subcl
 culture. Without them, constructing almost any CoreLib exception would be "unknown", because the
 lookup reaches culture data, formatting, collections, event tracing and reflection.
 
+Constructing a CoreLib exception runs type initializers, though: `SR`'s, as it asks for its message,
+and the resource reader's types', in the lookup. Should one fail, the runtime may throw its own
+exception again, which reads that exception's stack trace. The analysis cannot see into `SR`'s
+initializer or into that read, so unless the caller allows `CoreLibTypeInitializers` and
+`StackTracePreserved` (below), constructing almost any CoreLib exception is "unknown" still.
+
 Other assumptions are the caller's to allow (`Assumption`, given to `EscapeAnalysis.create`). Each
 lets the analysis take a contract in place of a method's body, and each answer lists in
 `Escapes.Assumes` those it relied on: the ones whose contract stands in for code that something
 escaping could come from, so that without them the answer could be "unknown". It may also list one
 that a handler in a method this one calls made unnecessary, since a callee's answer records only
 that it relied on the assumption. Allowed none, every answer follows from the code and the
-assumptions above. There is one so far:
+assumptions above. There are three so far:
 
 * `NamedTypesLoad`: every type that the metadata of a loaded type names loads. The assembly that
   defines it is found without running the program's `AssemblyResolve` or `Resolving` handlers, is
@@ -172,6 +186,28 @@ assumptions above. There is one so far:
   constructor too, and what it raises escapes as well. `RuntimeType` asks for the constraints
   whenever it works out a generic parameter's base type, so without this assumption, comparing
   `Type`s or asking whether one is a value type is "unknown".
+* `StackTracePreserved`: reading an exception's `Source` and `StackTrace` raises only
+  `OutOfMemoryException`, `TypeInitializationException`, `ThreadInterruptedException` and
+  `StackOverflowException`. CoreCLR reads both when it throws an exception that has been thrown
+  before (`Exception.InternalPreserveStackTrace`), as it does a type initializer's own exception
+  when it cannot wrap that. `Exception`'s own getters walk the stack trace, reading each method's
+  metadata through reflection and native code the analysis does not see into; what they read of
+  attributes is inside handlers that absorb anything. It holds when every exception class that
+  overrides either getter raises from it only what `Exception`'s own does, and when the metadata of
+  each method on the stack trace, and of every type and assembly it names, is intact and loads
+  without running the program's `AssemblyResolve` or `Resolving` handlers. Without it, wherever a
+  type initializer may fail is "unknown".
+* `CoreLibTypeInitializers`: each of CoreLib's type initializers raises only
+  `OutOfMemoryException`, `TypeInitializationException` (from another type's initializer it runs),
+  `ThreadInterruptedException` and `StackOverflowException`. Every CoreLib exception's constructor
+  runs `SR`'s, which reads an `AppContext` switch through dictionaries and reflection the analysis
+  does not see into, and many others are like it: allowed every other assumption, about five in six
+  of CoreLib's own methods are "unknown" without this one, and about one in three with it. It holds when
+  the runtime is installed completely and intact; when the configuration the host gives the
+  runtime (its `runtimeconfig.json` properties and the environment variables it reads) is well
+  formed; when only CoreLib writes CoreLib's private static fields; and when each of CoreLib's
+  generic types' initializers does so whatever its type arguments. The program's own type
+  initializers are always followed.
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set

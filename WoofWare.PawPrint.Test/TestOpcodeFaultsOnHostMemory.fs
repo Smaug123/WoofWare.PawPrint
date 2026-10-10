@@ -19,15 +19,10 @@ open WoofWare.PawPrint
 /// host raises must be exactly what the table lists. The inputs are classes rather than a range,
 /// so there is no property over random ones.
 ///
-/// Three things are deliberately never tried. A non-null address that is not valid: CoreCLR ends
-/// the process on most of those, and the table excludes them (see `OpcodeFaults.Raises`). A block
-/// longer than 8 bytes through a null address: CoreCLR copies a long block in native code, where a
-/// null address ends the process rather than raising. And a value of the operand of `throw`: what
-/// `throw` raises then is the value, not a fault of the instruction.
-///
-/// `Ldelem_u8`, `Ldind_u8`, `Stelem_u1`, `Stelem_u2`, `Stelem_u4` and `Stelem_u8` are absent because
-/// no IL encodes them: `ldelem.u8` and `ldind.u8` are other names for the `.i8` opcodes, and there
-/// is no `stelem.u*`.
+/// Two things are deliberately never tried. A non-null address that is not valid: CoreCLR ends
+/// the process on most of those, and the table excludes them (see `OpcodeFaults.Raises`). And a
+/// value of the operand of `throw`: what `throw` raises then is the value, not a fault of the
+/// instruction.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestOpcodeFaultsOnHostMemory =
@@ -219,17 +214,21 @@ module TestOpcodeFaultsOnHostMemory =
 
     // ---------- Addresses ----------
 
-    /// Two blocks of unmanaged memory that live as long as the test host, long enough for every
-    /// type here. Only nulls are ever stored in `referenceSlots`, so a load of an object reference
-    /// from it reads null; `valueSlots` takes everything else.
-    let private allocateZeroed () : nativeint =
-        let block = Marshal.AllocHGlobal 64
-        Marshal.Copy (Array.zeroCreate<byte> 64, 0, block, 64)
+    /// Blocks of unmanaged memory that live as long as the test host. `referenceSlots` and
+    /// `valueSlots` are long enough for every type here. Only nulls are ever stored in
+    /// `referenceSlots`, so a load of an object reference from it reads null; `valueSlots` takes
+    /// every other type. `blockSlots` is long enough for every length `cpblk` and `initblk` are
+    /// given.
+    let private allocateZeroed (length : int) : nativeint =
+        let block = Marshal.AllocHGlobal length
+        Marshal.Copy (Array.zeroCreate<byte> length, 0, block, length)
         block
 
-    let private referenceSlots : nativeint = allocateZeroed ()
+    let private referenceSlots : nativeint = allocateZeroed 64
 
-    let private valueSlots : nativeint = allocateZeroed ()
+    let private valueSlots : nativeint = allocateZeroed 64
+
+    let private blockSlots : nativeint = allocateZeroed 65536
 
     /// A null address and a valid one for a value of `ty`.
     let private addressesFor (ty : Type) : obj list =
@@ -302,10 +301,12 @@ module TestOpcodeFaultsOnHostMemory =
                     Arguments = HostFaultProbe.cartesian arguments
                 }
 
-            // `cpblk` and `initblk` take a length, kept to at most 8 bytes; see the fixture's
-            // documentation for why.
-            let lengths = [ 0u ; 1u ; 8u ] |> List.map box
-            let addresses = [ box 0n ; box valueSlots ]
+            // A null address raises at every length. CoreCLR's helper for a block the JIT does not
+            // unroll is `SpanHelpers.Memmove` or `SpanHelpers.Fill`, and `Memmove` reads both
+            // endpoints before it hands a long copy to native code: above 2048 bytes on x64, and
+            // never on arm64. The lengths reach past that threshold.
+            let lengths = [ 0u ; 1u ; 8u ; 9u ; 2049u ; 65536u ] |> List.map box
+            let addresses = [ box 0n ; box blockSlots ]
             let cpblk = nullary NullaryIlOp.Cpblk OpCodes.Cpblk
             let initblk = nullary NullaryIlOp.Initblk OpCodes.Initblk
 

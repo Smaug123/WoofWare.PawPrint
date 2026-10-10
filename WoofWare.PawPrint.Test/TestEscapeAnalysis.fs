@@ -580,6 +580,14 @@ public static class CctorCases
     public static int CallsBoom() => Boom.M();
 }
 
+// Its initializer calls a static method of its own type, which the initializing thread runs
+// without running the initializer again.
+public class SelfInit
+{
+    static SelfInit() { Helper(); }
+    static void Helper() { }
+}
+
 public class Shadowed
 {
     public int Field;
@@ -640,6 +648,11 @@ public static class SR
             Assumes = None
             Sources = None
         }
+
+    /// The assumptions that constructing a CoreLib exception relies on: asking for its message runs
+    /// `SR`'s type initializer, and the lookup may throw a type initializer's own exception again.
+    let private constructing : Assumption list =
+        [ Assumption.CoreLibTypeInitializers ; Assumption.StackTracePreserved ]
 
     let private expectations : Expectation list =
         let ioe = "=System.InvalidOperationException"
@@ -814,9 +827,14 @@ public static class SR
             { expect "Fixture.G`1" ".cctor" with
                 Contains = [ "=System.TypeInitializationException" ]
             }
-            // `Boom`'s initializer fails, and calling `M` runs it first.
+            // `Boom`'s initializer fails, and `M` reading its field runs it first. Should wrapping
+            // what it raised fail, that escapes instead.
             { expect "Fixture.CctorCases" "CallsBoom" with
-                Contains = [ "=System.TypeInitializationException" ]
+                Contains = [ "=System.TypeInitializationException" ; "=System.FormatException" ]
+            }
+            { expect "Fixture.SelfInit" ".cctor" with
+                Excludes = [ "=System.TypeInitializationException" ]
+                Unknown = Some false
             }
             { expect "Fixture.ShadowCases" "DereferencesNull" with
                 Contains = [ "=System.NullReferenceException" ]
@@ -890,7 +908,7 @@ public static class SR
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
                 Excludes = [ ioe ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
                 Sources = Some []
             }
             // Whatever the lookup raises is caught.
@@ -902,13 +920,13 @@ public static class SR
             { expect "Fixture.Messages" "Rethrown" with
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
             }
             { expect "Fixture.Messages" "RethrownAsTimeout" with
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
                 Excludes = [ "<:System.TimeoutException" ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
             }
             { expect "Fixture.Messages" "RethrownThenAbsorbed" with
                 Unknown = Some false
@@ -918,7 +936,7 @@ public static class SR
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
                 Excludes = [ "=System.OutOfMemoryException" ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
             }
             { expect "Fixture.Messages" "Impostor" with
                 Excludes = [ "=System.Threading.ThreadInterruptedException" ]
@@ -934,7 +952,7 @@ public static class SR
                         "=System.Threading.ThreadInterruptedException"
                     ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
             }
             { expect "Fixture.Faults" "Element" with
                 Contains =
@@ -943,7 +961,7 @@ public static class SR
                         "=System.Threading.ThreadInterruptedException"
                     ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
             }
             { expect "Fixture.Faults" "Cast" with
                 Contains =
@@ -952,12 +970,12 @@ public static class SR
                         "=System.Threading.ThreadInterruptedException"
                     ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
             }
             { expect "Fixture.Faults" "Sum" with
                 Contains = [ "=System.OverflowException" ; "=System.Threading.ThreadInterruptedException" ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
             }
             { expect "Fixture.Faults" "Quotient" with
                 Contains =
@@ -966,7 +984,7 @@ public static class SR
                         "=System.Threading.ThreadInterruptedException"
                     ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
             }
             { expect "Fixture.Faults" "Grid" with
                 Contains =
@@ -975,7 +993,7 @@ public static class SR
                         "=System.Threading.ThreadInterruptedException"
                     ]
                 Unknown = Some false
-                Assumes = Some []
+                Assumes = Some constructing
             }
             { expect "Fixture.Faults" "Allocate" with
                 Contains = [ "=System.OutOfMemoryException" ]
@@ -1543,22 +1561,32 @@ public static class SR
         | _, failures -> failures |> String.concat Environment.NewLine |> failwith
 
     [<Test>]
-    let ``each method an assumption summarises raises exactly its contract when assumed, and is unknown otherwise``
+    let ``each method an assumption summarises raises exactly its contract when assumed, and some is unknown otherwise``
         ()
         : unit
         =
         let corelib = hostCoreLib ()
 
-        let summarised =
+        let summarised : Map<Assumption, MethodKey list> =
             [
                 for KeyValue (handle, _) in corelib.Methods do
                     match Assumption.summarises corelib handle with
-                    | Some assumption -> yield MethodKey.make corelib handle, assumption
+                    | Some assumption -> yield assumption, MethodKey.make corelib handle
                     | None -> ()
             ]
+            |> List.groupBy fst
+            |> List.map (fun (assumption, keys) -> assumption, List.map snd keys)
+            |> Map.ofList
 
-        summarised |> List.map snd |> Set.ofList |> shouldEqual Assumption.all
-        summarised.Length |> shouldEqual Assumption.all.Count
+        summarised |> Map.keys |> Set.ofSeq |> shouldEqual Assumption.all
+
+        // Each stands in for one method, but the one about CoreLib's type initializers, which
+        // stands in for each of them.
+        for KeyValue (assumption, keys) in summarised do
+            match assumption with
+            | Assumption.CoreLibTypeInitializers -> keys.Length |> shouldBeGreaterThan 1
+            | Assumption.NamedTypesLoad
+            | Assumption.StackTracePreserved -> keys.Length |> shouldEqual 1
 
         let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf
@@ -1570,7 +1598,9 @@ public static class SR
                 []
                 id
 
-        for key, assumption in summarised do
+        let mutable assuming = analysis Assumption.all
+
+        for KeyValue (assumption, keys) in summarised do
             // Running out of memory or stack is something no assumption rules out.
             let contract =
                 Assumption.raises assumption
@@ -1586,48 +1616,89 @@ public static class SR
                 Assumption.constructs assumption
                 |> List.map (fun name -> parameterlessConstructor corelib name.Namespace name.Name)
 
-            let constructed (allowed : Set<Assumption>) : EscapeAnalysisState * Escapes list =
-                ((analysis allowed, []), constructors)
+            let constructed (state : EscapeAnalysisState) : EscapeAnalysisState * Escapes list =
+                ((state, []), constructors)
                 ||> List.fold (fun (state, answers) constructor ->
                     let state, answer = EscapeAnalysis.escapes state constructor
                     state, answer :: answers
                 )
 
-            // Allowed everything, it raises its contract and what those constructors raise.
-            let assuming, made = constructed Assumption.all
-            let assuming, escapes = EscapeAnalysis.escapes assuming key
+            // Allowed everything, each raises its contract and what those constructors raise.
+            let next, made = constructed assuming
+            assuming <- next
 
-            render assuming escapes
-            |> shouldEqual (
-                made
-                |> List.map (render assuming)
-                |> Set.unionMany
-                |> Set.union (contract |> Set.map (fun name -> "=" + name))
-            )
+            for key in keys do
+                let next, escapes = EscapeAnalysis.escapes assuming key
+                assuming <- next
 
-            escapes.Unknown |> shouldEqual false
+                render assuming escapes
+                |> shouldEqual (
+                    made
+                    |> List.map (render assuming)
+                    |> Set.unionMany
+                    |> Set.union (contract |> Set.map (fun name -> "=" + name))
+                )
 
-            escapes.Assumes
-            |> shouldEqual (made |> List.map _.Assumes |> Set.unionMany |> Set.add assumption)
+                escapes.Unknown |> shouldEqual false
 
-            // Those constructors are known allowed no assumption: constructing a CoreLib exception
-            // looks up its message, and the analysis always takes the lookup's contract.
-            let _, made = constructed Set.empty
+                escapes.Assumes
+                |> shouldEqual (made |> List.map _.Assumes |> Set.unionMany |> Set.add assumption)
+
+            // Those constructors are known allowed only the assumptions about what constructing a
+            // CoreLib exception runs: its message's lookup runs `SR`'s type initializer, and may
+            // throw a type initializer's own exception again.
+            let constructing =
+                Set.ofList [ Assumption.StackTracePreserved ; Assumption.CoreLibTypeInitializers ]
+
+            let _, made = constructed (analysis constructing)
 
             for answer in made do
                 answer.Unknown |> shouldEqual false
-                answer.Assumes |> shouldEqual Set.empty
+                answer.Assumes |> shouldEqual constructing
 
-            // Every other assumption allowed does not stand in for this one, though the method's own
-            // code may rely on another.
-            let _, escapes =
-                EscapeAnalysis.escapes (analysis (Set.remove assumption Assumption.all)) key
+            // Every other assumption allowed does not stand in for this one, though a method's own
+            // code may rely on another: none relies on it, and some is unknown.
+            let mutable without = analysis (Set.remove assumption Assumption.all)
 
-            escapes.Unknown |> shouldEqual true
-            escapes.Assumes.Contains assumption |> shouldEqual false
+            let someUnknown =
+                keys
+                |> List.exists (fun key ->
+                    let next, escapes = EscapeAnalysis.escapes without key
+                    without <- next
+                    escapes.Assumes.Contains assumption |> shouldEqual false
+                    escapes.Unknown
+                )
+
+            if not someUnknown then
+                failwith $"Allowed every other assumption, every method %A{assumption} summarises is known"
+
+    /// The places the analysis cannot see through in `corelib`'s `Exception.InternalPreserveStackTrace`
+    /// asked about by itself, as `renderSite` spells them, among which are the virtual getters it
+    /// reads, on an exception of any class.
+    let private preservingStackTrace
+        (analysis : EscapeAnalysisState)
+        (corelib : DumpedAssembly)
+        : EscapeAnalysisState * Set<string>
+        =
+        let analysis, sources =
+            EscapeAnalysis.unknownSources analysis (methodNamed corelib "System.Exception" "InternalPreserveStackTrace")
+
+        let rendered = sources |> Seq.map (renderSite analysis) |> Set.ofSeq
+
+        for getter in [ "get_Source" ; "get_StackTrace" ] do
+            let site =
+                $"System.Exception::InternalPreserveStackTrace IL VirtualCall System.Exception::%s{getter}"
+
+            if not (rendered.Contains site) then
+                failwith $"Preserving a stack trace is hidden at %A{Set.toList rendered}, not at %s{site}"
+
+        analysis, rendered
 
     [<Test>]
-    let ``CoreLib's resource lookup raises exactly its contract, allowed no assumption`` () : unit =
+    let ``CoreLib's resource lookup raises exactly its contract, besides what throwing an initializer's exception again does``
+        ()
+        : unit
+        =
         let corelib = hostCoreLib ()
 
         let key =
@@ -1636,27 +1707,44 @@ public static class SR
             |> Seq.exactlyOne
             |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
 
-        let analysis =
+        let analysis (assumptions : Set<Assumption>) : EscapeAnalysisState =
             analysisOf
                 corelib
                 (FrameworkUnderTest.runtimeDirs ())
                 (hostTarget ())
                 HardwareIntrinsicsProfile.ScalarOnly
-                Set.empty
+                assumptions
                 []
                 id
 
-        let analysis, escapes = EscapeAnalysis.escapes analysis key
+        // A type initializer it runs may fail, and the runtime may throw that one's own exception
+        // again, which reads its stack trace.
+        let assuming, escapes =
+            EscapeAnalysis.escapes (analysis (Set.singleton Assumption.StackTracePreserved)) key
 
-        render analysis escapes
+        render assuming escapes
         |> shouldEqual (
-            ResourceLookup.raises
+            ResourceLookup.raises @ Assumption.raises Assumption.StackTracePreserved
             |> List.map (fun name -> "=" + name.FullName)
             |> Set.ofList
         )
 
         escapes.Unknown |> shouldEqual false
-        escapes.Assumes |> shouldEqual Set.empty
+        escapes.Assumes |> shouldEqual (Set.singleton Assumption.StackTracePreserved)
+
+        // Allowed every other assumption, only reading that stack trace is hidden.
+        let unassuming, escapes =
+            EscapeAnalysis.escapes (analysis (Set.remove Assumption.StackTracePreserved Assumption.all)) key
+
+        escapes.Unknown |> shouldEqual true
+        escapes.Assumes.Contains Assumption.StackTracePreserved |> shouldEqual false
+        let unassuming, sources = EscapeAnalysis.unknownSources unassuming key
+        let unassuming, preserving = preservingStackTrace unassuming corelib
+
+        sources
+        |> Seq.map (renderSite unassuming)
+        |> Set.ofSeq
+        |> shouldEqual preserving
 
     [<Test>]
     let ``a native method the contract table describes raises exactly what its row says`` () : unit =
@@ -2705,6 +2793,230 @@ public static class Uses
         // A module's own code runs only once its initializer has.
         reportsInitialisation providerAssembly "Provider.P" "CallsM"
         |> shouldEqual false
+
+    /// Types whose initializers fail, and the ways a body can reach them, which CoreCLR's
+    /// `CEEInfo::initClass` decides between: a static field's access runs its type's initializer,
+    /// and so does calling a method of a type not marked `beforefieldinit` that is static, a
+    /// constructor, or an instance method of a value type.
+    let private initializerSource : string =
+        """
+using System;
+
+namespace Inits;
+
+public class Precise
+{
+    static Precise() { throw new InvalidTimeZoneException(); }
+    public static void Run() { }
+    public void Instance() { }
+}
+
+public struct PreciseValue
+{
+    static PreciseValue() { throw new InvalidTimeZoneException(); }
+    public int Field;
+    public void Instance() { }
+}
+
+// No static constructor, so `beforefieldinit`: only touching a static field runs the initializer.
+public static class Lazy
+{
+    public static readonly int Value = Fail();
+    static int Fail() => throw new InvalidTimeZoneException();
+    public static void Run() { }
+}
+
+public sealed class Boom : Exception { }
+
+public class Thrower
+{
+    public static readonly int Value;
+    static Thrower() { throw new Boom(); }
+    public static void Run() { }
+}
+
+// Its initializer can fail only by running out of memory, whose exception is made in advance, so
+// that nothing it runs reaches the preservation of a stack trace: only the runtime's throwing that
+// exception again does.
+public class Allocates
+{
+    public static readonly object Value;
+    static Allocates() { Value = new object(); }
+    public static void Run() { }
+}
+
+public interface IMake { static abstract int Make(); }
+public sealed class MakesFormat : IMake { public static int Make() => throw new FormatException(); }
+public sealed class MakesNothing : IMake { public static int Make() => 0; }
+
+// Each instantiation has an initializer of its own, which raises what its argument's `Make` does.
+public static class Made<T> where T : IMake
+{
+    public static readonly int Value = T.Make();
+}
+
+public static class Runners
+{
+    public static void CallsStatic() => Precise.Run();
+    public static void Constructs() => new Precise();
+    public static void CallsValueInstance() => default(PreciseValue).Instance();
+    public static int ReadsValueField() => default(PreciseValue).Field;
+    public static void WritesValueField() { PreciseValue v = default; v.Field = 1; }
+    public static void CallsReferenceInstance() { Precise p = null; p.Instance(); }
+    public static void CallsLazy() => Lazy.Run();
+    public static int ReadsLazy() => Lazy.Value;
+    public static void CatchesStatic()
+    {
+        try { Precise.Run(); }
+        catch (TypeInitializationException) { }
+    }
+    public static int ReadsMadeFormat() => Made<MakesFormat>.Value;
+    public static int ReadsMadeNothing() => Made<MakesNothing>.Value;
+    public static void CallsThrower() => Thrower.Run();
+    public static int ReadsThrower() => Thrower.Value;
+    public static void CallsAllocates() => Allocates.Run();
+    public static object ReadsAllocates() => Allocates.Value;
+}
+"""
+
+    [<Test>]
+    let ``what runs a type's initializer, and what that initializer raises, are in the answer`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "Inits" OutputKind.DynamicallyLinkedLibrary [] [ initializerSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Inits.dll") (new MemoryStream (image))
+
+        // The full name of what escapes the runner on the real runtime, if anything does, in a
+        // context of its own, since a type whose initializer failed fails every later touch.
+        let onRealRuntime (runner : string) : string option =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("Inits", isCollectible = true)
+
+            try
+                let runners =
+                    context.LoadFromStream(new MemoryStream (image)).GetType "Inits.Runners"
+
+                try
+                    runners.GetMethod(runner).Invoke ((null : obj), Array.empty<obj>) |> ignore<obj>
+
+                    None
+                with :? TargetInvocationException as e ->
+                    Some (e.InnerException.GetType().FullName)
+            finally
+                context.Unload ()
+
+        let initialization = "System.TypeInitializationException"
+        let own = "System.InvalidTimeZoneException"
+        let format = "System.FormatException"
+
+        // Each runner, what escapes it on the real runtime, what its answer must name besides, and
+        // what its answer must not. A runner that faults makes the fault's exception, which looks up
+        // its message, and the lookup runs initializers of its own, so a `TypeInitializationException`
+        // in its answer says nothing of `Precise`'s.
+        let cases : (string * string option * string list * string list) list =
+            [
+                "CallsStatic", Some initialization, [ own ], []
+                "Constructs", Some initialization, [ own ], []
+                "CallsValueInstance", Some initialization, [ own ], []
+                "ReadsValueField", None, [], [ own ]
+                "WritesValueField", None, [], [ own ]
+                "CallsReferenceInstance", Some "System.NullReferenceException", [], [ own ]
+                "CallsLazy", None, [], [ initialization ; own ]
+                "ReadsLazy", Some initialization, [ own ], []
+                // What the initializer raises when making the wrapper fails is no wrapper.
+                "CatchesStatic", None, [ own ], [ initialization ]
+                "ReadsMadeFormat", Some initialization, [ format ], []
+                "ReadsMadeNothing", None, [ initialization ], [ format ]
+                "CallsThrower", Some initialization, [ "Inits.Boom" ], []
+                "ReadsThrower", Some initialization, [ "Inits.Boom" ], []
+                "CallsAllocates", None, [ initialization ], []
+                "ReadsAllocates", None, [ initialization ], []
+            ]
+
+        let mutable analysis = analysisOver [ fixture ] id
+
+        let failures =
+            [
+                for runner, raised, named, excluded in cases do
+                    onRealRuntime runner |> shouldEqual raised
+
+                    let next, escapes =
+                        EscapeAnalysis.escapes analysis (methodNamed fixture "Inits.Runners" runner)
+
+                    analysis <- next
+                    let shown = render analysis escapes
+                    let describe = $"%s{runner}: %A{Set.toList shown}, unknown %b{escapes.Unknown}"
+
+                    if escapes.Unknown then
+                        yield $"%s{describe}, expected known"
+
+                    for name in Option.toList raised @ named do
+                        if not (shown.Contains ("=" + name)) then
+                            yield $"%s{describe} lacks %s{name}"
+
+                    for name in excluded do
+                        if shown.Contains ("=" + name) then
+                            yield $"%s{describe} has %s{name}"
+            ]
+
+        match failures with
+        | [] -> ()
+        | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``a failing type initializer is unknown only for preserving a stack trace, unless that is assumed too``
+        ()
+        : unit
+        =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let image =
+            Roslyn.compileAssembly "Inits" OutputKind.DynamicallyLinkedLibrary [] [ initializerSource ]
+
+        let fixture =
+            Assembly.read loggerFactory (Some "Inits.dll") (new MemoryStream (image))
+
+        let analysisAllowed (assumptions : Set<Assumption>) : EscapeAnalysisState =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                assumptions
+                [ fixture ]
+                id
+
+        let mutable unassuming =
+            analysisAllowed (Set.remove Assumption.StackTracePreserved Assumption.all)
+
+        let next, preserving = preservingStackTrace unassuming (hostCoreLib ())
+        unassuming <- next
+        let mutable assuming = analysisAllowed Assumption.all
+
+        // `Precise`'s initializer makes a CoreLib exception, whose message's lookup may throw an
+        // initializer's exception again by itself. Nothing `Allocates`' runs does, so only the site
+        // running it does: a call, and a field's access.
+        for runner in [ "CallsStatic" ; "CallsAllocates" ; "ReadsAllocates" ] do
+            let key = methodNamed fixture "Inits.Runners" runner
+            let next, escapes = EscapeAnalysis.escapes unassuming key
+            escapes.Unknown |> shouldEqual true
+            escapes.Assumes.Contains Assumption.StackTracePreserved |> shouldEqual false
+            let next, sources = EscapeAnalysis.unknownSources next key
+            unassuming <- next
+
+            sources
+            |> Seq.map (renderSite unassuming)
+            |> Set.ofSeq
+            |> shouldEqual preserving
+
+            // Allowed it too, the answer is known, and relies on it.
+            let next, escapes = EscapeAnalysis.escapes assuming key
+            assuming <- next
+            escapes.Unknown |> shouldEqual false
+            escapes.Assumes.Contains Assumption.StackTracePreserved |> shouldEqual true
 
     /// `int32[,]`'s constructor taking lower bounds and lengths raises `ArgumentOutOfRangeException`
     /// for bounds whose upper end overflows; the one taking lengths alone does not. C# spells

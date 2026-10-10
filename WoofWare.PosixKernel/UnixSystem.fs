@@ -1328,7 +1328,8 @@ module UnixSystem =
                 | SocketPhase.EstablishedPendingReport connection ->
                     [ socketId, connection, Some ConnectionEnd.Client ]
                 | SocketPhase.Listening listenState ->
-                    listenState.Queue |> List.map (fun connection -> socketId, connection, None)
+                    ListenState.connections listenState
+                    |> List.map (fun connection -> socketId, connection, None)
                 | SocketPhase.Idle
                 | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> []
@@ -1410,7 +1411,7 @@ module UnixSystem =
                 let rulesFlavour =
                     match tcp.Transfer.Rules with
                     | TcpTransferRules.Linux _ -> SimulatedUnixFlavour.Linux
-                    | TcpTransferRules.Darwin -> SimulatedUnixFlavour.Darwin
+                    | TcpTransferRules.Darwin _ -> SimulatedUnixFlavour.Darwin
 
                 let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 

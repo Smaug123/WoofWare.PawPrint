@@ -118,7 +118,7 @@ module TestPollTimeout =
                                     SocketPhase.Listening
                                         {
                                             Backlog = 8
-                                            Queue = queue
+                                            Queue = List.map ForgedConnection.queued queue
                                             Drained = false
                                         }
                             }

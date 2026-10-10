@@ -180,7 +180,7 @@ module TestListen =
                     (SocketPhase.Listening
                         {
                             Backlog = 8
-                            Queue = queued
+                            Queue = List.map ForgedConnection.queued queued
                             Drained = false
                         }))
                 (systemOn platform)
@@ -190,7 +190,7 @@ module TestListen =
         match phaseOf (SocketId 0L) system with
         | SocketPhase.Listening listenState ->
             listenState.Backlog |> shouldEqual 64
-            listenState.Queue |> shouldEqual queued
+            ListenState.connections listenState |> shouldEqual queued
         | other -> failwith $"expected Listening, got %A{other}"
 
     // ------------------------------------------------------------------

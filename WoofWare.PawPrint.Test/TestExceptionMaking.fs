@@ -209,3 +209,93 @@ static class Program
                 failwith
                     $"%s{fault} under a culture whose name throws: expected %s{case.Exception} itself, got %A{other}"
         | ExceptionMaking.InitializerFailure -> failwith $"%s{fault}: no case here raises a TypeInitializationException"
+
+    /// Touches a type whose initializer throws an exception whose construction looks nothing up,
+    /// under a current UI culture whose name cannot be read at all when its argument is "nameless",
+    /// can be read except the first time when it is "once", and can always be read when it is
+    /// "named". Exits 1 if a `TypeInitializationException` escaped the touch, 4 if the initializer's
+    /// own exception did, 2 if the culture's did, 3 if another did, and 0 if none did.
+    let private initializerGuest : string =
+        """
+using System;
+using System.Globalization;
+
+sealed class Boom : Exception { }
+
+static class Failing
+{
+    static Failing() { throw new Boom(); }
+    public static void Touch() { }
+}
+
+sealed class FickleCulture : CultureInfo
+{
+    public FickleCulture() : base("") { }
+    // How many more reads of the name throw; every one does while it is negative.
+    public int Throws;
+    public override string Name
+    {
+        get
+        {
+            if (Throws == 0) return base.Name;
+            if (Throws > 0) Throws--;
+            throw new TimeZoneNotFoundException("a culture's name");
+        }
+    }
+}
+
+static class Program
+{
+    static int Main(string[] args)
+    {
+        var culture = new FickleCulture();
+        if (args[0] != "named")
+        {
+            CultureInfo.CurrentUICulture = culture;
+            culture.Throws = args[0] == "once" ? 1 : -1;
+        }
+
+        try
+        {
+            Failing.Touch();
+            return 0;
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return 2;
+        }
+        catch (TypeInitializationException)
+        {
+            return 1;
+        }
+        catch (Boom)
+        {
+            return 4;
+        }
+        catch (Exception)
+        {
+            return 3;
+        }
+    }
+}
+"""
+
+    let private initializerImage : Lazy<byte[]> =
+        lazy (Roslyn.compile [ initializerGuest ])
+
+    [<Test>]
+    let ``a type initializer's failure raises what ExceptionMaking says`` () : unit =
+        ExceptionMaking.ofOpcodeFault OpcodeFault.TypeInitialization
+        |> shouldEqual ExceptionMaking.InitializerFailure
+
+        let touch (culture : string) : RealRuntimeResult =
+            RealRuntime.executeWithRealRuntime [| culture |] initializerImage.Value
+
+        // The runtime wraps what the initializer raised.
+        touch "named" |> shouldEqual (RealRuntimeResult.NormalExit 1)
+        // Making the wrapper looks up its message, and fails; the initializer's own exception
+        // escapes in its place.
+        touch "once" |> shouldEqual (RealRuntimeResult.NormalExit 4)
+        // So it does again, but preserving the stack trace of that exception before raising it
+        // looks up resources too, and what that raises escapes instead.
+        touch "nameless" |> shouldEqual (RealRuntimeResult.NormalExit 2)

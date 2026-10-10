@@ -14,7 +14,8 @@ type internal ExceptionMaking =
     | ParameterlessConstructor
     /// It runs `TypeInitializationException`'s `(string, Exception)` constructor around what a type
     /// initializer raised, and should that constructor fail, raises what the initializer raised
-    /// instead. The analysis takes it as raising only the `TypeInitializationException`.
+    /// instead, throwing it again: that runs `Exception.InternalPreserveStackTrace` on it, whose
+    /// own raises escape in its place. What the constructor raises never escapes.
     | InitializerFailure
 
 [<RequireQualifiedAccess>]
