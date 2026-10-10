@@ -170,16 +170,27 @@ module TestConnect =
     /// answered there instead; `TestSocketAddressLength` holds that order.)
     [<TestCaseSource(nameof platforms)>]
     let ``a socket in an unmodelled domain is refused`` (platform : SimulatedUnixPlatform) : unit =
-        for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
-            let socket =
-                { streamSocket None SocketPhase.Idle with
-                    Addressing = SocketAddressing.initial domain false
-                }
+        let socket =
+            { streamSocket None SocketPhase.Idle with
+                Addressing = SocketAddressing.Unix
+            }
 
-            let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
+        let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd UserBuffer.Mapped 16u system
-            |> shouldEqual (Error (SockaddrCopyRefusal.UnmodelledDomain (SocketId 0L, domain)))
+        UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd UserBuffer.Mapped 16u system
+        |> shouldEqual (Error (SockaddrCopyRefusal.UnmodelledDomain (SocketId 0L, SocketDomain.Unix)))
+
+        // An IPv6 datagram socket's addresses are not modelled either.
+        let socket =
+            { streamSocket None SocketPhase.Idle with
+                Addressing = SocketAddressing.Inet6DualMode None
+                Kind = SocketKind.Datagram
+            }
+
+        let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
+
+        UnixSocket.admitSockaddrCopy SockaddrCopySyscall.Connect fd UserBuffer.Mapped 28u system
+        |> shouldEqual (Error (SockaddrCopyRefusal.UnmodelledInet6Kind (SocketId 0L, SocketKind.Datagram)))
 
     /// `connectSocket` skips the descriptor screens, but not the domain's: a
     /// Unix-domain socket has no IPv4 destination to connect to, even with a

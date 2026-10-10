@@ -1469,6 +1469,32 @@ module TestImpureCases =
             AssertTerminalState = None
         }
 
+    /// `SocketDualMode.cs` under `platform`: a dual-mode IPv6 socket talking
+    /// to an IPv4 listener through the managed `Socket` API, which exits 0 for
+    /// Linux's answers where the flavours disagree and 100 for Darwin's
+    /// (`docs/probes/dual-mode/`).
+    ///
+    /// `new Socket(SocketType.Stream, ProtocolType.Tcp)` makes an IPv4 socket
+    /// where `DOTNET_SYSTEM_NET_DISABLEIPV6` is set, so the case names it, and
+    /// the oracle does not take the test host's.
+    let private socketDualModeCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketDualMode.cs"
+            ExpectedReturnCode =
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Linux -> 0
+                | SimulatedUnixFlavour.Darwin -> 100
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                    Environment = [ "DOTNET_SYSTEM_NET_DISABLEIPV6=0" ]
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     let cases : EndToEndTestCase list =
         [
             // Both of these have a current directory whose UTF-8 encoding
@@ -1637,6 +1663,8 @@ module TestImpureCases =
             socketOptionsCase SimulatedUnixPlatform.macOsArm64
             socketPeerNameCase SimulatedUnixPlatform.linuxX64
             socketPeerNameCase SimulatedUnixPlatform.macOsArm64
+            socketDualModeCase SimulatedUnixPlatform.linuxX64
+            socketDualModeCase SimulatedUnixPlatform.macOsArm64
             {
                 // A managed bind of a multicast and of the broadcast address under
                 // Darwin: EAFNOSUPPORT on a stream socket, EADDRNOTAVAIL for the

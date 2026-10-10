@@ -5044,11 +5044,13 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``a domain whose address this kernel does not model is refused`` () : unit =
-        // Refused rather than answered: a real kernel in either family reports
-        // an address, and every value this one could report would be invented.
-        // IPv6 and Unix-domain differ in *shape* from what is modelled, not in
-        // width, so there is nothing to truncate into an answer.
-        for domain in [ SocketDomain.Inet6 ; SocketDomain.Unix ] do
+        // Refused rather than answered: a real kernel reports an address, and
+        // every value this one could report would be invented. A Unix-domain
+        // address differs in *shape* from what is modelled, not in width, so
+        // there is nothing to truncate into an answer. (An IPv6 stream socket's
+        // is answered, and an IPv6 datagram socket's refused otherwise: see
+        // `TestDualMode`.)
+        for domain in [ SocketDomain.Unix ] do
             let fd, system = withSocket linux
 
             let system =

@@ -183,11 +183,13 @@ module TestKeventWriteData =
             Phase = phase
         }
 
-    /// The machine of `darwinWithSendSpace`, holding connection 0 over IPv6,
-    /// which the IPv6 rows' sockets, built by hand, are the client end of.
+    /// The machine of `darwinWithSendSpace`, holding connection 0, which the
+    /// IPv6 rows' sockets, built by hand, are the client end of. It is over
+    /// IPv4, as a dual-mode socket's connection is: this kernel has no IPv6
+    /// transport.
     let private darwinMachine (sendSpace : int option) : UnixMachineState =
         (darwinWithSendSpace sendSpace
-         |> ForgedConnection.add (ConnectionId 0L) SocketDomain.Inet6 [])
+         |> ForgedConnection.add (ConnectionId 0L) SocketDomain.Inet [])
             .Machine
 
     // ------------------------------------------------------------------
@@ -212,18 +214,25 @@ module TestKeventWriteData =
             List.distinct values |> shouldHaveLength 1
             List.distinct modelled |> shouldEqual [ List.head values ]
 
+    /// This kernel has no IPv6 transport, so no socket holds a connection
+    /// over IPv6; the rule for one is kept for when it does. An IPv6 socket's
+    /// connection is a dual-mode one over IPv4, with IPv4's buffer (measured,
+    /// `docs/probes/dual-mode/`, G8: `SO_SNDBUF` 146988 at the default).
     [<Test>]
     let ``an established IPv6 socket's send buffer is what Darwin reported`` () : unit =
         let measured = establishedRows "IPv6 ::1"
         measured |> shouldHaveLength 2
 
-        let modelled =
-            DarwinReadiness.sendBufferSpace
-                (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)))
-                (darwinMachine None)
+        let ruled =
+            int64 (TcpBufferSizing.darwinSendBuffer (darwinMachine None).TcpSendSpace SocketDomain.Inet6)
 
         for (_, values) in measured do
-            List.distinct values |> shouldEqual [ modelled ]
+            List.distinct values |> shouldEqual [ ruled ]
+
+        DarwinReadiness.sendBufferSpace
+            (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)))
+            (darwinMachine None)
+        |> shouldEqual 146988L
 
     [<Test>]
     let ``a configured send space gives the IPv4 buffer Darwin grew from it`` () : unit =
@@ -245,12 +254,9 @@ module TestKeventWriteData =
         measured |> shouldHaveLength 13
 
         for (size, values) in measured do
-            let modelled =
-                DarwinReadiness.sendBufferSpace
-                    (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)))
-                    (darwinMachine (Some size))
+            let ruled = int64 (TcpBufferSizing.darwinSendBuffer size SocketDomain.Inet6)
 
-            (size, List.distinct values) |> shouldEqual (size, [ modelled ])
+            (size, List.distinct values) |> shouldEqual (size, [ ruled ])
 
     [<Test>]
     let ``a refused socket's WRITE data is what Darwin reported`` () : unit =
@@ -335,10 +341,14 @@ module TestKeventWriteData =
 
             connecting @ accepted |> List.distinct |> shouldEqual [ grown 16332L sendSpace ]
 
+            int64 (TcpBufferSizing.darwinSendBuffer sendSpace SocketDomain.Inet6)
+            |> shouldEqual (grown 16312L sendSpace)
+
+            // A dual-mode socket's connection is over IPv4.
             DarwinReadiness.sendBufferSpace
                 (socketIn SocketDomain.Inet6 (SocketPhase.Established (ConnectionId 0L, ConnectionEnd.Client)))
                 (darwinMachine (Some sendSpace))
-            |> shouldEqual (grown 16312L sendSpace)
+            |> shouldEqual (grown 16332L sendSpace)
 
             refusedWriteData (darwinWithSendSpace (Some sendSpace))
             |> List.distinct

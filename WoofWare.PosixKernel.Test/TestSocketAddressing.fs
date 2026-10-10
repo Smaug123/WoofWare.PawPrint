@@ -69,17 +69,26 @@ module TestSocketAddressing =
         | SocketDomain.Inet -> Answer.Failed (flavourColumn platform UnixError.EOPNOTSUPP UnixError.EINVAL)
         | SocketDomain.Unix -> Answer.Failed UnixError.EOPNOTSUPP
 
-    /// A bind to loopback and port 0, in the socket's own family.
-    let private expectedBind (socket : Expected) : Answer * Expected =
-        match socket.Domain with
-        | SocketDomain.Inet when socket.HasAddress -> Answer.Failed UnixError.EINVAL, socket
-        | SocketDomain.Inet ->
+    /// A bind to loopback and port 0, in the socket's own family: on an IPv6
+    /// socket, `::ffff:127.0.0.1`. Measured (`docs/probes/dual-mode/`, B and
+    /// F): an IPv6 socket with `IPV6_V6ONLY` on takes no v4-mapped address,
+    /// and judges that before whether it is bound.
+    let private expectedBind (platform : SimulatedUnixPlatform) (socket : Expected) : Answer * Expected =
+        let bindable =
+            socket.Domain = SocketDomain.Inet
+            || (socket.Domain = SocketDomain.Inet6 && socket.Kind = SocketKind.Stream)
+
+        if not bindable then
+            Answer.Refused, socket
+        elif socket.Domain = SocketDomain.Inet6 && socket.Ipv6Only then
+            Answer.Failed (flavourColumn platform UnixError.EINVAL UnixError.EADDRNOTAVAIL), socket
+        elif socket.HasAddress then
+            Answer.Failed UnixError.EINVAL, socket
+        else
             Answer.Succeeded,
             { socket with
                 HasAddress = true
             }
-        | SocketDomain.Inet6
-        | SocketDomain.Unix -> Answer.Refused, socket
 
     let private expectedListen (socket : Expected) : Answer * Expected =
         match socket.Domain with
@@ -251,7 +260,7 @@ module TestSocketAddressing =
                     | None -> go (index + 1) rest sockets system
                     | Some (i, (fd, socket)) ->
                         let actual, system = bind fd socket.Domain system
-                        let expected, socket = expectedBind socket
+                        let expected, socket = expectedBind platform socket
                         compare actual expected
                         check describe system
                         go (index + 1) rest (replace i socket) system

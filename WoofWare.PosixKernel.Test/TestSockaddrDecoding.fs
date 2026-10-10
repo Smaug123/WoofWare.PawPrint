@@ -267,6 +267,27 @@ module TestSockaddrDecoding =
         =
         CopyIn.admitted syscall fd case.Buffer case.Length case.Blob system
 
+    /// What `connectDecoded` reads of an IPv4 socket's sockaddr, from the
+    /// oracle's own reading of its bytes.
+    let private asConnectAddress
+        (platform : SimulatedUnixPlatform)
+        (declaredLength : uint32)
+        (decoded : CopiedInternetSockaddr)
+        : ConnectAddress
+        =
+        {
+            Family = decoded.Family
+            OwnFamily = SimulatedUnixPlatform.internetAddressFamily
+            LengthVerdict =
+                SimulatedUnixPlatform.bindAddressLength
+                    platform
+                    SimulatedUnixPlatform.internetSocketAddressSize
+                    declaredLength
+            Destination = decoded.Endpoint
+            NativeDestination = None
+            ZeroFilledAddress = decoded.ZeroFilledAddress
+        }
+
     [<Test>]
     let ``bind decodes its bytes as its client used to`` () : unit =
         let property (case : Case) : unit =
@@ -316,7 +337,7 @@ module TestSockaddrDecoding =
                         socketId
                         nonBlocking
                         case.Length
-                        (Oracle.decode case.Platform case.Blob length)
+                        (asConnectAddress case.Platform case.Length (Oracle.decode case.Platform case.Blob length))
                         system
 
             throughBytes |> shouldEqual throughOracle
@@ -341,7 +362,7 @@ module TestSockaddrDecoding =
                     socketId
                     false
                     case.Length
-                    (Oracle.decode case.Platform case.Blob length)
+                    (asConnectAddress case.Platform case.Length (Oracle.decode case.Platform case.Blob length))
                     system
             )
 
