@@ -669,3 +669,70 @@ public static class Program
     [<Test>]
     let ``a listener and a connector on the linux-x64 CoreLib both exit 0`` () : unit =
         listenerAndConnector (runtimeDirsPreferringLinux (requireLinuxFramework ()))
+
+    /// Reads its processor from the shim five times, writing each answer.
+    let private processorSource : string =
+        """
+using System.Runtime.InteropServices;
+
+public static class Program
+{
+    // `Thread.GetCurrentProcessorId` caches its answer for a number of calls, so ask the
+    // shim directly, as the cache does when it refreshes.
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SchedGetCpu")]
+    static extern int SchedGetCpu();
+
+    public static int Main()
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            Out.Write(SchedGetCpu());
+        }
+        return 0;
+    }
+}
+"""
+
+    [<Test>]
+    let ``two programs taking turns on one processor each read it as theirs`` () : unit =
+        // The default machine has one processor, and round robin steps the two programs
+        // alternately, so each step of one displaces the other's thread from processor 0. The
+        // kernel answers `sched_getcpu` only for a thread it records as running, so every read
+        // checks that the driver reported the reading thread after the other program's step.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let config = machineConfig ProgramChoice.RoundRobin
+        config.ProcessorCount |> shouldEqual 1
+
+        let driver =
+            MultiProgram.start
+                loggerFactory
+                config
+                [
+                    launch "First.cs" (compile processorSource)
+                    launch "Second.cs" (compile processorSource)
+                ]
+
+        let run, _ = drive loggerFactory Int32.MaxValue driver
+
+        match finished run with
+        | [ (_, first) ; (_, second) ] ->
+            exitCodeOf first |> shouldEqual 0
+            exitCodeOf second |> shouldEqual 0
+            longsOf first |> shouldEqual [ 0L ; 0L ; 0L ; 0L ; 0L ]
+            longsOf second |> shouldEqual [ 0L ; 0L ; 0L ; 0L ; 0L ]
+        | other -> failwith $"expected two programs' ends, got %A{other}"
+
+        // The two programs did take turns while both lived, so each read followed the other
+        // program's step.
+        let firstEnded = List.exactlyOne run.EndedInOrder
+        let programs = run.Ticks |> List.map _.Program
+
+        let bothLive =
+            programs |> List.take (List.findIndexBack ((=) firstEnded) programs + 1)
+
+        bothLive
+        |> List.pairwise
+        |> List.forall (fun (before, after) -> before <> after)
+        |> shouldEqual true

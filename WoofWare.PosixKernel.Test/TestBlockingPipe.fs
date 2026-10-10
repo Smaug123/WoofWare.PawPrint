@@ -656,7 +656,25 @@ module TestBlockingPipe =
     let private closingOpGen : Gen<BlockingPipeOp> =
         opGenWeighted (4, 4, 4, 4, 1, 1, 6, 8)
 
-    /// The label `covered` records for a call that came to `seen`.
+    /// A write through the write end, fd 1, that sleeps having put some in; a
+    /// signal to it; and its finish, which returns the count already in. Each
+    /// op names a task by index, as `opGenWeighted`'s do: the first idle task,
+    /// then the first in a call, then the first woken.
+    let private interruptedWrite : BlockingPipeOp list =
+        [
+            BlockingPipeOp.Write (0, 1, 140000, true)
+            BlockingPipeOp.Signal 0
+            BlockingPipeOp.Wake
+            BlockingPipeOp.Finish 0
+        ]
+
+    /// Openings that reach what a random run reaches only now and then: a
+    /// write's finish with the count already in, which needs a signal to a
+    /// writer asleep with part of its payload in the buffer.
+    let private openingGen : Gen<BlockingPipeOp list> =
+        Gen.frequency [ 7, Gen.constant [] ; 1, Gen.constant interruptedWrite ]
+
+    /// The label the test below covers for a call that came to `seen`.
     let private label (flavour : string) (what : string) (seen : Seen) : string =
         let kind =
             match seen with
@@ -672,12 +690,11 @@ module TestBlockingPipe =
 
     [<Test>]
     let ``blocking transfers park, wake and finish as the reference says`` () : unit =
-        let covered = System.Collections.Concurrent.ConcurrentDictionary<string, int> ()
-
-        let cover (label : string) =
-            covered.AddOrUpdate (label, 1, (fun _ n -> n + 1)) |> ignore
-
-        let property (platform : SimulatedUnixPlatform, restart : bool, ops : BlockingPipeOp list) : unit =
+        let property
+            (cover : string -> unit)
+            (platform : SimulatedUnixPlatform, restart : bool, ops : BlockingPipeOp list)
+            : unit
+            =
             let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
 
             let bare =
@@ -1214,12 +1231,14 @@ module TestBlockingPipe =
             gen {
                 let! platform = Gen.elements platforms
                 let! restart = ArbMap.defaults |> ArbMap.generate<bool>
+                let! opening = openingGen
                 let! length = Gen.choose (0, 80)
                 let! ops = Gen.listOfLength length opGen
-                return platform, restart, ops
+                return platform, restart, opening @ ops
             }
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen gen) property
 
         let closingGen =
             Gen.zip
@@ -1228,9 +1247,13 @@ module TestBlockingPipe =
                  |> Gen.bind (fun length -> Gen.listOfLength length closingOpGen))
             |> Gen.map (fun (restart, ops) -> SimulatedUnixPlatform.macOsArm64, restart, ops)
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen closingGen) property)
+        let closingCoverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 500) (Arb.fromGen closingGen) property
 
-        // The outcomes a run of this size reaches dozens of times over. The
+        let count (label : string) : int =
+            coverage.Count label + closingCoverage.Count label
+
+        // The outcomes the fixed samples reach a dozen times or more. The
         // rarer endings of a sleeping call, which need a particular state
         // and signal at once, are enumerated by the table test below.
         let required =
@@ -1262,10 +1285,11 @@ module TestBlockingPipe =
                 "Darwin dup2: onto a descriptor a transfer sleeps through"
             ]
 
-        let missing = required |> List.filter (fun label -> not (covered.ContainsKey label))
+        let missing = required |> List.filter (fun label -> count label = 0)
 
         if not (List.isEmpty missing) then
-            failwith $"the property never reached %A{missing}; it reached %A{List.ofSeq covered.Keys |> List.sort}"
+            failwith
+                $"the property never reached %A{missing}; it reached %A{coverage.Reached |> List.sort} and, weighted towards closes, %A{closingCoverage.Reached |> List.sort}"
 
     // --- the measured rows, one at a time ---
 

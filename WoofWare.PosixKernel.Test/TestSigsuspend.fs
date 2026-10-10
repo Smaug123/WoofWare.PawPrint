@@ -822,19 +822,34 @@ module TestSigsuspend =
         /// changes every task's mask, and then blocks every signal again.
         | Spread of SignalMaskChange * Set<Signal>
 
+    /// The paths of the model that its walk must reach.
+    [<RequireQualifiedAccess>]
+    type private ModelLabel =
+        /// A `sigsuspend` or `pause` answered `EINTR` at once.
+        | AnsweredAtOnce
+        /// A `sigsuspend` or `pause` that slept.
+        | Park
+        /// A sleeping main thread that a helper's call woke.
+        | Wake
+        | Pause
+        /// A return to user mode under a suspend whose last frame saved a mask
+        /// other than the thread's own.
+        | RestoredByFrame
+        /// A return to user mode under a suspend that pushed several frames.
+        | SeveralFramesFromSuspend
+        /// A Darwin `sigprocmask` while the main thread slept.
+        | SpreadWhileParked
+        /// A Darwin `sigprocmask` refused because it would unblock a signal
+        /// pending for the main thread.
+        | RefusedSpread
+        /// A Linux sleep that discarded an ignored signal the temporary mask
+        /// let through.
+        | StaleDiscard
+
     let private checkAgainstModel (flavour : SimulatedUnixFlavour) : unit =
         let numbering = numberingOf flavour
-        let mutable answeredAtOnce = 0
-        let mutable parks = 0
-        let mutable wakes = 0
-        let mutable pauses = 0
-        let mutable restoredByFrame = 0
-        let mutable severalFramesFromSuspend = 0
-        let mutable spreadsWhileParked = 0
-        let mutable staleDiscards = 0
-        let mutable refusedSpreads = 0
 
-        let property (seed : int) : unit =
+        let property (cover : ModelLabel -> unit) (seed : int) : unit =
             let rng = Random seed
             let pick (xs : 'a list) : 'a = xs.[rng.Next xs.Length]
 
@@ -941,10 +956,10 @@ module TestSigsuspend =
                 let next, pushed = modelReturn numbering model
 
                 if model.Restore.IsSome && List.length pushed > 1 then
-                    severalFramesFromSuspend <- severalFramesFromSuspend + 1
+                    cover ModelLabel.SeveralFramesFromSuspend
 
                 match List.tryLast pushed, model.Restore with
-                | Some (_, saved), Some _ when saved <> model.Mask -> restoredByFrame <- restoredByFrame + 1
+                | Some (_, saved), Some _ when saved <> model.Mask -> cover ModelLabel.RestoredByFrame
                 | _ -> ()
 
                 model <- next
@@ -966,7 +981,7 @@ module TestSigsuspend =
                     woken |> shouldEqual due
 
                     if due then
-                        wakes <- wakes + 1
+                        cover ModelLabel.Wake
 
                         match UnixSignal.finishSigsuspend main system with
                         | Ok (SigsuspendOutcome.Failed UnixError.EINTR, after) ->
@@ -998,12 +1013,12 @@ module TestSigsuspend =
                     // included, in order: a frame pushed first may block an
                     // ignored signal, which then stays pending.
                     modelHandlerDue model |> shouldEqual true
-                    answeredAtOnce <- answeredAtOnce + 1
+                    cover ModelLabel.AnsweredAtOnce
                     system <- after
                     deliver ()
                 | Ok (SigsuspendOutcome.WouldBlock _, after) ->
                     modelHandlerDue model |> shouldEqual false
-                    parks <- parks + 1
+                    cover ModelLabel.Park
                     system <- after
 
                     // With no handler due, Linux takes every ignored signal the
@@ -1014,7 +1029,7 @@ module TestSigsuspend =
                         |> Set.filter (fun signal -> not (Set.contains signal model.Mask) && modelIgnores model signal)
 
                     if not discarded.IsEmpty then
-                        staleDiscards <- staleDiscards + 1
+                        cover ModelLabel.StaleDiscard
 
                     model <-
                         { model with
@@ -1066,7 +1081,7 @@ module TestSigsuspend =
                 | ModelOp.Suspend temporary ->
                     suspendWith temporary (UnixSignal.sigsuspend main (maskOf temporary) system)
                 | ModelOp.Pause ->
-                    pauses <- pauses + 1
+                    cover ModelLabel.Pause
                     suspendWith model.Mask (UnixSignal.pause main system)
                 | ModelOp.ChangeMask (change, set) ->
                     match UnixSignal.pthreadSigmask main (how flavour change) (Some (maskOf set)) system with
@@ -1125,7 +1140,7 @@ module TestSigsuspend =
                     afterHelper ()
                 | ModelOp.Spread (change, set) ->
                     if model.Parked && numbering = SignalNumbering.Darwin then
-                        spreadsWhileParked <- spreadsWhileParked + 1
+                        cover ModelLabel.SpreadWhileParked
 
                     // Darwin's spread reaches the main thread's mask, and is
                     // refused where it would unblock a signal pending there
@@ -1144,7 +1159,7 @@ module TestSigsuspend =
                     match UnixSignal.sigprocmask helper (how flavour change) (Some (maskOf set)) system with
                     | Error (SigprocmaskRefusal.DarwinUnblockedForAnotherTask (task, signal)) ->
                         (task, Set.contains signal unblockedForMain) |> shouldEqual (main, true)
-                        refusedSpreads <- refusedSpreads + 1
+                        cover ModelLabel.RefusedSpread
                     | Ok (Ok (_, after)) ->
                         unblockedForMain |> shouldEqual Set.empty
                         system <- withMask helper everyBit after
@@ -1162,27 +1177,28 @@ module TestSigsuspend =
 
                 agree $"step %d{step}, %A{op}"
 
-        // The seed is drawn from the whole range, so that each run walks fresh
-        // sequences; a seed has no meaningful shrink.
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest 500,
-            Prop.forAll (Arb.fromGen (Gen.choose (0, Int32.MaxValue))) property
-        )
+        // The seed is drawn from the whole range, so that each fresh case walks
+        // a fresh sequence; a seed has no meaningful shrink.
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 500)
+                (Arb.fromGen (Gen.choose (0, Int32.MaxValue)))
+                property
 
-        // The walk must reach each path often enough for a regression there to
-        // surface.
-        answeredAtOnce |> shouldBeGreaterThan 50
-        parks |> shouldBeGreaterThan 50
-        wakes |> shouldBeGreaterThan 50
-        pauses |> shouldBeGreaterThan 50
-        restoredByFrame |> shouldBeGreaterThan 50
-        severalFramesFromSuspend |> shouldBeGreaterThan 20
+        // The fixed sample must reach each path often enough for a regression
+        // there to surface.
+        coverage.Count ModelLabel.AnsweredAtOnce |> shouldBeGreaterThan 50
+        coverage.Count ModelLabel.Park |> shouldBeGreaterThan 50
+        coverage.Count ModelLabel.Wake |> shouldBeGreaterThan 50
+        coverage.Count ModelLabel.Pause |> shouldBeGreaterThan 50
+        coverage.Count ModelLabel.RestoredByFrame |> shouldBeGreaterThan 50
+        coverage.Count ModelLabel.SeveralFramesFromSuspend |> shouldBeGreaterThan 20
 
         match numbering with
-        | SignalNumbering.Linux -> staleDiscards |> shouldBeGreaterThan 30
+        | SignalNumbering.Linux -> coverage.Count ModelLabel.StaleDiscard |> shouldBeGreaterThan 30
         | SignalNumbering.Darwin ->
-            spreadsWhileParked |> shouldBeGreaterThan 20
-            refusedSpreads |> shouldBeGreaterThan 20
+            coverage.Count ModelLabel.SpreadWhileParked |> shouldBeGreaterThan 20
+            coverage.Count ModelLabel.RefusedSpread |> shouldBeGreaterThan 20
 
     [<Test>]
     let ``random signal sequences agree with a reference model of the masks, on Linux`` () : unit =

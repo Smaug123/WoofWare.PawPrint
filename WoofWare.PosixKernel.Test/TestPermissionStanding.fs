@@ -1453,8 +1453,6 @@ module TestPermissionStanding =
                 return Credentials.ofIds (uid user) (gid group) (supplementary |> List.map gid)
             }
 
-        let mutable darwinRefusals : Set<string> = Set.empty
-
         let kinds =
             [
                 "UnmeasuredDarwinWrite"
@@ -1463,14 +1461,14 @@ module TestPermissionStanding =
                 "DarwinDirectoryDisplacingDirectory"
             ]
 
-        let property (vfs : VirtualFileSystem, caller : Credentials) : unit =
+        let property (cover : string -> unit) (vfs : VirtualFileSystem, caller : Credentials) : unit =
             refusalsMet (systemOn SimulatedUnixPlatform.linuxX64 caller vfs)
             |> shouldEqual []
 
             for refusal in refusalsMet (systemOn SimulatedUnixPlatform.macOsArm64 caller vfs) do
                 for kind in kinds do
                     if refusal.Contains kind then
-                        darwinRefusals <- Set.add kind darwinRefusals
+                        cover kind
 
         let gen =
             gen {
@@ -1479,6 +1477,10 @@ module TestPermissionStanding =
                 return vfs, caller
             }
 
-        Check.One (config.WithMaxTest 500, Prop.forAll (Arb.fromGen gen) property)
+        let coverage =
+            CoverageSample.check (config.WithMaxTest 500) (Arb.fromGen gen) property
 
-        darwinRefusals |> shouldEqual (Set.ofList kinds)
+        // Every kind is met by the fixed sample.
+        for kind in kinds do
+            if coverage.Count kind = 0 then
+                failwith $"no Darwin call met %s{kind}; met %A{coverage.Reached |> List.sort}"

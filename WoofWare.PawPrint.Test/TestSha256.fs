@@ -8,6 +8,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// `Sha256` against the host's `SHA256.HashData`, which is the oracle throughout: the
 /// implementation is never compared with itself.
@@ -136,13 +137,19 @@ module TestSha256 =
         |> List.scan (+) 0
         |> List.exists (fun offset -> offset % Sha256.BlockSize <> 0)
 
+    /// The parts of `Sha256` the incremental property must be seen to reach.
+    [<RequireQualifiedAccess>]
+    type private Sha256Path =
+        /// A chunk boundary strictly inside a block: the pending-bytes carry.
+        | Straddling
+        /// A message whose padding needs a second block.
+        | TwoBlockPadding
+        /// A message of at least one whole block.
+        | MultiBlock
+
     [<Test>]
     let ``incremental feeding in any chunking agrees with the host on the whole message`` () : unit =
-        let straddling = ref 0
-        let twoBlockPadding = ref 0
-        let multiBlock = ref 0
-
-        let property (bytes : byte[], chunks : int list) : unit =
+        let property (cover : Sha256Path -> unit) (bytes : byte[], chunks : int list) : unit =
             List.sum chunks |> shouldEqual bytes.Length
 
             let states = feed bytes chunks
@@ -152,21 +159,23 @@ module TestSha256 =
             hex (Sha256.finish final) |> shouldEqual (oracle bytes)
 
             if straddlesABlock chunks then
-                straddling.Value <- straddling.Value + 1
+                cover Sha256Path.Straddling
 
             if bytes.Length % Sha256.BlockSize >= 56 then
-                twoBlockPadding.Value <- twoBlockPadding.Value + 1
+                cover Sha256Path.TwoBlockPadding
 
             if bytes.Length >= Sha256.BlockSize then
-                multiBlock.Value <- multiBlock.Value + 1
+                cover Sha256Path.MultiBlock
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen genCase) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen genCase) property
 
         // The generator's job is to reach the carry, the second padding block and the
-        // multi-block compressions; these bounds sit far below the observed rates.
-        straddling.Value |> shouldBeGreaterThan 300
-        twoBlockPadding.Value |> shouldBeGreaterThan 60
-        multiBlock.Value |> shouldBeGreaterThan 300
+        // multi-block compressions; these bounds sit far below the counts of the fixed sample
+        // they are asserted over.
+        coverage.Count Sha256Path.Straddling |> shouldBeGreaterThan 300
+        coverage.Count Sha256Path.TwoBlockPadding |> shouldBeGreaterThan 60
+        coverage.Count Sha256Path.MultiBlock |> shouldBeGreaterThan 300
 
     /// `finish` is a pure function of the state: finishing after any prefix of the chunks gives
     /// the host's digest of that prefix, and the same state then continues to the whole

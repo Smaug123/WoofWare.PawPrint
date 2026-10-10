@@ -58,6 +58,41 @@ module WriteOutcomes =
         | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), signal, _)) ->
             failwith $"admitWrite raised %A{signal} and still asked for %d{count} bytes"
 
+    /// A whole `send(2)` by `task` with the raw flag word `flags`, as
+    /// `admitThenWrite` is a whole `write(2)`: `UnixReadWrite.admitSend`, and
+    /// if it says to transfer, `UnixReadWrite.send` or
+    /// `UnixReadWrite.sendThenSleep` of the first that many of `bytes`.
+    let admitThenSend<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (fd : int)
+        (buffer : UserBuffer)
+        (bytes : ImmutableArray<byte>)
+        (flags : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteOutcome<WriteAnswer, 'Task, 'Handler>, SendRefusal>
+        =
+        match UnixReadWrite.admitSend task fd buffer (uint64 bytes.Length) flags system with
+        | Error refusal -> Error refusal
+        | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, after)) -> Ok (WriteOutcome.Returns (answer, after))
+        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, signal, after)) ->
+            Ok (WriteOutcome.ReturnsRaising (answer, signal, after))
+        | Ok (WriteOutcome.ProcessEnded ended) -> Ok (WriteOutcome.ProcessEnded ended)
+        | Ok (WriteOutcome.WouldBlock (condition, after)) -> Ok (WriteOutcome.WouldBlock (condition, after))
+        | Ok (WriteOutcome.Restarts after) -> Ok (WriteOutcome.Restarts after)
+        | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
+            if count > bytes.Length then
+                failwith $"admitSend asked for %d{count} of %d{bytes.Length} bytes"
+
+            UnixReadWrite.send task fd (ImmutableArray.Create (bytes, 0, count)) flags admitted
+        | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
+            if total <> bytes.Length || count > bytes.Length then
+                failwith $"admitSend asked for %d{count} of %d{total} bytes, given %d{bytes.Length}"
+
+            Ok (UnixReadWrite.sendThenSleep task fd total (ImmutableArray.Create (bytes, 0, count)) flags admitted)
+        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, signal, _))
+        | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), signal, _)) ->
+            failwith $"admitSend raised %A{signal} and still asked for %d{count} bytes"
+
     /// `UnixReadWrite.admitWrite` by the leader, through `returned`.
     let admitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)

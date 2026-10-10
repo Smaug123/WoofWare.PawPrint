@@ -1,6 +1,5 @@
 namespace WoofWare.PosixKernel.Test
 
-open System.Collections.Concurrent
 open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
@@ -541,12 +540,7 @@ module TestFcntlReference =
 
     [<Test>]
     let ``every descriptor-table call answers as the reference does, and leaves the same table`` () : unit =
-        let covered = ConcurrentDictionary<string, int> ()
-
-        let cover (label : string) =
-            covered.AddOrUpdate (label, 1, fun _ n -> n + 1) |> ignore
-
-        let property (platform : SimulatedUnixPlatform, ops : FcntlOp list) : unit =
+        let property (cover : string -> unit) (platform : SimulatedUnixPlatform, ops : FcntlOp list) : unit =
             let mutable system = system platform
             let darwin = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Darwin
 
@@ -658,7 +652,8 @@ module TestFcntlReference =
                 return platform, ops
             }
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen gen) property
 
         for label in
             [
@@ -673,5 +668,5 @@ module TestFcntlReference =
                 "Dup3"
                 "Write"
             ] do
-            if not (covered.ContainsKey label) then
-                failwith $"the property never reached %s{label}; reached %A{covered.Keys |> Seq.sort |> List.ofSeq}"
+            if coverage.Count label = 0 then
+                failwith $"the property never reached %s{label}; reached %A{coverage.Reached |> List.sort}"

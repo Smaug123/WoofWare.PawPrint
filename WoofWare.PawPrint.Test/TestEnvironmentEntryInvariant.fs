@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
+open WoofWare.PosixKernel.Test
 
 /// A real process's environment is a list of byte strings, the `envp` it was
 /// started with, and not a map: the map every environment API presents is a
@@ -108,12 +109,15 @@ module TestEnvironmentEntryInvariant =
     /// below states the rule rather than reusing the implementation's parse.
     let private defaultName : string = "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"
 
+    /// Whether a configured environment names the default, and so displaces it.
+    [<RequireQualifiedAccess>]
+    type private DefaultEntry =
+        | Displaced
+        | Kept
+
     [<Test>]
     let ``the defaults come first, unless an entry names them`` () : unit =
         EmulatedKernel.defaultEnvironment |> shouldEqual [ defaultName + "=1" ]
-
-        let mutable displaced = 0
-        let mutable kept = 0
 
         let genEntry : Gen<string> =
             Gen.elements
@@ -132,17 +136,14 @@ module TestEnvironmentEntryInvariant =
                     ""
                 ]
 
-        let property (entries : string list) : unit =
+        let property (cover : DefaultEntry -> unit) (entries : string list) : unit =
             let names =
                 entries
                 |> List.exists (fun entry -> entry = defaultName || entry.StartsWith (defaultName + "="))
 
             let expected = (if names then [] else [ defaultName + "=1" ]) @ entries
 
-            if names then
-                displaced <- displaced + 1
-            else
-                kept <- kept + 1
+            cover (if names then DefaultEntry.Displaced else DefaultEntry.Kept)
 
             let kernel =
                 KernelConfig.toKernel
@@ -155,9 +156,8 @@ module TestEnvironmentEntryInvariant =
             |> shouldEqual (List.map Some expected)
 
         // Three of the ten entries name the default, so a list keeps it with probability 0.7^n in
-        // its length n. `Gen.listOf` alone grows lists long enough that only ~35 of 300 keep it,
-        // so the `kept > 20` check below would fail about once in 3000 runs. Half the lists are
-        // short, which keeps both classes well populated (fewest kept in 3000 runs: 54).
+        // its length n. `Gen.listOf` alone grows lists long enough that few keep it, so half the
+        // lists are short, which keeps both classes well populated.
         let genEntries : Gen<string list> =
             Gen.oneof
                 [
@@ -165,10 +165,12 @@ module TestEnvironmentEntryInvariant =
                     Gen.listOf genEntry
                 ]
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen genEntries) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 300) (Arb.fromGen genEntries) property
 
-        displaced > 20 |> shouldEqual true
-        kept > 20 |> shouldEqual true
+        // Counted over a fixed sample: a run cannot fall short by chance.
+        coverage.Count DefaultEntry.Displaced > 20 |> shouldEqual true
+        coverage.Count DefaultEntry.Kept > 20 |> shouldEqual true
 
     [<Test>]
     let ``the default KernelConfig holds exactly the defaults`` () : unit =

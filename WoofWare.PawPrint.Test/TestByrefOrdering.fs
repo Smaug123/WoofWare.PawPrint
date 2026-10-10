@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// `cgt.un` and `clt.un` on two byrefs into one array.
 ///
@@ -378,6 +379,12 @@ module TestByrefOrdering =
                 }
         }
 
+    /// How `byteAddressDeltaSign` settles a pair: structurally, or by deferring to byte coordinates.
+    [<RequireQualifiedAccess>]
+    type private OrderingRoute =
+        | Deferred
+        | Decided
+
     /// For every pair of shapes a guest can build, the resolved `clt.un` and `cgt.un` agree
     /// with the byte coordinates, and the stateless comparisons either agree or refuse —
     /// never answer wrongly.
@@ -386,10 +393,7 @@ module TestByrefOrdering =
         let state, arr = stateWithPairArray 4
         let resolve = StorageLocation.resolveOrder baseClassTypes state
 
-        let mutable deferred = 0
-        let mutable decided = 0
-
-        let property (left : Shape, right : Shape) : unit =
+        let property (cover : OrderingRoute -> unit) (left : Shape, right : Shape) : unit =
             let p1 = build state arr left
             let p2 = build state arr right
 
@@ -397,8 +401,8 @@ module TestByrefOrdering =
             let expectedAbove = address left > address right
 
             match ManagedPointerSource.byteAddressDeltaSign p1 p2 with
-            | ByteAddressDeltaSign.NeedsByteLocation _ -> deferred <- deferred + 1
-            | ByteAddressDeltaSign.Decided _ -> decided <- decided + 1
+            | ByteAddressDeltaSign.NeedsByteLocation _ -> cover OrderingRoute.Deferred
+            | ByteAddressDeltaSign.Decided _ -> cover OrderingRoute.Decided
 
             let v1 = pointer p1
             let v2 = pointer p2
@@ -431,14 +435,15 @@ module TestByrefOrdering =
                 failwith $"stateless cgt.un answered %b{answer} for %s{describe}"
             | _ -> ()
 
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest 1000,
-            Prop.forAll (Arb.fromGen (Gen.zip genShape genShape)) property
-        )
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 1000)
+                (Arb.fromGen (Gen.zip genShape genShape))
+                property
 
         // Both routes must have been exercised, or the law above is vacuous for one of them.
-        if deferred = 0 then
+        if coverage.Count OrderingRoute.Deferred = 0 then
             failwith "no generated pair was deferred to byte coordinates"
 
-        if decided = 0 then
+        if coverage.Count OrderingRoute.Decided = 0 then
             failwith "no generated pair was decided structurally"

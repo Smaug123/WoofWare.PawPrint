@@ -8,6 +8,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -207,19 +208,8 @@ module TestSwitchIlOp =
 
     [<Test>]
     let ``switch jumps relative to the instruction after its target table`` () : unit =
-        let mutable inRangeNonZeroCases = 0
-        let mutable inRangeZeroCases = 0
-        let mutable negativeIndexCases = 0
-        let mutable tooLargeIndexCases = 0
-        let mutable emptyTableCases = 0
-
-        let property (case : SwitchCase) : bool =
-            match case.Kind with
-            | SwitchCaseKind.InRangeNonZero -> inRangeNonZeroCases <- inRangeNonZeroCases + 1
-            | SwitchCaseKind.InRangeZero -> inRangeZeroCases <- inRangeZeroCases + 1
-            | SwitchCaseKind.NegativeIndex -> negativeIndexCases <- negativeIndexCases + 1
-            | SwitchCaseKind.TooLargeIndex -> tooLargeIndexCases <- tooLargeIndexCases + 1
-            | SwitchCaseKind.EmptyTable -> emptyTableCases <- emptyTableCases + 1
+        let property (cover : SwitchCaseKind -> unit) (case : SwitchCase) : bool =
+            cover case.Kind
 
             let targets = ImmutableArray.CreateRange case.Targets
             let _, loggerFactory = LoggerFactory.makeTest ()
@@ -242,14 +232,16 @@ module TestSwitchIlOp =
 
             true
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genSwitchCase) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genSwitchCase) property
 
-        if
-            inRangeNonZeroCases = 0
-            || inRangeZeroCases = 0
-            || negativeIndexCases = 0
-            || tooLargeIndexCases = 0
-            || emptyTableCases = 0
-        then
-            failwith
-                $"generator missed required regimes: inRangeNonZero=%d{inRangeNonZeroCases}, inRangeZero=%d{inRangeZeroCases}, negative=%d{negativeIndexCases}, tooLarge=%d{tooLargeIndexCases}, empty=%d{emptyTableCases}"
+        for kind in
+            [
+                SwitchCaseKind.InRangeNonZero
+                SwitchCaseKind.InRangeZero
+                SwitchCaseKind.NegativeIndex
+                SwitchCaseKind.TooLargeIndex
+                SwitchCaseKind.EmptyTable
+            ] do
+            if coverage.Count kind = 0 then
+                failwith $"generator missed the regime %A{kind}; reached %A{coverage.Reached}"

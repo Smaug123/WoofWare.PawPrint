@@ -15,6 +15,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// <summary>
 /// Tests for <see cref="IlDecoding.decodeInstructions"/>, which turns a method body's IL
@@ -362,13 +363,19 @@ module TestIlDecoding =
                 }
         }
 
+    /// Where a well-formed `switch`'s jump table ends.
+    [<RequireQualifiedAccess>]
+    type private SwitchEnd =
+        /// Exactly where the body does.
+        | EndsTheBody
+        /// Before a trailing `ret`.
+        | BeforeRet
+
     [<Test>]
     let ``a switch whose targets all fit decodes to exactly those targets`` () =
         // The guard against a truncated jump table must not refuse a table that ends exactly
         // where the body does, so make sure that shape is generated.
-        let mutable endsTheBody = 0
-
-        let property (body : WellFormedSwitchBody) : unit =
+        let property (cover : SwitchEnd -> unit) (body : WellFormedSwitchBody) : unit =
             let targetBytes = body.Targets |> List.map int32Bytes |> Array.concat
 
             let bytes =
@@ -382,8 +389,12 @@ module TestIlDecoding =
                              [||])
                     ]
 
-            if not body.TrailingRet then
-                endsTheBody <- endsTheBody + 1
+            cover (
+                if body.TrailingRet then
+                    SwitchEnd.BeforeRet
+                else
+                    SwitchEnd.EndsTheBody
+            )
 
             let switchOffset = body.Prefix
             let afterSwitch = switchOffset + 5 + 4 * body.Targets.Length
@@ -410,8 +421,14 @@ module TestIlDecoding =
                 aOff |> shouldEqual eOff
             )
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen wellFormedSwitchGen) property)
-        endsTheBody |> shouldBeGreaterThan 300
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 2000)
+                (Arb.fromGen wellFormedSwitchGen)
+                property
+
+        // Counted over a fixed sample: a run cannot fall short by chance.
+        coverage.Count SwitchEnd.EndsTheBody |> shouldBeGreaterThan 300
 
     /// A `switch` whose operand is cut short: either within the four-byte count, or within
     /// the jump table the count declares.
@@ -470,17 +487,21 @@ module TestIlDecoding =
                 }
         }
 
+    /// Where a truncated `switch`'s operand was cut: within the count, or within a jump table
+    /// that would fit in memory, or within one of at least 2 GB.
+    [<RequireQualifiedAccess>]
+    type private TruncationKind =
+        | WithinCount
+        | WithinSmallTable
+        | WithinHugeTable
+
     [<Test>]
     let ``a switch whose operand is cut short is refused as a malformed image`` () =
-        let mutable withinCount = 0
-        let mutable withinSmallTable = 0
-        let mutable withinHugeTable = 0
-
-        let property (body : TruncatedSwitchBody) : unit =
+        let property (cover : TruncationKind -> unit) (body : TruncatedSwitchBody) : unit =
             let bytes =
                 match body.Truncation with
                 | Truncation.WithinCount present ->
-                    withinCount <- withinCount + 1
+                    cover TruncationKind.WithinCount
 
                     Array.concat
                         [
@@ -490,9 +511,9 @@ module TestIlDecoding =
                         ]
                 | Truncation.WithinTargets (count, presentBytes) ->
                     if count > uint32 (Int32.MaxValue / 4) then
-                        withinHugeTable <- withinHugeTable + 1
+                        cover TruncationKind.WithinHugeTable
                     else
-                        withinSmallTable <- withinSmallTable + 1
+                        cover TruncationKind.WithinSmallTable
 
                     Array.concat [ nops body.Prefix ; switchBytes count presentBytes ]
 
@@ -529,10 +550,13 @@ module TestIlDecoding =
                 failwith
                     $"a truncated switch raised %s{e.GetType().FullName} rather than BadImageFormatException: %s{e.Message}"
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen truncatedSwitchGen) property)
-        withinCount |> shouldBeGreaterThan 200
-        withinSmallTable |> shouldBeGreaterThan 200
-        withinHugeTable |> shouldBeGreaterThan 200
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 2000) (Arb.fromGen truncatedSwitchGen) property
+
+        // Counted over a fixed sample: a run cannot fall short by chance.
+        coverage.Count TruncationKind.WithinCount |> shouldBeGreaterThan 200
+        coverage.Count TruncationKind.WithinSmallTable |> shouldBeGreaterThan 200
+        coverage.Count TruncationKind.WithinHugeTable |> shouldBeGreaterThan 200
 
     [<Test>]
     let ``a switch declaring Int32.MaxValue targets with none present is refused without allocating`` () =

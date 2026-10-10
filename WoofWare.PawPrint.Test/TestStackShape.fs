@@ -8,6 +8,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// Tests for the stack-shape analysis: the evaluation stack's shape at the entry of every
 /// instruction, joined over every path that reaches it, and the offsets at which a float32 must
@@ -2089,14 +2090,21 @@ module TestStackShape =
             | _ -> false
         )
 
+    /// The joins the folded-program property must be seen to reach.
+    [<RequireQualifiedAccess>]
+    type private JoinCoverage =
+        /// A join refused because its width depends on a folded branch.
+        | Refusal
+        /// Such a refusal whose branch is a call branch's.
+        | CallRefusal
+        /// Such a refusal whose branch is an argument branch's.
+        | ArgumentRefusal
+        /// A promotion compared against the folded program's.
+        | ComparedPromotion
+
     [<Test>]
     let ``every join the analysis types has the shape and promotion the folded program gets`` () : unit =
-        let mutable refusals = 0
-        let mutable callRefusals = 0
-        let mutable argumentRefusals = 0
-        let mutable comparedPromotions = 0
-
-        let property (statements : Statement list) : unit =
+        let property (cover : JoinCoverage -> unit) (statements : Statement list) : unit =
             // Offsets are compared at statement starts only: within a rewritten foldable branch the
             // folded program has not pushed the condition.
             let body, starts, tokens = layOutStatements Set.empty statements
@@ -2128,7 +2136,8 @@ module TestStackShape =
                     | _ -> false
                 )
 
-            refusals <- refusals + refused.Count
+            for _ in 1 .. refused.Count do
+                cover JoinCoverage.Refusal
 
             // A call branch's `brtrue` follows its 5-byte `call`.
             let callBranches =
@@ -2155,9 +2164,9 @@ module TestStackShape =
             for KeyValue (_, error) in refused do
                 match error with
                 | StackShapeError.WidthDependsOnFoldedBranch (_, branch) when callBranches.Contains branch ->
-                    callRefusals <- callRefusals + 1
+                    cover JoinCoverage.CallRefusal
                 | StackShapeError.WidthDependsOnFoldedBranch (_, branch) when argumentBranches.Contains branch ->
-                    argumentRefusals <- argumentRefusals + 1
+                    cover JoinCoverage.ArgumentRefusal
                 | _ -> ()
 
             for offset in starts.Values do
@@ -2170,23 +2179,29 @@ module TestStackShape =
                     let promotion = Map.tryFind offset shape.Promotions
 
                     if promotion.IsSome then
-                        comparedPromotions <- comparedPromotions + 1
+                        cover JoinCoverage.ComparedPromotion
 
                     promotion |> shouldEqual (Map.tryFind offset folded.Promotions)
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen genStatements) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 2000) (Arb.fromGen genStatements) property
 
-        // The generator reaches both kinds of join the property is about.
-        refusals |> shouldBeGreaterThan 0
-        callRefusals |> shouldBeGreaterThan 0
-        argumentRefusals |> shouldBeGreaterThan 0
-        comparedPromotions |> shouldBeGreaterThan 0
+        // The generator reaches both kinds of join the property is about, counted over a fixed
+        // sample: a run cannot miss one by chance.
+        coverage.Count JoinCoverage.Refusal |> shouldBeGreaterThan 0
+        coverage.Count JoinCoverage.CallRefusal |> shouldBeGreaterThan 0
+        coverage.Count JoinCoverage.ArgumentRefusal |> shouldBeGreaterThan 0
+        coverage.Count JoinCoverage.ComparedPromotion |> shouldBeGreaterThan 0
+
+    /// The join the lenient-lattice property must be seen to reach.
+    [<RequireQualifiedAccess>]
+    type private LenientCoverage =
+        /// A join the refusing analysis refused, which the lenient one typed.
+        | RefusedThenTyped
 
     [<Test>]
     let ``a lattice whose widening converts nothing types the joins a folded branch reaches`` () : unit =
-        let mutable refusedThenTyped = 0
-
-        let property (statements : Statement list) : unit =
+        let property (cover : LenientCoverage -> unit) (statements : Statement list) : unit =
             let body, _, tokens = layOutStatements Set.empty statements
 
             let inputs =
@@ -2226,12 +2241,14 @@ module TestStackShape =
                 | StackShapeError.WidthDependsOnFoldedBranch _ ->
                     lenient.Entry.ContainsKey offset |> shouldEqual true
                     lenient.Widened.ContainsKey offset |> shouldEqual true
-                    refusedThenTyped <- refusedThenTyped + 1
+                    cover LenientCoverage.RefusedThenTyped
                 | _ -> ()
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen genStatements) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 2000) (Arb.fromGen genStatements) property
 
-        refusedThenTyped |> shouldBeGreaterThan 0
+        // Counted over a fixed sample: a run cannot miss it by chance.
+        coverage.Count LenientCoverage.RefusedThenTyped |> shouldBeGreaterThan 0
 
     // ---------- The interpreter's refusal of a float32 entering an untyped block ----------
 

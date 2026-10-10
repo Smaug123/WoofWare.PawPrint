@@ -11,6 +11,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// <summary>
 /// A <c>TypeDefn</c> is a DAG, not a tree: nothing stops the same subterm appearing in several
@@ -481,6 +482,14 @@ module TestSharedTypeGraphResolution =
         with e when e.Message.Contains cyclicMarker ->
             Outcome.Cyclic
 
+    /// What the sharing property must be seen to reach.
+    [<RequireQualifiedAccess>]
+    type private SharingCoverage =
+        /// An input smaller as a DAG than as a tree, so that the memo fires.
+        | ActuallyShared
+        | Resolved
+        | Cyclic
+
     /// <summary>
     /// Sharing in the input changes what resolution costs, and nothing else.
     /// </summary>
@@ -494,40 +503,46 @@ module TestSharedTypeGraphResolution =
     let ``sharing the input does not change the answer`` () : unit =
         let fixture = setUp ()
 
-        let mutable actuallyShared = 0
-        let mutable resolved = 0
-        let mutable cyclic = 0
-
-        let property (subject : TypeDefn, typeArgs : TypeDefn list, methodArgs : TypeDefn list) : bool =
+        let property
+            (cover : SharingCoverage -> unit)
+            (subject : TypeDefn, typeArgs : TypeDefn list, methodArgs : TypeDefn list)
+            : bool
+            =
             let asTree = unshare subject
             let treeArgs = typeArgs |> List.map unshare
             let treeMethodArgs = methodArgs |> List.map unshare
 
             if dagSize subject < dagSize asTree then
-                actuallyShared <- actuallyShared + 1
+                cover SharingCoverage.ActuallyShared
 
             let shared = outcome fixture subject typeArgs methodArgs
             let unshared = outcome fixture asTree treeArgs treeMethodArgs
 
             match shared with
-            | Outcome.Resolved _ -> resolved <- resolved + 1
-            | Outcome.Cyclic -> cyclic <- cyclic + 1
+            | Outcome.Resolved _ -> cover SharingCoverage.Resolved
+            | Outcome.Cyclic -> cover SharingCoverage.Cyclic
 
             shared = unshared
 
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest 300,
-            Prop.forAll (Arb.fromGen (environmentGen fixture)) property
-        )
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 300)
+                (Arb.fromGen (environmentGen fixture))
+                property
 
-        TestContext.Out.WriteLine $"shared inputs %d{actuallyShared}, resolved %d{resolved}, cyclic %d{cyclic}"
-
-        // Without genuinely-shared inputs the memo never fires and the property says nothing.
-        if actuallyShared = 0 then
+        // Counted over a fixed sample: a run cannot miss one by chance. Without genuinely-shared
+        // inputs the memo never fires and the property says nothing.
+        if coverage.Count SharingCoverage.ActuallyShared = 0 then
             Assert.Fail "Generator produced no shared input; the property never exercised the memo."
 
-        if resolved = 0 then
+        if coverage.Count SharingCoverage.Resolved = 0 then
             Assert.Fail "Generator produced no resolvable environment; the property is vacuous."
+
+    /// What the idempotence property must be seen to reach.
+    [<RequireQualifiedAccess>]
+    type private IdempotenceCoverage =
+        /// A subject that resolved, so that its answer was fed back in.
+        | Checked
 
     /// <summary>
     /// Resolution is idempotent: feeding an answer back in, under the empty environment, returns
@@ -549,13 +564,15 @@ module TestSharedTypeGraphResolution =
     let ``resolution is idempotent`` () : unit =
         let fixture = setUp ()
 
-        let mutable checked' = 0
-
-        let property (subject : TypeDefn, typeArgs : TypeDefn list, methodArgs : TypeDefn list) : bool =
+        let property
+            (cover : IdempotenceCoverage -> unit)
+            (subject : TypeDefn, typeArgs : TypeDefn list, methodArgs : TypeDefn list)
+            : bool
+            =
             match outcome fixture subject typeArgs methodArgs with
             | Outcome.Cyclic -> true
             | Outcome.Resolved once ->
-                checked' <- checked' + 1
+                cover IdempotenceCoverage.Checked
 
                 // The answer is closed, so it needs no environment to resolve a second time; if it
                 // still mentioned a parameter, this would throw an index-out-of-range rather than
@@ -567,9 +584,9 @@ module TestSharedTypeGraphResolution =
         let subjects =
             environmentGen fixture |> Gen.where (fun (subject, _, _) -> substitutes subject)
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen subjects) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 300) (Arb.fromGen subjects) property
 
-        TestContext.Out.WriteLine $"checked idempotence on %d{checked'} resolved types"
-
-        if checked' = 0 then
+        // Counted over a fixed sample: a run cannot miss it by chance.
+        if coverage.Count IdempotenceCoverage.Checked = 0 then
             Assert.Fail "Generator produced no resolvable environment; the property is vacuous."
