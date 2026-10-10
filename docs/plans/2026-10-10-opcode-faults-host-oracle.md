@@ -60,12 +60,16 @@ Each stage is one PR.
    `ArrayTypeMismatchException` from `stelem.<type>` of a primitive, which the
    table listed, so those entries now leave it out. `Ldelem_u8`, `Ldind_u8` and
    `Stelem_u1/u2/u4/u8` are not checked, because no IL encodes them.
-3. **The other instructions that take a metadata token**: `castclass`,
-   `isinst`, `unbox`, `unbox.any`, `box`, `newarr` (negative and too-long
-   lengths), `refanyval`, `mkrefany`, `ldvirtftn`, `callvirt` on null, and the
-   entries for a static constructor that throws (`ldsfld`, `ldsflda`, `stsfld`,
-   `call`, `newobj`, and `ldfld`, `ldflda` and `stfld` naming a static field)
-   through a type whose static constructor always throws.
+3. **The other instructions that take a metadata token**
+   (`TestOpcodeFaultsOnHostTokens`): `castclass`, `isinst`, `unbox`,
+   `unbox.any`, `box`, `newarr` (negative and too-long lengths), `refanyval`,
+   `mkrefany`, `ldvirtftn`, `callvirt` on null, `ldftn`, `ldtoken`, `sizeof`,
+   `ldstr`, and the entries for a static constructor that throws (`ldsfld`,
+   `ldsflda`, `stsfld`, `call`, `callvirt`, `newobj`, `jmp`, `calli`, and
+   `ldfld`, `ldflda` and `stfld` naming a static field), tested through types
+   whose static constructors always throw. Every entry agreed with the host.
+   A test requires every token-bearing instruction except the `constrained.`
+   prefix to be checked here or in stage 2.
 
 ## Not checkable in process
 
