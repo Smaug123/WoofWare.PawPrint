@@ -7,6 +7,7 @@ open System.Collections.Immutable
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
+open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -177,20 +178,24 @@ module TestNativeKernel32 =
         exn.Message |> shouldContainText "GetEnvironmentVariableW"
         exn.Message |> shouldContainText "\\x80"
 
+    /// How a `GetEnvironmentVariableW` call's buffer met its variable.
+    [<RequireQualifiedAccess>]
+    type private BufferOutcome =
+        | Missing
+        | TooSmall
+        /// Too small, though it holds every code unit: the case only a byte count gets right.
+        | TooSmallForBytesOnly
+        | Fits
+
     [<Test>]
     let ``GetEnvironmentVariableW plan matches the PAL's buffer contract`` () : unit =
-        let mutable missing = 0
-        let mutable tooSmall = 0
-        let mutable tooSmallForBytesOnly = 0
-        let mutable fits = 0
-
-        let property (case : EnvironmentVariableCase) : unit =
+        let property (cover : BufferOutcome -> unit) (case : EnvironmentVariableCase) : unit =
             let actual =
                 NativeKernel32.planGetEnvironmentVariableW case.BufferSize (Option.map bytesOf case.Value)
 
             match case.Value with
             | None ->
-                missing <- missing + 1
+                cover BufferOutcome.Missing
                 actual.ReturnLength |> shouldEqual 0u
                 actual.LastError |> shouldEqual errorEnvVarNotFound
                 actual.ValueToWrite |> shouldEqual None
@@ -198,29 +203,31 @@ module TestNativeKernel32 =
                 let byteLength = utf8ByteCount value
 
                 if byteLength >= case.BufferSize then
-                    tooSmall <- tooSmall + 1
+                    cover BufferOutcome.TooSmall
 
                     if value.Length < case.BufferSize then
-                        tooSmallForBytesOnly <- tooSmallForBytesOnly + 1
+                        cover BufferOutcome.TooSmallForBytesOnly
 
                     actual.ReturnLength |> shouldEqual (uint32 (byteLength + 1))
                     actual.LastError |> shouldEqual 0
                     actual.ValueToWrite |> shouldEqual None
                 else
-                    fits <- fits + 1
+                    cover BufferOutcome.Fits
                     actual.ReturnLength |> shouldEqual (uint32 value.Length)
                     actual.LastError |> shouldEqual 0
                     actual.ValueToWrite |> shouldEqual (Some value)
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genEnvironmentVariableCase) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genEnvironmentVariableCase) property
 
-        missing > 20 |> shouldEqual true
-        tooSmall > 50 |> shouldEqual true
+        // Counted over a fixed sample: a run cannot fall short by chance.
+        coverage.Count BufferOutcome.Missing > 20 |> shouldEqual true
+        coverage.Count BufferOutcome.TooSmall > 50 |> shouldEqual true
         // The cases only a byte count gets right: the buffer holds every code
         // unit but not every byte. Without this the property could be satisfied
         // by an ASCII-shaped generator.
-        tooSmallForBytesOnly > 50 |> shouldEqual true
-        fits > 50 |> shouldEqual true
+        coverage.Count BufferOutcome.TooSmallForBytesOnly > 50 |> shouldEqual true
+        coverage.Count BufferOutcome.Fits > 50 |> shouldEqual true
 
     /// The UTF-16 code units of an environment block, paired out of its bytes
     /// little-endian.
@@ -345,22 +352,25 @@ module TestNativeKernel32 =
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genEnvironment) property)
 
+    /// The shapes of environment the parse is meant to be interesting for.
+    [<RequireQualifiedAccess>]
+    type private EnvironmentShape =
+        | Empty
+        | DuplicateNames
+        | EntryWithoutEquals
+        | EntryWithLeadingEquals
+        | EmptyEntryBeforeEnd
+        | EntryWithAstral
+
     [<Test>]
     let ``environment block parses as the variables CoreLib reports`` () : unit =
-        let mutable empties = 0
-        let mutable duplicateNames = 0
-        let mutable withoutEquals = 0
-        let mutable leadingEquals = 0
-        let mutable emptyEntryBeforeEnd = 0
-        let mutable withAstral = 0
-
-        let property (entries : string list) : unit =
+        let property (cover : EnvironmentShape -> unit) (entries : string list) : unit =
             NativeKernel32.environmentBlockBytes (List.map bytesOf entries)
             |> parseEnvironmentBlock
             |> shouldEqual (expectedVariables entries)
 
             if List.isEmpty entries then
-                empties <- empties + 1
+                cover EnvironmentShape.Empty
 
             let names =
                 entries
@@ -371,32 +381,39 @@ module TestNativeKernel32 =
                 )
 
             if List.length (List.distinct names) < List.length names then
-                duplicateNames <- duplicateNames + 1
+                cover EnvironmentShape.DuplicateNames
 
             if entries |> List.exists (fun entry -> entry <> "" && not (entry.Contains '=')) then
-                withoutEquals <- withoutEquals + 1
+                cover EnvironmentShape.EntryWithoutEquals
 
             if entries |> List.exists (fun entry -> entry.StartsWith '=') then
-                leadingEquals <- leadingEquals + 1
+                cover EnvironmentShape.EntryWithLeadingEquals
 
             match List.tryFindIndex (fun entry -> entry = "") entries with
-            | Some i when i < List.length entries - 1 -> emptyEntryBeforeEnd <- emptyEntryBeforeEnd + 1
+            | Some i when i < List.length entries - 1 -> cover EnvironmentShape.EmptyEntryBeforeEnd
             | _ -> ()
 
             if entries |> List.exists (fun entry -> entry.Contains "\U0001F436") then
-                withAstral <- withAstral + 1
+                cover EnvironmentShape.EntryWithAstral
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genEnvironment) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genEnvironment) property
 
         // Every shape the parse is meant to be interesting for really did turn
-        // up. Without these, narrowing the generator later would silently reduce
+        // up, counted over a fixed sample: a run cannot fall short by chance.
+        // Without these, narrowing the generator later would silently reduce
         // the property to a claim about short, distinct, well-formed pairs.
-        empties > 20 |> shouldEqual true
-        duplicateNames > 20 |> shouldEqual true
-        withoutEquals > 20 |> shouldEqual true
-        leadingEquals > 20 |> shouldEqual true
-        emptyEntryBeforeEnd > 20 |> shouldEqual true
-        withAstral > 20 |> shouldEqual true
+        for shape in
+            [
+                EnvironmentShape.Empty
+                EnvironmentShape.DuplicateNames
+                EnvironmentShape.EntryWithoutEquals
+                EnvironmentShape.EntryWithLeadingEquals
+                EnvironmentShape.EmptyEntryBeforeEnd
+                EnvironmentShape.EntryWithAstral
+            ] do
+            if coverage.Count shape <= 20 then
+                failwith $"the property reached %A{shape} only %d{coverage.Count shape} times"
 
     /// A NUL code unit as a string, for spelling block layouts out readably.
     let private nul : string = string (char 0)

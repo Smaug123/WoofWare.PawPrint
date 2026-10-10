@@ -7,6 +7,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -196,8 +197,8 @@ module TestBinaryArithmetic =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
-    // FirstStep is zero with probability 1/25, so 650 cases puts the false
-    // "missed zero" balance failure probability below 1e-11.
+    // FirstStep is zero with probability 1/25, so a fixed sample of 650 cases reaches it about
+    // 26 times: often enough that a change which reshuffles the sample does not lose it.
     let private sameArrayPropertyConfig : Config =
         Config.QuickThrowOnFailure.WithMaxTest 650
 
@@ -606,13 +607,26 @@ module TestBinaryArithmetic =
         | Error OpcodeFault.Overflow -> None
         | Error fault -> failwith $"sub.ovf faulted with %O{fault}, but overflow is the only fault it can detect"
 
+    /// Whether a checked operation trapped or computed a result: the two regimes a property about
+    /// one must reach.
+    [<RequireQualifiedAccess>]
+    type private OverflowRegime =
+        | Trapped
+        | Computed
+
+    /// Fails unless the fixed sample reached both regimes.
+    let private requireBothRegimes (coverage : Coverage<OverflowRegime>) : unit =
+        let trapped = coverage.Count OverflowRegime.Trapped
+        let computed = coverage.Count OverflowRegime.Computed
+
+        if trapped = 0 || computed = 0 then
+            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+
     [<Test>]
     let ``sub ovf on int32 traps exactly when the exact difference leaves int32 range`` () : unit =
         let state = state ()
-        let mutable trapped = 0
-        let mutable computed = 0
 
-        let property (a : int32, b : int32) : unit =
+        let property (cover : OverflowRegime -> unit) (a : int32, b : int32) : unit =
             let exact = bigint a - bigint b
 
             let inRange =
@@ -625,7 +639,7 @@ module TestBinaryArithmetic =
                     (EvalStackValue.Int32 (Int32Source.Verbatim b))
             with
             | Some actual ->
-                computed <- computed + 1
+                cover OverflowRegime.Computed
 
                 if not inRange then
                     failwith
@@ -643,26 +657,19 @@ module TestBinaryArithmetic =
                         (EvalStackValue.Int32 (Int32Source.Verbatim b))
                 )
             | None ->
-                trapped <- trapped + 1
+                cover OverflowRegime.Trapped
 
                 if inRange then
                     failwith $"sub.ovf %d{a} - %d{b} trapped, but the exact difference %O{exact} fits in int32"
 
-        Check.One (
-            propertyConfig,
-            Prop.forAll (Arb.fromGen (Gen.zip genOverflowProneInt32 genOverflowProneInt32)) property
-        )
-
-        if trapped = 0 || computed = 0 then
-            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+        CoverageSample.check propertyConfig (Arb.fromGen (Gen.zip genOverflowProneInt32 genOverflowProneInt32)) property
+        |> requireBothRegimes
 
     [<Test>]
     let ``sub ovf on int64 traps exactly when the exact difference leaves int64 range`` () : unit =
         let state = state ()
-        let mutable trapped = 0
-        let mutable computed = 0
 
-        let property (a : int64, b : int64) : unit =
+        let property (cover : OverflowRegime -> unit) (a : int64, b : int64) : unit =
             let exact = bigint a - bigint b
 
             let inRange =
@@ -673,7 +680,7 @@ module TestBinaryArithmetic =
 
             match trySubOvf state val1 val2 with
             | Some actual ->
-                computed <- computed + 1
+                cover OverflowRegime.Computed
 
                 if not inRange then
                     failwith
@@ -684,18 +691,13 @@ module TestBinaryArithmetic =
 
                 actual |> shouldEqual (execute ArithmeticOperation.sub state val1 val2)
             | None ->
-                trapped <- trapped + 1
+                cover OverflowRegime.Trapped
 
                 if inRange then
                     failwith $"sub.ovf %d{a} - %d{b} trapped, but the exact difference %O{exact} fits in int64"
 
-        Check.One (
-            propertyConfig,
-            Prop.forAll (Arb.fromGen (Gen.zip genOverflowProneInt64 genOverflowProneInt64)) property
-        )
-
-        if trapped = 0 || computed = 0 then
-            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+        CoverageSample.check propertyConfig (Arb.fromGen (Gen.zip genOverflowProneInt64 genOverflowProneInt64)) property
+        |> requireBothRegimes
 
     let private placeholderPointer (bits : int64) : EvalStackValue =
         EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)
@@ -727,16 +729,20 @@ module TestBinaryArithmetic =
     let private nullPointer : EvalStackValue =
         EvalStackValue.ManagedPointer ManagedPointerSource.Null
 
+    /// Whether an offset is zero, which leaves the byref it moves where it was.
+    [<RequireQualifiedAccess>]
+    type private OffsetRegime =
+        | Zero
+        | NonZero
+
     /// `Null` is the bit pattern 0, so offsetting it must give the byref with
     /// the offset as its bit pattern — the same answer the `Unsafe.Add<T>`
     /// intrinsic already produces (IntrinsicHelpers.offsetManagedPointerByElements).
     [<Test>]
     let ``offsetting the null byref treats it as the zero bit pattern`` () : unit =
         let state = state ()
-        let mutable zeroResults = 0
-        let mutable nonZeroResults = 0
 
-        let property (offset : int32) : unit =
+        let property (cover : OffsetRegime -> unit) (offset : int32) : unit =
             let v = EvalStackValue.Int32 (Int32Source.Verbatim offset)
 
             let expect (expectedBits : int64) (actual : EvalStackValue) : unit =
@@ -756,11 +762,15 @@ module TestBinaryArithmetic =
             |> expect (-(int64 offset))
 
             if offset = 0 then
-                zeroResults <- zeroResults + 1
+                cover OffsetRegime.Zero
             else
-                nonZeroResults <- nonZeroResults + 1
+                cover OffsetRegime.NonZero
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genOverflowProneInt32) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genOverflowProneInt32) property
+
+        let zeroResults = coverage.Count OffsetRegime.Zero
+        let nonZeroResults = coverage.Count OffsetRegime.NonZero
 
         if zeroResults = 0 || nonZeroResults = 0 then
             failwith $"generator missed a regime: zero=%d{zeroResults}, nonZero=%d{nonZeroResults}"
@@ -797,20 +807,32 @@ module TestBinaryArithmetic =
         execute ArithmeticOperation.sub state nullPointer (placeholderPointer 24L)
         |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim -24L))
 
+    /// Whether a bit-pattern byref is `Null` or a `NativeIntPlaceholder`: the two shapes the
+    /// zero and nonzero bit patterns take.
+    [<RequireQualifiedAccess>]
+    type private BitPatternStart =
+        | Null
+        | Placeholder
+
+    /// Fails unless the fixed sample started from both shapes.
+    let private requireBothStarts (coverage : Coverage<BitPatternStart>) : unit =
+        let nullCases = coverage.Count BitPatternStart.Null
+        let placeholderCases = coverage.Count BitPatternStart.Placeholder
+
+        if nullCases = 0 || placeholderCases = 0 then
+            failwith $"generator missed a regime: null=%d{nullCases}, placeholder=%d{placeholderCases}"
+
     [<Test>]
     let ``opcode and Unsafe Add intrinsic agree on bit-pattern byrefs`` () : unit =
         // The same arithmetic is reachable through the `Unsafe.Add<T>`
         // intrinsic and through the `add` opcode; the two must agree.
-        let mutable nullCases = 0
-        let mutable placeholderCases = 0
-
-        let property (bits : int64, offset : int32) : unit =
+        let property (cover : BitPatternStart -> unit) (bits : int64, offset : int32) : unit =
             let start, viaOpcodeState =
                 if bits = 0L then
-                    nullCases <- nullCases + 1
+                    cover BitPatternStart.Null
                     nullPointer, state ()
                 else
-                    placeholderCases <- placeholderCases + 1
+                    cover BitPatternStart.Placeholder
                     placeholderPointer bits, state ()
 
             let viaOpcode =
@@ -836,10 +858,8 @@ module TestBinaryArithmetic =
 
         let genBits = Gen.frequency [ 1, Gen.constant 0L ; 3, genPlaceholderBits ]
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genBits genOverflowProneInt32)) property)
-
-        if nullCases = 0 || placeholderCases = 0 then
-            failwith $"generator missed a regime: null=%d{nullCases}, placeholder=%d{placeholderCases}"
+        CoverageSample.check propertyConfig (Arb.fromGen (Gen.zip genBits genOverflowProneInt32)) property
+        |> requireBothStarts
 
     /// Offsets outside the int32 range. A bit-pattern byref's offset is a
     /// native int, so these are perfectly ordinary; only the symbolic offset
@@ -862,16 +882,14 @@ module TestBinaryArithmetic =
     [<Test>]
     let ``bit-pattern byrefs accept native int offsets outside the int32 range`` () : unit =
         let state = state ()
-        let mutable nullCases = 0
-        let mutable placeholderCases = 0
 
-        let property (bits : int64, offset : int64) : unit =
+        let property (cover : BitPatternStart -> unit) (bits : int64, offset : int64) : unit =
             let start =
                 if bits = 0L then
-                    nullCases <- nullCases + 1
+                    cover BitPatternStart.Null
                     nullPointer
                 else
-                    placeholderCases <- placeholderCases + 1
+                    cover BitPatternStart.Placeholder
                     placeholderPointer bits
 
             let asNativeInt = EvalStackValue.NativeInt (NativeIntSource.Verbatim offset)
@@ -892,10 +910,8 @@ module TestBinaryArithmetic =
 
         let genBits = Gen.frequency [ 1, Gen.constant 0L ; 3, genPlaceholderBits ]
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genBits genOversizeInt64Offset)) property)
-
-        if nullCases = 0 || placeholderCases = 0 then
-            failwith $"generator missed a regime: null=%d{nullCases}, placeholder=%d{placeholderCases}"
+        CoverageSample.check propertyConfig (Arb.fromGen (Gen.zip genBits genOversizeInt64Offset)) property
+        |> requireBothStarts
 
     [<Test>]
     let ``subtracting an oversize native int from the null byref is representable`` () : unit =
@@ -956,10 +972,8 @@ module TestBinaryArithmetic =
         // not a symbolic offset, so this is the one pointer shape where the
         // checked form has machine-width bits to overflow.
         let state = state ()
-        let mutable trapped = 0
-        let mutable computed = 0
 
-        let property (bits1 : int64, bits2 : int64) : unit =
+        let property (cover : OverflowRegime -> unit) (bits1 : int64, bits2 : int64) : unit =
             let exact = bigint bits1 - bigint bits2
 
             let inRange =
@@ -975,7 +989,7 @@ module TestBinaryArithmetic =
 
             match trySubOvf state val1 val2 with
             | Some actual ->
-                computed <- computed + 1
+                cover OverflowRegime.Computed
 
                 if not inRange then
                     failwith
@@ -984,15 +998,13 @@ module TestBinaryArithmetic =
                 actual
                 |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 exact)))
             | None ->
-                trapped <- trapped + 1
+                cover OverflowRegime.Trapped
 
                 if inRange then
                     failwith $"sub.ovf on placeholders %d{bits1} - %d{bits2} trapped, but %O{exact} fits in native int"
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genPlaceholderBits genPlaceholderBits)) property)
-
-        if trapped = 0 || computed = 0 then
-            failwith $"generator missed a regime: trapped=%d{trapped}, computed=%d{computed}"
+        CoverageSample.check propertyConfig (Arb.fromGen (Gen.zip genPlaceholderBits genPlaceholderBits)) property
+        |> requireBothRegimes
 
     [<Test>]
     let ``sub ovf traps when negating the minimum bit-pattern byref`` () : unit =
@@ -1010,13 +1022,15 @@ module TestBinaryArithmetic =
         execute ArithmeticOperation.sub state nullPtr (placeholderPointer System.Int64.MinValue)
         |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.Verbatim System.Int64.MinValue))
 
+    /// Which direction a checked pointer offset moves.
+    [<RequireQualifiedAccess>]
+    type private OffsetDirection =
+        | Add
+        | Sub
+
     [<Test>]
     let ``checked pointer offsetting of a bit-pattern byref traps exactly on native int overflow`` () : unit =
         let state = state ()
-        let mutable addTrapped = 0
-        let mutable addComputed = 0
-        let mutable subTrapped = 0
-        let mutable subComputed = 0
 
         let expectedPointer (bits : bigint) : EvalStackValue =
             if bits = bigint 0 then
@@ -1055,24 +1069,30 @@ module TestBinaryArithmetic =
                 failwith
                     $"%s{checkedOp.Name} of %O{val1} and %O{val2} faulted with %O{fault}, but overflow is the only fault it can detect"
 
-        let property (bits : int64, offset : int32) : unit =
+        let property (cover : OffsetDirection * OverflowRegime -> unit) (bits : int64, offset : int32) : unit =
             let ptr = placeholderPointer bits
             let v = EvalStackValue.Int32 (Int32Source.Verbatim offset)
 
             if check ArithmeticOperation.addOvf ArithmeticOperation.add (bigint bits + bigint offset) ptr v then
-                addTrapped <- addTrapped + 1
+                cover (OffsetDirection.Add, OverflowRegime.Trapped)
             else
-                addComputed <- addComputed + 1
+                cover (OffsetDirection.Add, OverflowRegime.Computed)
 
             if check ArithmeticOperation.subOvf ArithmeticOperation.sub (bigint bits - bigint offset) ptr v then
-                subTrapped <- subTrapped + 1
+                cover (OffsetDirection.Sub, OverflowRegime.Trapped)
             else
-                subComputed <- subComputed + 1
+                cover (OffsetDirection.Sub, OverflowRegime.Computed)
 
-        Check.One (
-            propertyConfig,
-            Prop.forAll (Arb.fromGen (Gen.zip genPlaceholderBits genOverflowProneInt32)) property
-        )
+        let coverage =
+            CoverageSample.check
+                propertyConfig
+                (Arb.fromGen (Gen.zip genPlaceholderBits genOverflowProneInt32))
+                property
+
+        let addTrapped = coverage.Count (OffsetDirection.Add, OverflowRegime.Trapped)
+        let addComputed = coverage.Count (OffsetDirection.Add, OverflowRegime.Computed)
+        let subTrapped = coverage.Count (OffsetDirection.Sub, OverflowRegime.Trapped)
+        let subComputed = coverage.Count (OffsetDirection.Sub, OverflowRegime.Computed)
 
         if addTrapped = 0 || addComputed = 0 || subTrapped = 0 || subComputed = 0 then
             failwith
@@ -1427,19 +1447,19 @@ module TestBinaryArithmetic =
 
         ex.Message |> shouldContainText "overflowed int32 offset model"
 
+    /// The sign of a generated step.
+    [<RequireQualifiedAccess>]
+    type private StepSign =
+        | Negative
+        | Zero
+        | Positive
+
     [<Test>]
     let ``plain array byref arithmetic obeys generated add and subtract laws`` () : unit =
-        let mutable negativeSteps = 0
-        let mutable zeroSteps = 0
-        let mutable positiveSteps = 0
-
-        let property (case : SameArrayCase) : bool =
-            if case.FirstStep < 0 then
-                negativeSteps <- negativeSteps + 1
-            elif case.FirstStep = 0 then
-                zeroSteps <- zeroSteps + 1
-            else
-                positiveSteps <- positiveSteps + 1
+        let property (cover : StepSign -> unit) (case : SameArrayCase) : bool =
+            if case.FirstStep < 0 then cover StepSign.Negative
+            elif case.FirstStep = 0 then cover StepSign.Zero
+            else cover StepSign.Positive
 
             let state, arr = stateWithIntArray (valuesOfLength case.Length)
             let ptr = arrayPointer arr case.Index
@@ -1524,27 +1544,35 @@ module TestBinaryArithmetic =
 
             true
 
-        Check.One (sameArrayPropertyConfig, Prop.forAll (Arb.fromGen genSameArrayCase) property)
+        let coverage =
+            CoverageSample.check sameArrayPropertyConfig (Arb.fromGen genSameArrayCase) property
+
+        let negativeSteps = coverage.Count StepSign.Negative
+        let zeroSteps = coverage.Count StepSign.Zero
+        let positiveSteps = coverage.Count StepSign.Positive
 
         if negativeSteps = 0 || zeroSteps = 0 || positiveSteps = 0 then
             failwith
                 $"generator did not exercise all step signs: negative=%d{negativeSteps}, zero=%d{zeroSteps}, positive=%d{positiveSteps}"
 
+    /// What a cross-array case must sometimes have: a regime each, not exclusive of one another.
+    [<RequireQualifiedAccess>]
+    type private CrossArrayRegime =
+        | EmptyArray
+        | NonEmptyArrays
+        | NonZeroByteOffset
+
     [<Test>]
     let ``cross-array byref subtraction is generated anti-symmetric and tagged`` () : unit =
-        let mutable emptyArrayCases = 0
-        let mutable nonEmptyArrayCases = 0
-        let mutable nonZeroByteOffsetCases = 0
-
-        let property (case : CrossArrayCase) : bool =
+        let property (cover : CrossArrayRegime -> unit) (case : CrossArrayCase) : bool =
             if case.Length1 = 0 || case.Length2 = 0 then
-                emptyArrayCases <- emptyArrayCases + 1
+                cover CrossArrayRegime.EmptyArray
 
             if case.Length1 > 0 && case.Length2 > 0 then
-                nonEmptyArrayCases <- nonEmptyArrayCases + 1
+                cover CrossArrayRegime.NonEmptyArrays
 
             if case.ByteOffset1 <> 0 || case.ByteOffset2 <> 0 then
-                nonZeroByteOffsetCases <- nonZeroByteOffsetCases + 1
+                cover CrossArrayRegime.NonZeroByteOffset
 
             let state, arr1, arr2 =
                 stateWithTwoIntArrays (valuesOfLength case.Length1) (valuesOfLength case.Length2)
@@ -1593,7 +1621,12 @@ module TestBinaryArithmetic =
 
             true
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genCrossArrayCase) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genCrossArrayCase) property
+
+        let emptyArrayCases = coverage.Count CrossArrayRegime.EmptyArray
+        let nonEmptyArrayCases = coverage.Count CrossArrayRegime.NonEmptyArrays
+        let nonZeroByteOffsetCases = coverage.Count CrossArrayRegime.NonZeroByteOffset
 
         if emptyArrayCases = 0 || nonEmptyArrayCases = 0 || nonZeroByteOffsetCases = 0 then
             failwith
@@ -1713,30 +1746,31 @@ module TestBinaryArithmetic =
         arr1,
         arr2
 
+    /// What the mixed-representation subtraction property must reach. `Element` is a
+    /// `MixedElementKind`, by its name.
+    [<RequireQualifiedAccess>]
+    type private MixedSubtractionRegime =
+        | View of ByteViewSide
+        | CrossArray
+        | MidCellView
+        | NonZeroBothIndices
+        | Element of name : string
+
     [<Test>]
     let ``subtracting a bare array byref and a byte cursor gives the layout's byte distance`` () : unit =
-        let mutable leftViews = 0
-        let mutable rightViews = 0
-        let mutable crossArrays = 0
-        let mutable midCellViews = 0
-        let mutable nonZeroBothIndices = 0
-        let elementsSeen = System.Collections.Generic.HashSet<string> ()
-
-        let property (case : MixedArraySubtractionCase) : bool =
-            match case.ViewSide with
-            | ByteViewSide.Left -> leftViews <- leftViews + 1
-            | ByteViewSide.Right -> rightViews <- rightViews + 1
+        let property (cover : MixedSubtractionRegime -> unit) (case : MixedArraySubtractionCase) : bool =
+            cover (MixedSubtractionRegime.View case.ViewSide)
 
             if case.CrossArray then
-                crossArrays <- crossArrays + 1
+                cover MixedSubtractionRegime.CrossArray
 
             if case.ViewByteOffset <> 0 then
-                midCellViews <- midCellViews + 1
+                cover MixedSubtractionRegime.MidCellView
 
             if case.ViewIndex <> 0 && case.BareIndex <> 0 then
-                nonZeroBothIndices <- nonZeroBothIndices + 1
+                cover MixedSubtractionRegime.NonZeroBothIndices
 
-            elementsSeen.Add case.Element.Name |> ignore
+            cover (MixedSubtractionRegime.Element case.Element.Name)
 
             let state, viewArr, otherArr = stateWithArraysOf case.Element case.Length
             let bareArr = if case.CrossArray then otherArr else viewArr
@@ -1784,45 +1818,29 @@ module TestBinaryArithmetic =
 
             true
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genMixedArraySubtractionCase) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genMixedArraySubtractionCase) property
 
-        if
-            leftViews = 0
-            || rightViews = 0
-            || crossArrays = 0
-            || midCellViews = 0
-            || nonZeroBothIndices = 0
-            || elementsSeen.Count <> mixedElementKinds.Length
-        then
-            failwith
-                $"generator missed required regimes: left=%d{leftViews}, right=%d{rightViews}, cross=%d{crossArrays}, midCell=%d{midCellViews}, nonZeroBoth=%d{nonZeroBothIndices}, elements=%d{elementsSeen.Count}"
+        let required =
+            [
+                MixedSubtractionRegime.View ByteViewSide.Left
+                MixedSubtractionRegime.View ByteViewSide.Right
+                MixedSubtractionRegime.CrossArray
+                MixedSubtractionRegime.MidCellView
+                MixedSubtractionRegime.NonZeroBothIndices
+                for element in mixedElementKinds do
+                    MixedSubtractionRegime.Element element.Name
+            ]
+
+        for regime in required do
+            if coverage.Count regime = 0 then
+                failwith $"generator missed the regime %A{regime}; reached %A{coverage.Reached}"
 
     [<Test>]
     let ``cross-storage byte offsets are generated anti-symmetric for all byte storage identities`` () : unit =
-        let mutable arrayCases = 0
-        let mutable stringCases = 0
-        let mutable stackMemoryCases = 0
-        let mutable stackLocalCases = 0
-        let mutable stackArgumentCases = 0
-
-        let touchesKind (kind : string) (case : CrossStorageCase) : bool =
-            case.OriginKind = kind || case.TargetKind = kind
-
-        let property (case : CrossStorageCase) : bool =
-            if touchesKind "array" case then
-                arrayCases <- arrayCases + 1
-
-            if touchesKind "string" case then
-                stringCases <- stringCases + 1
-
-            if touchesKind "local-memory" case then
-                stackMemoryCases <- stackMemoryCases + 1
-
-            if touchesKind "stack-local" case then
-                stackLocalCases <- stackLocalCases + 1
-
-            if touchesKind "stack-argument" case then
-                stackArgumentCases <- stackArgumentCases + 1
+        let property (cover : string -> unit) (case : CrossStorageCase) : bool =
+            cover case.OriginKind
+            cover case.TargetKind
 
             let forward =
                 NativeIntSource.syntheticCrossStorageByteOffset
@@ -1849,17 +1867,12 @@ module TestBinaryArithmetic =
 
             true
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genCrossStorageCase) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genCrossStorageCase) property
 
-        if
-            arrayCases = 0
-            || stringCases = 0
-            || stackMemoryCases = 0
-            || stackLocalCases = 0
-            || stackArgumentCases = 0
-        then
-            failwith
-                $"generator missed required storage identities: array=%d{arrayCases}, string=%d{stringCases}, local-memory=%d{stackMemoryCases}, stack-local=%d{stackLocalCases}, stack-argument=%d{stackArgumentCases}"
+        for kind in [ "array" ; "string" ; "local-memory" ; "stack-local" ; "stack-argument" ] do
+            if coverage.Count kind = 0 then
+                failwith $"generator missed the storage identity %s{kind}; reached %A{coverage.Reached |> List.sort}"
 
     // The following tests cover the BCL's portable wraparound idiom from
     // UnmanagedMemoryStream.Initialize: `((byte*)((long)pointer + capacity)) < pointer`

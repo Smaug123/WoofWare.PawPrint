@@ -2011,7 +2011,15 @@ module UnixDescriptor =
                 |> List.exists (fun (_, ended) ->
                     match ended with
                     | ParkedSyscall.PipeWrite write -> write.Written > 0
-                    | ParkedSyscall.ConnectionWrite write -> write.Written > 0
+                    // A `send` marks nothing, ended or not (measured,
+                    // `tcp-recv-send.c` section W).
+                    | ParkedSyscall.ConnectionWrite write ->
+                        write.Written > 0
+                        && (
+                            match write.Call with
+                            | TcpSendCall.Write -> true
+                            | TcpSendCall.Send _ -> false
+                        )
                     | ParkedSyscall.ConnectionRead _
                     | ParkedSyscall.PipeRead _
                     | ParkedSyscall.Accept _

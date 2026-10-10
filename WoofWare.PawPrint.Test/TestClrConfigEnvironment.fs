@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
+open WoofWare.PosixKernel.Test
 
 /// How CLRConfig reads a knob out of the environment, which differs from a plain
 /// lookup once the environment holds an empty entry: `CLRConfig::Initialize`'s
@@ -139,24 +140,30 @@ module TestClrConfigEnvironment =
         | Some value -> Some value
         | None -> tryVariable ("COMPlus_" + name)
 
+    /// Whether a plain lookup finds the knob.
+    [<RequireQualifiedAccess>]
+    type private Lookup =
+        | Found
+        | Unset
+
     [<Test>]
     let ``without an empty entry the cache never changes an answer`` () : unit =
-        let mutable found = 0
-
-        let property (entries : string list, name : string) : unit =
+        let property (cover : Lookup -> unit) (entries : string list, name : string) : unit =
             let environment = environmentOf entries
             let expected = lookUpInFull environment name
 
-            if expected.IsSome then
-                found <- found + 1
+            cover (if expected.IsSome then Lookup.Found else Lookup.Unset)
 
             ClrConfigEnvironment.tryGetValue "test" environment name |> shouldEqual expected
 
         let gen =
             Gen.zip (Gen.listOf genEntry) (Gen.elements [ "A" ; "B" ; "PROCESSOR_COUNT" ; "XR" ; "DisableConfigCache" ])
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
-        found > 100 |> shouldEqual true
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen gen) property
+
+        // Counted over a fixed sample: a run cannot fall short by chance.
+        coverage.Count Lookup.Found > 100 |> shouldEqual true
 
     [<Test>]
     let ``with the cache disabled every knob is looked up in full`` () : unit =

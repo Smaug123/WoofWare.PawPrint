@@ -87,13 +87,21 @@ module TestUnixProcessState =
                 |> Gen.map (List.toArray >> ofBytes)
             ]
 
+    /// The environments a run must set.
+    [<RequireQualifiedAccess>]
+    type private EnvironmentLabel =
+        /// An environment that holds some entry twice.
+        | WithDuplicates
+
     [<Test>]
     let ``the environment is exactly the entries it was set to, in order`` () : unit =
         // Replacement, not an overlay: whatever the process held before is gone,
         // and nothing is merged, sorted or de-duplicated.
-        let mutable withDuplicates = 0
-
-        let property (before : UnixByteString list, after : UnixByteString list) : unit =
+        let property
+            (cover : EnvironmentLabel -> unit)
+            (before : UnixByteString list, after : UnixByteString list)
+            : unit
+            =
             let system =
                 image
                 |> (Launched.bootWith
@@ -106,13 +114,16 @@ module TestUnixProcessState =
             system.Process.Environment |> shouldEqual after
 
             if List.length (List.distinct after) < List.length after then
-                withDuplicates <- withDuplicates + 1
+                cover EnvironmentLabel.WithDuplicates
 
         let gen = Gen.zip (Gen.listOf genEntry) (Gen.listOf genEntry)
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen gen) property)
 
-        // Duplicates are the case a map would silently collapse.
-        withDuplicates > 20 |> shouldEqual true
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 500) (Arb.fromGen gen) property
+
+        // Duplicates are the case a map would silently collapse; the fixed
+        // sample must hold them.
+        coverage.Count EnvironmentLabel.WithDuplicates > 20 |> shouldEqual true
 
     [<Test>]
     let ``a forged entry is refused under the caller's name for it`` () : unit =

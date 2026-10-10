@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// `ceqNormalised` is the single place three boundaries — `ceq` on byrefs,
 /// `Unsafe.AreSame`, and pointer comparison in `NativeIntSource` — decide whether two
@@ -643,12 +644,15 @@ module TestByrefComparison =
             | ByrefProjection.ReinterpretAs _ -> 0I
         )
 
+    /// What a pair of chains must sometimes be for the displacement property to mean anything.
+    [<RequireQualifiedAccess>]
+    type private ChainPairRegime =
+        | SameAddress
+        | OutsideInt32
+
     [<Test>]
     let ``two byte cursors on one root compare equal exactly when their displacements agree`` () =
-        let mutable equalAnswers = 0
-        let mutable outsideInt32 = 0
-
-        let property =
+        let property (cover : ChainPairRegime -> unit) : Property =
             Prop.forAll
                 (Arb.fromGen genChainPair)
                 (fun (projs1, projs2) ->
@@ -660,24 +664,25 @@ module TestByrefComparison =
                     |> shouldEqual expected
 
                     if expected then
-                        equalAnswers <- equalAnswers + 1
+                        cover ChainPairRegime.SameAddress
 
                     let leavesInt32 (d : bigint) : bool =
                         d < bigint System.Int32.MinValue || d > bigint System.Int32.MaxValue
 
                     if leavesInt32 displacement1 || leavesInt32 displacement2 then
-                        outsideInt32 <- outsideInt32 + 1
+                        cover ChainPairRegime.OutsideInt32
                 )
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 5000, property)
+        let coverage =
+            CoverageSample.checkProperty (Config.QuickThrowOnFailure.WithMaxTest 5000) property
 
         // Both halves must occur, or the law is only being checked on one branch.
-        if equalAnswers = 0 then
+        if coverage.Count ChainPairRegime.SameAddress = 0 then
             failwith "property never generated a pair of chains at the same address"
 
         // The inputs an `int` fold cannot serve at all. Without them the property would pass
         // against the accumulator it exists to reject.
-        if outsideInt32 = 0 then
+        if coverage.Count ChainPairRegime.OutsideInt32 = 0 then
             failwith "property never generated a chain whose displacement leaves int32 range"
 
     /// The other end of the same limit, and the reason the chains above are built by hand.

@@ -383,45 +383,47 @@ module TestMultiProcessFuzz =
                 }
         }
 
-    /// How often each path the property exists for was reached.
-    type private Coverage =
-        {
-            mutable CrossConnects : int
-            mutable CrossAddressInUse : int
-            mutable Accepts : int
-            mutable CrossRmDirOfStanding : int
-            mutable EpollAdds : int
-            mutable KeventAdds : int
-            mutable Parks : int
-            /// A call in one process that made a call asleep in another wakeable.
-            mutable CrossWakes : int
-            /// How many of those each kind of wake condition woke.
-            mutable CrossWakeKinds : Map<string, int>
-            /// A finish that answered, in a process other than the one whose
-            /// call made it wakeable.
-            mutable Finishes : int
-            mutable DarwinPollParks : int
-            mutable KeventParks : int
-            mutable Exits : int
-            mutable ExitRefusals : int
-            /// A read that took bytes another process's socket had written.
-            mutable CrossReads : int
-            /// A write that took fewer bytes than offered, or none (`EAGAIN`).
-            mutable ShortWrites : int
-            /// A read or write that met a reset (`ECONNRESET` or `EPIPE`).
-            mutable Resets : int
-            /// A read that met end of file.
-            mutable EndsOfFile : int
-            /// A blocking read of a connected socket that slept.
-            mutable ConnectionReadParks : int
-            /// A blocking write to a connected socket that slept, having taken
-            /// part of its bytes or none.
-            mutable ConnectionWriteParks : int
-            /// A finished connection transfer that answered.
-            mutable ConnectionFinishes : int
-            mutable Refusals : int
-            mutable Calls : int
-        }
+    /// The paths the property exists for, each counted every time a step
+    /// reaches it.
+    [<RequireQualifiedAccess>]
+    type private FuzzLabel =
+        | CrossConnect
+        | CrossAddressInUse
+        | Accept
+        | CrossRmDirOfStanding
+        | EpollAdd
+        | KeventAdd
+        | Park
+        /// A call in one process that made a call asleep in another wakeable.
+        | CrossWake
+        /// A wake condition of this kind, named by its case, that such a call
+        /// fired.
+        | CrossWakeKind of string
+        /// A finish that answered, in a process other than the one whose call
+        /// made it wakeable.
+        | Finish
+        | DarwinPollPark
+        | KeventPark
+        | Exit
+        | ExitRefusal
+        /// A read that took bytes another process's socket had written.
+        | CrossRead
+        /// A write that took fewer bytes than offered, or none (`EAGAIN`).
+        | ShortWrite
+        /// A read or write that met a reset (`ECONNRESET` or `EPIPE`).
+        | Reset
+        /// A read that met end of file.
+        | EndOfFile
+        /// A blocking read of a connected socket that slept.
+        | ConnectionReadPark
+        /// A blocking write to a connected socket that slept, having taken
+        /// part of its bytes or none.
+        | ConnectionWritePark
+        /// A finished connection transfer that answered.
+        | ConnectionFinish
+        /// A step refused, which tested nothing.
+        | Refusal
+        | Call
 
     let private fdsOf (view : UnixSystem<int, string>) : Map<int, OpenFileTarget> =
         let registry = UnixSystemState.fileDescriptors view
@@ -645,7 +647,7 @@ module TestMultiProcessFuzz =
     /// One call by `task` of the process `pid`, in its view `view`, on `machine`
     /// as it stood before.
     let private call
-        (coverage : Coverage)
+        (cover : FuzzLabel -> unit)
         (machine : SimulatedMachine<int, string>)
         (pid : ProcessId)
         (task : int)
@@ -665,7 +667,7 @@ module TestMultiProcessFuzz =
             match UnixPoll.poll task entries milliseconds view with
             | Ok (PollOutcome.WouldBlock _, after) ->
                 match SimulatedUnixPlatform.flavour view.Machine.UnixPlatform with
-                | SimulatedUnixFlavour.Darwin -> coverage.DarwinPollParks <- coverage.DarwinPollParks + 1
+                | SimulatedUnixFlavour.Darwin -> cover FuzzLabel.DarwinPollPark
                 | SimulatedUnixFlavour.Linux -> ()
 
                 Made.Sleeps after
@@ -684,19 +686,19 @@ module TestMultiProcessFuzz =
             match UnixReadWrite.read task fd UserBuffer.Mapped (uint64 size) view with
             | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
                 if not bytes.IsEmpty && writer.IsSome && writer <> Some pid then
-                    coverage.CrossReads <- coverage.CrossReads + 1
+                    cover FuzzLabel.CrossRead
 
                 if bytes.IsEmpty && size > 0 then
-                    coverage.EndsOfFile <- coverage.EndsOfFile + 1
+                    cover FuzzLabel.EndOfFile
 
                 Made.Answered after
             | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.ECONNRESET), after)
             | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EPIPE), after) ->
-                coverage.Resets <- coverage.Resets + 1
+                cover FuzzLabel.Reset
                 Made.Answered after
             | Ok (ReadOutcome.Answered (ReadAnswer.Failed UnixError.EAGAIN), after) -> Made.Answered after
             | Ok (ReadOutcome.WouldBlock _, after) ->
-                coverage.ConnectionReadParks <- coverage.ConnectionReadParks + 1
+                cover FuzzLabel.ConnectionReadPark
                 Made.Sleeps after
             | Ok (outcome, _) -> failwith $"a read of a connected socket answered %A{outcome}"
             | Error refusal -> failwith $"a read of a connected socket was refused: %s{ReadRefusal.describe refusal}"
@@ -708,19 +710,19 @@ module TestMultiProcessFuzz =
             match WriteOutcomes.admitThenWrite task fd UserBuffer.Mapped bytes view with
             | Ok (WriteOutcome.Returns (WriteAnswer.Completed written, after)) ->
                 if written < int64 size then
-                    coverage.ShortWrites <- coverage.ShortWrites + 1
+                    cover FuzzLabel.ShortWrite
 
                 Made.Answered after
             | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EAGAIN, after)) ->
-                coverage.ShortWrites <- coverage.ShortWrites + 1
+                cover FuzzLabel.ShortWrite
                 Made.Answered after
             | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.ECONNRESET, _))
             | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, _, _))
             | Ok (WriteOutcome.ProcessEnded _) as outcome ->
-                coverage.Resets <- coverage.Resets + 1
+                cover FuzzLabel.Reset
                 ofWrite outcome
             | Ok (WriteOutcome.WouldBlock (_, after)) ->
-                coverage.ConnectionWriteParks <- coverage.ConnectionWriteParks + 1
+                cover FuzzLabel.ConnectionWritePark
                 Made.Sleeps after
             | Ok outcome -> failwith $"a write to a connected socket answered %A{outcome}"
             | Error refusal -> failwith $"a write to a connected socket was refused: %s{WriteRefusal.describe refusal}"
@@ -743,7 +745,7 @@ module TestMultiProcessFuzz =
                 with
                 | Ok (BindAnswer.Failed UnixError.EADDRINUSE, after) ->
                     if not (holdsPort port view) then
-                        coverage.CrossAddressInUse <- coverage.CrossAddressInUse + 1
+                        cover FuzzLabel.CrossAddressInUse
 
                     Made.Answered after
                 | Ok (_, after) -> Made.Answered after
@@ -771,7 +773,7 @@ module TestMultiProcessFuzz =
                     match outcome, owner with
                     | ConnectOutcome.Completed, Some owner
                     | ConnectOutcome.Failed UnixError.EINPROGRESS, Some owner when owner <> pid ->
-                        coverage.CrossConnects <- coverage.CrossConnects + 1
+                        cover FuzzLabel.CrossConnect
                     | _ -> ()
 
                     Made.Answered after
@@ -782,7 +784,7 @@ module TestMultiProcessFuzz =
             | Some fd ->
                 match UnixConnection.accept task fd UserBuffer.Mapped 16u view with
                 | Ok (AcceptOutcome.Accepted _, after) ->
-                    coverage.Accepts <- coverage.Accepts + 1
+                    cover FuzzLabel.Accept
                     Made.Answered after
                 | Ok (AcceptOutcome.WouldBlock _, after) -> Made.Sleeps after
                 | Ok (_, after) -> Made.Answered after
@@ -878,7 +880,7 @@ module TestMultiProcessFuzz =
                     |> Map.exists (fun other slot -> other <> pid && Some slot.Process.CurrentDirectoryInode = inode)
 
                 if standsElsewhere then
-                    coverage.CrossRmDirOfStanding <- coverage.CrossRmDirOfStanding + 1
+                    cover FuzzLabel.CrossRmDirOfStanding
 
                 Made.Answered after
             | Ok (_, after) -> Made.Answered after
@@ -909,7 +911,7 @@ module TestMultiProcessFuzz =
                         view
                 with
                 | Ok (EpollCtlAnswer.Changed, after) ->
-                    coverage.EpollAdds <- coverage.EpollAdds + 1
+                    cover FuzzLabel.EpollAdd
                     Made.Answered after
                 | Ok (_, after) -> Made.Answered after
                 | Error _ -> Made.Refused
@@ -940,7 +942,7 @@ module TestMultiProcessFuzz =
                         view
                 with
                 | Ok (KeventOutcome.Answered [], after) ->
-                    coverage.KeventAdds <- coverage.KeventAdds + 1
+                    cover FuzzLabel.KeventAdd
                     Made.Answered after
                 | Ok (KeventOutcome.WouldBlock condition, _) -> failwith $"kevent with no room parked on %A{condition}"
                 | Ok (_, after) -> Made.Answered after
@@ -958,7 +960,7 @@ module TestMultiProcessFuzz =
 
                 match UnixKqueue.kevent task kqueue 0 [] 8 UserBuffer.Mapped timeout view with
                 | Ok (KeventOutcome.WouldBlock _, after) ->
-                    coverage.KeventParks <- coverage.KeventParks + 1
+                    cover FuzzLabel.KeventPark
                     Made.Sleeps after
                 | Ok (_, after) -> Made.Answered after
                 | Error _ -> Made.Refused
@@ -995,7 +997,7 @@ module TestMultiProcessFuzz =
         | Op.Exit status -> Made.Ended (UnixTaskLifecycle.exitGroup task status view)
 
     /// The call `task` of the view `view` is asleep in, finished.
-    let private finish (coverage : Coverage) (task : int) (view : UnixSystem<int, string>) : Made =
+    let private finish (cover : FuzzLabel -> unit) (task : int) (view : UnixSystem<int, string>) : Made =
         match UnixTaskTable.parkedFor task view.Tasks with
         | Some (ParkedSyscall.Accept _) ->
             match UnixConnection.finishAccept task view with
@@ -1032,7 +1034,7 @@ module TestMultiProcessFuzz =
             match UnixReadWrite.finishRead task view with
             | Ok (ReadOutcome.WouldBlock _, after) -> Made.Sleeps after
             | Ok (_, after) ->
-                coverage.ConnectionFinishes <- coverage.ConnectionFinishes + 1
+                cover FuzzLabel.ConnectionFinish
                 Made.Answered after
             | Error _ -> Made.Refused
         | Some (ParkedSyscall.PipeWrite _)
@@ -1058,7 +1060,7 @@ module TestMultiProcessFuzz =
                 | Ok (WriteOutcome.ProcessEnded ended) -> Made.Ended ended
 
             match made with
-            | Made.Answered _ when connection -> coverage.ConnectionFinishes <- coverage.ConnectionFinishes + 1
+            | Made.Answered _ when connection -> cover FuzzLabel.ConnectionFinish
             | _ -> ()
 
             made
@@ -1138,17 +1140,24 @@ module TestMultiProcessFuzz =
 
     /// `made`, by `task` of `pid`, written into `world`: a view written back,
     /// the task asleep, or the process ended.
-    let private settle (coverage : Coverage) (pid : ProcessId) (task : int) (made : Made) (world : World) : World =
+    let private settle
+        (cover : FuzzLabel -> unit)
+        (pid : ProcessId)
+        (task : int)
+        (made : Made)
+        (world : World)
+        : World
+        =
         match made with
         | Made.Refused ->
-            coverage.Refusals <- coverage.Refusals + 1
+            cover FuzzLabel.Refusal
             world
         | Made.Answered view ->
             { world with
                 Machine = SimulatedMachine.unfocus view world.Machine
             }
         | Made.Sleeps view ->
-            coverage.Parks <- coverage.Parks + 1
+            cover FuzzLabel.Park
 
             { world with
                 Machine = SimulatedMachine.unfocus view world.Machine
@@ -1157,10 +1166,10 @@ module TestMultiProcessFuzz =
         | Made.Ended ended ->
             match SimulatedMachine.endProcess ended world.Machine with
             | Error _ ->
-                coverage.ExitRefusals <- coverage.ExitRefusals + 1
+                cover FuzzLabel.ExitRefusal
                 world
             | Ok (_, machine) ->
-                coverage.Exits <- coverage.Exits + 1
+                cover FuzzLabel.Exit
                 othersUnmoved pid world.Machine machine
                 machine.Processes.ContainsKey pid |> shouldEqual false
 
@@ -1171,7 +1180,7 @@ module TestMultiProcessFuzz =
                     Woken = world.Woken |> List.filter (fun (owner, _) -> owner <> pid)
                 }
 
-    let private step (coverage : Coverage) (world : World) (next : Step) : World =
+    let private step (cover : FuzzLabel -> unit) (world : World) (next : Step) : World =
         match next with
         | Step.Advance milliseconds ->
             match world.Live with
@@ -1219,21 +1228,21 @@ module TestMultiProcessFuzz =
                 let before = world.Machine
 
                 let made =
-                    finish coverage task (SimulatedMachine.focus pid world.Machine |> Option.get)
+                    finish cover task (SimulatedMachine.focus pid world.Machine |> Option.get)
 
                 match made with
                 | Made.Refused ->
-                    coverage.Refusals <- coverage.Refusals + 1
+                    cover FuzzLabel.Refusal
                     // Left woken, for a later pass.
                     { world with
                         Woken = world.Woken @ [ pid, task ]
                     }
                 | made ->
                     match made with
-                    | Made.Answered _ -> coverage.Finishes <- coverage.Finishes + 1
+                    | Made.Answered _ -> cover FuzzLabel.Finish
                     | _ -> ()
 
-                    let world = settle coverage pid task made world
+                    let world = settle cover pid task made world
 
                     // A finish whose process's end was refused leaves the task
                     // parked, woken still, for a later pass.
@@ -1265,7 +1274,7 @@ module TestMultiProcessFuzz =
                 world
             else
 
-            coverage.Calls <- coverage.Calls + 1
+            cover FuzzLabel.Call
             let before = world.Machine
             let view = SimulatedMachine.focus pid before |> Option.get
             let beforeFds = fdsOf view |> Map.keys |> Set.ofSeq
@@ -1276,7 +1285,7 @@ module TestMultiProcessFuzz =
                 |> Map.keys
                 |> Set.ofSeq
 
-            let world = settle coverage pid task (call coverage before pid task op view) world
+            let world = settle cover pid task (call cover before pid task op view) world
 
             // A call in this process, its end included, that made a call
             // asleep in another wakeable.
@@ -1285,15 +1294,13 @@ module TestMultiProcessFuzz =
                 |> Map.filter (fun (owner, _ as key) _ -> owner <> pid && not (Set.contains key othersWakeable))
 
             if not newlyWakeable.IsEmpty then
-                coverage.CrossWakes <- coverage.CrossWakes + 1
+                cover FuzzLabel.CrossWake
 
                 for KeyValue (_, fired) in newlyWakeable do
                     for primitive in fired do
                         let kind = (sprintf "%A" primitive).Split(' ').[0]
 
-                        coverage.CrossWakeKinds <-
-                            coverage.CrossWakeKinds
-                            |> Map.change kind (fun count -> Some (1 + Option.defaultValue 0 count))
+                        cover (FuzzLabel.CrossWakeKind kind)
 
             match Map.tryFind pid world.Machine.Processes with
             | None -> world
@@ -1381,7 +1388,7 @@ module TestMultiProcessFuzz =
             |> UnixBootImage.withTcpReceiveSpace (Some UnixMachineState.darwinLoopbackReceivePipe)
             |> Configured.expectOk TcpReceiveSpaceRefusal.describe
 
-    let private run (coverage : Coverage) (case : Case) : unit =
+    let private run (cover : FuzzLabel -> unit) (case : Case) : unit =
         let pids, machine =
             Machines.withTasksOn smallBuffers case.Platform case.Processes tasks
 
@@ -1432,7 +1439,7 @@ module TestMultiProcessFuzz =
 
         (world, case.Steps)
         ||> List.fold (fun world next ->
-            let world = step coverage world next
+            let world = step cover world next
             assertClean world.Machine
             world
         )
@@ -1443,64 +1450,39 @@ module TestMultiProcessFuzz =
         ()
         : unit
         =
-        let coverage =
-            {
-                CrossConnects = 0
-                CrossAddressInUse = 0
-                Accepts = 0
-                CrossRmDirOfStanding = 0
-                EpollAdds = 0
-                KeventAdds = 0
-                Parks = 0
-                CrossWakes = 0
-                CrossWakeKinds = Map.empty
-                Finishes = 0
-                DarwinPollParks = 0
-                KeventParks = 0
-                Exits = 0
-                ExitRefusals = 0
-                CrossReads = 0
-                ShortWrites = 0
-                Resets = 0
-                EndsOfFile = 0
-                ConnectionReadParks = 0
-                ConnectionWriteParks = 0
-                ConnectionFinishes = 0
-                Refusals = 0
-                Calls = 0
-            }
-
         // 1500 cases, because the cases biased towards transfers leave fewer
         // steps for the rest, and 1000 reached the rarest of the paths below
         // too seldom for its bound to be safe.
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1500, Prop.forAll (Arb.fromGen caseGen) (run coverage))
-        printfn $"%A{coverage}"
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1500) (Arb.fromGen caseGen) run
 
-        // The paths the property exists for, each reached often enough that a
-        // generator regression shows here rather than as a silently weaker
-        // test: about a third of the median over 60 seeded runs.
-        coverage.CrossConnects |> shouldBeGreaterThan 840
-        coverage.CrossAddressInUse |> shouldBeGreaterThan 173
-        coverage.Accepts |> shouldBeGreaterThan 476
-        coverage.CrossRmDirOfStanding |> shouldBeGreaterThan 113
-        coverage.EpollAdds |> shouldBeGreaterThan 152
-        coverage.KeventAdds |> shouldBeGreaterThan 222
-        coverage.Parks |> shouldBeGreaterThan 1942
-        coverage.DarwinPollParks |> shouldBeGreaterThan 170
-        coverage.KeventParks |> shouldBeGreaterThan 196
-        coverage.Finishes |> shouldBeGreaterThan 569
-        coverage.Exits |> shouldBeGreaterThan 74
-        coverage.CrossWakes |> shouldBeGreaterThan 610
-        coverage.CrossReads |> shouldBeGreaterThan 418
-        coverage.ShortWrites |> shouldBeGreaterThan 113
-        coverage.Resets |> shouldBeGreaterThan 140
-        coverage.EndsOfFile |> shouldBeGreaterThan 277
-        coverage.ConnectionReadParks |> shouldBeGreaterThan 180
-        coverage.ConnectionWriteParks |> shouldBeGreaterThan 112
-        coverage.ConnectionFinishes |> shouldBeGreaterThan 68
+        // The paths the property exists for, each reached by the fixed sample
+        // often enough that a generator regression shows here rather than as a
+        // silently weaker test. Each floor is about a third of the median over
+        // 60 seeded runs, so a change that reshuffles the sample keeps meeting
+        // it.
+        coverage.Count FuzzLabel.CrossConnect |> shouldBeGreaterThan 840
+        coverage.Count FuzzLabel.CrossAddressInUse |> shouldBeGreaterThan 173
+        coverage.Count FuzzLabel.Accept |> shouldBeGreaterThan 476
+        coverage.Count FuzzLabel.CrossRmDirOfStanding |> shouldBeGreaterThan 113
+        coverage.Count FuzzLabel.EpollAdd |> shouldBeGreaterThan 152
+        coverage.Count FuzzLabel.KeventAdd |> shouldBeGreaterThan 222
+        coverage.Count FuzzLabel.Park |> shouldBeGreaterThan 1942
+        coverage.Count FuzzLabel.DarwinPollPark |> shouldBeGreaterThan 170
+        coverage.Count FuzzLabel.KeventPark |> shouldBeGreaterThan 196
+        coverage.Count FuzzLabel.Finish |> shouldBeGreaterThan 569
+        coverage.Count FuzzLabel.Exit |> shouldBeGreaterThan 74
+        coverage.Count FuzzLabel.CrossWake |> shouldBeGreaterThan 610
+        coverage.Count FuzzLabel.CrossRead |> shouldBeGreaterThan 418
+        coverage.Count FuzzLabel.ShortWrite |> shouldBeGreaterThan 113
+        coverage.Count FuzzLabel.Reset |> shouldBeGreaterThan 140
+        coverage.Count FuzzLabel.EndOfFile |> shouldBeGreaterThan 277
+        coverage.Count FuzzLabel.ConnectionReadPark |> shouldBeGreaterThan 180
+        coverage.Count FuzzLabel.ConnectionWritePark |> shouldBeGreaterThan 112
+        coverage.Count FuzzLabel.ConnectionFinish |> shouldBeGreaterThan 68
 
         let crossWakes (kind : string) : int =
-            Map.tryFind kind coverage.CrossWakeKinds |> Option.defaultValue 0
+            coverage.Count (FuzzLabel.CrossWakeKind kind)
 
         crossWakes "AcceptQueueNonEmpty" |> shouldBeGreaterThan 206
         crossWakes "EpollEventDeliverable" |> shouldBeGreaterThan 73
@@ -1510,5 +1492,7 @@ module TestMultiProcessFuzz =
         crossWakes "DescriptorReady" |> shouldBeGreaterThan 56
         crossWakes "ConnectionReadable" |> shouldBeGreaterThan 52
         crossWakes "ConnectionWritable" |> shouldBeGreaterThan 73
-        // Refusals are steps that tested nothing; they must stay rare.
-        coverage.Refusals * 10 |> shouldBeSmallerThan coverage.Calls
+        // Refusals are steps that tested nothing; they must stay rare in the
+        // fixed sample.
+        coverage.Count FuzzLabel.Refusal * 10
+        |> shouldBeSmallerThan (coverage.Count FuzzLabel.Call)

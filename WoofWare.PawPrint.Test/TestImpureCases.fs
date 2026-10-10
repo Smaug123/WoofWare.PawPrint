@@ -390,26 +390,6 @@ module TestImpureCases =
             // ordering, not anything about the current directory. `TestAbsoluteUnixPath` covers the UTF-8 encoding of
             // such a path directly in the meantime.
             currentDirectoryCase "/héllo/中文/🐶"
-            {
-                // Managed async connect, accept, send and receive over loopback on a
-                // Darwin kernel. Parked: the connect and the accept work
-                // (`SocketAsyncConnectDarwin.cs` carries them), but the send and
-                // receive need data transfer on a connection -- SystemNative_Send
-                // and SystemNative_Receive, and a receive path in the kernel --
-                // which this kernel does not model: it stops at "Unimplemented
-                // native method ... SystemNative_Receive" (measured). Un-park when
-                // it does.
-                FileName = "SocketAsyncSendReceiveDarwin.cs"
-                ExpectedReturnCode = 0
-                KernelConfig =
-                    { KernelConfig.Default with
-                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
-                    }
-                AppContext = AppContextProperties.empty
-                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
-                ExpectsUnhandledException = false
-                AssertTerminalState = None
-            }
         ]
 
     /// Is this the concrete handle for `System.Runtime.ExceptionServices.ExceptionDispatchInfo`?
@@ -1290,6 +1270,75 @@ module TestImpureCases =
             AssertTerminalState = Some (fun state -> SignalState.pending state.Kernel.Signals |> shouldEqual [])
         }
 
+    /// `SocketSendReceive.cs` under `platform`: the synchronous Socket API and
+    /// hand-rolled P/Invokes of `SystemNative_Receive`, `SystemNative_Send`,
+    /// `SystemNative_GetBytesAvailable`, `SystemNative_Read` and
+    /// `SystemNative_Write` over a loopback connection, including a blocking
+    /// peek and receive on a second thread. Compared against the real runtime
+    /// on a host of the same flavour: it asserts counts, bytes and PAL errors,
+    /// on which the flavours agree.
+    let private socketSendReceiveCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        {
+            FileName = "SocketSendReceive.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            // No transfer is left asleep: the blocking peek and receive the
+            // worker thread made have both returned. (The SocketAsyncEngine's
+            // thread sleeps in its wait for events, as it always does.)
+            AssertTerminalState =
+                Some (fun state ->
+                    state.Kernel.Tasks
+                    |> Map.toList
+                    |> List.choose (fun (thread, task) ->
+                        match UnixTaskState.park task |> Option.map (fun park -> park.Syscall) with
+                        | Some (ParkedSyscall.ConnectionRead _ as parked)
+                        | Some (ParkedSyscall.ConnectionWrite _ as parked) -> Some (thread, parked)
+                        | Some _
+                        | None -> None
+                    )
+                    |> shouldEqual []
+                )
+        }
+
+    /// `NetworkStreamAsync.cs` under `platform`: NetworkStream's `ReadAsync`
+    /// and `WriteAsync` over a loopback connection, through the
+    /// SocketAsyncEngine's epoll port or kqueue. The TCP buffers are as small
+    /// as the flavour admits, so that its 200000 bytes outgrow them and the
+    /// writer waits for room. Compared against the real runtime on a host of
+    /// the same flavour, whose buffers are the defaults: it asserts only the
+    /// bytes, which no buffer size changes.
+    let private networkStreamAsyncCase (platform : SimulatedUnixPlatform) : EndToEndTestCase =
+        let config =
+            match SimulatedUnixPlatform.flavour platform with
+            | SimulatedUnixFlavour.Linux ->
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                    TcpSendSpaceMax = Some 30000
+                    TcpReceiveSpace = Some 10000
+                }
+            | SimulatedUnixFlavour.Darwin ->
+                { KernelConfig.Default with
+                    UnixPlatform = platform
+                    TcpSendSpace = Some UnixMachineState.darwinLoopbackSendPipe
+                    TcpReceiveSpace = Some UnixMachineState.darwinLoopbackReceivePipe
+                }
+
+        {
+            FileName = "NetworkStreamAsync.cs"
+            ExpectedReturnCode = 0
+            KernelConfig = config
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+
     /// Build one registration of `PipeBrokenRaw.cs` under `platform`, whose
     /// exit code is the flavour's answer to a zero-length write with no reader:
     /// 0 on Linux, 100 (EPIPE) on Darwin. The assertion here is that none of
@@ -1649,6 +1698,27 @@ module TestImpureCases =
             pipeBrokenRawCase SimulatedUnixPlatform.macOsArm64
             socketUnconnectedTransferCase SimulatedUnixPlatform.linuxX64
             socketUnconnectedTransferCase SimulatedUnixPlatform.macOsArm64
+            socketSendReceiveCase SimulatedUnixPlatform.linuxX64
+            socketSendReceiveCase SimulatedUnixPlatform.macOsArm64
+            networkStreamAsyncCase SimulatedUnixPlatform.linuxX64
+            networkStreamAsyncCase SimulatedUnixPlatform.macOsArm64
+            {
+                // Managed async connect, accept, send and receive over loopback on a
+                // Darwin kernel: SystemNative_Send and SystemNative_Receive, with
+                // the receive issued before the send, so that it waits for
+                // SocketAsyncEngine's kqueue to report the bytes.
+                FileName = "SocketAsyncSendReceiveDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                // Compared: it asserts only the bytes.
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
             pipeReaderLeavesCase SimulatedUnixPlatform.linuxX64
             pipeReaderLeavesCase SimulatedUnixPlatform.macOsArm64
             closeEndsCallCase "CloseEndsSleepingAccept.cs" SimulatedUnixPlatform.linuxX64

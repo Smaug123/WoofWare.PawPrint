@@ -605,6 +605,17 @@ module TestFileDescriptorRegistry =
         |> List.countBy snd
         |> Map.ofList
 
+    /// The branches of the description-count walk's reference that its walks
+    /// must reach.
+    [<RequireQualifiedAccess>]
+    type private DescriptionCountLabel =
+        /// A close that left a description another descriptor names.
+        | SharedCount
+        /// A close of a description's last descriptor, which a hold keeps.
+        | SurvivedByHold
+        /// A hold's release that destroyed its description.
+        | DestroyedWhileHeldElsewhere
+
     /// Walk the table through a random sequence of every operation that makes,
     /// shares or drops a reference to a description, together with holds
     /// standing for calls in flight, and after every step compare the
@@ -615,11 +626,7 @@ module TestFileDescriptorRegistry =
         ()
         : unit
         =
-        let mutable sharedCounts = 0
-        let mutable destroyedWhileHeldElsewhere = 0
-        let mutable survivedByHold = 0
-
-        let property (seed : int) : unit =
+        let property (cover : DescriptionCountLabel -> unit) (seed : int) : unit =
             let rng = System.Random seed
             let mutable registry = LaunchedStreams.registry
             let mutable held : OpenFileDescriptionId list = []
@@ -690,8 +697,9 @@ module TestFileDescriptorRegistry =
                         | Some _ when namedElsewhere || List.contains id held ->
                             failwith $"close of fd %d{fd} destroyed %O{id}, which something else still references"
                         | Some _ -> ()
-                        | None when not namedElsewhere && List.contains id held -> survivedByHold <- survivedByHold + 1
-                        | None when namedElsewhere -> sharedCounts <- sharedCounts + 1
+                        | None when not namedElsewhere && List.contains id held ->
+                            cover DescriptionCountLabel.SurvivedByHold
+                        | None when namedElsewhere -> cover DescriptionCountLabel.SharedCount
                         | None -> failwith $"close of the last reference to %O{id} destroyed nothing"
                     | Error error -> failwith $"close of live fd %d{fd} answered %O{error}"
                 | CountStep.Hold fd ->
@@ -712,7 +720,7 @@ module TestFileDescriptorRegistry =
                     match destroyed with
                     | Some _ when (namingCounts registry).ContainsKey id || List.contains id held ->
                         failwith $"letting go of %O{id} destroyed it while something else references it"
-                    | Some _ -> destroyedWhileHeldElsewhere <- destroyedWhileHeldElsewhere + 1
+                    | Some _ -> cover DescriptionCountLabel.DestroyedWhileHeldElsewhere
                     | None -> ()
 
                 // The reference: what names each description, and what must be
@@ -740,14 +748,16 @@ module TestFileDescriptorRegistry =
 
                 FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
 
-        Check.One (propertyConfig, Prop.forAll walkSeed property)
+        let coverage = CoverageSample.check propertyConfig walkSeed property
 
-        // Each branch the reference distinguishes is reached: a close that
-        // leaves a description another descriptor names, one a hold keeps,
-        // and a hold's release that destroys.
-        sharedCounts |> shouldBeGreaterThan 0
-        survivedByHold |> shouldBeGreaterThan 0
-        destroyedWhileHeldElsewhere |> shouldBeGreaterThan 0
+        // Each branch the reference distinguishes is reached by the fixed
+        // sample: a close that leaves a description another descriptor names,
+        // one a hold keeps, and a hold's release that destroys.
+        coverage.Count DescriptionCountLabel.SharedCount |> shouldBeGreaterThan 0
+        coverage.Count DescriptionCountLabel.SurvivedByHold |> shouldBeGreaterThan 0
+
+        coverage.Count DescriptionCountLabel.DestroyedWhileHeldElsewhere
+        |> shouldBeGreaterThan 0
 
     /// The count is what decides when a description goes, so `checkInvariants`
     /// must notice one that disagrees with the descriptors, by however much.
@@ -801,6 +811,14 @@ module TestFileDescriptorRegistry =
 
         scan 0
 
+    /// What the lowest-free walk must reach.
+    [<RequireQualifiedAccess>]
+    type private LowestFreeLabel =
+        | Dup
+        | Close
+        /// A dup that filled a gap below the live maximum.
+        | HoleFill
+
     [<Test>]
     let ``dup always allocates the lowest non-negative fd not already in use`` () : unit =
         // Generate a sequence of dup and close operations against the registry,
@@ -808,11 +826,7 @@ module TestFileDescriptorRegistry =
         // dup the newly allocated fd must equal the lowest non-negative
         // integer not currently live; closes punch holes that subsequent dups
         // must fill before extending past the existing maximum.
-        let mutable observedDups = 0
-        let mutable observedCloses = 0
-        let mutable observedHoleFills = 0
-
-        let property (seed : int) : unit =
+        let property (cover : LowestFreeLabel -> unit) (seed : int) : unit =
             let rng = System.Random seed
             let steps = rng.Next (1, 30)
 
@@ -834,7 +848,7 @@ module TestFileDescriptorRegistry =
                     | Ok registry' ->
                         live <- Set.remove chosen live
                         registry <- registry'
-                        observedCloses <- observedCloses + 1
+                        cover LowestFreeLabel.Close
                     | Error e -> failwith $"unexpected close error: %O{e}"
                 else
                     let pickIndex = rng.Next (liveList.Length)
@@ -851,24 +865,32 @@ module TestFileDescriptorRegistry =
                         let liveMaxBefore = Set.maxElement live
 
                         if newFd < liveMaxBefore then
-                            observedHoleFills <- observedHoleFills + 1
+                            cover LowestFreeLabel.HoleFill
 
                         live <- Set.add newFd live
                         registry <- registry'
-                        observedDups <- observedDups + 1
+                        cover LowestFreeLabel.Dup
                     | Error e -> failwith $"unexpected dup error: %O{e}"
 
-        Check.One (propertyConfig, Prop.forAll walkSeed property)
+        let coverage = CoverageSample.check propertyConfig walkSeed property
 
-        // Distribution check: if observedHoleFills were 0, the property
-        // could be satisfied by a buggy `max + 1` implementation, so assert
-        // we observe gap-fills frequently enough that a regression would be
-        // caught. Over 5000 runs, each resampling 500 walks from 5000 seeds,
-        // a run averaged about 5400 dups and 1450 hole-fills, with a standard
-        // deviation of about 50 hole-fills; a floor of 30 sits far below that.
-        observedDups |> shouldBeGreaterThan 0
-        observedCloses |> shouldBeGreaterThan 0
-        observedHoleFills |> shouldBeGreaterThan 30
+        // Distribution check: with no hole-fills, the property could be
+        // satisfied by a buggy `max + 1` implementation, so assert the fixed
+        // sample observes gap-fills often enough that a regression would be
+        // caught. 500 walks average about 5400 dups and 1450 hole-fills, so a
+        // floor of 30 sits far below what the generator gives.
+        coverage.Count LowestFreeLabel.Dup |> shouldBeGreaterThan 0
+        coverage.Count LowestFreeLabel.Close |> shouldBeGreaterThan 0
+        coverage.Count LowestFreeLabel.HoleFill |> shouldBeGreaterThan 30
+
+    /// The two halves of the dup-ancestry equivalence, as pairs of live
+    /// descriptors the walk compared.
+    [<RequireQualifiedAccess>]
+    type private SharingLabel =
+        /// Two descriptors of one origin.
+        | SharingPair
+        /// Two descriptors of different origins.
+        | DistinctPair
 
     /// The central contract of the descriptor/description split, stated as an
     /// equivalence rather than a one-way implication: two live descriptors name
@@ -882,10 +904,7 @@ module TestFileDescriptorRegistry =
     /// chain descends from.
     [<Test>]
     let ``descriptors share a description exactly when dup-related`` () : unit =
-        let mutable observedSharingPairs = 0
-        let mutable observedDistinctPairs = 0
-
-        let property (seed : int) : unit =
+        let property (cover : SharingLabel -> unit) (seed : int) : unit =
             let rng = System.Random seed
             let steps = rng.Next (1, 30)
 
@@ -927,10 +946,10 @@ module TestFileDescriptorRegistry =
                             idA |> shouldEqual idB
 
                             if a <> b then
-                                observedSharingPairs <- observedSharingPairs + 1
+                                cover SharingLabel.SharingPair
                         else
                             idA |> shouldNotEqual idB
-                            observedDistinctPairs <- observedDistinctPairs + 1
+                            cover SharingLabel.DistinctPair
 
                 // A description exists for exactly the set of origins still
                 // reachable: nothing leaks, nothing is destroyed early.
@@ -940,13 +959,13 @@ module TestFileDescriptorRegistry =
                 |> Map.count
                 |> shouldEqual expectedDescriptions
 
-        Check.One (propertyConfig, Prop.forAll walkSeed property)
+        let coverage = CoverageSample.check propertyConfig walkSeed property
 
-        // Both halves of the equivalence must actually be exercised: without
-        // sharing pairs the "if" half is vacuous, and without distinct pairs
-        // the "only if" half is.
-        observedSharingPairs |> shouldBeGreaterThan 100
-        observedDistinctPairs |> shouldBeGreaterThan 100
+        // Both halves of the equivalence must actually be exercised by the
+        // fixed sample: without sharing pairs the "if" half is vacuous, and
+        // without distinct pairs the "only if" half is.
+        coverage.Count SharingLabel.SharingPair |> shouldBeGreaterThan 100
+        coverage.Count SharingLabel.DistinctPair |> shouldBeGreaterThan 100
 
     [<Test>]
     let ``checkInvariants rejects a descriptor naming an absent description`` () : unit =
@@ -1348,6 +1367,17 @@ module TestFileDescriptorRegistry =
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
 
+    /// The answers to `flock` acquisitions that the mutual-exclusion walk must
+    /// reach.
+    [<RequireQualifiedAccess>]
+    type private FlockLabel =
+        | Grant
+        | Refusal
+        /// A grant to a description that already held a lock.
+        | Conversion
+        /// A refusal to a description that already held a lock, which drops it.
+        | FailedConversion
+
     /// The mutual-exclusion guarantee over random operation sequences, checked
     /// against an independent model of who holds what.
     ///
@@ -1358,14 +1388,9 @@ module TestFileDescriptorRegistry =
     /// disagree with this.
     [<Test>]
     let ``flock grants exactly the requests a kernel would`` () : unit =
-        let mutable observedGrants = 0
-        let mutable observedRefusals = 0
-        let mutable observedConversions = 0
-        let mutable observedFailedConversions = 0
-
         let inodes = [| InodeNumber 1L ; InodeNumber 2L |]
 
-        let property (seed : int) : unit =
+        let property (cover : FlockLabel -> unit) (seed : int) : unit =
             let rng = System.Random seed
             let steps = rng.Next (1, 40)
 
@@ -1464,10 +1489,10 @@ module TestFileDescriptorRegistry =
                         expectedBlocked |> shouldEqual false
                         registry <- registry'
                         held <- Map.add id (inode, Some wanted) held
-                        observedGrants <- observedGrants + 1
+                        cover FlockLabel.Grant
 
                         if existing.IsSome then
-                            observedConversions <- observedConversions + 1
+                            cover FlockLabel.Conversion
                     | registry', Some FlockError.WouldBlock ->
                         expectedBlocked |> shouldEqual true
                         registry <- registry'
@@ -1480,32 +1505,32 @@ module TestFileDescriptorRegistry =
                         held <- Map.add id (inode, None) held
 
                         if existing.IsSome then
-                            observedFailedConversions <- observedFailedConversions + 1
+                            cover FlockLabel.FailedConversion
 
-                        observedRefusals <- observedRefusals + 1
+                        cover FlockLabel.Refusal
                     | _, Some e -> failwith $"unexpected flock error: %O{e}"
 
                 FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
 
-        Check.One (propertyConfig, Prop.forAll walkSeed property)
+        let coverage = CoverageSample.check propertyConfig walkSeed property
 
-        // Without refusals the exclusion rule is never exercised; without
-        // conversions the re-lock path is never exercised.
-        observedGrants |> shouldBeGreaterThan 100
-        observedRefusals |> shouldBeGreaterThan 30
-        observedConversions |> shouldBeGreaterThan 30
+        // Counted over the fixed sample. Without refusals the exclusion rule is
+        // never exercised; without conversions the re-lock path is never
+        // exercised.
+        coverage.Count FlockLabel.Grant |> shouldBeGreaterThan 100
+        coverage.Count FlockLabel.Refusal |> shouldBeGreaterThan 30
+        coverage.Count FlockLabel.Conversion |> shouldBeGreaterThan 30
         // ...and without *failed* conversions, the drop-on-failure rule is never
         // exercised: every refusal would be of a description holding nothing, for
         // which keeping and dropping are the same thing.
         //
         // The floor is much lower than its neighbours': this is the rarest event
-        // the run produces, reached by about one walk in fifteen and measured
-        // at about 37 per run against about 2200 grants, so a floor of 30 would
-        // flake; the chance that a run of 500 walks sees at most 5 is about
-        // 4e-10. One occurrence suffices — a single failed conversion diverges
-        // from the model on the next request — so this bound proves the event
-        // happens at all, not accumulates confidence.
-        observedFailedConversions |> shouldBeGreaterThan 5
+        // the walk produces, reached by about one walk in fifteen, about 37 times
+        // in 500 walks against about 2200 grants. One occurrence suffices — a
+        // single failed conversion diverges from the model on the next request —
+        // so this bound proves the event happens at all, not accumulates
+        // confidence.
+        coverage.Count FlockLabel.FailedConversion |> shouldBeGreaterThan 5
 
     [<Test>]
     let ``tryFind crashes rather than inventing a description for a dangling fd`` () : unit =
@@ -1719,6 +1744,15 @@ module TestFileDescriptorRegistry =
         |> FileDescriptorRegistry.checkInvariants
         |> shouldEqual []
 
+    /// What the random mix of allocations and closes must reach.
+    [<RequireQualifiedAccess>]
+    type private AllocationMixLabel =
+        | Socket
+        | Close
+        | Dup
+        /// A step after which two or more sockets were live.
+        | LiveSocketPair
+
     /// Every allocating operation the module offers, interleaved at random, must
     /// leave a table `checkInvariants` accepts. The duplicate-socket clause is
     /// the reason this exists in its present form: it is asserted directly above
@@ -1732,12 +1766,7 @@ module TestFileDescriptorRegistry =
     /// property.
     [<Test>]
     let ``a random mix of allocations and closes keeps the table sound`` () : unit =
-        let mutable observedSockets = 0
-        let mutable observedCloses = 0
-        let mutable observedDups = 0
-        let mutable observedLiveSocketPairs = 0
-
-        let property (seed : int) : unit =
+        let property (cover : AllocationMixLabel -> unit) (seed : int) : unit =
             let rng = System.Random seed
             let steps = rng.Next (1, 30)
 
@@ -1762,14 +1791,14 @@ module TestFileDescriptorRegistry =
                     match closeOnly live.[rng.Next live.Length] registry with
                     | Ok registry' ->
                         registry <- registry'
-                        observedCloses <- observedCloses + 1
+                        cover AllocationMixLabel.Close
                     | Error e -> failwith $"unexpected close error: %O{e}"
                 | 2
                 | 3 ->
                     match FileDescriptorRegistry.dup live.[rng.Next live.Length] registry with
                     | Ok (_, registry') ->
                         registry <- registry'
-                        observedDups <- observedDups + 1
+                        cover AllocationMixLabel.Dup
                     | Error e -> failwith $"unexpected dup error: %O{e}"
                 | 4
                 | 5 ->
@@ -1810,7 +1839,7 @@ module TestFileDescriptorRegistry =
 
                     nextSocketId <- nextSocketId + 1L
                     registry <- registry'
-                    observedSockets <- observedSockets + 1
+                    cover AllocationMixLabel.Socket
 
                 let liveSockets =
                     OpenFileTable.descriptions (FileDescriptorRegistry.openFiles registry)
@@ -1822,7 +1851,7 @@ module TestFileDescriptorRegistry =
                     )
 
                 if liveSockets.Length > 1 then
-                    observedLiveSocketPairs <- observedLiveSocketPairs + 1
+                    cover AllocationMixLabel.LiveSocketPair
 
                     // The property the duplicate clause protects, stated
                     // positively: distinct descriptions never share a socket.
@@ -1830,16 +1859,16 @@ module TestFileDescriptorRegistry =
 
                 FileDescriptorRegistry.checkInvariants registry |> shouldEqual []
 
-        Check.One (propertyConfig, Prop.forAll walkSeed property)
+        let coverage = CoverageSample.check propertyConfig walkSeed property
 
-        // Without these the run could be sound while never having exercised the
-        // operations the clauses are about.
-        observedSockets |> shouldBeGreaterThan 500
-        observedCloses |> shouldBeGreaterThan 100
-        observedDups |> shouldBeGreaterThan 100
+        // Without these the fixed sample could be sound while never having
+        // exercised the operations the clauses are about.
+        coverage.Count AllocationMixLabel.Socket |> shouldBeGreaterThan 500
+        coverage.Count AllocationMixLabel.Close |> shouldBeGreaterThan 100
+        coverage.Count AllocationMixLabel.Dup |> shouldBeGreaterThan 100
         // And specifically: two or more sockets alive at once, which is the only
         // state in which one could collide with another.
-        observedLiveSocketPairs |> shouldBeGreaterThan 500
+        coverage.Count AllocationMixLabel.LiveSocketPair |> shouldBeGreaterThan 500
 
     /// it. Reachable only through `Unchecked.ofParts`: every operation in the module maintains it.
     [<Test>]

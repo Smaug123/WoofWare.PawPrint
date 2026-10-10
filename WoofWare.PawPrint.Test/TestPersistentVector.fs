@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -41,12 +42,9 @@ module TestPersistentVector =
 
     let private regimeGen : Gen<Regime> = Gen.elements regimes
 
-    let private assertEveryRegimeSeen (seen : Collections.Generic.Dictionary<Regime, int>) : unit =
+    let private assertEveryRegimeSeen (seen : Coverage<Regime>) : unit =
         for regime in regimes do
-            let count =
-                match seen.TryGetValue regime with
-                | true, n -> n
-                | false, _ -> 0
+            let count = seen.Count regime
 
             if count < 10 then
                 failwith $"regime %A{regime} was generated only %d{count} times; the generator is not exploring it"
@@ -82,14 +80,8 @@ module TestPersistentVector =
 
     [<Test>]
     let ``Every version agrees with a mutable array snapshot taken at the same point`` () =
-        let seen = Collections.Generic.Dictionary<Regime, int> ()
-
-        let property (scenario : Scenario) : unit =
-            seen.[scenario.Regime] <-
-                (match seen.TryGetValue scenario.Regime with
-                 | true, n -> n
-                 | false, _ -> 0)
-                + 1
+        let property (cover : Regime -> unit) (scenario : Scenario) : unit =
+            cover scenario.Regime
 
             let initial = PersistentVector.ofArray scenario.Source
             let reference = Array.copy scenario.Source
@@ -125,8 +117,10 @@ module TestPersistentVector =
                     vector.[snapshot.Length - 1] |> shouldEqual snapshot.[snapshot.Length - 1]
 
         let config = Config.QuickThrowOnFailure.WithMaxTest 300
-        Check.One (config, Prop.forAll (Arb.fromGen scenarioGen) property)
-        assertEveryRegimeSeen seen
+
+        // Counted over a fixed sample: a run cannot fall short by chance.
+        CoverageSample.check config (Arb.fromGen scenarioGen) property
+        |> assertEveryRegimeSeen
 
     [<Test>]
     let ``ofSeq and init agree with ofArray`` () =
@@ -180,11 +174,14 @@ module TestPersistentVector =
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 200, Prop.forAll (Arb.fromGen gen) property)
 
+    /// Whether the two vectors of a pair have the same contents.
+    [<RequireQualifiedAccess>]
+    type private Contents =
+        | Equal
+        | Unequal
+
     [<Test>]
     let ``Equality and hashing are structural`` () =
-        let mutable equalCases = 0
-        let mutable unequalCases = 0
-
         let gen =
             gen {
                 let! regime = regimeGen
@@ -207,16 +204,16 @@ module TestPersistentVector =
                 return source, other
             }
 
-        let property (source : int[], other : int[]) : unit =
+        let property (cover : Contents -> unit) (source : int[], other : int[]) : unit =
             let a = PersistentVector.ofArray source
             let b = PersistentVector.ofArray other
 
             if source = other then
-                equalCases <- equalCases + 1
+                cover Contents.Equal
                 a |> shouldEqual b
                 a.GetHashCode () |> shouldEqual (b.GetHashCode ())
             else
-                unequalCases <- unequalCases + 1
+                cover Contents.Unequal
                 a |> shouldNotEqual b
 
             // A replacement that is undone gives back an equal vector.
@@ -229,7 +226,12 @@ module TestPersistentVector =
                 roundTrip |> shouldEqual a
                 roundTrip.GetHashCode () |> shouldEqual (a.GetHashCode ())
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen gen) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 300) (Arb.fromGen gen) property
+
+        // Counted over a fixed sample: a run cannot fall short by chance.
+        let equalCases = coverage.Count Contents.Equal
+        let unequalCases = coverage.Count Contents.Unequal
 
         if equalCases < 30 || unequalCases < 30 then
             failwith $"saw %d{equalCases} equal and %d{unequalCases} unequal pairs; the generator is not exploring both"

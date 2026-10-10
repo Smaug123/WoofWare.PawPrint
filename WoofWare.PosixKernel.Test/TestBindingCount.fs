@@ -17,9 +17,10 @@ open WoofWare.PosixKernel
 module TestBindingCount =
 
     /// Sized for the history property's coverage guard rather than for the
-    /// property itself. The rarest thing it guards, a freeing cascade, was
-    /// measured at 22 to 28 occurrences in each of five checks of 3000 cases,
-    /// against 5 to 14 at 1000 and 0 to 7 at 300.
+    /// property itself. The rarest thing it guards, a freeing cascade, is
+    /// reached 31 times in the guard's fixed sample of 3000 cases; fresh
+    /// samples reached it 22 to 28 times in 3000, 5 to 14 in 1000 and 0 to 7 in
+    /// 300.
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 3000
 
     let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
@@ -693,15 +694,12 @@ module TestBindingCount =
 
     [<Test>]
     let ``the stored counts are the scans, and stat's link count is the measured rule, through any history`` () : unit =
-        let reached = System.Collections.Concurrent.ConcurrentDictionary<Reached, int> ()
-
-        let record (r : Reached) : unit =
-            reached.AddOrUpdate (r, 1, fun _ n -> n + 1) |> ignore<int>
-
-        let property (seed : Map<DirectoryEntryName, SeedEntry>, ops : Op list) : unit = runHistory record seed ops
+        let property (record : Reached -> unit) (seed : Map<DirectoryEntryName, SeedEntry>, ops : Op list) : unit =
+            runHistory record seed ops
 
         let gen = Gen.zip (seedGen 2) (Gen.listOf opGen)
-        Check.One (config, Prop.forAll (Arb.fromGen gen) property)
+
+        let reached = CoverageSample.check config (Arb.fromGen gen) property
 
         // Every operation the property claims to cover must actually have run,
         // or a green result says nothing about it.
@@ -723,10 +721,10 @@ module TestBindingCount =
                 Reached.ForgetCascade
                 Reached.Chmod
             ]
-            |> List.filter (fun r -> not (reached.ContainsKey r))
+            |> List.filter (fun r -> reached.Count r = 0)
 
         if not (List.isEmpty unreached) then
-            failwith $"these were never reached: %A{unreached}; reached: %A{List.ofSeq reached}"
+            failwith $"these were never reached: %A{unreached}; reached: %A{reached.Reached}"
 
     // ------------------------------------------------------ the invariant
 

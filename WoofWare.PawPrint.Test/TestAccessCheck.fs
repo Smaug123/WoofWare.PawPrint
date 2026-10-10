@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -611,43 +612,58 @@ module TestAccessCheck =
 
         targetChain |> List.forall (fun vis -> isPublic vis || assemblyScopedAllowed)
 
+    /// The reference decision for a pair of parties, by whether they are one assembly. Same
+    /// assembly is never denied.
+    [<RequireQualifiedAccess>]
+    type private ClassAccessOutcome =
+        | SameAssemblyGranted
+        | CrossAssemblyGranted
+        | CrossAssemblyDenied
+
     [<Test>]
     let ``canAccessClass agrees with the reference decision`` () : unit =
-        let sameAssemblyDenied = ref 0
-        let sameAssemblyGranted = ref 0
-        let crossAssemblyDenied = ref 0
-        let crossAssemblyGranted = ref 0
-
-        let property (accessorSpec, targetSpec) : unit =
+        let property (cover : ClassAccessOutcome -> unit) (accessorSpec, targetSpec) : unit =
             let expected = referenceClassVisible accessorSpec targetSpec
             let accessorName, _, _, _ = accessorSpec
             let targetName, _, _, _ = targetSpec
 
-            let counter =
+            let outcome =
                 match accessorName = targetName, expected with
-                | true, true -> sameAssemblyGranted
-                | true, false -> sameAssemblyDenied
-                | false, true -> crossAssemblyGranted
-                | false, false -> crossAssemblyDenied
+                | true, true -> ClassAccessOutcome.SameAssemblyGranted
+                | true, false ->
+                    failwith
+                        $"the reference denied a same-assembly access, which it never should: %A{accessorSpec} to %A{targetSpec}"
+                | false, true -> ClassAccessOutcome.CrossAssemblyGranted
+                | false, false -> ClassAccessOutcome.CrossAssemblyDenied
 
-            counter.Value <- counter.Value + 1
+            cover outcome
 
             AccessCheck.canAccessClass (toParty accessorSpec) (toParty targetSpec)
             |> shouldEqual (Ok expected)
 
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest 1000,
-            Prop.forAll (Arb.fromGen (Gen.zip partyGen partyGen)) property
-        )
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 1000)
+                (Arb.fromGen (Gen.zip partyGen partyGen))
+                property
 
-        // Same assembly is never denied, and each of the other three
-        // outcomes is well represented: around a third of the pairs are
-        // same-assembly, and a cross-assembly pair with a non-public level
-        // and no friend grant is the commonest shape.
-        sameAssemblyDenied.Value |> shouldEqual 0
-        sameAssemblyGranted.Value |> shouldBeGreaterThan 150
-        crossAssemblyGranted.Value |> shouldBeGreaterThan 100
-        crossAssemblyDenied.Value |> shouldBeGreaterThan 100
+        // Counted over a fixed sample: a run cannot miss one by chance. Each
+        // outcome is well represented: around a third of the pairs are
+        // same-assembly, and a cross-assembly pair with a non-public level and
+        // no friend grant is the commonest shape.
+        coverage.Count ClassAccessOutcome.SameAssemblyGranted |> shouldBeGreaterThan 150
+
+        coverage.Count ClassAccessOutcome.CrossAssemblyGranted
+        |> shouldBeGreaterThan 100
+
+        coverage.Count ClassAccessOutcome.CrossAssemblyDenied |> shouldBeGreaterThan 100
+
+    /// The case the method-access property must be seen to reach.
+    [<RequireQualifiedAccess>]
+    type private MethodAccessCoverage =
+        /// An assembly-scoped member on a same-assembly target that no friend
+        /// declaration would rescue.
+        | DecidedByAssemblyIdentity
 
     [<Test>]
     let ``canAccessMethod agrees with the reference decision`` () : unit =
@@ -655,9 +671,11 @@ module TestAccessCheck =
         let attrsGen : Gen<MethodAttributes> =
             Gen.elements [ MethodAttributes.Public ; MethodAttributes.Assembly ]
 
-        let decidedByAssemblyIdentity = ref 0
-
-        let property (accessorSpec, targetSpec, attrs : MethodAttributes) : unit =
+        let property
+            (cover : MethodAccessCoverage -> unit)
+            (accessorSpec, targetSpec, attrs : MethodAttributes)
+            : unit
+            =
             let accessorName, _, _, accessorIgnores = accessorSpec
             let targetName, _, targetIvt, _ = targetSpec
 
@@ -676,15 +694,18 @@ module TestAccessCheck =
                 && accessorName = targetName
                 && not friendGranted
             then
-                decidedByAssemblyIdentity.Value <- decidedByAssemblyIdentity.Value + 1
+                cover MethodAccessCoverage.DecidedByAssemblyIdentity
 
             AccessCheck.canAccessMethod (toParty accessorSpec) (toParty targetSpec) attrs
             |> shouldEqual (Ok expected)
 
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest 1000,
-            Prop.forAll (Arb.fromGen (Gen.zip3 partyGen partyGen attrsGen)) property
-        )
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 1000)
+                (Arb.fromGen (Gen.zip3 partyGen partyGen attrsGen))
+                property
 
-        // 1/2 * 1/3 * (3/4)^2 of the runs, so about 90 of 1000.
-        decidedByAssemblyIdentity.Value |> shouldBeGreaterThan 30
+        // 1/2 * 1/3 * (3/4)^2 of the cases, so about 90 of 1000, counted over
+        // a fixed sample: a run cannot miss them by chance.
+        coverage.Count MethodAccessCoverage.DecidedByAssemblyIdentity
+        |> shouldBeGreaterThan 30

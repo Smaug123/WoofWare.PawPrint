@@ -7,6 +7,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// Tests for the comparison behind the `MdUtf8String_EqualsCaseInsensitive` QCall.
 ///
@@ -280,6 +281,14 @@ module TestNativeMdUtf8String =
 
         Gen.frequency [ 4, related ; 1, independent ]
 
+    /// What the oracle answers of a pair of strings.
+    [<RequireQualifiedAccess>]
+    type private Comparison =
+        | Equal
+        /// Equal, though the strings differ.
+        | FoldedEqual
+        | SameLengthUnequal
+
     [<Test>]
     let ``agrees with OrdinalIgnoreCase away from its two known divergences`` () : unit =
         // `String.Equals(_, _, OrdinalIgnoreCase)` is an independent BCL implementation of
@@ -289,30 +298,27 @@ module TestNativeMdUtf8String =
         // the sweep above checks code unit by code unit. `genCodeUnit` excludes both, and every
         // code unit the host cases outside the runtime's Unicode, so over this alphabet the
         // oracle is exact.
-        let mutable equalCases = 0
-        let mutable foldedEqualCases = 0
-        let mutable sameLengthUnequalCases = 0
-
-        let property (left : string, right : string) : bool =
+        let property (cover : Comparison -> unit) (left : string, right : string) : bool =
             let expected = String.Equals (left, right, StringComparison.OrdinalIgnoreCase)
 
             if expected then
-                equalCases <- equalCases + 1
+                cover Comparison.Equal
 
                 if left <> right then
-                    foldedEqualCases <- foldedEqualCases + 1
+                    cover Comparison.FoldedEqual
             elif left.Length = right.Length then
-                sameLengthUnequalCases <- sameLengthUnequalCases + 1
+                cover Comparison.SameLengthUnequal
 
             NativeMdUtf8String.equalsCaseInsensitive operation (utf8 left) (utf8 right) = expected
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genPair) property)
+        let coverage = CoverageSample.check propertyConfig (Arb.fromGen genPair) property
 
-        // Distribution checks: without them the property could pass vacuously on inputs that
-        // are all trivially unequal.
-        equalCases |> shouldBeGreaterThan 100
-        foldedEqualCases |> shouldBeGreaterThan 50
-        sameLengthUnequalCases |> shouldBeGreaterThan 100
+        // Distribution checks, counted over a fixed sample so that a run cannot fall short by
+        // chance: without them the property could pass vacuously on inputs that are all
+        // trivially unequal.
+        coverage.Count Comparison.Equal |> shouldBeGreaterThan 100
+        coverage.Count Comparison.FoldedEqual |> shouldBeGreaterThan 50
+        coverage.Count Comparison.SameLengthUnequal |> shouldBeGreaterThan 100
 
     [<Test>]
     let ``is an equivalence relation on well-formed UTF-8`` () : unit =
