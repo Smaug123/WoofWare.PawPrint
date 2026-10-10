@@ -128,9 +128,11 @@
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestOpcodeFaults.fs" />
     <Compile Include="HostFaultProbe.fs" />
+    <Compile Include="NumericOpcodeGrid.fs" />
     <Compile Include="TestOpcodeFaultsOnHost.fs" />
     <Compile Include="TestOpcodeFaultsOnHostMemory.fs" />
     <Compile Include="TestOpcodeFaultsOnHostTokens.fs" />
+    <Compile Include="TestOpcodeFaultsOnPawPrint.fs" />
     <Compile Include="TestStackEffect.fs" />
     <Compile Include="TestStackShape.fs" />
     <Compile Include="TestControlFlow.fs" />

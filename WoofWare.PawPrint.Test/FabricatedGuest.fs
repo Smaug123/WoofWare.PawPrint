@@ -6,6 +6,7 @@ open System.IO
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// How the driver terminated under PawPrint.
 [<RequireQualifiedAccess>]
@@ -67,16 +68,20 @@ module FabricatedGuest =
         }
         |> ImmutableArray.CreateRange
 
-    /// PawPrint's outcome for a run, with every failure caught, and the captured log written to
-    /// stderr when there is one.
-    let private onPawPrint (messages : unit -> 'message list) (run : unit -> RunEnd) : FabricatedOutcome =
+    /// PawPrint's final state for a run that exited, or the failure of one that did not, with the
+    /// captured log written to stderr when there is one.
+    let private exitedOnPawPrint
+        (messages : unit -> 'message list)
+        (run : unit -> RunEnd)
+        : Result<IlMachineState, exn>
+        =
         try
             let outcome = run ()
             FrameworkUnderTest.assertOutcomeServes outcome
 
             match ExpectRun.ended outcome with
             | RunOutcome.NormalExit (state, _, _)
-            | RunOutcome.ProcessExit (state, _, _) -> FabricatedOutcome.Exited state.LatchedExitCode
+            | RunOutcome.ProcessExit (state, _, _) -> Ok state
             | RunOutcome.GuestUnhandledException (finalState, _, exn, _) ->
                 failwith $"guest threw:\n%s{UnhandledExceptionReport.describe finalState exn}"
             | RunOutcome.Aborted (_, _, fatal, _) ->
@@ -87,7 +92,14 @@ module FabricatedGuest =
             for message in messages () do
                 Console.Error.WriteLine $"{message}"
 
-            FabricatedOutcome.Failed e
+            Error e
+
+    /// PawPrint's outcome for a run, with every failure caught, and the captured log written to
+    /// stderr when there is one.
+    let private onPawPrint (messages : unit -> 'message list) (run : unit -> RunEnd) : FabricatedOutcome =
+        match exitedOnPawPrint messages run with
+        | Ok state -> FabricatedOutcome.Exited state.LatchedExitCode
+        | Error e -> FabricatedOutcome.Failed e
 
     /// Lay `fabricated` and a driver compiled against it side by side on disk, and run the driver
     /// on both runtimes.
@@ -159,6 +171,52 @@ module FabricatedGuest =
                             peImage
                             (HostConfig.Default (runtimeDirs tempDir))
                     )
+            )
+
+    /// Run the driver on PawPrint alone, and return what it wrote to stdout. A run that does not
+    /// exit, or exits nonzero, fails, with PawPrint's log written to stderr.
+    let stdoutOnPawPrint
+        (fabricatedName : string)
+        (fabricated : byte[])
+        (driverName : string)
+        (driverSource : string)
+        : string
+        =
+        laidOut
+            fabricatedName
+            fabricated
+            driverName
+            driverSource
+            (fun tempDir driverPath driver ->
+                let messages, loggerFactory =
+                    LoggerFactory.makeTestWithProperties [ "entry_assembly", driverPath ]
+
+                use _loggerFactoryResource = loggerFactory
+                use peImage = new MemoryStream (driver)
+
+                let exited =
+                    exitedOnPawPrint
+                        messages
+                        (fun () ->
+                            Program.run
+                                loggerFactory
+                                (Some driverPath)
+                                peImage
+                                (HostConfig.Default (runtimeDirs tempDir))
+                        )
+
+                match exited with
+                | Error e -> raise (Exception ("PawPrint did not run the guest to completion", e))
+                | Ok state ->
+                    let stdout =
+                        OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                        |> Seq.toArray
+                        |> Text.Encoding.UTF8.GetString
+
+                    if state.LatchedExitCode <> 0 then
+                        failwith $"the guest exited %d{state.LatchedExitCode}; its stdout was:\n%s{stdout}"
+
+                    stdout
             )
 
     /// Run the driver on both runtimes and require they agree on the exit code.
