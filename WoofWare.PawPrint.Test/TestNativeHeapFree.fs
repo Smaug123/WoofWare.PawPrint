@@ -5,6 +5,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// `NativeCall.tryResolveNativeHeapFreeTarget` decides which pointers a
 /// `free`-shaped entry point may release. It is shared by `SystemNative_Free`
@@ -227,12 +228,15 @@ module TestNativeHeapFree =
                 3, Gen.zip genByteOffset genByteOffset
             ]
 
+    /// The classifier's verdict on a native-heap pointer.
+    [<RequireQualifiedAccess>]
+    type private FreeVerdict =
+        | Accepted
+        | Refused
+
     [<Test>]
     let ``a byte-offset pointer is accepted exactly when its offsets sum to zero`` () : unit =
-        let mutable accepted = 0
-        let mutable refused = 0
-
-        let property (rootOffset : int, projectionOffset : int) : unit =
+        let property (cover : FreeVerdict -> unit) (rootOffset : int, projectionOffset : int) : unit =
             let ptr =
                 ManagedPointerSource.Byref
                     {
@@ -247,18 +251,20 @@ module TestNativeHeapFree =
 
             match NativeCall.tryResolveNativeHeapFreeTarget ptr with
             | Ok (Some block) ->
-                accepted <- accepted + 1
+                cover FreeVerdict.Accepted
                 isBase |> shouldEqual true
                 block |> shouldEqual blockA
             | Ok None -> failwith $"a native-heap pointer resolved to the null no-op: %O{ptr}"
             | Error _ ->
-                refused <- refused + 1
+                cover FreeVerdict.Refused
                 isBase |> shouldEqual false
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen genOffsetPair) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 2000) (Arb.fromGen genOffsetPair) property
 
-        // Both verdicts really occurred: without this, a generator that never
-        // produced a cancelling pair would leave the accepting arm unexercised —
-        // which is exactly what an earlier version of `genOffsetPair` did.
-        accepted > 100 |> shouldEqual true
-        refused > 100 |> shouldEqual true
+        // Both verdicts really occurred, counted over a fixed sample: without
+        // this, a generator that never produced a cancelling pair would leave
+        // the accepting arm unexercised — which is exactly what an earlier
+        // version of `genOffsetPair` did.
+        coverage.Count FreeVerdict.Accepted > 100 |> shouldEqual true
+        coverage.Count FreeVerdict.Refused > 100 |> shouldEqual true

@@ -283,6 +283,39 @@ while it slept, which Linux's source would leave asleep and Darwin's would
 end; and a Darwin close of the descriptor of a call something has already
 woken.
 
+### 2.6 `recv` and `send` (stage 6)
+
+**Probe.** `2026-10-07-tcp-byte-transfer/tcp-recv-send.c`, with each flavour's
+output beside it, measured as `tcp-transfer.c` was, twice on each.
+
+- **The flag word** is numbered per flavour, but for `MSG_OOB`, `MSG_PEEK` and
+  `MSG_DONTROUTE`: `MSG_DONTWAIT` is 0x40 on Linux and 0x80 on Darwin, and
+  `MSG_NOSIGNAL` 0x4000 and 0x80000.
+- **Order.** Linux screens the buffer before it looks up the descriptor
+  (`import_ubuf` comes first in `__sys_recvfrom` and `__sys_sendto`), so
+  `(void*)-1` is EFAULT ahead of EBADF and ENOTSOCK, at length 0 too. Darwin
+  screens nothing. A descriptor that is not a socket is ENOTSOCK on both.
+- **`MSG_PEEK` blocks** like a read: it sleeps until there is something to
+  answer, then answers it without taking the bytes; asleep at a FIN it is 0,
+  and at a reset ECONNRESET, taken on Linux only, as 2.3 found for a peek
+  that does not sleep.
+- **`recv(0)` sleeps on Linux**: a blocking one with nothing queued returns 0
+  only once bytes arrive (or a FIN). Darwin's returns 0 at once.
+- **`MSG_DONTWAIT`** makes a `recv` non-blocking on both, and a Linux `send`,
+  which also arms the send-space edge as `O_NONBLOCK` does. **Darwin's `send`
+  ignores it**: on a full socket it sleeps, and returns only once its bytes
+  are taken.
+- **`MSG_NOSIGNAL`** suppresses Darwin's `SIGPIPE` from a `send` asleep when
+  its connection is reset; Linux raises none there in any case. It changes
+  nothing about a `recv`.
+- **Darwin's `send` marks no description written** (`FWASWRITTEN`), where its
+  `write` does.
+
+The BCL reaches `SystemNative_Receive` only from an asynchronous receive and
+from a receive on a socket whose `Blocking` is false: a synchronous receive on
+a blocking socket goes through `SystemNative_ReceiveMessage` (`recvmsg`), which
+is not part of this plan. `Send` reaches `SystemNative_Send` either way.
+
 ## 3. Design options
 
 ### 3.1 Which end of the connection a socket is
@@ -485,7 +518,7 @@ changing, so they wait for that to merge.
    section 2.5 has the measurements.
 6. **`recv` and `send` in the kernel**, with `MSG_PEEK`, `MSG_DONTWAIT` and
    `MSG_NOSIGNAL`. Every other flag is refused. This includes `recv(0)`'s
-   divergence from `read(0)`.
+   divergence from `read(0)`. Done: section 2.6 has the measurements.
 7. **PawPrint handlers**: `SystemNative_Receive` and `SystemNative_Send` (PAL
    flags through a `SocketFlagsPal` adapter in `Native/`),
    `SystemNative_GetBytesAvailable` for sockets, and socket arms for

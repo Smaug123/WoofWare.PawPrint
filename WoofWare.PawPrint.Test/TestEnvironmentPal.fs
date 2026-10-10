@@ -7,6 +7,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
+open WoofWare.PosixKernel.Test
 
 /// The name-to-value view CoreCLR's Unix PAL presents over the kernel's `envp`,
 /// which is what `GetEnvironmentVariableW` and PawPrint's own knob lookups read.
@@ -99,15 +100,21 @@ module TestEnvironmentPal =
             return System.String.Concat chosen
         }
 
+    /// The shapes of lookup the property must be seen to reach.
+    [<RequireQualifiedAccess>]
+    type private LookupShape =
+        | Hit
+        /// A hit on a name holding an unpaired surrogate.
+        | HitThroughReplacement
+        /// A hit on an entry with no `=`.
+        | HitOnBareEntry
+        /// A hit on a name a later entry names too.
+        | HitShadowingLater
+        | Miss
+
     [<Test>]
     let ``a lookup finds what the PAL finds`` () : unit =
-        let mutable hits = 0
-        let mutable hitsThroughReplacement = 0
-        let mutable hitsOnBareEntry = 0
-        let mutable hitsShadowingLater = 0
-        let mutable misses = 0
-
-        let property (name : string, entries : string list) : unit =
+        let property (cover : LookupShape -> unit) (name : string, entries : string list) : unit =
             let expected = expectedLookup name entries
 
             EnvironmentPal.tryFindValue name (List.map bytesOf entries)
@@ -115,23 +122,23 @@ module TestEnvironmentPal =
             |> shouldEqual (Option.map Some expected)
 
             match expected with
-            | None -> misses <- misses + 1
+            | None -> cover LookupShape.Miss
             | Some _ ->
-                hits <- hits + 1
+                cover LookupShape.Hit
                 let replaced = withReplacements name
 
                 if replaced <> name then
-                    hitsThroughReplacement <- hitsThroughReplacement + 1
+                    cover LookupShape.HitThroughReplacement
 
                 if List.contains replaced entries then
-                    hitsOnBareEntry <- hitsOnBareEntry + 1
+                    cover LookupShape.HitOnBareEntry
 
                 let named =
                     entries
                     |> List.filter (fun entry -> entry = replaced || entry.StartsWith (replaced + "="))
 
                 if List.length named > 1 then
-                    hitsShadowingLater <- hitsShadowingLater + 1
+                    cover LookupShape.HitShadowingLater
 
         // Mostly free, but sometimes a name holding an unpaired surrogate beside
         // an entry named by its replacement, which free generation seldom pairs.
@@ -147,13 +154,14 @@ module TestEnvironmentPal =
         let gen =
             Gen.frequency [ 3, Gen.zip genName (Gen.listOf genEntry) ; 1, genReplacementCase ]
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen gen) property)
+        let coverage = CoverageSample.check propertyConfig (Arb.fromGen gen) property
 
-        hits > 50 |> shouldEqual true
-        hitsThroughReplacement > 20 |> shouldEqual true
-        hitsOnBareEntry > 20 |> shouldEqual true
-        hitsShadowingLater > 20 |> shouldEqual true
-        misses > 50 |> shouldEqual true
+        // Counted over a fixed sample: a run cannot fall short by chance.
+        coverage.Count LookupShape.Hit > 50 |> shouldEqual true
+        coverage.Count LookupShape.HitThroughReplacement > 20 |> shouldEqual true
+        coverage.Count LookupShape.HitOnBareEntry > 20 |> shouldEqual true
+        coverage.Count LookupShape.HitShadowingLater > 20 |> shouldEqual true
+        coverage.Count LookupShape.Miss > 50 |> shouldEqual true
 
     [<Test>]
     let ``an unpaired surrogate in a name is looked up as U+FFFD`` () : unit =

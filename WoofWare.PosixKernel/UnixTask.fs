@@ -347,8 +347,28 @@ type ParkedPipeWrite =
         ReadsSeen : int64
     }
 
-/// One task's in-flight blocking `read(2)` of a connected stream socket that
-/// had nothing to answer: no bytes, no FIN and no reset.
+/// Which call reads from a TCP connection.
+[<RequireQualifiedAccess>]
+type TcpReceiveCall =
+    /// `read(2)`.
+    | Read
+    /// `recv(2)` without `MSG_PEEK`.
+    | Receive
+    /// `recv(2)` with `MSG_PEEK`: the bytes stay queued.
+    | Peek
+
+/// Which call writes to a TCP connection, as far as what it does differs.
+[<RequireQualifiedAccess>]
+type TcpSendCall =
+    /// `write(2)`: an `EPIPE` raises `SIGPIPE`, and on Darwin a write that
+    /// moves bytes marks its description written.
+    | Write
+    /// `send(2)`, which marks no description written. With `noSignal`
+    /// (`MSG_NOSIGNAL`), an `EPIPE` raises no `SIGPIPE`.
+    | Send of noSignal : bool
+
+/// One task's in-flight blocking `read(2)` or `recv(2)` of a connected stream
+/// socket that had nothing to answer: no bytes, no FIN and no reset.
 type ParkedConnectionRead =
     {
         /// The open file description of the socket the call was made through,
@@ -359,13 +379,17 @@ type ParkedConnectionRead =
         /// when the call was entered. Nothing is copied before the call sleeps.
         Buffer : UserBuffer
         /// The most bytes the call takes: its count, after the platform's limit
-        /// on one call's transfer. Never zero, since a read of nothing returns
-        /// at once.
+        /// on one call's transfer. Zero only for a Linux `recv(2)`, which
+        /// sleeps until there is something to answer even when it asks for
+        /// nothing; a `read(2)` of nothing, and a Darwin `recv(2)` of nothing,
+        /// return at once.
         Count : int
+        /// Which call it is.
+        Call : TcpReceiveCall
     }
 
-/// One task's in-flight blocking `write(2)` to a connected stream socket whose
-/// buffers had no room for all of it.
+/// One task's in-flight blocking `write(2)` or `send(2)` to a connected stream
+/// socket whose buffers had no room for all of it.
 ///
 /// Holds no bytes, as `ParkedPipeWrite` holds none: the call that finishes the
 /// write asks the caller for the next of them as room appears.
@@ -384,6 +408,8 @@ type ParkedConnectionWrite =
         /// How many of them, from the start, the connection has taken already:
         /// less than `Count`.
         Written : int
+        /// Which call it is.
+        Call : TcpSendCall
     }
 
 /// <summary>

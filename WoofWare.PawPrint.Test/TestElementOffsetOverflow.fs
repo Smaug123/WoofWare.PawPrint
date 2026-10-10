@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// `IntrinsicHelpers.offsetManagedPointerByElements` is the shared element-offset walk behind
 /// `Unsafe.Add`, `Unsafe.Subtract`, `Span<T>.get_Item` and friends. Every branch of it combines the
@@ -80,9 +81,9 @@ module TestElementOffsetOverflow =
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
     /// For the properties whose non-vacuity guard counts how many cases landed in the regime they
-    /// are about. That count is a random variable, so it needs enough cases to concentrate: at 500
-    /// the wrapping counter below spans 246-303 across runs, which no useful threshold can sit
-    /// clear of.
+    /// are about. The count is taken over a fixed sample, but a change to the generator reshuffles
+    /// that sample, so it needs enough cases to concentrate: at 500 the wrapping counter below
+    /// spans 246-303 across samples, which no useful threshold can sit clear of.
     let private countedPropertyConfig : Config =
         Config.QuickThrowOnFailure.WithMaxTest 2000
 
@@ -126,28 +127,30 @@ module TestElementOffsetOverflow =
             return index, offset
         }
 
+    /// Which part of an element walk lies beyond ±2^30, near the int32 boundary.
+    [<RequireQualifiedAccess>]
+    type private ExtremeWalk =
+        | Index
+        | Sum
+
     [<Test>]
     let ``in-range element walk lands on index plus offset`` () : unit =
         // The property is only meaningful if it actually visits sums near the int32 boundary: that
         // is where an unchecked `i + offset` would wrap, and where a guard that clamped too
         // aggressively would start refusing valid walks. Count what the generator really produced
         // and assert the distribution rather than trusting it.
-        let mutable extremeIndex = 0
-        let mutable extremeSum = 0
-        let mutable total = 0
-
+        //
         // 2^30: comfortably "near the boundary" without making the assertion below a coin flip.
         let extreme = 1073741824L
 
-        let property ((index, offset) : int * int) : unit =
+        let property (cover : ExtremeWalk -> unit) ((index, offset) : int * int) : unit =
             let sum = int64<int> index + int64<int> offset
-            total <- total + 1
 
             if abs (int64<int> index) > extreme then
-                extremeIndex <- extremeIndex + 1
+                cover ExtremeWalk.Index
 
             if abs sum > extreme then
-                extremeSum <- extremeSum + 1
+                cover ExtremeWalk.Sum
 
             let arr, st = allocateIntArray 4 (state ())
 
@@ -175,7 +178,13 @@ module TestElementOffsetOverflow =
                 )
             )
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genRepresentableCase) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genRepresentableCase) property
+
+        // The fixed sample is `MaxTest` cases, and this property discards none.
+        let total = propertyConfig.MaxTest
+        let extremeIndex = coverage.Count ExtremeWalk.Index
+        let extremeSum = coverage.Count ExtremeWalk.Sum
 
         // A uniform draw over int32 puts just over half the mass beyond ±2^30, so a generator that
         // had silently reverted to FsCheck's size-bounded default would fail these outright.
@@ -385,6 +394,10 @@ module TestElementOffsetOverflow =
         else
             int64 raw
 
+    /// A walk whose exact answer does not fit in 64 bits, so its modular answer differs from it.
+    [<RequireQualifiedAccess>]
+    type private WalkWrapped = | Wrapped
+
     [<Test>]
     let ``bit-pattern walk is exact modulo 2^64 for every native-width offset`` () : unit =
         // A bit-pattern byref carries its whole address in an int64 and has no int32 root to
@@ -406,21 +419,18 @@ module TestElementOffsetOverflow =
             | other -> failwith $"no element handle of size %d{other} in this fixture"
 
         // The property is only about wrapping if it actually wraps. Count it rather than assume.
-        let mutable wrapped = 0
-        let mutable total = 0
 
         // One machine state for the whole property: a bit-pattern walk allocates nothing, so
         // there is nothing to keep fresh between iterations, and `state ()` builds a logger
         // factory that outlives the call.
         let st = state ()
 
-        let property ((start, offset, size) : int64 * int64 * int) : unit =
-            total <- total + 1
+        let property (cover : WalkWrapped -> unit) ((start, offset, size) : int64 * int64 * int) : unit =
             let expected = wrappedAddress start offset size
 
             // A walk whose exact (unwrapped) answer differs from the modular one is a wrap.
             if bigint expected <> bigint start + bigint offset * bigint size then
-                wrapped <- wrapped + 1
+                cover WalkWrapped.Wrapped
 
             let result =
                 IntrinsicHelpers.offsetManagedPointerByElements
@@ -444,15 +454,20 @@ module TestElementOffsetOverflow =
                 return start, offset, size
             }
 
-        Check.One (countedPropertyConfig, Prop.forAll (Arb.fromGen genCase) property)
+        let coverage =
+            CoverageSample.check countedPropertyConfig (Arb.fromGen genCase) property
+
+        let total = countedPropertyConfig.MaxTest
+        let wrapped = coverage.Count WalkWrapped.Wrapped
 
         // Two uniform int64 draws put most of the mass outside the range where the sum fits, so a
         // generator that had quietly reverted to a size-bounded default — which wraps essentially
         // never — fails this outright and the property would be asserting nothing about wrapping.
         //
-        // The threshold is half the measured minimum, not half the measured mean: over 400 runs of
-        // 2000 cases the counter had mean 1091 and never fell below 1011, so 500 sits far outside
-        // the run-to-run spread in a way that a fraction-of-total threshold near the mean did not.
+        // Counted over a fixed sample, so a run cannot miss it by chance. The threshold is half the
+        // measured minimum over other samples, not half their mean: over 400 samples of 2000 cases
+        // the counter had mean 1091 and never fell below 1011, so 500 stays clear of any sample a
+        // change to the generator's draws could reshuffle this one into.
         if wrapped < 500 then
             failwith
                 $"generator produced too few wrapping walks: %d{wrapped} of %d{total}, so the modular arithmetic is not being exercised"

@@ -873,9 +873,13 @@ module EmulatedKernel =
     /// syscall or is asked about only while it has one, so a missing task is
     /// an interpreter bug rather than anything the guest did.
     let taskOf (thread : ThreadId) (tasks : Map<ThreadId, UnixTaskState>) : UnixTaskState =
-        match Map.tryFind thread tasks with
-        | Some task -> task
-        | None ->
+        // `TryGetValue` rather than `Map.tryFind`, whose option the driver would allocate on
+        // every tick (`dispatch`).
+        let mutable task = Unchecked.defaultof<UnixTaskState>
+
+        if tasks.TryGetValue (thread, &task) then
+            task
+        else
             failwith
                 $"EmulatedKernel.taskOf: thread %O{thread} has no task in the kernel. A task is created with its thread and leaves the kernel when the thread exits, so this thread was never created or has already exited (this is an interpreter bug)."
 
@@ -1653,6 +1657,25 @@ module EmulatedKernel =
             failwith
                 $"EmulatedKernel.exitThread: %O{thread} was the process's last task, so its exit ended the process (%O{EndedProcess.termination ended}); the entry thread never exits through here, so it should still have had a task"
         | Error refusal -> failwith $"EmulatedKernel.exitThread: %s{ThreadExitRefusal.describe refusal}"
+
+    /// `thread` is about to run an instruction: `UnixScheduling.dispatch` of its task
+    /// to the processor its task is on (`UnixTaskState.Cpu`), which displaces whichever
+    /// task that processor ran, in this process or another on the machine. PawPrint
+    /// never migrates a thread, so the processor is always the one its thread was
+    /// placed on (`cpuForRotation`).
+    ///
+    /// Answers `kernel` itself when `thread` is already running there, which is every
+    /// step of a thread after its first but the steps after a park or a displacement.
+    let dispatch (thread : ThreadId) (kernel : EmulatedKernel) : EmulatedKernel =
+        let cpu = UnixTaskState.cpu (taskOf thread kernel.Tasks)
+        let system = UnixScheduling.dispatch thread cpu kernel.System
+
+        if obj.ReferenceEquals (system, kernel.System) then
+            kernel
+        else
+            { kernel with
+                System = system
+            }
 
     /// `UnixTaskLifecycle.exitGroup` through this kernel: `thread` calls
     /// `exit(3)` with `status`, which ends in `exit_group(2)`, and the process

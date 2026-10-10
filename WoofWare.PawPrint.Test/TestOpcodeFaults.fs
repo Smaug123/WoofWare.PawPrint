@@ -403,7 +403,7 @@ module TestOpcodeFaults =
     /// prevent.
     ///
     /// Resolved against the *host's* corelib rather than a fabricated one: the point is that these
-    /// ten names exist and are the types they claim to be, which a stub could not establish.
+    /// nine names exist and are the types they claim to be, which a stub could not establish.
     [<Test>]
     let ``typeName and resolve agree for every fault`` () : unit =
         // Factory intentionally undisposed: corelib.Logger outlives this scope.

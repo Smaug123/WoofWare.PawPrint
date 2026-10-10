@@ -8,6 +8,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// `TypeConcretization.signaturesEquivalent` mirrors `MetaSig::CompareMethodSigs`, and most of its
 /// rules cannot be reached by a guest: a C# program cannot declare two methods whose signatures
@@ -1388,6 +1389,12 @@ public class OpenGeneric<T>
         equivalentWithoutSubstitution fixture takesMethodParameter takesTypeParameter
         |> shouldEqual false
 
+    /// What a definition-rooted comparison answers of a pair of signatures.
+    [<RequireQualifiedAccess>]
+    type private Equivalence =
+        | Equivalent
+        | Inequivalent
+
     /// The comparison without substitution is the definition-rooted one with the owner check taken
     /// away: when both sides' variables belong to one definition, the two must agree on every pair of
     /// signatures. `forDefinition`'s `Formal` is compared by index once the owners agree, and that is
@@ -1451,25 +1458,26 @@ public class OpenGeneric<T>
                 return left, right
             }
 
-        let mutable sawEqual = 0
-        let mutable sawUnequal = 0
+        let property
+            (cover : Equivalence -> unit)
+            (left : TypeMethodSignature<TypeDefn>, right : TypeMethodSignature<TypeDefn>)
+            : unit
+            =
+            let expected = equivalentBetween fixture definition definition left right
+            let actual = equivalentWithoutSubstitution fixture left right
 
-        let property =
-            Prop.forAll
-                (Arb.fromGen genPair)
-                (fun (left, right) ->
-                    let expected = equivalentBetween fixture definition definition left right
-                    let actual = equivalentWithoutSubstitution fixture left right
+            cover (
+                if expected then
+                    Equivalence.Equivalent
+                else
+                    Equivalence.Inequivalent
+            )
 
-                    if expected then
-                        sawEqual <- sawEqual + 1
-                    else
-                        sawUnequal <- sawUnequal + 1
+            actual |> shouldEqual expected
 
-                    actual |> shouldEqual expected
-                )
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 500) (Arb.fromGen genPair) property
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, property)
-
-        sawEqual |> shouldBeGreaterThan 50
-        sawUnequal |> shouldBeGreaterThan 50
+        // Counted over a fixed sample: a run cannot fall short by chance.
+        coverage.Count Equivalence.Equivalent |> shouldBeGreaterThan 50
+        coverage.Count Equivalence.Inequivalent |> shouldBeGreaterThan 50

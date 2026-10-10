@@ -7,6 +7,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\WoofWare.PosixKernel.Test\CoverageSample.fs"
+             Link="CoverageSample.fs" />
     <Compile Include="LoggerFactory.fs" />
     <Compile Include="Launched.fs" />
     <Compile Include="ExpectRun.fs" />
@@ -125,6 +127,7 @@
     <Compile Include="TestRawRootFieldLayoutDisplacement.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestOpcodeFaults.fs" />
+    <Compile Include="TestOpcodeFaultsOnHost.fs" />
     <Compile Include="TestStackEffect.fs" />
     <Compile Include="TestStackShape.fs" />
     <Compile Include="TestControlFlow.fs" />
@@ -245,6 +248,7 @@
     <Compile Include="TestNativeLibc.fs" />
     <Compile Include="TestStartupSignalDispositions.fs" />
     <Compile Include="TestSocketEventsPal.fs" />
+    <Compile Include="TestSocketFlagsPal.fs" />
     <Compile Include="KernelTasks.fs" />
     <Compile Include="ThreadFixtures.fs" />
     <Compile Include="TestPollEventsPal.fs" />

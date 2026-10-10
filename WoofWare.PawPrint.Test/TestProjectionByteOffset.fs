@@ -7,6 +7,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// `IlMachineManagedByref.walkProjectionByteOffset` folds a `ByrefProjection` chain to a byte
 /// offset. `Field` consults the current type cursor; `ReinterpretAs` re-anchors it; `ByteOffset`
@@ -421,12 +422,15 @@ module TestProjectionByteOffset =
 
         go root 0 projs
 
+    /// What a chain must sometimes do for the walk's property to reject an `int32` accumulator.
+    [<RequireQualifiedAccess>]
+    type private ChainRegime =
+        | OutsideInt32
+        | WouldHaveWrapped
+
     [<Test>]
     let ``the walk agrees with unbounded arithmetic on every chain`` () : unit =
-        let mutable outsideInt32 = 0
-        let mutable wouldHaveWrapped = 0
-
-        let property =
+        let property (cover : ChainRegime -> unit) : Property =
             Prop.forAll
                 (Arb.fromGen genChain)
                 (fun projs ->
@@ -438,18 +442,19 @@ module TestProjectionByteOffset =
                     |> shouldEqual expected
 
                     if expected < bigint Int32.MinValue || expected > bigint Int32.MaxValue then
-                        outsideInt32 <- outsideInt32 + 1
+                        cover ChainRegime.OutsideInt32
 
                     if bigint (wrappingCoordinate root projs) <> expected then
-                        wouldHaveWrapped <- wouldHaveWrapped + 1
+                        cover ChainRegime.WouldHaveWrapped
                 )
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 5000, property)
+        let coverage =
+            CoverageSample.checkProperty (Config.QuickThrowOnFailure.WithMaxTest 5000) property
 
         // Without these the property is vacuous: a generator that never leaves `int32` range
         // would pass against the very accumulator this fixture exists to reject.
-        if outsideInt32 = 0 then
+        if coverage.Count ChainRegime.OutsideInt32 = 0 then
             failwith "property never generated a chain whose coordinate leaves int32 range"
 
-        if wouldHaveWrapped = 0 then
+        if coverage.Count ChainRegime.WouldHaveWrapped = 0 then
             failwith "property never generated a chain on which an int32 accumulator would wrap"
