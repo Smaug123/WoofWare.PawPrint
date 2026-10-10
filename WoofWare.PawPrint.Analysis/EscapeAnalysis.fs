@@ -287,6 +287,13 @@ type EscapeAnalysisState =
 /// so almost every method can escape <c>StackOverflowException</c>; a report that wants to drop
 /// those does so knowingly.
 ///
+/// The runtime makes most of the exceptions it raises by itself by running the exception's
+/// parameterless constructor, which looks up its message, so what that constructor can raise is in
+/// the answer too. What it runs to make one with arguments is not followed: a failed binding's, a
+/// multidimensional array constructor's <c>ArgumentOutOfRangeException</c>, and a
+/// <c>TypeInitializationException</c>. Should the last's constructor fail, the runtime raises the
+/// type initializer's own exception instead, which the answer leaves out.
+///
 /// An interface cast or an array store calls <c>IDynamicInterfaceCastable.IsInterfaceImplemented</c>
 /// on an object whose class implements it. That is assumed to throw nothing but the
 /// <c>InvalidCastException</c> its documentation asks for.
@@ -413,16 +420,6 @@ module EscapeAnalysis =
                 }
         }
 
-    /// The CoreLib type an `OpcodeFault` names.
-    let private faultType (state : EscapeAnalysisState) (fault : OpcodeFault) : ResolvedTypeIdentity =
-        let qualified = OpcodeFault.typeName fault
-        let dot = qualified.LastIndexOf '.'
-        let ns, name = qualified.Substring (0, dot), qualified.Substring (dot + 1)
-
-        match state.BaseTypes.Corelib.TryGetTopLevelTypeDef ns name with
-        | Some ty -> ty.Identity
-        | None -> failwith $"CoreLib declares no %s{qualified}, which OpcodeFaults names"
-
     /// The CoreLib type of this namespace and name.
     let private corelibType (state : EscapeAnalysisState) (ns : string) (name : string) : ResolvedTypeIdentity =
         match state.BaseTypes.Corelib.TryGetTopLevelTypeDef ns name with
@@ -449,6 +446,57 @@ module EscapeAnalysis =
         | found ->
             failwith
                 $"EscapeAnalysis: expected %s{corelib.DefinitionFullName} to define one %O{name}(), found %d{found.Length}"
+
+    /// What the runtime raises where it raises the CoreLib exception of this full name by itself,
+    /// making it as `making` says: the exception, and the constructor it runs to make it, if it runs
+    /// one, whose own raises escape there too.
+    let private runtimeRaises
+        (state : EscapeAnalysisState)
+        (fullName : string)
+        (making : ExceptionMaking)
+        : ThrownType * MethodKey option
+        =
+        let name =
+            match ExceptionName.parse fullName with
+            | Some name -> name
+            | None -> failwith $"EscapeAnalysis: %s{fullName} is not an exception type's full name"
+
+        let thrown = ThrownType.Exactly (corelibType state name.Namespace name.Name)
+
+        match making with
+        | ExceptionMaking.ParameterlessConstructor -> thrown, Some (parameterlessConstructor state name)
+        | ExceptionMaking.Preallocated
+        | ExceptionMaking.InitializerFailure -> thrown, None
+
+    /// What the runtime raises for an `OpcodeFault` (`runtimeRaises`).
+    let private faultRaises (state : EscapeAnalysisState) (fault : OpcodeFault) : ThrownType * MethodKey option =
+        runtimeRaises state (OpcodeFault.typeName fault) (ExceptionMaking.ofOpcodeFault fault)
+
+    /// What `runtimeRaises` says the runtime raises at `offset`, as raises and as calls to the
+    /// constructors it runs.
+    let private raisedAt
+        (offset : int)
+        (raised : (ThrownType * MethodKey option) list)
+        : (int * ThrownType) list * (int * CallSite * StackValue list) list
+        =
+        let raises = raised |> List.map (fun (thrown, _) -> offset, thrown)
+
+        let calls =
+            raised
+            |> List.choose (fun (_, constructor) ->
+                constructor
+                |> Option.map (fun callee ->
+                    offset,
+                    CallSite.Direct
+                        {
+                            Callee = callee
+                            Spelling = CalleeSpelling.Fixed
+                        },
+                    []
+                )
+            )
+
+        raises, calls
 
     /// What binding a type reference in `assembly` finds.
     let private bindTypeRef
@@ -903,15 +951,15 @@ module EscapeAnalysis =
             Some (MethodKey.make assembly (MethodInfo.requireMetadata "String.Ctor" implementation).Handle)
         | Error _ -> None
 
-    /// The runtime's own exceptions from one of the methods it supplies on an array type: those of
-    /// the instruction each stands in for, `ldelem`, `stelem.ref`, `ldelema` and `newarr`, and for a
-    /// multidimensional array's constructor taking lower bounds, `ArgumentOutOfRangeException` for
-    /// bounds whose upper end overflows.
+    /// The runtime's own exceptions from one of the methods it supplies on an array type
+    /// (`runtimeRaises`): those of the instruction each stands in for, `ldelem`, `stelem.ref`,
+    /// `ldelema` and `newarr`, and for a multidimensional array's constructor taking lower bounds,
+    /// `ArgumentOutOfRangeException` for bounds whose upper end overflows.
     let private arrayAccessorRaises
         (state : EscapeAnalysisState)
         (arrayType : TypeDefn)
         (accessor : ArrayAccessor)
-        : ThrownType list
+        : (ThrownType * MethodKey option) list
         =
         let faults =
             match accessor with
@@ -933,11 +981,13 @@ module EscapeAnalysis =
         let lowerBounds =
             match arrayType, accessor with
             | TypeDefn.Array (_, rank), ArrayAccessor.Constructor arity when arity = 2 * rank ->
-                [ ThrownType.Exactly (corelibException state "ArgumentOutOfRangeException") ]
+                // The runtime makes it with a message, and what that runs is not followed.
+                [
+                    ThrownType.Exactly (corelibException state "ArgumentOutOfRangeException"), None
+                ]
             | _ -> []
 
-        (faults |> List.map (fun fault -> ThrownType.Exactly (faultType state fault)))
-        @ lowerBounds
+        (faults |> List.map (faultRaises state)) @ lowerBounds
 
     /// Why binding a type reference fails, which decides what the binding throws.
     [<RequireQualifiedAccess>]
@@ -1705,24 +1755,40 @@ module EscapeAnalysis =
             Consults = Set.empty
         }
 
-    /// The exceptions an operation of the runtime's own can raise. Its contract says under which
-    /// conditions on its arguments; the analysis does not track their values, so each may be raised.
-    let private contractRaises (state : EscapeAnalysisState) (contract : IntrinsicContract) : ThrownType list =
+    /// The exceptions an operation of the runtime's own can raise (`runtimeRaises`). Its contract
+    /// says under which conditions on its arguments; the analysis does not track their values, so
+    /// each may be raised.
+    let private contractRaises
+        (state : EscapeAnalysisState)
+        (contract : IntrinsicContract)
+        : (ThrownType * MethodKey option) list
+        =
         contract.Raises
         |> List.map (fun (fault, _) ->
-            match fault with
-            | PrimitiveFault.NullReference -> ThrownType.Exactly (corelibException state "NullReferenceException")
-            | PrimitiveFault.DataMisaligned -> ThrownType.Exactly (corelibException state "DataMisalignedException")
+            let fullName =
+                match fault with
+                | PrimitiveFault.NullReference -> "System.NullReferenceException"
+                | PrimitiveFault.DataMisaligned -> "System.DataMisalignedException"
+
+            runtimeRaises state fullName (ExceptionMaking.ofPrimitiveFault fault)
         )
 
-    /// What a fault the CPU reports raises, as the VM raises it; `None` for an out-of-range
-    /// immediate, which the JIT throws by calling a helper in CoreLib.
-    let private instructionRaises (state : EscapeAnalysisState) (fault : InstructionFault) : ThrownType option =
+    /// What a fault the CPU reports raises, as the VM raises it (`runtimeRaises`); `None` for an
+    /// out-of-range immediate, which the JIT throws by calling a helper in CoreLib.
+    let private instructionRaises
+        (state : EscapeAnalysisState)
+        (fault : InstructionFault)
+        : (ThrownType * MethodKey option) option
+        =
+        let made (fullName : string) =
+            ExceptionMaking.ofInstructionFault fault
+            |> Option.map (runtimeRaises state fullName)
+
         match fault with
-        | InstructionFault.NullAddress -> Some (ThrownType.Exactly (corelibException state "NullReferenceException"))
+        | InstructionFault.NullAddress -> made "System.NullReferenceException"
         | InstructionFault.ImmediateOutOfRange -> None
-        | InstructionFault.ZeroDivisor -> Some (ThrownType.Exactly (corelibException state "DivideByZeroException"))
-        | InstructionFault.QuotientOverflow -> Some (ThrownType.Exactly (corelibException state "OverflowException"))
+        | InstructionFault.ZeroDivisor -> made "System.DivideByZeroException"
+        | InstructionFault.QuotientOverflow -> made "System.OverflowException"
 
     /// What CoreCLR runs when `key` is called, or the contract of one of `assumptions` that stands
     /// in for it. The VM's substitute for an intrinsic runs whatever IL CoreLib ships in its place,
@@ -1806,7 +1872,8 @@ module EscapeAnalysis =
         match runsFor state.Assumptions assembly key with
         | Runs.Opaque reason -> state, opaqueFromEntry reason
         | Runs.Primitive primitive ->
-            state, contracted (contractRaises state (IntrinsicPrimitive.contract primitive)) [] []
+            let raised = contractRaises state (IntrinsicPrimitive.contract primitive)
+            state, contracted (List.map fst raised) [] (List.choose snd raised)
         | Runs.Native native -> state, contracted (exactly (NativeMethod.contract native).Raises) [] []
         | Runs.ResourceLookup -> state, contracted (exactly ResourceLookup.raises) [] []
         | Runs.Assumed assumption ->
@@ -1985,16 +2052,16 @@ module EscapeAnalysis =
 
             // 1. What the instruction raises by itself. What a `rethrow` raises is its handler's to
             // say, which `rethrows` below records.
-            let state, raises, opaque =
+            let state, raises, opaque, calls =
                 match OpcodeFaults.ofIlOp op with
                 | OpcodeFaults.Unmodelled ->
                     match op with
-                    | IlOp.Nullary NullaryIlOp.Rethrow -> state, raises, opaque
-                    | _ -> state, raises, (offset, Opacity.UnmodelledOpcode, None) :: opaque
+                    | IlOp.Nullary NullaryIlOp.Rethrow -> state, raises, opaque, calls
+                    | _ -> state, raises, (offset, Opacity.UnmodelledOpcode, None) :: opaque, calls
                 | OpcodeFaults.Raises faults ->
-                    let state, raises =
-                        ((state, raises), faults)
-                        ||> List.fold (fun (state, raises) fault ->
+                    let state, raises, calls =
+                        ((state, raises, calls), faults)
+                        ||> List.fold (fun (state, raises, calls) fault ->
                             let state, impossible =
                                 if fault = OpcodeFault.TypeInitialization then
                                     typeInitializationImpossible state op methodTarget
@@ -2002,12 +2069,13 @@ module EscapeAnalysis =
                                     state, false
 
                             if impossible then
-                                state, raises
+                                state, raises, calls
                             else
-                                state, (offset, ThrownType.Exactly (faultType state fault)) :: raises
+                                let raised, constructed = raisedAt offset [ faultRaises state fault ]
+                                state, raised @ raises, constructed @ calls
                         )
 
-                    state, raises, opaque
+                    state, raises, opaque, calls
 
             // 2. What the instruction throws explicitly: each object its operand may be. A null one
             // raises only the fault `OpcodeFaults` names for `throw`.
@@ -2086,8 +2154,9 @@ module EscapeAnalysis =
                         ->
                         // The body's call to itself, which the JIT expands where it stands
                         // (`gtIsRecursiveCall`): no call happens, so the raises are this offset's.
-                        let raisedHere (thrown : ThrownType list) =
-                            state, (thrown |> List.map (fun thrown -> offset, thrown)) @ raises, opaque, calls
+                        let raisedHere (raised : (ThrownType * MethodKey option) list) =
+                            let raisedHere, constructed = raisedAt offset raised
+                            state, raisedHere @ raises, opaque, constructed @ calls
 
                         match IntrinsicBody.expandSelfCall state.Profile expansion with
                         | SelfCallExpansion.Constant _ -> state, raises, opaque, calls
@@ -2191,11 +2260,10 @@ module EscapeAnalysis =
                             (offset, CallSite.Direct callee, passedAt offset (call = UnaryMetadataTokenIlOp.Newobj))
                             :: calls
                     | MetadataOperand.FromMetadata _, Some (CallTarget.ArrayAccessor (arrayType, accessor)), _ ->
-                        let raised =
-                            arrayAccessorRaises state arrayType accessor
-                            |> List.map (fun thrown -> offset, thrown)
+                        let raised, constructed =
+                            arrayAccessorRaises state arrayType accessor |> raisedAt offset
 
-                        state, raised @ raises, opaque, calls
+                        state, raised @ raises, opaque, constructed @ calls
                     | MetadataOperand.FromMetadata _, Some CallTarget.DependsOnInstantiation, _ ->
                         state, raises, (offset, Opacity.DependsOnInstantiation, None) :: opaque, calls
                     // Binding the token fails, which step 0 recorded; there is nothing to call.

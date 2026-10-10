@@ -135,6 +135,30 @@ public static class Messages
     public static string Impostor() => SR.InternalGetResourceString("key");
 }
 
+// The runtime makes the exception of each of these faults by running its parameterless
+// constructor, which looks up its message.
+public static class Faults
+{
+    public sealed class Cell { public int Value; }
+
+    public static int Field(Cell cell) => cell.Value;
+
+    public static int Element(int[] array, int index) => array[index];
+
+    public static string Cast(object value) => (string)value;
+
+    public static int Sum(int x, int y) => checked(x + y);
+
+    public static int Quotient(int x, int y) => x / y;
+
+    // A multidimensional array's accessor is a method the runtime supplies, which faults as
+    // `ldelem` does.
+    public static int Grid(int[,] grid) => grid[0, 0];
+
+    // Running out of memory raises an object the runtime made in advance, so nothing is looked up.
+    public static object Allocate() => new object();
+}
+
 public static class Cases
 {
     public static void ThrowsDirectly() { throw new InvalidOperationException("boom"); }
@@ -893,6 +917,64 @@ public static class SR
                 Unknown = Some false
                 Assumes = Some []
             }
+            // Each fault's constructor looks up its message, and the lookup's contract has this
+            // exception, which none of these methods raises otherwise.
+            { expect "Fixture.Faults" "Field" with
+                Contains =
+                    [
+                        "=System.NullReferenceException"
+                        "=System.Threading.ThreadInterruptedException"
+                    ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.Faults" "Element" with
+                Contains =
+                    [
+                        "=System.IndexOutOfRangeException"
+                        "=System.Threading.ThreadInterruptedException"
+                    ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.Faults" "Cast" with
+                Contains =
+                    [
+                        "=System.InvalidCastException"
+                        "=System.Threading.ThreadInterruptedException"
+                    ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.Faults" "Sum" with
+                Contains = [ "=System.OverflowException" ; "=System.Threading.ThreadInterruptedException" ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.Faults" "Quotient" with
+                Contains =
+                    [
+                        "=System.DivideByZeroException"
+                        "=System.Threading.ThreadInterruptedException"
+                    ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.Faults" "Grid" with
+                Contains =
+                    [
+                        "=System.IndexOutOfRangeException"
+                        "=System.Threading.ThreadInterruptedException"
+                    ]
+                Unknown = Some false
+                Assumes = Some []
+            }
+            { expect "Fixture.Faults" "Allocate" with
+                Contains = [ "=System.OutOfMemoryException" ]
+                Excludes = [ "=System.Threading.ThreadInterruptedException" ]
+                Unknown = Some false
+                Assumes = Some []
+            }
             { expect "Fixture.ContextCases" "CallsSealedParameter" with
                 Contains = [ "=Fixture.Bark" ]
                 Unknown = Some false
@@ -1047,6 +1129,19 @@ public static class SR
         Assembly.readFile
             loggerFactory
             (Path.Combine (FrameworkUnderTest.sharedFrameworkDirectory (), "System.Private.CoreLib.dll"))
+
+    /// The parameterless instance constructor of `corelib`'s exception type of this namespace and
+    /// name.
+    let private parameterlessConstructor (corelib : DumpedAssembly) (ns : string) (name : string) : MethodKey =
+        let ty =
+            match corelib.TryGetTopLevelTypeDef ns name with
+            | Some ty -> ty
+            | None -> failwith $"CoreLib defines no %s{ns}.%s{name}"
+
+        ty.Methods
+        |> Seq.filter (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Signature.ParameterTypes.IsEmpty)
+        |> Seq.exactlyOne
+        |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
 
     /// An analysis over the host's CoreLib and `assemblies`, with `bind` applied to the load
     /// context, for the host's JIT on a CPU `profile` describes.
@@ -1476,17 +1571,7 @@ public static class SR
             // The parameterless constructors of the exceptions it makes before raising them.
             let constructors =
                 Assumption.constructs assumption
-                |> List.map (fun name ->
-                    let ty =
-                        match corelib.TryGetTopLevelTypeDef name.Namespace name.Name with
-                        | Some ty -> ty
-                        | None -> failwith $"CoreLib defines no %O{name}"
-
-                    ty.Methods
-                    |> Seq.filter (fun m -> m.Name = ".ctor" && not m.IsStatic && m.Signature.ParameterTypes.IsEmpty)
-                    |> Seq.exactlyOne
-                    |> fun m -> MethodKey.make corelib m.TryMetadata.Value.Handle
-                )
+                |> List.map (fun name -> parameterlessConstructor corelib name.Namespace name.Name)
 
             let constructed (allowed : Set<Assumption>) : EscapeAnalysisState * Escapes list =
                 ((analysis allowed, []), constructors)
@@ -1888,19 +1973,49 @@ public static class Cases
 
             escapes, shown
 
-        let instructionFaultName (fault : InstructionFault) : string =
-            match fault with
-            | InstructionFault.NullAddress -> "=System.NullReferenceException"
-            | InstructionFault.ImmediateOutOfRange -> "=System.ArgumentOutOfRangeException"
-            | InstructionFault.ZeroDivisor -> "=System.DivideByZeroException"
-            | InstructionFault.QuotientOverflow -> "=System.OverflowException"
+        // What the parameterless constructor of each exception these faults raise raises.
+        let mutable constructorShown = Map.empty
+
+        for ns, name in
+            [
+                "System", "NullReferenceException"
+                "System", "DataMisalignedException"
+                "System", "DivideByZeroException"
+                "System", "OverflowException"
+            ] do
+            let next, escapes =
+                EscapeAnalysis.escapes analysis (parameterlessConstructor corelib ns name)
+
+            analysis <- next
+            constructorShown <- constructorShown.Add ($"%s{ns}.%s{name}", render analysis escapes)
+
+        let constructorShown = constructorShown
+
+        // A fault raises its exception, and what the constructor the runtime runs to make it raises.
+        let made (fullName : string) (making : ExceptionMaking option) : Set<string> =
+            match making with
+            | Some ExceptionMaking.ParameterlessConstructor -> Set.add ("=" + fullName) constructorShown.[fullName]
+            | _ -> Set.singleton ("=" + fullName)
+
+        let instructionFaultShown (fault : InstructionFault) : Set<string> =
+            let fullName =
+                match fault with
+                | InstructionFault.NullAddress -> "System.NullReferenceException"
+                | InstructionFault.ImmediateOutOfRange -> "System.ArgumentOutOfRangeException"
+                | InstructionFault.ZeroDivisor -> "System.DivideByZeroException"
+                | InstructionFault.QuotientOverflow -> "System.OverflowException"
+
+            made fullName (ExceptionMaking.ofInstructionFault fault)
 
         let mutable wholePrimitives = 0
 
-        let faultName (fault : PrimitiveFault) : string =
-            match fault with
-            | PrimitiveFault.NullReference -> "=System.NullReferenceException"
-            | PrimitiveFault.DataMisaligned -> "=System.DataMisalignedException"
+        let faultShown (fault : PrimitiveFault) : Set<string> =
+            let fullName =
+                match fault with
+                | PrimitiveFault.NullReference -> "System.NullReferenceException"
+                | PrimitiveFault.DataMisaligned -> "System.DataMisalignedException"
+
+            made fullName (Some (ExceptionMaking.ofPrimitiveFault fault))
 
         for KeyValue (handle, method) in corelib.Methods do
             if IntrinsicBody.isIntrinsic corelib handle then
@@ -1921,8 +2036,10 @@ public static class Cases
                     primitives <- primitives + 1
 
                     for fault, _ in (IntrinsicPrimitive.contract primitive).Raises do
-                        if not (shown.Contains (faultName fault)) then
-                            failures.Add $"%s{describe ()} lacks %s{faultName fault}, which %A{primitive} can raise"
+                        for wanted in faultShown fault do
+                            if not (shown.Contains wanted) then
+                                failures.Add
+                                    $"%s{describe ()} lacks %s{wanted}, which %A{primitive} can raise by its fault %A{fault}"
                 | None, IntrinsicBody.VmSubstitution ->
                     // The VM chooses the substitute by instantiation; where it is a primitive, that
                     // is the whole method.
@@ -1932,8 +2049,8 @@ public static class Cases
 
                         let wanted =
                             (IntrinsicPrimitive.contract primitive).Raises
-                            |> List.map (fst >> faultName)
-                            |> Set.ofList
+                            |> List.map (fst >> faultShown)
+                            |> Set.unionMany
 
                         if escapes.Unknown || shown <> wanted then
                             failures.Add $"%s{describe ()}: %A{primitive} raises exactly %A{Set.toList wanted}"
@@ -1980,8 +2097,8 @@ public static class Cases
                             let wanted =
                                 faults
                                 |> Seq.filter (fun fault -> fault <> InstructionFault.ImmediateOutOfRange)
-                                |> Seq.map instructionFaultName
-                                |> Set.ofSeq
+                                |> Seq.map instructionFaultShown
+                                |> Set.unionMany
                                 |> Set.union (if viaHelper then rangeHelperShown else Set.empty)
 
                             for wanted in wanted do

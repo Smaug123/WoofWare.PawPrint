@@ -371,6 +371,7 @@
     <Compile Include="TestNativeMethod.fs" />
     <Compile Include="TestNativeContractTable.fs" />
     <Compile Include="TestAssumption.fs" />
+    <Compile Include="TestExceptionMaking.fs" />
     <Compile Include="TestStringConstructor.fs" />
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />
     <Compile Include="TestEmulatedRuntime.fs" />
