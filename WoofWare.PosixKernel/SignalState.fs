@@ -249,7 +249,7 @@ module SignalReceiverRefusal =
     let describe (refusal : SignalReceiverRefusal) : string =
         match refusal with
         | SignalReceiverRefusal.LeaderBlocks signal ->
-            $"%O{signal} is sent to the process as a whole and caught, and the process's leader blocks it while another task does not, so a task other than the leader would take it. Which one differs between flavours, and on Linux depends on which tasks took earlier signals; this kernel delivers a process's own signals to its leader only."
+            $"%O{signal} is sent to the process as a whole, and the process's leader blocks it while another task does not, so a task other than the leader would take it: a caught signal to run its handler, and under Linux an ignored one (SIGCONT at its default included) to discard it, which Linux leaves pending on the process until then. Which task differs between flavours, and on Linux depends on which tasks took earlier signals; this kernel delivers a process's own signals to its leader only."
         | SignalReceiverRefusal.DefaultBehindHandlers signal ->
             $"returning to user mode, a task would take %O{signal}, whose default stops or continues the process, after handler frames were pushed for other signals at the same return. What a stopped process does with frames already pushed has not been measured."
         | SignalReceiverRefusal.PendingForProcessAndLeader signal ->

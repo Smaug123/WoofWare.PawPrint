@@ -306,6 +306,11 @@ A `SyscallOutcome` is a `SyscallAnswer` (`SyscallOutcome.Answered`), the task as
 
 `UnixPathResolution.currentDirectoryPath` is the current directory's path, for a client that wants it without a buffer.
 
+A symbolic link's own mode is `UnixPathResolution.fchmodat` with `AT_SYMLINK_NOFOLLOW`: Linux answers `EOPNOTSUPP`, and Darwin changes it.
+There is no `lchmod` function, since neither kernel has that syscall.
+On Linux, glibc's `lchmod(3)` is that `fchmodat` from `AT_FDCWD`, so a client implementing it calls `fchmodat`.
+Darwin's C library implements it with `setattrlist(2)` instead, which answers a non-owner `EACCES` rather than `EPERM`, and refuses `S_ISGID` outside the inode's group with `EPERM` rather than dropping the bit; this library does not model `setattrlist`.
+
 #### Names in the filesystem
 
 | Call | Function | Answers |
@@ -365,7 +370,7 @@ A `SyscallOutcome` is a `SyscallAnswer` (`SyscallOutcome.Answered`), the task as
 | `getsockopt(2)`, before the length is read | `UnixSocket.admitGetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer)` | `Result<GetSockOptAdmission, SocketOptionRefusal>` |
 | `getsockopt(2)`, given the length | `UnixSocket.getsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer) (declaredLength : uint32 option)` | `Result<GetSockOptAnswer * UnixSystem, SocketOptionRefusal>` |
 
-A connected TCP socket's `read` and `write` move bytes through its connection, which holds each direction's bytes in the sender's send buffer and the receiver's receive buffer, sized from the machine's TCP sysctls, and each end's state: open, a FIN received, reset, or closed. A close over bytes left unread resets the peer; otherwise it sends a FIN behind what it had sent. `poll`, epoll and kqueue read a connected socket's readiness from the same state, and each transfer wakes the waiters each flavour wakes: every arrival of bytes, and room freed in a send buffer (on Linux once after a write ran out of room, when the buffer has drained to two thirds full; on Darwin as bytes leave it). `FIONREAD` reports what waits to be read, and `SO_ERROR` takes a reset's error. A blocking read with nothing to answer sleeps until bytes, a FIN or a reset arrive; a blocking write takes what fits and sleeps for the rest, woken on Linux once its send buffer has drained to two thirds full and on Darwin once there is room for it to take something, and it returns once every byte is taken. Every task asleep on a socket wakes for what it waits on.
+A connected TCP socket's `read` and `write` move bytes through its connection, which holds each direction's bytes in the sender's send buffer and the receiver's receive buffer, sized from the machine's TCP sysctls, and each end's state: open, a FIN received, reset, or closed. A close over bytes left unread resets the peer; otherwise it sends a FIN behind what it had sent. A listener's last close resets every client still in its accept queue, oldest first, whatever the listener's `SO_LINGER`. `poll`, epoll and kqueue read a connected socket's readiness from the same state, and each transfer wakes the waiters each flavour wakes: every arrival of bytes, and room freed in a send buffer (on Linux once after a write ran out of room, when the buffer has drained to two thirds full; on Darwin as bytes leave it). `FIONREAD` reports what waits to be read, and `SO_ERROR` takes a reset's error. A blocking read with nothing to answer sleeps until bytes, a FIN or a reset arrive; a blocking write takes what fits and sleeps for the rest, woken on Linux once its send buffer has drained to two thirds full and on Darwin once there is room for it to take something, and it returns once every byte is taken. Every task asleep on a socket wakes for what it waits on.
 
 `recv` and `send` reach a connected TCP socket through the same transfer, sleep and wake as `read` and `write`, and take their flag word raw, in the flavour's numbering (`MessageFlag.number`). `MSG_PEEK` answers bytes without taking them, `MSG_DONTWAIT` makes a `recv`, and a Linux `send`, non-blocking (Darwin's `send` ignores it), and `MSG_NOSIGNAL` keeps an `EPIPE` from raising `SIGPIPE`; any other flag is refused, naming it. Where they part from `read` and `write` is measured: Linux screens their buffer before it looks up the descriptor, a Linux `recv` of nothing waits as a longer one would, and Darwin's `send` marks no description written.
 
@@ -621,6 +626,8 @@ match SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine
 
 `UnixSignal.kill` and `UnixSignal.pthreadKill` generate a signal, and answer a `KillOutcome`: the process carries on (`KillOutcome.ProcessContinues`), with the signal pending or discarded; the signal stopped it (`KillOutcome.ProcessStopped`); or the signal killed it at once (`KillOutcome.ProcessEnded`).
 `kill` of another process, or of a process group, is refused.
+A signal the process ignores, and a `SIGCONT` at its default, which has nothing to resume, are discarded as they are sent, unless the task they are aimed at blocks them: for a signal sent to the process, that is the leader under Linux and every task under Darwin. So such a signal never wakes a sleeping call.
+One sent while blocked stays pending, and is discarded as a task takes it.
 `UnixSignal.sigaction` installs a `SignalDisposition`: `SignalDisposition.Default`, `SignalDisposition.Ignore`, or `SignalDisposition.Catch` of a `SignalCatch`, made with `SignalCatch.ofHandler`, which holds the client's `'Handler`.
 
 `UnixSignal.sigprocmask` changes every task's mask on Darwin, as Darwin's does, and refuses (`SigprocmaskRefusal`) a call that would unblock a signal pending for a task other than the caller: Darwin was measured neither to wake that task for it nor always to deliver it as the task next returns to user mode, both of which this library would do.
@@ -635,7 +642,7 @@ It answers a `ReturnToUserOutcome`:
 * `ReturnToUserOutcome.RunHandlers (frames, system)`: the frames the kernel pushed, innermost first, each with the signal, the disposition and the mask to restore. The client runs each handler, and when one returns it calls `UnixSignal.sigreturn` with that frame's `HandlerFrame.Id` and asks `onReturnToUser` again.
 * `ReturnToUserOutcome.ProcessEnded ended`: a signal whose default action terminates the process killed it (see below).
 * `ReturnToUserOutcome.ProcessStopped (signal, system)`: a signal whose default action stops the process stopped it (see below).
-* `ReturnToUserOutcome.ContinueDiscarded (signal, system)`: the kernel discarded a `SIGCONT` at its default as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
+* `ReturnToUserOutcome.ContinueDiscarded (signal, system)`: the kernel discarded a `SIGCONT` at its default, pending while the task blocked it, as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
 
 A signal whose default terminates the process ends it where the library applies the default: at generation, when some task can take it (`KillOutcome.ProcessEnded`, and `WriteOutcome.ProcessEnded` for a write's `SIGPIPE`), and otherwise when a task that blocked it can take it, as the task returns to user mode (`ReturnToUserOutcome.ProcessEnded`): after a mask call or a `sigreturn` that unblocks it, or from a `sigsuspend` whose temporary mask lets it through.
 Either answer is the `EndedProcess`, killed by the signal (`ProcessTermination.Signaled`, with the core flag), and no handler runs, not even one whose frame was pushed at the same return; the client ends the process on its machine with `SimulatedMachine.endProcess`, as for an exit.
@@ -722,8 +729,8 @@ A call that ends the process answers an `EndedProcess` instead of a system: `exi
 `EndedProcess.processId` is which process it was, and `EndedProcess.endedIn` the view it ended in.
 Only such a call makes one, and `SimulatedMachine.endProcess` takes nothing else.
 
-`SimulatedMachine.endProcess ended machine` ends the process on the machine: it releases what only the process's calls held, then closes every descriptor in the order each kernel measurably does (Linux drops them lowest first and releases the last let go of first; Darwin closes them highest first), as `close` closes each: sending its peers their FINs, or resets where it left bytes unread, and letting its locks, pipes, listeners and event queues go, and removes the process.
-It refuses (`ProcessEndRefusal`) where a close would: a listener holding a connection another process's open socket made is not released, since what the reset does to that socket is not measured.
+`SimulatedMachine.endProcess ended machine` ends the process on the machine: it releases what only the process's calls held, then closes every descriptor in the order each kernel measurably does (Linux drops them lowest first and releases the last let go of first; Darwin closes them highest first), as `close` closes each: sending its peers their FINs, or resets where it left bytes unread, resetting the clients left in its listeners' accept queues, whichever process holds them, and letting its locks, pipes, listeners and event queues go, and removes the process.
+It refuses (`ProcessEndRefusal`) where a close would: so far, the last close of a connected socket whose `SO_LINGER` would make it reset the connection or wait.
 A process alone on its machine is ended on the machine `SimulatedMachine.ofSystem (EndedProcess.endedIn ended)` makes of the view the process ended in.
 
 ## Several processes
