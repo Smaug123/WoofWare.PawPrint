@@ -354,6 +354,24 @@ is free to a fresh bind at once.
 Kestrel never sets t > 0. `.NET`'s `DoCloseHandle` retries a close that answers
 `EWOULDBLOCK`, which Darwin 27 never did here.
 
+### 2.9 Once both ends have shut writing (`tcp-shutdown-exchange.c`)
+
+A follow-up probe, measured 2026-10-10 twice on each flavour with identical
+output, for states stage 3's review found unmeasured:
+
+| | Linux | Darwin |
+|---|---|---|
+| both FINs arrived, then any `shutdown` at either end (K) | `ENOTCONN`: both ends are in `TCP_CLOSE` | `ENOTCONN`, as 2.1's rules give |
+| both FINs arrived, then a close over unread bytes (U, V `one-cfin`) | no reset: the peer reads 0, `SO_ERROR` 0 | the same |
+| the closer shut writing, the peer's FIN still queued behind its bytes, then the closer closes over them (Q, V `full-cfin`) | reset; the peer, whose own FIN is queued, reads 0 first (`SOCK_DONE` is tested before the error), and `SO_ERROR` is `ECONNRESET` | **no reset**, not even 5 s later (T): the peer reads 0, `SO_ERROR` 0 |
+| the closer shut writing, the peer did not, then a close over unread bytes (V `one`, `full`) | reset; the peer, in `CLOSE_WAIT`, reads 0 and has `EPIPE` pending | reset; `ECONNRESET` |
+| the peer shut writing, the closer did not (W) | reset; `ECONNRESET` | reset; `ECONNRESET` |
+
+So a close over unread bytes resets except on Linux once both FINs have
+arrived, and on Darwin once both ends have made theirs; and on Linux a read
+of a reset end answers 0 rather than the error once the peer's FIN has
+arrived, whatever the end itself has sent.
+
 ## 3. Design
 
 ### 3.1 How a shut direction is represented
@@ -715,6 +733,14 @@ been rebased onto main (with #1790).
      endpoints (stage 4) must decide at the call.
    - `SocketWake.signalTransfer` refuses `TcpWake.ShutDown`, which only
      `shutdown` raises, until stage 4 maps it.
+   - Section 2.9's rows, measured for this stage, are modelled: Linux's
+     `ENOTCONN` after a complete exchange, the closes over unread bytes
+     that do not reset, and Linux's end of file before a reset's error once
+     the peer's FIN has arrived. Bytes still on their way to a closer that
+     did not reset stay counted in the peer's send buffer on Darwin, as
+     after a reset. Linux's `TCP_CLOSE` after a complete exchange also
+     changes what `getpeername` answers there (`inet_getname`); that is the
+     syscall's, stage 4's.
 4. **`shutdown(2)` on connected sockets.**
    - The syscall and its screens, readiness, `TcpWake.ShutDown`, parked
      calls, and the passive closer's port.

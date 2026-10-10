@@ -351,6 +351,12 @@ module internal TcpTransfer =
         | TcpFin.NotSent
         | TcpFin.Queued _ -> false
 
+    /// Whether both FINs have arrived.
+    let private exchangeComplete (transfer : TcpTransfer) : bool =
+        match transfer.ToClient.Fin, transfer.ToServer.Fin with
+        | TcpFin.Arrived _, TcpFin.Arrived _ -> true
+        | _ -> false
+
     /// Every way `transfer` breaks the rules the functions here keep, as text;
     /// empty when it breaks none.
     let violations (transfer : TcpTransfer) : string list =
@@ -439,9 +445,11 @@ module internal TcpTransfer =
                         if count > outbound.SendCapacity then
                             $"%A{sender} has %d{count} bytes stranded in a send buffer of %d{outbound.SendCapacity}"
 
-                        match (towards sender transfer).Receiver with
-                        | TcpEndState.Reset _ -> ()
-                        | other -> $"%A{sender} has %d{count} bytes stranded, but is in %A{other} rather than reset"
+                        match outbound.Receiver with
+                        | TcpEndState.Reset _
+                        | TcpEndState.Closed -> ()
+                        | TcpEndState.Open _ ->
+                            $"%A{sender} has %d{count} bytes stranded, but its peer is open to receive them"
                 ]
 
         ofDirection ConnectionEnd.Client @ ofDirection ConnectionEnd.Server @ ofRules
@@ -957,8 +965,16 @@ module internal TcpTransfer =
             | TcpEndState.Open _, _ when receiveShut receiver transfer -> TcpReadAnswer.EndOfFile, [], transfer
             | TcpEndState.Open _, TcpFin.Queued _ -> failwith unqueuedFin
             | TcpEndState.Open _, _ -> TcpReadAnswer.WouldBlock, [], transfer
-            | TcpEndState.Reset errorPending, _ ->
-                if closeWaiting receiver transfer || not errorPending then
+            // `SOCK_DONE`, which the peer's FIN set, comes before the error
+            // whatever this end has sent (`tcp-shutdown-exchange.c`, Q).
+            | TcpEndState.Reset errorPending, fin ->
+                let finArrived =
+                    match fin with
+                    | TcpFin.Arrived _ -> true
+                    | TcpFin.NotSent
+                    | TcpFin.Queued _ -> false
+
+                if finArrived || not errorPending then
                     TcpReadAnswer.EndOfFile, [], transfer
                 else
                     TcpReadAnswer.Failed (resetError receiver transfer), [], takeError ()
@@ -1082,8 +1098,8 @@ module internal TcpTransfer =
     /// transfer after; or why this kernel refuses it.
     ///
     /// Linux applies every side it is asked to, again or not, and answers 0,
-    /// unless the connection was reset, when it answers `ENOTCONN` and the
-    /// error stays pending. Darwin applies `SHUT_RDWR` side by side, as XNU's
+    /// unless the connection was reset, or both FINs have arrived, when it
+    /// answers `ENOTCONN` (and a reset's error stays pending). Darwin applies `SHUT_RDWR` side by side, as XNU's
     /// `soshutdownlock` does: the receive side fails with `ENOTCONN` if it is
     /// already shut (by an earlier `SHUT_RD`, the peer's FIN, or a reset),
     /// and then nothing else is applied; the send side likewise, after the
@@ -1123,6 +1139,11 @@ module internal TcpTransfer =
                 | TcpTransferRules.Darwin _ -> []
 
             Ok (TcpShutdownAnswer.NotConnected, wakes, transfer)
+        // Once both FINs have arrived, a Linux socket is in `TCP_CLOSE` too
+        // (measured, `tcp-shutdown-exchange.c` section K). Darwin's answer
+        // follows from its rule: both sides are already shut.
+        | TcpEndState.Open _ when isLinux transfer && exchangeComplete transfer ->
+            Ok (TcpShutdownAnswer.NotConnected, [ TcpWake.ShutDown (shutter, how) ], transfer)
         | TcpEndState.Open _ ->
 
         match shutdownRefusal shutter how transfer with
@@ -1204,8 +1225,9 @@ module internal TcpTransfer =
         | _ -> false
 
     /// `closer`'s socket closes, sending a FIN unless it made one already, or
-    /// a reset: if bytes are left unread, or if `abortive` and the exchange of
-    /// FINs is not complete.
+    /// a reset: if bytes are left unread (but not on Linux once both FINs
+    /// have arrived, nor on Darwin once both ends have made theirs), or if
+    /// `abortive` and the exchange of FINs is not complete.
     let private closeWith
         (context : string)
         (abortive : bool)
@@ -1258,14 +1280,22 @@ module internal TcpTransfer =
         // covers them.
         let unread = ByteQueue.length own.Receiving > 0
 
+        // A close over unread bytes resets, except on Linux once both FINs
+        // have arrived (`tcp_close` in `TCP_CLOSE`) and on Darwin once both
+        // ends have made theirs (measured, `tcp-shutdown-exchange.c`
+        // sections U, Q, V and W; on Darwin no reset came within 5 s).
+        let unreadResets =
+            unread
+            && not (
+                if isLinux transfer then
+                    exchangeComplete transfer
+                else
+                    sendShut closer transfer && sendShut peer transfer
+            )
+
         // Once both FINs have arrived, a close under linger zero is the
         // ordinary close (`tcp_disconnect` resets only before that).
-        let exchangeDone =
-            match outbound.Fin, own.Fin with
-            | TcpFin.Arrived _, TcpFin.Arrived _ -> true
-            | _ -> false
-
-        if unread || (abortive && not exchangeDone) then
+        if unreadResets || (abortive && not (exchangeComplete transfer)) then
             // The peer keeps what is in its receive buffer, and loses what the
             // closer still had to send it. What the peer still had to send
             // the closer is discarded on Linux, and stays counted in the
@@ -1287,19 +1317,28 @@ module internal TcpTransfer =
         else
             // What the closer had left to send keeps draining as the peer
             // reads, and the FIN follows it, unless the closer's
-            // `shutdown(SHUT_WR)` made it already.
+            // `shutdown(SHUT_WR)` made it already. What the peer still had
+            // on its way to the closer will never arrive: Darwin goes on
+            // counting it in the peer's send buffer.
             let wakes, transfer =
                 if sendShut closer transfer then
                     [], transfer
                 else
                     makeFin closer transfer
 
-            wakes, keepingRules context (withTowards closer closedOwn transfer)
+            let transfer =
+                transfer
+                |> strand peer (ByteQueue.length own.Sending)
+                |> withTowards closer closedOwn
+
+            wakes, keepingRules context transfer
 
     /// `closer`'s socket closes. With nothing unread, and nothing on its way
     /// to it, the close is a FIN, unless `shutdown(SHUT_WR)` made one
     /// already: the peer reads what was sent, then end of file. Otherwise it
-    /// is a reset, and the peer gets a pending error.
+    /// is a reset, and the peer gets a pending error; but once both FINs have
+    /// arrived on Linux, or both ends have made theirs on Darwin, bytes left
+    /// unread are discarded without a reset.
     let close (closer : ConnectionEnd) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
         closeWith "close" false closer transfer
 

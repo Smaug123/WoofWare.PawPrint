@@ -448,7 +448,8 @@ module internal TcpTransferReference =
                 @ resetWakes,
                 m
         elif m.Linux then
-            if me.GotReset && me.ResetAfterFin then
+            // `SOCK_DONE`, set by the peer's FIN, is tested before the error.
+            if me.GotReset && me.FinArrived then
                 TcpTransferSeen.EndOfFile, [], m
             elif me.GotReset && me.ErrorWaiting then
                 TcpTransferSeen.ReadFailed (errorAt m r),
@@ -516,7 +517,11 @@ module internal TcpTransferReference =
                 }
                 m
 
-        if me.GotReset then
+        // Once both FINs have arrived, a Linux socket is in `TCP_CLOSE`, as a
+        // reset one is.
+        let exchangeDone = me.FinArrived && m.Ends.[other s].FinArrived
+
+        if me.GotReset || (m.Linux && exchangeDone) then
             Some (TcpShutdownAnswer.NotConnected, (if m.Linux then [ TcpWake.ShutDown (s, how) ] else []), m)
         elif m.Linux then
             // Linux applies whatever is asked, again or not.
@@ -661,8 +666,18 @@ module internal TcpTransferReference =
             // Once both FINs have arrived, a close under linger {1, 0} is the
             // ordinary close.
             let exchangeDone = m.Ends.[p].FinArrived && me.FinArrived
+            // A close over unread bytes resets, but not on Linux once both
+            // FINs have arrived, nor on Darwin once both have been made.
+            let unreadResets =
+                unread
+                && not (
+                    if m.Linux then
+                        exchangeDone
+                    else
+                        m.Ends.[p].FinSent && me.FinSent
+                )
 
-            if unread || (abortive && not exchangeDone) then
+            if unreadResets || (abortive && not exchangeDone) then
                 [ TcpWake.PeerReset p ],
                 m
                 |> setEnd c closedMe
@@ -688,7 +703,19 @@ module internal TcpTransferReference =
                         Stranded = 0
                     }
             else
-                let m = m |> setEnd c closedMe |> setFlow p (forget toPeer)
+                // Whatever was still on its way here will never arrive: on
+                // Darwin it stays counted against its sender.
+                let m =
+                    m
+                    |> setEnd c closedMe
+                    |> setFlow p (forget toPeer)
+                    |> setFlow
+                        c
+                        { toMe with
+                            Arrived = []
+                            InFlight = []
+                            Stranded = (if m.Linux then 0 else toMe.Stranded + toMe.InFlight.Length)
+                        }
 
                 if m.Ends.[p].FinSent then [], m else makeFin c m
 
@@ -980,6 +1007,13 @@ module TestTcpTransfer =
         /// A Linux poll of an end whose send side is shut, while its send
         /// buffer is more than two thirds full.
         | PollOfFullShutSender
+        /// A close over unread bytes that did not reset the peer.
+        | UnreadCloseWithoutReset of SimulatedUnixFlavour
+        /// A Linux read of a reset end with its error pending, which answered
+        /// end of file because the peer's FIN had arrived.
+        | EndOfFileBeforeError
+        /// A Linux shutdown after both FINs arrived, neither end reset.
+        | ShutdownAfterExchange
 
     let private reached
         (flavour : SimulatedUnixFlavour)
@@ -1013,6 +1047,18 @@ module TestTcpTransfer =
                 not before.Ends.[w].GotReset
                 ->
                 Reached.WriteAfterShutdown flavour
+            | TcpTransferOp.Close e, TcpTransferSeen.Closed
+            | TcpTransferOp.Abort e, TcpTransferSeen.Closed when
+                not before.Ends.[e].GotReset
+                && not before.Ends.[TcpTransferReference.other e].Closed
+                && (not before.Flows.[e].Arrived.IsEmpty || not before.Flows.[e].InFlight.IsEmpty)
+                && not after.Ends.[TcpTransferReference.other e].GotReset
+                ->
+                Reached.UnreadCloseWithoutReset flavour
+            | TcpTransferOp.Read (r, _, _), TcpTransferSeen.EndOfFile when
+                before.Linux && before.Ends.[r].GotReset && before.Ends.[r].ErrorWaiting
+                ->
+                Reached.EndOfFileBeforeError
             | TcpTransferOp.Poll e, _ when
                 before.Linux
                 && not before.Ends.[e].GotReset
@@ -1033,6 +1079,10 @@ module TestTcpTransfer =
                 && not before.Ends.[actor op].ShutRead
                 ->
                 Reached.DarwinHalfApplied
+            | TcpTransferOp.Shutdown (e, _), TcpTransferSeen.ShutdownAnswered TcpShutdownAnswer.NotConnected when
+                before.Linux && not before.Ends.[e].GotReset
+                ->
+                Reached.ShutdownAfterExchange
             | _ -> ()
 
             if ends |> List.forall resetNow then
@@ -1138,6 +1188,10 @@ module TestTcpTransfer =
                 Reached.AbortRefused, 5
                 Reached.ResetInCloseWait, 20
                 Reached.PollOfFullShutSender, 10
+                Reached.UnreadCloseWithoutReset SimulatedUnixFlavour.Linux, 5
+                Reached.UnreadCloseWithoutReset SimulatedUnixFlavour.Darwin, 5
+                Reached.EndOfFileBeforeError, 5
+                Reached.ShutdownAfterExchange, 10
             ]
 
         let short =

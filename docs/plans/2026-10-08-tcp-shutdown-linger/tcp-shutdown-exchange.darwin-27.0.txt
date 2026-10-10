@@ -1,0 +1,26 @@
+#	Darwin 27.0.0 arm64
+K	c-first	c	RD	shutdown=-1 ENOTCONN
+K	c-first	c	WR	shutdown=-1 ENOTCONN
+K	c-first	c	RDWR	shutdown=-1 ENOTCONN
+K	c-first	p	RD	shutdown=-1 ENOTCONN
+K	c-first	p	WR	shutdown=-1 ENOTCONN
+K	c-first	p	RDWR	shutdown=-1 ENOTCONN
+K	p-first	c	RD	shutdown=-1 ENOTCONN
+K	p-first	c	WR	shutdown=-1 ENOTCONN
+K	p-first	c	RDWR	shutdown=-1 ENOTCONN
+K	p-first	p	RD	shutdown=-1 ENOTCONN
+K	p-first	p	WR	shutdown=-1 ENOTCONN
+K	p-first	p	RDWR	shutdown=-1 ENOTCONN
+U	c-first	p-read=0,0 soerr(p)=0
+U	p-first	p-read=0,0 soerr(p)=0
+Q	read-first	c-read=0,0 soerr(c)=0
+Q	soerr-first	soerr(c)=0 c-read=0,0
+V	noshut-one	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+V	one	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+V	one-cfin	c-read=0,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+V	full	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+V	full-cfin	c-read=0,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+W	one	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+W	full	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+T	V-full-cfin	at once c-read=0 soerr(c)=0; 5 s later c-read=0 soerr(c)=0
+T	W-full	at once c-read=-1 ECONNRESET soerr(c)=0; 5 s later c-read=0 soerr(c)=0

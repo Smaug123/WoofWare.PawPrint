@@ -426,9 +426,12 @@
          output is embedded from beside its probe. `TestListenerTeardown`
          replays section Q and the reset order, and `TestCrossProcess` the exit
          order. `TestTcpShutdownMeasured` replays sections S, T, R, P and L
-         through the transfer rules. -->
+         through the transfer rules, and the sections of
+         tcp-shutdown-exchange.c beside it. -->
     <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\tcp-shutdown.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.tcpShutdown.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\tcp-shutdown.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.tcpShutdown.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\tcp-shutdown-exchange.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.tcpShutdownExchange.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\tcp-shutdown-exchange.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.tcpShutdownExchange.darwin.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\listener-reset-order.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.listenerResetOrder.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\listener-reset-order.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.listenerResetOrder.darwin.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\listener-exit-order.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.listenerExitOrder.linux.txt" />

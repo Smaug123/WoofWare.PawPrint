@@ -51,11 +51,24 @@ module TestTcpShutdownMeasured =
         /// The line reports something this layer does not model.
         | Elsewhere
 
-    let private measured (flavour : SimulatedUnixFlavour) (section : string) : Measured list =
+    /// The probe whose output a section is replayed from.
+    [<RequireQualifiedAccess>]
+    type private Probe =
+        /// `tcp-shutdown.c`.
+        | Shutdown
+        /// `tcp-shutdown-exchange.c`: once both ends have shut writing.
+        | Exchange
+
+    let private measuredBy (probe : Probe) (flavour : SimulatedUnixFlavour) (section : string) : Measured list =
+        let name =
+            match probe with
+            | Probe.Shutdown -> "tcpShutdown"
+            | Probe.Exchange -> "tcpShutdownExchange"
+
         let resource =
             match flavour with
-            | SimulatedUnixFlavour.Linux -> "WoofWare.PosixKernel.Test.tcpShutdown.linux.txt"
-            | SimulatedUnixFlavour.Darwin -> "WoofWare.PosixKernel.Test.tcpShutdown.darwin.txt"
+            | SimulatedUnixFlavour.Linux -> $"WoofWare.PosixKernel.Test.%s{name}.linux.txt"
+            | SimulatedUnixFlavour.Darwin -> $"WoofWare.PosixKernel.Test.%s{name}.darwin.txt"
 
         use stream =
             match Assembly.GetExecutingAssembly().GetManifestResourceStream resource with
@@ -85,6 +98,9 @@ module TestTcpShutdownMeasured =
                     Mark = Mark.Exact
                 }
         )
+
+    let private measured : SimulatedUnixFlavour -> string -> Measured list =
+        measuredBy Probe.Shutdown
 
     let private countsPattern : Regex =
         Regex @"(fionread=|fionread\(c\)=|kq-read=|kq-write=|p-drained=|p-took=|p-unsent\()-?\d+"
@@ -607,13 +623,133 @@ module TestTcpShutdownMeasured =
                     yield! s.Lines
         ]
 
-    let private disagreements
+    /// `tcp-shutdown-exchange.c`'s sections, each on fresh pairs: both ends
+    /// shut writing (K, U), and closes over unread bytes once one or both
+    /// have (Q, V, W, T).
+    let private sectionsExchange (section : string) (flavour : SimulatedUnixFlavour) : Modelled list =
+        let exchange (s : Session) (cFirst : bool) : unit =
+            s.Write p 1 |> ignore
+
+            if cFirst then
+                s.Shutdown c TcpShutdownHow.Write |> ignore
+                s.Shutdown p TcpShutdownHow.Write |> ignore
+            else
+                s.Shutdown p TcpShutdownHow.Write |> ignore
+                s.Shutdown c TcpShutdownHow.Write |> ignore
+
+        let order (cFirst : bool) = if cFirst then "c-first" else "p-first"
+
+        [
+            match section with
+            | "K" ->
+                for cFirst in [ true ; false ] do
+                    for who in [ c ; p ] do
+                        for how in hows do
+                            let s = Session flavour
+                            exchange s cFirst
+                            let r = s.Shutdown who how
+                            let name = if who = c then "c" else "p"
+                            s.Emit $"K\t%s{order cFirst}\t%s{name}\t%s{howName how}\tshutdown=%s{r}"
+                            yield! s.Lines
+            | "U" ->
+                for cFirst in [ true ; false ] do
+                    let s = Session flavour
+                    exchange s cFirst
+                    s.Close c |> ignore
+                    let r1 = s.Read p 4096
+                    let r2 = s.Read p 4096
+                    let e = s.SoError p
+                    s.Emit $"U\t%s{order cFirst}\tp-read=%s{r1},%s{r2} soerr(p)=%s{e}"
+                    yield! s.Lines
+            | "Q" ->
+                for soErrorFirst in [ false ; true ] do
+                    let s = Session flavour
+                    s.Fill c |> ignore
+                    s.Shutdown c TcpShutdownHow.Write |> ignore
+                    s.Shutdown p TcpShutdownHow.Write |> ignore
+                    s.Close p |> ignore
+
+                    if soErrorFirst then
+                        let e = s.SoError c
+                        let r1 = s.Read c 4096
+                        let r2 = s.Read c 4096
+                        s.Emit $"Q\tsoerr-first\tsoerr(c)=%s{e} c-read=%s{r1},%s{r2}"
+                    else
+                        let r1 = s.Read c 4096
+                        let r2 = s.Read c 4096
+                        let e = s.SoError c
+                        s.Emit $"Q\tread-first\tc-read=%s{r1},%s{r2} soerr(c)=%s{e}"
+
+                    yield! s.Lines
+            | "V"
+            | "W" ->
+                let rows =
+                    if section = "V" then
+                        [
+                            // name, p shuts writing first, c fills, c shuts writing
+                            "noshut-one", false, false, false
+                            "one", true, false, false
+                            "one-cfin", true, false, true
+                            "full", true, true, false
+                            "full-cfin", true, true, true
+                        ]
+                    else
+                        [ "one", false, false, true ; "full", false, true, true ]
+
+                for name, pShuts, full, cShuts in rows do
+                    let s = Session flavour
+
+                    if pShuts then
+                        s.Shutdown p TcpShutdownHow.Write |> ignore
+
+                    if full then s.Fill c |> ignore else s.Write c 1 |> ignore
+
+                    if cShuts then
+                        s.Shutdown c TcpShutdownHow.Write |> ignore
+
+                    s.Close p |> ignore
+                    let r1 = s.Read c 4096
+                    let r2 = s.Read c 4096
+                    let e1 = s.SoError c
+                    let w = s.Write c 100
+                    let e2 = s.SoError c
+
+                    s.Emit
+                        $"%s{section}\t%s{name}\tc-read=%s{r1},%s{r2} soerr(c)=%s{e1} c-write100=%s{w} soerr(c)=%s{e2}"
+
+                    yield! s.Lines
+            | "T" ->
+                for name, pShuts in [ "V-full-cfin", true ; "W-full", false ] do
+                    let s = Session flavour
+
+                    if pShuts then
+                        s.Shutdown p TcpShutdownHow.Write |> ignore
+
+                    s.Fill c |> ignore
+                    s.Shutdown c TcpShutdownHow.Write |> ignore
+                    s.Close p |> ignore
+                    let r1 = s.Read c 4096
+                    let e1 = s.SoError c
+                    // No timer of the kernel's fires in the 5 s: the model
+                    // has none to fire.
+                    let r2 = s.Read c 4096
+                    let e2 = s.SoError c
+
+                    s.Emit
+                        $"T\t%s{name}\tat once c-read=%s{r1} soerr(c)=%s{e1}; 5 s later c-read=%s{r2} soerr(c)=%s{e2}"
+
+                    yield! s.Lines
+            | other -> failwith $"tcp-shutdown-exchange.c has no section %s{other}"
+        ]
+
+    let private disagreementsBy
+        (probe : Probe)
         (flavour : SimulatedUnixFlavour)
         (section : string)
         (model : SimulatedUnixFlavour -> Modelled list)
         : string list
         =
-        let probe = measured flavour section
+        let probe = measuredBy probe flavour section
         let model = model flavour
 
         if probe.Length <> model.Length then
@@ -643,6 +779,8 @@ module TestTcpShutdownMeasured =
                         Some $"measured %s{expected}\n   model %s{text}"
             )
 
+    let private disagreements = disagreementsBy Probe.Shutdown
+
     let private flavours : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
 
@@ -670,6 +808,18 @@ module TestTcpShutdownMeasured =
     let ``a close under linger zero resets by the two FINs, as each flavour measured (section L)`` () : unit =
         for flavour in flavours do
             disagreements flavour "L" sectionL |> shouldEqual []
+
+    [<Test>]
+    let ``once both ends have shut writing, as each flavour measured (tcp-shutdown-exchange.c)`` () : unit =
+        for flavour in flavours do
+            for section in [ "K" ; "U" ; "Q" ; "V" ; "W" ; "T" ] do
+                let probe = measuredBy Probe.Exchange flavour section
+
+                if probe.IsEmpty then
+                    failwith $"%A{flavour}: the probe printed no section %s{section}"
+
+                disagreementsBy Probe.Exchange flavour section (sectionsExchange section)
+                |> shouldEqual []
 
     [<Test>]
     let ``the model refuses only where the probe marked the outcome as waiting on a timer`` () : unit =
