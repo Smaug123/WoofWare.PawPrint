@@ -70,6 +70,31 @@ type KillOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality
     /// The signal killed the process.
     | ProcessEnded of EndedProcess<'Task, 'Handler>
 
+/// What a task's return to user mode did, as `UnixSignal.onReturnToUser`
+/// answers it: the `SignalDelivery` the kernel decided on, with a default that
+/// terminates the process applied, so that the process has ended.
+[<RequireQualifiedAccess>]
+type ReturnToUserOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// The task took nothing the client acts on, and runs its own code next,
+    /// in this system.
+    | Resumes of UnixSystem<'Task, 'Handler>
+    /// The frames the kernel pushed, innermost first, in this system: see
+    /// `SignalDelivery.RunHandlers`.
+    | RunHandlers of frames : HandlerFrame<'Task, 'Handler> list * UnixSystem<'Task, 'Handler>
+    /// The signal, at its default, stops the whole process, which is this
+    /// system: see `SignalDelivery.DefaultStop`.
+    | ProcessStopped of signal : Signal * UnixSystem<'Task, 'Handler>
+    /// The kernel discarded a SIGCONT at its default as the task took it, and
+    /// the process carries on, as this system: see
+    /// `SignalDelivery.DefaultContinue`.
+    | ContinueDiscarded of signal : Signal * UnixSystem<'Task, 'Handler>
+    /// A signal at a default that terminates the process killed it
+    /// (`SignalDelivery.DefaultTerminate`), and `EndedProcess.termination` is
+    /// `ProcessTermination.Signaled` with the signal and the core flag. No
+    /// handler runs, not even one whose frame was pushed for another signal at
+    /// the same return.
+    | ProcessEnded of EndedProcess<'Task, 'Handler>
+
 /// What became of a `sigsuspend(2)` or `pause(2)` this kernel could answer.
 [<RequireQualifiedAccess>]
 type SigsuspendOutcome =
@@ -281,6 +306,10 @@ module UnixSignal =
     /// reached after frames were pushed. A refusal changes nothing, a mask to
     /// restore included.
     ///
+    /// A signal whose default terminates the process ends it here, and the
+    /// answer is then the ended process rather than a system to make another
+    /// call in, as `kill` answers one that kills at once.
+    ///
     /// A task asleep in a syscall is not in user mode, and returns to it only
     /// once the syscall has answered. A signal ends that sleep through the
     /// syscall's finishing call instead (see `SyscallInterruption`), after which
@@ -291,7 +320,7 @@ module UnixSignal =
     let onReturnToUser<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SignalDelivery<'Task, 'Handler> option * UnixSystem<'Task, 'Handler>, SignalReceiverRefusal>
+        : Result<ReturnToUserOutcome<'Task, 'Handler>, SignalReceiverRefusal>
         =
         // Looked up rather than asked of `UnixTaskTable.parkedFor`, so that a
         // name that is no task is left to `SignalState.onReturnToUser`'s own
@@ -305,7 +334,22 @@ module UnixSignal =
         | None ->
 
         SignalState.onReturnToUser system.Process.CoreDumps system.Leader (tasksOf system) task system.Process.Signals
-        |> Result.map (fun (delivery, signals) -> delivery, withSignals signals system)
+        |> Result.map (fun (delivery, signals) ->
+            let after = withSignals signals system
+
+            match delivery with
+            | None -> ReturnToUserOutcome.Resumes after
+            | Some (SignalDelivery.RunHandlers frames) -> ReturnToUserOutcome.RunHandlers (frames, after)
+            | Some (SignalDelivery.DefaultStop signal) -> ReturnToUserOutcome.ProcessStopped (signal, after)
+            | Some (SignalDelivery.DefaultContinue signal) -> ReturnToUserOutcome.ContinueDiscarded (signal, after)
+            | Some (SignalDelivery.DefaultTerminate (signal, coreDumped)) ->
+                // Ended as the walk left it: the signal that kills it is taken,
+                // so it is not pending in the process's final state, as one
+                // `kill` applies at once never is.
+                ReturnToUserOutcome.ProcessEnded (
+                    UnixTaskLifecycle.endProcess (ProcessTermination.Signaled (signal, coreDumped)) after
+                )
+        )
 
     /// `sigreturn(2)`: `task`'s handler for the frame `frame` has returned, and
     /// the frame is popped, restoring the mask that was in force before it was

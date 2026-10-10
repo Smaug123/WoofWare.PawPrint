@@ -271,12 +271,17 @@ module SignalFuzz =
         let rec returnToUser () : unit =
             match UnixSignal.onReturnToUser leader system with
             | Error refusal -> raise (Refusal $"onReturnToUser refused: %O{refusal}")
-            | Ok (None, after) -> system <- after
-            | Ok (Some (SignalDelivery.RunHandlers frames), after) ->
+            | Ok (ReturnToUserOutcome.Resumes after) -> system <- after
+            | Ok (ReturnToUserOutcome.RunHandlers (frames, after)) ->
                 system <- after
                 runFrames frames
-            | Ok (Some (SignalDelivery.DefaultTerminate (killedBy, _)), _) -> raise (Died (signo killedBy))
-            | Ok (Some other, _) -> raise (Refusal $"onReturnToUser answered %A{other}")
+            | Ok (ReturnToUserOutcome.ProcessEnded ended) ->
+                match EndedProcess.termination ended with
+                | ProcessTermination.Signaled (killedBy, _) -> raise (Died (signo killedBy))
+                | other -> failwith $"a return to user mode ended the process with %O{other}"
+            | Ok (ReturnToUserOutcome.ProcessStopped _ as other)
+            | Ok (ReturnToUserOutcome.ContinueDiscarded _ as other) ->
+                raise (Refusal $"onReturnToUser answered %A{other}")
 
         and runFrames (frames : HandlerFrame<int, unit> list) : unit =
             match frames with

@@ -104,10 +104,10 @@ type HandlerFrame<'Task, 'Handler> =
     }
 
 /// What the kernel does with the signals a task takes as it returns to user
-/// mode, as decided by `UnixSignal.onReturnToUser`: run handlers, or apply a
-/// signal's kernel default. The client interprets it: runs the handlers,
-/// terminates the simulated process by the signal, or refuses what it does not
-/// model.
+/// mode: run handlers, or apply a signal's kernel default. A client reads
+/// the decision through `UnixSignal.onReturnToUser`, as the
+/// `ReturnToUserOutcome` with the same case, with a default that terminates
+/// the process applied.
 [<RequireQualifiedAccess>]
 type SignalDelivery<'Task, 'Handler> =
     /// A frame for every caught signal the task takes now, pushed all at once,
@@ -121,7 +121,8 @@ type SignalDelivery<'Task, 'Handler> =
     /// the signal (`WIFSIGNALED`, `WTERMSIG`), with the core flag set iff
     /// `coreDumped`; `128 + signo` is only how a shell renders that as an
     /// exit status. Any frames pushed for other signals at the same return
-    /// never run.
+    /// never run. `UnixSignal.onReturnToUser` ends the process for it
+    /// (`ReturnToUserOutcome.ProcessEnded`).
     | DefaultTerminate of signal : Signal * coreDumped : bool
     /// No handler claims the signal and its kernel default is to suspend
     /// the whole process.

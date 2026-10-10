@@ -931,8 +931,8 @@ module TestBlockingAccept =
 
     let rec private returnToUser (task : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
         match UnixSignal.onReturnToUser task system with
-        | Ok (None, system) -> system
-        | Ok (Some (SignalDelivery.RunHandlers frames), system) ->
+        | Ok (ReturnToUserOutcome.Resumes system) -> system
+        | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) ->
             (system, frames)
             ||> List.fold (fun system frame -> UnixSignal.sigreturn task frame.Id system)
             |> returnToUser task

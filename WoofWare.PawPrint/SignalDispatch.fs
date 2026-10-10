@@ -62,15 +62,16 @@ type SignalPoll =
 /// (`SignalReceiverRefusal.LeaderBlocks`), when it is sent or at this poll,
 /// and the refusal fails the run.
 ///
-/// `SignalDelivery.DefaultTerminate` and `SignalDelivery.DefaultStop` are
-/// refused loudly: such a default is applied when the signal is generated
+/// A default action the leader's return applies is refused loudly when it
+/// terminates or stops (`ReturnToUserOutcome`'s `ProcessEnded` and
+/// `ProcessStopped`): such a default is applied when the signal is generated
 /// (see `NativeLibc.kill` and `NativeLibc.raiseSignal`), so one reaches this
 /// poll only by becoming receivable later, as a handler frame's mask is popped
 /// or a mask call unblocks it, and applying it at delivery is not modelled.
-/// `SignalDelivery.DefaultContinue` is a SIGCONT at its default, which the
-/// kernel has discarded as the leader took it: the process was never stopped
-/// (PawPrint refuses a stop), so nothing happens, and the leader's return goes
-/// on to whatever else it takes.
+/// `ReturnToUserOutcome.ContinueDiscarded` is a SIGCONT at its default, which
+/// the kernel has discarded as the leader took it: the process was never
+/// stopped (PawPrint refuses a stop), so nothing happens, and the leader's
+/// return goes on to whatever else it takes.
 [<RequireQualifiedAccess>]
 module SignalDispatch =
 
@@ -327,26 +328,24 @@ module SignalDispatch =
             SignalPoll.Continues state
         else
 
-        let returnToUser
+        let returnToUser (state : IlMachineState) : ReturnToUserOutcome<ThreadId, NativeSignalHandler> =
+            match UnixSignal.onReturnToUser leader state.Kernel.System with
+            | Ok outcome -> outcome
+            | Error refusal ->
+                failwith $"SignalDispatch.poll: the kernel will not say what the leader takes: %O{refusal}"
+
+        // Persist the walk's state whether or not it produced an action:
+        // discarding a receivable ignored signal is a state change with no
+        // delivery, and dropping it would replay the discard every tick.
+        let persist
+            (systemAfter : UnixSystem<ThreadId, NativeSignalHandler>)
             (state : IlMachineState)
-            : SignalDelivery<ThreadId, NativeSignalHandler> option * IlMachineState
+            : IlMachineState
             =
-            let delivery, systemAfter =
-                match UnixSignal.onReturnToUser leader state.Kernel.System with
-                | Ok answer -> answer
-                | Error refusal ->
-                    failwith $"SignalDispatch.poll: the kernel will not say what the leader takes: %O{refusal}"
-
-            // Persist the walk's state whether or not it produced an action:
-            // discarding a receivable ignored signal is a state change with no
-            // delivery, and dropping it would replay the discard every tick.
-            let state =
-                if UnixSystem.signals systemAfter = state.Kernel.Signals then
-                    state
-                else
-                    state.MapKernel (EmulatedKernel.withUnix systemAfter)
-
-            delivery, state
+            if UnixSystem.signals systemAfter = state.Kernel.Signals then
+                state
+            else
+                state.MapKernel (EmulatedKernel.withUnix systemAfter)
 
         // Run `frames`, innermost first, each followed by its `sigreturn` and a
         // return to user mode, which may push frames that run before the rest.
@@ -385,24 +384,26 @@ module SignalDispatch =
 
         and returnToUserThen (continuation : IlMachineState -> SignalPoll) (state : IlMachineState) : SignalPoll =
             match returnToUser state with
-            | None, state -> continuation state
-            | Some (SignalDelivery.RunHandlers frames), state ->
-                match runFrames frames state with
+            | ReturnToUserOutcome.Resumes after -> continuation (persist after state)
+            | ReturnToUserOutcome.RunHandlers (frames, after) ->
+                match runFrames frames (persist after state) with
                 | SignalPoll.Continues state -> continuation state
                 | killed -> killed
             // The kernel has discarded it: the process was never stopped, so
             // there is nothing to resume. The return goes on.
-            | Some (SignalDelivery.DefaultContinue _), state -> returnToUserThen continuation state
-            | Some (SignalDelivery.DefaultTerminate (signal, _)), _
-            | Some (SignalDelivery.DefaultStop signal), _ ->
-                // A pending signal at its default disposition, whose kernel
-                // default is to terminate or stop the process.
-                // `SignalState.generate` applies such a default at generation
-                // whenever some thread can receive the signal, so it is
-                // pending here only if none could then: every thread blocked
-                // it, through a mask call, and one has since unblocked it.
-                // Applying a default at delivery is refused rather than
-                // half-modelled.
+            | ReturnToUserOutcome.ContinueDiscarded (_, after) -> returnToUserThen continuation (persist after state)
+            // A pending signal at its default disposition, whose kernel default
+            // is to terminate or stop the process. `SignalState.generate`
+            // applies such a default at generation whenever some thread can
+            // receive the signal, so it is pending here only if none could
+            // then: every thread blocked it, through a mask call, and one has
+            // since unblocked it. Applying a default at delivery is refused
+            // rather than half-modelled, a termination's included, though the
+            // kernel has ended the process.
+            | ReturnToUserOutcome.ProcessEnded ended ->
+                failwith
+                    $"SignalDispatch.poll: a pending signal at its default disposition, whose kernel default is to terminate, ended the process as the leader took it (%O{EndedProcess.termination ended}); applying a default disposition at delivery rather than at generation is not modelled."
+            | ReturnToUserOutcome.ProcessStopped (signal, _) ->
                 failwith
                     $"SignalDispatch.poll: pending %O{signal} is at its default disposition, and its kernel default is to terminate or stop the process; applying such a default at delivery rather than at generation is not modelled."
 
