@@ -58,20 +58,19 @@ module TestCallHolds =
             Tids : Map<int, OsThreadId>
         }
 
-    /// How often each path the property exists for was reached.
-    type private Coverage =
-        {
-            mutable Parks : int
-            mutable Reparks : int
-            mutable RepeatedHolds : int
-            mutable Unparks : int
-            mutable DestroyedAtUnpark : int
-            mutable KeptByHoldAtClose : int
-            mutable EndedByClose : int
-            mutable Spawns : int
-            mutable Exits : int
-            mutable EndedWithHolds : int
-        }
+    /// A path the property exists for.
+    [<RequireQualifiedAccess>]
+    type private Reached =
+        | Park
+        | Repark
+        | RepeatedHold
+        | Unpark
+        | DestroyedAtUnpark
+        | KeptByHoldAtClose
+        | EndedByClose
+        | Spawn
+        | Exit
+        | EndedWithHolds
 
     let private world (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
         let system =
@@ -359,7 +358,7 @@ module TestCallHolds =
         | [] -> ()
         | defects -> failwith $"%s{where}: %A{defects}"
 
-    let private run (coverage : Coverage) (platform : SimulatedUnixPlatform) (ops : Op list) : unit =
+    let private run (cover : Reached -> unit) (platform : SimulatedUnixPlatform) (ops : Op list) : unit =
         let darwin = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Darwin
 
         let initial = world platform
@@ -388,12 +387,12 @@ module TestCallHolds =
                         | Some existing when kindOf existing <> kindOf parked -> system, model
                         | existing ->
                             if existing.IsSome then
-                                coverage.Reparks <- coverage.Reparks + 1
+                                cover Reached.Repark
 
                             if List.length (List.distinct held) < List.length held then
-                                coverage.RepeatedHolds <- coverage.RepeatedHolds + 1
+                                cover Reached.RepeatedHold
 
-                            coverage.Parks <- coverage.Parks + 1
+                            cover Reached.Park
 
                             // A re-park lets go of what the earlier park held, which
                             // goes if nothing else references it, as it would at the
@@ -422,9 +421,9 @@ module TestCallHolds =
                             |> ObjectLifetime.releaseUnreferencedUnrefusable "test" held
 
                         if OpenFileTable.descriptions after.Machine.OpenFiles |> Map.count < before then
-                            coverage.DestroyedAtUnpark <- coverage.DestroyedAtUnpark + 1
+                            cover Reached.DestroyedAtUnpark
 
-                        coverage.Unparks <- coverage.Unparks + 1
+                        cover Reached.Unpark
 
                         after,
                         { model with
@@ -454,7 +453,7 @@ module TestCallHolds =
                                         | Some (ParkedSyscall.PipeWrite {
                                                                             Writer = SleepTarget.Waiting (_, entered)
                                                                         }) when entered = fd ->
-                                            coverage.EndedByClose <- coverage.EndedByClose + 1
+                                            cover Reached.EndedByClose
                                             []
                                         | _ -> held
                                     )
@@ -468,7 +467,7 @@ module TestCallHolds =
                                 OpenFileTable.tryFind id after.Machine.OpenFiles |> Option.isSome
                                 && not (fds after |> List.exists (fun (_, other, _) -> other = id))
                             then
-                                coverage.KeptByHoldAtClose <- coverage.KeptByHoldAtClose + 1
+                                cover Reached.KeptByHoldAtClose
 
                             after, model
                 | Op.Dup i ->
@@ -500,7 +499,7 @@ module TestCallHolds =
                     | Ok (SpawnAnswer.Failed error, _) -> failwith $"spawn: %O{error}"
                     | Ok (SpawnAnswer.Spawned id, after) ->
                         Set.contains id before |> shouldEqual false
-                        coverage.Spawns <- coverage.Spawns + 1
+                        cover Reached.Spawn
 
                         after,
                         { model with
@@ -515,7 +514,7 @@ module TestCallHolds =
 
                     match UnixTaskLifecycle.exitThread task 0 system with
                     | Ok (TaskOutcome.Continues after) ->
-                        coverage.Exits <- coverage.Exits + 1
+                        cover Reached.Exit
 
                         after,
                         { model with
@@ -535,7 +534,7 @@ module TestCallHolds =
                     let ended = UnixTaskLifecycle.exitGroup task 0 system
 
                     if not model.Holds.IsEmpty then
-                        coverage.EndedWithHolds <- coverage.EndedWithHolds + 1
+                        cover Reached.EndedWithHolds
 
                     ThreadIdAllocator.live ended.Machine.ThreadIds |> shouldEqual Set.empty
 
@@ -559,40 +558,30 @@ module TestCallHolds =
         (platform : SimulatedUnixPlatform)
         : unit
         =
-        let coverage =
-            {
-                Parks = 0
-                Reparks = 0
-                RepeatedHolds = 0
-                Unparks = 0
-                DestroyedAtUnpark = 0
-                KeptByHoldAtClose = 0
-                EndedByClose = 0
-                Spawns = 0
-                Exits = 0
-                EndedWithHolds = 0
-            }
-
         let gen =
             gen {
                 let! length = Gen.choose (0, 60)
                 return! Gen.listOfLength length opGen
             }
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen gen) (run coverage platform))
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 500)
+                (Arb.fromGen gen)
+                (fun cover -> run cover platform)
 
-        coverage.Parks |> shouldBeGreaterThan 100
-        coverage.Reparks |> shouldBeGreaterThan 10
-        coverage.Unparks |> shouldBeGreaterThan 100
-        coverage.DestroyedAtUnpark |> shouldBeGreaterThan 0
-        coverage.KeptByHoldAtClose |> shouldBeGreaterThan 0
-        coverage.Spawns |> shouldBeGreaterThan 100
-        coverage.Exits |> shouldBeGreaterThan 10
-        coverage.EndedWithHolds |> shouldBeGreaterThan 10
+        coverage.Count Reached.Park |> shouldBeGreaterThan 100
+        coverage.Count Reached.Repark |> shouldBeGreaterThan 10
+        coverage.Count Reached.Unpark |> shouldBeGreaterThan 100
+        coverage.Count Reached.DestroyedAtUnpark |> shouldBeGreaterThan 0
+        coverage.Count Reached.KeptByHoldAtClose |> shouldBeGreaterThan 0
+        coverage.Count Reached.Spawn |> shouldBeGreaterThan 100
+        coverage.Count Reached.Exit |> shouldBeGreaterThan 10
+        coverage.Count Reached.EndedWithHolds |> shouldBeGreaterThan 10
 
         match SimulatedUnixPlatform.flavour platform with
-        | SimulatedUnixFlavour.Darwin -> coverage.EndedByClose |> shouldBeGreaterThan 0
-        | SimulatedUnixFlavour.Linux -> coverage.RepeatedHolds |> shouldBeGreaterThan 10
+        | SimulatedUnixFlavour.Darwin -> coverage.Count Reached.EndedByClose |> shouldBeGreaterThan 0
+        | SimulatedUnixFlavour.Linux -> coverage.Count Reached.RepeatedHold |> shouldBeGreaterThan 10
 
     [<Test>]
     let ``checkInvariants reports exactly a description whose holds disagree with the parks`` () : unit =

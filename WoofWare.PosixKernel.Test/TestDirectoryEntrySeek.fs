@@ -15,8 +15,8 @@ open WoofWare.PosixKernel
 module TestDirectoryEntrySeek =
 
     /// The rarest thing the history property's coverage guard asks for, a read
-    /// of a stream over a directory `rmdir` has removed, was measured at 76 to
-    /// 102 occurrences in each of three checks of 1000 cases.
+    /// of a stream over a directory `rmdir` has removed, is reached 89 times in
+    /// the guard's fixed sample of 1000 cases.
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 1000
 
     let private buildTime : UnixTimestamp =
@@ -510,12 +510,8 @@ module TestDirectoryEntrySeek =
 
     [<Test>]
     let ``the seek agrees with the scan from every cursor, through any history`` () : unit =
-        let reached = System.Collections.Concurrent.ConcurrentDictionary<Reached, int> ()
-
-        let record (r : Reached) : unit =
-            reached.AddOrUpdate (r, 1, fun _ n -> n + 1) |> ignore<int>
-
-        Check.One (config, Prop.forAll (Arb.fromGen (Gen.listOf opGen)) (runHistory record))
+        let reached =
+            CoverageSample.check config (Arb.fromGen (Gen.listOf opGen)) runHistory
 
         let unreached =
             [
@@ -531,10 +527,10 @@ module TestDirectoryEntrySeek =
                 Reached.StreamEnded
                 Reached.AdvanceOverOrphan
             ]
-            |> List.filter (fun r -> not (reached.ContainsKey r))
+            |> List.filter (fun r -> reached.Count r = 0)
 
         if not (List.isEmpty unreached) then
-            failwith $"these were never reached: %A{unreached}; reached: %A{List.ofSeq reached}"
+            failwith $"these were never reached: %A{unreached}; reached: %A{reached.Reached}"
 
     // ------------------------------------------------------ the invariant
 
