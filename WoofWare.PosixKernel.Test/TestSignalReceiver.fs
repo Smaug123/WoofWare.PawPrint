@@ -198,13 +198,11 @@ module TestSignalReceiver =
             | other -> failwith $"%O{flavour}: %A{other}"
 
     [<Test>]
-    let ``a signal whose effect is on the whole process is answered when the leader blocks it`` () : unit =
+    let ``a signal whose default ends the process is answered when the leader blocks it`` () : unit =
         // Which task receives it does not matter: SIGUSR1 at its default ends the
-        // process, and ignored it is discarded.
+        // process.
         for flavour in flavours do
-            let blocking = Set.ofList [ 0 ; 2 ]
-
-            let system = systemWith flavour SignalDisposition.Default blocking
+            let system = systemWith flavour SignalDisposition.Default (Set.ofList [ 0 ; 2 ])
 
             match UnixSignal.kill (self system) (usr1 flavour) system with
             | Ok (Ok (KillOutcome.ProcessEnded ended)) ->
@@ -212,11 +210,22 @@ module TestSignalReceiver =
                 |> shouldEqual (ProcessTermination.Signaled (Signal.SIGUSR1, false))
             | other -> failwith $"%O{flavour}: %A{other}"
 
-            let system = systemWith flavour SignalDisposition.Ignore blocking
+    [<Test>]
+    let ``an ignored signal the leader blocks is discarded under Darwin and refused under Linux`` () : unit =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/sigcont-generation.c`
+        // (the "gen USR1 IGN" rows): Darwin hands it to a thread that does not
+        // block it, which discards it; Linux leaves it pending on the process,
+        // where the leader's sigpending sees it, until another thread takes it.
+        for flavour in flavours do
+            let system = systemWith flavour SignalDisposition.Ignore (Set.ofList [ 0 ; 2 ])
 
-            match UnixSignal.kill (self system) (usr1 flavour) system with
-            | Ok (Ok (KillOutcome.ProcessContinues after)) -> SignalState.pending after.Process.Signals |> shouldBeEmpty
-            | other -> failwith $"%O{flavour}: %A{other}"
+            match flavour, UnixSignal.kill (self system) (usr1 flavour) system with
+            | SimulatedUnixFlavour.Darwin, Ok (Ok (KillOutcome.ProcessContinues after)) ->
+                SignalState.pending after.Process.Signals |> shouldBeEmpty
+            | SimulatedUnixFlavour.Linux, Error refusal ->
+                refusal
+                |> shouldEqual (KillRefusal.Receiver (SignalReceiverRefusal.LeaderBlocks Signal.SIGUSR1))
+            | _, other -> failwith $"%O{flavour}: %A{other}"
 
     [<Test>]
     let ``every task is refused while a pending caught signal could reach only a task other than the leader``

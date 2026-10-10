@@ -393,11 +393,18 @@ module TestMinipalRandom =
         ()
         : unit
         =
-        // A default SIGCONT stays pending for the thread it was sent to.
+        // A caught SIGUSR1 (10) stays pending for the thread it was sent to,
+        // until the thread returns to user mode.
         let kernel = linuxAt SimulatedUnixPlatform.linuxX64 7UL
 
+        let caught =
+            KernelSignals.setDisposition
+                Signal.SIGUSR1
+                (SignalDisposition.Catch (SignalCatch.ofHandler NativeSignalHandler.SystemNative))
+                kernel.System
+
         let system =
-            match UnixSignal.pthreadKill thread 18 kernel.System with
+            match UnixSignal.pthreadKill thread 10 caught with
             | Ok (Ok (KillOutcome.ProcessContinues system)) -> system
             | other -> failwith $"pthread_kill: %A{other}"
 

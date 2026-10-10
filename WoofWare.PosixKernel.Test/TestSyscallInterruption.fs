@@ -704,8 +704,9 @@ module TestSyscallInterruption =
 
     [<Test>]
     let ``a signal whose default takes effect is refused rather than guessed at`` () : unit =
-        // A default SIGCONT stays pending, and would be the first thing the
-        // sleeper took on its return to user mode.
+        // A default SIGCONT pending for a sleeper that does not block it, put
+        // there directly: generation discards such a signal as it is sent, so
+        // this is the refusal standing for any default the sleeper could take.
         let system =
             asleep linuxWorld 1 Sleep.Accept
             |> fun system ->

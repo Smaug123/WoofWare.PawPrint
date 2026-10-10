@@ -218,11 +218,14 @@ type internal SignalGeneration<'Task, 'Handler when 'Task : comparison and 'Hand
 /// not model, rather than one a kernel refuses.
 [<RequireQualifiedAccess>]
 type SignalReceiverRefusal =
-    /// `signal` is sent to the process as a whole and caught, and its leader
-    /// blocks it while another task does not, so some task other than the leader
-    /// would take it. Which one differs between flavours, and on Linux depends on
-    /// which tasks took earlier signals; this library delivers a process's own
-    /// signals to its leader only.
+    /// `signal` is sent to the process as a whole, and its leader blocks it
+    /// while another task does not, so some task other than the leader would
+    /// take it: a caught one to run its handler, and under Linux's numbering an
+    /// ignored one (SIGCONT at its default included) to discard it, which
+    /// Linux leaves pending on the process until then. Which task differs
+    /// between flavours, and on Linux depends on which tasks took earlier
+    /// signals; this library delivers a process's own signals to its leader
+    /// only.
     | LeaderBlocks of signal : Signal
     /// Returning to user mode, a task would take `signal`, whose default stops
     /// or continues the process, after handler frames were pushed for other
@@ -266,38 +269,46 @@ module SignalState =
         | Signal.SIGSTOP -> true
         | _ -> false
 
-    /// Whether a signal generated under `disposition` is ignored at
-    /// generation: `SIG_IGN`, or `SIG_DFL` for a signal whose default is to
-    /// discard it.
-    let private ignoredAtGeneration
-        (numbering : SignalNumbering)
-        (disposition : SignalDisposition<'Handler>)
-        (signal : Signal)
-        : bool
-        =
-        match disposition with
-        | SignalDisposition.Ignore -> true
-        | SignalDisposition.Catch _ -> false
-        | SignalDisposition.Default -> Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Ignore
+    /// What a signal generated under `disposition` does once a task could
+    /// take it.
+    [<RequireQualifiedAccess>]
+    type private Effect =
+        /// It is pending until that task takes it and runs its handler.
+        | Caught
+        /// It is discarded: `SIG_IGN`, or `SIG_DFL` for a signal whose default
+        /// is to discard it or to continue the process, which, never stopped
+        /// here, has nothing to continue. Linux's `sig_handler_ignored` counts
+        /// SIGCONT at its default the same way.
+        | Ignored
+        /// Its default terminates the process.
+        | Terminates
+        /// Its default stops the process.
+        | Stops
 
-    /// Whether setting `disposition` discards the signal's pending instances.
-    /// Wider than `ignoredAtGeneration` by one signal: a default SIGCONT
-    /// counts as ignored here, though its default is to continue.
-    let private discardsPendingWhenSet
+    let private effectOf
         (numbering : SignalNumbering)
         (disposition : SignalDisposition<'Handler>)
         (signal : Signal)
-        : bool
+        : Effect
         =
         match disposition with
-        | SignalDisposition.Ignore -> true
-        | SignalDisposition.Catch _ -> false
+        | SignalDisposition.Catch _ -> Effect.Caught
+        | SignalDisposition.Ignore -> Effect.Ignored
         | SignalDisposition.Default ->
             match Signal.defaultDispositionUnder numbering signal with
             | DefaultDisposition.Ignore
-            | DefaultDisposition.Continue -> true
-            | DefaultDisposition.Terminate
-            | DefaultDisposition.Stop -> false
+            | DefaultDisposition.Continue -> Effect.Ignored
+            | DefaultDisposition.Terminate -> Effect.Terminates
+            | DefaultDisposition.Stop -> Effect.Stops
+
+    /// Whether `disposition` ignores `signal` (see `Effect.Ignored`).
+    let private ignores
+        (numbering : SignalNumbering)
+        (disposition : SignalDisposition<'Handler>)
+        (signal : Signal)
+        : bool
+        =
+        effectOf numbering disposition signal = Effect.Ignored
 
     /// `mask` as a kernel holds it: without SIGKILL and SIGSTOP, which it drops
     /// silently, and with every other bit, one that names no signal included.
@@ -422,11 +433,11 @@ module SignalState =
         // handler to each of those and a second handler, blocked and pending
         // in either direction
         // (docs/plans/2026-08-23-posix-kernel-extraction/signal-disposition-table.c):
-        // exactly the changes `discardsPendingWhenSet` names emptied
-        // sigpending, whatever the disposition before, and the rest were
-        // delivered once unblocked.
+        // exactly the changes to a disposition that `ignores` the signal
+        // emptied sigpending, whatever the disposition before, and the rest
+        // were delivered once unblocked.
         let pending =
-            if discardsPendingWhenSet state.Numbering disposition signal then
+            if ignores state.Numbering disposition signal then
                 state.Pending |> List.filter (fun entry -> entry.Signal <> signal)
             else
                 state.Pending
@@ -599,7 +610,7 @@ module SignalState =
             | None -> SignalDisposition.Default
 
         if
-            ignoredAtGeneration state.Numbering disposition signal
+            ignores state.Numbering disposition signal
             && not (Signal.blockedIgnoredSignalStaysPendingUnder state.Numbering signal)
         then
             None
@@ -688,8 +699,9 @@ module SignalState =
     /// which does).
     ///
     /// A signal whose disposition at generation is "ignore" — `SIG_IGN`, or
-    /// the default where that discards it — never becomes pending under
-    /// Darwin's rule, whatever any mask says, unless it is SIGCONT; under
+    /// the default where that discards it or continues the process — never
+    /// becomes pending under Darwin's rule, whatever any mask says, unless it
+    /// is SIGCONT; under
     /// Linux's it becomes pending and stays so exactly as long as no receiver
     /// could take it (see `onReturnToUser` for the delivery half of the rule).
     ///
@@ -865,29 +877,37 @@ module SignalState =
 
         let receiver = receiverFor leader tasks entry state
 
-        match receiver, disposition entry.Signal state with
+        match receiver, effectOf state.Numbering (disposition entry.Signal state) entry.Signal with
         | Receiver.Nobody, _ -> leftPending ()
-        | Receiver.BeyondLeader, SignalDisposition.Catch _ -> Error (SignalReceiverRefusal.LeaderBlocks entry.Signal)
-        | Receiver.Task _, SignalDisposition.Catch _ -> leftPending ()
-        // Discarded without ever being pending, on both kernels. Were it
-        // queued instead, it would sit there until the client next asked
+        | Receiver.BeyondLeader, Effect.Caught -> Error (SignalReceiverRefusal.LeaderBlocks entry.Signal)
+        | Receiver.Task _, Effect.Caught -> leftPending ()
+        // Discarded without ever being pending, on both kernels, SIGCONT at
+        // its default included: Linux decides by the mask of the task the
+        // signal is aimed at (the leader, for one sent to the process), and
+        // Darwin by whether a thread it could hand the signal to does not
+        // block it. Measured by
+        // `docs/plans/2026-08-23-posix-kernel-extraction/sigcont-generation.c`
+        // on Linux 6.18.5 and Darwin 27.0.0: a thread that blocked it never saw
+        // it through sigpending, a handler installed afterwards never ran, and
+        // a thread asleep in poll or sigsuspend slept on. Were it queued
+        // instead, it would sit there until the client next asked
         // `onReturnToUser`, and a handler installed in between would receive a
         // signal that was ignored when it was sent.
-        | _, SignalDisposition.Ignore -> Ok (SignalGeneration.ProcessContinues state)
-        | _, SignalDisposition.Default ->
-            match Signal.defaultDispositionUnder state.Numbering entry.Signal with
-            | DefaultDisposition.Terminate ->
-                Ok (SignalGeneration.ProcessTerminated (entry.Signal, dumpsCore coreDumps state.Numbering entry.Signal))
-            | DefaultDisposition.Stop -> Ok (SignalGeneration.ProcessStopped (entry.Signal, state))
-            | DefaultDisposition.Ignore -> Ok (SignalGeneration.ProcessContinues state)
-            | DefaultDisposition.Continue ->
-                // Pending until a task takes it (see `DefaultContinue`); which
-                // task does is `onReturnToUser`'s, and only the leader is
-                // asked.
-                match receiver with
-                | Receiver.BeyondLeader -> Error (SignalReceiverRefusal.LeaderBlocks entry.Signal)
-                | Receiver.Task _
-                | Receiver.Nobody -> leftPending ()
+        | Receiver.Task _, Effect.Ignored -> Ok (SignalGeneration.ProcessContinues state)
+        | Receiver.BeyondLeader, Effect.Ignored ->
+            match state.Numbering with
+            // Measured by the same probe, with SIGCONT under SIG_IGN and at its
+            // default, SIGUSR1 under SIG_IGN and SIGURG at its default: Linux
+            // queued each on the process (the leader saw it through sigpending
+            // straight after the kill) for another thread to take and discard.
+            | SignalNumbering.Linux -> Error (SignalReceiverRefusal.LeaderBlocks entry.Signal)
+            // Darwin handed it to a thread that did not block it, which
+            // discarded it: only SIGCONT gets here, every other ignored signal
+            // having been discarded by `beginGeneration`.
+            | SignalNumbering.Darwin -> Ok (SignalGeneration.ProcessContinues state)
+        | _, Effect.Terminates ->
+            Ok (SignalGeneration.ProcessTerminated (entry.Signal, dumpsCore coreDumps state.Numbering entry.Signal))
+        | _, Effect.Stops -> Ok (SignalGeneration.ProcessStopped (entry.Signal, state))
 
     /// Every pending entry: the process's own set first, then each task's, each set in the order a task
     /// takes its signals (see `pendingFor`).

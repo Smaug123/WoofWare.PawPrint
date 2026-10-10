@@ -1,0 +1,124 @@
+# Darwin 27.0.0 arm64, uid 501
+# flavour darwin CONT 40000 USR1 20000000 URG 8000, 10 repetitions a row
+gen CONT DFL to=proc from=m blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=proc from=m blk=m x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=proc from=m blk=s x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=proc from=m blk=both x10 A=40000 B=0 runs=CONT:m@2 end=exit0
+gen CONT DFL to=proc from=s blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=proc from=s blk=m x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=proc from=s blk=s x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=proc from=s blk=both x10 A=0 B=40000 runs=CONT:m@2 end=exit0
+gen CONT DFL to=m from=m blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=m from=m blk=m x10 A=40000 B=0 runs=CONT:m@2 end=exit0
+gen CONT DFL to=m from=m blk=s x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=m from=m blk=both x10 A=40000 B=0 runs=CONT:m@2 end=exit0
+gen CONT DFL to=m from=s blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=m from=s blk=m x10 A=0 B=40000 runs=CONT:m@2 end=exit0
+gen CONT DFL to=m from=s blk=s x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=m from=s blk=both x10 A=0 B=40000 runs=CONT:m@2 end=exit0
+gen CONT DFL to=s from=m blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=s from=m blk=m x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=s from=m blk=s x10 A=0 B=40000 runs=CONT:s@3 end=exit0
+gen CONT DFL to=s from=m blk=both x10 A=0 B=40000 runs=CONT:s@3 end=exit0
+gen CONT DFL to=s from=s blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=s from=s blk=m x10 A=0 B=0 runs=- end=exit0
+gen CONT DFL to=s from=s blk=s x10 A=40000 B=0 runs=CONT:s@3 end=exit0
+gen CONT DFL to=s from=s blk=both x10 A=40000 B=0 runs=CONT:s@3 end=exit0
+gen CONT IGN to=proc from=m blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=proc from=m blk=m x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=proc from=m blk=s x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=proc from=m blk=both x10 A=40000 B=0 runs=CONT:m@2 end=exit0
+gen CONT IGN to=proc from=s blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=proc from=s blk=m x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=proc from=s blk=s x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=proc from=s blk=both x10 A=0 B=40000 runs=CONT:m@2 end=exit0
+gen CONT IGN to=m from=m blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=m from=m blk=m x10 A=40000 B=0 runs=CONT:m@2 end=exit0
+gen CONT IGN to=m from=m blk=s x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=m from=m blk=both x10 A=40000 B=0 runs=CONT:m@2 end=exit0
+gen CONT IGN to=m from=s blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=m from=s blk=m x10 A=0 B=40000 runs=CONT:m@2 end=exit0
+gen CONT IGN to=m from=s blk=s x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=m from=s blk=both x10 A=0 B=40000 runs=CONT:m@2 end=exit0
+gen CONT IGN to=s from=m blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=s from=m blk=m x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=s from=m blk=s x10 A=0 B=40000 runs=CONT:s@3 end=exit0
+gen CONT IGN to=s from=m blk=both x10 A=0 B=40000 runs=CONT:s@3 end=exit0
+gen CONT IGN to=s from=s blk=none x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=s from=s blk=m x10 A=0 B=0 runs=- end=exit0
+gen CONT IGN to=s from=s blk=s x10 A=40000 B=0 runs=CONT:s@3 end=exit0
+gen CONT IGN to=s from=s blk=both x10 A=40000 B=0 runs=CONT:s@3 end=exit0
+gen CONT H to=proc from=m blk=none x10 A=0 B=0 runs=CONT:m@0 end=exit0
+gen CONT H to=proc from=m blk=m x10 A=0 B=0 runs=CONT:s@0 end=exit0
+gen CONT H to=proc from=m blk=s x10 A=0 B=0 runs=CONT:m@0 end=exit0
+gen CONT H to=proc from=m blk=both x10 A=40000 B=0 runs=CONT:m@2 end=exit0
+gen CONT H to=proc from=s blk=none x10 A=0 B=0 runs=CONT:m@0 end=exit0
+gen CONT H to=proc from=s blk=m x10 A=0 B=0 runs=CONT:s@0 end=exit0
+gen CONT H to=proc from=s blk=s x10 A=0 B=0 runs=CONT:m@0 end=exit0
+gen CONT H to=proc from=s blk=both x10 A=0 B=40000 runs=CONT:m@2 end=exit0
+gen CONT H to=m from=m blk=none x10 A=0 B=0 runs=CONT:m@0 end=exit0
+gen CONT H to=m from=m blk=m x10 A=40000 B=0 runs=CONT:m@2 end=exit0
+gen CONT H to=m from=m blk=s x10 A=0 B=0 runs=CONT:m@0 end=exit0
+gen CONT H to=m from=m blk=both x10 A=40000 B=0 runs=CONT:m@2 end=exit0
+gen CONT H to=m from=s blk=none x10 A=0 B=0 runs=CONT:m@0 end=exit0
+gen CONT H to=m from=s blk=m x10 A=0 B=40000 runs=CONT:m@2 end=exit0
+gen CONT H to=m from=s blk=s x10 A=0 B=0 runs=CONT:m@0 end=exit0
+gen CONT H to=m from=s blk=both x10 A=0 B=40000 runs=CONT:m@2 end=exit0
+gen CONT H to=s from=m blk=none x10 A=0 B=0 runs=CONT:s@0 end=exit0
+gen CONT H to=s from=m blk=m x10 A=0 B=0 runs=CONT:s@0 end=exit0
+gen CONT H to=s from=m blk=s x10 A=0 B=40000 runs=CONT:s@3 end=exit0
+gen CONT H to=s from=m blk=both x10 A=0 B=40000 runs=CONT:s@3 end=exit0
+gen CONT H to=s from=s blk=none x10 A=0 B=0 runs=CONT:s@0 end=exit0
+gen CONT H to=s from=s blk=m x10 A=0 B=0 runs=CONT:s@0 end=exit0
+gen CONT H to=s from=s blk=s x10 A=40000 B=0 runs=CONT:s@3 end=exit0
+gen CONT H to=s from=s blk=both x10 A=40000 B=0 runs=CONT:s@3 end=exit0
+gen USR1 IGN to=proc from=m blk=none x10 A=0 B=0 runs=- end=exit0
+gen USR1 IGN to=proc from=m blk=m x10 A=0 B=0 runs=- end=exit0
+gen USR1 IGN to=proc from=m blk=s x10 A=0 B=0 runs=- end=exit0
+gen USR1 IGN to=proc from=m blk=both x10 A=0 B=0 runs=- end=exit0
+gen USR1 IGN to=proc from=s blk=none x10 A=0 B=0 runs=- end=exit0
+gen USR1 IGN to=proc from=s blk=m x10 A=0 B=0 runs=- end=exit0
+gen USR1 IGN to=proc from=s blk=s x10 A=0 B=0 runs=- end=exit0
+gen USR1 IGN to=proc from=s blk=both x10 A=0 B=0 runs=- end=exit0
+gen URG DFL to=proc from=m blk=none x10 A=0 B=0 runs=- end=exit0
+gen URG DFL to=proc from=m blk=m x10 A=0 B=0 runs=- end=exit0
+gen URG DFL to=proc from=m blk=s x10 A=0 B=0 runs=- end=exit0
+gen URG DFL to=proc from=m blk=both x10 A=0 B=0 runs=- end=exit0
+gen URG DFL to=proc from=s blk=none x10 A=0 B=0 runs=- end=exit0
+gen URG DFL to=proc from=s blk=m x10 A=0 B=0 runs=- end=exit0
+gen URG DFL to=proc from=s blk=s x10 A=0 B=0 runs=- end=exit0
+gen URG DFL to=proc from=s blk=both x10 A=0 B=0 runs=- end=exit0
+sleep in=poll DFL sleeper=m to=sleeper x10 A=0 B=0 C=0 ret=0/0@3 runs=- end=exit0
+sleep in=poll DFL sleeper=m to=proc x10 A=0 B=0 C=0 ret=0/0@3 runs=- end=exit0
+sleep in=poll DFL sleeper=s to=sleeper x10 A=0 B=0 C=0 ret=0/0@3 runs=- end=exit0
+sleep in=poll DFL sleeper=s to=proc x10 A=0 B=0 C=0 ret=0/0@3 runs=- end=exit0
+sleep in=poll IGN sleeper=m to=sleeper x10 A=0 B=0 C=0 ret=0/0@3 runs=- end=exit0
+sleep in=poll IGN sleeper=m to=proc x10 A=0 B=0 C=0 ret=0/0@3 runs=- end=exit0
+sleep in=poll IGN sleeper=s to=sleeper x10 A=0 B=0 C=0 ret=0/0@3 runs=- end=exit0
+sleep in=poll IGN sleeper=s to=proc x10 A=0 B=0 C=0 ret=0/0@3 runs=- end=exit0
+sleep in=poll H sleeper=m to=sleeper x10 A=0 B=0 C=0 ret=-1/EINTR@1 runs=CONT:m@1 end=exit0
+sleep in=poll H sleeper=m to=proc x10 A=0 B=0 C=0 ret=-1/EINTR@1 runs=CONT:m@1 end=exit0
+sleep in=poll H sleeper=s to=sleeper x10 A=0 B=0 C=0 ret=-1/EINTR@1 runs=CONT:s@1 end=exit0
+sleep in=poll H sleeper=s to=proc x10 A=0 B=0 C=0 ret=-1/EINTR@1 runs=CONT:s@1 end=exit0
+sleep in=sigsuspend DFL sleeper=m to=sleeper x10 A=0 B=0 C=0 ret=-1/EINTR@3 runs=USR1:m@3 end=exit0
+sleep in=sigsuspend DFL sleeper=m to=proc x10 A=0 B=0 C=0 ret=-1/EINTR@3 runs=USR1:m@3 end=exit0
+sleep in=sigsuspend DFL sleeper=s to=sleeper x10 A=0 B=0 C=0 ret=-1/EINTR@3 runs=USR1:s@3 end=exit0
+sleep in=sigsuspend DFL sleeper=s to=proc x10 A=0 B=0 C=0 ret=-1/EINTR@3 runs=USR1:s@3 end=exit0
+sleep in=sigsuspend IGN sleeper=m to=sleeper x10 A=0 B=0 C=0 ret=-1/EINTR@3 runs=USR1:m@3 end=exit0
+sleep in=sigsuspend IGN sleeper=m to=proc x10 A=0 B=0 C=0 ret=-1/EINTR@3 runs=USR1:m@3 end=exit0
+sleep in=sigsuspend IGN sleeper=s to=sleeper x10 A=0 B=0 C=0 ret=-1/EINTR@3 runs=USR1:s@3 end=exit0
+sleep in=sigsuspend IGN sleeper=s to=proc x10 A=0 B=0 C=0 ret=-1/EINTR@3 runs=USR1:s@3 end=exit0
+sleep in=sigsuspend H sleeper=m to=sleeper x10 A=0 B=0 C=0 ret=-1/EINTR@1 runs=CONT:m@1 end=exit0
+sleep in=sigsuspend H sleeper=m to=proc x10 A=0 B=0 C=0 ret=-1/EINTR@1 runs=CONT:m@1 end=exit0
+sleep in=sigsuspend H sleeper=s to=sleeper x10 A=0 B=0 C=0 ret=-1/EINTR@1 runs=CONT:s@1 end=exit0
+sleep in=sigsuspend H sleeper=s to=proc x10 A=0 B=0 C=0 ret=-1/EINTR@1 runs=CONT:s@1 end=exit0
+unblock DFL to=self x10 A=40000 B=0 runs=- end=exit0
+unblock DFL to=proc x10 A=40000 B=0 runs=- end=exit0
+unblock IGN to=self x10 A=40000 B=0 runs=- end=exit0
+unblock IGN to=proc x10 A=40000 B=0 runs=- end=exit0
+stopinfo stop=0 stopped=0 before=40000 after=40000 runs=1 si_pid=0 end=exit0
+stopinfo stop=1 stopped=1 before=40000 after=40000 runs=1 si_pid=parent end=exit0
+stopinfo stop=0 stopped=0 before=40000 after=40000 runs=1 si_pid=0 end=exit0
+stopinfo stop=1 stopped=1 before=40000 after=40000 runs=1 si_pid=parent end=exit0
+stopinfo stop=0 stopped=0 before=40000 after=40000 runs=1 si_pid=0 end=exit0
+stopinfo stop=1 stopped=1 before=40000 after=40000 runs=1 si_pid=parent end=exit0
