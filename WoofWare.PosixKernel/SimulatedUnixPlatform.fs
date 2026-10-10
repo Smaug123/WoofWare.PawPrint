@@ -1320,8 +1320,9 @@ module SimulatedUnixPlatform =
         | Some BindGroupAddressRule.RejectedWithTheFamily -> false
         | None -> not (isBindableAddress platform localAddresses localRoutes address)
 
-    /// Does a bind of `candidate` collide with the socket already bound at
-    /// `existing`?
+    /// Does a bind of `candidate` collide with what already holds `existing`,
+    /// as `existingHolder` says: a socket bound there, or a connection end
+    /// whose socket has closed?
     ///
     /// Both flavours refuse two sockets the same port on overlapping addresses,
     /// and both relax that when `SO_REUSEADDR` is set — in opposite directions,
@@ -1338,7 +1339,8 @@ module SimulatedUnixPlatform =
     /// With the flag absent from the candidate, the two agree and refuse.
     ///
     /// Each socket's flag is read as it stands when the question is asked, not
-    /// as it stood when that socket was bound.
+    /// as it stood when that socket was bound; a connection end whose socket
+    /// has closed holds its endpoint with the flag that socket carried then.
     ///
     /// The same relation answers `listen(2)`, which is measured rather than
     /// assumed: on Linux two reuse-carrying sockets may share an endpoint until
@@ -1347,34 +1349,31 @@ module SimulatedUnixPlatform =
     /// a listen, and never lets the pair coexist in the first place.
     let internal bindConflict
         (platform : SimulatedUnixPlatform)
-        (existing : Ipv4Binding)
+        (existing : Ipv4Endpoint)
         (existingReuse : bool)
-        (existingPhase : SocketPhase)
-        (candidate : Ipv4Binding)
+        (existingHolder : EndpointHolder)
+        (candidate : Ipv4Endpoint)
         (candidateReuse : bool)
         : bool
         =
-        if existing.Endpoint.Port <> candidate.Endpoint.Port then
+        if existing.Port <> candidate.Port then
             false
-        elif not (Ipv4Endpoint.addressesOverlap existing.Endpoint candidate.Endpoint) then
+        elif not (Ipv4Endpoint.addressesOverlap existing candidate) then
             false
         else
 
-        let existingIsListening = SocketPhase.isListening existingPhase
+        let existingIsListening = existingHolder = EndpointHolder.Listener
 
-        // An established socket's pcb is keyed by its full peer tuple, and a
+        // A connection end's pcb is keyed by its full peer tuple, and a
         // replacement listener can bind over it: measured on both kernels
         // (accept a connection, close the listener, bind a reuse-carrying
         // replacement at the exact endpoint — OK; without the candidate's
-        // reuse flag — EADDRINUSE).
-        let existingIsEstablished =
-            match existingPhase with
-            | SocketPhase.Established _
-            | SocketPhase.EstablishedPendingReport _ -> true
-            | SocketPhase.Idle
-            | SocketPhase.Listening _
-            | SocketPhase.Refused _
-            | SocketPhase.DatagramPeer _ -> false
+        // reuse flag — EADDRINUSE). The same holds of an end whose socket has
+        // closed and which still holds its endpoint, on both
+        // (`bind-held-endpoint.c` in
+        // docs/plans/2026-10-08-tcp-shutdown-linger), whose flag is the one its
+        // socket carried when it closed.
+        let existingIsEstablished = existingHolder = EndpointHolder.ConnectionEnd
 
         match flavour platform with
         // Linux relaxes only while nothing listens, and only when *both* sockets
@@ -1389,13 +1388,15 @@ module SimulatedUnixPlatform =
         // The exact-duplicate refusal exempts established sockets (measured
         // above).
         | SimulatedUnixFlavour.Darwin ->
-            (existing.Endpoint.Address = candidate.Endpoint.Address
-             && not existingIsEstablished)
+            (existing.Address = candidate.Address && not existingIsEstablished)
             || not candidateReuse
 
-    /// Whether `listen(2)` on a socket that is *already bound* asks the port
-    /// admission question again, so that a binding admitted earlier can still be
-    /// refused a listen.
+    /// Whether `listen(2)` on a socket that is *already bound*, and not yet
+    /// listening, asks the port admission question again, so that a binding
+    /// admitted earlier can still be refused a listen. A socket already
+    /// listening is asked nothing on either flavour: its listen only updates
+    /// the backlog (measured, `relisten-held.c` in
+    /// docs/plans/2026-10-08-tcp-shutdown-linger).
     ///
     /// The flavours differ, and not merely in strictness. Linux's
     /// `inet_csk_listen_start` calls `get_port` a second time, which is why two

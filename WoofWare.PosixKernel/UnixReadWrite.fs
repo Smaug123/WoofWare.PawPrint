@@ -3298,7 +3298,7 @@ module UnixReadWrite =
             match (TcpTransfer.towards connectionEnd transfer).Receiver with
             | TcpEndState.Reset _ -> true
             | TcpEndState.Open _ -> TcpTransfer.sendShut connectionEnd transfer
-            | TcpEndState.Closed ->
+            | TcpEndState.Closed _ ->
                 failwith
                     $"UnixReadWrite.admitFinishWrite: task %O{task} sleeps on socket %O{socketId}, whose end of the connection is closed, but the call holds the socket (this is a bug in this library)."
 

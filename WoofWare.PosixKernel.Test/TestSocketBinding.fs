@@ -192,10 +192,10 @@ module TestSocketBinding =
 
             SimulatedUnixPlatform.bindConflict
                 SimulatedUnixPlatform.linuxX64
-                existing
+                existing.Endpoint
                 firstReuse
-                firstPhase
-                candidate
+                (EndpointHolder.ofPhase firstPhase)
+                candidate.Endpoint
                 secondReuse
             |> fun actual ->
                 if actual <> linuxConflicts then
@@ -203,10 +203,10 @@ module TestSocketBinding =
 
             SimulatedUnixPlatform.bindConflict
                 SimulatedUnixPlatform.macOsArm64
-                existing
+                existing.Endpoint
                 firstReuse
-                firstPhase
-                candidate
+                (EndpointHolder.ofPhase firstPhase)
+                candidate.Endpoint
                 secondReuse
             |> fun actual ->
                 if actual <> darwinConflicts then
@@ -229,7 +229,15 @@ module TestSocketBinding =
 
             platforms
             |> List.forall (fun platform ->
-                not (SimulatedUnixPlatform.bindConflict platform existing reuse phase candidate reuse)
+                not (
+                    SimulatedUnixPlatform.bindConflict
+                        platform
+                        existing.Endpoint
+                        reuse
+                        (EndpointHolder.ofPhase phase)
+                        candidate.Endpoint
+                        reuse
+                )
             )
 
         Check.One (propertyConfig, property)
@@ -346,10 +354,10 @@ module TestSocketBinding =
 
         SimulatedUnixPlatform.bindConflict
             SimulatedUnixPlatform.macOsArm64
-            specificBinding
+            specificBinding.Endpoint
             true
-            idle
-            wildcardBinding
+            (EndpointHolder.ofPhase idle)
+            wildcardBinding.Endpoint
             false
         |> shouldEqual true
 

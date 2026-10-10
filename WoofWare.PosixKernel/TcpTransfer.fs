@@ -56,7 +56,10 @@ type internal TcpEndState =
     /// Darwin.
     | Reset of errorPending : bool
     /// This end's socket is closed: nothing reads here any more.
-    | Closed
+    /// `reuseAddress` is the `SO_REUSEADDR` the end's socket carried when it
+    /// closed, which the end holds its endpoint with against a bind while it
+    /// still holds it.
+    | Closed of reuseAddress : bool
 
 /// The bytes travelling towards one end of a TCP connection, and that end's
 /// state.
@@ -261,7 +264,7 @@ module internal TcpTransfer =
         match (towards receiver transfer).Receiver with
         | TcpEndState.Reset _ -> true
         | TcpEndState.Open _
-        | TcpEndState.Closed -> false
+        | TcpEndState.Closed _ -> false
 
     let private withTowards
         (receiver : ConnectionEnd)
@@ -331,7 +334,7 @@ module internal TcpTransfer =
         | TcpEndState.Open false, TcpFin.NotSent
         | TcpEndState.Open false, TcpFin.Queued _
         | TcpEndState.Reset _, _
-        | TcpEndState.Closed, _ -> false
+        | TcpEndState.Closed _, _ -> false
 
     /// Whether `sender` has made its FIN, by `shutdown(SHUT_WR)` or by its
     /// close, whether or not the FIN has arrived: its send side is shut, and
@@ -356,6 +359,13 @@ module internal TcpTransfer =
     let exchangeComplete (transfer : TcpTransfer) : bool =
         match transfer.ToClient.Fin, transfer.ToServer.Fin with
         | TcpFin.Arrived _, TcpFin.Arrived _ -> true
+        | _ -> false
+
+    /// Whether `sender`'s end is in `TIME_WAIT`: its FIN, made before the
+    /// peer's had arrived, has arrived, and so has the peer's.
+    let timeWait (sender : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        match (towards (otherEnd sender) transfer).Fin, (towards sender transfer).Fin with
+        | TcpFin.Arrived false, TcpFin.Arrived _ -> true
         | _ -> false
 
     /// Whether `sender`'s FIN was made after the peer's had arrived and has
@@ -399,7 +409,7 @@ module internal TcpTransfer =
                 | TcpEndState.Reset _ ->
                     if sending > 0 then
                         $"towards %A{receiver}: %d{sending} bytes in flight to an end that was reset"
-                | TcpEndState.Closed ->
+                | TcpEndState.Closed _ ->
                     if receiving > 0 then
                         $"towards %A{receiver}: %d{receiving} bytes queued for a closed end"
 
@@ -414,7 +424,7 @@ module internal TcpTransfer =
                     if sending > 0 then
                         $"towards %A{receiver}: a FIN has arrived ahead of %d{sending} bytes sent before it"
                 | TcpFin.Queued _, TcpEndState.Reset _
-                | TcpFin.Queued _, TcpEndState.Closed
+                | TcpFin.Queued _, TcpEndState.Closed _
                 | TcpFin.NotSent, _ -> ()
 
                 match direction.Fin with
@@ -432,7 +442,7 @@ module internal TcpTransfer =
                 // closed; and a close tells the peer, by a FIN or a reset.
                 match direction.Receiver, senderState with
                 | TcpEndState.Reset _, TcpEndState.Open _ -> $"%A{receiver} was reset while its peer is open"
-                | TcpEndState.Closed, TcpEndState.Open _ when (towards sender transfer).Fin = TcpFin.NotSent ->
+                | TcpEndState.Closed _, TcpEndState.Open _ when (towards sender transfer).Fin = TcpFin.NotSent ->
                     $"%A{receiver} is closed while its peer has not been told"
                 | _ -> ()
             ]
@@ -459,7 +469,7 @@ module internal TcpTransfer =
 
                         match outbound.Receiver with
                         | TcpEndState.Reset _
-                        | TcpEndState.Closed -> ()
+                        | TcpEndState.Closed _ -> ()
                         | TcpEndState.Open _ ->
                             $"%A{sender} has %d{count} bytes stranded, but its peer is open to receive them"
                 ]
@@ -531,7 +541,7 @@ module internal TcpTransfer =
         | TcpEndState.Reset true -> Some (resetError receiver transfer)
         | TcpEndState.Reset false
         | TcpEndState.Open _
-        | TcpEndState.Closed -> None
+        | TcpEndState.Closed _ -> None
 
     /// A Linux `tcp_poll` of `sender`'s socket, by `poll(2)`, an epoll `ADD`
     /// or `MOD`, or `epoll_wait`'s re-poll of a pending entry: one that finds
@@ -549,7 +559,7 @@ module internal TcpTransfer =
             else
                 withArmed sender true transfer
         | TcpTransferRules.Linux _, TcpEndState.Reset _
-        | TcpTransferRules.Linux _, TcpEndState.Closed -> transfer
+        | TcpTransferRules.Linux _, TcpEndState.Closed _ -> transfer
 
     /// Whether bytes reaching `receiver` now make its kernel reset the
     /// connection rather than queue them: on Darwin once its receive side is
@@ -575,7 +585,7 @@ module internal TcpTransfer =
 
         let senderClosed =
             match outbound.Receiver with
-            | TcpEndState.Closed -> true
+            | TcpEndState.Closed _ -> true
             | TcpEndState.Open _
             | TcpEndState.Reset _ -> false
 
@@ -598,7 +608,7 @@ module internal TcpTransfer =
                     Sending = ByteQueue.empty
                     Receiver =
                         if senderClosed then
-                            TcpEndState.Closed
+                            outbound.Receiver
                         else
                             TcpEndState.Reset true
                 }
@@ -651,7 +661,7 @@ module internal TcpTransfer =
         : TcpWake list * TcpTransfer
         =
         match (towards sender transfer).Receiver with
-        | TcpEndState.Closed
+        | TcpEndState.Closed _
         | TcpEndState.Reset _ -> [], transfer
         | TcpEndState.Open _ ->
 
@@ -696,7 +706,7 @@ module internal TcpTransfer =
             int64 (outbound.ReceiveCapacity - ByteQueue.length outbound.Receiving)
             + int64 (sendSpace writer transfer)
         // The peer has gone, so nothing drains the send buffer.
-        | TcpEndState.Closed -> int64 (sendSpace writer transfer)
+        | TcpEndState.Closed _ -> int64 (sendSpace writer transfer)
         | TcpEndState.Reset _ ->
             failwith
                 $"TcpTransfer.%s{context}: the %A{writer} end's peer was reset while the %A{writer} end was not, which TcpTransfer.violations forbids (this is a bug in this library)."
@@ -710,7 +720,7 @@ module internal TcpTransfer =
         let direction = towards receiver transfer
 
         match direction.Receiver with
-        | TcpEndState.Closed ->
+        | TcpEndState.Closed _ ->
             failwith
                 $"TcpTransfer.readAnswers: the %A{receiver} end is closed, so nothing can be asleep reading there (this is a bug in this library)."
         | TcpEndState.Reset _ -> true
@@ -735,7 +745,7 @@ module internal TcpTransfer =
                 $"TcpTransfer.writeResumes: a write asleep with %d{remaining} bytes left, but a write with nothing left has returned (this is a bug in this library)."
 
         match (towards writer transfer).Receiver with
-        | TcpEndState.Closed ->
+        | TcpEndState.Closed _ ->
             failwith
                 $"TcpTransfer.writeResumes: the %A{writer} end is closed, so nothing can be asleep writing there (this is a bug in this library)."
         | TcpEndState.Reset _ -> true
@@ -767,7 +777,7 @@ module internal TcpTransfer =
         let own = towards writer transfer
 
         match own.Receiver with
-        | TcpEndState.Closed ->
+        | TcpEndState.Closed _ ->
             failwith
                 $"TcpTransfer.admitWrite: the %A{writer} end is closed, so nothing can write there (this is a bug in this library)."
         | TcpEndState.Reset errorPending ->
@@ -830,7 +840,7 @@ module internal TcpTransfer =
         let outbound = towards peer transfer
 
         match outbound.Receiver with
-        | TcpEndState.Closed ->
+        | TcpEndState.Closed _ ->
             // The reset also ends what the closed peer still had in flight
             // to the writer; what already arrived stays readable.
             let transfer =
@@ -893,7 +903,7 @@ module internal TcpTransfer =
         let direction = towards receiver transfer
 
         match direction.Receiver with
-        | TcpEndState.Closed ->
+        | TcpEndState.Closed _ ->
             failwith
                 $"TcpTransfer.read: the %A{receiver} end is closed, so nothing can read there (this is a bug in this library)."
         | TcpEndState.Open _
@@ -910,7 +920,7 @@ module internal TcpTransfer =
                     transfer
             | TcpEndState.Reset false
             | TcpEndState.Open _
-            | TcpEndState.Closed -> transfer
+            | TcpEndState.Closed _ -> transfer
 
         let queued = ByteQueue.length direction.Receiving
 
@@ -990,7 +1000,7 @@ module internal TcpTransfer =
                     TcpReadAnswer.EndOfFile, [], transfer
                 else
                     TcpReadAnswer.Failed (resetError receiver transfer), [], takeError ()
-            | TcpEndState.Closed, _ -> failwith "TcpTransfer.read: unreachable, the closed end was refused above."
+            | TcpEndState.Closed _, _ -> failwith "TcpTransfer.read: unreachable, the closed end was refused above."
         else
             // `soreceive` takes the pending error unless peeking, and a
             // zero-length request with nothing queued answers 0 rather than
@@ -1012,7 +1022,7 @@ module internal TcpTransfer =
                     TcpReadAnswer.Bytes ImmutableArray.Empty, [], transfer
                 else
                     TcpReadAnswer.WouldBlock, [], transfer
-            | TcpEndState.Closed, _ -> failwith "TcpTransfer.read: unreachable, the closed end was refused above."
+            | TcpEndState.Closed _, _ -> failwith "TcpTransfer.read: unreachable, the closed end was refused above."
 
     /// `getsockopt(SO_ERROR)` on `receiver`'s socket: the pending error, which
     /// the call takes, and the transfer after.
@@ -1020,7 +1030,7 @@ module internal TcpTransfer =
         let direction = towards receiver transfer
 
         match direction.Receiver with
-        | TcpEndState.Closed ->
+        | TcpEndState.Closed _ ->
             failwith
                 $"TcpTransfer.takeError: the %A{receiver} end is closed, so it has no socket to ask (this is a bug in this library)."
         | TcpEndState.Reset true ->
@@ -1139,7 +1149,7 @@ module internal TcpTransfer =
             | TcpShutdownHow.Both -> true, true
 
         match inbound.Receiver with
-        | TcpEndState.Closed ->
+        | TcpEndState.Closed _ ->
             failwith
                 $"TcpTransfer.shutdown: the %A{shutter} end is closed, so it has no socket to shut (this is a bug in this library)."
         // `inet_shutdown` answers `ENOTCONN` in `TCP_CLOSE`, but still wakes
@@ -1265,6 +1275,7 @@ module internal TcpTransfer =
         (context : string)
         (abortive : bool)
         (closer : ConnectionEnd)
+        (reuseAddress : bool)
         (transfer : TcpTransfer)
         : TcpWake list * TcpTransfer
         =
@@ -1278,13 +1289,13 @@ module internal TcpTransfer =
             { own with
                 Sending = ByteQueue.empty
                 Receiving = ByteQueue.empty
-                Receiver = TcpEndState.Closed
+                Receiver = TcpEndState.Closed reuseAddress
             }
 
         match own.Receiver, outbound.Receiver with
-        | TcpEndState.Closed, _ ->
+        | TcpEndState.Closed _, _ ->
             failwith $"TcpTransfer.%s{context}: the %A{closer} end is closed already (this is a bug in this library)."
-        | _, TcpEndState.Closed ->
+        | _, TcpEndState.Closed _ ->
             // Both ends have now closed, and nothing is left to send or keep.
             let transfer =
                 transfer
@@ -1383,13 +1394,14 @@ module internal TcpTransfer =
     /// is a reset, and the peer gets a pending error; but once both FINs have
     /// arrived on Linux, or on Darwin once the closer's has arrived and the
     /// peer has made its own, bytes left unread are discarded without a
-    /// reset. Not to be asked where `closeRefused` holds.
-    let close (closer : ConnectionEnd) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
-        closeWith "close" false closer transfer
+    /// reset. Not to be asked where `closeRefused` holds. `reuseAddress` is
+    /// the closing socket's `SO_REUSEADDR`, which the closed end keeps.
+    let close (closer : ConnectionEnd) (reuseAddress : bool) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
+        closeWith "close" false closer reuseAddress transfer
 
     /// `closer`'s socket closes under `SO_LINGER` {1, 0}: a reset, unless
     /// both FINs have arrived, when it is the ordinary close (measured,
     /// `tcp-shutdown.c` section L). Not to be asked where `abortRefused`
-    /// holds.
-    let abort (closer : ConnectionEnd) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
-        closeWith "abort" true closer transfer
+    /// holds. `reuseAddress` is as for `close`.
+    let abort (closer : ConnectionEnd) (reuseAddress : bool) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
+        closeWith "abort" true closer reuseAddress transfer

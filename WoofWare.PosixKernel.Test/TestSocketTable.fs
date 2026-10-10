@@ -1495,7 +1495,7 @@ module TestSocketTable =
                                         // closed.
                                         Transfer =
                                             TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine
-                                            |> TcpTransfer.close ConnectionEnd.Client
+                                            |> TcpTransfer.close ConnectionEnd.Client false
                                             |> snd
                                     }
                                 ]
@@ -1560,7 +1560,9 @@ module TestSocketTable =
                                     ServerAddress = loopback 2us
                                     Transfer =
                                         (TcpBufferSizing.newTransfer SocketDomain.Inet kernel.Machine, closed)
-                                        ||> List.fold (fun transfer closer -> TcpTransfer.close closer transfer |> snd)
+                                        ||> List.fold (fun transfer closer ->
+                                            TcpTransfer.close closer false transfer |> snd
+                                        )
                                 }
                             ]
                     NextConnectionId = ConnectionId 1L

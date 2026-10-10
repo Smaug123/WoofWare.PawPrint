@@ -1,0 +1,9 @@
+#	Darwin 27.0.0 arm64
+tw reuse 0->1 (setsockopt=-1) c open: bind=EADDRINUSE bind+reuse=ok
+tw reuse 0->1 (setsockopt=-1) c closed: bind=EADDRINUSE bind+reuse=ok
+tw reuse 1->0 (setsockopt=-1) c open: bind=EADDRINUSE bind+reuse=ok
+tw reuse 1->0 (setsockopt=-1) c closed: bind=EADDRINUSE bind+reuse=ok
+fw2 reuse 0->1 (setsockopt=0) c open: bind=EADDRINUSE bind+reuse=ok
+fw2 reuse 0->1 (setsockopt=0) c closed: bind=EADDRINUSE bind+reuse=ok
+fw2 reuse 1->0 (setsockopt=0) c open: bind=EADDRINUSE bind+reuse=ok
+fw2 reuse 1->0 (setsockopt=0) c closed: bind=EADDRINUSE bind+reuse=ok

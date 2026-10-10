@@ -1284,6 +1284,221 @@ module TestConnectedTransfer =
         |> Result.map fst
         |> shouldEqual (Ok (ReadAnswer.Failed UnixError.ECONNRESET))
 
+    /// A connection a Linux accept drops leaves its server end as an accept
+    /// followed by a close would: its FIN made first, it holds the listener's
+    /// port once the listener has closed, against a bind with `SO_REUSEADDR`
+    /// exactly when the listener carried the flag when the connection
+    /// completed, whatever it carries at the drop. An accepted socket holds
+    /// that flag (measured, `queued-options.c`); that a dropped connection's
+    /// end keeps it is inferred from Linux's source (`sk_clone_lock` in
+    /// `tcp_create_openreq_child`), not measured.
+    [<Test>]
+    let ``a connection a Linux accept drops holds its server end's endpoint with the listener's SO_REUSEADDR at completion``
+        ()
+        : unit
+        =
+        for listenerReuse in [ false ; true ] do
+            let system = systemOn id SimulatedUnixPlatform.linuxX64
+            let listener, system = KeventWorld.stream false system
+
+            let system =
+                if listenerReuse then
+                    ReuseAddress.set true listener system
+                else
+                    system
+
+            let system = system |> KeventWorld.bind listener port |> KeventWorld.listen listener
+            let client, system = KeventWorld.stream true system
+            let _, system = KeventWorld.connect client port system
+            // The listener's flag changes once the connection has completed.
+            let system = ReuseAddress.set (not listenerReuse) listener system
+
+            let system =
+                match UnixConnection.accept 1 listener UserBuffer.Mapped 0xFFFFFFFFu system with
+                | Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, system) -> system
+                | other -> failwith $"accept: %A{other}"
+
+            let system = KeventWorld.close listener system
+            assertClean system
+
+            let bindAnswer (reuse : bool) : BindAnswer =
+                let fresh, system = KeventWorld.stream false system
+                let system = if reuse then ReuseAddress.set true fresh system else system
+
+                match
+                    CopyIn.bind
+                        fresh
+                        UserBuffer.Mapped
+                        16u
+                        (CopyIn.inet SimulatedUnixPlatform.linuxX64 (KeventWorld.loopback port))
+                        system
+                with
+                | Ok (answer, _) -> answer
+                | Error refusal -> failwith $"bind refused: %A{refusal}"
+
+            bindAnswer false |> shouldEqual (BindAnswer.Failed UnixError.EADDRINUSE)
+
+            match bindAnswer true with
+            | BindAnswer.Bound _ when listenerReuse -> ()
+            | BindAnswer.Failed UnixError.EADDRINUSE when not listenerReuse -> ()
+            | other -> failwith $"listener SO_REUSEADDR %b{listenerReuse}: a bind with it answered %A{other}"
+
+    /// `bind-late-reuse.c`'s rows (docs/plans/2026-10-08-tcp-shutdown-linger),
+    /// through the syscalls on each flavour: a client's `SO_REUSEADDR` flipped
+    /// once its end is in `TIME_WAIT` or `FIN_WAIT2`, the client then left
+    /// open or closed, and a bind of its endpoint without and with the flag.
+    /// Linux judges an end in `TIME_WAIT` by the flag it had when it entered
+    /// it, a copy this kernel does not keep, so it refuses that change
+    /// (`SocketOptionRefusal.LinuxReuseAddressInTimeWait`), and only there.
+    [<Test>]
+    let ``SO_REUSEADDR changed in TIME_WAIT is refused on Linux, and otherwise judged as measured`` () : unit =
+        for platform in Machines.platforms do
+            let flavour = SimulatedUnixPlatform.flavour platform
+
+            let resource =
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> "WoofWare.PosixKernel.Test.bindLateReuse.linux.txt"
+                | SimulatedUnixFlavour.Darwin -> "WoofWare.PosixKernel.Test.bindLateReuse.darwin.txt"
+
+            let rows =
+                use stream =
+                    match Assembly.GetExecutingAssembly().GetManifestResourceStream resource with
+                    | null -> failwith $"embedded resource %s{resource} not found"
+                    | stream -> stream
+
+                use reader = new StreamReader (stream)
+
+                reader.ReadToEnd().Split '\n'
+                |> Array.map (fun line -> line.TrimEnd '\r')
+                |> Array.filter (fun line -> line.Length > 0 && not (line.StartsWith ("#", StringComparison.Ordinal)))
+                |> Array.toList
+
+            rows.Length |> shouldEqual 8
+
+            // An end whose FIN was made after the peer's had arrived holds no
+            // TIME_WAIT, and Linux takes the option there as everywhere else.
+            if flavour = SimulatedUnixFlavour.Linux then
+                let client, server, system = pair true (systemOn small platform)
+                let system = shut server 1 system |> shut client 1
+                ReuseAddress.set true client system |> assertClean
+
+            for row in rows do
+                let fields = row.Split ' '
+                let timeWait = fields.[0] = "tw"
+                let before = fields.[2] = "1->0"
+                let closes = fields.[5] = "closed:"
+
+                let client, server, system = pair true (systemOn small platform)
+
+                let system =
+                    if before then
+                        ReuseAddress.set true client system
+                    else
+                        system
+
+                let cport =
+                    int
+                        (UnixMachineState.socket (socketOf client system) system.Machine)
+                            .Ipv4Binding.Value.Endpoint.Port
+
+                let system = shut client 1 system
+                let system = if timeWait then shut server 1 system else system
+
+                let level = SimulatedUnixPlatform.socketOptionLevel platform
+                let name = SimulatedUnixPlatform.reuseAddressOption platform
+                let value = Some (OptionValue.ofInt (if before then 0 else 1))
+
+                let flipped =
+                    match UnixSocket.admitSetSockOpt client level name UserBuffer.Mapped 4u system with
+                    | Ok (SetSockOptAdmission.Answered _) -> Ok ("-1", system)
+                    | Ok (SetSockOptAdmission.Transfer _) ->
+                        match UnixSocket.setsockopt client level name UserBuffer.Mapped 4u value system with
+                        | Ok (SetSockOptAnswer.Set, system) -> Ok ("0", system)
+                        | Ok (SetSockOptAnswer.Failed _, system) -> Ok ("-1", system)
+                        | Error refusal -> Error refusal
+                    | other -> failwith $"setsockopt admission: %A{other}"
+
+                match flipped with
+                | Error (SocketOptionRefusal.LinuxReuseAddressInTimeWait _) when
+                    flavour = SimulatedUnixFlavour.Linux && timeWait
+                    ->
+                    // Setting the value it has changes no copy, and is served.
+                    let unchanged = Some (OptionValue.ofInt (if before then 1 else 0))
+
+                    match UnixSocket.setsockopt client level name UserBuffer.Mapped 4u unchanged system with
+                    | Ok (SetSockOptAnswer.Set, _) -> ()
+                    | other -> failwith $"Linux %s{row}: setting the value it has answered %A{other}"
+                | Error refusal -> failwith $"%A{flavour} %s{row}: refused %A{refusal}"
+                | Ok _ when flavour = SimulatedUnixFlavour.Linux && timeWait ->
+                    failwith $"Linux %s{row}: served a change this kernel cannot judge a bind by"
+                | Ok (answer, system) ->
+                    let system = if closes then KeventWorld.close client system else system
+                    assertClean system
+
+                    let bindAnswer (reuse : bool) : string =
+                        let fresh, system = KeventWorld.stream false system
+                        let system = if reuse then ReuseAddress.set true fresh system else system
+
+                        match
+                            CopyIn.bind
+                                fresh
+                                UserBuffer.Mapped
+                                16u
+                                (CopyIn.inet platform (KeventWorld.loopback (uint16 cport)))
+                                system
+                        with
+                        | Ok (BindAnswer.Bound _, _) -> "ok"
+                        | Ok (BindAnswer.Failed error, _) -> $"%A{error}"
+                        | Error refusal -> failwith $"bind refused: %A{refusal}"
+
+                    let state = if timeWait then "tw" else "fw2"
+                    let flip = if before then "1->0" else "0->1"
+                    let socket = if closes then "closed" else "open"
+
+                    $"%s{state} reuse %s{flip} (setsockopt=%s{answer}) c %s{socket}: bind=%s{bindAnswer false} bind+reuse=%s{bindAnswer true}"
+                    |> shouldEqual row
+
+
+    /// `listen(2)` of a socket already listening answers 0 while a connection
+    /// it accepted holds its port, the accepted socket open or closed, the
+    /// listener with or without `SO_REUSEADDR`: Linux only updates the
+    /// backlog, and re-screens no binding (measured on both,
+    /// `relisten-held.c` in docs/plans/2026-10-08-tcp-shutdown-linger).
+    [<Test>]
+    let ``a re-listen answers 0 while a connection it accepted holds the port`` () : unit =
+        for platform in Machines.platforms do
+            for listenerReuse in [ false ; true ] do
+                for child in [ "open" ; "closed-active" ; "closed-passive" ] do
+                    let system = systemOn small platform
+                    let listener, system = KeventWorld.stream false system
+
+                    let system =
+                        if listenerReuse then
+                            ReuseAddress.set true listener system
+                        else
+                            system
+
+                    let system = system |> KeventWorld.bind listener port |> KeventWorld.listen listener
+                    let client, system = KeventWorld.client port system
+                    let accepted, system = KeventWorld.accept listener system
+
+                    let system =
+                        if child = "closed-passive" then
+                            shut client 1 system
+                        else
+                            system
+
+                    let system =
+                        if child = "open" then
+                            system
+                        else
+                            KeventWorld.close accepted system
+
+                    match UnixSocket.listen listener 8 system with
+                    | Ok (ListenAnswer.Listening _, system) -> assertClean system
+                    | other ->
+                        failwith $"%O{platform}, listener SO_REUSEADDR %b{listenerReuse}, child %s{child}: %A{other}"
+
     // ------------------------------------------------------------------
     // The invariants
     // ------------------------------------------------------------------
@@ -1362,7 +1577,7 @@ module TestConnectedTransfer =
 
             // An end closed under its socket.
             system
-            |> withTransfer (TcpTransfer.close ConnectionEnd.Client >> snd)
+            |> withTransfer (TcpTransfer.close ConnectionEnd.Client false >> snd)
             |> snd
             |> UnixSystem.checkInvariants
             |> shouldEqual

@@ -947,7 +947,7 @@ module UnixConnection =
                      with
                      | TcpEndState.Reset _ -> true
                      | TcpEndState.Open _
-                     | TcpEndState.Closed -> false)
+                     | TcpEndState.Closed _ -> false)
                     ->
                     Error (ConnectRefusal.ResetBeforeReport socketId)
                 | SocketPhase.EstablishedPendingReport connectionId ->
@@ -1719,18 +1719,20 @@ module UnixConnection =
         =
         let listener = UnixMachineState.socket socketId system.Machine
 
-        let connectionId, listenState =
+        let queued, listenState =
             match listener.Phase with
             | SocketPhase.Listening ({
                                          Queue = queued :: rest
                                      } as listenState) ->
-                queued.Connection,
+                queued,
                 { listenState with
                     Queue = rest
                 }
             | phase ->
                 failwith
                     $"UnixConnection.dropConnection: socket %O{socketId} is in %A{phase}, not listening with a connection queued; `accept` screens this (this is a bug in this library)."
+
+        let connectionId = queued.Connection
 
         let sockets =
             Map.add
@@ -1755,9 +1757,17 @@ module UnixConnection =
             )
 
         // The server end closes as `close` closes it: a FIN, or a reset if the
-        // client had written to it.
+        // client had written to it. It keeps the SO_REUSEADDR its socket would
+        // have held, the listener's when the connection completed
+        // (`QueuedConnection.ReuseAddress`, measured for the socket an accept
+        // returns); that a dropped connection's end keeps it too is inferred
+        // from Linux's source (`sk_clone_lock` in `tcp_create_openreq_child`),
+        // not measured.
         let wakes, transfer =
-            TcpTransfer.close ConnectionEnd.Server (UnixMachineState.connection connectionId system.Machine).Transfer
+            TcpTransfer.close
+                ConnectionEnd.Server
+                queued.ReuseAddress
+                (UnixMachineState.connection connectionId system.Machine).Transfer
 
         let connections =
             if List.isEmpty clients then

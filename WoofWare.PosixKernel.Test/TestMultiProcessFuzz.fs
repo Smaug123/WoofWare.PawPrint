@@ -1664,7 +1664,7 @@ module TestMultiProcessFuzz =
                     | TcpEndState.Open _, (TcpFin.Queued _ | TcpFin.Arrived _) -> true
                     | TcpEndState.Open _, TcpFin.NotSent
                     | TcpEndState.Reset _, _
-                    | TcpEndState.Closed, _ -> false)
+                    | TcpEndState.Closed _, _ -> false)
 
             let stillQueued =
                 match Map.tryFind queued.Listener after.Machine.Sockets with
