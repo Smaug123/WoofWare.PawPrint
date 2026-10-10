@@ -130,6 +130,7 @@
     <Compile Include="TestSigaction.fs" />
     <Compile Include="TestSigprocmask.fs" />
     <Compile Include="TestSigsuspend.fs" />
+    <Compile Include="TestUnblockForAnotherTask.fs" />
     <Compile Include="TestSignalPickOrder.fs" />
     <Compile Include="TestSignalReceiver.fs" />
     <Compile Include="SignalFuzz.fs" />

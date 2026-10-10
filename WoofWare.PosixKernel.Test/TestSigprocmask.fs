@@ -24,6 +24,18 @@ module TestSigprocmask =
         UnixSystem.initial (HostPlatform.platformOf flavour)
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
+    /// `UnixSignal.sigprocmask`, failing the test on a refusal.
+    let private sigprocmask
+        (task : int)
+        (how : int)
+        (set : SignalMask option)
+        (system : UnixSystem<int, string>)
+        : Result<SignalMask * UnixSystem<int, string>, UnixError>
+        =
+        match UnixSignal.sigprocmask task how set system with
+        | Ok answered -> answered
+        | Error refusal -> failwith $"sigprocmask was refused: %s{SigprocmaskRefusal.describe refusal}"
+
     let private numberingOf (flavour : SimulatedUnixFlavour) : SignalNumbering =
         SimulatedUnixPlatform.signalNumbering (HostPlatform.platformOf flavour)
 
@@ -60,7 +72,7 @@ module TestSigprocmask =
         : Result<SignalMask * UnixSystem<int, string>, UnixError>
         =
         match route with
-        | Route.Libc -> UnixSignal.sigprocmask task how set system
+        | Route.Libc -> sigprocmask task how set system
         | Route.Pthread -> UnixSignal.pthreadSigmask task how set system
         | Route.Raw -> UnixSignal.rtSigprocmask task how set 8UL system
 
@@ -171,7 +183,7 @@ module TestSigprocmask =
             UnixSignal.rtSigprocmask 0 (block flavour) (Some (maskOfWord flavour (rt ||| hup))) 8UL (systemOn flavour)
             |> orFail
 
-        match UnixSignal.sigprocmask 0 (block flavour) None blocked with
+        match sigprocmask 0 (block flavour) None blocked with
         | Ok (old, _) -> SignalMask.toWord old |> shouldEqual 0x180000001UL
         | Error errno -> failwith $"%O{errno}"
 
@@ -179,12 +191,12 @@ module TestSigprocmask =
         | Ok (old, _) -> SignalMask.toWord old |> shouldEqual 0x180000001UL
         | Error errno -> failwith $"%O{errno}"
 
-        UnixSignal.sigprocmask 0 (setmask flavour) (Some (maskOfWord flavour hup)) blocked
+        sigprocmask 0 (setmask flavour) (Some (maskOfWord flavour hup)) blocked
         |> orFail
         |> wordOf 0
         |> shouldEqual 0x1UL
 
-        UnixSignal.sigprocmask 0 (unblock flavour) (Some (maskOfWord flavour rt)) blocked
+        sigprocmask 0 (unblock flavour) (Some (maskOfWord flavour rt)) blocked
         |> orFail
         |> wordOf 0
         |> shouldEqual 0x180000001UL
@@ -318,8 +330,7 @@ module TestSigprocmask =
 
                 UnixSignal.sigpending 0 system |> shouldEqual mask
 
-                let unblocked =
-                    UnixSignal.sigprocmask 0 (unblock flavour) (Some mask) system |> orFail
+                let unblocked = sigprocmask 0 (unblock flavour) (Some mask) system |> orFail
 
                 match UnixSignal.onReturnToUser 0 unblocked with
                 | Ok (Some (SignalDelivery.RunHandlers frames), after) ->
@@ -528,7 +539,13 @@ module TestSigprocmask =
             UnixSignal.sigpending 0 pending |> SignalMask.toWord |> shouldEqual usr1
 
     [<Test>]
-    let ``a sigprocmask that unblocks a signal for a task asleep in poll wakes it on Darwin alone`` () : unit =
+    let ``a sigprocmask that unblocks a signal pending for a task asleep in poll is refused on Darwin, and wakes nothing on Linux``
+        ()
+        : unit
+        =
+        // `unblock-wakes-sleeper.c`: on Darwin the sleeper slept on until its
+        // own condition ended the call, which this library cannot express
+        // (`TestUnblockForAnotherTask` searches every call and signal).
         for flavour in flavours do
             let usr1 = SignalMask.ofSignals (numberingOf flavour) (Set.singleton Signal.SIGUSR1)
 
@@ -549,16 +566,13 @@ module TestSigprocmask =
 
             UnixWait.wakes (Set.singleton 1) parked |> shouldEqual []
 
-            let unblocked =
-                UnixSignal.sigprocmask 0 (unblock flavour) (Some usr1) parked |> orFail
-
-            UnixWait.wakes (Set.singleton 1) unblocked
-            |> List.map fst
-            |> shouldEqual (
-                match flavour with
-                | SimulatedUnixFlavour.Darwin -> [ 1 ]
-                | SimulatedUnixFlavour.Linux -> []
-            )
+            match flavour, UnixSignal.sigprocmask 0 (unblock flavour) (Some usr1) parked with
+            | SimulatedUnixFlavour.Darwin, Error refusal ->
+                refusal
+                |> shouldEqual (SigprocmaskRefusal.DarwinUnblockedForAnotherTask (1, Signal.SIGUSR1))
+            | SimulatedUnixFlavour.Linux, Ok (Ok (_, unblocked)) ->
+                UnixWait.wakes (Set.singleton 1) unblocked |> shouldEqual []
+            | _, other -> failwith $"%O{flavour}: the sigprocmask answered %A{other}"
 
     /// One mask call of the property's sequences.
     type private MaskCall =

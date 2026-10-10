@@ -31,6 +31,33 @@ type ThreadKillRefusal =
     /// What the signal would do to the process is not modelled.
     | Receiver of SignalReceiverRefusal
 
+/// Why this library will not answer a `sigprocmask(2)`: something it does not
+/// model, rather than an error a kernel would report.
+[<RequireQualifiedAccess>]
+type SigprocmaskRefusal<'Task> =
+    /// Under Darwin, whose `sigprocmask` changes every task's mask, the call
+    /// would unblock `signal` for `task`, which is not the caller, while
+    /// `signal` is pending where `task` would take it: on `task` itself, or,
+    /// for the process's leader, on the process.
+    ///
+    /// Darwin was measured not to wake such a task, if it is asleep in a
+    /// system call, and not always to deliver the signal as the task next
+    /// returns to user mode: whether it did depended on the call the task was
+    /// in and on what the task had done since the signal was sent, which this
+    /// library does not record. This library delivers every signal a task's
+    /// mask lets through at its next return to user mode, and wakes a sleeping
+    /// task for one, so it cannot express what the task does next.
+    | DarwinUnblockedForAnotherTask of task : 'Task * signal : Signal
+
+[<RequireQualifiedAccess>]
+module SigprocmaskRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half: which task made the call.
+    let describe<'Task> (refusal : SigprocmaskRefusal<'Task>) : string =
+        match refusal with
+        | SigprocmaskRefusal.DarwinUnblockedForAnotherTask (task, signal) ->
+            $"under Darwin, sigprocmask changes every task's mask, and this call would unblock %O{signal} for task %O{task}, which is not the caller, while %O{signal} is pending for that task. Darwin was measured neither to wake that task from a sleep for it nor always to deliver it as the task next returns to user mode, which depended on the call the task was in and on what it had done since the signal was sent, and this kernel does not record that."
+
 /// What a `kill(2)` or `pthread_kill(3)` the kernel answered did to the
 /// calling process.
 [<RequireQualifiedAccess>]
@@ -477,6 +504,33 @@ module UnixSignal =
         let numbering = SignalState.numbering system.Process.Signals
         changeMaskUnder "pthreadSigmask" MaskScope.Caller (screenedByCLibrary numbering) task how set system
 
+    /// The first task of `before` other than `caller`, with the first signal
+    /// pending where it would take it, that its mask in `before` blocks and
+    /// its mask in `after` does not.
+    let private unblockedForAnother<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (caller : 'Task)
+        (before : UnixSystem<'Task, 'Handler>)
+        (after : UnixSystem<'Task, 'Handler>)
+        : ('Task * Signal) option
+        =
+        let was = before.Process.Signals
+        let now = after.Process.Signals
+
+        before.Tasks
+        |> Map.keys
+        |> Seq.filter (fun other -> other <> caller)
+        |> Seq.tryPick (fun other ->
+            let blockedBefore = SignalState.maskOf other was
+            let blockedAfter = SignalState.maskOf other now
+
+            SignalState.pendingFor before.Leader other was
+            |> List.tryFind (fun entry ->
+                SignalMask.contains entry.Signal blockedBefore
+                && not (SignalMask.contains entry.Signal blockedAfter)
+            )
+            |> Option.map (fun entry -> other, entry.Signal)
+        )
+
     /// `sigprocmask(2)`, called by `task`: on Linux exactly `pthreadSigmask`.
     ///
     /// On Darwin it changes **every** task's mask, each as `how` says, and
@@ -488,9 +542,13 @@ module UnixSignal =
     /// threads blocking nothing, and its `SIG_SETMASK` of SIGTERM left both
     /// blocking SIGTERM alone; Darwin's raw `sigprocmask` system call did the
     /// same. Linux's changed the caller's alone, as `pthread_sigmask` did on
-    /// both. A signal another task blocked and no longer does may then be
-    /// deliverable to it: that task takes it as it next returns to user mode,
-    /// and if it is asleep in a syscall, `UnixWait.wakes` says so.
+    /// both.
+    ///
+    /// Refuses, on Darwin, a call that would unblock a pending signal for a
+    /// task other than the caller (see
+    /// `SigprocmaskRefusal.DarwinUnblockedForAnotherTask`), changing nothing.
+    /// The caller's own pending signals it unblocks are deliverable to it as it
+    /// returns from the call, as `pthreadSigmask` describes.
     ///
     /// Everything else is as `pthreadSigmask` answers.
     let sigprocmask<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -498,16 +556,34 @@ module UnixSignal =
         (how : int32)
         (set : SignalMask option)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SignalMask * UnixSystem<'Task, 'Handler>, UnixError>
+        : Result<Result<SignalMask * UnixSystem<'Task, 'Handler>, UnixError>, SigprocmaskRefusal<'Task>>
         =
         let numbering = SignalState.numbering system.Process.Signals
 
-        let scope =
-            match numbering with
-            | SignalNumbering.Linux -> MaskScope.Caller
-            | SignalNumbering.Darwin -> MaskScope.EveryTask
+        match numbering with
+        | SignalNumbering.Linux ->
+            changeMaskUnder "sigprocmask" MaskScope.Caller (screenedByCLibrary numbering) task how set system
+            |> Ok
+        | SignalNumbering.Darwin ->
 
-        changeMaskUnder "sigprocmask" scope (screenedByCLibrary numbering) task how set system
+        match changeMaskUnder "sigprocmask" MaskScope.EveryTask (screenedByCLibrary numbering) task how set system with
+        | Error error -> Ok (Error error)
+        | Ok (old, after) ->
+            // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/unblock-wakes-sleeper.c`
+            // on Darwin 27.0.0: a second thread's sigprocmask unblocked a signal
+            // pending on a thread asleep in each of poll, kevent, read and write
+            // of a pipe or a TCP socket, accept, flock, sigsuspend, pause and
+            // nanosleep, and the sleeper slept on until its own condition ended
+            // the call 500 ms later, whether the signal was caught or a TERM at
+            // its default. Then read, write, accept and flock answered EINTR or
+            // restarted, and sigsuspend and pause EINTR, each taking the signal;
+            // poll, kevent and nanosleep answered as they would have, and took
+            // it only if another thread had sent it, never one the sleeper had
+            // sent itself before it slept. A thread running user code, with a
+            // system call every 100 us, never took it at all.
+            match unblockedForAnother task system after with
+            | Some (other, signal) -> Error (SigprocmaskRefusal.DarwinUnblockedForAnotherTask (other, signal))
+            | None -> Ok (Ok (old, after))
 
     /// Linux's `rt_sigprocmask(2)`, made as a system call rather than through
     /// the C library, by `task`: as `pthreadSigmask`, except that it takes
