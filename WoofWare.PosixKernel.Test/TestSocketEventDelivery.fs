@@ -757,23 +757,43 @@ module TestSocketEventDelivery =
 
         assertSound kernel
 
-    /// A dying listener RSTs its unaccepted queue entries' clients, leaving
-    /// them in an unmeasured state a later registration could not answer for
-    /// — so the close refuses whenever a live client would be left behind,
-    /// registered or not (an unregistered survivor would otherwise be
-    /// indistinguishable from a cleanly FIN'd peer at its next ADD).
+    /// A dying listener resets its queued clients (`tcp-shutdown.c` section Q,
+    /// docs/plans/2026-10-08-tcp-shutdown-linger): a registration made before
+    /// the close is queued by the reset's edge, and one made after reports the
+    /// reset at its ADD, both as the reset level 0x201d.
     [<Test>]
-    let ``closing a listener with a live queued client refuses`` () : unit =
-        let listenerFd, _, kernel = addListener 5000us initialSystem
-        let _, clientId, kernel = addStream kernel
-        let _, kernel = connect clientId false (loopback 5000us) kernel
+    let ``closing a listener resets its queued clients, before and after a registration`` () : unit =
+        let queueFd, queueId, kernel = addEpoll initialSystem
+        let listenerFd, _, kernel = addListener 5000us kernel
+        let earlyFd, earlyId, kernel = addStream kernel
+        let lateFd, lateId, kernel = addStream kernel
+        let _, kernel = connect earlyId false (loopback 5000us) kernel
+        let _, kernel = connect lateId false (loopback 5000us) kernel
+        let kernel = register queueFd earlyFd 1UL kernel
 
-        // Asserted as the refusal's own case rather than as a crash: the
-        // library now says which measured gap it declined to answer across, and
-        // a message match would pass for any of the three.
-        match UnixDescriptor.close listenerFd kernel with
-        | Error (CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) -> ()
-        | other -> failwith $"expected a listener-reset refusal, got %O{other}"
+        // Consume the early registration's ADD-of-ready edge, so that only the
+        // reset's remains.
+        let delivered, kernel = deliverEpollEvents queueId 8 kernel
+        dataOf delivered |> shouldEqual [ 1UL ]
+
+        let kernel =
+            match closeFd listenerFd kernel with
+            | Ok kernel -> kernel
+            | Error error -> failwith $"close failed: %O{error}"
+
+        assertSound kernel
+
+        let reset =
+            EpollEvents.In
+            ||| EpollEvents.Out
+            ||| EpollEvents.RdHup
+            ||| EpollEvents.Hup
+            ||| EpollEvents.Err
+
+        let kernel = register queueFd lateFd 2UL kernel
+        let delivered, kernel = deliverEpollEvents queueId 8 kernel
+        delivered |> shouldEqual [ 1UL, reset ; 2UL, reset ]
+        assertSound kernel
 
     /// The connect's two edges enter in the measured order (`order7.c`): the
     /// client's completion before the listener's accept edge.

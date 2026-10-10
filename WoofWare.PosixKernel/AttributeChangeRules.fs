@@ -34,8 +34,8 @@ type SymlinkModeChange =
     | NotSupported
     /// The link's own mode changes, by the rule `chmod(2)` applies to a
     /// regular file (see `UnixPathResolution.chmod`), set-ID and sticky bits
-    /// included, moving the link's `ctime` and nothing of its target's: this
-    /// is `lchmod`. Darwin.
+    /// included, moving the link's `ctime`, even to the mode it already has,
+    /// and nothing of its target's or its directory's. Darwin.
     | ChangesLink
 
 [<RequireQualifiedAccess>]

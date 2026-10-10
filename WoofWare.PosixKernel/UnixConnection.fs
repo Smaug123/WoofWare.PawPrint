@@ -99,10 +99,6 @@ type AcceptRefusal =
     /// The accept was asleep and a signal is pending for the task, and this
     /// library will not say how the signal ends it.
     | Interruption of SyscallInterruptionRefusal
-    /// The accept slept on a listener whose last descriptor closed meanwhile,
-    /// so the listener goes as the call returns, and what that does to what is
-    /// left in its queue is unmeasured.
-    | Release of DescriptionReleaseRefusal
     /// The accept would sleep on a listener a close has drained
     /// (`ListenState.Drained`): its queue is empty and the description it was
     /// made through blocking.
@@ -138,8 +134,6 @@ module AcceptRefusal =
         | AcceptRefusal.UnmeasuredCopyOutFault listener ->
             $"socket %O{listener} has a connection to hand over, so this call takes it off the queue and copies the peer address out -- but the destination is unmapped, so that copy faults. Measured, Linux stores the untruncated length in the caller's length cell, answers EFAULT and loses the connection, while Darwin ignores the fault and succeeds; this kernel's accept has no outcome for either. (A NULL destination is not copied to at all, and neither is the length cell; that has no outcome here either.)"
         | AcceptRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
-        | AcceptRefusal.Release refusal ->
-            $"the accept slept on a listener no descriptor names any more, which goes as the call returns: %s{DescriptionReleaseRefusal.describe refusal}"
         | AcceptRefusal.AbortiveDrop (listener, connection) ->
             $"the accept fails having taken connection %O{connection} off socket %O{listener}'s queue, which closes its server end at once, and that end has the listener's SO_LINGER, on with a time of zero, while the client is open. A real kernel resets the connection, and the client reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless the client had written to the server end."
         | AcceptRefusal.DarwinDrainedListener listener ->
@@ -840,9 +834,7 @@ module UnixConnection =
                             .Receiver
                      with
                      | TcpEndState.Reset _ -> true
-                     | TcpEndState.Open
-                     | TcpEndState.FinQueued
-                     | TcpEndState.FinReceived
+                     | TcpEndState.Open _
                      | TcpEndState.Closed -> false)
                     ->
                     Error (ConnectRefusal.ResetBeforeReport socketId)
@@ -2065,9 +2057,8 @@ module UnixConnection =
     ///
     /// The sleeping call holds the listener, so it outlives its last descriptor
     /// until the call returns. A listener no descriptor names goes as the call
-    /// answers, and if a connection whose client is open is left in its queue,
-    /// what that does to the client is unmeasured and the finish refuses
-    /// (`AcceptRefusal.Release`).
+    /// answers, resetting each connection left in its queue, as a close of the
+    /// listener's last descriptor does.
     ///
     /// An accept a close has ended (`SleepTarget.EndedByClose`, under Darwin)
     /// answers `ECONNABORTED`, whatever is queued and whatever signal is
@@ -2090,6 +2081,4 @@ module UnixConnection =
         match finishAcceptHolding task system with
         | Error refusal -> Error refusal
         | Ok (outcome, after) ->
-            match ObjectLifetime.releaseUnreferenced held after with
-            | Ok released -> Ok (outcome, released)
-            | Error refusal -> Error (AcceptRefusal.Release refusal)
+            Ok (outcome, ObjectLifetime.releaseUnreferencedUnrefusable "UnixConnection.finishAccept" held after)

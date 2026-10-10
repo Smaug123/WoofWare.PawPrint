@@ -1827,9 +1827,7 @@ module UnixSocket =
                 match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
                 | SimulatedUnixFlavour.Linux -> notConnected
                 | SimulatedUnixFlavour.Darwin -> Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
-            | TcpEndState.Open
-            | TcpEndState.FinQueued
-            | TcpEndState.FinReceived ->
+            | TcpEndState.Open _ ->
                 match connectionEnd with
                 | ConnectionEnd.Client -> reportPeer connection.ServerAddress
                 | ConnectionEnd.Server -> reportPeer connection.ClientAddress
@@ -2062,9 +2060,7 @@ module UnixSocket =
                            .Receiver
                    with
                    | TcpEndState.Reset _ -> true
-                   | TcpEndState.Open
-                   | TcpEndState.FinQueued
-                   | TcpEndState.FinReceived
+                   | TcpEndState.Open _
                    | TcpEndState.Closed -> false
                | SocketPhase.Idle
                | SocketPhase.Listening _

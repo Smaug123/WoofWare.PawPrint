@@ -290,7 +290,7 @@ type internal RenameOutcome =
 /// kernels, and there is no portable case to add. `UnixDescriptor.lseek`
 /// decodes a raw `whence` under the flavour and refuses them.
 [<RequireQualifiedAccess>]
-type SeekWhence =
+type internal SeekWhence =
     /// `SEEK_SET` (0): from the start of the file.
     | Set
     /// `SEEK_CUR` (1): from the description's current offset.
@@ -2089,9 +2089,10 @@ module VirtualFileSystem =
     /// `ctime` moves even when `bits` are the bits the inode already had, and
     /// no other timestamp moves.
     ///
-    /// Partial in the inode, which must name a regular file, a device or a
-    /// directory this filesystem contains: no syscall this library models
-    /// changes a symbolic link's own bits.
+    /// Partial in the inode, which must be one this filesystem contains. A
+    /// symbolic link's bits are its own: whether a flavour lets a syscall
+    /// change them is the caller's question
+    /// (`SimulatedUnixPlatform.symlinkModeChange`).
     let internal setPermissions
         (inode : InodeNumber)
         (bits : PermissionBits)
@@ -2120,9 +2121,7 @@ module VirtualFileSystem =
                     { directory with
                         Permissions = bits
                     }
-            | InodeContent.Symlink _ ->
-                failwith
-                    $"VirtualFileSystem.setPermissions: inode %O{inode} is a symbolic link. `chmod` follows a final symlink, no descriptor names one, and Darwin's `lchmod` is not modelled, so the caller should never have reached a link (this is a bug in the caller)."
+            | InodeContent.Symlink (target, _) -> InodeContent.Symlink (target, bits)
 
         { vfs with
             Inodes =

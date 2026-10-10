@@ -314,10 +314,8 @@ module TestTcpTransferMeasured =
 
     let private errorPending (transfer : TcpTransfer) : bool =
         match (TcpTransfer.towards s transfer).Receiver with
-        | TcpEndState.Reset (_, pending) -> pending
-        | TcpEndState.Open
-        | TcpEndState.FinQueued
-        | TcpEndState.FinReceived
+        | TcpEndState.Reset pending -> pending
+        | TcpEndState.Open _
         | TcpEndState.Closed -> false
 
     let private readinessOfModel (transfer : TcpTransfer) : Readiness =

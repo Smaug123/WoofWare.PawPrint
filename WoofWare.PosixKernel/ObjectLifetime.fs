@@ -5,10 +5,6 @@ namespace WoofWare.PosixKernel
 /// last reference to has not been measured.
 [<RequireQualifiedAccess>]
 type DescriptionReleaseRefusal =
-    /// The description is the last reference to the listening socket
-    /// `listener`, whose accept queue still holds `connection`, and that
-    /// connection's client (socket `client`) is still open.
-    | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
     /// The description is the last reference to the connected stream socket
     /// `socket`, whose `SO_LINGER` is on with a time of zero, and its
     /// connection `connection` is still referenced: by its peer, or by a
@@ -39,8 +35,6 @@ module DescriptionReleaseRefusal =
     /// client supplies its own half: which call let go of the last reference.
     let describe (refusal : DescriptionReleaseRefusal) : string =
         match refusal with
-        | DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
-            $"releasing the last reference destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client when the listener goes, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
         | DescriptionReleaseRefusal.AbortiveClose (socket, connection) ->
             $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time of zero, while its connection %O{connection} is still referenced. A real kernel resets the connection rather than shutting it down in order, and the peer reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless bytes were left unread."
         | DescriptionReleaseRefusal.LingeringClose (socket, connection, unsent) ->
@@ -182,6 +176,14 @@ module ObjectLifetime =
     /// would make reset the connection or wait is refused
     /// (`DescriptionReleaseRefusal.AbortiveClose`,
     /// `DescriptionReleaseRefusal.LingeringClose`).
+    ///
+    /// Destroying a listener's description resets every connection still in
+    /// its accept queue, oldest first (`TcpTransfer.abort` of the server
+    /// end), whatever the listener's `SO_LINGER`: each client reads
+    /// `ECONNRESET`, and its waiters get the reset's wake. The queue goes
+    /// with the listener. Measured on both (`tcp-shutdown.c` section Q, and
+    /// `listener-reset-order.c` for the order, in
+    /// docs/plans/2026-10-08-tcp-shutdown-linger).
     let internal releaseDestroyed<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destroyed : OpenFileDescription)
         (system : UnixSystem<'Task, 'Handler>)
@@ -273,20 +275,38 @@ module ObjectLifetime =
         // What the release does to the dying socket's connections splits by
         // which end is dying. An established end closes its end of the
         // connection (`TcpTransfer.close`): a FIN, or a reset if bytes it had
-        // not read remain; the wakes either raises are signalled below, once
-        // the socket table reflects the release, so the level a wake filters
-        // against is the survivor's new one. Under `SO_LINGER` {1, 0} the close
-        // would be abortive, which is refused while the connection is still
-        // referenced (`DescriptionReleaseRefusal.AbortiveClose`); under a
-        // positive linger time it would wait for any bytes still in the send
-        // buffer, which is refused where a real kernel waits
-        // (`DescriptionReleaseRefusal.LingeringClose`). A dying
-        // *listener* instead RSTs its unaccepted queue entries' clients, whose
-        // resulting level is unmeasured -- that case refuses when a
-        // registration could observe it, and an RST raises ERR, which no
-        // interest mask can hide, so any registration could.
-        let closing : Result<(ConnectionId * TcpWake list * TcpTransfer) option, DescriptionReleaseRefusal> =
+        // not read remain. Under `SO_LINGER` {1, 0} the close would be
+        // abortive, which is refused while the connection is still referenced
+        // (`DescriptionReleaseRefusal.AbortiveClose`); under a positive linger
+        // time it would wait for any bytes still in the send buffer, which is
+        // refused where a real kernel waits
+        // (`DescriptionReleaseRefusal.LingeringClose`). A dying listener
+        // resets each connection in its queue, oldest first, as Linux's
+        // `inet_csk_listen_stop` and XNU's `soclose` walk the queue from its
+        // head, whatever its own linger. The wakes either raises are
+        // signalled below, once the socket table reflects the release, so the
+        // level a wake filters against is the survivor's new one.
+        let closing : Result<(ConnectionId * TcpWake list * TcpTransfer) list, DescriptionReleaseRefusal> =
+            match dying.Phase with
+            | SocketPhase.Listening listenState ->
+                listenState.Queue
+                |> List.map (fun connection ->
+                    let wakes, transfer =
+                        TcpTransfer.abort
+                            ConnectionEnd.Server
+                            (UnixMachineState.connection connection system.Machine).Transfer
+
+                    connection, wakes, transfer
+                )
+                |> Ok
+            | SocketPhase.Idle
+            | SocketPhase.Refused _
+            | SocketPhase.DatagramPeer _
+            | SocketPhase.Established _
+            | SocketPhase.EstablishedPendingReport _ ->
+
             match SocketPhase.connectionEnd dying.Phase with
+            | None -> Ok []
             | Some (connection, _) when
                 dying.Options.Linger.Enabled
                 && dying.Options.Linger.Hundredths = 0L
@@ -316,53 +336,15 @@ module ObjectLifetime =
                     Error (DescriptionReleaseRefusal.LingeringClose (socketId, connection, unsent))
                 else
                     let wakes, transfer = TcpTransfer.close connectionEnd transfer
-                    Ok (Some (connection, wakes, transfer))
-            | None ->
-
-            match dying.Phase with
-            | SocketPhase.Listening _ ->
-                // The first candidate with a live client.
-                let refusal =
-                    candidates
-                    |> List.tryPick (fun candidate ->
-                        sockets
-                        |> Map.toSeq
-                        |> Seq.filter (fun (_, survivor) ->
-                            match survivor.Phase with
-                            | SocketPhase.Established (c, _)
-                            | SocketPhase.EstablishedPendingReport c -> c = candidate
-                            | SocketPhase.Listening _
-                            | SocketPhase.Idle
-                            | SocketPhase.Refused _
-                            | SocketPhase.DatagramPeer _ -> false
-                        )
-                        |> Seq.map fst
-                        |> Seq.tryHead
-                        |> Option.map (fun survivor ->
-                            DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient (
-                                socketId,
-                                candidate,
-                                survivor
-                            )
-                        )
-                    )
-
-                match refusal with
-                | Some refusal -> Error refusal
-                | None -> Ok None
-            | SocketPhase.Idle
-            | SocketPhase.Refused _
-            | SocketPhase.DatagramPeer _
-            | SocketPhase.Established _
-            | SocketPhase.EstablishedPendingReport _ -> Ok None
+                    Ok [ connection, wakes, transfer ]
 
         match closing with
         | Error refusal -> Error refusal
         | Ok closing ->
 
         let connections =
-            match closing with
-            | Some (connection, _, transfer) ->
+            (system.Machine.Connections, closing)
+            ||> List.fold (fun connections (connection, _, transfer) ->
                 Map.change
                     connection
                     (Option.map (fun existing ->
@@ -370,8 +352,8 @@ module ObjectLifetime =
                             Transfer = transfer
                         }
                     ))
-                    system.Machine.Connections
-            | None -> system.Machine.Connections
+                    connections
+            )
 
         let connections =
             (connections, candidates)
@@ -391,14 +373,16 @@ module ObjectLifetime =
                     }
             }
 
-        // The FIN's or the reset's edge, raised now that the survivor's level
-        // is the one it leaves. An epoll registration is queued by its
-        // interest and a kqueue registration activated only if its filter is
-        // then ready, so a survivor nobody watches records nothing; nor does a
-        // server end still queued, which has no socket yet.
-        match closing with
-        | Some (connection, wakes, _) -> Ok (SocketWake.signalTransfer connection wakes released)
-        | None -> Ok released
+        // Each FIN's or reset's edge, raised now that the survivor's level
+        // is the one it leaves, in the order the connections were closed. An
+        // epoll registration is queued by its interest and a kqueue
+        // registration activated only if its filter is then ready, so a
+        // survivor nobody watches records nothing; nor does a server end
+        // still queued, which has no socket yet, or a client that has
+        // already closed.
+        (released, closing)
+        ||> List.fold (fun released (connection, wakes, _) -> SocketWake.signalTransfer connection wakes released)
+        |> Ok
 
     /// Destroy each of `descriptions` that nothing references any more — no
     /// descriptor names it, and no syscall in flight holds it
@@ -410,7 +394,7 @@ module ObjectLifetime =
     /// returned, and its park has let go of the holds it took, so that a
     /// description whose last descriptor closed while it slept goes now, as a
     /// real kernel releases the file when the call drops its reference.
-    let internal releaseUnreferenced<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let private releaseUnreferenced<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (descriptions : OpenFileDescriptionId list)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>
@@ -428,16 +412,12 @@ module ObjectLifetime =
                 |> releaseDestroyed destroyed
         )
 
-    /// `releaseUnreferenced`, for the return of a call none of whose
+    /// `releaseUnreferenced`, for the return of a call, none of whose
     /// descriptions can be the last reference to a socket whose release can be
     /// refused: failing loudly, naming `caller`, if one is.
     ///
-    /// A socket's release is refused only for a listener, which of the calls
-    /// that hold a description only `accept` can leave as its last reference
-    /// (a Linux `poll` watching one keeps a descriptor onto it,
-    /// `CloseRefusal.PolledDescriptor`), and under `SO_LINGER`, which no
+    /// A socket's release is refused only under `SO_LINGER`, which no
     /// description only calls hold has (`UnixSystemDefect.LingeringSocketHeldOnlyByCalls`).
-    /// `accept` calls `releaseUnreferenced` instead.
     let internal releaseUnreferencedUnrefusable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (caller : string)
         (descriptions : OpenFileDescriptionId list)

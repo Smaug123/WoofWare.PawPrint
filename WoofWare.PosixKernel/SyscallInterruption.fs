@@ -78,8 +78,9 @@ type SigsuspendRefusal =
     /// does not end it even once a handler is installed for the signal, until
     /// another signal ends the call and both are delivered (measured). This
     /// library wakes a sleeping task from the state alone, so cannot leave a
-    /// signal it could deliver undelivered; and what Darwin does with one
-    /// generated during the sleep is unmeasured.
+    /// signal it could deliver undelivered. One generated during the sleep
+    /// never gets here: the temporary mask lets it through, so it is
+    /// discarded as it is sent (measured).
     | DarwinPendingContinue
 
 [<RequireQualifiedAccess>]

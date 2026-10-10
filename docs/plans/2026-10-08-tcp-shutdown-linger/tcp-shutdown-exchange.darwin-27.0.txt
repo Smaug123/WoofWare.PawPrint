@@ -1,0 +1,39 @@
+#	Darwin 27.0.0 arm64
+K	c-first	c	RD	shutdown=-1 ENOTCONN
+K	c-first	c	WR	shutdown=-1 ENOTCONN
+K	c-first	c	RDWR	shutdown=-1 ENOTCONN
+K	c-first	p	RD	shutdown=-1 ENOTCONN
+K	c-first	p	WR	shutdown=-1 ENOTCONN
+K	c-first	p	RDWR	shutdown=-1 ENOTCONN
+K	p-first	c	RD	shutdown=-1 ENOTCONN
+K	p-first	c	WR	shutdown=-1 ENOTCONN
+K	p-first	c	RDWR	shutdown=-1 ENOTCONN
+K	p-first	p	RD	shutdown=-1 ENOTCONN
+K	p-first	p	WR	shutdown=-1 ENOTCONN
+K	p-first	p	RDWR	shutdown=-1 ENOTCONN
+U	c-first	p-read=0,0 soerr(p)=0
+U	p-first	p-read=0,0 soerr(p)=0
+Q	read-first	c-read=0,0 soerr(c)=0
+Q	soerr-first	soerr(c)=0 c-read=0,0
+V	noshut-one	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+V	one	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+V	one-cfin	c-read=0,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+V	full	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+V	full-cfin	c-read=0,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+W	one	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+W	full	c-read=-1 ECONNRESET,0 soerr(c)=0 c-write100=-1 EPIPE+SIGPIPE soerr(c)=0
+T	V-full-cfin	at once c-read=0 soerr(c)=0; 5 s later c-read=0 soerr(c)=0
+T	W-full	at once c-read=-1 ECONNRESET soerr(c)=0; 5 s later c-read=0 soerr(c)=0
+G	c-none	p-none	c-first	soerr(p)=ECONNRESET p-drained=none last=0; 2 s later soerr(p)=0 p-read=0
+G	c-none	p-queued	c-first	soerr(p)=ECONNRESET p-drained=none last=0; 2 s later soerr(p)=0 p-read=0
+G	c-none	p-arrived	c-first	soerr(p)=ECONNRESET p-drained=none last=0; 2 s later soerr(p)=0 p-read=0
+G	c-queued	p-none	c-first	soerr(p)=ECONNRESET p-drained=some last=0; 2 s later soerr(p)=0 p-read=0
+G	c-queued	p-queued	c-first	soerr(p)=ECONNRESET p-drained=some last=0; 2 s later soerr(p)=0 p-read=0	~timing
+G	c-queued	p-queued	p-first	soerr(p)=ECONNRESET p-drained=some last=0; 2 s later soerr(p)=0 p-read=0	~timing
+G	c-queued	p-arrived	c-first	soerr(p)=0 p-drained=some last=-1 EAGAIN; 2 s later soerr(p)=0 p-read=-1 EAGAIN	~timing
+G	c-queued	p-arrived	p-first	soerr(p)=0 p-drained=some last=-1 EAGAIN; 2 s later soerr(p)=0 p-read=-1 EAGAIN	~timing
+G	c-arrived	p-none	c-first	soerr(p)=ECONNRESET p-drained=none last=0; 2 s later soerr(p)=0 p-read=0
+G	c-arrived	p-queued	c-first	soerr(p)=0 p-drained=none last=0; 2 s later soerr(p)=0 p-read=0
+G	c-arrived	p-queued	p-first	soerr(p)=0 p-drained=none last=0; 2 s later soerr(p)=0 p-read=0
+G	c-arrived	p-arrived	c-first	soerr(p)=0 p-drained=none last=0; 2 s later soerr(p)=0 p-read=0
+G	c-arrived	p-arrived	p-first	soerr(p)=0 p-drained=none last=0; 2 s later soerr(p)=0 p-read=0

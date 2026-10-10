@@ -71,28 +71,55 @@ type KillOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality
     | ProcessEnded of EndedProcess<'Task, 'Handler>
 
 /// What a task's return to user mode did, as `UnixSignal.onReturnToUser`
-/// answers it: the `SignalDelivery` the kernel decided on, with a default that
-/// terminates the process applied, so that the process has ended.
+/// answers it: run the handlers of the caught signals it took, or apply a
+/// signal's kernel default.
 [<RequireQualifiedAccess>]
 type ReturnToUserOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     /// The task took nothing the client acts on, and runs its own code next,
     /// in this system.
     | Resumes of UnixSystem<'Task, 'Handler>
-    /// The frames the kernel pushed, innermost first, in this system: see
-    /// `SignalDelivery.RunHandlers`.
+    /// A frame for every caught signal the task takes now, pushed all at once,
+    /// innermost first, in this system: the head's handler runs first, and
+    /// each handler's `UnixSignal.sigreturn` is followed by another
+    /// `UnixSignal.onReturnToUser`, which may push more frames before the next
+    /// one down runs. Never empty.
     | RunHandlers of frames : HandlerFrame<'Task, 'Handler> list * UnixSystem<'Task, 'Handler>
-    /// The signal, at its default, stops the whole process, which is this
-    /// system: see `SignalDelivery.DefaultStop`.
+    /// No handler claims the signal and its kernel default is to suspend the
+    /// whole process, which is this system. The library holds no stopped
+    /// state, so the client acts on it.
     | ProcessStopped of signal : Signal * UnixSystem<'Task, 'Handler>
-    /// The kernel discarded a SIGCONT at its default as the task took it, and
-    /// the process carries on, as this system: see
-    /// `SignalDelivery.DefaultContinue`.
+    /// No handler claims the signal, its kernel default is to resume a stopped
+    /// process, and the task does not block it: the kernel discarded it as it
+    /// was delivered, and the process carries on, as this system. A blocked
+    /// one stays pending, as any other signal does, and `sigpending` reports
+    /// it.
+    ///
+    /// Such a signal is pending only if it was generated while the task it was
+    /// aimed at blocked it (for one sent to the process, every task that could
+    /// take it), and the task has since unblocked it. One generated otherwise
+    /// is discarded as it is sent, as an ignored signal is (see
+    /// `UnixSignal.kill`).
+    ///
+    /// The task's return to user mode is not over: the client asks
+    /// `onReturnToUser` again, and the task may take more signals, under the
+    /// temporary mask of a `sigsuspend(2)` it is returning from. A client
+    /// that let the task run its own code instead would leave it with that
+    /// temporary mask.
+    ///
+    /// On a real kernel the resumption itself happens at generation, whatever
+    /// any mask says. This library has no stopped process to resume (a stop is
+    /// answered as `KillOutcome.ProcessStopped` or `ProcessStopped`, for the
+    /// client to act on), so the generation has nothing to do, and what
+    /// remains is the pending signal, gated by the mask like any other.
     | ContinueDiscarded of signal : Signal * UnixSystem<'Task, 'Handler>
-    /// A signal at a default that terminates the process killed it
-    /// (`SignalDelivery.DefaultTerminate`), and `EndedProcess.termination` is
-    /// `ProcessTermination.Signaled` with the signal and the core flag. No
-    /// handler runs, not even one whose frame was pushed for another signal at
-    /// the same return.
+    /// No handler claims the signal and its kernel default is to terminate
+    /// the process, which it did: `EndedProcess.termination` is
+    /// `ProcessTermination.Signaled` with the signal and the core flag. A
+    /// parent's `wait` reports the process as killed by the signal
+    /// (`WIFSIGNALED`, `WTERMSIG`), with the core flag set iff a core was
+    /// dumped; `128 + signo` is only how a shell renders that as an exit
+    /// status. No handler runs, not even one whose frame was pushed for
+    /// another signal at the same return.
     | ProcessEnded of EndedProcess<'Task, 'Handler>
 
 /// What became of a `sigsuspend(2)` or `pause(2)` this kernel could answer.
@@ -141,9 +168,9 @@ module UnixSignal =
     ///     takes that default at once: it terminates the process
     ///     (`KillOutcome.ProcessEnded`, with the core flag set if its default
     ///     dumps core and the process's `CoreDumps` allows a dump), stops it
-    ///     (`KillOutcome.ProcessStopped`), or, if the default is to discard it,
-    ///     is discarded. One whose default is to continue the process is
-    ///     pending instead (see `SignalDelivery.DefaultContinue`);
+    ///     (`KillOutcome.ProcessStopped`), or, if the default is to discard it
+    ///     or to continue the process (SIGCONT, which has no stopped process to
+    ///     continue), is discarded;
     ///   * ignored, where some task could receive it, it is discarded;
     ///   * otherwise it is pending, including when every task that could
     ///     receive it blocks it, and a task takes it as it returns to user mode
@@ -158,8 +185,15 @@ module UnixSignal =
     /// pending SIGCONT, and SIGCONT discards every pending stop signal, on
     /// every task and on the process.
     ///
-    /// Refuses (`KillRefusal.Receiver`) a caught signal sent to the process
-    /// that only a task other than the leader could receive; and, under
+    /// For an ignored signal, whether some task "could receive" it is decided
+    /// by a mask: for one sent to a task, that task's; for one sent to the
+    /// process, any task's under Darwin's numbering, and the leader's alone
+    /// under Linux's, which leaves one the leader blocks pending on the
+    /// process until another task takes it and discards it.
+    ///
+    /// Refuses (`KillRefusal.Receiver`) a signal sent to the process that only
+    /// a task other than the leader could receive, where it is caught, or,
+    /// under Linux's numbering, ignored; and, under
     /// Darwin's numbering, a standard signal it would leave pending on the
     /// process while an instance is pending on the leader alone, or the other
     /// way round, which Darwin holds as one instance where this library holds
@@ -284,8 +318,10 @@ module UnixSignal =
     /// as one set.
     ///
     /// A pending signal whose default is to continue the process, at its
-    /// default, surfaces as `SignalDelivery.DefaultContinue` if `task` does not
-    /// block it, and stays pending if it does. The task's return is not over:
+    /// default, surfaces as `ReturnToUserOutcome.ContinueDiscarded` if `task`
+    /// does not block it, and stays pending if it does. Only one generated
+    /// while it was blocked is pending at all (see `kill`). The task's return
+    /// is not over:
     /// the client asks again before the task runs its own code, and that answer
     /// may take more signals.
     ///
@@ -821,11 +857,10 @@ module UnixSignal =
     /// that terminates the process ends the call the same way, and the return
     /// to user mode then terminates the process.
     ///
-    /// An ignored signal ends nothing. One sent during the call is discarded as
-    /// it is sent. Under Linux, one pending as the call is made, which `mask`
-    /// unblocks, is discarded then, as is a SIGCONT at its default, and the
-    /// call sleeps on; such a SIGCONT sent during the call is discarded as the
-    /// sleeping task is woken for it, and the call sleeps on, as Linux's does
+    /// An ignored signal ends nothing, and nor does a SIGCONT at its default.
+    /// One sent during the call that `mask` lets through is discarded as it is
+    /// sent. Under Linux, one pending as the call is made, which `mask`
+    /// unblocks, is discarded then, and the call sleeps on, as Linux's does
     /// after a stop and continue.
     ///
     /// Refuses (see `SigsuspendRefusal`): a signal whose default stops the

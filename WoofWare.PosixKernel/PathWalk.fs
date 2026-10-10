@@ -37,8 +37,7 @@ type SymlinkPolicy =
 /// XNU resolves it as any other lookup would.
 [<RequireQualifiedAccess>]
 type TrailingSeparatorPolicy =
-    /// Record the demand on `Resolution.TrailingSeparatorDemanded` and let the
-    /// caller enforce it. Every lookup (`stat`, `lstat`, `readlink`), every
+    /// Record the demand on the resolution and let the caller enforce it. Every lookup (`stat`, `lstat`, `readlink`), every
     /// non-creating `open`, and -- on Darwin -- a creating `open` and `mkdir`.
     | Demand
     /// Answer EISDIR on *reaching* a final component that carries a trailing
@@ -58,8 +57,7 @@ type TrailingSeparatorPolicy =
     /// `O_CREAT` is EISDIR rather than ELOOP, so the check has to sit inside the
     /// walk rather than at the syscall boundary.
     | RefuseIsDirectory
-    /// Record the demand on `Resolution.TrailingSeparatorDemanded` and impose
-    /// *nothing*: the final component is neither dereferenced because of the
+    /// Record the demand on the resolution and impose *nothing*: the final component is neither dereferenced because of the
     /// separator nor required to be a directory. What Linux's `mkdir` does,
     /// whose last component is resolved by `filename_create` -- a plain dentry
     /// lookup that never follows a link and never inspects what it found.
@@ -77,7 +75,7 @@ type TrailingSeparatorPolicy =
     /// are both ENOTDIR there — which looks like a second axis, and is not one:
     /// `do_unlinkat` takes a parent and a name and then inspects the byte after
     /// the name, so the demand is enforced *after* the walk, by the verdict,
-    /// out of `Resolution.TrailingSeparatorDemanded`. Measured, and the row
+    /// out of the demand the resolution records. Measured, and the row
     /// that proves it is `unlink("lroot/")` with `lroot -> "/"`: ENOTDIR on
     /// Linux, so the link was never traversed, where Darwin's `Demand` walk
     /// traverses it and answers EISDIR.
@@ -97,7 +95,7 @@ type TrailingSeparatorPolicy =
 /// `rmdir` owes "d/." EINVAL and "d/.." ENOTEMPTY, and Darwin's owes the root
 /// reached by either one EBUSY where "/" itself is EISDIR.
 [<RequireQualifiedAccess>]
-type FinalNavigation =
+type internal FinalNavigation =
     /// The path named no component at all: "/" itself, or a symlink whose
     /// target was "/". `rmdir` owes this EBUSY on Linux and EISDIR on Darwin.
     | Root
@@ -159,7 +157,7 @@ type PathFailure =
 
 /// Where a path resolution ended up.
 [<RequireQualifiedAccess>]
-type ResolvedTarget =
+type internal ResolvedTarget =
     /// The path named `Name` inside `Directory`. `Existing` is the inode bound
     /// to that name, or `None` when the name is free — which is *not* an error
     /// here, because it is exactly the state `open(O_CREAT)`, `mkdir` and
@@ -178,7 +176,7 @@ type ResolvedTarget =
 
 /// The outcome of a resolution, together with the facts about *how* it
 /// finished that a caller cannot recover from the path it passed in.
-type Resolution =
+type internal Resolution =
     {
         Target : ResolvedTarget
         /// The path, after any final symlink was spliced in, ended with a

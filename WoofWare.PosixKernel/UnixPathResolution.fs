@@ -204,15 +204,6 @@ type ChModRefusal =
     | UnmeasuredModeChange of inode : InodeNumber * refusal : ModeChangeRefusal
     /// This kernel will not resolve the path.
     | Path of PathRefusal
-    /// `fchmodat(2)` with `AT_SYMLINK_NOFOLLOW` reached the symbolic link at
-    /// `inode`, on a flavour whose links take the mode asked for
-    /// (`SymlinkModeChange.ChangesLink`), and the caller may change it: the link
-    /// would get `bits`. This library does not model that change: a link may
-    /// hold only the bits link creation gives it (`UnixSystem.checkInvariants`,
-    /// `SymlinkPermissionsNotOfFlavour`), and such a flavour's change can set
-    /// the set-ID and sticky bits too. `chmod(2)` follows a final link, so only
-    /// `fchmodat` reaches this.
-    | SymlinkMode of inode : InodeNumber * bits : PermissionBits
 
 [<RequireQualifiedAccess>]
 module ChModRefusal =
@@ -223,8 +214,6 @@ module ChModRefusal =
         | ChModRefusal.UnmeasuredModeChange (inode, refusal) ->
             $"changing the mode of inode %O{inode}: %s{ModeChangeRefusal.describe refusal}"
         | ChModRefusal.Path refusal -> PathRefusal.describe refusal
-        | ChModRefusal.SymlinkMode (inode, bits) ->
-            $"AT_SYMLINK_NOFOLLOW reached symbolic link %O{inode}, whose own mode this flavour would set to %O{bits}. Measured on Darwin 27.0, that sets the link's own mode by chmod's rule, set-ID and sticky bits included; this library does not model the change, since it keeps a link only the bits link creation gives it (UnixSystem.checkInvariants, SymlinkPermissionsNotOfFlavour)."
 
 /// Why this kernel will not answer an `fchmod(2)`.
 [<RequireQualifiedAccess>]
@@ -1062,8 +1051,9 @@ module UnixPathResolution =
             |> Result.mapError FStatAtRefusal.Stat
 
     /// What `chmod` and `fchmod` do once they have reached `inode`, which is a
-    /// regular file or a directory this filesystem holds: EPERM changing
-    /// nothing, or the new bits with `ctime` moved.
+    /// regular file, a device, a directory, or a symbolic link on a flavour
+    /// whose links change (`SymlinkModeChange.ChangesLink`), this filesystem
+    /// holds: EPERM changing nothing, or the new bits with `ctime` moved.
     let private changeModeOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (mode : int)
@@ -1112,9 +1102,10 @@ module UnixPathResolution =
         // dangling link and an absent name ENOENT, a link to itself ELOOP,
         // the empty path ENOENT and "f/under" ENOTDIR. Those are exactly what
         // `Follow` with a demanded trailing separator answers. Under
-        // AT_SYMLINK_NOFOLLOW (`chmod-chown-at.c`, NOFOLLOW) a final link is
-        // the link itself, dangling or looping or not, and "ld/" is still the
-        // directory and "lf/" ENOTDIR, as `NoFollowFinal` answers.
+        // AT_SYMLINK_NOFOLLOW (`chmod-chown-at.c`, NOFOLLOW; `lchmod-rules.c`,
+        // CALLS) a final link is the link itself, dangling or looping or not,
+        // and "ld/" is still the directory and "lf/" ENOTDIR, as
+        // `NoFollowFinal` answers.
         match resolvePath directory policy path system with
         | Error (PathFailure.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Error (PathFailure.Refused refusal) -> Error (ChModRefusal.Path refusal)
@@ -1126,23 +1117,21 @@ module UnixPathResolution =
                 $"UnixPathResolution.chmodParsed: resolving %O{path} returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
         | Some entry ->
 
-        match entry.Content with
-        | InodeContent.Symlink _ ->
-            match SimulatedUnixPlatform.symlinkModeChange system.Machine.UnixPlatform with
-            | SymlinkModeChange.NotSupported -> Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
-            | SymlinkModeChange.ChangesLink ->
+        let changeable =
+            match entry.Content with
+            | InodeContent.Symlink _ ->
+                match SimulatedUnixPlatform.symlinkModeChange system.Machine.UnixPlatform with
+                | SymlinkModeChange.NotSupported -> false
+                | SymlinkModeChange.ChangesLink -> true
+            | InodeContent.RegularFile _
+            | InodeContent.Directory _
+            | InodeContent.CharacterDevice _ -> true
 
-            let rule = SimulatedUnixPlatform.privilegedModeChange system.Machine.UnixPlatform
-
-            match PermissionBits.afterModeChange rule (Standing.toward system.Process.Credentials entry.Owner) mode with
-            | Error refusal -> Error (ChModRefusal.UnmeasuredModeChange (inode, refusal))
-            | Ok ModeChange.Forbidden -> Ok (SyscallAnswer.Failed UnixError.EPERM, system)
-            | Ok (ModeChange.Permitted bits) -> Error (ChModRefusal.SymlinkMode (inode, bits))
-        | InodeContent.RegularFile _
-        | InodeContent.Directory _
-        | InodeContent.CharacterDevice _ ->
+        if changeable then
             changeModeOf inode mode system
             |> Result.mapError ChModRefusal.UnmeasuredModeChange
+        else
+            Ok (SyscallAnswer.Failed UnixError.EOPNOTSUPP, system)
 
     /// `chmod(2)`: change the mode of the inode `path` names. This is
     /// `fchmodat` from `AT_FDCWD` with no flags.
@@ -1308,18 +1297,13 @@ module UnixPathResolution =
 
         let vfs = VirtualFileSystem.setOwner inode owner now system.Machine.FileSystem
 
+        // Measured on Darwin (`chmod-chown-at.c`, LINKSETID): a link's set-ID
+        // bits go exactly as a regular file's do.
         let vfs =
             if changed = bits then
                 vfs
             else
-
-            match entry.Content with
-            | InodeContent.RegularFile _
-            | InodeContent.CharacterDevice _
-            | InodeContent.Directory _ -> VirtualFileSystem.setPermissions inode changed now vfs
-            | InodeContent.Symlink _ ->
-                failwith
-                    $"UnixPathResolution.changeOwnerOf: the owner-change rule changed symbolic link %O{inode}'s permission bits from %O{bits} to %O{changed}, but a link's bits are the platform's and carry no set-ID bit for a rule to clear (this is a bug in this library)."
+                VirtualFileSystem.setPermissions inode changed now vfs
 
         Ok (
             SyscallAnswer.Completed 0L,
@@ -1522,9 +1506,15 @@ module UnixPathResolution =
     ///
     /// Under `AT_SYMLINK_NOFOLLOW` a symbolic link in the final position is
     /// itself the inode, and what that does is the flavour's
-    /// (`SimulatedUnixPlatform.symlinkModeChange`): Linux answers EOPNOTSUPP;
-    /// Darwin changes the link's own mode, which this library refuses where
-    /// the caller may make the change (`ChModRefusal.SymlinkMode`).
+    /// (`SimulatedUnixPlatform.symlinkModeChange`): Linux answers EOPNOTSUPP,
+    /// changing nothing; Darwin changes the link's own mode by `chmod`'s
+    /// rule, moving the link's `ctime` and nothing of its target's.
+    ///
+    /// On Linux, glibc's `lchmod(3)` is this call from `AT_FDCWD` with
+    /// `AT_SYMLINK_NOFOLLOW`. Darwin's is not: its libc calls `setattrlist(2)`
+    /// instead, which answers a non-owner EACCES rather than EPERM, and
+    /// refuses `S_ISGID` outside the inode's group with EPERM rather than
+    /// dropping it. This library does not model `setattrlist`.
     ///
     /// Under Linux's `AT_EMPTY_PATH` the empty path is `fchmod(2)` of
     /// `dirfd`, whatever kind of descriptor it is, or `chmod` of the current

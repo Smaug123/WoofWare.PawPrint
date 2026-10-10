@@ -1002,7 +1002,7 @@ type private DescriptorEntry =
 /// machine's (`OpenFileTable`), as a real kernel's `struct file` is shared by
 /// every descriptor table that names it. `FileDescriptorRegistry` reads the two
 /// together.
-type DescriptorTable =
+type internal DescriptorTable =
     private
         {
             Fds : Map<int, DescriptorEntry>

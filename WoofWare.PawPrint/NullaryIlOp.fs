@@ -2651,7 +2651,6 @@ module NullaryIlOp =
         | Ldind_u1 -> executeLdind loggerFactory corelib LdindTargetType.LdindU1 currentThread state
         | Ldind_u2 -> executeLdind loggerFactory corelib LdindTargetType.LdindU2 currentThread state
         | Ldind_u4 -> executeLdind loggerFactory corelib LdindTargetType.LdindU4 currentThread state
-        | Ldind_u8 -> failwith "TODO: Ldind_u8 unimplemented"
         | Ldind_r4 -> executeLdind loggerFactory corelib LdindTargetType.LdindR4 currentThread state
         | Ldind_r8 -> executeLdind loggerFactory corelib LdindTargetType.LdindR8 currentThread state
         | Rem ->
@@ -3084,7 +3083,6 @@ module NullaryIlOp =
                 arr
                 currentThread
                 state
-        | Ldelem_u8 -> failwith "TODO: Ldelem_u8 unimplemented"
         | Ldelem_r4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
@@ -3128,28 +3126,24 @@ module NullaryIlOp =
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem loggerFactory corelib value index arr currentThread state
-        | Stelem_u1 -> failwith "TODO: Stelem_u1 unimplemented"
         | Stelem_i2 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem loggerFactory corelib value index arr currentThread state
-        | Stelem_u2 -> failwith "TODO: Stelem_u2 unimplemented"
         | Stelem_i4 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem loggerFactory corelib value index arr currentThread state
-        | Stelem_u4 -> failwith "TODO: Stelem_u4 unimplemented"
         | Stelem_i8 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem loggerFactory corelib value index arr currentThread state
-        | Stelem_u8 -> failwith "TODO: Stelem_u8 unimplemented"
         | Stelem_r4 ->
             let value, state = IlMachineState.popEvalStack currentThread state
             let index, state = IlMachineState.popEvalStack currentThread state
@@ -3277,7 +3271,27 @@ module NullaryIlOp =
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Arglist -> failwith "TODO: Arglist unimplemented"
-        | Ckfinite -> failwith "TODO: Ckfinite unimplemented"
+        | Ckfinite ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            let operand =
+                match popped with
+                | EvalStackValue.Float f -> f
+                | other -> failwith $"ckfinite takes a float (ECMA-335 III.3.19), but the stack held %O{other}"
+
+            if Double.IsFinite (EvalStackFloat.toDouble operand) then
+                // The operand stays at its own width: CoreCLR's importer gives the result the
+                // operand's type, so a float32 is not widened.
+                state
+                |> IlMachineState.pushToEvalStack' popped currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            else
+                // III.3.19 names ArithmeticException; CoreCLR raises its subclass OverflowException.
+                // Exception dispatch uses the faulting instruction's PC, so do not advance it.
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
+                |> ExecutionResult.stepped
         | Readonly ->
             // ECMA-335 III.2.2: `readonly.` precedes `ldelema`. The resulting controlled-
             // mutability managed pointer must not be used to write through, nor to call
