@@ -251,8 +251,14 @@ module NativeLibcSignalMask =
           [ ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ; ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
             // `int sigprocmask(int how, const sigset_t* set, sigset_t* oldset)`.
-            maskCall ctx "libc sigprocmask" (fun _ -> ErrorConvention.InErrno) UnixSignal.sigprocmask
-            |> Some
+            let operation = "libc sigprocmask"
+
+            let call task how set system =
+                match UnixSignal.sigprocmask task how set system with
+                | Ok answered -> answered
+                | Error refusal -> failwith $"%s{operation}: %s{SigprocmaskRefusal.describe refusal}"
+
+            maskCall ctx operation (fun _ -> ErrorConvention.InErrno) call |> Some
         | Some "sigpending",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32) ->
