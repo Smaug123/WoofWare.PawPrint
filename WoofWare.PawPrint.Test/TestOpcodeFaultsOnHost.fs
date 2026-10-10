@@ -321,7 +321,7 @@ module TestOpcodeFaultsOnHost =
                         |> List.map (fun (name, witnesses) -> name, snd (List.head witnesses))
                         |> Map.ofList
 
-                    yield! HostFaultProbe.mismatches $"%O{op}" (OpcodeFaults.ofNullary op) observed
+                    yield! HostFaultProbe.mismatches $"%O{op}" (OpcodeFaults.ofNullary op) Set.empty observed
             ]
 
         match mismatches with
