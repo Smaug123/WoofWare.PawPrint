@@ -984,6 +984,9 @@ module internal SocketWake =
                 | TcpWake.SendSpace sender -> sender, SocketWake.SendSpace
                 | TcpWake.PeerFinished receiver -> receiver, SocketWake.PeerFin
                 | TcpWake.PeerReset receiver -> receiver, SocketWake.PeerReset
+                | TcpWake.ShutDown (shutter, how) ->
+                    failwith
+                        $"SocketWake.signalTransfer: the %A{shutter} end of %O{connectionId} shut %A{how}, but only TcpTransfer.shutdown raises that wake, and no syscall here calls it yet, so this is a bug in this library."
 
             match UnixMachineState.socketHoldingEnd connectionId connectionEnd system.Machine with
             | None -> system

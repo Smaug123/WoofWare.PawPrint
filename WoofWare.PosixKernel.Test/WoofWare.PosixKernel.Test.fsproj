@@ -176,6 +176,7 @@
     <Compile Include="TestConnectedTransferAgainstHost.fs" />
     <Compile Include="TestTcpTransfer.fs" />
     <Compile Include="TestTcpTransferMeasured.fs" />
+    <Compile Include="TestTcpShutdownMeasured.fs" />
     <Compile Include="TestTcpBufferSizing.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestEphemeralPorts.fs" />
@@ -424,7 +425,8 @@
          among a process's exit's, measured by listener-exit-order.c; each
          output is embedded from beside its probe. `TestListenerTeardown`
          replays section Q and the reset order, and `TestCrossProcess` the exit
-         order. -->
+         order. `TestTcpShutdownMeasured` replays sections S, T, R, P and L
+         through the transfer rules. -->
     <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\tcp-shutdown.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.tcpShutdown.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\tcp-shutdown.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.tcpShutdown.darwin.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\listener-reset-order.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.listenerResetOrder.linux.txt" />

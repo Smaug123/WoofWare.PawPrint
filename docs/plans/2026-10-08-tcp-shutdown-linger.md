@@ -689,6 +689,32 @@ been rebased onto main (with #1790).
      `~timing` line (section 2's table says why each is skipped) and
      comparing only answers and readiness bits on `~counts` lines.
    - No syscall uses any of it yet.
+
+   Done as described, with these choices the design above did not settle:
+
+   - A write towards a peer that resets on arrival (Darwin's read-shut end,
+     Linux's end shut both ways) has the send buffer's free space as its
+     room, not the peer's receive buffer as well: nothing acknowledges the
+     bytes, and otherwise Darwin's stranded count could exceed the send
+     buffer.
+   - An arrival reset whose sender has already closed (a Linux orphan whose
+     bytes wait for the shutter's reads) leaves the sender closed.
+   - Darwin's `SHUT_RDWR` before the peer's unsent bytes is modelled only
+     when the shutter's own FIN goes out at once (nothing of its own is
+     unsent), as in the measured row; otherwise it is refused like
+     `SHUT_RD`.
+   - Linux's `shutdown` of a reset socket raises `TcpWake.ShutDown`, since
+     `inet_shutdown` wakes the socket even when it answers `ENOTCONN`. That
+     is read from the source, not measured.
+   - `TcpTransfer.abort` keeps its signature; Darwin's refusal is
+     `TcpTransfer.abortRefused`, which a caller asks first. `abort` fails
+     loudly if asked anyway.
+   - Darwin releasing the closer's endpoint after a linger-zero close that
+     is an ordinary close (both FINs arrived) is not recorded: the
+     transfer after it is the same as after `close`, so whoever releases
+     endpoints (stage 4) must decide at the call.
+   - `SocketWake.signalTransfer` refuses `TcpWake.ShutDown`, which only
+     `shutdown` raises, until stage 4 maps it.
 4. **`shutdown(2)` on connected sockets.**
    - The syscall and its screens, readiness, `TcpWake.ShutDown`, parked
      calls, and the passive closer's port.

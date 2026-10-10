@@ -15,8 +15,12 @@ type internal TcpTransferOp =
     | Read of reader : ConnectionEnd * call : TcpReceiveCall * count : int
     | TakeError of ConnectionEnd
     | Close of ConnectionEnd
-    /// A close that resets whatever is unread.
+    /// A close under `SO_LINGER` {1, 0}.
     | Abort of ConnectionEnd
+    | Shutdown of shutter : ConnectionEnd * how : TcpShutdownHow
+    /// A Linux `tcp_poll` of the end's socket, which may mark its send buffer
+    /// out of space.
+    | Poll of ConnectionEnd
 
 /// What one call answered, in a form both the library and the reference give.
 [<RequireQualifiedAccess>]
@@ -29,13 +33,21 @@ type internal TcpTransferSeen =
     | WriteFailed of TcpError
     | Error of TcpError option
     | Closed
+    | ShutdownAnswered of TcpShutdownAnswer
+    | Polled
+    /// The kernel refuses the call: what a real kernel does next waits on a
+    /// timer.
+    | Refused
 
 /// A naive statement of the transfer rules, held to the library's `TcpTransfer`.
 ///
 /// Written from the measured tables (sections 2.3 and 2.4 of
-/// `docs/plans/2026-10-07-tcp-byte-transfer.md`) rather than from the library:
-/// each direction is a pair of byte lists, and each end a handful of flags,
-/// where the library keeps chunked queues and one state per end.
+/// `docs/plans/2026-10-07-tcp-byte-transfer.md`, and sections 2.1, 2.2 and
+/// 2.7 and the abort table of 3.2 of
+/// `docs/plans/2026-10-08-tcp-shutdown-linger.md`) rather than from the
+/// library: each direction is a pair of byte lists, and each end a handful of
+/// flags, where the library keeps chunked queues, a FIN per direction and one
+/// state per end.
 [<RequireQualifiedAccess>]
 module internal TcpTransferReference =
 
@@ -57,11 +69,18 @@ module internal TcpTransferReference =
     type End =
         {
             Closed : bool
-            /// The peer closed cleanly. Its FIN arrives once the bytes in
-            /// flight here have.
+            /// The peer has made its FIN, by `SHUT_WR` or by closing cleanly.
+            /// It arrives once the bytes in flight here have.
             FinSent : bool
+            /// The peer's FIN has arrived.
+            FinArrived : bool
+            /// The peer made its FIN after this end's had arrived.
+            FinPassive : bool
+            /// This end's own `SHUT_RD` was applied.
+            ShutRead : bool
             GotReset : bool
-            /// The FIN had arrived when the reset came.
+            /// The peer's FIN had arrived, and this end had made none, when
+            /// the reset came.
             ResetAfterFin : bool
             ErrorWaiting : bool
             /// Linux's `SOCK_NOSPACE` on this end's send buffer.
@@ -95,6 +114,9 @@ module internal TcpTransferReference =
             {
                 Closed = false
                 FinSent = false
+                FinArrived = false
+                FinPassive = false
+                ShutRead = false
                 GotReset = false
                 ResetAfterFin = false
                 ErrorWaiting = false
@@ -117,23 +139,19 @@ module internal TcpTransferReference =
             Ends = Map.add e x m.Ends
         }
 
+    /// `e` has made its FIN.
+    let writeShut (m : Model) (e : ConnectionEnd) : bool = m.Ends.[other e].FinSent
+
+    /// `e` can receive no more: its own `SHUT_RD`, or the peer's FIN.
+    let readShut (m : Model) (e : ConnectionEnd) : bool =
+        m.Ends.[e].ShutRead || m.Ends.[e].FinArrived
+
     /// The error a waiting one is, at end `e`.
     let private errorAt (m : Model) (e : ConnectionEnd) : TcpError =
         if m.Linux && m.Ends.[e].ResetAfterFin then
             TcpError.BrokenPipe
         else
             TcpError.ConnectionReset
-
-    /// Top the receive buffer up from the send buffer: how many bytes moved.
-    let private topUp (f : Flow) : int * Flow =
-        let room = f.RecvCap - List.length f.Arrived
-        let n = min room (List.length f.InFlight)
-
-        n,
-        { f with
-            Arrived = f.Arrived @ List.take n f.InFlight
-            InFlight = List.skip n f.InFlight
-        }
 
     let private linuxWritable (f : Flow) : bool =
         let q = List.length f.InFlight
@@ -152,6 +170,115 @@ module internal TcpTransferReference =
         else
             None
 
+    /// Whether bytes reaching `r` now are answered with a reset: on Darwin
+    /// once it cannot receive, and on Linux once it has made its FIN too.
+    let private resetsOnArrival (m : Model) (r : ConnectionEnd) : bool =
+        let e = m.Ends.[r]
+
+        not e.Closed && not e.GotReset && readShut m r && (not m.Linux || writeShut m r)
+
+    /// Bytes reached `r`, which answered with a reset. Both ends are reset,
+    /// but for a sender that has closed already; what is in flight either way
+    /// is lost, or on Darwin stays counted against a sender still open. On
+    /// Darwin the end that reset sees no error.
+    let private resetByArrival (r : ConnectionEnd) (m : Model) : TcpWake list * Model =
+        let s = other r
+        let senderGone = m.Ends.[s].Closed
+
+        let afterFin (e : ConnectionEnd) =
+            m.Ends.[e].FinArrived && not (writeShut m e)
+
+        let lose (f : Flow) =
+            { f with
+                InFlight = []
+                Stranded = (if m.Linux then 0 else f.Stranded + f.InFlight.Length)
+            }
+
+        (if senderGone then [] else [ TcpWake.PeerReset s ]) @ [ TcpWake.PeerReset r ],
+        m
+        |> setFlow
+            r
+            (if senderGone then
+                 { m.Flows.[r] with
+                     InFlight = []
+                 }
+             else
+                 lose m.Flows.[r])
+        |> setFlow s (lose m.Flows.[s])
+        |> setEnd
+            s
+            (if senderGone then
+                 m.Ends.[s]
+             else
+                 { m.Ends.[s] with
+                     GotReset = true
+                     ResetAfterFin = afterFin s
+                     ErrorWaiting = true
+                     Armed = false
+                 })
+        |> setEnd
+            r
+            { m.Ends.[r] with
+                GotReset = true
+                ResetAfterFin = afterFin r
+                ErrorWaiting = m.Linux
+                Armed = false
+            }
+
+    /// Top `r`'s receive buffer up from the send buffer towards it, or reset
+    /// if bytes would reach an end that resets on them: how many bytes moved,
+    /// the wakes a reset raises, whether the FIN arrived, and the model after.
+    let private topUp (r : ConnectionEnd) (m : Model) : int * TcpWake list * bool * Model =
+        let f = m.Flows.[r]
+        let room = f.RecvCap - List.length f.Arrived
+        let n = min room (List.length f.InFlight)
+
+        if n > 0 && resetsOnArrival m r then
+            let wakes, m = resetByArrival r m
+            0, wakes, false, m
+        else
+            let f =
+                { f with
+                    Arrived = f.Arrived @ List.take n f.InFlight
+                    InFlight = List.skip n f.InFlight
+                }
+
+            let me = m.Ends.[r]
+            let finArrives = n > 0 && f.InFlight.IsEmpty && me.FinSent && not me.FinArrived
+
+            let m =
+                if finArrives then
+                    setEnd
+                        r
+                        { me with
+                            FinArrived = true
+                        }
+                        m
+                else
+                    m
+
+            n, [], finArrives, setFlow r f m
+
+    /// `s` makes its FIN, which arrives at once if nothing is in flight ahead
+    /// of it.
+    let private makeFin (s : ConnectionEnd) (m : Model) : TcpWake list * Model =
+        let p = other s
+        let peer = m.Ends.[p]
+        let arrives = m.Flows.[p].InFlight.IsEmpty
+
+        (if arrives && not peer.Closed then
+             [ TcpWake.PeerFinished p ]
+         else
+             []),
+        setEnd
+            p
+            { peer with
+                FinSent = true
+                FinArrived = arrives
+                FinPassive = m.Ends.[s].FinArrived
+            }
+            m
+
     /// A write by `w` of `bytes`, of which it takes what the rules allow.
     let write (w : ConnectionEnd) (bytes : byte list) (m : Model) : TcpTransferSeen * TcpWake list * Model =
         let me = m.Ends.[w]
@@ -169,18 +296,23 @@ module internal TcpTransferReference =
                     m
             else
                 TcpTransferSeen.WriteFailed TcpError.BrokenPipe, [], m
+        elif writeShut m w then
+            TcpTransferSeen.WriteFailed TcpError.BrokenPipe, [], m
         elif bytes.IsEmpty then
             TcpTransferSeen.Wrote 0, [], m
         else
             let toPeer = m.Flows.[p]
             let peerGone = m.Ends.[p].Closed
 
+            // Nothing drains the send buffer towards a peer that has gone, or
+            // one that answers an arrival with a reset.
             let free =
-                if peerGone then
+                if peerGone || resetsOnArrival m p then
                     toPeer.SendCap - List.length toPeer.InFlight - toPeer.Stranded
                 else
                     toPeer.RecvCap - List.length toPeer.Arrived + toPeer.SendCap
                     - List.length toPeer.InFlight
+                    - toPeer.Stranded
 
             match accepts m bytes.Length free with
             | None ->
@@ -232,25 +364,29 @@ module internal TcpTransferReference =
                         }
                     |> setEnd
                         w
-                        { me with
+                        { m.Ends.[w] with
                             GotReset = true
-                            ResetAfterFin = me.FinSent && m.Flows.[w].InFlight.IsEmpty
+                            ResetAfterFin = me.FinArrived
                             ErrorWaiting = true
                             Armed = false
                         }
                 else
-                    let moved, toPeer =
-                        topUp
+                    let m =
+                        setFlow
+                            p
                             { toPeer with
                                 InFlight = toPeer.InFlight @ taken
                             }
+                            m
+
+                    let moved, resetWakes, _, m = topUp p m
 
                     let wakes =
                         if moved = 0 then []
                         elif m.Linux then [ TcpWake.DataArrived p ]
                         else [ TcpWake.DataArrived p ; TcpWake.SendSpace w ]
 
-                    TcpTransferSeen.Wrote n, wakes, setFlow p toPeer m
+                    TcpTransferSeen.Wrote n, wakes @ resetWakes, m
 
     /// A read by `r` of up to `count` bytes, by `call`.
     let read
@@ -272,15 +408,19 @@ module internal TcpTransferReference =
             if call = TcpReceiveCall.Peek then
                 TcpTransferSeen.Bytes got, [], m
             else
-                let moved, f =
-                    topUp
-                        { f with
-                            Arrived = List.skip n f.Arrived
-                        }
-
                 let s = other r
+
+                let moved, resetWakes, finArrived, m =
+                    topUp
+                        r
+                        (setFlow
+                            r
+                            { f with
+                                Arrived = List.skip n f.Arrived
+                            }
+                            m)
+
                 let sender = m.Ends.[s]
-                let m = setFlow r f m
                 let canStillWrite = not sender.Closed && not sender.GotReset
 
                 let spaceWakes, m =
@@ -288,7 +428,7 @@ module internal TcpTransferReference =
                         [], m
                     elif not m.Linux then
                         (if moved > 0 then [ TcpWake.SendSpace s ] else []), m
-                    elif sender.Armed && linuxWritable f then
+                    elif sender.Armed && linuxWritable m.Flows.[r] then
                         [ TcpWake.SendSpace s ],
                         setEnd
                             s
@@ -299,14 +439,13 @@ module internal TcpTransferReference =
                     else
                         [], m
 
-                let finWake =
-                    if moved > 0 && f.InFlight.IsEmpty && me.FinSent && not me.GotReset then
-                        [ TcpWake.PeerFinished r ]
-                    else
-                        []
+                let finWake = if finArrived then [ TcpWake.PeerFinished r ] else []
 
                 TcpTransferSeen.Bytes got,
-                (if moved > 0 then [ TcpWake.DataArrived r ] else []) @ finWake @ spaceWakes,
+                (if moved > 0 then [ TcpWake.DataArrived r ] else [])
+                @ finWake
+                @ spaceWakes
+                @ resetWakes,
                 m
         elif m.Linux then
             if me.GotReset && me.ResetAfterFin then
@@ -320,7 +459,7 @@ module internal TcpTransferReference =
                         ErrorWaiting = false
                     }
                     m
-            elif me.GotReset || me.FinSent then
+            elif me.GotReset || readShut m r then
                 TcpTransferSeen.EndOfFile, [], m
             else
                 TcpTransferSeen.WouldBlock, [], m
@@ -337,7 +476,7 @@ module internal TcpTransferReference =
                         m
 
             TcpTransferSeen.ReadFailed TcpError.ConnectionReset, [], m
-        elif me.GotReset || me.FinSent then
+        elif me.GotReset || readShut m r then
             TcpTransferSeen.EndOfFile, [], m
         elif count = 0 then
             TcpTransferSeen.Bytes [], [], m
@@ -358,7 +497,120 @@ module internal TcpTransferReference =
         else
             TcpTransferSeen.Error None, m
 
-    /// `c` closes; with `abortive`, it resets whatever is unread.
+    /// `shutdown(s, how)`: the 2.1 table. `None` where the kernel refuses.
+    let shutdown
+        (s : ConnectionEnd)
+        (how : TcpShutdownHow)
+        (m : Model)
+        : (TcpShutdownAnswer * TcpWake list * Model) option
+        =
+        let rd = how <> TcpShutdownHow.Write
+        let wr = how <> TcpShutdownHow.Read
+        let me = m.Ends.[s]
+
+        let shutRead (m : Model) : Model =
+            setEnd
+                s
+                { m.Ends.[s] with
+                    ShutRead = true
+                }
+                m
+
+        if me.GotReset then
+            Some (TcpShutdownAnswer.NotConnected, (if m.Linux then [ TcpWake.ShutDown (s, how) ] else []), m)
+        elif m.Linux then
+            // Linux applies whatever is asked, again or not.
+            let m = if rd then shutRead m else m
+            let finWakes, m = if wr && not (writeShut m s) then makeFin s m else [], m
+            Some (TcpShutdownAnswer.Shut, TcpWake.ShutDown (s, how) :: finWakes, m)
+        // Darwin: the receive half first, failing if the side is already
+        // shut; then the send half, likewise.
+        elif rd && readShut m s then
+            Some (TcpShutdownAnswer.NotConnected, [], m)
+        else
+            let waiting = m.Flows.[s].InFlight.Length
+
+            let finGoesAtOnce = wr && not (writeShut m s) && m.Flows.[other s].InFlight.IsEmpty
+
+            let peerStillSends = not me.FinSent
+
+            if
+                rd
+                && waiting > 0
+                && not (how = TcpShutdownHow.Both && finGoesAtOnce && peerStillSends)
+            then
+                None
+            else
+                // SHUT_RD flushes what was received.
+                let m =
+                    if rd then
+                        shutRead m
+                        |> setFlow
+                            s
+                            { m.Flows.[s] with
+                                Arrived = []
+                            }
+                    else
+                        m
+
+                let writeFails = wr && writeShut m s
+                let writeApplied = wr && not writeFails
+                let finWakes, m = if writeApplied then makeFin s m else [], m
+                let _, resetWakes, _, m = if rd then topUp s m else 0, [], false, m
+
+                let applied =
+                    match rd, writeApplied with
+                    | true, true -> [ TcpWake.ShutDown (s, TcpShutdownHow.Both) ]
+                    | true, false -> [ TcpWake.ShutDown (s, TcpShutdownHow.Read) ]
+                    | false, true -> [ TcpWake.ShutDown (s, TcpShutdownHow.Write) ]
+                    | false, false -> []
+
+                let answer =
+                    if writeFails then
+                        TcpShutdownAnswer.NotConnected
+                    else
+                        TcpShutdownAnswer.Shut
+
+                Some (answer, applied @ finWakes @ resetWakes, m)
+
+    /// Whether Darwin refuses `c`'s close under `SO_LINGER` {1, 0}: `c` made
+    /// its FIN before the peer's arrived, the FIN still waits behind its
+    /// bytes, and the peer's has arrived.
+    let abortRefused (c : ConnectionEnd) (m : Model) : bool =
+        let p = other c
+        let me = m.Ends.[c]
+        let peer = m.Ends.[p]
+
+        not m.Linux
+        && not me.GotReset
+        && not peer.Closed
+        && peer.FinSent
+        && not peer.FinArrived
+        && not peer.FinPassive
+        && me.FinArrived
+
+    /// A Linux poll of `e`, which marks an open end that can still send, but
+    /// whose send buffer is more than two thirds full, out of space.
+    let poll (e : ConnectionEnd) (m : Model) : Model =
+        let me = m.Ends.[e]
+
+        if
+            m.Linux
+            && not me.Closed
+            && not me.GotReset
+            && not (writeShut m e)
+            && not (linuxWritable m.Flows.[other e])
+        then
+            setEnd
+                e
+                { me with
+                    Armed = true
+                }
+                m
+        else
+            m
+
+    /// `c` closes; with `abortive`, under `SO_LINGER` {1, 0}.
     let close (abortive : bool) (c : ConnectionEnd) (m : Model) : TcpWake list * Model =
         let p = other c
         let me = m.Ends.[c]
@@ -366,7 +618,16 @@ module internal TcpTransferReference =
         let closedMe =
             { me with
                 Closed = true
+                ShutRead = false
+                GotReset = false
+                ResetAfterFin = false
+                ErrorWaiting = false
                 Armed = false
+            }
+
+        let forget (f : Flow) =
+            { f with
+                Stranded = 0
             }
 
         if m.Ends.[p].Closed then
@@ -382,11 +643,26 @@ module internal TcpTransferReference =
             |> setEnd c closedMe
             |> setFlow c (empty m.Flows.[c])
             |> setFlow p (empty m.Flows.[p])
+        elif me.GotReset then
+            // The peer was reset too: there is nothing to tell it.
+            [],
+            m
+            |> setEnd c closedMe
+            |> setFlow
+                c
+                { m.Flows.[c] with
+                    Arrived = []
+                }
+            |> setFlow p (forget m.Flows.[p])
         else
             let toMe = m.Flows.[c]
             let toPeer = m.Flows.[p]
+            let unread = not toMe.Arrived.IsEmpty || not toMe.InFlight.IsEmpty
+            // Once both FINs have arrived, a close under linger {1, 0} is the
+            // ordinary close.
+            let exchangeDone = m.Ends.[p].FinArrived && me.FinArrived
 
-            if abortive || not toMe.Arrived.IsEmpty || not toMe.InFlight.IsEmpty then
+            if unread || (abortive && not exchangeDone) then
                 [ TcpWake.PeerReset p ],
                 m
                 |> setEnd c closedMe
@@ -394,6 +670,7 @@ module internal TcpTransferReference =
                     p
                     { m.Ends.[p] with
                         GotReset = true
+                        ResetAfterFin = m.Ends.[p].FinArrived && not (writeShut m p)
                         ErrorWaiting = true
                         Armed = false
                     }
@@ -408,19 +685,12 @@ module internal TcpTransferReference =
                     p
                     { toPeer with
                         InFlight = []
+                        Stranded = 0
                     }
             else
-                (if toPeer.InFlight.IsEmpty then
-                     [ TcpWake.PeerFinished p ]
-                 else
-                     []),
-                m
-                |> setEnd c closedMe
-                |> setEnd
-                    p
-                    { m.Ends.[p] with
-                        FinSent = true
-                    }
+                let m = m |> setEnd c closedMe |> setFlow p (forget toPeer)
+
+                if m.Ends.[p].FinSent then [], m else makeFin c m
 
 /// `TcpTransfer` held to `TcpTransferReference` over random calls.
 [<TestFixture>]
@@ -455,24 +725,28 @@ module TestTcpTransfer =
         let endOf (e : ConnectionEnd) : TcpTransferReference.End =
             let inbound = TcpTransfer.towards e transfer
 
-            let afterFin =
-                match inbound.Fin, (TcpTransfer.towards (TcpTransferReference.other e) transfer).Fin with
-                | TcpFin.Arrived _, TcpFin.NotSent -> true
-                | _ -> false
+            let finSent, finArrived, finPassive =
+                match inbound.Fin with
+                | TcpFin.NotSent -> false, false, false
+                | TcpFin.Queued passive -> true, false, passive
+                | TcpFin.Arrived passive -> true, true, passive
 
-            let finSent = inbound.Fin <> TcpFin.NotSent
+            let madeOwnFin = TcpTransfer.sendShut e transfer
 
-            let closed, reset, waiting =
+            let closed, shutRead, reset, waiting =
                 match inbound.Receiver with
-                | TcpEndState.Open _ -> false, false, false
-                | TcpEndState.Reset pending -> false, true, pending
-                | TcpEndState.Closed -> true, false, false
+                | TcpEndState.Open receiveShut -> false, receiveShut, false, false
+                | TcpEndState.Reset pending -> false, false, true, pending
+                | TcpEndState.Closed -> true, false, false, false
 
             {
                 Closed = closed
                 FinSent = finSent
+                FinArrived = finArrived
+                FinPassive = finPassive
+                ShutRead = shutRead
                 GotReset = reset
-                ResetAfterFin = reset && afterFin
+                ResetAfterFin = reset && finArrived && not madeOwnFin
                 ErrorWaiting = waiting
                 Armed = armed e
             }
@@ -486,26 +760,15 @@ module TestTcpTransfer =
             Ends = ends |> List.map (fun e -> e, endOf e) |> Map.ofList
         }
 
-    /// A closed end's flags past `Closed` are not state the library keeps,
-    /// nor is whether a reset end's peer had closed cleanly, past
-    /// `ResetAfterFin`.
+    /// A reset end's own `SHUT_RD` is not state the library keeps.
     let private comparable (m : TcpTransferReference.Model) : TcpTransferReference.Model =
         { m with
             Ends =
                 m.Ends
                 |> Map.map (fun _ e ->
-                    if e.Closed then
-                        {
-                            Closed = true
-                            FinSent = false
-                            GotReset = false
-                            ResetAfterFin = false
-                            ErrorWaiting = false
-                            Armed = false
-                        }
-                    elif e.GotReset then
+                    if e.GotReset then
                         { e with
-                            FinSent = false
+                            ShutRead = false
                         }
                     else
                         e
@@ -557,8 +820,16 @@ module TestTcpTransfer =
             let wakes, transfer = TcpTransfer.close e transfer
             TcpTransferSeen.Closed, wakes, transfer
         | TcpTransferOp.Abort e ->
-            let wakes, transfer = TcpTransfer.abort e transfer
-            TcpTransferSeen.Closed, wakes, transfer
+            if TcpTransfer.abortRefused e transfer then
+                TcpTransferSeen.Refused, [], transfer
+            else
+                let wakes, transfer = TcpTransfer.abort e transfer
+                TcpTransferSeen.Closed, wakes, transfer
+        | TcpTransferOp.Shutdown (e, how) ->
+            match TcpTransfer.shutdown e how transfer with
+            | Ok (answer, wakes, transfer) -> TcpTransferSeen.ShutdownAnswered answer, wakes, transfer
+            | Error _ -> TcpTransferSeen.Refused, [], transfer
+        | TcpTransferOp.Poll e -> TcpTransferSeen.Polled, [], TcpTransfer.polled e transfer
 
     /// The same call on the reference.
     let private applyReference
@@ -577,8 +848,16 @@ module TestTcpTransfer =
             let wakes, model = TcpTransferReference.close false e model
             TcpTransferSeen.Closed, wakes, model
         | TcpTransferOp.Abort e ->
-            let wakes, model = TcpTransferReference.close true e model
-            TcpTransferSeen.Closed, wakes, model
+            if TcpTransferReference.abortRefused e model then
+                TcpTransferSeen.Refused, [], model
+            else
+                let wakes, model = TcpTransferReference.close true e model
+                TcpTransferSeen.Closed, wakes, model
+        | TcpTransferOp.Shutdown (e, how) ->
+            match TcpTransferReference.shutdown e how model with
+            | Some (answer, wakes, model) -> TcpTransferSeen.ShutdownAnswered answer, wakes, model
+            | None -> TcpTransferSeen.Refused, [], model
+        | TcpTransferOp.Poll e -> TcpTransferSeen.Polled, [], TcpTransferReference.poll e model
 
     let private actor (op : TcpTransferOp) : ConnectionEnd =
         match op with
@@ -586,7 +865,9 @@ module TestTcpTransfer =
         | TcpTransferOp.Read (e, _, _)
         | TcpTransferOp.TakeError e
         | TcpTransferOp.Close e
-        | TcpTransferOp.Abort e -> e
+        | TcpTransferOp.Abort e
+        | TcpTransferOp.Shutdown (e, _)
+        | TcpTransferOp.Poll e -> e
 
     /// A scale for one run: the capacities, and how big a call is.
     type private Scale =
@@ -626,6 +907,9 @@ module TestTcpTransfer =
                     (Gen.choose (1, 9000))
             ]
 
+    let private howGen : Gen<TcpShutdownHow> =
+        Gen.elements [ TcpShutdownHow.Read ; TcpShutdownHow.Write ; TcpShutdownHow.Both ]
+
     let private opGen (maxCall : int) : Gen<TcpTransferOp> =
         let endGen = Gen.elements ends
         let count = Gen.frequency [ 1, Gen.constant 0 ; 6, Gen.choose (1, maxCall) ]
@@ -642,19 +926,144 @@ module TestTcpTransfer =
                 1, Gen.map TcpTransferOp.TakeError endGen
                 1, Gen.map TcpTransferOp.Close endGen
                 1, Gen.map TcpTransferOp.Abort endGen
+                3, Gen.map2 (fun e how -> TcpTransferOp.Shutdown (e, how)) endGen howGen
+                1, Gen.map TcpTransferOp.Poll endGen
             ]
+
+    /// An end fills both buffers towards its peer and shuts writing, so its
+    /// FIN waits behind its bytes, and then the peer shuts writing, so the
+    /// peer's FIN arrives first: the state in which Darwin refuses a close
+    /// under linger zero, which random calls rarely reach.
+    let private openingGen (scale : Scale) : Gen<TcpTransferOp list> =
+        gen {
+            let! e = Gen.elements ends
+            let! abortNow = Gen.elements [ true ; false ]
+
+            return
+                [
+                    TcpTransferOp.Write (e, scale.SendCap + scale.RecvCap)
+                    TcpTransferOp.Shutdown (e, TcpShutdownHow.Write)
+                    TcpTransferOp.Shutdown (TcpTransferReference.other e, TcpShutdownHow.Write)
+                    if abortNow then
+                        TcpTransferOp.Abort e
+                ]
+        }
 
     let private runGen : Gen<SimulatedUnixFlavour * Scale * TcpTransferOp list> =
         gen {
             let! flavour = Gen.elements [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
             let! scale = scaleGen
+            let! opening = Gen.frequency [ 7, Gen.constant [] ; 1, openingGen scale ]
             let! ops = Gen.listOf (opGen scale.MaxCall) |> Gen.map (List.truncate 60)
-            return flavour, scale, ops
+            return flavour, scale, opening @ ops
         }
+
+    /// What a call reached, for the coverage floors.
+    [<RequireQualifiedAccess>]
+    type private Reached =
+        | Shutdown of SimulatedUnixFlavour * TcpShutdownHow * TcpShutdownAnswer
+        /// Darwin's `SHUT_RDWR` failed in its send half after applying its
+        /// receive half.
+        | DarwinHalfApplied
+        | ShutdownRefused
+        /// Bytes reached an end that cannot take them, which reset both ends.
+        | ArrivalReset of SimulatedUnixFlavour * by : string
+        | AbortReset of SimulatedUnixFlavour
+        /// An abort after both FINs had arrived, which is the ordinary close.
+        | AbortAfterExchange of SimulatedUnixFlavour
+        | AbortRefused
+        | WriteAfterShutdown of SimulatedUnixFlavour
+        /// A FIN made after the opposite one had arrived.
+        | PassiveFin of SimulatedUnixFlavour
+        /// A reset that leaves Linux's `EPIPE` pending.
+        | ResetInCloseWait
+        /// A Linux poll of an end whose send side is shut, while its send
+        /// buffer is more than two thirds full.
+        | PollOfFullShutSender
+
+    let private reached
+        (flavour : SimulatedUnixFlavour)
+        (op : TcpTransferOp)
+        (seen : TcpTransferSeen)
+        (before : TcpTransferReference.Model)
+        (after : TcpTransferReference.Model)
+        : Reached list
+        =
+        let resetNow (e : ConnectionEnd) =
+            after.Ends.[e].GotReset && not before.Ends.[e].GotReset
+
+        [
+            match op, seen with
+            | TcpTransferOp.Shutdown (_, how), TcpTransferSeen.ShutdownAnswered answer ->
+                Reached.Shutdown (flavour, how, answer)
+            | TcpTransferOp.Shutdown _, TcpTransferSeen.Refused -> Reached.ShutdownRefused
+            | TcpTransferOp.Abort _, TcpTransferSeen.Refused -> Reached.AbortRefused
+            | TcpTransferOp.Abort e, TcpTransferSeen.Closed when
+                not before.Ends.[TcpTransferReference.other e].Closed
+                && not before.Ends.[e].GotReset
+                ->
+                if resetNow (TcpTransferReference.other e) then
+                    Reached.AbortReset flavour
+                elif
+                    before.Ends.[e].FinArrived
+                    && before.Ends.[TcpTransferReference.other e].FinArrived
+                then
+                    Reached.AbortAfterExchange flavour
+            | TcpTransferOp.Write (w, _), TcpTransferSeen.WriteFailed TcpError.BrokenPipe when
+                not before.Ends.[w].GotReset
+                ->
+                Reached.WriteAfterShutdown flavour
+            | TcpTransferOp.Poll e, _ when
+                before.Linux
+                && not before.Ends.[e].GotReset
+                && TcpTransferReference.writeShut before e
+                ->
+                let f = before.Flows.[TcpTransferReference.other e]
+                let queued = f.InFlight.Length
+
+                if f.SendCap - queued < queued / 2 then
+                    Reached.PollOfFullShutSender
+            | _ -> ()
+
+            match op, seen with
+            | TcpTransferOp.Shutdown (_, TcpShutdownHow.Both),
+              TcpTransferSeen.ShutdownAnswered TcpShutdownAnswer.NotConnected when
+                flavour = SimulatedUnixFlavour.Darwin
+                && after.Ends.[actor op].ShutRead
+                && not before.Ends.[actor op].ShutRead
+                ->
+                Reached.DarwinHalfApplied
+            | _ -> ()
+
+            if ends |> List.forall resetNow then
+                let by =
+                    match op with
+                    | TcpTransferOp.Write _ -> "write"
+                    | TcpTransferOp.Read _ -> "read"
+                    | TcpTransferOp.Shutdown _ -> "shutdown"
+                    | other -> $"%A{other}"
+
+                Reached.ArrivalReset (flavour, by)
+
+            for e in ends do
+                if
+                    after.Ends.[e].FinSent
+                    && not before.Ends.[e].FinSent
+                    && after.Ends.[e].FinPassive
+                then
+                    Reached.PassiveFin flavour
+
+                if resetNow e && after.Ends.[e].ResetAfterFin && after.Linux then
+                    Reached.ResetInCloseWait
+        ]
 
     [<Test>]
     let ``every call answers, wakes and leaves the transfer as the reference does`` () : unit =
-        let property (flavour : SimulatedUnixFlavour, scale : Scale, ops : TcpTransferOp list) : unit =
+        let property
+            (cover : Reached -> unit)
+            (flavour : SimulatedUnixFlavour, scale : Scale, ops : TcpTransferOp list)
+            : unit
+            =
             let mutable transfer = TcpTransfer.create flavour scale.SendCap scale.RecvCap
 
             let mutable model =
@@ -677,11 +1086,66 @@ module TestTcpTransfer =
                         if not expected.Ends.[e].Closed then
                             TcpTransfer.readable e after |> shouldEqual expected.Flows.[e].Arrived.Length
 
+                            TcpTransfer.receiveShut e after
+                            |> shouldEqual (not expected.Ends.[e].GotReset && TcpTransferReference.readShut expected e)
+
+                        TcpTransfer.sendShut e after
+                        |> shouldEqual (TcpTransferReference.writeShut expected e)
+
+                        if not expected.Ends.[e].Closed then
+                            // A read asleep has an answer exactly when a read
+                            // made now would not answer EAGAIN.
+                            let readNow, _, _ = TcpTransferReference.read e TcpReceiveCall.Receive 1 expected
+
+                            TcpTransfer.readAnswers e after
+                            |> shouldEqual (readNow <> TcpTransferSeen.WouldBlock)
+
+                            // A write asleep is ended by a reset, or by its own
+                            // end's send side being shut.
+                            if expected.Ends.[e].GotReset || TcpTransferReference.writeShut expected e then
+                                TcpTransfer.writeResumes e 1 after |> shouldEqual true
+
+                    for label in reached flavour op seen model expected do
+                        cover label
+
                     transfer <- after
                     model <- expected
                     start <- start + 1000
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen runGen) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 3000) (Arb.fromGen runGen) property
+
+        let flavours = [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
+
+        let hows = [ TcpShutdownHow.Read ; TcpShutdownHow.Write ; TcpShutdownHow.Both ]
+
+        let floors : (Reached * int) list =
+            [
+                for flavour in flavours do
+                    for how in hows do
+                        Reached.Shutdown (flavour, how, TcpShutdownAnswer.Shut), 20
+                        Reached.Shutdown (flavour, how, TcpShutdownAnswer.NotConnected), 20
+
+                    Reached.ArrivalReset (flavour, "write"), 20
+                    Reached.AbortReset flavour, 20
+                    Reached.AbortAfterExchange flavour, 5
+                    Reached.WriteAfterShutdown flavour, 20
+                    Reached.PassiveFin flavour, 20
+                Reached.ArrivalReset (SimulatedUnixFlavour.Linux, "read"), 10
+                Reached.ArrivalReset (SimulatedUnixFlavour.Darwin, "shutdown"), 5
+                Reached.DarwinHalfApplied, 10
+                Reached.ShutdownRefused, 20
+                Reached.AbortRefused, 5
+                Reached.ResetInCloseWait, 20
+                Reached.PollOfFullShutSender, 10
+            ]
+
+        let short =
+            floors
+            |> List.filter (fun (label, floor) -> coverage.Count label < floor)
+            |> List.map (fun (label, floor) -> label, coverage.Count label, floor)
+
+        short |> shouldEqual []
 
     [<Test>]
     let ``a Linux writer that met EAGAIN gets one SendSpace when its send buffer drains to two thirds`` () : unit =

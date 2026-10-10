@@ -118,6 +118,18 @@ type internal TcpTransfer =
             Rules : TcpTransferRules
         }
 
+/// Which sides of its connection a `shutdown(2)` shuts: `SHUT_RD`, `SHUT_WR`
+/// or `SHUT_RDWR`.
+[<RequireQualifiedAccess>]
+type internal TcpShutdownHow =
+    /// `SHUT_RD`: the receive side.
+    | Read
+    /// `SHUT_WR`: the send side, which sends a FIN behind the bytes already
+    /// written.
+    | Write
+    /// `SHUT_RDWR`: both.
+    | Both
+
 /// Something a transfer did that a waiter on one end could be woken by.
 [<RequireQualifiedAccess>]
 type internal TcpWake =
@@ -134,6 +146,32 @@ type internal TcpWake =
     | PeerFinished of receiver : ConnectionEnd
     /// `receiver`'s connection was reset.
     | PeerReset of receiver : ConnectionEnd
+    /// `shutter`'s own `shutdown(2)` shut `how`: the sides it applied, which
+    /// on Darwin may be fewer than it asked for. Linux raises it for every
+    /// call on a connected socket, even one that changed nothing.
+    | ShutDown of shutter : ConnectionEnd * how : TcpShutdownHow
+
+/// What `shutdown(2)` on a connected TCP socket answers.
+[<RequireQualifiedAccess>]
+type internal TcpShutdownAnswer =
+    /// 0.
+    | Shut
+    /// `ENOTCONN`.
+    | NotConnected
+
+/// A `shutdown(2)` this kernel refuses to answer, because what a real kernel
+/// does next waits on a TCP timer.
+[<RequireQualifiedAccess>]
+type internal TcpShutdownRefusal =
+    /// On Darwin, the call would shut `shutter`'s receive side while `unsent`
+    /// bytes of its peer's still wait in the peer's send buffer, and it is not
+    /// a `SHUT_RDWR` whose FIN goes out at once to a peer still able to send.
+    /// Measured, the peer was reset only when a TCP timer fired, within 5 s
+    /// but at a time that varied between runs (`tcp-shutdown.c`, section R),
+    /// or, after `SHUT_RDWR` against a peer that had shut writing, not for 15
+    /// s (section X). This kernel delivers bytes as soon as there is room, so
+    /// it would reset at once.
+    | DarwinReceiveShutBeforeUnsentBytes of shutter : ConnectionEnd * unsent : int
 
 /// What a non-blocking read of a TCP connection answers.
 [<RequireQualifiedAccess>]
@@ -279,16 +317,39 @@ module internal TcpTransfer =
                 Rules = TcpTransferRules.Darwin (Map.remove sender stranded)
             }
 
+    /// Whether `receiver`'s receive side is shut: by its own
+    /// `shutdown(SHUT_RD)`, or by its peer's FIN having arrived, as both
+    /// kernels fold the two together (`RCV_SHUTDOWN`, `SS_CANTRCVMORE`). A
+    /// reset end's is shut too, but the reset is the fact a caller reads
+    /// there, so this answers only of an open end.
+    let receiveShut (receiver : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        let inbound = towards receiver transfer
+
+        match inbound.Receiver, inbound.Fin with
+        | TcpEndState.Open true, _
+        | TcpEndState.Open false, TcpFin.Arrived _ -> true
+        | TcpEndState.Open false, TcpFin.NotSent
+        | TcpEndState.Open false, TcpFin.Queued _
+        | TcpEndState.Reset _, _
+        | TcpEndState.Closed, _ -> false
+
+    /// Whether `sender` has made its FIN, by `shutdown(SHUT_WR)` or by its
+    /// close, whether or not the FIN has arrived: its send side is shut, and
+    /// a write there answers `EPIPE`.
+    let sendShut (sender : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        match (towards (otherEnd sender) transfer).Fin with
+        | TcpFin.NotSent -> false
+        | TcpFin.Queued _
+        | TcpFin.Arrived _ -> true
+
     /// Whether a reset reaching `receiver` now finds the connection as
     /// Linux's `CLOSE_WAIT`: the peer's FIN has arrived, and `receiver` has
     /// made no FIN of its own.
     let private closeWaiting (receiver : ConnectionEnd) (transfer : TcpTransfer) : bool =
-        match (towards receiver transfer).Fin, (towards (otherEnd receiver) transfer).Fin with
-        | TcpFin.Arrived _, TcpFin.NotSent -> true
-        | TcpFin.Arrived _, TcpFin.Queued _
-        | TcpFin.Arrived _, TcpFin.Arrived _
-        | TcpFin.NotSent, _
-        | TcpFin.Queued _, _ -> false
+        match (towards receiver transfer).Fin with
+        | TcpFin.Arrived _ -> not (sendShut receiver transfer)
+        | TcpFin.NotSent
+        | TcpFin.Queued _ -> false
 
     /// Every way `transfer` breaks the rules the functions here keep, as text;
     /// empty when it breaks none.
@@ -309,9 +370,14 @@ module internal TcpTransfer =
                     $"towards %A{receiver}: %d{receiving} bytes in a receive buffer of %d{direction.ReceiveCapacity}"
 
                 match direction.Receiver with
-                | TcpEndState.Open _ ->
+                | TcpEndState.Open receiveShut ->
                     if sending > 0 && receiving < direction.ReceiveCapacity then
                         $"towards %A{receiver}: %d{sending} bytes wait to be sent while the receive buffer has room"
+
+                    // Darwin's `SHUT_RD` flushes the receive buffer, and any
+                    // byte arriving after it resets the connection.
+                    if receiveShut && not (isLinux transfer) && sending + receiving > 0 then
+                        $"towards %A{receiver}: %d{sending + receiving} bytes on their way to a Darwin end that shut its receive side"
                 | TcpEndState.Reset _ ->
                     if sending > 0 then
                         $"towards %A{receiver}: %d{sending} bytes in flight to an end that was reset"
@@ -344,20 +410,11 @@ module internal TcpTransfer =
                 | TcpFin.Arrived false
                 | TcpFin.NotSent -> ()
 
-                match direction.Fin, senderState with
-                | TcpFin.NotSent, _
-                | _, TcpEndState.Closed -> ()
-                | fin, other -> $"%A{sender} sent %A{fin} towards %A{receiver} while it is %A{other} rather than closed"
-
+                // A reset reaches both ends at once, unless one of them has
+                // closed; and a close tells the peer, by a FIN or a reset.
                 match direction.Receiver, senderState with
-                | TcpEndState.Reset _, TcpEndState.Closed
-                | TcpEndState.Open _, _
-                | TcpEndState.Closed, _ -> ()
-                | TcpEndState.Reset _, other ->
-                    $"%A{receiver} was reset while its peer is in %A{other} rather than closed"
-
-                match direction.Receiver, senderState, (towards sender transfer).Fin with
-                | TcpEndState.Closed, TcpEndState.Open _, TcpFin.NotSent ->
+                | TcpEndState.Reset _, TcpEndState.Open _ -> $"%A{receiver} was reset while its peer is open"
+                | TcpEndState.Closed, TcpEndState.Open _ when (towards sender transfer).Fin = TcpFin.NotSent ->
                     $"%A{receiver} is closed while its peer has not been told"
                 | _ -> ()
             ]
@@ -385,12 +442,6 @@ module internal TcpTransfer =
                         match (towards sender transfer).Receiver with
                         | TcpEndState.Reset _ -> ()
                         | other -> $"%A{sender} has %d{count} bytes stranded, but is in %A{other} rather than reset"
-
-                        match outbound.Receiver with
-                        | TcpEndState.Reset _
-                        | TcpEndState.Closed -> ()
-                        | TcpEndState.Open _ ->
-                            $"%A{sender} has %d{count} bytes stranded, but its peer is open to receive them"
                 ]
 
         ofDirection ConnectionEnd.Client @ ofDirection ConnectionEnd.Server @ ofRules
@@ -442,7 +493,7 @@ module internal TcpTransfer =
     /// Whether Linux's `tcp_poll` finds `sender` writable: its send buffer at
     /// most two thirds full (`sk_stream_is_writeable`). Says nothing of an end
     /// that was reset, which is writable whatever its buffer holds, since the
-    /// write fails at once.
+    /// write fails at once, nor of one that shut its send side.
     let linuxSendable (sender : ConnectionEnd) (transfer : TcpTransfer) : bool =
         linuxWritable (towards (otherEnd sender) transfer)
 
@@ -466,35 +517,110 @@ module internal TcpTransfer =
     /// or `MOD`, or `epoll_wait`'s re-poll of a pending entry: one that finds
     /// the socket open for sending but not writable marks it out of space
     /// (`SOCK_NOSPACE`), so that its send buffer draining to two thirds full
-    /// raises `TcpWake.SendSpace`. Darwin's poll keeps no such mark.
+    /// raises `TcpWake.SendSpace`. A socket whose send side is shut is
+    /// writable whatever its buffer holds, so its poll marks nothing. Darwin's
+    /// poll keeps no such mark.
     let polled (sender : ConnectionEnd) (transfer : TcpTransfer) : TcpTransfer =
         match transfer.Rules, (towards sender transfer).Receiver with
         | TcpTransferRules.Darwin _, _ -> transfer
         | TcpTransferRules.Linux _, TcpEndState.Open _ ->
-            if linuxSendable sender transfer then
+            if sendShut sender transfer || linuxSendable sender transfer then
                 transfer
             else
                 withArmed sender true transfer
         | TcpTransferRules.Linux _, TcpEndState.Reset _
         | TcpTransferRules.Linux _, TcpEndState.Closed -> transfer
 
-    /// Move bytes on from the send buffer into the receive buffer as far as it
-    /// has room: how many moved, and the direction after.
-    let private deliver (direction : TcpDirection) : int * TcpDirection =
+    /// Whether bytes reaching `receiver` now make its kernel reset the
+    /// connection rather than queue them: on Darwin once its receive side is
+    /// shut, and on Linux once its send side is shut too
+    /// (`tcp_rcv_state_process`'s `TCPABORTONDATA`, in `FIN_WAIT1` and
+    /// `FIN_WAIT2`).
+    let private resetsOnArrival (receiver : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        receiveShut receiver transfer
+        && (not (isLinux transfer) || sendShut receiver transfer)
+
+    /// Bytes reached `receiver`, whose kernel answered with a reset, which
+    /// reaches both ends. What was in flight either way is discarded on Linux
+    /// and stays counted in its sender's send buffer on Darwin, the bytes
+    /// that provoked the reset included; what each end's receive buffer holds
+    /// stays readable. The sender gets the error, and so does the receiver on
+    /// Linux; Darwin's receiver sees none (measured, `tcp-shutdown.c`
+    /// sections S and R). A sender that has closed stays closed: the reset
+    /// only ends what it still had to send.
+    let private resetByArrival (receiver : ConnectionEnd) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
+        let sender = otherEnd receiver
+        let inbound = towards receiver transfer
+        let outbound = towards sender transfer
+
+        let senderClosed =
+            match outbound.Receiver with
+            | TcpEndState.Closed -> true
+            | TcpEndState.Open _
+            | TcpEndState.Reset _ -> false
+
+        let transfer =
+            transfer
+            |> (if senderClosed then
+                    id
+                else
+                    strand sender (ByteQueue.length inbound.Sending))
+            |> strand receiver (ByteQueue.length outbound.Sending)
+            |> withTowards
+                receiver
+                { inbound with
+                    Sending = ByteQueue.empty
+                    Receiver = TcpEndState.Reset (isLinux transfer)
+                }
+            |> withTowards
+                sender
+                { outbound with
+                    Sending = ByteQueue.empty
+                    Receiver =
+                        if senderClosed then
+                            TcpEndState.Closed
+                        else
+                            TcpEndState.Reset true
+                }
+            |> withArmed receiver false
+            |> withArmed sender false
+
+        let wakes =
+            [
+                if not senderClosed then
+                    TcpWake.PeerReset sender
+                TcpWake.PeerReset receiver
+            ]
+
+        wakes, transfer
+
+    /// Bytes move on towards `receiver` from the send buffer into the receive
+    /// buffer as far as it has room, unless they would reach an end that
+    /// resets on their arrival, which then resets the connection. How many
+    /// moved, the wakes a reset raises, and the transfer after.
+    let private arrive (receiver : ConnectionEnd) (transfer : TcpTransfer) : int * TcpWake list * TcpTransfer =
+        let direction = towards receiver transfer
         let room = direction.ReceiveCapacity - ByteQueue.length direction.Receiving
         let moved = min room (ByteQueue.length direction.Sending)
 
         if moved = 0 then
-            0, direction
+            0, [], transfer
+        elif resetsOnArrival receiver transfer then
+            let wakes, transfer = resetByArrival receiver transfer
+            0, wakes, transfer
         else
 
         let bytes, sending = ByteQueue.take moved direction.Sending
 
         moved,
-        { direction with
-            Sending = sending
-            Receiving = ByteQueue.append bytes direction.Receiving
-        }
+        [],
+        withTowards
+            receiver
+            { direction with
+                Sending = sending
+                Receiving = ByteQueue.append bytes direction.Receiving
+            }
+            transfer
 
     /// The wakes owed to `sender` now that `moved` bytes have left its send
     /// buffer for the peer's receive buffer.
@@ -535,44 +661,49 @@ module internal TcpTransfer =
     /// space in its send buffer, and in the peer's receive buffer while the
     /// peer is there to drain it.
     let private writeSpace (context : string) (writer : ConnectionEnd) (transfer : TcpTransfer) : int64 =
-        let outbound = towards (otherEnd writer) transfer
+        let peer = otherEnd writer
+        let outbound = towards peer transfer
 
-        match outbound.Fin, outbound.Receiver with
-        | TcpFin.NotSent, TcpEndState.Open _ ->
+        if sendShut writer transfer then
+            failwith
+                $"TcpTransfer.%s{context}: the %A{writer} end has shut its send side, but it is still writing (this is a bug in this library)."
+
+        match outbound.Receiver with
+        // A peer that answers an arrival with a reset acknowledges nothing,
+        // so a write can fill the send buffer and no more.
+        | TcpEndState.Open _ when resetsOnArrival peer transfer -> int64 (sendSpace writer transfer)
+        | TcpEndState.Open _ ->
             int64 (outbound.ReceiveCapacity - ByteQueue.length outbound.Receiving)
             + int64 (sendSpace writer transfer)
         // The peer has gone, so nothing drains the send buffer.
-        | TcpFin.NotSent, TcpEndState.Closed -> int64 (sendSpace writer transfer)
-        | TcpFin.NotSent, TcpEndState.Reset _ ->
+        | TcpEndState.Closed -> int64 (sendSpace writer transfer)
+        | TcpEndState.Reset _ ->
             failwith
-                $"TcpTransfer.%s{context}: the %A{writer} end's peer was reset, which only the %A{writer} end's own close does, but it is still writing (this is a bug in this library)."
-        | fin, _ ->
-            failwith
-                $"TcpTransfer.%s{context}: the %A{writer} end has sent its FIN (%A{fin}), which only its close does (this library models no shutdown), but it is still writing (this is a bug in this library)."
+                $"TcpTransfer.%s{context}: the %A{writer} end's peer was reset while the %A{writer} end was not, which TcpTransfer.violations forbids (this is a bug in this library)."
 
     /// Whether a read by `receiver`, asleep because nothing was there to
-    /// answer it, has an answer now: bytes have arrived, or a FIN, or a reset.
-    /// A read wakes for any of them, needing only one byte to return
-    /// (measured, `tcp-blocking.c` sections R-data, R-fin and R-reset).
+    /// answer it, has an answer now: bytes have arrived, or its receive side
+    /// is shut (by its peer's FIN or its own `SHUT_RD`), or a reset. A read
+    /// wakes for any of them, needing only one byte to return (measured,
+    /// `tcp-blocking.c` sections R-data, R-fin and R-reset).
     let readAnswers (receiver : ConnectionEnd) (transfer : TcpTransfer) : bool =
         let direction = towards receiver transfer
 
-        match direction.Receiver, direction.Fin with
-        | TcpEndState.Closed, _ ->
+        match direction.Receiver with
+        | TcpEndState.Closed ->
             failwith
                 $"TcpTransfer.readAnswers: the %A{receiver} end is closed, so nothing can be asleep reading there (this is a bug in this library)."
-        | TcpEndState.Reset _, _
-        | TcpEndState.Open _, TcpFin.Arrived _ -> true
-        | TcpEndState.Open _, TcpFin.NotSent
-        | TcpEndState.Open _, TcpFin.Queued _ -> ByteQueue.length direction.Receiving > 0
+        | TcpEndState.Reset _ -> true
+        | TcpEndState.Open _ -> receiveShut receiver transfer || ByteQueue.length direction.Receiving > 0
 
     /// Whether a write by `writer`, asleep with `remaining` of its bytes not
-    /// yet taken, is woken: by a reset at either flavour, and otherwise by
-    /// room. On Linux a sleeping writer is woken only once its send buffer
-    /// has drained to two thirds full (`sk_stream_write_space`), as an
-    /// edge-triggered waiter is, and has room; on Darwin, at every acknowledgement that
-    /// leaves room for a write of `remaining` to take something, by the low
-    /// water mark `admitWrite` applies.
+    /// yet taken, is woken: by a reset at either flavour, or by its own
+    /// end's send side being shut, and otherwise by room. On Linux a sleeping
+    /// writer is woken only once its send buffer has drained to two thirds
+    /// full (`sk_stream_write_space`), as an edge-triggered waiter is, and
+    /// has room; on Darwin, at every acknowledgement that leaves room for a
+    /// write of `remaining` to take something, by the low water mark
+    /// `admitWrite` applies.
     ///
     /// Measured (`tcp-blocking.c` section W-resume): Linux's writer, asleep
     /// with 4194304 bytes queued, took nothing while the reader drained the
@@ -588,6 +719,7 @@ module internal TcpTransfer =
             failwith
                 $"TcpTransfer.writeResumes: the %A{writer} end is closed, so nothing can be asleep writing there (this is a bug in this library)."
         | TcpEndState.Reset _ -> true
+        | TcpEndState.Open _ when sendShut writer transfer -> true
         | TcpEndState.Open _ ->
 
         match transfer.Rules with
@@ -604,6 +736,10 @@ module internal TcpTransfer =
     /// error on Linux, and a Linux write that runs out of space, whether it
     /// meets `EAGAIN` or takes only part of its bytes, arms the writer's
     /// send-space wake (`SOCK_NOSPACE`).
+    ///
+    /// A reset end answers by the reset's rules. Otherwise an end whose send
+    /// side is shut answers `EPIPE`, even to a write of nothing (measured on
+    /// both, `tcp-shutdown.c` section S).
     let admitWrite (writer : ConnectionEnd) (count : int) (transfer : TcpTransfer) : TcpWriteAdmission * TcpTransfer =
         if count < 0 then
             failwith $"TcpTransfer.admitWrite: a write of %d{count} bytes (this is a bug in this library)."
@@ -633,6 +769,8 @@ module internal TcpTransfer =
             // reading the pending error.
             | TcpTransferRules.Darwin _ ->
                 TcpWriteAdmission.Answered (TcpWriteAnswer.Failed TcpError.BrokenPipe), transfer
+        | TcpEndState.Open _ when sendShut writer transfer ->
+            TcpWriteAdmission.Answered (TcpWriteAnswer.Failed TcpError.BrokenPipe), transfer
         | TcpEndState.Open _ ->
 
         if count = 0 then
@@ -652,7 +790,9 @@ module internal TcpTransfer =
     ///
     /// When the peer has closed, the bytes are taken and never delivered, and
     /// the peer's kernel answers with a reset: Linux discards them, and Darwin
-    /// keeps counting them in the writer's send buffer.
+    /// keeps counting them in the writer's send buffer. When they reach a
+    /// peer that resets on their arrival (`resetsOnArrival`), they are taken
+    /// and the connection is reset in the same way.
     let write
         (writer : ConnectionEnd)
         (bytes : ImmutableArray<byte>)
@@ -687,15 +827,18 @@ module internal TcpTransfer =
             [ TcpWake.PeerReset writer ], keepingRules "write" transfer
         | TcpEndState.Reset _ ->
             failwith
-                $"TcpTransfer.write: the %A{writer} end's peer was reset, which only the %A{writer} end's own close does, but it is still writing (this is a bug in this library)."
+                $"TcpTransfer.write: the %A{writer} end's peer was reset while the %A{writer} end was not, which TcpTransfer.violations forbids (this is a bug in this library)."
         | TcpEndState.Open _ ->
 
-        let queued =
-            { outbound with
-                Sending = ByteQueue.append bytes outbound.Sending
-            }
+        let transfer =
+            withTowards
+                peer
+                { outbound with
+                    Sending = ByteQueue.append bytes outbound.Sending
+                }
+                transfer
 
-        let arrived, outbound = deliver queued
+        let arrived, resetWakes, transfer = arrive peer transfer
 
         let wakes =
             [
@@ -705,12 +848,18 @@ module internal TcpTransfer =
                     match transfer.Rules with
                     | TcpTransferRules.Darwin _ -> TcpWake.SendSpace writer
                     | TcpTransferRules.Linux _ -> ()
+                yield! resetWakes
             ]
 
-        wakes, keepingRules "write" (withTowards peer outbound transfer)
+        wakes, keepingRules "write" transfer
 
     /// What a non-blocking `call` asking for `count` bytes from `receiver`
     /// answers, the wakes it raises, and the transfer after.
+    ///
+    /// With nothing queued, a read of an end whose receive side is shut
+    /// answers end of file, never `EAGAIN`. Linux keeps what was queued when
+    /// the end shut its receive side, and a read takes it first; Darwin's
+    /// `SHUT_RD` discarded it (`shutdown`).
     let read
         (receiver : ConnectionEnd)
         (call : TcpReceiveCall)
@@ -761,23 +910,31 @@ module internal TcpTransfer =
             | TcpReceiveCall.Receive ->
                 let bytes, receiving = ByteQueue.take taken direction.Receiving
 
-                let moved, direction =
-                    deliver
-                        { direction with
-                            Receiving = receiving
-                        }
+                let moved, resetWakes, transfer =
+                    arrive
+                        receiver
+                        (withTowards
+                            receiver
+                            { direction with
+                                Receiving = receiving
+                            }
+                            transfer)
 
                 // A FIN queued behind the bytes arrives with the last of them.
-                let direction, finArrives =
+                let direction = towards receiver transfer
+
+                let transfer, finArrives =
                     match direction.Fin, direction.Receiver with
                     | TcpFin.Queued passive, TcpEndState.Open _ when ByteQueue.length direction.Sending = 0 ->
-                        { direction with
-                            Fin = TcpFin.Arrived passive
-                        },
+                        withTowards
+                            receiver
+                            { direction with
+                                Fin = TcpFin.Arrived passive
+                            }
+                            transfer,
                         true
-                    | _ -> direction, false
+                    | _ -> transfer, false
 
-                let transfer = withTowards receiver direction transfer
                 let sender = otherEnd receiver
                 let spaceWakes, transfer = spaceFreed sender moved transfer
 
@@ -788,16 +945,18 @@ module internal TcpTransfer =
                         if finArrives then
                             TcpWake.PeerFinished receiver
                         yield! spaceWakes
+                        yield! resetWakes
                     ]
 
                 TcpReadAnswer.Bytes bytes, wakes, keepingRules "read" transfer
         elif isLinux transfer then
-            // `tcp_recvmsg` tests for a received FIN before the pending error,
-            // and `sock_error` takes the error even under `MSG_PEEK`.
+            // `tcp_recvmsg` tests for a shut receive side (a received FIN, or
+            // `SHUT_RD`) before the pending error, and `sock_error` takes the
+            // error even under `MSG_PEEK`.
             match direction.Receiver, direction.Fin with
-            | TcpEndState.Open _, TcpFin.NotSent -> TcpReadAnswer.WouldBlock, [], transfer
-            | TcpEndState.Open _, TcpFin.Arrived _ -> TcpReadAnswer.EndOfFile, [], transfer
+            | TcpEndState.Open _, _ when receiveShut receiver transfer -> TcpReadAnswer.EndOfFile, [], transfer
             | TcpEndState.Open _, TcpFin.Queued _ -> failwith unqueuedFin
+            | TcpEndState.Open _, _ -> TcpReadAnswer.WouldBlock, [], transfer
             | TcpEndState.Reset errorPending, _ ->
                 if closeWaiting receiver transfer || not errorPending then
                     TcpReadAnswer.EndOfFile, [], transfer
@@ -817,14 +976,14 @@ module internal TcpTransfer =
                     | TcpReceiveCall.Receive -> takeError ()
 
                 TcpReadAnswer.Failed (resetError receiver transfer), [], transfer
-            | TcpEndState.Reset false, _
-            | TcpEndState.Open _, TcpFin.Arrived _ -> TcpReadAnswer.EndOfFile, [], transfer
-            | TcpEndState.Open _, TcpFin.NotSent ->
+            | TcpEndState.Reset false, _ -> TcpReadAnswer.EndOfFile, [], transfer
+            | TcpEndState.Open _, _ when receiveShut receiver transfer -> TcpReadAnswer.EndOfFile, [], transfer
+            | TcpEndState.Open _, TcpFin.Queued _ -> failwith unqueuedFin
+            | TcpEndState.Open _, _ ->
                 if count = 0 then
                     TcpReadAnswer.Bytes ImmutableArray.Empty, [], transfer
                 else
                     TcpReadAnswer.WouldBlock, [], transfer
-            | TcpEndState.Open _, TcpFin.Queued _ -> failwith unqueuedFin
             | TcpEndState.Closed, _ -> failwith "TcpTransfer.read: unreachable, the closed end was refused above."
 
     /// `getsockopt(SO_ERROR)` on `receiver`'s socket: the pending error, which
@@ -847,8 +1006,206 @@ module internal TcpTransfer =
         | TcpEndState.Open _
         | TcpEndState.Reset false -> None, transfer
 
-    /// `closer`'s socket closes, sending a FIN if `abortive` is false and
-    /// nothing is left unread, and a reset otherwise.
+    /// `sender` makes its FIN, which follows whatever it still has to send,
+    /// and the wakes its arrival raises. Its send side must not be shut yet.
+    let private makeFin (sender : ConnectionEnd) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
+        let peer = otherEnd sender
+        let outbound = towards peer transfer
+
+        if sendShut sender transfer then
+            failwith
+                $"TcpTransfer.makeFin: the %A{sender} end has made its FIN already (this is a bug in this library)."
+
+        let passive =
+            match (towards sender transfer).Fin with
+            | TcpFin.Arrived _ -> true
+            | TcpFin.NotSent
+            | TcpFin.Queued _ -> false
+
+        let fin =
+            if ByteQueue.length outbound.Sending > 0 then
+                TcpFin.Queued passive
+            else
+                TcpFin.Arrived passive
+
+        let wakes =
+            match fin, outbound.Receiver with
+            | TcpFin.Arrived _, TcpEndState.Open _ -> [ TcpWake.PeerFinished peer ]
+            | _ -> []
+
+        wakes,
+        withTowards
+            peer
+            { outbound with
+                Fin = fin
+            }
+            transfer
+
+    /// Whether `shutdown(2)` of `how` by `shutter` is one this kernel refuses
+    /// (`TcpShutdownRefusal`), and why.
+    let private shutdownRefusal
+        (shutter : ConnectionEnd)
+        (how : TcpShutdownHow)
+        (transfer : TcpTransfer)
+        : TcpShutdownRefusal option
+        =
+        let inbound = towards shutter transfer
+        let waiting = ByteQueue.length inbound.Sending
+
+        let receiveHalf =
+            match how with
+            | TcpShutdownHow.Read
+            | TcpShutdownHow.Both -> true
+            | TcpShutdownHow.Write -> false
+
+        // A `SHUT_RDWR` whose FIN goes out at once, to a peer that has not
+        // shut its send side, reset that peer at once (measured, section R,
+        // `RDWR p-unsent`): the FIN carries the room the flush made.
+        let resetsAtOnce =
+            how = TcpShutdownHow.Both
+            && not (sendShut shutter transfer)
+            && unsent shutter transfer = 0
+            && inbound.Fin = TcpFin.NotSent
+
+        match transfer.Rules, inbound.Receiver with
+        | TcpTransferRules.Darwin _, TcpEndState.Open _ when
+            receiveHalf
+            && not (receiveShut shutter transfer)
+            && waiting > 0
+            && not resetsAtOnce
+            ->
+            Some (TcpShutdownRefusal.DarwinReceiveShutBeforeUnsentBytes (shutter, waiting))
+        | _ -> None
+
+    /// `shutter`'s socket, an end of an established connection, calls
+    /// `shutdown(how)`: what it answers, the wakes it raises, and the
+    /// transfer after; or why this kernel refuses it.
+    ///
+    /// Linux applies every side it is asked to, again or not, and answers 0,
+    /// unless the connection was reset, when it answers `ENOTCONN` and the
+    /// error stays pending. Darwin applies `SHUT_RDWR` side by side, as XNU's
+    /// `soshutdownlock` does: the receive side fails with `ENOTCONN` if it is
+    /// already shut (by an earlier `SHUT_RD`, the peer's FIN, or a reset),
+    /// and then nothing else is applied; the send side likewise, after the
+    /// receive side has been applied (measured, `tcp-shutdown.c` sections S
+    /// and T).
+    ///
+    /// Shutting the send side makes the FIN, behind whatever is still to be
+    /// sent. Shutting the receive side leaves Linux receiving as before, but
+    /// an arrival at an end shut both ways resets the connection; Darwin
+    /// discards what is queued, and any arrival afterwards resets. Every call
+    /// raises `TcpWake.ShutDown` for the sides it applied (on Linux, for every
+    /// call), and the peer's wakes for what reached it.
+    let shutdown
+        (shutter : ConnectionEnd)
+        (how : TcpShutdownHow)
+        (transfer : TcpTransfer)
+        : Result<TcpShutdownAnswer * TcpWake list * TcpTransfer, TcpShutdownRefusal>
+        =
+        let inbound = towards shutter transfer
+
+        let receiveHalf, sendHalf =
+            match how with
+            | TcpShutdownHow.Read -> true, false
+            | TcpShutdownHow.Write -> false, true
+            | TcpShutdownHow.Both -> true, true
+
+        match inbound.Receiver with
+        | TcpEndState.Closed ->
+            failwith
+                $"TcpTransfer.shutdown: the %A{shutter} end is closed, so it has no socket to shut (this is a bug in this library)."
+        // `inet_shutdown` answers `ENOTCONN` in `TCP_CLOSE`, but still wakes
+        // the socket's waiters; `soshutdownlock` finds both sides shut.
+        | TcpEndState.Reset _ ->
+            let wakes =
+                match transfer.Rules with
+                | TcpTransferRules.Linux _ -> [ TcpWake.ShutDown (shutter, how) ]
+                | TcpTransferRules.Darwin _ -> []
+
+            Ok (TcpShutdownAnswer.NotConnected, wakes, transfer)
+        | TcpEndState.Open _ ->
+
+        match shutdownRefusal shutter how transfer with
+        | Some refusal -> Error refusal
+        | None ->
+
+        let shutReceive (flush : bool) (transfer : TcpTransfer) : TcpTransfer =
+            let inbound = towards shutter transfer
+
+            withTowards
+                shutter
+                { inbound with
+                    Receiving = if flush then ByteQueue.empty else inbound.Receiving
+                    Receiver = TcpEndState.Open true
+                }
+                transfer
+
+        match transfer.Rules with
+        | TcpTransferRules.Linux _ ->
+            let transfer = if receiveHalf then shutReceive false transfer else transfer
+
+            let finWakes, transfer =
+                if sendHalf && not (sendShut shutter transfer) then
+                    makeFin shutter transfer
+                else
+                    [], transfer
+
+            Ok (TcpShutdownAnswer.Shut, TcpWake.ShutDown (shutter, how) :: finWakes, keepingRules "shutdown" transfer)
+        | TcpTransferRules.Darwin _ ->
+
+        if receiveHalf && receiveShut shutter transfer then
+            Ok (TcpShutdownAnswer.NotConnected, [], transfer)
+        else
+
+        let transfer = if receiveHalf then shutReceive true transfer else transfer
+        let sendFails = sendHalf && sendShut shutter transfer
+        let sendApplied = sendHalf && not sendFails
+
+        let finWakes, transfer =
+            if sendApplied then
+                makeFin shutter transfer
+            else
+                [], transfer
+        // Bytes still on their way arrive at an end that cannot take them.
+        let _, resetWakes, transfer = arrive shutter transfer
+
+        let applied =
+            match receiveHalf, sendApplied with
+            | true, true -> [ TcpWake.ShutDown (shutter, TcpShutdownHow.Both) ]
+            | true, false -> [ TcpWake.ShutDown (shutter, TcpShutdownHow.Read) ]
+            | false, true -> [ TcpWake.ShutDown (shutter, TcpShutdownHow.Write) ]
+            | false, false -> []
+
+        let answer =
+            if sendFails then
+                TcpShutdownAnswer.NotConnected
+            else
+                TcpShutdownAnswer.Shut
+
+        Ok (answer, applied @ finWakes @ resetWakes, keepingRules "shutdown" transfer)
+
+    /// Whether this kernel refuses `closer`'s close under `SO_LINGER` {1, 0},
+    /// which `abort` must not then be asked to make.
+    ///
+    /// On Darwin, when `closer` made its FIN before the peer's arrived, the
+    /// FIN still waits behind its bytes, and the peer's has arrived, no reset
+    /// is sent at the close: the peer reads what it holds and then
+    /// `ECONNRESET`, once its reads open the window towards a socket that has
+    /// gone (measured, `tcp-shutdown.c` section L, `cqueued-pfin`). This
+    /// kernel has no reset owed to whoever next reads.
+    let abortRefused (closer : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        let peer = otherEnd closer
+
+        match transfer.Rules, (towards closer transfer).Receiver, (towards peer transfer).Receiver with
+        | TcpTransferRules.Darwin _, TcpEndState.Open _, TcpEndState.Open _ ->
+            match (towards peer transfer).Fin, (towards closer transfer).Fin with
+            | TcpFin.Queued false, TcpFin.Arrived _ -> true
+            | _ -> false
+        | _ -> false
+
+    /// `closer`'s socket closes, sending a FIN unless it made one already, or
+    /// a reset: if bytes are left unread, or if `abortive` and the exchange of
+    /// FINs is not complete.
     let private closeWith
         (context : string)
         (abortive : bool)
@@ -860,12 +1217,6 @@ module internal TcpTransfer =
         let peer = otherEnd closer
         let outbound = towards peer transfer
 
-        match own.Receiver with
-        | TcpEndState.Closed ->
-            failwith $"TcpTransfer.%s{context}: the %A{closer} end is closed already (this is a bug in this library)."
-        | TcpEndState.Open _
-        | TcpEndState.Reset _ -> ()
-
         let transfer = transfer |> withArmed closer false |> forgetStranded closer
 
         let closedOwn : TcpDirection =
@@ -875,7 +1226,9 @@ module internal TcpTransfer =
                 Receiver = TcpEndState.Closed
             }
 
-        match outbound.Fin, outbound.Receiver with
+        match own.Receiver, outbound.Receiver with
+        | TcpEndState.Closed, _ ->
+            failwith $"TcpTransfer.%s{context}: the %A{closer} end is closed already (this is a bug in this library)."
         | _, TcpEndState.Closed ->
             // Both ends have now closed, and nothing is left to send or keep.
             let transfer =
@@ -888,23 +1241,36 @@ module internal TcpTransfer =
                     }
 
             [], keepingRules context transfer
-        | TcpFin.NotSent, TcpEndState.Reset _
-        | TcpFin.Queued _, _
-        | TcpFin.Arrived _, _ ->
+        // The reset reached both ends, so there is nothing to tell the peer.
+        | TcpEndState.Reset _, TcpEndState.Reset _ -> [], keepingRules context (withTowards closer closedOwn transfer)
+        | TcpEndState.Reset _, TcpEndState.Open _
+        | TcpEndState.Open _, TcpEndState.Reset _ ->
             failwith
-                $"TcpTransfer.%s{context}: the %A{closer} end has sent its FIN or reset already, which only its close does (this library models no shutdown), but it is open (this is a bug in this library)."
-        | TcpFin.NotSent, TcpEndState.Open _ ->
+                $"TcpTransfer.%s{context}: one end of the connection was reset and the other is open, which TcpTransfer.violations forbids (this is a bug in this library)."
+        | TcpEndState.Open _, TcpEndState.Open _ ->
+
+        if abortive && abortRefused closer transfer then
+            failwith
+                $"TcpTransfer.%s{context}: the %A{closer} end's close under linger zero is one TcpTransfer.abortRefused refuses (this is a bug in the caller)."
 
         // Bytes still on their way to the closer count as unread too, but
         // they wait only while its receive buffer is full, so that test
         // covers them.
         let unread = ByteQueue.length own.Receiving > 0
 
-        if abortive || unread then
+        // Once both FINs have arrived, a close under linger zero is the
+        // ordinary close (`tcp_disconnect` resets only before that).
+        let exchangeDone =
+            match outbound.Fin, own.Fin with
+            | TcpFin.Arrived _, TcpFin.Arrived _ -> true
+            | _ -> false
+
+        if unread || (abortive && not exchangeDone) then
             // The peer keeps what is in its receive buffer, and loses what the
             // closer still had to send it. What the peer still had to send
             // the closer is discarded on Linux, and stays counted in the
-            // peer's send buffer on Darwin.
+            // peer's send buffer on Darwin. Whether the peer's error reads as
+            // `EPIPE` on Linux follows from the FINs (`closeWaiting`).
             let transfer =
                 transfer
                 |> strand peer (ByteQueue.length own.Sending)
@@ -920,43 +1286,26 @@ module internal TcpTransfer =
             [ TcpWake.PeerReset peer ], keepingRules context transfer
         else
             // What the closer had left to send keeps draining as the peer
-            // reads, and the FIN follows it.
-            let passive =
-                match own.Fin with
-                | TcpFin.Arrived _ -> true
-                | TcpFin.NotSent
-                | TcpFin.Queued _ -> false
-
-            let fin =
-                if ByteQueue.length outbound.Sending > 0 then
-                    TcpFin.Queued passive
+            // reads, and the FIN follows it, unless the closer's
+            // `shutdown(SHUT_WR)` made it already.
+            let wakes, transfer =
+                if sendShut closer transfer then
+                    [], transfer
                 else
-                    TcpFin.Arrived passive
+                    makeFin closer transfer
 
-            let transfer =
-                transfer
-                |> withTowards closer closedOwn
-                |> withTowards
-                    peer
-                    { outbound with
-                        Fin = fin
-                    }
-
-            let wakes =
-                match fin with
-                | TcpFin.Arrived _ -> [ TcpWake.PeerFinished peer ]
-                | TcpFin.Queued _
-                | TcpFin.NotSent -> []
-
-            wakes, keepingRules context transfer
+            wakes, keepingRules context (withTowards closer closedOwn transfer)
 
     /// `closer`'s socket closes. With nothing unread, and nothing on its way
-    /// to it, the close is a FIN: the peer reads what was sent, then end of
-    /// file. Otherwise it is a reset, and the peer gets a pending error.
+    /// to it, the close is a FIN, unless `shutdown(SHUT_WR)` made one
+    /// already: the peer reads what was sent, then end of file. Otherwise it
+    /// is a reset, and the peer gets a pending error.
     let close (closer : ConnectionEnd) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
         closeWith "close" false closer transfer
 
-    /// `closer`'s socket closes with a reset whatever is unread, as a close
-    /// under `SO_LINGER` {1, 0} does.
+    /// `closer`'s socket closes under `SO_LINGER` {1, 0}: a reset, unless
+    /// both FINs have arrived, when it is the ordinary close (measured,
+    /// `tcp-shutdown.c` section L). Not to be asked where `abortRefused`
+    /// holds.
     let abort (closer : ConnectionEnd) (transfer : TcpTransfer) : TcpWake list * TcpTransfer =
         closeWith "abort" true closer transfer
