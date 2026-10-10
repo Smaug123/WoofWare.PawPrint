@@ -59,6 +59,25 @@ A client reads a system through `UnixSystem`'s queries, such as `UnixSystem.lead
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
 
+### The client's own operations
+
+Besides the syscalls, a client calls these between them (the system argument is left out, as in the tables under "The syscalls"):
+
+| Operation | Function | Answers |
+| --- | --- | --- |
+| a task, by the client's name for it | `UnixSystem.tasks` | `Map<'Task, UnixTaskState>` |
+| which syscall a task sleeps in | `UnixTaskState.parkedIn (task : UnixTaskState)` | `ParkedSyscall option` |
+| the platform, and its flavour | `UnixSystem.platform` | `SimulatedUnixPlatform` |
+| the time since boot | `UnixSystem.nanosecondsSinceBoot` | `int64` |
+| time passing | `UnixSystem.advanceClock (nanoseconds : int64)` | `UnixSystem` |
+| which sleeping tasks wake | `UnixWait.wakes (asleep : Set<'Task>)` | `('Task * Set<WakePrimitive>) list` |
+| whether one sleeping task could go on | `UnixWait.satisfied (task : 'Task)` | `Set<WakePrimitive> option` |
+| when sleeping calls time out | `UnixWait.deadlines (asleep : Set<'Task>)` | `int64 list` |
+| every way the tables disagree | `UnixSystem.checkInvariants` | `UnixSystemDefect list` |
+
+`SimulatedUnixPlatform.flavour` of a platform is its `SimulatedUnixFlavour`, `SimulatedUnixFlavour.Linux` or `SimulatedUnixFlavour.Darwin`, which decides how a raw number is read.
+In prose, as in the tables, a type's `'Task` and `'Handler` arguments are left out: `EndedProcess` is `EndedProcess<'Task, 'Handler>`.
+
 ## Booting a machine
 
 `UnixSystem.initial` builds the *boot image* of a machine of the given `SimulatedUnixPlatform` that has not done anything yet: a `UnixBootImage`, which no syscall takes.
@@ -418,8 +437,9 @@ These calls have no function, and a client should refuse them rather than guess:
 
 A real kernel copies an argument in from the caller's memory at a point in the call, and what happens before that point is observable: a bad descriptor is `EBADF` whatever the buffer holds.
 So each call that copies bytes in comes as two functions.
-The first, an admission (`UnixReadWrite.admitWrite`, `UnixReadWrite.admitSend`, `UnixReadWrite.admitPWrite`, `UnixSocket.admitSockaddrCopy`, `UnixSocket.admitSetSockOpt`, `UnixSocket.admitGetSockOpt`), changes nothing, and answers either the call's answer (a failure before the copy) or how many bytes to copy.
-The second takes exactly those bytes.
+The first, an admission, answers either the call's answer, reached before the copy, or how many bytes to copy; the second takes exactly those bytes.
+`UnixReadWrite.admitPWrite`, `UnixSocket.admitSockaddrCopy`, `UnixSocket.admitSetSockOpt` and `UnixSocket.admitGetSockOpt` change nothing, and answer no system.
+`UnixReadWrite.admitWrite` and `UnixReadWrite.admitSend` answer a `WriteOutcome`, which carries the system the admission left: a blocking write with no room has parked the task, a write into a broken pipe has raised `SIGPIPE`, and on Darwin a write can move a pipe's timestamps without taking a byte. The client carries on from that system, as from any other call's (see "Moving bytes").
 
 Calls that copy in two pathnames come as phases too, for a client that reads its arguments out of a live process, where reading the second pathname too early is itself observable: `UnixNamespace.renameatSourcePhase` or `UnixNamespace.renameSourcePhase` then `UnixNamespace.renameWithDestination`; `UnixNamespace.linkatSourcePhase` or `UnixNamespace.linkSourcePhase` then `UnixNamespace.linkWithDestination`; `UnixNamespace.symlinkatTargetPhase` or `UnixNamespace.symlinkTargetPhase` then `UnixNamespace.symlinkWithPath`; `UnixNamespace.cloneFileFlagsPhase`, `UnixNamespace.cloneFileSourcePhase` then `UnixNamespace.cloneFileWithDestination`; and `UnixPathResolution.faccessatScreenPhase` or `UnixPathResolution.accessScreenPhase` then `UnixPathResolution.accessWithPath`.
 A client that holds every argument already, such as a replayer, uses the one-shot functions in the tables.
@@ -692,7 +712,7 @@ match pending |> mask 1 |> returnToUser with
 
 ## Threads, and the end of the process
 
-`UnixTaskLifecycle.spawn parent child cpu` starts a task the client names `child`, on processor `cpu`, with a copy of `parent`'s signal mask, and answers its thread ID (`SpawnAnswer.Spawned`).
+`UnixTaskLifecycle.spawn parent child cpu` starts a task the client names `child`, on processor `cpu`, with a copy of `parent`'s signal mask, and answers its thread ID, an `OsThreadId` (`SpawnAnswer.Spawned`).
 `UnixTaskLifecycle.exitThread task status` ends one task, and answers `TaskOutcome.Continues` with the process carrying on, or `TaskOutcome.ProcessEnded` if it was the last.
 It refuses (`ThreadExitRefusal`) a task parked in a syscall, the process's leader while any other task lives, and, on Darwin, the process's last task: a Darwin client ends a process with `exitGroup`, never by its last thread exiting.
 `UnixTaskLifecycle.exitGroup task status` ends every task at once, parked ones included.
@@ -777,7 +797,7 @@ When nothing can run, the client advances the clock to the earlier of its own de
 It answers which tasks could run (not parked in the kernel; the client subtracts its own blocked threads), and records what the client says happened.
 Choosing is policy, and a client that explores schedules, or a harness that steers one from outside, must own it; the kernel keeps only the facts a choice is made from.
 
-**Where they meet.** `UnixSystem.tasks` lists the process's tasks, and `UnixTaskState.park` says which are parked in a syscall.
+**Where they meet.** `UnixSystem.tasks` lists the process's tasks, and `UnixTaskState.parkedIn` says which are parked in a syscall.
 The client keeps the set of tasks it holds asleep and passes it to `UnixWait.wakes`, which says which may wake now; it decides when a woken task finishes its call.
 Which processor a task belongs on is the client's policy too.
 The client reports each task it runs with `UnixScheduling.dispatch task cpu`: "task T is now running on processor c".

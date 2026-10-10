@@ -319,7 +319,7 @@ module TestReadme =
         |> List.distinct
         |> shouldEqual []
 
-    /// Each row of every table whose columns are `Call | Function | Answers`:
+    /// Each row of every table whose last two columns are `Function | Answers`:
     /// its function cell and its answer cell, both without their backticks.
     let private answerRows (text : string) : (string * string) list =
         let cells (line : string) : string list =
@@ -338,7 +338,7 @@ module TestReadme =
             for i in 0 .. lines.Length - 3 do
                 if
                     lines.[i].StartsWith "|"
-                    && cells lines.[i] = [ "Call" ; "Function" ; "Answers" ]
+                    && List.tail (cells lines.[i]) = [ "Function" ; "Answers" ]
                 then
                     let mutable j = i + 2
 
