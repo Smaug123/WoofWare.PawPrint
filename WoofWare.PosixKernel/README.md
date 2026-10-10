@@ -146,6 +146,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixEntropy` | `getrandom`, `getentropy` |
 | `UnixCredentials` | `getresuid`, `getresgid`, `setresuid`, `setresgid`, `setgroups` |
 | `UnixTaskLifecycle` | starting a thread, a thread exiting, `exit_group` |
+| `UnixScheduling` | `getcpu`, and the client's report of which task it runs on which processor |
 | `UnixSystem` | `getpid`, `umask` |
 
 A connected TCP socket's `read` and `write` move bytes through its connection (`TcpConnection.Transfer`), which holds each direction's bytes in the sender's send buffer and the receiver's receive buffer, sized from the machine's TCP sysctls, and each end's state: open, a FIN received, reset, or closed. A close over bytes left unread resets the peer; otherwise it sends a FIN behind what it had sent. `poll`, epoll and kqueue read a connected socket's readiness from the same state, and each transfer wakes the waiters each flavour wakes: every arrival of bytes, and room freed in a send buffer (on Linux once after a write ran out of room, when the buffer has drained to two thirds full; on Darwin as bytes leave it). `FIONREAD` reports what waits to be read, and `SO_ERROR` takes a reset's error. A blocking read with nothing to answer sleeps until bytes, a FIN or a reset arrive; a blocking write takes what fits and sleeps for the rest, woken on Linux once its send buffer has drained to two thirds full and on Darwin once there is room for it to take something, and it returns once every byte is taken. Every task asleep on a socket wakes for what it waits on.
@@ -241,9 +242,17 @@ Choosing is policy, and a client that explores schedules, or a harness that stee
 
 **Where they meet.** `UnixSystem.tasks` lists the process's tasks, and `UnixTaskState.park` says which are parked in a syscall.
 The client keeps the set of tasks it holds asleep and passes it to `UnixWait.wakes`, which says which may wake now; it decides when a woken task finishes its call.
-A task's processor is named when the task is created (`ProcessLaunch.create`, `UnixTaskLifecycle.spawn`), and `UnixTaskState.cpu` reports it, for a task found in `UnixSystem.tasks`.
-Not built yet: recording the client's reports of a dispatch ("task T is now running on processor c") and of the processor time a task used, and a default policy (round-robin, and PCT, probabilistic concurrency testing) as a module that knows nothing of the kernel.
-All three are planned in #1726.
+Which processor a task belongs on is the client's policy too.
+The client reports each task it runs with `UnixScheduling.dispatch task cpu`: "task T is now running on processor c".
+The kernel keeps what Linux keeps.
+Each task has a processor, the one it last ran on, or before it first runs, the one its creator named (`ProcessLaunch.create`, `UnixTaskLifecycle.spawn`); `UnixTaskState.cpu` reports it, for a task found in `UnixSystem.tasks`.
+Each processor runs at most one task, so a dispatch displaces whichever task the processor ran before, whatever process it belongs to; that task keeps the processor as its own, as a preempted task does.
+A task stops running when it parks in a syscall, and when it exits or its process ends; a parked task may still be dispatched, which is how a woken task gets back onto a processor to finish its call.
+`UnixScheduling.runningOn` says where a task is running, and `UnixScheduling.getcpu` answers only for a running task, failing loudly for any other: a task making a syscall is running, so a client whose records say otherwise has a bug.
+Nothing else requires its caller to have been dispatched, so a client that never reads placement need never report it.
+Every processor named must be one the machine has (`UnixSystem.processorCount`).
+Not built yet: recording the processor time a task used, and a default policy (round-robin, and PCT, probabilistic concurrency testing) as a module that knows nothing of the kernel.
+Both are planned in #1726.
 
 ### When time passes
 
