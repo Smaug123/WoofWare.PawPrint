@@ -37,3 +37,12 @@ module internal ForgedConnection =
                             system.Machine.Connections
                 }
         }
+
+    /// `connection` as an accept queue holds it, completed on a listener whose
+    /// options were all as `socket(2)` leaves them.
+    let queued (connection : ConnectionId) : QueuedConnection =
+        {
+            Connection = connection
+            ReuseAddress = false
+            Options = SocketOptions.initial
+        }

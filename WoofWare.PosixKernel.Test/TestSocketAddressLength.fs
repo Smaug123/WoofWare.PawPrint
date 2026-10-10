@@ -103,7 +103,7 @@ module TestSocketAddressLength =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
             match (UnixMachineState.socket socketId system.Machine).Phase with
-            | SocketPhase.Listening listenState -> listenState.Queue
+            | SocketPhase.Listening listenState -> ListenState.connections listenState
             | phase -> failwith $"fd %d{fd} is %A{phase}, not listening"
         | other -> failwith $"fd %d{fd} names %A{other}, not a socket"
 

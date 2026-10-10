@@ -528,7 +528,7 @@ module TestEpollCtl =
                     (SocketPhase.Listening
                         {
                             Backlog = 8
-                            Queue = [ queued ]
+                            Queue = [ ForgedConnection.queued queued ]
                             Drained = false
                         }),
                 0x0041u

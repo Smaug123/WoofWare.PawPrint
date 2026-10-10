@@ -346,8 +346,7 @@ module TestSockOptAgainstHost =
         match refusal with
         | SocketOptionRefusal.NegativeLingerTime _ -> true
         | SocketOptionRefusal.UnmodelledOption _
-        | SocketOptionRefusal.Buffer _
-        | SocketOptionRefusal.ListenerWithQueuedConnections _ -> false
+        | SocketOptionRefusal.Buffer _ -> false
 
     [<Test>]
     let ``a sequence of setsockopt calls answers and reads back as this kernel does`` () : unit =
