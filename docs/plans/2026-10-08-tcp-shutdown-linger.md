@@ -826,6 +826,14 @@ been rebased onto main (with #1790).
    - `sourcesImpure` guests under both flavours, and then the Kestrel
      `StopAsync` and `HttpClient` disposal path between two processes.
 
+   The first part is done: `SystemNative_Shutdown` converts the PAL's
+   `SocketShutdown` in `SocketShutdownPal` (EINVAL for any other value,
+   before the descriptor, as `Common_Shutdown` does) and calls
+   `UnixConnection.shutdown`; `SystemNative_Disconnect` is refused by name;
+   and `sourcesImpure/SocketShutdown.cs` runs under both flavours,
+   differential on a host of the same flavour, asserting only what both
+   flavours' runtimes agree on.
+
 Stages 1 and 2 need nothing from 3, and either can go first. Stage 6 can merge
 with stage 4 if small.
 

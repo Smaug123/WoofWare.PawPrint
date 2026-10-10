@@ -5729,6 +5729,73 @@ module NativeSystemNative =
             state.MapKernel (EmulatedKernel.withUnix unix)
             |> writeBytesThrough ctx operation errorCell (ImmutableArray.CreateRange bytes)
             |> complete UnixErrorPal.palSuccess
+        // `int32_t SystemNative_Shutdown(intptr_t socket, int32_t
+        // socketShutdown)` (pal_networking.c), which is `Common_Shutdown`
+        // (pal_networking_common.h):
+        //
+        //     switch (socketShutdown) { case SocketShutdown_SHUT_READ: how = SHUT_RD; ...
+        //                               default: return Error_EINVAL; }
+        //     int err = shutdown(fd, how);
+        //     return err == 0 ? Error_SUCCESS : ConvertErrorPlatformToPal(errno);
+        //
+        // so the conversion's EINVAL precedes even the descriptor, and makes no
+        // call (`SocketShutdownPal`). The argument is CoreLib's `SocketShutdown`
+        // enum, matched with a wildcard as `SystemNative_Receive`'s flags are.
+        //
+        // CoreLib reaches this from `Socket.Shutdown`, which ignores ENOTCONN
+        // on a socket that was connected, and so from `NetworkStream`'s and
+        // Kestrel's disposal of a connection.
+        | Some "SystemNative_Shutdown",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_Shutdown"
+            let palHow = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match SocketShutdownPal.toPlatform palHow with
+            | None -> complete (UnixErrorPal.toPal UnixError.EINVAL) state
+            | Some how ->
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            match UnixConnection.shutdown fd how state.Kernel.System with
+            | Error refusal ->
+                // The library says why no kernel answer exists; PawPrint says how
+                // a guest could be holding such a socket.
+                let reachedBy =
+                    match refusal with
+                    | ShutdownRefusal.Listener _ ->
+                        " A managed guest reaches this by calling Socket.Shutdown on a listening Socket."
+                    | ShutdownRefusal.LinuxUnconnected _ ->
+                        " A managed guest reaches this by calling Socket.Shutdown on a Socket that never connected, which a real Linux kernel answers ENOTCONN to while leaving the socket changed."
+                    | ShutdownRefusal.ConnectedDatagram _ ->
+                        " A managed guest reaches this by calling Socket.Shutdown on a UDP Socket after Connect."
+                    | ShutdownRefusal.UnmodelledDomain (_, SocketDomain.Unix) ->
+                        " That belongs with the filesystem work (issue #956), not here."
+                    | ShutdownRefusal.UnmodelledDomain (_, (SocketDomain.Inet | SocketDomain.Inet6)) ->
+                        failwith
+                            $"%s{operation}: the library refused an internet socket's domain, which it shuts down or refuses otherwise. This is an interpreter bug."
+                    | ShutdownRefusal.UnmeasuredKind _
+                    | ShutdownRefusal.ReceiveShutBeforeUnsentBytes _ -> ""
+
+                failwith $"%s{operation}: fd %d{fd}: %s{ShutdownRefusal.describe refusal}%s{reachedBy}"
+            | Ok (ShutdownAnswer.Shut, system) -> withAnswered system state |> complete UnixErrorPal.palSuccess
+            | Ok (ShutdownAnswer.Failed error, system) ->
+                withErrno ctx error system state |> complete (UnixErrorPal.toPal error)
+        // `int32_t SystemNative_Disconnect(intptr_t socket)` (pal_networking.c):
+        // Linux's `connect(AF_UNSPEC)`, an abortive close, falling back to
+        // `shutdown(SHUT_RDWR)`; Darwin's `disconnectx`, a FIN, falling back
+        // likewise. Refused by name: neither is modelled, and CoreLib calls it
+        // only from `SafeSocketHandle.TryUnblockSocket`, when a close races a
+        // synchronous call that holds the socket.
+        | Some "SystemNative_Disconnect", _, _ ->
+            failwith
+                "SystemNative_Disconnect: not modelled. The shim disconnects a socket with Linux's connect(AF_UNSPEC), which resets a TCP connection, or with Darwin's disconnectx, which sends a FIN, each falling back to shutdown(SHUT_RDWR); this kernel models neither the reset of an open socket nor disconnectx. CoreLib calls it only from SafeSocketHandle.TryUnblockSocket, when a Socket is closed while a synchronous call on another thread still holds it."
         // `int32_t SystemNative_Receive(intptr_t socket, void* buffer, int32_t
         // bufferLen, int32_t flags, int32_t* received)` (pal_networking.c):
         //

@@ -154,6 +154,7 @@
     <Compile Include="Native\PollEventsPal.fs" />
     <Compile Include="Native\SocketArgumentsPal.fs" />
     <Compile Include="Native\SocketFlagsPal.fs" />
+    <Compile Include="Native\SocketShutdownPal.fs" />
     <Compile Include="Native\PosixSignalPal.fs" />
     <Compile Include="Native\KillSignalPal.fs" />
     <Compile Include="Native\FileAdvicePal.fs" />
