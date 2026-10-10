@@ -412,15 +412,16 @@ type UnixSystemDefect<'Task> =
     /// them in, where a sleeping write has put in at least none and fewer than
     /// all.
     | ParkedPipeTransferProgress of task : 'Task * count : int * written : int
-    /// A task is asleep in a `read` or `write` of a connected socket through a
-    /// description that names something other than an end of a connection,
+    /// A task is asleep in a `read`, `recv`, `write` or `send` of a connected
+    /// socket through a description that names something other than an end
+    /// of a connection,
     /// which no such call could have produced and on which
     /// `UnixWait.wakes` crashes.
     | ParkedConnectionTransferOnNonConnection of task : 'Task * description : OpenFileDescriptionId
     /// A task is asleep in a connection transfer whose progress no call could
-    /// have made: a read of nothing, or a write of `count` bytes with
-    /// `written` of them taken, where a sleeping write has taken at least none
-    /// and fewer than all.
+    /// have made: a read of nothing but a Linux `recv`, or a write of `count`
+    /// bytes with `written` of them taken, where a sleeping write has taken at
+    /// least none and fewer than all.
     | ParkedConnectionTransferProgress of task : 'Task * count : int * written : int
     /// A task's park records an ordinal at or above the next one to mint, so
     /// some future park would repeat it, and the two waiters' order would be
@@ -2463,8 +2464,16 @@ module UnixSystem =
 
                     progress @ target
                 | Some (ParkedSyscall.ConnectionRead read) ->
+                    // Only a Linux `recv` sleeps asking for nothing.
+                    let mayAskNothing =
+                        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, read.Call with
+                        | SimulatedUnixFlavour.Linux, TcpReceiveCall.Receive
+                        | SimulatedUnixFlavour.Linux, TcpReceiveCall.Peek -> true
+                        | SimulatedUnixFlavour.Linux, TcpReceiveCall.Read
+                        | SimulatedUnixFlavour.Darwin, _ -> false
+
                     let progress =
-                        if read.Count > 0 then
+                        if read.Count > 0 || (read.Count = 0 && mayAskNothing) then
                             []
                         else
                             [ UnixSystemDefect.ParkedConnectionTransferProgress (task, read.Count, 0) ]

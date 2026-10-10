@@ -14,11 +14,13 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestSocketTable =
 
-    // The soundness walk's coverage counters are sums over the whole run, so
-    // their spread relative to the mean shrinks as the case count grows. Over 40
-    // sampled runs the rarest of them ranged 18-47 at 500 cases — a threshold
-    // anywhere in that band is a coin toss — and 111-169 at 2000. Every
-    // threshold below is set at about half the minimum of 40 runs at this count.
+    // The soundness walk's coverage floors are counted over a fixed sample of
+    // this many walks, so a run cannot miss one by chance. They are sums over
+    // the sample, whose spread relative to the mean shrinks as the case count
+    // grows: over 40 sampled runs the rarest of them ranged 18-47 at 500 cases
+    // and 111-169 at 2000. Every floor is set at about half the minimum of 40
+    // runs at this count, so a generator change that reshuffles the sample
+    // keeps meeting it.
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
 
     /// The soundness walk's only input is a seed for its own `System.Random`, so
@@ -303,6 +305,20 @@ module TestSocketTable =
 
         Map.ofList ((name "top", chain) :: files)
 
+    /// What the random mix of allocations, closes and unlinks must reach.
+    [<RequireQualifiedAccess>]
+    type private LifetimeMixLabel =
+        | Socket
+        /// A close of a descriptor that named a socket.
+        | SocketClose
+        | Dup
+        | Unlink
+        /// An unlink after which the filesystem held fewer inodes.
+        | Reap
+        /// An unlink of a directory's last name, after which the directory
+        /// survived because something holds it.
+        | HeldOrphanDirectory
+
     /// The allocating and closing operations interleaved at random must leave
     /// *all three* tables sound. This is what connects the hand-forged defects
     /// above to the code paths that maintain them: a `close` that forgot the
@@ -319,14 +335,7 @@ module TestSocketTable =
     /// descriptor can go.
     [<Test>]
     let ``a random mix of allocations and closes keeps both tables sound`` () : unit =
-        let mutable observedSockets = 0
-        let mutable observedHeldOrphanDirectories = 0
-        let mutable observedSocketCloses = 0
-        let mutable observedDups = 0
-        let mutable observedUnlinks = 0
-        let mutable observedReaps = 0
-
-        let property (seed : int) : unit =
+        let property (cover : LifetimeMixLabel -> unit) (seed : int) : unit =
             let rng = System.Random (seed)
             let steps = rng.Next (1, 30)
 
@@ -377,7 +386,7 @@ module TestSocketTable =
                         kernel <- kernel'
 
                         if wasSocket then
-                            observedSocketCloses <- observedSocketCloses + 1
+                            cover LifetimeMixLabel.SocketClose
                     | Error e -> failwith $"unexpected close error: %O{e}"
                 | 2
                 | 3 ->
@@ -387,7 +396,7 @@ module TestSocketTable =
                     | Ok (_, registry) ->
                         kernel <- UnixSystemState.withFileDescriptors registry kernel
 
-                        observedDups <- observedDups + 1
+                        cover LifetimeMixLabel.Dup
                     | Error e -> failwith $"unexpected dup error: %O{e}"
                 | 4
                 | 5 ->
@@ -482,17 +491,16 @@ module TestSocketTable =
                                 }
                                 |> ObjectLifetime.forgetIfUnheld inode
 
-                            observedUnlinks <- observedUnlinks + 1
+                            cover LifetimeMixLabel.Unlink
 
                             if (VirtualFileSystem.inodes kernel.Machine.FileSystem |> Map.count) < before then
-                                observedReaps <- observedReaps + 1
+                                cover LifetimeMixLabel.Reap
 
                             // The inode survived the loss of its last name, and
                             // it is a directory — so something is holding an
                             // orphan whose ".." must not dangle.
                             match VirtualFileSystem.tryGetContent inode kernel.Machine.FileSystem with
-                            | Some (InodeContent.Directory _) ->
-                                observedHeldOrphanDirectories <- observedHeldOrphanDirectories + 1
+                            | Some (InodeContent.Directory _) -> cover LifetimeMixLabel.HeldOrphanDirectory
                             | Some (InodeContent.RegularFile _)
                             | Some (InodeContent.CharacterDevice _)
                             | Some (InodeContent.Symlink _)
@@ -521,7 +529,7 @@ module TestSocketTable =
                     let _, kernel' = NewSocket.create domain kind SocketProtocol.Default kernel
 
                     kernel <- kernel'
-                    observedSockets <- observedSockets + 1
+                    cover LifetimeMixLabel.Socket
 
                 UnixSystem.checkInvariants kernel |> shouldEqual []
 
@@ -531,21 +539,23 @@ module TestSocketTable =
                 VirtualFileSystem.checkInvariants (ObjectLifetime.pinnedInodes kernel) kernel.Machine.FileSystem
                 |> shouldEqual []
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genWalkSeed) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genWalkSeed) property
 
-        // Without these the run could be sound while never having exercised the
-        // operations the clauses are about — a close that never fell on a socket
-        // would leave the `UnreferencedSocket` clause untouched throughout.
-        observedSockets |> shouldBeGreaterThan 2500
-        observedSocketCloses |> shouldBeGreaterThan 500
-        observedDups |> shouldBeGreaterThan 2500
-        observedUnlinks |> shouldBeGreaterThan 1400
+        // Without these the fixed sample could be sound while never having
+        // exercised the operations the clauses are about — a close that never
+        // fell on a socket would leave the `UnreferencedSocket` clause untouched
+        // throughout.
+        coverage.Count LifetimeMixLabel.Socket |> shouldBeGreaterThan 2500
+        coverage.Count LifetimeMixLabel.SocketClose |> shouldBeGreaterThan 500
+        coverage.Count LifetimeMixLabel.Dup |> shouldBeGreaterThan 2500
+        coverage.Count LifetimeMixLabel.Unlink |> shouldBeGreaterThan 1400
 
         // ...and a reap really happened, so the `DanglingOpenInode` and
         // `UnreachableFromRoot` clauses had something to be wrong about. An
         // unlink whose inode is still held reaps nothing, and a run of only
         // those would leave both clauses untouched.
-        observedReaps |> shouldBeGreaterThan 1100
+        coverage.Count LifetimeMixLabel.Reap |> shouldBeGreaterThan 1100
 
         // ...and specifically that a *directory* outlived its last name. Without
         // this the run could be sound while never producing an orphaned
@@ -565,7 +575,7 @@ module TestSocketTable =
         // cascade is pinned deterministically by
         // `TestInodeLifetime`'s `an orphan held by a descriptor
         // keeps its ancestors alive` and `the cascade stops at the root`.
-        observedHeldOrphanDirectories |> shouldBeGreaterThan 50
+        coverage.Count LifetimeMixLabel.HeldOrphanDirectory |> shouldBeGreaterThan 50
 
     // --- socketReadinessLevel ---
 

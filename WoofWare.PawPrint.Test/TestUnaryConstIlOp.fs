@@ -9,6 +9,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -192,22 +193,24 @@ module TestUnaryConstIlOp =
         | SignedBranchKind.Blt -> case.Value1 < case.Value2
         | SignedBranchKind.Bgt -> case.Value1 > case.Value2
 
+    [<RequireQualifiedAccess>]
+    type private BranchOutcome =
+        | Taken
+        | NotTaken
+
     [<Test>]
     let ``Blt and Bgt branch relative to next instruction iff signed comparison holds`` () : unit =
-        let mutable bltTaken = 0
-        let mutable bltNotTaken = 0
-        let mutable bgtTaken = 0
-        let mutable bgtNotTaken = 0
-
-        let property (case : SignedBranchCase) : unit =
+        let property (cover : SignedBranchKind * BranchOutcome -> unit) (case : SignedBranchCase) : unit =
             let op = opOfCase case
             let taken = isTaken case
 
-            match case.Kind, taken with
-            | SignedBranchKind.Blt, true -> bltTaken <- bltTaken + 1
-            | SignedBranchKind.Blt, false -> bltNotTaken <- bltNotTaken + 1
-            | SignedBranchKind.Bgt, true -> bgtTaken <- bgtTaken + 1
-            | SignedBranchKind.Bgt, false -> bgtNotTaken <- bgtNotTaken + 1
+            cover (
+                case.Kind,
+                (if taken then
+                     BranchOutcome.Taken
+                 else
+                     BranchOutcome.NotTaken)
+            )
 
             let _, loggerFactory = LoggerFactory.makeTest ()
             use _loggerFactoryResource = loggerFactory
@@ -226,7 +229,13 @@ module TestUnaryConstIlOp =
             methodState.IlOpIndex |> shouldEqual expectedPc
             methodState.EvaluationStack.Values |> shouldEqual []
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genSignedBranchCase) property)
+        let coverage =
+            CoverageSample.check propertyConfig (Arb.fromGen genSignedBranchCase) property
+
+        let bltTaken = coverage.Count (SignedBranchKind.Blt, BranchOutcome.Taken)
+        let bltNotTaken = coverage.Count (SignedBranchKind.Blt, BranchOutcome.NotTaken)
+        let bgtTaken = coverage.Count (SignedBranchKind.Bgt, BranchOutcome.Taken)
+        let bgtNotTaken = coverage.Count (SignedBranchKind.Bgt, BranchOutcome.NotTaken)
 
         if bltTaken = 0 || bltNotTaken = 0 || bgtTaken = 0 || bgtNotTaken = 0 then
             failwith

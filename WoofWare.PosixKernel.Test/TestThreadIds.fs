@@ -624,24 +624,23 @@ module TestThreadIds =
             else
                 Expected.Issued (next, Model.Darwin (next + 1UL))
 
-    /// Coverage of the paths the property exists for, so that a generator change
-    /// which stops reaching one is noticed.
-    type private Coverage =
-        {
-            mutable Spawned : int
-            mutable Wraps : int
-            mutable SkippedLive : int
-            mutable Exhausted : int
-            /// Spawns refused because Darwin's counter is at the top.
-            mutable CounterAtTop : int
-            mutable Exits : int
-            mutable Groups : int
-            /// `pid_max` writes at or below a live id.
-            mutable LoweredBeneathLive : int
-            /// Linux machines that boot with a process ID at or above the pid_max
-            /// then written.
-            mutable BootedAbove : int
-        }
+    /// The paths the property exists for, so that a generator change which
+    /// stops reaching one is noticed.
+    [<RequireQualifiedAccess>]
+    type private ThreadIdLabel =
+        | Spawned
+        | Wraps
+        | SkippedLive
+        | Exhausted
+        /// Spawns refused because Darwin's counter is at the top.
+        | CounterAtTop
+        | Exits
+        | Groups
+        /// `pid_max` writes at or below a live id.
+        | LoweredBeneathLive
+        /// Linux machines that boot with a process ID at or above the pid_max
+        /// then written.
+        | BootedAbove
 
     let private setupGen (flavour : SimulatedUnixFlavour) : Gen<Setup> =
         match flavour with
@@ -694,12 +693,12 @@ module TestThreadIds =
             Gen.frequency ((1, pidMax) :: common)
         | SimulatedUnixFlavour.Darwin -> Gen.frequency common
 
-    let private runModel (coverage : Coverage) (setup : Setup) (ops : Op list) : unit =
+    let private runModel (cover : ThreadIdLabel -> unit) (setup : Setup) (ops : Op list) : unit =
         let system, model =
             match setup with
             | Setup.Linux (pidValue, pidMax) ->
                 if pidValue >= pidMax then
-                    coverage.BootedAbove <- coverage.BootedAbove + 1
+                    cover ThreadIdLabel.BootedAbove
 
                 linuxImage
                 |> Launched.processId (pid pidValue)
@@ -755,12 +754,12 @@ module TestThreadIds =
                     error |> shouldEqual UnixError.EAGAIN
                     // A failed creation hands out no thread ID and adds no task.
                     after |> shouldEqual system
-                    coverage.Exhausted <- coverage.Exhausted + 1
+                    cover ThreadIdLabel.Exhausted
                     system, model, nextName + 1, minted, last
                 | Expected.CounterAtTop, Error refusal ->
                     refusal |> shouldEqual SpawnRefusal.ThreadIdCounterExhausted
                     // A refusal carries no system, so the run goes on from this one.
-                    coverage.CounterAtTop <- coverage.CounterAtTop + 1
+                    cover ThreadIdLabel.CounterAtTop
                     system, model, nextName + 1, minted, last
                 | Expected.Issued (expected, model), Ok (SpawnAnswer.Spawned id, after) ->
                     let id = OsThreadId.toUInt64 id
@@ -772,7 +771,7 @@ module TestThreadIds =
                     // 300 and passes over only live ids; between wraps, no id is
                     // handed out twice.
                     if id <= last then
-                        coverage.Wraps <- coverage.Wraps + 1
+                        cover ThreadIdLabel.Wraps
                         (id >= 300UL) |> shouldEqual true
 
                         for skipped in 300UL .. id - 1UL do
@@ -783,9 +782,9 @@ module TestThreadIds =
                     // Every id between the last one and this was passed over for
                     // being live: from the last one up, or from 300 after a wrap.
                     if id > last + 1UL || (id <= last && id > 300UL) then
-                        coverage.SkippedLive <- coverage.SkippedLive + 1
+                        cover ThreadIdLabel.SkippedLive
 
-                    coverage.Spawned <- coverage.Spawned + 1
+                    cover ThreadIdLabel.Spawned
                     check after
                     let minted = if id <= last then Set.singleton id else Set.add id minted
                     after, model, nextName + 1, minted, id
@@ -796,7 +795,7 @@ module TestThreadIds =
                 | others ->
                     let task = others.[index % others.Length]
                     let after = exitOrFail task system
-                    coverage.Exits <- coverage.Exits + 1
+                    cover ThreadIdLabel.Exits
                     check after
                     after, model, nextName, minted, last
             | Op.ExitGroup index ->
@@ -815,7 +814,7 @@ module TestThreadIds =
                 }
                 |> shouldEqual system.Machine
 
-                coverage.Groups <- coverage.Groups + 1
+                cover ThreadIdLabel.Groups
                 system, model, nextName, minted, last
             | Op.WritePidMax pidMax ->
                 let model =
@@ -824,7 +823,7 @@ module TestThreadIds =
                     | Model.Darwin _ -> failwith "the generator writes pid_max only on Linux"
 
                 if liveIds system |> Set.exists (fun id -> id >= uint64 pidMax) then
-                    coverage.LoweredBeneathLive <- coverage.LoweredBeneathLive + 1
+                    cover ThreadIdLabel.LoweredBeneathLive
 
                 let after = UnixSystem.writePidMaxSysctl "test" pidMax system
 
@@ -855,47 +854,36 @@ module TestThreadIds =
         (flavour : SimulatedUnixFlavour)
         : unit
         =
-        let coverage =
-            {
-                Spawned = 0
-                Wraps = 0
-                SkippedLive = 0
-                Exhausted = 0
-                CounterAtTop = 0
-                Exits = 0
-                Groups = 0
-                LoweredBeneathLive = 0
-                BootedAbove = 0
-            }
-
         let ops =
             gen {
                 let! length = Gen.choose (0, 400)
                 return! Gen.listOfLength length (opGen flavour)
             }
 
-        let property =
-            Prop.forAll (Arb.fromGen (Gen.zip (setupGen flavour) ops))
-            <| fun (setup, ops) -> runModel coverage setup ops
+        // Counted over the fixed sample, as are the other flavour's zeroes,
+        // which are claims about the model rather than about the generator.
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 200)
+                (Arb.fromGen (Gen.zip (setupGen flavour) ops))
+                (fun cover (setup, ops) -> runModel cover setup ops)
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 200, property)
-
-        coverage.Spawned |> shouldBeGreaterThan 1000
-        coverage.Exits |> shouldBeGreaterThan 1000
-        coverage.Groups |> shouldBeGreaterThan 100
+        coverage.Count ThreadIdLabel.Spawned |> shouldBeGreaterThan 1000
+        coverage.Count ThreadIdLabel.Exits |> shouldBeGreaterThan 1000
+        coverage.Count ThreadIdLabel.Groups |> shouldBeGreaterThan 100
 
         match flavour with
         | SimulatedUnixFlavour.Linux ->
-            coverage.Wraps |> shouldBeGreaterThan 50
-            coverage.SkippedLive |> shouldBeGreaterThan 50
-            coverage.Exhausted |> shouldBeGreaterThan 20
-            coverage.CounterAtTop |> shouldEqual 0
-            coverage.LoweredBeneathLive |> shouldBeGreaterThan 100
-            coverage.BootedAbove |> shouldBeGreaterThan 10
+            coverage.Count ThreadIdLabel.Wraps |> shouldBeGreaterThan 50
+            coverage.Count ThreadIdLabel.SkippedLive |> shouldBeGreaterThan 50
+            coverage.Count ThreadIdLabel.Exhausted |> shouldBeGreaterThan 20
+            coverage.Count ThreadIdLabel.CounterAtTop |> shouldEqual 0
+            coverage.Count ThreadIdLabel.LoweredBeneathLive |> shouldBeGreaterThan 100
+            coverage.Count ThreadIdLabel.BootedAbove |> shouldBeGreaterThan 10
         | SimulatedUnixFlavour.Darwin ->
-            coverage.Wraps |> shouldEqual 0
-            coverage.SkippedLive |> shouldEqual 0
-            coverage.Exhausted |> shouldEqual 0
-            coverage.CounterAtTop |> shouldBeGreaterThan 20
-            coverage.LoweredBeneathLive |> shouldEqual 0
-            coverage.BootedAbove |> shouldEqual 0
+            coverage.Count ThreadIdLabel.Wraps |> shouldEqual 0
+            coverage.Count ThreadIdLabel.SkippedLive |> shouldEqual 0
+            coverage.Count ThreadIdLabel.Exhausted |> shouldEqual 0
+            coverage.Count ThreadIdLabel.CounterAtTop |> shouldBeGreaterThan 20
+            coverage.Count ThreadIdLabel.LoweredBeneathLive |> shouldEqual 0
+            coverage.Count ThreadIdLabel.BootedAbove |> shouldEqual 0

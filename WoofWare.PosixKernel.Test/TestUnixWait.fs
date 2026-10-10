@@ -134,59 +134,64 @@ module TestUnixWait =
             else
                 withTask task system
 
+    /// The parks a walk must make.
+    [<RequireQualifiedAccess>]
+    type private ParkLabel =
+        /// A park by a task already parked.
+        | Repark
+
     [<Test>]
     let ``park order is strictly increasing, and survives unrelated changes`` () : unit =
-        let mutable reparks = 0
+        let property (cover : ParkLabel -> unit) (ops : Op list) : unit =
+            ((system, None), ops)
+            ||> List.fold (fun (before, lastMinted : ParkOrdinal option) op ->
+                let after = apply op before
 
-        let property =
-            Prop.forAll (Arb.fromGen (Gen.listOf opGen))
-            <| fun ops ->
-                ((system, None), ops)
-                ||> List.fold (fun (before, lastMinted : ParkOrdinal option) op ->
-                    let after = apply op before
-
-                    let subject =
-                        match op with
-                        | Op.Park task
-                        | Op.Unpark task -> Some task
-                        | Op.AdvanceClock _
-                        | Op.CreateEpoll
-                        | Op.Register _ -> None
-
-                    // Every other task keeps its park, ordinal and all.
-                    for task in Map.keys before.Tasks do
-                        if Some task <> subject then
-                            UnixTaskTable.parkOf task after.Tasks
-                            |> shouldEqual (UnixTaskTable.parkOf task before.Tasks)
-
-                    UnixSystem.checkInvariants after |> shouldEqual []
-
+                let subject =
                     match op with
-                    | Op.Park task ->
-                        if (UnixTaskTable.parkOf task before.Tasks).IsSome then
-                            reparks <- reparks + 1
-
-                        match UnixTaskTable.parkOf task after.Tasks with
-                        | None -> failwith "expected the park to be recorded"
-                        | Some park ->
-                            park.Syscall |> shouldEqual (parkOfTask task)
-
-                            match lastMinted with
-                            | Some last -> park.Ordinal |> shouldBeGreaterThan last
-                            | None -> ()
-
-                            after, Some park.Ordinal
-                    | Op.Unpark task ->
-                        UnixTaskTable.parkOf task after.Tasks |> shouldEqual None
-                        after, lastMinted
+                    | Op.Park task
+                    | Op.Unpark task -> Some task
                     | Op.AdvanceClock _
                     | Op.CreateEpoll
-                    | Op.Register _ -> after, lastMinted
-                )
-                |> ignore
+                    | Op.Register _ -> None
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, property)
-        reparks |> shouldBeGreaterThan 50
+                // Every other task keeps its park, ordinal and all.
+                for task in Map.keys before.Tasks do
+                    if Some task <> subject then
+                        UnixTaskTable.parkOf task after.Tasks
+                        |> shouldEqual (UnixTaskTable.parkOf task before.Tasks)
+
+                UnixSystem.checkInvariants after |> shouldEqual []
+
+                match op with
+                | Op.Park task ->
+                    if (UnixTaskTable.parkOf task before.Tasks).IsSome then
+                        cover ParkLabel.Repark
+
+                    match UnixTaskTable.parkOf task after.Tasks with
+                    | None -> failwith "expected the park to be recorded"
+                    | Some park ->
+                        park.Syscall |> shouldEqual (parkOfTask task)
+
+                        match lastMinted with
+                        | Some last -> park.Ordinal |> shouldBeGreaterThan last
+                        | None -> ()
+
+                        after, Some park.Ordinal
+                | Op.Unpark task ->
+                    UnixTaskTable.parkOf task after.Tasks |> shouldEqual None
+                    after, lastMinted
+                | Op.AdvanceClock _
+                | Op.CreateEpoll
+                | Op.Register _ -> after, lastMinted
+            )
+            |> ignore
+
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 300) (Arb.fromGen (Gen.listOf opGen)) property
+
+        // Counted over the fixed sample.
+        coverage.Count ParkLabel.Repark |> shouldBeGreaterThan 50
 
     [<Test>]
     let ``a released lock wakes every waiter, in the order they parked`` () : unit =

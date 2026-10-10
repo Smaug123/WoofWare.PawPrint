@@ -122,28 +122,33 @@ module TestSimulatedMachine =
                 // Outside what the kernel models, so the step changes nothing.
                 | Error _ -> system
 
+    /// What a walk's process ended holding.
+    [<RequireQualifiedAccess>]
+    type private HeldLabel =
+        | Connection
+        /// A pipe the process made, beyond its standard streams'.
+        | Pipe
+        /// A description that two or more descriptors name.
+        | DuplicatedDescriptor
+
     [<Test>]
     let ``a machine made from a system focuses back to that system, unfocuses it, and checks clean`` () : unit =
         // Runs whose process ended holding a connection, a pipe it made, and a
         // duplicated descriptor: the walk must reach each.
-        let mutable connected = 0
-        let mutable piped = 0
-        let mutable duplicated = 0
-
-        let property (platform : SimulatedUnixPlatform) (ops : Op list) : unit =
+        let property (cover : HeldLabel -> unit) (platform : SimulatedUnixPlatform, ops : Op list) : unit =
             let system = List.fold apply (world platform) ops
 
             if not system.Machine.Connections.IsEmpty then
-                connected <- connected + 1
+                cover HeldLabel.Connection
 
             if system.Machine.Pipes.Count > 3 then
-                piped <- piped + 1
+                cover HeldLabel.Pipe
 
             if
                 OpenFileTable.descriptions system.Machine.OpenFiles
                 |> Map.exists (fun id _ -> OpenFileTable.descriptorCount id system.Machine.OpenFiles > Some 1)
             then
-                duplicated <- duplicated + 1
+                cover HeldLabel.DuplicatedDescriptor
 
             let pid = UnixSystem.processId system
             let machine = SimulatedMachine.ofSystem system
@@ -166,16 +171,16 @@ module TestSimulatedMachine =
             let view = SimulatedMachine.focus pid machine |> Option.get
             SimulatedMachine.unfocus view machine |> shouldEqual machine
 
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest 200,
-            Prop.forAll
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 200)
                 (Arb.fromGen (Gen.zip (Gen.elements platforms) (Gen.listOf opGen)))
-                (fun (platform, ops) -> property platform ops)
-        )
+                property
 
-        connected |> shouldBeGreaterThan 20
-        piped |> shouldBeGreaterThan 20
-        duplicated |> shouldBeGreaterThan 20
+        // Counted over the fixed sample.
+        coverage.Count HeldLabel.Connection |> shouldBeGreaterThan 20
+        coverage.Count HeldLabel.Pipe |> shouldBeGreaterThan 20
+        coverage.Count HeldLabel.DuplicatedDescriptor |> shouldBeGreaterThan 20
 
     [<Test>]
     let ``step makes the call in the process's view and writes the view back`` () : unit =

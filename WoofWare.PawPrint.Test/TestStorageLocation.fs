@@ -5,6 +5,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// Laws of `StorageLocation.overlapVerdict`.
 ///
@@ -81,6 +82,16 @@ module TestStorageLocation =
         | StorageLocation.LocationResolution.Located (_, precise) -> precise
         | StorageLocation.LocationResolution.Unrelatable -> None
 
+    /// The shapes the laws below are about. Each law is vacuous unless the cases reach its shape,
+    /// so each property counts the cases that do.
+    [<RequireQualifiedAccess>]
+    type private Regime =
+        | SharedCoarseKeyImprecise
+        | CopyBackwards
+        | UnrelatableEndpoint
+        | BothPreciseOverlapping
+        | BothPreciseDisjoint
+
     /// The pre-refactor decision, transcribed from `CellAwareMemOps.shouldCopyBackwards`.
     /// An independent statement of the arithmetic, so that a slip in rewriting the `match`
     /// shows up as a disagreement rather than as a silently reordered guard.
@@ -101,9 +112,7 @@ module TestStorageLocation =
     /// would be incomparable.
     [<Test>]
     let ``equal coarse keys with either side imprecise is undecidable`` () : unit =
-        let mutable observed = 0
-
-        let property =
+        let property (cover : Regime -> unit) : Property =
             Prop.forAll
                 (Arb.fromGen genCase)
                 (fun (src, dest, byteCount) ->
@@ -112,7 +121,7 @@ module TestStorageLocation =
                       StorageLocation.LocationResolution.Located (destCoarse, destPrecise) when
                         srcCoarse = destCoarse && (srcPrecise.IsNone || destPrecise.IsNone)
                         ->
-                        observed <- observed + 1
+                        cover Regime.SharedCoarseKeyImprecise
 
                         match StorageLocation.overlapVerdict src dest byteCount with
                         | StorageLocation.OverlapVerdict.Undecidable key -> key |> shouldEqual srcCoarse
@@ -122,12 +131,12 @@ module TestStorageLocation =
                     | _ -> ()
                 )
 
-        Check.One (propertyConfig, property)
+        let coverage = CoverageSample.checkProperty propertyConfig property
 
         // Distribution check: the law is vacuous unless the shared-key-imprecise shape is
         // actually generated. If this were 0 the property above would pass on an
         // implementation that never returns `Undecidable` at all.
-        if observed = 0 then
+        if coverage.Count Regime.SharedCoarseKeyImprecise = 0 then
             failwith "property never generated a shared-coarse-key pair with an imprecise side"
 
     /// `CopyBackwards` is the only verdict that can corrupt data if wrong, so it must be
@@ -135,15 +144,13 @@ module TestStorageLocation =
     /// `src`'s range.
     [<Test>]
     let ``backwards is claimed only for a genuine forward overlap`` () : unit =
-        let mutable observed = 0
-
-        let property =
+        let property (cover : Regime -> unit) : Property =
             Prop.forAll
                 (Arb.fromGen genCase)
                 (fun (src, dest, byteCount) ->
                     match StorageLocation.overlapVerdict src dest byteCount with
                     | StorageLocation.OverlapVerdict.CopyBackwards ->
-                        observed <- observed + 1
+                        cover Regime.CopyBackwards
 
                         match preciseOf src, preciseOf dest with
                         | Some (srcStorage, srcOffset), Some (destStorage, destOffset) ->
@@ -156,18 +163,16 @@ module TestStorageLocation =
                     | _ -> ()
                 )
 
-        Check.One (propertyConfig, property)
+        let coverage = CoverageSample.checkProperty propertyConfig property
 
-        if observed = 0 then
+        if coverage.Count Regime.CopyBackwards = 0 then
             failwith "property never produced a CopyBackwards verdict, so the law is vacuous"
 
     /// A non-byref endpoint shares storage with nothing, so a copy involving one can always
     /// run forwards. This is the arm that must never reach `Undecidable`.
     [<Test>]
     let ``an unrelatable endpoint always copies forwards`` () : unit =
-        let mutable observed = 0
-
-        let property =
+        let property (cover : Regime -> unit) : Property =
             Prop.forAll
                 (Arb.fromGen genCase)
                 (fun (src, dest, byteCount) ->
@@ -175,25 +180,22 @@ module TestStorageLocation =
                         src = StorageLocation.LocationResolution.Unrelatable
                         || dest = StorageLocation.LocationResolution.Unrelatable
                     then
-                        observed <- observed + 1
+                        cover Regime.UnrelatableEndpoint
 
                         StorageLocation.overlapVerdict src dest byteCount
                         |> shouldEqual StorageLocation.OverlapVerdict.CopyForwards
                 )
 
-        Check.One (propertyConfig, property)
+        let coverage = CoverageSample.checkProperty propertyConfig property
 
-        if observed = 0 then
+        if coverage.Count Regime.UnrelatableEndpoint = 0 then
             failwith "property never generated an Unrelatable endpoint"
 
     /// Behaviour preservation: for the both-precise case, the new verdict must agree with the
     /// arithmetic the pre-refactor `shouldCopyBackwards` performed.
     [<Test>]
     let ``both-precise agrees with the pre-refactor decision`` () : unit =
-        let mutable observedBackwards = 0
-        let mutable observedForwards = 0
-
-        let property =
+        let property (cover : Regime -> unit) : Property =
             Prop.forAll
                 (Arb.fromGen genCase)
                 (fun (src, dest, byteCount) ->
@@ -211,19 +213,19 @@ module TestStorageLocation =
                         actual |> shouldEqual expected
 
                         if expected then
-                            observedBackwards <- observedBackwards + 1
+                            cover Regime.BothPreciseOverlapping
                         else
-                            observedForwards <- observedForwards + 1
+                            cover Regime.BothPreciseDisjoint
                     | _ -> ()
                 )
 
-        Check.One (propertyConfig, property)
+        let coverage = CoverageSample.checkProperty propertyConfig property
 
         // Both outcomes must occur, or the agreement is only being checked on one branch.
-        if observedBackwards = 0 then
+        if coverage.Count Regime.BothPreciseOverlapping = 0 then
             failwith "never observed a both-precise overlapping pair"
 
-        if observedForwards = 0 then
+        if coverage.Count Regime.BothPreciseDisjoint = 0 then
             failwith "never observed a both-precise non-overlapping pair"
 
 /// Resolution of real byrefs through `StorageLocation.resolve`, on a real machine state.
