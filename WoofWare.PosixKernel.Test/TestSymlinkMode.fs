@@ -207,7 +207,7 @@ module TestSymlinkMode =
         )
 
     [<Test>]
-    let ``checkInvariants refuses a link's bits exactly where its flavour never creates them`` () : unit =
+    let ``checkInvariants refuses a link's bits exactly where its flavour can never give it them`` () : unit =
         for platform in [ linux ; darwin ] do
             let flavour = SimulatedUnixPlatform.flavour platform
 
@@ -220,8 +220,15 @@ module TestSymlinkMode =
                         SimulatedUnixPlatform.symlinkCreationPermissions platform (bits umask) = bits linkBits
                     )
 
+                // A flavour whose fchmodat(AT_SYMLINK_NOFOLLOW) changes a link
+                // can give it any bits its owner asks for.
+                let changeable =
+                    match SimulatedUnixPlatform.symlinkModeChange platform with
+                    | SymlinkModeChange.ChangesLink -> true
+                    | SymlinkModeChange.NotSupported -> false
+
                 let expected =
-                    if creatable then
+                    if creatable || changeable then
                         []
                     else
                         let inode =
@@ -246,10 +253,11 @@ module TestSymlinkMode =
                 |> shouldEqual (flavour, linkBits, expected)
 
     [<Test>]
-    let ``only 0777 is a Linux link's, and only the low nine bits a Darwin link's`` () : unit =
+    let ``only 0777 is a Linux link's, and any bits a Darwin link's`` () : unit =
         // The previous test's reference, stated as the flavours' own facts.
         symlinkDefects (systemWithLink linux 0o777) |> shouldEqual []
         symlinkDefects (systemWithLink linux 0o755) |> List.length |> shouldEqual 1
         symlinkDefects (systemWithLink darwin 0) |> shouldEqual []
         symlinkDefects (systemWithLink darwin 0o700) |> shouldEqual []
-        symlinkDefects (systemWithLink darwin 0o4777) |> List.length |> shouldEqual 1
+        symlinkDefects (systemWithLink darwin 0o4777) |> shouldEqual []
+        symlinkDefects (systemWithLink darwin 0o7777) |> shouldEqual []

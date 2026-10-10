@@ -681,6 +681,11 @@ module SimulatedUnixPlatform =
         // at uid 501: all 4096 modes set on its own link as `chmod` would set
         // them on a file, in the link's group and out of it; EPERM on root's;
         // the link's ctime moves and its target's timestamps do not.
+        // `lchmod-rules.c` (CALLS, MODES, TIMES, UMASK, HIGH, DIRFD) agrees on
+        // both, and adds: Darwin's change moves the link's ctime even to the
+        // mode it has, and neither its target's timestamps nor its directory's;
+        // it ignores the umask and the bits above 0o7777, as chmod does; and
+        // root's Linux refusal is the same EOPNOTSUPP on another user's link.
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> SymlinkModeChange.NotSupported
         | SimulatedUnixFlavour.Darwin -> SymlinkModeChange.ChangesLink
