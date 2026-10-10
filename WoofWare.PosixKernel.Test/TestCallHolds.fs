@@ -566,7 +566,7 @@ module TestCallHolds =
 
         let coverage =
             CoverageSample.check
-                (CoverageSample.inParallel (Config.QuickThrowOnFailure.WithMaxTest 500))
+                (Config.QuickThrowOnFailure.WithMaxTest 500)
                 (Arb.fromGen gen)
                 (fun cover -> run cover platform)
 

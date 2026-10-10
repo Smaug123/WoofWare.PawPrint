@@ -653,10 +653,7 @@ module TestFcntlReference =
             }
 
         let coverage =
-            CoverageSample.check
-                (CoverageSample.inParallel (Config.QuickThrowOnFailure.WithMaxTest 1000))
-                (Arb.fromGen gen)
-                property
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen gen) property
 
         for label in
             [

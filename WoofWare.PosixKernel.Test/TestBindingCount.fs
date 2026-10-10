@@ -699,8 +699,7 @@ module TestBindingCount =
 
         let gen = Gen.zip (seedGen 2) (Gen.listOf opGen)
 
-        let reached =
-            CoverageSample.check (CoverageSample.inParallel config) (Arb.fromGen gen) property
+        let reached = CoverageSample.check config (Arb.fromGen gen) property
 
         // Every operation the property claims to cover must actually have run,
         // or a green result says nothing about it.

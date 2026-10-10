@@ -1132,10 +1132,7 @@ module TestBlockingConnection =
         // The floors below are a claim about the generator, so they are
         // counted over a fixed sample: a run cannot miss one by chance.
         let coverage =
-            CoverageSample.check
-                (CoverageSample.inParallel (Config.QuickThrowOnFailure.WithMaxTest 400))
-                (Arb.fromGen gen)
-                property
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 400) (Arb.fromGen gen) property
 
         // Each reached by the fixed sample, whose counts `CoverageSample.check`
         // prints; a change that loses one fails on every run, and wants

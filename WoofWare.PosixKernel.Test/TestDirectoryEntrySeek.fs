@@ -511,7 +511,7 @@ module TestDirectoryEntrySeek =
     [<Test>]
     let ``the seek agrees with the scan from every cursor, through any history`` () : unit =
         let reached =
-            CoverageSample.check (CoverageSample.inParallel config) (Arb.fromGen (Gen.listOf opGen)) runHistory
+            CoverageSample.check config (Arb.fromGen (Gen.listOf opGen)) runHistory
 
         let unreached =
             [

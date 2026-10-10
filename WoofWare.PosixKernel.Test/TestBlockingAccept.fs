@@ -1389,7 +1389,7 @@ module TestBlockingAccept =
                 return platform, restart, ops
             }
 
-        let config = CoverageSample.inParallel (Config.QuickThrowOnFailure.WithMaxTest 1000)
+        let config = Config.QuickThrowOnFailure.WithMaxTest 1000
         let coverage = CoverageSample.check config (Arb.fromGen gen) property
 
         let closingGen =

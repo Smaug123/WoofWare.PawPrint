@@ -1238,10 +1238,7 @@ module TestBlockingPipe =
             }
 
         let coverage =
-            CoverageSample.check
-                (CoverageSample.inParallel (Config.QuickThrowOnFailure.WithMaxTest 1000))
-                (Arb.fromGen gen)
-                property
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen gen) property
 
         let closingGen =
             Gen.zip
@@ -1251,10 +1248,7 @@ module TestBlockingPipe =
             |> Gen.map (fun (restart, ops) -> SimulatedUnixPlatform.macOsArm64, restart, ops)
 
         let closingCoverage =
-            CoverageSample.check
-                (CoverageSample.inParallel (Config.QuickThrowOnFailure.WithMaxTest 500))
-                (Arb.fromGen closingGen)
-                property
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 500) (Arb.fromGen closingGen) property
 
         let count (label : string) : int =
             coverage.Count label + closingCoverage.Count label

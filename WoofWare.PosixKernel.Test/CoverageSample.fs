@@ -1,18 +1,19 @@
 namespace WoofWare.PosixKernel.Test
 
-open System.Collections.Concurrent
+open System.Collections.Generic
 open FsCheck
 open FsCheck.FSharp
 
 /// How many times a property reached each label over the fixed sample that
-/// `CoverageSample.check` draws. Counting is thread-safe, so the property may
-/// run its cases in parallel.
+/// `CoverageSample.check` draws.
 [<Sealed>]
 type Coverage<'label when 'label : equality> internal () =
-    let counts = ConcurrentDictionary<'label, int> ()
+    let counts = Dictionary<'label, int> ()
 
     member internal _.Hit (label : 'label) : unit =
-        counts.AddOrUpdate (label, 1, (fun _ n -> n + 1)) |> ignore
+        match counts.TryGetValue label with
+        | true, n -> counts.[label] <- n + 1
+        | false, _ -> counts.[label] <- 1
 
     /// How many times the fixed sample reached `label`: zero for a label it
     /// never reached.
@@ -47,20 +48,11 @@ module CoverageSample =
     /// happens to reach it.
     let private seed : Rnd = Rnd 20261010UL
 
-    /// `config`, running four cases at a time.
-    let inParallel (config : Config) : Config =
-        config.WithParallelRunConfig (
-            Some
-                {
-                    MaxDegreeOfParallelism = 4
-                }
-        )
-
     /// Checks `property` over `config.MaxTest` cases replayed from a fixed
     /// seed, giving it a `cover` that counts into the `Coverage` this returns;
     /// then over `config.MaxTest` fresh cases, giving it a `cover` that counts
-    /// nothing. `config` must not already replay a seed. If it runs cases in
-    /// parallel, `property` must be safe to run so.
+    /// nothing. `config` must not already replay a seed, and must run one case
+    /// at a time.
     let checkProperty<'label when 'label : equality>
         (config : Config)
         (property : ('label -> unit) -> Property)
@@ -69,6 +61,13 @@ module CoverageSample =
         if config.Replay.IsSome then
             failwith
                 "CoverageSample.checkProperty: the config already replays a seed, but the fixed sample's seed is CoverageSample's own"
+
+        // NUnit already runs these tests in parallel on the thread pool, and
+        // four cases at a time in each of them makes the PosixKernel suite
+        // about 40% slower (measured), not faster.
+        if config.ParallelRunConfig.IsSome then
+            failwith
+                "CoverageSample.checkProperty: the config runs cases in parallel, which slows the suite these tests run in"
 
         let coverage = Coverage<'label> ()
 
