@@ -131,6 +131,38 @@ type SyscallRefusal<'Task> =
     | SetIds of SetIdsRefusal
     | SetGroups of SetGroupsRefusal
 
+[<RequireQualifiedAccess>]
+module SyscallRefusal =
+    /// What this kernel knows about why it cannot answer, after the name of
+    /// the syscall it refused. The client supplies its own half: which task
+    /// made the call.
+    let describe<'Task> (refusal : SyscallRefusal<'Task>) : string =
+        match refusal with
+        | SyscallRefusal.Dup refusal -> $"dup: %s{DescriptorLimitRefusal.describe refusal}"
+        | SyscallRefusal.Fcntl refusal -> $"fcntl: %s{FcntlRefusal.describe refusal}"
+        | SyscallRefusal.Dup2 refusal -> $"dup2: %s{Dup2Refusal.describe refusal}"
+        | SyscallRefusal.Dup3 refusal -> $"dup3: %s{Dup3Refusal.describe refusal}"
+        | SyscallRefusal.LSeek refusal -> $"lseek: %s{LSeekRefusal.describe refusal}"
+        | SyscallRefusal.FLock refusal -> $"flock: %s{FLockRefusal.describe refusal}"
+        | SyscallRefusal.FTruncate refusal -> $"ftruncate: %s{TruncationRefusal.describe refusal}"
+        | SyscallRefusal.MkDir refusal -> $"mkdirat: %s{PathRefusal.describe refusal}"
+        | SyscallRefusal.UnlinkAt refusal -> $"unlinkat: %s{UnlinkAtRefusal.describe refusal}"
+        | SyscallRefusal.ChDir refusal -> $"chdir: %s{PathRefusal.describe refusal}"
+        | SyscallRefusal.FChModAt refusal -> $"fchmodat: %s{FChModAtRefusal.describe refusal}"
+        | SyscallRefusal.FChMod refusal -> $"fchmod: %s{FChModRefusal.describe refusal}"
+        | SyscallRefusal.FChOwnAt refusal -> $"fchownat: %s{FChOwnAtRefusal.describe refusal}"
+        | SyscallRefusal.FChOwn refusal -> $"fchown: %s{FChOwnRefusal.describe refusal}"
+        | SyscallRefusal.Access refusal -> $"faccessat: %s{AccessRefusal.describe refusal}"
+        | SyscallRefusal.Symlink refusal -> $"symlinkat: %s{SymlinkRefusal.describe refusal}"
+        | SyscallRefusal.Link refusal -> $"linkat: %s{LinkRefusal.describe refusal}"
+        | SyscallRefusal.Close refusal -> $"close: %s{CloseRefusal.describe refusal}"
+        | SyscallRefusal.UTimensAt refusal -> $"utimensat: %s{UTimensAtRefusal.describe refusal}"
+        | SyscallRefusal.CopyFileRange refusal -> $"copy_file_range: %s{CopyFileRangeRefusal.describe refusal}"
+        | SyscallRefusal.FileClone refusal -> $"ioctl(FICLONE): %s{FileCloneRefusal.describe refusal}"
+        | SyscallRefusal.CloneFile refusal -> $"clonefile: %s{CloneFileRefusal.describe refusal}"
+        | SyscallRefusal.SetIds refusal -> $"setresuid or setresgid: %s{SetIdsRefusal.describe refusal}"
+        | SyscallRefusal.SetGroups refusal -> $"setgroups: %s{SetGroupsRefusal.describe refusal}"
+
 /// A way this system's tables disagree with each other — a state no kernel
 /// could be in, and which the operations here exist to keep unreachable.
 /// `UnixSystem.checkInvariants` returns these.
@@ -647,6 +679,19 @@ type FileSystemSeedFault =
     /// directory. The kernel mounts its device filesystem there at boot, and a
     /// mount over a populated directory would hide what it holds.
     | SeedCoversDeviceFileSystem of name : DirectoryEntryName
+
+[<RequireQualifiedAccess>]
+module FileSystemSeedFault =
+    /// What this library knows about why it refused the seed, for a client
+    /// composing a diagnostic that names its own knob.
+    let describe (fault : FileSystemSeedFault) : string =
+        match fault with
+        | FileSystemSeedFault.SeedNameTooLong (name, flavour) ->
+            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which is past the %O{flavour} flavour's NAME_MAX, so no kernel of that flavour could have mounted the filesystem it describes."
+        | FileSystemSeedFault.SeedNameNotBindable (name, flavour) ->
+            $"the seed holds a directory entry named %s{DirectoryEntryName.toEscaped name}, which a %O{flavour} filesystem will not bind, so no kernel of that flavour could have created it."
+        | FileSystemSeedFault.SeedCoversDeviceFileSystem name ->
+            $"the seed binds %s{DirectoryEntryName.toEscaped name} at its root to something other than an empty directory, and the kernel mounts its device filesystem there at boot, which would hide what the seed put there."
 
 [<RequireQualifiedAccess>]
 module UnixSystem =
