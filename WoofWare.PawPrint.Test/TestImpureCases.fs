@@ -4644,10 +4644,11 @@ module TestImpureCases =
             }
             {
                 // libc's kill(2) sending SIGCONT, at its default, to the
-                // process itself under the Linux flavour, unblocked and then
-                // blocked and unblocked: the process is not stopped, so the
-                // signal is consumed as it is taken, and the process carries
-                // on to its own exit code.
+                // process itself under the Linux flavour, and raise(3) raising
+                // it at the main thread while that blocks it, which then
+                // unblocks it: the process is not stopped, so the signal is
+                // consumed as it is taken, and the process carries on to its
+                // own exit code.
                 FileName = "LibcKillDefaultContinueLinux.cs"
                 ExpectedReturnCode = 42
                 KernelConfig =

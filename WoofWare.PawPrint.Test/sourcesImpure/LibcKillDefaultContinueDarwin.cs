@@ -4,8 +4,10 @@ using System.Runtime.InteropServices;
 // SIGCONT at its default disposition, sent by the process to itself with
 // libc's kill(2) under the Darwin flavour. The process is not stopped, so
 // there is nothing to resume, and the signal is consumed: the process carries
-// on. Sent unblocked, and then sent while the main thread blocks it, when it
-// stays pending until it is unblocked, and is then discarded.
+// on. Sent unblocked, and then raised at the main thread while it blocks it,
+// when it stays pending until it is unblocked, and is then discarded. (Raised
+// rather than sent to the process, which the kernel could give to one of the
+// runtime's own threads, none of which blocks it.)
 //
 // Nothing here initialises System.Native's signal handling, which would
 // install its own SIGCONT handler; so SIGCONT keeps the default the runtime
@@ -24,6 +26,9 @@ unsafe class Program
 
     [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
     static extern int Kill(int pid, int sig);
+
+    [DllImport("libc", EntryPoint = "raise", SetLastError = true)]
+    static extern int Raise(int sig);
 
     [DllImport("libc", EntryPoint = "sigprocmask", SetLastError = true)]
     static extern int Sigprocmask(int how, uint* set, uint* oldSet);
@@ -44,7 +49,7 @@ unsafe class Program
 
         uint set = Cont;
         if (Sigprocmask(SIG_BLOCK, &set, null) != 0) return 5;
-        if (Kill(pid, SIGCONT) != 0) return 6;
+        if (Raise(SIGCONT) != 0) return 6;
         if (Sigpending(&pending) != 0) return 7;
         if ((pending & Cont) == 0) return 8;
 
