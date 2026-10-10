@@ -11,7 +11,7 @@ namespace WoofWare.PosixKernel
 ///
 /// Not derivable from `RenameRules.TrailingSeparator`, and not something the
 /// verdict could express: it decides which resolutions are *performed at all*,
-/// before there are two `Resolution`s to judge.
+/// before there are two resolutions to judge.
 [<RequireQualifiedAccess>]
 type RenameWalkOrder =
     /// Both parents before either final lookup, with each pathname copied in
@@ -66,8 +66,8 @@ type RenameRules =
         /// other.
         ///
         /// This is the field that makes the two flavours **destroy different
-        /// objects**, the divergence `Resolution.FinalSymlinkFollowed` warns
-        /// about. With `s -> real` a directory, `rename("s/", "moved")` moves
+        /// objects**, the divergence that a final symlink
+        /// followed under a trailing separator causes. With `s -> real` a directory, `rename("s/", "moved")` moves
         /// *real* on Darwin, leaving `s` dangling, and is ENOTDIR on Linux;
         /// `rename("src", "s/")` replaces *real* on Darwin and is ENOTDIR on
         /// Linux.

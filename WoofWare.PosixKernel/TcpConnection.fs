@@ -13,7 +13,7 @@ namespace WoofWare.PosixKernel
 /// the server end has no socket at all until that accept, so an end-to-socket
 /// field would spend most of its life dangling or `None`. Cleanup instead
 /// scans the socket table for references, which `UnixDescriptor.close` does.
-type TcpConnection =
+type internal TcpConnection =
     {
         /// The connecting side's address — what `accept(2)` reports as the
         /// peer.

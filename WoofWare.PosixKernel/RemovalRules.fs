@@ -61,7 +61,7 @@ module RemovalRefusal =
 
 /// Which removal an `unlinkat(2)` makes, as its flag word says.
 [<RequireQualifiedAccess>]
-type RemovalKind =
+type internal RemovalKind =
     /// No `AT_REMOVEDIR`: the call is `unlink(2)`'s, under `UnlinkRules`.
     | Unlink
     /// `AT_REMOVEDIR`: the call is `rmdir(2)`'s, under `RmDirRules`.
@@ -168,7 +168,7 @@ type UnlinkRules =
         /// Linux's `do_unlinkat` takes a parent and a name and never resolves
         /// the final component at all, so a trailing separator neither
         /// dereferences a final symlink nor is enforced by the walk: it is
-        /// reported on `Resolution.TrailingSeparatorDemanded` and enforced by
+        /// reported on the resolution and enforced by
         /// `linuxVerdict`. Darwin's `namei` resolves it like any other lookup,
         /// which is `Demand`.
         ///
@@ -505,7 +505,8 @@ type RmDirRules =
         /// objects**. With `ld -> d` and `d` an empty directory, `rmdir("ld/")`
         /// is ENOTDIR on Linux — whose walk cannot have traversed the link — and
         /// *removes `d`* on Darwin, whose walk did. It is the divergence
-        /// `Resolution.FinalSymlinkFollowed` warns about, and the reason this
+        /// that a final symlink followed under a trailing separator causes, and
+        /// the reason this
         /// syscall dispatches on the flavour rather than picking a column.
         TrailingSeparator : TrailingSeparatorPolicy
         /// What removing the directory does to the removed directory's own

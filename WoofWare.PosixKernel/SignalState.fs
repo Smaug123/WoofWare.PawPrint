@@ -104,46 +104,19 @@ type HandlerFrame<'Task, 'Handler> =
     }
 
 /// What the kernel does with the signals a task takes as it returns to user
-/// mode: run handlers, or apply a signal's kernel default. A client reads
-/// the decision through `UnixSignal.onReturnToUser`, as the
-/// `ReturnToUserOutcome` with the same case, with a default that terminates
-/// the process applied.
+/// mode: run handlers, or apply a signal's kernel default.
+/// `UnixSignal.onReturnToUser` answers it as the `ReturnToUserOutcome` of the
+/// same case, whose docstrings state what each means for a client, with a
+/// default that terminates the process applied.
 [<RequireQualifiedAccess>]
-type SignalDelivery<'Task, 'Handler> =
-    /// A frame for every caught signal the task takes now, pushed all at once,
-    /// innermost first: the head's handler runs first, and each handler's
-    /// `UnixSignal.sigreturn` is followed by another
-    /// `UnixSignal.onReturnToUser`, which may push more frames before the next
-    /// one down runs. Never empty.
+type internal SignalDelivery<'Task, 'Handler> =
+    /// `ReturnToUserOutcome.RunHandlers`. Never empty.
     | RunHandlers of frames : HandlerFrame<'Task, 'Handler> list
-    /// No handler claims the signal and its kernel default is to terminate
-    /// the process. A parent's `wait` then reports the process as killed by
-    /// the signal (`WIFSIGNALED`, `WTERMSIG`), with the core flag set iff
-    /// `coreDumped`; `128 + signo` is only how a shell renders that as an
-    /// exit status. Any frames pushed for other signals at the same return
-    /// never run. `UnixSignal.onReturnToUser` ends the process for it
-    /// (`ReturnToUserOutcome.ProcessEnded`).
+    /// `ReturnToUserOutcome.ProcessEnded`, before the process is ended.
     | DefaultTerminate of signal : Signal * coreDumped : bool
-    /// No handler claims the signal and its kernel default is to suspend
-    /// the whole process.
+    /// `ReturnToUserOutcome.ProcessStopped`.
     | DefaultStop of Signal
-    /// No handler claims the signal and its kernel default is to resume a
-    /// stopped process, and the task does not block it: the kernel discards
-    /// it as it is delivered, and nothing else happens. A blocked one stays
-    /// pending, as any other signal does, and `sigpending` reports it.
-    ///
-    /// The task's return to user mode is not over: the client asks
-    /// `onReturnToUser` again, and the task may take more signals, under the
-    /// temporary mask of a `sigsuspend(2)` it is returning from. A client
-    /// that let the task run its own code instead would leave it with that
-    /// temporary mask.
-    ///
-    /// On a real kernel the resumption itself happens at generation,
-    /// whatever any mask says. This library has no stopped process to resume
-    /// (a stop is answered as `KillOutcome.ProcessStopped` or `DefaultStop`,
-    /// for the client to act on), so the generation has nothing to do, and
-    /// what remains is the pending signal, gated by the mask like any other.
-    /// That is exact under this model.
+    /// `ReturnToUserOutcome.ContinueDiscarded`.
     | DefaultContinue of Signal
 
 /// How `sigprocmask(2)` changes a mask, which its `how` argument names.

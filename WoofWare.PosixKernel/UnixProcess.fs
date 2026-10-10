@@ -13,7 +13,7 @@ namespace WoofWare.PosixKernel
 /// A second process on the same simulated kernel would have its own
 /// copy of <c>UnixProcessState</c> but would share <c>UnixMachineState</c>.
 /// </remarks>
-type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+type internal UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     internal
         {
             /// In-memory model of the simulated process's Unix file descriptor

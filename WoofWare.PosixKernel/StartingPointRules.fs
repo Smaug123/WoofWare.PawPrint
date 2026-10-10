@@ -3,7 +3,7 @@ namespace WoofWare.PosixKernel
 /// The directory a relative path given to a `*at` syscall starts from: its
 /// `dirfd` argument, decoded.
 [<RequireQualifiedAccess>]
-type AtDirectory =
+type internal AtDirectory =
     /// `AT_FDCWD`: the process's current directory.
     | CurrentDirectory
     /// Any other value, which the call looks up in the descriptor table if it
