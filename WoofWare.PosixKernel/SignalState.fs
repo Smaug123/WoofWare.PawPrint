@@ -79,7 +79,7 @@ type PendingSignal<'Task> =
         Target : 'Task voption
     }
 
-/// Which handler frame a delivery pushed: the name `SignalState.sigreturn`
+/// Which handler frame a delivery pushed: the name `UnixSignal.sigreturn`
 /// takes it back by. Unique within one `SignalState`, and never reused.
 [<Struct>]
 type HandlerFrameId = | HandlerFrameId of int64
@@ -104,7 +104,7 @@ type HandlerFrame<'Task, 'Handler> =
     }
 
 /// What the kernel does with the signals a task takes as it returns to user
-/// mode, as decided by `SignalState.onReturnToUser`: run handlers, or apply a
+/// mode, as decided by `UnixSignal.onReturnToUser`: run handlers, or apply a
 /// signal's kernel default. The client interprets it: runs the handlers,
 /// terminates the simulated process by the signal, or refuses what it does not
 /// model.
@@ -112,8 +112,9 @@ type HandlerFrame<'Task, 'Handler> =
 type SignalDelivery<'Task, 'Handler> =
     /// A frame for every caught signal the task takes now, pushed all at once,
     /// innermost first: the head's handler runs first, and each handler's
-    /// `sigreturn` is followed by another `onReturnToUser`, which may push more
-    /// frames before the next one down runs. Never empty.
+    /// `UnixSignal.sigreturn` is followed by another
+    /// `UnixSignal.onReturnToUser`, which may push more frames before the next
+    /// one down runs. Never empty.
     | RunHandlers of frames : HandlerFrame<'Task, 'Handler> list
     /// No handler claims the signal and its kernel default is to terminate
     /// the process. A parent's `wait` then reports the process as killed by
@@ -138,15 +139,15 @@ type SignalDelivery<'Task, 'Handler> =
     ///
     /// On a real kernel the resumption itself happens at generation,
     /// whatever any mask says. This library has no stopped process to resume
-    /// (a stop is answered as `SignalGeneration.ProcessStopped` or
-    /// `DefaultStop`, for the client to act on), so the generation has
-    /// nothing to do, and what remains is the pending signal, gated by the
-    /// mask like any other. That is exact under this model.
+    /// (a stop is answered as `KillOutcome.ProcessStopped` or `DefaultStop`,
+    /// for the client to act on), so the generation has nothing to do, and
+    /// what remains is the pending signal, gated by the mask like any other.
+    /// That is exact under this model.
     | DefaultContinue of Signal
 
 /// How `sigprocmask(2)` changes a mask, which its `how` argument names.
 [<RequireQualifiedAccess>]
-type SignalMaskChange =
+type internal SignalMaskChange =
     /// `SIG_BLOCK`: add the set to the mask.
     | Block
     /// `SIG_UNBLOCK`: take the set out of the mask.
@@ -170,9 +171,10 @@ type SignalMaskChange =
 ///   * `Pending` — the signals generated and not yet delivered: the process's
 ///     own set, and each task's.
 ///
-/// One instance of this type belongs to each simulated process. A client
-/// asks it, one task at a time, what that task takes as it returns to user
-/// mode; the data shape is exercised by property tests against a
+/// One instance of this type belongs to each simulated process. A client reads
+/// it out of a system (`UnixSystem.signals`), and changes it only through the
+/// signal calls (`UnixSignal`) and a task's leaving (`UnixTaskLifecycle`);
+/// the data shape is exercised by property tests against a
 /// structurally-different reference oracle.
 ///
 /// Every `Signal` stored here is one `Numbering` has, and every operation
@@ -223,7 +225,7 @@ type SignalState<'Task, 'Handler when 'Task : comparison and 'Handler : equality
 /// `SignalState.generate`. Anything else it does happens later, through the
 /// pending sets and `SignalState.onReturnToUser`.
 [<RequireQualifiedAccess>]
-type SignalGeneration<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+type internal SignalGeneration<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     /// The process carries on, with these signals. The signal is pending, or
     /// coalesced into an instance already pending, or discarded because it is
     /// ignored.
@@ -367,7 +369,7 @@ module SignalState =
     ///
     /// Fails loud on a signal the numbering does not have, and on SIGKILL or
     /// SIGSTOP, which no process can have ignored.
-    let initial (numbering : SignalNumbering) (inheritedIgnores : Set<Signal>) : SignalState<'Task, 'Handler> =
+    let internal initial (numbering : SignalNumbering) (inheritedIgnores : Set<Signal>) : SignalState<'Task, 'Handler> =
         let dispositions =
             (Map.empty, inheritedIgnores)
             ||> Set.fold (fun dispositions signal ->
@@ -390,8 +392,8 @@ module SignalState =
             Pending = []
         }
 
-    /// The numbering every signal in this state is read under, as given to
-    /// `initial`.
+    /// The numbering every signal in this state is read under: the platform's
+    /// (`SimulatedUnixPlatform.signalNumbering`), fixed for the process's life.
     let numbering (state : SignalState<'Task, 'Handler>) : SignalNumbering = state.Numbering
 
     /// What a delivery of `signal` would do now. A client asks
@@ -460,8 +462,9 @@ module SignalState =
             Pending = pending
         }
 
-    /// `task`'s handler frames, innermost first: the ones `onReturnToUser` has
-    /// pushed and `sigreturn` has not yet popped.
+    /// `task`'s handler frames, innermost first: the ones
+    /// `UnixSignal.onReturnToUser` has pushed and `UnixSignal.sigreturn` has not
+    /// yet popped.
     let framesOf (task : 'Task) (state : SignalState<'Task, 'Handler>) : HandlerFrame<'Task, 'Handler> list =
         match Map.tryFind task state.Frames with
         | Some frames -> frames
@@ -532,7 +535,7 @@ module SignalState =
 
     /// The mask `task` gets back once the `sigsuspend(2)` or `pause(2)` it is
     /// in returns: `Some` from the call until the task next returns to user
-    /// mode (`onReturnToUser`), and `None` otherwise.
+    /// mode (`UnixSignal.onReturnToUser`), and `None` otherwise.
     let maskToRestore (task : 'Task) (state : SignalState<'Task, 'Handler>) : SignalMask option =
         Map.tryFind task state.MasksToRestore
 
@@ -574,7 +577,7 @@ module SignalState =
     /// Signals pending on the process stay for another thread to take.
     ///
     /// For a thread that has exited.
-    let forgetTask (thread : 'Task) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
+    let internal forgetTask (thread : 'Task) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
         // Discarded, not passed to the process: measured on Linux 6.18.5 and Darwin
         // 27.0.0 by `docs/plans/2026-08-23-posix-kernel-extraction/thread-exit-pending.c`.
         // A signal pending on an exiting thread alone was never delivered afterwards,
@@ -739,7 +742,11 @@ module SignalState =
     /// refuses to leave such a pair pending
     /// (`SignalReceiverRefusal.PendingForProcessAndLeader`); this function,
     /// which is not told the leader, holds them apart.
-    let enqueue (entry : PendingSignal<'Task>) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
+    let internal enqueue
+        (entry : PendingSignal<'Task>)
+        (state : SignalState<'Task, 'Handler>)
+        : SignalState<'Task, 'Handler>
+        =
         let entry =
             { entry with
                 Signal = parse "enqueue" state entry.Signal
@@ -819,24 +826,12 @@ module SignalState =
     /// process can be received by the leader, and by no other task while the
     /// leader does not block it.
     ///
-    /// A signal at its default disposition, which some task could receive,
-    /// takes that default here rather than being queued: it terminates the
-    /// process (writing a core dump if its default dumps core and `coreDumps`
-    /// allows one), stops it, or, if the default is to discard it, is
-    /// discarded. An ignored signal some task could receive is discarded too.
-    /// Every other signal is queued, including one that every task blocks,
-    /// which takes effect once a task can receive it; generation discards
-    /// pending signals of the opposite kind first, as `enqueue` describes.
-    ///
-    /// Refuses a caught signal sent to the process that only a task other than
-    /// the leader could receive; and, under Darwin's numbering, a standard
-    /// signal it would leave pending on the process while an instance is
-    /// pending on the leader alone, or the other way round, which Darwin holds
-    /// as one instance where this library holds two.
+    /// What the signal does, and what is refused, are as `UnixSignal.kill`
+    /// states; a termination's core flag is as `coreDumps` decides.
     ///
     /// Fails loudly unless `leader` is among `tasks`, and on a signal aimed at a
     /// task that is not.
-    let generate
+    let internal generate
         (coreDumps : CoreDumps)
         (leader : 'Task)
         (tasks : Set<'Task>)
@@ -1163,63 +1158,20 @@ module SignalState =
 
         walk [] state (pendingFor leader task state)
 
-    /// What `task` takes as it returns to user mode: `tasks` and `leader` are as
+    /// What `task` takes as it returns to user mode, by the rules
+    /// `UnixSignal.onReturnToUser` states: `tasks` and `leader` are as
     /// `generate` takes them, so `task` takes the process's own signals as well
-    /// as its own only if it is the leader. A client asks this before `task`
-    /// next runs its own code: after every system call it makes, `sigreturn`
-    /// included.
+    /// as its own only if it is the leader, and a termination's core flag is as
+    /// `coreDumps` decides.
     ///
     /// Returns the possibly-updated state in every case, because an answer can
-    /// change the state without producing an action (see the Ignore rule
-    /// below), and a client that dropped the no-action state would replay those
-    /// discards forever.
-    ///
-    /// The signals are walked in `pendingFor`'s order, skipping any that `task`'s
-    /// mask blocks, and what happens to each is its disposition *now*, not at
-    /// generation:
-    ///   * caught — a handler frame is pushed for it, and the walk goes on
-    ///     under the mask the frame says, so that every caught signal the task
-    ///     can take gets a frame before any handler runs. Their handlers run
-    ///     innermost first, the reverse of the order they were taken in.
-    ///     Under `SA_RESETHAND` the disposition returns to the default as the
-    ///     frame is pushed;
-    ///   * ignored, whether by `SIG_IGN` or by a default of Ignore — it is
-    ///     discarded silently, the walk continuing past it. That discard is
-    ///     the delivery half of the generation rule on `enqueue`: under
-    ///     Linux numbering an ignored-but-blocked signal stays pending
-    ///     (measured; `Signal.blockedIgnoredSignalStaysPendingUnder`), and
-    ///     what un-pends it is exactly this — it becomes receivable while
-    ///     still ignored and is dropped, or a handler arrives first and it
-    ///     is delivered;
-    ///   * the default, where that is to terminate or stop — surfaced as its
-    ///     case for the client to act on, a termination with its core flag
-    ///     as `coreDumps` decides.
-    ///
-    /// A pending signal whose default is to continue the process, at its
-    /// default, surfaces as `DefaultContinue` if `task` does not block it, and
-    /// stays pending if it does (see the case's own docstring). The task's
-    /// return is not over: the client asks again before the task runs its own
-    /// code, and that answer may take more signals.
-    ///
-    /// A task returning from `sigsuspend(2)` or `pause(2)` (`maskToRestore` is
-    /// `Some`) takes its signals under the call's temporary mask, and gets the
-    /// mask the call replaced back as it returns: the first frame pushed (the
-    /// outermost) saves that mask rather than the temporary one, so the
-    /// handler's `sigreturn` restores it, and a return that pushes no frame
-    /// restores it at once, unless it answers `DefaultContinue`, whose return
-    /// goes on under the temporary mask when the client asks again. Each frame
-    /// after the first saves the mask the one before it set, as for any other
-    /// return.
-    ///
-    /// Refuses, whichever task is asked, while any signal pending on the process
-    /// could be received by a task other than the leader but not by the leader;
-    /// the refusal names the first such signal in `pending`'s order. Refuses a
-    /// stop or continue default reached after frames were pushed. A refusal
-    /// changes nothing, a mask to restore included.
+    /// change the state without producing an action (an ignored signal is
+    /// discarded), and a caller that dropped the no-action state would replay
+    /// those discards forever.
     ///
     /// Fails loudly unless `leader` and `task` are among `tasks`, and on a
     /// signal pending on a task that is not.
-    let onReturnToUser
+    let internal onReturnToUser
         (coreDumps : CoreDumps)
         (leader : 'Task)
         (tasks : Set<'Task>)
@@ -1258,15 +1210,12 @@ module SignalState =
                         delivery, withMask task restore cleared
         )
 
-    /// `sigreturn(2)`: `task`'s handler for the frame `frame` has returned, and
-    /// the frame is popped, restoring the mask that was in force before it was
-    /// pushed (`HandlerFrame.SavedMask`), whatever the handler did to the mask
-    /// meanwhile. The client then asks `onReturnToUser` again, since signals
-    /// the frame blocked may now be deliverable.
+    /// `sigreturn(2)`: pop `task`'s innermost frame, `frame`, as
+    /// `UnixSignal.sigreturn` states.
     ///
     /// Fails loudly unless `frame` is `task`'s innermost frame: handlers return
     /// innermost first, so anything else is a bug in the client.
-    let sigreturn
+    let internal sigreturn
         (task : 'Task)
         (frame : HandlerFrameId)
         (state : SignalState<'Task, 'Handler>)
