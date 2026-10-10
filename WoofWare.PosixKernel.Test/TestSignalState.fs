@@ -736,6 +736,58 @@ module TestSignalState =
             SignalState.pending s |> shouldEqual []
 
     [<Test>]
+    let ``a return from sigsuspend that takes a default SIGCONT goes on under the call's temporary mask`` () : unit =
+        // Linux takes SIGCONT (18) before SIGWINCH (28). Its `get_signal`
+        // passes over a signal whose default is to do nothing and goes on
+        // taking signals under the call's temporary mask, so SIGWINCH, which
+        // the mask from before the call blocks, is delivered, and its frame
+        // saves that mask for its `sigreturn` to restore. A return that then
+        // takes nothing restores the mask at once.
+        let before =
+            SignalMask.ofSignals SignalNumbering.Linux (Set.ofList [ Signal.SIGCONT ; Signal.SIGWINCH ])
+
+        let toProcess (signal : Signal) : PendingSignal<TestTask> =
+            {
+                Signal = signal
+                Target = ValueNone
+            }
+
+        let suspended (pending : Signal list) : SignalState<TestTask, TestHandler> =
+            pending
+            |> List.fold
+                (fun s signal -> SignalState.enqueue (toProcess signal) s)
+                (empty
+                 |> enable Signal.SIGWINCH
+                 |> SignalState.changeMask SignalMaskChange.Block before t0)
+            |> SignalState.suspend t0 SignalMask.empty
+
+        let delivery, s =
+            leaderDelivery [ t0 ] (suspended [ Signal.SIGCONT ; Signal.SIGWINCH ])
+
+        delivery |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
+        SignalState.maskToRestore t0 s |> shouldEqual (Some before)
+        SignalState.maskOf t0 s |> shouldEqual SignalMask.empty
+
+        let delivery, s = leaderDelivery [ t0 ] s
+
+        match delivery with
+        | Some (SignalDelivery.RunHandlers [ frame ]) ->
+            frame.Entry |> shouldEqual (toProcess Signal.SIGWINCH)
+            frame.SavedMask |> shouldEqual before
+        | other -> failwith $"expected SIGWINCH's handler, got %A{other}"
+
+        SignalState.maskToRestore t0 s |> shouldEqual None
+
+        let delivery, s = leaderDelivery [ t0 ] (suspended [ Signal.SIGCONT ])
+        delivery |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
+        SignalState.maskToRestore t0 s |> shouldEqual (Some before)
+
+        let delivery, s = leaderDelivery [ t0 ] s
+        delivery |> shouldEqual None
+        SignalState.maskToRestore t0 s |> shouldEqual None
+        SignalState.maskOf t0 s |> shouldEqual before
+
+    [<Test>]
     let ``generating an unclaimed fatal signal terminates the process at once`` () : unit =
         let entry =
             {
@@ -1853,12 +1905,14 @@ module TestSignalState =
                 | DefaultDisposition.Continue -> failwith "unreachable: handled above"
 
         // The return gives a task in `sigsuspend` its mask back: through the
-        // outermost frame when one was pushed, and at once otherwise.
+        // outermost frame when one was pushed, and at once otherwise, unless
+        // it took a default SIGCONT, after which the return goes on.
         go [] r
         |> Result.map (fun (delivery, r') ->
-            match Map.tryFind task r'.Restore with
-            | None -> delivery, r'
-            | Some restore ->
+            match Map.tryFind task r'.Restore, delivery with
+            | None, _ -> delivery, r'
+            | Some _, Some (SignalDelivery.DefaultContinue _) -> delivery, r'
+            | Some restore, _ ->
                 let cleared =
                     { r' with
                         Restore = Map.remove task r'.Restore

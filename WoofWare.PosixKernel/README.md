@@ -292,6 +292,7 @@ A handler that leaves by `siglongjmp` instead of returning has no operation yet.
 
 A signal whose default stops the process is reported (`KillOutcome.ProcessStopped`, `SignalDelivery.DefaultStop`) for the client to act on.
 The library holds no stopped state, and nothing here continues a stopped process, so a client should refuse a stop rather than carry on as if the process were still running.
+A SIGCONT at its default, on the other hand, has nothing to resume: `SignalDelivery.DefaultContinue` says the kernel discarded it as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
 
 ### The alternate signal stack
 
