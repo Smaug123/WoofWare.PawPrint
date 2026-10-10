@@ -143,27 +143,24 @@ module TestSocketFuzz =
             Assert.Fail
                 $"only %d{accepted} accepts answered across 2000 sequences: the run is not reaching accepted connections"
 
-    /// A typed refusal from any op is a skip, never a finding: the model has
-    /// said, in its own type, that the sequence is outside what it answers.
-    /// One from `close` (a listener with an unaccepted client) and one from
-    /// `connect` (a full accept queue), which are the two ops that refuse.
+    /// A typed refusal is a skip, never a finding: the model has said, in its
+    /// own type, that the sequence is outside what it answers. One from
+    /// `connect` to a full accept queue, which Linux admits a connection more
+    /// than the backlog of 8 the op language listens with.
     [<Test>]
-    let ``a typed refusal is a skip, whichever op it comes from`` () : unit =
-        let refusedBy (ops : FuzzOp list) : int =
-            match SocketFuzz.executeEmulated ops with
-            | EmulatedRun.Refused (index, _) -> index
-            | other -> failwith $"expected a refusal, got %A{other}"
-
-        // Closing the listener while its queue holds an unaccepted client.
-        refusedBy
+    let ``a typed refusal is a skip`` () : unit =
+        let ops =
             [
                 FuzzOp.NewSocket 0
                 FuzzOp.Listen 0
-                FuzzOp.NewSocket 1
-                FuzzOp.Connect (1, 0)
-                FuzzOp.Close 0
+                for client in 1..10 do
+                    FuzzOp.NewSocket client
+                    FuzzOp.Connect (client, 0)
             ]
-        |> shouldEqual 4
+
+        match SocketFuzz.executeEmulated ops with
+        | EmulatedRun.Refused (index, _) -> index |> shouldEqual (ops.Length - 1)
+        | other -> failwith $"expected a refusal, got %A{other}"
 
     [<Test>]
     let ``SocketFuzzCorpus: every measured real-kernel transcript replays against the emulated kernel`` () : unit =

@@ -639,11 +639,16 @@ module SocketFuzz =
     [<RequireQualifiedAccess>]
     type private Shadow =
         | Idle
-        /// Listening, with the shadow's count of unaccepted queued connects.
-        | Listening of queued : int
+        /// Listening, with the shadow sockets whose connects wait unaccepted
+        /// in its queue, oldest first.
+        | Listening of queue : int list
         /// A nonblocking connect toward a live listener is in flight; the
         /// next connect on this socket is the completion-reporting retry.
         | Connecting
+        /// The connection was reset while it waited in a listener's queue,
+        /// as the listener went. A connect that would report its completion
+        /// is refused, so none is made.
+        | Reset
         /// A conndead is in flight; the next connect delivers the refusal.
         | Refused
         | Established
@@ -758,9 +763,9 @@ module SocketFuzz =
 
     /// One generated sequence. Constructive: every op names live slots and
     /// stays inside the modelled envelope where the shadow can tell — e.g. no
-    /// slot of a listener with a nonempty shadow queue is ever closed (a
-    /// modelled refusal), and an epoll instance is never a registration target (nested
-    /// epoll is refused). The op-kind weights are themselves drawn from
+    /// client a listener's close reset makes the connect that would report its
+    /// completion (a modelled refusal), and an epoll instance is never a
+    /// registration target (nested epoll is refused). The op-kind weights are themselves drawn from
     /// `rng`, so the distribution is fuzzed too.
     let generate (rng : Random) : FuzzOp list =
         let targetLength = 6 + rng.Next 11
@@ -842,14 +847,14 @@ module SocketFuzz =
             let queuedListeners =
                 slotsWhere (fun s ->
                     match s with
-                    | Shadow.Listening q -> q > 0
+                    | Shadow.Listening queue -> not queue.IsEmpty
                     | _ -> false
                 )
 
             let emptyListeners =
                 slotsWhere (fun s ->
                     match s with
-                    | Shadow.Listening q -> q = 0
+                    | Shadow.Listening queue -> queue.IsEmpty
                     | _ -> false
                 )
 
@@ -876,7 +881,7 @@ module SocketFuzz =
                     (fun () ->
                         let slot = pick rng idle
                         ops.Add (FuzzOp.Listen slot)
-                        setShadowOfSlot slot (Shadow.Listening 0)
+                        setShadowOfSlot slot (Shadow.Listening [])
                     )
 
                 addWeighted
@@ -897,7 +902,10 @@ module SocketFuzz =
                             setShadowOfSlot client Shadow.Connecting
 
                             match shadowOfSlot listener with
-                            | Shadow.Listening q -> setShadowOfSlot listener (Shadow.Listening (q + 1))
+                            | Shadow.Listening queue ->
+                                setShadowOfSlot
+                                    listener
+                                    (Shadow.Listening (queue @ [ Map.find client state.SlotSocket ]))
                             | _ -> ()
                         )
 
@@ -927,7 +935,7 @@ module SocketFuzz =
                         ops.Add (FuzzOp.Accept (listener, freshSlot (Some Shadow.Established)))
 
                         match shadowOfSlot listener with
-                        | Shadow.Listening q -> setShadowOfSlot listener (Shadow.Listening (q - 1))
+                        | Shadow.Listening queue -> setShadowOfSlot listener (Shadow.Listening (List.tail queue))
                         | _ -> ()
                     )
 
@@ -941,31 +949,37 @@ module SocketFuzz =
                         ops.Add (FuzzOp.Accept (listener, freshSlot None))
                     )
 
-            let closable =
-                slotsWhere (fun shadow ->
-                    match shadow with
-                    // Destroying a listener over a live queued client is a
-                    // modelled refusal, and the shadow cannot tell which
-                    // slot's close is the destroying one, so it keeps clear
-                    // of every slot of such a listener.
-                    | Shadow.Listening q -> q = 0
-                    | _ -> true
-                )
+            let close (slot : int) : unit =
+                let socket = Map.find slot state.SlotSocket
+                ops.Add (FuzzOp.Close slot)
 
-            if not (List.isEmpty closable) then
-                addWeighted
-                    wChurn
-                    (fun () ->
-                        let slot = pick rng closable
-                        ops.Add (FuzzOp.Close slot)
+                state <-
+                    { state with
+                        SlotSocket = Map.remove slot state.SlotSocket
+                        Registrations = state.Registrations |> Set.filter (fun (p, t) -> p <> slot && t <> slot)
+                    }
 
-                        state <-
-                            { state with
-                                SlotSocket = Map.remove slot state.SlotSocket
-                                Registrations =
-                                    state.Registrations |> Set.filter (fun (p, t) -> p <> slot && t <> slot)
-                            }
-                    )
+                // The last slot of a listener goes with the listener, which
+                // resets every connection still in its queue.
+                let lastSlot = not (state.SlotSocket |> Map.exists (fun _ named -> named = socket))
+
+                match Map.find socket state.SocketShadow with
+                | Shadow.Listening queue when lastSlot ->
+                    state <-
+                        { state with
+                            SocketShadow =
+                                (state.SocketShadow, queue)
+                                ||> List.fold (fun shadows client -> Map.add client Shadow.Reset shadows)
+                        }
+                | _ -> ()
+
+            if not (Map.isEmpty state.SlotSocket) then
+                addWeighted wChurn (fun () -> close (pick rng (Map.keys state.SlotSocket |> List.ofSeq)))
+
+            // A listener's close over connections it has not accepted, which
+            // the churn above reaches only now and then.
+            if not (List.isEmpty queuedListeners) then
+                addWeighted wConnect (fun () -> close (pick rng queuedListeners))
 
             if not (List.isEmpty allSockets) && state.SlotSocket.Count < 24 then
                 addWeighted

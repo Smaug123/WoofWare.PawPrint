@@ -989,44 +989,330 @@ module TestCrossProcess =
 
             woken [ b, 1 ] machine |> List.map fst |> shouldEqual [ b, 1 ]
 
+    /// A listener's release resets each client still in its queue
+    /// (`tcp-shutdown.c` section Q, docs/plans/2026-10-08-tcp-shutdown-linger),
+    /// so the end of the listener's process resets another process's clients
+    /// queued there, and wakes what waits on them as any reset does: a read
+    /// asleep on one, a `poll` asleep on another, and that one's registration
+    /// in an epoll instance (Linux) or a kqueue (Darwin).
     [<Test>]
-    let ``a process's end refuses to reset another process's connection unaccepted in its listener`` () : unit =
+    let ``a process's end resets another process's clients queued in its listener, and wakes their waiters`` () : unit =
         for platform in Machines.platforms do
+            let flavour = SimulatedUnixPlatform.flavour platform
             let pids, machine = Machines.ofCount platform 2
             let a, b = pids.[0], pids.[1]
-            let listener, machine = Machines.inProcess a (KeventWorld.listenerAt 8080us) machine
-            let client, machine = Machines.inProcess b (KeventWorld.client 8080us) machine
+            let _, machine = Machines.inProcess a (KeventWorld.listenerAt 8080us) machine
 
-            match exitIn a 0 machine with
-            | Error (ProcessEndRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) -> ()
-            | other -> failwith $"expected the reset to be refused, got %A{other}"
-
-            // Once the client has gone, the end goes ahead.
-            let machine = Machines.doIn b (KeventWorld.close client) machine
-            let machine = exitedOk a machine
-            ignore listener
-            Machines.assertClean machine
-
-    [<Test>]
-    let ``a process's end lets its listener go after its own unaccepted client, whatever their descriptors`` () : unit =
-        for platform in Machines.platforms do
-            let pids, machine = Machines.ofCount platform 2
-            let a = pids.[0]
-
-            // The listener at a higher descriptor than its own client, so that
-            // the end closes the listener's first.
-            let machine =
-                Machines.doIn
-                    a
+            // A blocking client, whose read sleeps.
+            let reader, machine =
+                Machines.inProcess
+                    b
                     (fun view ->
-                        let listener, view = KeventWorld.listenerAt 8080us view
-                        let _, view = KeventWorld.client 8080us view
-                        dup2 listener 9 view
+                        let fd, view = KeventWorld.stream false view
+
+                        match KeventWorld.connect fd 8080us view with
+                        | ConnectOutcome.Completed, view -> fd, view
+                        | other, _ -> failwith $"connect: %A{other}"
                     )
                     machine
 
+            let machine =
+                Machines.doIn
+                    b
+                    (fun view ->
+                        match UnixReadWrite.read 1 reader UserBuffer.Mapped 4096UL view with
+                        | Ok (ReadOutcome.WouldBlock _, view) -> view
+                        | other -> failwith $"read: expected to sleep, got %A{other}"
+                    )
+                    machine
+
+            // A non-blocking client, registered edge-triggered and polled.
+            let watched, machine = Machines.inProcess b (KeventWorld.client 8080us) machine
+
+            let queue, machine =
+                Machines.inProcess
+                    b
+                    (fun view ->
+                        match flavour with
+                        | SimulatedUnixFlavour.Linux ->
+                            let epoll, view =
+                                match UnixPoll.epollCreate1 0 view with
+                                | Ok (Ok created) -> created
+                                | other -> failwith $"epoll_create1: %A{other}"
+
+                            let interest =
+                                EpollEvents.In
+                                ||| EpollEvents.Out
+                                ||| EpollEvents.RdHup
+                                ||| EpollEvents.EdgeTriggered
+
+                            match
+                                UnixPoll.epollCtl epoll 1 watched (EpollEventArgument.Readable (interest, 7UL)) view
+                            with
+                            | Ok (EpollCtlAnswer.Changed, view) -> epoll, view
+                            | other -> failwith $"epoll_ctl: %A{other}"
+                        | SimulatedUnixFlavour.Darwin ->
+                            let kq, view = KeventWorld.kqueue view
+                            kq, KeventWorld.register kq watched KeventFilter.Read addClear 7UL view
+                    )
+                    machine
+
+            // What the queue reports at once, in b's view.
+            let drain (machine : SimulatedMachine<int, string>) : string list * SimulatedMachine<int, string> =
+                Machines.inProcess
+                    b
+                    (fun view ->
+                        match flavour with
+                        | SimulatedUnixFlavour.Linux ->
+                            match UnixPoll.epollWait 3 queue 8 UserBuffer.Mapped 0 view with
+                            | Ok (EpollWaitOutcome.Answered events, view) ->
+                                events |> List.map (fun (data, events) -> $"%d{data} 0x%x{events}"), view
+                            | other -> failwith $"epoll_wait: %A{other}"
+                        | SimulatedUnixFlavour.Darwin ->
+                            match KeventWorld.apply queue [] 8 view with
+                            | KeventOutcome.Answered events, view ->
+                                events
+                                |> List.map (fun event ->
+                                    let eof =
+                                        if event.Flags &&& KeventFlags.Eof <> 0us then
+                                            " EOF"
+                                        else
+                                            ""
+
+                                    $"%d{event.UserData}%s{eof} %d{event.FilterFlags}"
+                                ),
+                                view
+                            | other, _ -> failwith $"kevent: %A{other}"
+                    )
+                    machine
+
+            let _, machine = drain machine
+            let machine = sleepInPoll b 2 [ entry watched pollIn ] machine
+            Machines.assertClean machine
+            woken [ b, 1 ; b, 2 ] machine |> shouldEqual []
+
             let machine = exitedOk a machine
             Machines.assertClean machine
+
+            let kind (primitive : WakePrimitive) : string =
+                match primitive with
+                | WakePrimitive.ConnectionReadable _ -> "a read"
+                | WakePrimitive.DescriptorReady _
+                | WakePrimitive.KqueuePollReportable -> "a poll"
+                | other -> failwith $"unexpected wake %A{other}"
+
+            woken [ b, 1 ; b, 2 ] machine
+            |> List.map (fun (task, fired) -> task, fired |> Set.map kind)
+            |> shouldEqual [ (b, 1), Set.singleton "a read" ; (b, 2), Set.singleton "a poll" ]
+
+            let read, machine =
+                Machines.inProcess
+                    b
+                    (fun view ->
+                        match UnixReadWrite.finishRead 1 view with
+                        | Ok (ReadOutcome.Answered answer, view) -> answer, view
+                        | other -> failwith $"finishRead: %A{other}"
+                    )
+                    machine
+
+            read |> shouldEqual (ReadAnswer.Failed UnixError.ECONNRESET)
+
+            let polled, machine = finishPoll b 2 machine
+
+            polled
+            |> shouldEqual (
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> PollOutcome.Answered ([ pollIn ||| 0x0008s ||| pollHup ], 1)
+                | SimulatedUnixFlavour.Darwin -> PollOutcome.Answered ([ pollIn ||| pollHup ], 1)
+            )
+
+            let reported, machine = drain machine
+
+            reported
+            |> shouldEqual (
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> [ "7 0x201d" ]
+                | SimulatedUnixFlavour.Darwin -> [ "7 EOF 54" ]
+            )
+
+            // The listener's port is free again.
+            let _, machine = Machines.inProcess b (KeventWorld.listenerAt 8080us) machine
+            Machines.assertClean machine
+
+    /// The measured lines of `listener-exit-order.c`
+    /// (docs/plans/2026-10-08-tcp-shutdown-linger) for `flavour`, embedded.
+    let private listenerExitOrder (flavour : SimulatedUnixFlavour) : string list =
+        let resource =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> "WoofWare.PosixKernel.Test.listenerExitOrder.linux.txt"
+            | SimulatedUnixFlavour.Darwin -> "WoofWare.PosixKernel.Test.listenerExitOrder.darwin.txt"
+
+        use stream =
+            match System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream resource with
+            | null -> failwith $"embedded resource %s{resource} not found"
+            | stream -> stream
+
+        use reader = new System.IO.StreamReader (stream)
+
+        reader.ReadToEnd().Split '\n'
+        |> Array.map (fun line -> line.TrimEnd '\r')
+        |> Array.filter (fun line -> line <> "")
+        |> Array.toList
+
+    /// `listener-exit-order.c` made on the machine: a process whose listener
+    /// holds another process's client queued, and whose connected socket's
+    /// peer is that other process's, ends with the two at descriptors 10 and
+    /// 11 in either order; the other process's queue of events reports the
+    /// FIN and the reset in the order the end released them, which is the
+    /// order of the descriptors, a listener's release taking its place among
+    /// the rest. Printed as the probe prints it.
+    [<Test>]
+    let ``a process's end releases its listener where its descriptor falls among the rest, as each flavour was measured to``
+        ()
+        : unit
+        =
+        for platform in Machines.platforms do
+            let flavour = SimulatedUnixPlatform.flavour platform
+
+            let replayed (listenerFirst : bool) : string =
+                let pids, machine = Machines.ofCount platform 2
+                let child, parent = pids.[0], pids.[1]
+
+                let parentListener, machine =
+                    Machines.inProcess parent (KeventWorld.listenerAt 8081us) machine
+
+                let machine =
+                    Machines.doIn
+                        child
+                        (fun view ->
+                            let listener, view = KeventWorld.listenerAt 8080us view
+                            let connected, view = KeventWorld.stream false view
+
+                            let view =
+                                match KeventWorld.connect connected 8081us view with
+                                | ConnectOutcome.Completed, view -> view
+                                | other, _ -> failwith $"connect: %A{other}"
+
+                            let listenerAt, connectedAt = if listenerFirst then 10, 11 else 11, 10
+                            view |> dup2 listener listenerAt |> dup2 connected connectedAt
+                        )
+                        machine
+
+                let c, machine =
+                    Machines.inProcess parent (KeventWorld.accept parentListener) machine
+
+                let q, machine = Machines.inProcess parent (KeventWorld.client 8080us) machine
+
+                let queue, machine =
+                    Machines.inProcess
+                        parent
+                        (fun view ->
+                            match flavour with
+                            | SimulatedUnixFlavour.Linux ->
+                                let epoll, view =
+                                    match UnixPoll.epollCreate1 0 view with
+                                    | Ok (Ok created) -> created
+                                    | other -> failwith $"epoll_create1: %A{other}"
+
+                                let interest =
+                                    EpollEvents.In
+                                    ||| EpollEvents.Out
+                                    ||| EpollEvents.RdHup
+                                    ||| EpollEvents.EdgeTriggered
+
+                                let add (fd : int) (data : char) (view : UnixSystem<int, string>) =
+                                    match
+                                        UnixPoll.epollCtl
+                                            epoll
+                                            1
+                                            fd
+                                            (EpollEventArgument.Readable (interest, uint64 data))
+                                            view
+                                    with
+                                    | Ok (EpollCtlAnswer.Changed, view) -> view
+                                    | other -> failwith $"epoll_ctl: %A{other}"
+
+                                epoll, view |> add c 'c' |> add q 'q'
+                            | SimulatedUnixFlavour.Darwin ->
+                                let kq, view = KeventWorld.kqueue view
+
+                                kq,
+                                view
+                                |> KeventWorld.register kq c KeventFilter.Read addClear (uint64 'c')
+                                |> KeventWorld.register kq q KeventFilter.Read addClear (uint64 'q')
+                        )
+                        machine
+
+                let events (machine : SimulatedMachine<int, string>) : string list * SimulatedMachine<int, string> =
+                    Machines.inProcess
+                        parent
+                        (fun view ->
+                            match flavour with
+                            | SimulatedUnixFlavour.Linux ->
+                                match UnixPoll.epollWait 3 queue 4 UserBuffer.Mapped 0 view with
+                                | Ok (EpollWaitOutcome.Answered events, view) ->
+                                    events |> List.map (fun (data, events) -> $"%c{char data}(0x%x{events})"), view
+                                | other -> failwith $"epoll_wait: %A{other}"
+                            | SimulatedUnixFlavour.Darwin ->
+                                match KeventWorld.apply queue [] 4 view with
+                                | KeventOutcome.Answered events, view ->
+                                    events
+                                    |> List.map (fun event ->
+                                        let eof = if event.Flags &&& KeventFlags.Eof <> 0us then "EOF" else ""
+                                        $"%c{char event.UserData}(%s{eof}/%d{event.FilterFlags})"
+                                    ),
+                                    view
+                                | other, _ -> failwith $"kevent: %A{other}"
+                        )
+                        machine
+
+                let _, machine = events machine
+                let machine = exitedOk child machine
+                Machines.assertClean machine
+                let reported, _ = events machine
+
+                let layout =
+                    if listenerFirst then
+                        "10, connected socket at 11"
+                    else
+                        "11, connected socket at 10"
+
+                let reported = reported |> List.map (fun event -> event + " ") |> String.concat ""
+                $"listener at %s{layout}: %s{reported}"
+
+            let measured = listenerExitOrder flavour
+            measured |> List.length |> shouldEqual 10
+
+            [
+                for _ in 1..5 do
+                    replayed true
+                    replayed false
+            ]
+            |> shouldEqual measured
+
+    [<Test>]
+    let ``a process's end closes its listener and its own queued client, in either order`` () : unit =
+        for platform in Machines.platforms do
+            for listenerHigher in [ true ; false ] do
+                let pids, machine = Machines.ofCount platform 2
+                let a = pids.[0]
+
+                let machine =
+                    Machines.doIn
+                        a
+                        (fun view ->
+                            let listener, view = KeventWorld.listenerAt 8080us view
+                            let client, view = KeventWorld.client 8080us view
+
+                            if listenerHigher then
+                                dup2 listener 9 view
+                            else
+                                dup2 client 9 view
+                        )
+                        machine
+
+                let machine = exitedOk a machine
+                Machines.assertClean machine
 
     [<Test>]
     let ``a process's end releases what only its sleeping calls held, and its directory`` () : unit =

@@ -209,6 +209,7 @@
     <Compile Include="TestMultiProcessFuzz.fs" />
     <Compile Include="TestCrossProcess.fs" />
     <Compile Include="TestConnectedTransfer.fs" />
+    <Compile Include="TestListenerTeardown.fs" />
     <Compile Include="TestKeventWriteData.fs" />
     <Compile Include="TestDarwinPoll.fs" />
     <Compile Include="TestPipeBuffer.fs" />
@@ -409,6 +410,24 @@
          host to its flavour's rows. -->
     <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\tcp-transfer.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.tcpTransfer.linux.txt" />
     <EmbeddedResource Include="..\docs\plans\2026-10-07-tcp-byte-transfer\tcp-transfer.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.tcpTransfer.darwin.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- What shutdown(2), and close(2) under SO_LINGER, do to loopback TCP
+         sockets, measured per flavour by
+         docs/plans/2026-10-08-tcp-shutdown-linger/tcp-shutdown.c, and the order
+         in which a closing listener's queued clients are reset, measured by
+         listener-reset-order.c beside it, and where a listener's release falls
+         among a process's exit's, measured by listener-exit-order.c; each
+         output is embedded from beside its probe. `TestListenerTeardown`
+         replays section Q and the reset order, and `TestCrossProcess` the exit
+         order. -->
+    <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\tcp-shutdown.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.tcpShutdown.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\tcp-shutdown.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.tcpShutdown.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\listener-reset-order.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.listenerResetOrder.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\listener-reset-order.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.listenerResetOrder.darwin.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\listener-exit-order.linux-6.18.5-aarch64.txt" LogicalName="WoofWare.PosixKernel.Test.listenerExitOrder.linux.txt" />
+    <EmbeddedResource Include="..\docs\plans\2026-10-08-tcp-shutdown-linger\listener-exit-order.darwin-27.0.txt" LogicalName="WoofWare.PosixKernel.Test.listenerExitOrder.darwin.txt" />
   </ItemGroup>
 
   <ItemGroup>

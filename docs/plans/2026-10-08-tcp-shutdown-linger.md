@@ -41,9 +41,9 @@ the kernel.
   length) while the listener's linger is {1, 0} and the client is open
   (`AcceptRefusal.AbortiveDrop`).
 - Releasing the last reference to a listener whose accept queue holds a
-  connection with an open client is refused
+  connection with an open client was refused
   (`DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient`), whatever
-  the linger.
+  the linger. Stage 2 replaced the refusal with the reset (3.3 (a)).
 - There is no `shutdown` syscall in `WoofWare.PosixKernel`, and PawPrint has
   no handler for `SystemNative_Shutdown` or `SystemNative_Disconnect`.
 
@@ -664,6 +664,20 @@ been rebased onto main (with #1790).
      `ListenerWouldResetUnacceptedClient` goes.
    - The same applies when a process ends with a listener open.
    - Tests: Q's rows, and a fuzz case that connects just before a close.
+
+   Done. The resets go oldest first, which `listener-reset-order.c` (beside
+   the probe) measured on both flavours. A Linux accept that held the
+   listener's last reference releases it as it returns, resetting what is
+   left queued, so `AcceptRefusal.Release` went too; and a process's end no
+   longer holds its listeners back until its other releases are made, since a
+   listener's release now raises wakes, in the order its descriptors close.
+   Not done: section Q sets the listener's linger after its connections have
+   queued, and `setsockopt` still refuses any option's change on a listener
+   with connections queued (`SocketOptionRefusal.ListenerWithQueuedConnections`),
+   because an accepted socket takes the options the listener had when its
+   connection completed, and this kernel does not record them per
+   connection. So Kestrel's {1, 0} close succeeds whatever is queued, but the
+   `setsockopt` before it is refused when something is.
 3. **Half-close in `TcpTransfer`, as pure functions** (3.1 (D)).
    - First commit: the split of `TcpEndState`, with behaviour unchanged.
    - Then the read, write and arrival rules, `shutdown`'s answer function,
