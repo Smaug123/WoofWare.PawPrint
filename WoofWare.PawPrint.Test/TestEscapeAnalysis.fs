@@ -5286,3 +5286,100 @@ public static class Runners
 
         if not failures.IsEmpty then
             failwith (String.concat "\n" (List.rev failures))
+
+    /// `Run.Check(double)` is `ldarg.0; ckfinite; ret`, and `Run.Caught(double)` is the same inside
+    /// a `catch (OverflowException)` that returns zero. C# has no `ckfinite`, so the IL is emitted
+    /// directly.
+    let private emitCkfinite () : byte[] =
+        let builder =
+            System.Reflection.Emit.PersistedAssemblyBuilder (AssemblyName "Finite", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Finite"
+
+        let run =
+            modul.DefineType ("Run", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        let define (name : string) : System.Reflection.Emit.ILGenerator =
+            run
+                .DefineMethod(
+                    name,
+                    MethodAttributes.Public ||| MethodAttributes.Static,
+                    typeof<double>,
+                    [| typeof<double> |]
+                )
+                .GetILGenerator ()
+
+        do
+            let il = define "Check"
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_0
+            il.Emit System.Reflection.Emit.OpCodes.Ckfinite
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+        do
+            let il = define "Caught"
+            let result = il.DeclareLocal typeof<double>
+            il.BeginExceptionBlock () |> ignore<System.Reflection.Emit.Label>
+            il.Emit System.Reflection.Emit.OpCodes.Ldarg_0
+            il.Emit System.Reflection.Emit.OpCodes.Ckfinite
+            il.Emit (System.Reflection.Emit.OpCodes.Stloc, result)
+            il.BeginCatchBlock typeof<OverflowException>
+            il.Emit System.Reflection.Emit.OpCodes.Pop
+            il.Emit (System.Reflection.Emit.OpCodes.Ldc_R8, 0.0)
+            il.Emit (System.Reflection.Emit.OpCodes.Stloc, result)
+            il.EndExceptionBlock ()
+            il.Emit (System.Reflection.Emit.OpCodes.Ldloc, result)
+            il.Emit System.Reflection.Emit.OpCodes.Ret
+
+        run.CreateType () |> ignore<Type>
+
+        use stream = new MemoryStream ()
+        builder.Save stream
+        stream.ToArray ()
+
+    /// CoreCLR's `ckfinite` raises `OverflowException`, not the `ArithmeticException` ECMA-335
+    /// III.3.19 names, so a `catch (OverflowException)` absorbs it. The real runtime is asked first,
+    /// so that the emitted IL is known to mean what the analysis is held to.
+    [<Test>]
+    let ``ckfinite raises OverflowException, which a catch of it absorbs`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let image = emitCkfinite ()
+
+        let assembly =
+            Assembly.read loggerFactory (Some "Finite.dll") (new MemoryStream (image))
+
+        let onRealRuntime =
+            let context =
+                System.Runtime.Loader.AssemblyLoadContext ("Finite", isCollectible = true)
+
+            try
+                let run = context.LoadFromStream(new MemoryStream (image)).GetType "Run"
+
+                let invoke (name : string) : string =
+                    try
+                        $"%O{run.GetMethod(name).Invoke ((null : obj), [| box nan |])}"
+                    with :? TargetInvocationException as e ->
+                        e.InnerException.GetType().FullName
+
+                invoke "Check", invoke "Caught"
+            finally
+                context.Unload ()
+
+        onRealRuntime |> shouldEqual ("System.OverflowException", "0")
+
+        let analysis, check =
+            EscapeAnalysis.escapes (analysisOver [ assembly ] id) (methodNamed assembly "Run" "Check")
+
+        let analysis, caught =
+            EscapeAnalysis.escapes analysis (methodNamed assembly "Run" "Caught")
+
+        let check = render analysis check, check.Unknown
+        let caught = render analysis caught, caught.Unknown
+
+        let arithmetic =
+            Set.ofList [ "=System.OverflowException" ; "=System.ArithmeticException" ]
+
+        (Set.intersect (fst check) arithmetic, snd check)
+        |> shouldEqual (Set.singleton "=System.OverflowException", false)
+
+        (Set.intersect (fst caught) arithmetic, snd caught)
+        |> shouldEqual (Set.empty, false)

@@ -16,13 +16,12 @@ type OpcodeFault =
     | ArrayTypeMismatch
     /// `System.InvalidCastException`.
     | InvalidCast
-    /// `System.OverflowException`.
+    /// `System.OverflowException`. This is also what CoreCLR raises for `ckfinite`, where ECMA-335
+    /// III.3.19 names its base class `System.ArithmeticException`: the JIT's throw block for a
+    /// non-finite operand is the one it uses for overflow.
     | Overflow
     /// `System.DivideByZeroException`.
     | DivideByZero
-    /// `System.ArithmeticException`, which is what `ckfinite` raises — the base of `Overflow` and
-    /// `DivideByZero`, and raised as itself here rather than as either of them.
-    | Arithmetic
     /// `System.OutOfMemoryException`.
     | OutOfMemory
     /// `System.StackOverflowException`.
@@ -124,7 +123,6 @@ module OpcodeFault =
         | OpcodeFault.InvalidCast -> "System.InvalidCastException"
         | OpcodeFault.Overflow -> "System.OverflowException"
         | OpcodeFault.DivideByZero -> "System.DivideByZeroException"
-        | OpcodeFault.Arithmetic -> "System.ArithmeticException"
         | OpcodeFault.OutOfMemory -> "System.OutOfMemoryException"
         | OpcodeFault.StackOverflow -> "System.StackOverflowException"
         | OpcodeFault.TypeInitialization -> "System.TypeInitializationException"
@@ -150,8 +148,7 @@ module OpcodeFault =
         | OpcodeFault.ArrayTypeMismatch
         | OpcodeFault.InvalidCast
         | OpcodeFault.Overflow
-        | OpcodeFault.DivideByZero
-        | OpcodeFault.Arithmetic -> FaultKind.Logic
+        | OpcodeFault.DivideByZero -> FaultKind.Logic
 
     /// The corelib type an execution engine raises for this fault.
     ///
@@ -170,7 +167,6 @@ module OpcodeFault =
         | OpcodeFault.InvalidCast -> baseClassTypes.InvalidCastException
         | OpcodeFault.Overflow -> baseClassTypes.OverflowException
         | OpcodeFault.DivideByZero -> baseClassTypes.DivideByZeroException
-        | OpcodeFault.Arithmetic -> baseClassTypes.ArithmeticException
         | OpcodeFault.OutOfMemory -> baseClassTypes.OutOfMemoryException
         | OpcodeFault.StackOverflow -> baseClassTypes.StackOverflowException
         | OpcodeFault.TypeInitialization -> baseClassTypes.TypeInitializationException
@@ -240,8 +236,8 @@ module OpcodeFaults =
         | NullaryIlOp.Conv_ovf_i4_un
         | NullaryIlOp.Conv_ovf_u4_un
         | NullaryIlOp.Conv_ovf_i8_un
-        | NullaryIlOp.Conv_ovf_u8_un -> overflow
-        | NullaryIlOp.Ckfinite -> OpcodeFaults.Raises [ OpcodeFault.Arithmetic ]
+        | NullaryIlOp.Conv_ovf_u8_un
+        | NullaryIlOp.Ckfinite -> overflow
         | NullaryIlOp.Localloc -> OpcodeFaults.Raises [ OpcodeFault.StackOverflow ]
         | NullaryIlOp.LdLen -> nullDeref
         | NullaryIlOp.Ldind_ref

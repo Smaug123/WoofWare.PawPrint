@@ -189,7 +189,7 @@ module ContextSwitchPrior =
         | NullaryIlOp.Stloc_3
         // Trapping arithmetic / overflow-checked conversions / Ckfinite:
         // each may construct a CLR-defined runtime exception
-        // (OverflowException, DivideByZeroException, ArithmeticException)
+        // (OverflowException, DivideByZeroException)
         // on guest-supplied values. The exception object is heap-allocated,
         // but unless the guest deliberately publishes it (rare) the
         // identity stays thread-local.
