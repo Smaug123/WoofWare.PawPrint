@@ -3374,7 +3374,6 @@ module NativeSystemNative =
                             | FChModAtRefusal.ChMod (ChModRefusal.UnmeasuredModeChange _) ->
                                 "Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
                             | FChModAtRefusal.ChMod (ChModRefusal.Path _) -> ""
-                            | FChModAtRefusal.ChMod (ChModRefusal.SymlinkMode _)
                             | FChModAtRefusal.UnmodelledFlags _
                             | FChModAtRefusal.Descriptor _ ->
                                 "chmod(2) takes no flags and follows a final symbolic link, so this is a bug in the kernel library."

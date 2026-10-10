@@ -18,9 +18,10 @@ open System.Collections.Immutable
 /// `SeedEntry.file` and `SeedEntry.directory` supply the modes a `umask 022`
 /// process would have created, for the many seeds that only care about shape.
 ///
-/// A symlink has no mode field: Linux gives every link 0o777, `lchmod` is not
-/// portable, and a seeded link gets what its flavour gives a link created
-/// under `SeedEntry.symlinkCreatorsUmask`.
+/// A symlink has no mode field: Linux gives every link 0o777 and never changes
+/// it, and a seeded link gets what its flavour gives a link created under
+/// `SeedEntry.symlinkCreatorsUmask`. A Darwin link whose own mode was later
+/// changed is not seedable.
 ///
 /// Every entry has an optional owner. `None` means the owner the seed is
 /// realised with, which whoever realises it states explicitly

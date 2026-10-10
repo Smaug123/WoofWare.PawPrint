@@ -561,8 +561,10 @@ type UnixSystemDefect<'Task> =
     /// anything but `ProtectedFiles.off` on Darwin.
     | ProtectedFilesNotOfFlavour of protection : ProtectedFiles * flavour : SimulatedUnixFlavour
     /// The symbolic link at `inode` has permission bits no link of the
-    /// platform's flavour is created with, under any umask: anything but 0o777
-    /// on Linux, and anything outside 0o777 on Darwin.
+    /// platform's flavour can have: anything but 0o777 on Linux, which creates
+    /// every link with those bits and never changes them. A Darwin link can
+    /// have any bits, since `fchmodat(2)` changes them
+    /// (`SimulatedUnixPlatform.symlinkModeChange`).
     | SymlinkPermissionsNotOfFlavour of
         inode : InodeNumber *
         permissions : PermissionBits *
@@ -1723,9 +1725,15 @@ module UnixSystem =
                 ]
 
         // Every symbolic link's bits are ones its flavour creates a link with,
-        // under the umask that would leave exactly those bits.
+        // under the umask that would leave exactly those bits, unless the
+        // flavour changes a link's bits afterwards, which makes any bits ones a
+        // link can have.
         let symlinkPermissions =
             let platform = machine.UnixPlatform
+
+            match SimulatedUnixPlatform.symlinkModeChange platform with
+            | SymlinkModeChange.ChangesLink -> []
+            | SymlinkModeChange.NotSupported ->
 
             VirtualFileSystem.inodes machine.FileSystem
             |> Map.toList
