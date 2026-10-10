@@ -8,6 +8,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// <summary>
 /// Regression coverage for issue #903: unbounded recursion in <c>TypeResolution</c> when the
@@ -303,6 +304,12 @@ module TestGenericEnvironmentCycles =
 
         go depth
 
+    /// How a resolution the property tolerates ended.
+    [<RequireQualifiedAccess>]
+    type private ResolutionOutcome =
+        | Resolved
+        | RejectedAsCyclic
+
     /// <summary>
     /// Resolution terminates on every environment, well-founded or not.
     /// </summary>
@@ -330,31 +337,32 @@ module TestGenericEnvironmentCycles =
             }
 
         // The property is only worth anything if the generator actually reaches the guard, so
-        // count the two outcomes and insist on having seen both. Without this a narrowed
-        // generator — or a guard that stopped firing — would leave the test passing vacuously.
-        let mutable resolved = 0
-        let mutable rejected = 0
-
-        let property (subject : TypeDefn, typeArgs : TypeDefn list, methodArgs : TypeDefn list) : bool =
+        // count the two outcomes, over a fixed sample, and insist on having seen both. Without
+        // this a narrowed generator — or a guard that stopped firing — would leave the test
+        // passing vacuously.
+        let property
+            (cover : ResolutionOutcome -> unit)
+            (subject : TypeDefn, typeArgs : TypeDefn list, methodArgs : TypeDefn list)
+            : bool
+            =
             try
                 resolve fixture subject typeArgs methodArgs
                 |> ignore<TypeInfo<TypeDefn, TypeDefn>>
 
-                resolved <- resolved + 1
+                cover ResolutionOutcome.Resolved
                 true
             with e ->
                 if e.Message.Contains cyclicMarker then
-                    rejected <- rejected + 1
+                    cover ResolutionOutcome.RejectedAsCyclic
                     true
                 else
                     raise (exn ($"Unexpected failure for %O{subject}, type args %A{typeArgs}", e))
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen inputGen) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 300) (Arb.fromGen inputGen) property
 
-        TestContext.Out.WriteLine $"resolved %d{resolved}, rejected as cyclic %d{rejected}"
-
-        if resolved = 0 then
+        if coverage.Count ResolutionOutcome.Resolved = 0 then
             Assert.Fail "Generator produced no resolvable environment; the property is vacuous."
 
-        if rejected = 0 then
+        if coverage.Count ResolutionOutcome.RejectedAsCyclic = 0 then
             Assert.Fail "Generator produced no cyclic environment; the property never reached the guard."
