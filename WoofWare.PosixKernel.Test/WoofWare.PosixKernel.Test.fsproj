@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
+    <Compile Include="CoverageSample.fs" />
     <Compile Include="Configured.fs" />
     <Compile Include="Launched.fs" />
     <Compile Include="WriteAdmissions.fs" />
