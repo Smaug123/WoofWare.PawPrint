@@ -522,8 +522,6 @@ module NativeSystemNative =
             match refusal with
             | CloseRefusal.DarwinFlockedDescriptorWithWaiter _ ->
                 "Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
-            | CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _) ->
-                "Accept the connection or close the client before closing the listener."
             | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
                 "Model the reset a zero-linger close sends, or close the peer first."
             | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
@@ -5248,7 +5246,6 @@ module NativeSystemNative =
                 | Error (AcceptRefusal.UnmeasuredKind _ as refusal)
                 | Error (AcceptRefusal.DescriptorLimit _ as refusal)
                 | Error (AcceptRefusal.Interruption _ as refusal)
-                | Error (AcceptRefusal.Release _ as refusal)
                 | Error (AcceptRefusal.DarwinDrainedListener _ as refusal)
                 | Error (AcceptRefusal.AbortiveDrop _ as refusal) ->
                     failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
