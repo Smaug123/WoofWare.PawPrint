@@ -119,9 +119,9 @@ module TestSigcontGeneration =
         fun r ->
             match UnixSignal.onReturnToUser task r.System with
             | Error refusal -> Error (Stop.Receiver refusal)
-            | Ok (None, system) -> Ok (withSystem system r)
-            | Ok (Some (SignalDelivery.DefaultContinue _), system) -> returns task (withSystem system r)
-            | Ok (Some (SignalDelivery.RunHandlers frames), system) -> runFrames task frames (withSystem system r)
+            | Ok (ReturnToUserOutcome.Resumes system) -> Ok (withSystem system r)
+            | Ok (ReturnToUserOutcome.ContinueDiscarded (_, system)) -> returns task (withSystem system r)
+            | Ok (ReturnToUserOutcome.RunHandlers (frames, system)) -> runFrames task frames (withSystem system r)
             | Ok other -> failwith $"task %d{task}'s return to user mode: %A{other}"
 
     /// Each of `frames`' handlers runs, innermost first; each `sigreturn` is a
