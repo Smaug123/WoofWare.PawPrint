@@ -119,26 +119,38 @@ caller can catch, and an exception thrown by a managed function it calls back en
 Were one of those libraries missing, the runtime would run the program's `ResolvingUnmanagedDll`
 handlers, which could throw anything.
 
+It assumes that CoreLib's lookup of its own resource strings, `SR.InternalGetResourceString`, which
+gives every CoreLib exception its message, raises only `OutOfMemoryException`,
+`TypeInitializationException`, `NullReferenceException` (for a null key),
+`ThreadInterruptedException` (while it waits for its lock) and `StackOverflowException`. That holds
+when:
+
+* only CoreLib writes CoreLib's private static fields. Reflection could otherwise replace the
+  lookup's resource manager with a subclass whose `GetString` throws anything;
+* the runtime is installed completely and intact. A damaged resources file would otherwise throw
+  from the reader;
+* every culture the lookup walks (the current UI culture and each one its `Parent` chain reaches)
+  that is of a `CultureInfo` subclass the program defines behaves as CoreLib's own `CultureInfo`
+  would for that culture: its overrides raise nothing, its `Name` is a valid culture name, its
+  `Parent` chain ends at the invariant culture, and it changes no culture state. The lookup reads
+  each culture's `Name` and `Parent`; what an override throws there escapes the exception's
+  constructor, and a name the lookup rejects raises `ArgumentException`.
+
+The program's `AssemblyResolve` and `Resolving` handlers do not run there: CoreCLR runs none for
+CoreLib's own satellite assembly. Reading the code could not establish these conditions instead:
+whether the installation is intact is a fact about the machine, whether some code writes a private
+field by reflection is undecidable, and any code can make an object of any subclass the current UI
+culture. Without them, constructing almost any CoreLib exception would be "unknown", because the
+lookup reaches culture data, formatting, collections, event tracing and reflection.
+
 Other assumptions are the caller's to allow (`Assumption`, given to `EscapeAnalysis.create`). Each
 lets the analysis take a contract in place of a method's body, and each answer lists in
 `Escapes.Assumes` those it relied on: the ones whose contract stands in for code that something
 escaping could come from, so that without them the answer could be "unknown". It may also list one
 that a handler in a method this one calls made unnecessary, since a callee's answer records only
-that it relied on the assumption. Allowed none, every
-answer follows from the code alone. There are two so far:
+that it relied on the assumption. Allowed none, every answer follows from the code and the
+assumptions above. There is one so far:
 
-* `CoreLibResourceLookup`: CoreLib's lookup of its own resource strings,
-  `SR.InternalGetResourceString`, which gives every CoreLib exception its message, raises only
-  `OutOfMemoryException`, `TypeInitializationException`, `NullReferenceException` (for a null key),
-  `ThreadInterruptedException` (while it waits for its lock) and `StackOverflowException`. That holds
-  when only CoreLib writes CoreLib's private static fields, the runtime is installed completely and
-  intact, and every culture the lookup walks (the current UI culture and its `Parent` chain) that is
-  of a `CultureInfo` subclass the program defines behaves as CoreLib's own `CultureInfo` would for
-  that culture: its overrides raise nothing, its `Name` is a valid culture name, its `Parent` chain
-  ends at the invariant culture, and it changes no culture state. The program's `AssemblyResolve` and `Resolving` handlers do not run
-  there: CoreCLR runs none for CoreLib's own satellite assembly. Without this assumption,
-  constructing almost any CoreLib exception is "unknown", because the lookup reaches culture data,
-  formatting, collections, event tracing and reflection.
 * `NamedTypesLoad`: every type that the metadata of a loaded type names loads. The assembly that
   defines it is found without running the program's `AssemblyResolve` or `Resolving` handlers, is
   intact, and defines the type as named. So CoreCLR's native code for listing a generic parameter's
@@ -146,9 +158,9 @@ answer follows from the code alone. There are two so far:
   raises only `ArgumentException` (for a type that is not a generic parameter),
   `OutOfMemoryException` and `StackOverflowException`. The runtime makes that `ArgumentException`
   with its parameterless constructor, which looks up its message, so the analysis follows that
-  constructor too: without `CoreLibResourceLookup`, the answer is still "unknown". `RuntimeType`
-  asks for the constraints whenever it works out a generic parameter's base type, so without this
-  assumption, comparing `Type`s or asking whether one is a value type is "unknown".
+  constructor too, and what it raises escapes as well. `RuntimeType` asks for the constraints
+  whenever it works out a generic parameter's base type, so without this assumption, comparing
+  `Type`s or asking whether one is a value type is "unknown".
 
 That holds for a set of assemblies that agree with each other. When one has changed since another
 was compiled against it, a missing member or type is reported as above, and says that the set

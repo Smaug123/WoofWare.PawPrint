@@ -858,11 +858,10 @@ public static class SR
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
                 Excludes = [ ioe ]
                 Unknown = Some false
-                Assumes = Some [ Assumption.CoreLibResourceLookup ]
+                Assumes = Some []
                 Sources = Some []
             }
-            // Whatever the lookup raises is caught, so the answer holds whether or not the
-            // assumption does.
+            // Whatever the lookup raises is caught.
             { expect "Fixture.Messages" "Swallowed" with
                 Excludes = [ "=System.Threading.ThreadInterruptedException" ]
                 Unknown = Some false
@@ -871,13 +870,13 @@ public static class SR
             { expect "Fixture.Messages" "Rethrown" with
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
                 Unknown = Some false
-                Assumes = Some [ Assumption.CoreLibResourceLookup ]
+                Assumes = Some []
             }
             { expect "Fixture.Messages" "RethrownAsTimeout" with
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
                 Excludes = [ "<:System.TimeoutException" ]
                 Unknown = Some false
-                Assumes = Some [ Assumption.CoreLibResourceLookup ]
+                Assumes = Some []
             }
             { expect "Fixture.Messages" "RethrownThenAbsorbed" with
                 Unknown = Some false
@@ -887,7 +886,7 @@ public static class SR
                 Contains = [ "=System.Threading.ThreadInterruptedException" ]
                 Excludes = [ "=System.OutOfMemoryException" ]
                 Unknown = Some false
-                Assumes = Some [ Assumption.CoreLibResourceLookup ]
+                Assumes = Some []
             }
             { expect "Fixture.Messages" "Impostor" with
                 Excludes = [ "=System.Threading.ThreadInterruptedException" ]
@@ -1216,7 +1215,7 @@ public static class SR
             |> Seq.map (fun (KeyValue (handle, _)) -> MethodKey.make fixture handle)
             |> List.ofSeq
 
-        // Without the assumption, the places are deep in CoreLib, past its own handlers and rethrows.
+        // Allowed no assumption, the places may be deep in CoreLib, past its own handlers and rethrows.
         for assumptions in [ Assumption.all ; Set.empty ] do
             let analysis =
                 analysisOf
@@ -1399,10 +1398,7 @@ public static class SR
             context.Unload ()
 
     [<Test>]
-    let ``allowed no assumption, constructing a CoreLib exception is unknown and no answer assumes anything``
-        ()
-        : unit
-        =
+    let ``allowed no assumption, no answer assumes anything, and one that relied on none is unchanged`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         let image =
@@ -1421,41 +1417,20 @@ public static class SR
                 [ fixture ]
                 id
 
-        // Of the fixture's own expectations, only whether each answer assumes anything is checked.
+        // An answer that relied on no assumption follows from the code alone, so it holds as the
+        // fixture states it; of any other, only that it now assumes nothing is checked.
         let assumingNothing =
             expectations
             |> List.map (fun expectation ->
-                { expect (fst expectation.Method) (snd expectation.Method) with
-                    Assumes = Some []
-                }
+                match expectation.Assumes with
+                | Some [] -> expectation
+                | _ ->
+                    { expect (fst expectation.Method) (snd expectation.Method) with
+                        Assumes = Some []
+                    }
             )
 
-        let withoutLookup =
-            [
-                { expect "Fixture.Messages" "Construct" with
-                    Unknown = Some true
-                    Assumes = Some []
-                }
-                { expect "Fixture.Messages" "Swallowed" with
-                    Unknown = Some false
-                    Assumes = Some []
-                }
-                { expect "Fixture.Messages" "Rethrown" with
-                    Unknown = Some true
-                    Assumes = Some []
-                }
-                { expect "Fixture.Messages" "OutOfMemoryCaught" with
-                    Unknown = Some true
-                    Assumes = Some []
-                }
-                { expect "Fixture.Messages" "RethrownAsTimeout" with
-                    Contains = [ "<:System.TimeoutException" ]
-                    Unknown = Some true
-                    Assumes = Some []
-                }
-            ]
-
-        match unmet analysis fixture (assumingNothing @ withoutLookup) with
+        match unmet analysis fixture assumingNothing with
         | _, [] -> ()
         | _, failures -> failures |> String.concat Environment.NewLine |> failwith
 
@@ -1537,14 +1512,13 @@ public static class SR
             escapes.Assumes
             |> shouldEqual (made |> List.map _.Assumes |> Set.unionMany |> Set.add assumption)
 
-            // Allowed alone, it is unknown exactly where one of those constructors is: constructing a
-            // CoreLib exception looks up its message, which without the resource lookup is unknown.
-            let alone, made = constructed (Set.singleton assumption)
-            let _, escapes = EscapeAnalysis.escapes alone key
+            // Those constructors are known allowed no assumption: constructing a CoreLib exception
+            // looks up its message, and the analysis always takes the lookup's contract.
+            let _, made = constructed Set.empty
 
-            made |> List.exists _.Unknown |> shouldEqual (not constructors.IsEmpty)
-            escapes.Unknown |> shouldEqual (not constructors.IsEmpty)
-            escapes.Assumes |> shouldEqual (Set.singleton assumption)
+            for answer in made do
+                answer.Unknown |> shouldEqual false
+                answer.Assumes |> shouldEqual Set.empty
 
             // Every other assumption allowed does not stand in for this one, though the method's own
             // code may rely on another.
@@ -1553,6 +1527,38 @@ public static class SR
 
             escapes.Unknown |> shouldEqual true
             escapes.Assumes.Contains assumption |> shouldEqual false
+
+    [<Test>]
+    let ``CoreLib's resource lookup raises exactly its contract, allowed no assumption`` () : unit =
+        let corelib = hostCoreLib ()
+
+        let key =
+            corelib.Methods
+            |> Seq.filter (fun (KeyValue (handle, _)) -> ResourceLookup.isLookup corelib handle)
+            |> Seq.exactlyOne
+            |> fun (KeyValue (handle, _)) -> MethodKey.make corelib handle
+
+        let analysis =
+            analysisOf
+                corelib
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                Set.empty
+                []
+                id
+
+        let analysis, escapes = EscapeAnalysis.escapes analysis key
+
+        render analysis escapes
+        |> shouldEqual (
+            ResourceLookup.raises
+            |> List.map (fun name -> "=" + name.FullName)
+            |> Set.ofList
+        )
+
+        escapes.Unknown |> shouldEqual false
+        escapes.Assumes |> shouldEqual Set.empty
 
     [<Test>]
     let ``a native method the contract table describes raises exactly what its row says`` () : unit =

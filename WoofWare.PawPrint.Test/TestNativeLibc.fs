@@ -521,24 +521,20 @@ module TestNativeLibc =
             | other -> failwith $"expected System.Native's handler installed afresh, got %A{other}"
 
     [<Test>]
-    let ``every other signal is answered from a fresh state, but SIGCONT`` () : unit =
+    let ``every other signal is answered from a fresh state`` () : unit =
         for numbering in everyNumbering do
             for signo in 1 .. Signal.highestSignoUnder numbering do
                 match Map.tryFind signo (measured numbering) with
                 | Some (SignalDisposition.Catch _) -> ()
                 | _ ->
-                    let expected =
-                        if signal numbering signo = Signal.SIGCONT then
-                            Some (UnmodelledSelfSignal.ContinueWithoutHandler Signal.SIGCONT)
-                        else
-                            None
-
                     (numbering, signo, screen (fresh numbering) (signal numbering signo))
-                    |> shouldEqual (numbering, signo, expected)
+                    |> shouldEqual (numbering, signo, None)
 
     [<Test>]
-    let ``SIGCONT is answered once a handler is registered for it, or once it is ignored`` () : unit =
+    let ``SIGCONT is answered at its default, with a handler registered for it, and ignored`` () : unit =
         for numbering in everyNumbering do
+            screen (fresh numbering) Signal.SIGCONT |> shouldEqual None
+
             screen (register numbering Signal.SIGCONT (fresh numbering)) Signal.SIGCONT
             |> shouldEqual None
 

@@ -23,11 +23,6 @@ type UnmodelledSelfSignal =
     /// once the default is back, such a fault kills the process instead, and
     /// PawPrint cannot tell which faults the JIT leaves to the hardware.
     | FaultHandlerNeededLater of Signal
-    /// A signal whose kernel default is to continue a stopped process, with no
-    /// handler registered. A real process, never stopped, carries on; the model
-    /// has no stopped state for it to resume, and would leave it pending for a
-    /// dispatcher that refuses it.
-    | ContinueWithoutHandler of Signal
     /// A signal raised at the thread that made the call, which is not the main
     /// thread, and which stays pending there because the process catches it:
     /// `raise(3)` aims its signal at the caller, and Linux sends the SIGPIPE of
@@ -54,8 +49,6 @@ module UnmodelledSelfSignal =
             $"%O{signal} is sent by a thread other than the main thread, which receives it; a real CoreCLR process's fault handler raises a managed exception on the main thread if that thread is running managed code, and PawPrint does not model which code it is running."
         | UnmodelledSelfSignal.FaultHandlerNeededLater signal ->
             $"a real CoreCLR process's handler for %O{signal} would restore the default, and on this platform that handler is also how a later hardware fault in managed code becomes a managed exception; afterwards such a fault kills the process, and PawPrint cannot tell which faults the JIT leaves to the hardware."
-        | UnmodelledSelfSignal.ContinueWithoutHandler signal ->
-            $"%O{signal} with no handler registered continues a stopped process, and a running one carries on regardless; PawPrint has no stopped state, and would leave the signal pending for a dispatcher that refuses it."
         | UnmodelledSelfSignal.PendingOnOtherThread signal ->
             $"%O{signal} was raised at the thread that made the call, which is not the main thread, and the process catches it, so it is pending there; PawPrint delivers signals to the main thread only (SignalDispatch)."
 
@@ -159,8 +152,6 @@ module NativeLibc =
                                       Handler = NativeSignalHandler.CoreClrPalFault replaced
                                   } -> faultHandler replaced
         | SignalDisposition.Catch action -> Some (UnmodelledSelfSignal.NativeHandler (signal, action.Handler))
-        | SignalDisposition.Default when Signal.defaultDispositionUnder numbering signal = DefaultDisposition.Continue ->
-            Some (UnmodelledSelfSignal.ContinueWithoutHandler signal)
         | SignalDisposition.Default
         | SignalDisposition.Ignore -> None
 

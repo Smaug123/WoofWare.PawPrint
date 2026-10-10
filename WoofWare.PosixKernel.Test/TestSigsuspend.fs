@@ -504,7 +504,9 @@ module TestSigsuspend =
         let helperCall : Step =
             fun r ->
                 match UnixSignal.sigprocmask helper (how r.Flavour change) (Some (signals set r)) r.System with
-                | Ok (_, system) ->
+                | Error refusal ->
+                    failwith $"the helper's sigprocmask was refused: %s{SigprocmaskRefusal.describe refusal}"
+                | Ok (Ok (_, system)) ->
                     let r =
                         { r with
                             System = system
@@ -513,7 +515,7 @@ module TestSigsuspend =
                     (printWith (fun r -> $" helper-%s{label}-ret=0 helper-mask=%s{hex (maskIn helper r.System)}")
                      >=> wakeIfDue)
                         r
-                | Error errno -> failwith $"the helper's sigprocmask failed with %O{errno}"
+                | Ok (Error errno) -> failwith $"the helper's sigprocmask failed with %O{errno}"
 
         catch Signal.SIGUSR1
         >=> setMask main (signals [ Signal.SIGHUP ])
@@ -830,6 +832,7 @@ module TestSigsuspend =
         let mutable severalFramesFromSuspend = 0
         let mutable spreadsWhileParked = 0
         let mutable staleDiscards = 0
+        let mutable refusedSpreads = 0
 
         let property (seed : int) : unit =
             let rng = Random seed
@@ -1124,19 +1127,38 @@ module TestSigsuspend =
                     if model.Parked && numbering = SignalNumbering.Darwin then
                         spreadsWhileParked <- spreadsWhileParked + 1
 
+                    // Darwin's spread reaches the main thread's mask, and is
+                    // refused where it would unblock a signal pending there
+                    // (`SigprocmaskRefusal.DarwinUnblockedForAnotherTask`).
+                    let unblockedForMain =
+                        match numbering with
+                        | SignalNumbering.Darwin ->
+                            let after = changed change set model.Mask
+
+                            model.Pending
+                            |> Set.filter (fun signal ->
+                                Set.contains signal model.Mask && not (Set.contains signal after)
+                            )
+                        | SignalNumbering.Linux -> Set.empty
+
                     match UnixSignal.sigprocmask helper (how flavour change) (Some (maskOf set)) system with
-                    | Ok (_, after) -> system <- withMask helper everyBit after
-                    | Error errno -> failwith $"sigprocmask: %O{errno}"
+                    | Error (SigprocmaskRefusal.DarwinUnblockedForAnotherTask (task, signal)) ->
+                        (task, Set.contains signal unblockedForMain) |> shouldEqual (main, true)
+                        refusedSpreads <- refusedSpreads + 1
+                    | Ok (Ok (_, after)) ->
+                        unblockedForMain |> shouldEqual Set.empty
+                        system <- withMask helper everyBit after
 
-                    match numbering with
-                    | SignalNumbering.Darwin ->
-                        model <-
-                            { model with
-                                Mask = changed change set model.Mask
-                            }
-                    | SignalNumbering.Linux -> ()
+                        match numbering with
+                        | SignalNumbering.Darwin ->
+                            model <-
+                                { model with
+                                    Mask = changed change set model.Mask
+                                }
+                        | SignalNumbering.Linux -> ()
 
-                    afterHelper ()
+                        afterHelper ()
+                    | Ok (Error errno) -> failwith $"sigprocmask: %O{errno}"
 
                 agree $"step %d{step}, %A{op}"
 
@@ -1158,7 +1180,9 @@ module TestSigsuspend =
 
         match numbering with
         | SignalNumbering.Linux -> staleDiscards |> shouldBeGreaterThan 30
-        | SignalNumbering.Darwin -> spreadsWhileParked |> shouldBeGreaterThan 20
+        | SignalNumbering.Darwin ->
+            spreadsWhileParked |> shouldBeGreaterThan 20
+            refusedSpreads |> shouldBeGreaterThan 20
 
     [<Test>]
     let ``random signal sequences agree with a reference model of the masks, on Linux`` () : unit =
@@ -1290,15 +1314,16 @@ module TestSigsuspend =
         |> shouldEqual SignalRestartRule.FailsWithEintr
 
     [<Test>]
-    let ``Darwin: a pending SIGCONT another thread's sigprocmask lets through wakes the call into its refusal``
+    let ``Darwin: another thread's sigprocmask that would let a pending SIGCONT through to a sigsuspend is refused``
         ()
         : unit
         =
-        // Found by review, and reproduced natively: Darwin leaves such a
-        // SIGCONT pending without ending the call, even once a handler is
-        // installed for it. Were the sleeper not woken, the refusal would never
-        // be reached, and a later handler would end the call where Darwin does
-        // not.
+        // Darwin leaves such a SIGCONT pending without ending the call, even
+        // once a handler is installed for it (found by review, and reproduced
+        // natively), and wakes no sleeper for a signal another thread's
+        // sigprocmask unblocks (`unblock-wakes-sleeper.c`). Answered, the
+        // unblock would leave a signal this library delivers at the next return
+        // to user mode, and wakes the sleeper for, where Darwin does neither.
         for disposition in [ SignalDisposition.Ignore ; SignalDisposition.Default ] do
             let flavour = SimulatedUnixFlavour.Darwin
             let numbering = numberingOf flavour
@@ -1336,14 +1361,8 @@ module TestSigsuspend =
 
             UnixWait.wakes (Set.singleton main) asleep |> shouldEqual []
 
-            let unblocked =
-                UnixSignal.sigprocmask helper (how flavour SignalMaskChange.Unblock) (Some cont) asleep
-                |> orFail "sigprocmask"
-
-            UnixWait.wakes (Set.singleton main) unblocked
-            |> List.map fst
-            |> shouldEqual [ main ]
-
-            match UnixSignal.finishSigsuspend main unblocked with
-            | Error refusal -> refusal |> shouldEqual SigsuspendRefusal.DarwinPendingContinue
-            | other -> failwith $"%A{disposition}: finishSigsuspend answered %A{other}"
+            match UnixSignal.sigprocmask helper (how flavour SignalMaskChange.Unblock) (Some cont) asleep with
+            | Error refusal ->
+                refusal
+                |> shouldEqual (SigprocmaskRefusal.DarwinUnblockedForAnotherTask (main, Signal.SIGCONT))
+            | other -> failwith $"%A{disposition}: sigprocmask answered %A{other}"
