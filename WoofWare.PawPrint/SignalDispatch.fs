@@ -518,11 +518,31 @@ module SignalDispatch =
                 failwith
                     $"SignalDispatch.poll: dispatcher thread %O{dispatcher} recorded in PosixSignalShim but no ThreadState entry exists — the initialisation path should always allocate both."
 
+    /// What an open file description refers to, for a refusal's message.
+    let private describeTarget (target : OpenFileTarget) : string =
+        match target with
+        | OpenFileTarget.File (inode, _) -> $"a regular file (inode %O{inode})"
+        | OpenFileTarget.Directory (inode, _) -> $"a directory (inode %O{inode})"
+        | OpenFileTarget.Epoll _ -> "an epoll instance"
+        | OpenFileTarget.Kqueue _ -> "a kqueue"
+        | OpenFileTarget.Socket socket -> $"a socket (%O{socket})"
+        | OpenFileTarget.Pipe (pipe, pipeEnd) -> $"the %O{pipeEnd} end of pipe %O{pipe}"
+        | OpenFileTarget.CharacterDevice (_, device) -> $"the character device %O{device}"
+
     /// The dispatcher's blocking `read(pipeFd, &signalCode, 1)`, if it is
     /// Parked there: made afresh if its task is not yet asleep in it, and
     /// finished once the kernel wakes it if it is. Then what the loop does with
     /// the signal it read, and with each after it, until it starts a callback,
     /// the read sleeps, or the process dies.
+    ///
+    /// Fails where the read would not be of the signal pipe: where the
+    /// descriptor the loop was given no longer names the pipe's read end. If
+    /// the guest closed it, the loop's read fails and the loop exits; if the
+    /// guest put something else at its number, the loop reads that and takes
+    /// its bytes for signal numbers. PawPrint models neither. A read already
+    /// asleep holds the pipe's description, so it is finished from the pipe
+    /// whatever the guest has done to the number since; only the read after it
+    /// is refused.
     ///
     /// A read that sleeps leaves the dispatcher's task asleep in the kernel, as
     /// any thread's blocking read of a pipe does: the dispatcher holds the read
@@ -547,9 +567,16 @@ module SignalDispatch =
 
         let read =
             match UnixTaskState.parkedIn (EmulatedKernel.taskOf dispatcher state.Kernel.Tasks) with
-            // The loop reads the number it was given, whatever the guest has
-            // since put there.
-            | None -> Some (UnixReadWrite.read dispatcher pipe.ReadEnd UserBuffer.Mapped 1UL system)
+            // The loop reads the number it was given, so the read is of the
+            // signal pipe only while that number names the pipe's read end.
+            | None ->
+                match FileDescriptorRegistry.tryFindWithId pipe.ReadEnd (UnixSystem.fileDescriptors system) with
+                | Some (named, _) when named = pipe.ReadDescription ->
+                    Some (UnixReadWrite.read dispatcher pipe.ReadEnd UserBuffer.Mapped 1UL system)
+                | Some (_, description) ->
+                    failwith
+                        $"SignalDispatch.poll: System.Native's dispatcher reads descriptor %d{pipe.ReadEnd}, which it was given as its signal pipe's read end, but which no longer names that pipe's read end: the guest has put %s{describeTarget description.Target} at that number. The real SignalHandlerLoop would read from that instead and take what it read for signal numbers, which PawPrint does not model."
+                | None -> refuse "which the guest has closed, so the read fails with EBADF"
             // Asleep in its read, which holds the description it was made
             // through: finished once the kernel wakes it. Asked with every
             // other sleeper, so that a reader that went to sleep on the pipe

@@ -15,6 +15,10 @@ type SignalPipe =
     {
         ReadEnd : int
         WriteEnd : int
+        /// The open file description `pipe()` made for the read end, which
+        /// `ReadEnd` named when the pipe was made. A read through `ReadEnd`
+        /// reads the signal pipe exactly when `ReadEnd` still names this.
+        ReadDescription : OpenFileDescriptionId
     }
 
 /// Whether System.Native's signal handling has been initialised, and if so
