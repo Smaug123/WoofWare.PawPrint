@@ -16,7 +16,8 @@ type PendingSignal =
     | CaughtForAnother
     /// SIGUSR1, ignored, sent to the transferring task, which discards it.
     | IgnoredForTransferrer
-    /// SIGCONT at its default, sent to the transferring task: it stays pending.
+    /// SIGCONT at its default, sent to the transferring task, which does not
+    /// block it: the kernel discards it as it is sent.
     | DefaultForTransferrer
 
 [<RequireQualifiedAccess>]
@@ -36,11 +37,11 @@ module PendingSignal =
     /// returns to user mode, which is what Linux's `signal_pending` asks.
     let transferrerHasSignal (pending : PendingSignal) : bool =
         match pending with
-        | PendingSignal.CaughtForTransferrer
-        | PendingSignal.DefaultForTransferrer -> true
+        | PendingSignal.CaughtForTransferrer -> true
         | PendingSignal.Nothing
         | PendingSignal.CaughtForAnother
-        | PendingSignal.IgnoredForTransferrer -> false
+        | PendingSignal.IgnoredForTransferrer
+        | PendingSignal.DefaultForTransferrer -> false
 
     /// `system` with task 1 beside `transferrer`, which must not be 1, and
     /// `pending` made so through `sigaction` and `pthread_kill`.

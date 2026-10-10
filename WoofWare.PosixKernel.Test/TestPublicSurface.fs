@@ -97,6 +97,8 @@ module TestPublicSurface =
     type private Signature =
         {
             Name : string
+            /// The top-level type that declares the member, by generic definition.
+            Owner : Type
             /// Whether this is a function of an F# module, as opposed to a
             /// constructor, a property or a union case's maker.
             IsModuleFunction : bool
@@ -160,12 +162,19 @@ module TestPublicSurface =
 
             own @ List.collect fst parts, List.collect snd parts
 
+    let rec private outermost (t : Type) : Type =
+        if t.IsNested then
+            outermost t.DeclaringType
+        else
+            definitionOf t
+
     let private signatures (library : Assembly) : Signature list =
         let exported = library.GetExportedTypes () |> List.ofArray
 
         [
             for t in exported do
                 let inModule = isModule t
+                let owner = outermost t
 
                 for m in
                     t.GetMethods (
@@ -182,6 +191,7 @@ module TestPublicSurface =
                     yield
                         {
                             Name = $"%s{t.FullName}.%s{m.Name}"
+                            Owner = owner
                             // A name with an `@` in it is the compiler's, not the
                             // library's: a debugging copy of an inline function, say.
                             IsModuleFunction = inModule && m.IsStatic && not (m.Name.Contains '@')
@@ -198,6 +208,7 @@ module TestPublicSurface =
                     yield
                         {
                             Name = $"%s{t.FullName}..ctor"
+                            Owner = owner
                             IsModuleFunction = false
                             Needs = List.collect fst parameters
                             Gives = definitionOf t :: List.collect snd parameters
@@ -207,6 +218,7 @@ module TestPublicSurface =
                     yield
                         {
                             Name = $"%s{t.FullName} (enum)"
+                            Owner = owner
                             IsModuleFunction = false
                             Needs = []
                             Gives = [ t ]
@@ -276,4 +288,31 @@ module TestPublicSurface =
                 let names = missing |> List.map (fun (t : Type) -> t.Name) |> String.concat ", "
                 Some $"%s{s.Name} takes %s{names}"
         )
+        |> shouldBeEmpty
+
+    [<Test>]
+    let ``every public type appears in a public member of another type`` () : unit =
+        let library = typeof<VirtualFileSystem>.Assembly
+        let signatures = signatures library
+
+        let mentionedElsewhere (t : Type) : bool =
+            signatures
+            |> List.exists (fun (s : Signature) ->
+                s.Owner <> t
+                && (s.Needs @ s.Gives) |> List.exists (fun (u : Type) -> keyOf u = keyOf t)
+            )
+
+        let types =
+            library.GetExportedTypes ()
+            |> List.ofArray
+            |> List.filter (fun (t : Type) -> not t.IsNested && not (isModule t))
+            |> List.map definitionOf
+
+        // A control, so that this cannot pass by finding no types.
+        types.Length |> shouldBeGreaterThan 100
+
+        types
+        |> List.filter (mentionedElsewhere >> not)
+        |> List.map (fun (t : Type) -> t.FullName)
+        |> List.sort
         |> shouldBeEmpty

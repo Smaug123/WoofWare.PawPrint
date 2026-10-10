@@ -1,0 +1,6 @@
+registered 0123 linger 0: q0(EOF/54) q1(EOF/54) q2(EOF/54) q3(EOF/54) 
+registered 0123 linger 1: q0(EOF/54) q1(EOF/54) q2(EOF/54) q3(EOF/54) 
+registered 3210 linger 0: q0(EOF/54) q1(EOF/54) q2(EOF/54) q3(EOF/54) 
+registered 3210 linger 1: q0(EOF/54) q1(EOF/54) q2(EOF/54) q3(EOF/54) 
+registered 2031 linger 0: q0(EOF/54) q1(EOF/54) q2(EOF/54) q3(EOF/54) 
+registered 2031 linger 1: q0(EOF/54) q1(EOF/54) q2(EOF/54) q3(EOF/54) 

@@ -660,12 +660,11 @@ module TestBlockingAccept =
 
         connectAnswer 5000us system |> shouldEqual ConnectOutcome.Completed
 
-    /// What the accept's return would do to a second queued connection, once
-    /// nothing else holds the listener: a real kernel resets the client, in a
-    /// state this kernel has not measured, so the finish refuses, as `close`
-    /// refuses to destroy such a listener.
+    /// Once nothing else holds the listener, the accept's return releases it,
+    /// which resets the connection still queued behind the one the accept
+    /// took, as a close of the listener's last descriptor would.
     [<Test>]
-    let ``Linux: an accept whose return would reset a second queued connection is refused`` () : unit =
+    let ``Linux: an accept whose return releases the listener resets the connection left queued`` () : unit =
         let fd, system = world SimulatedUnixPlatform.linuxX64
         let system = parkIn 1 fd system
 
@@ -676,9 +675,33 @@ module TestBlockingAccept =
 
         let system = connectTo 5000us system |> connectTo 5000us
 
-        match UnixConnection.finishAccept 1 system with
-        | Error (AcceptRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) -> ()
-        | other -> failwith $"expected the finish to be refused, got %A{other}"
+        // No descriptor names the listener any more, so it is found by its
+        // phase.
+        let taken, left =
+            system.Machine.Sockets
+            |> Map.toSeq
+            |> Seq.pick (fun (_, socket) ->
+                match socket.Phase with
+                | SocketPhase.Listening listenState ->
+                    match listenState.Queue with
+                    | [ taken ; left ] -> Some (taken, left)
+                    | other -> failwith $"expected two connections queued, got %A{other}"
+                | _ -> None
+            )
+
+        let _, system = finishWithConnection 1 system
+        UnixSystem.checkInvariants system |> shouldEqual []
+
+        let resetAt (connection : ConnectionId) : bool =
+            TcpTransfer.hasBeenReset
+                ConnectionEnd.Client
+                (UnixMachineState.connection connection system.Machine).Transfer
+
+        resetAt taken |> shouldEqual false
+        resetAt left |> shouldEqual true
+
+        connectAnswer 5000us system
+        |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
     /// Measured (`blocking-accept.c`, sections C2 and C3): on Linux, closing
     /// either of two descriptors onto the listener -- the one the accept came
@@ -903,6 +926,19 @@ module TestBlockingAccept =
             Woken : bool
         }
 
+    /// What has become of a client's connect.
+    [<RequireQualifiedAccess>]
+    type private ClientFate =
+        /// Its connection waits in the listener's queue.
+        | Queued
+        /// An accept took its connection, and the accepted socket closed at
+        /// once, which sent it a FIN.
+        | Accepted
+        /// The listener went while its connection was queued, which reset it.
+        | Reset
+        /// The connect was refused, the listener having gone.
+        | Refused
+
     type private AcceptReference =
         {
             Linux : bool
@@ -912,7 +948,10 @@ module TestBlockingAccept =
             Parks : Map<int, AcceptPark>
             NextOrdinal : int
             Signalled : Set<int>
-            Queued : int
+            /// The clients whose connections are queued, oldest first.
+            Queue : int list
+            /// Each client's descriptor, and what became of its connect.
+            Clients : Map<int, ClientFate>
             Drained : bool
             /// Whether the listening socket still exists.
             Alive : bool
@@ -926,6 +965,58 @@ module TestBlockingAccept =
 
     let private lowestFree (r : AcceptReference) : int =
         Seq.initInfinite id |> Seq.find (fun n -> not (Map.containsKey n r.Fds))
+
+    /// `r` once the listening socket has gone, if nothing holds it any more:
+    /// each queued client reset, and the queue gone with the listener.
+    let private releasedIfUnheld (r : AcceptReference) : AcceptReference =
+        if r.Alive && not (listenerHeld r) then
+            { r with
+                Alive = false
+                Queue = []
+                Clients =
+                    (r.Clients, r.Queue)
+                    ||> List.fold (fun clients fd -> Map.add fd ClientFate.Reset clients)
+            }
+        else
+            r
+
+    /// What the kernel says has become of the client at `fd`.
+    let private clientFate (fd : int) (system : UnixSystem<int, string>) : ClientFate =
+        let socket =
+            match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+            | Some (OpenFileTarget.Socket socket) -> UnixMachineState.socket socket system.Machine
+            | other -> failwith $"client fd %d{fd} names %A{other}"
+
+        match SocketPhase.connectionEnd socket.Phase with
+        | None -> ClientFate.Refused
+        | Some (connection, ConnectionEnd.Client) ->
+            match
+                (TcpTransfer.towards
+                    ConnectionEnd.Client
+                    (UnixMachineState.connection connection system.Machine).Transfer)
+                    .Receiver
+            with
+            | TcpEndState.Open -> ClientFate.Queued
+            | TcpEndState.FinReceived -> ClientFate.Accepted
+            | TcpEndState.Reset _ -> ClientFate.Reset
+            | other -> failwith $"client fd %d{fd}'s end of %O{connection} is in %A{other}"
+        | Some (_, ConnectionEnd.Server) -> failwith $"client fd %d{fd} is a connection's server end"
+
+    /// The clients of the connections `queue` holds, in its order.
+    let private queuedClients (queue : ConnectionId list) (system : UnixSystem<int, string>) : int list =
+        let clientOf (connection : ConnectionId) : int =
+            match UnixMachineState.socketHoldingEnd connection ConnectionEnd.Client system.Machine with
+            | None -> failwith $"queued connection %O{connection} has no client"
+            | Some socket ->
+                FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors system)
+                |> Map.toSeq
+                |> Seq.pick (fun (fd, _) ->
+                    match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
+                    | Some (OpenFileTarget.Socket named) when named = socket -> Some fd
+                    | _ -> None
+                )
+
+        queue |> List.map clientOf
 
     let private acceptTasks : int list = [ 1 ; 2 ; 3 ; 4 ]
 
@@ -981,6 +1072,8 @@ module TestBlockingAccept =
             let linux = SimulatedUnixPlatform.flavour platform = SimulatedUnixFlavour.Linux
             let flavourName = if linux then "Linux" else "Darwin"
             let listenerFd, system = world platform
+            // `releasingOpening` names it.
+            listenerFd |> shouldEqual 3
 
             let mutable system =
                 { system with
@@ -1009,7 +1102,8 @@ module TestBlockingAccept =
                     Parks = Map.empty
                     NextOrdinal = 0
                     Signalled = Set.empty
-                    Queued = 0
+                    Queue = []
+                    Clients = Map.empty
                     Drained = false
                     Alive = true
                 }
@@ -1049,7 +1143,7 @@ module TestBlockingAccept =
                     | AcceptOp.Accept _
                     | AcceptOp.Close _
                     | AcceptOp.Dup _ -> None
-                    | AcceptOp.Connect -> if reference.Queued < 8 then Some op else None
+                    | AcceptOp.Connect -> if reference.Queue.Length < 8 then Some op else None
                     | AcceptOp.Signal index ->
                         pick (fun t -> Map.containsKey t reference.Parks) index
                         |> Option.map AcceptOp.Signal
@@ -1070,19 +1164,22 @@ module TestBlockingAccept =
 
                     match Map.tryFind fd reference.Fds, answer with
                     | None, Ok (AcceptOutcome.Failed UnixError.EBADF, _) -> cover $"%s{flavourName} accept: EBADF"
-                    | Some _, Ok (AcceptOutcome.Accepted (accepted, _, _), after) when reference.Queued > 0 ->
+                    | Some _, Ok (AcceptOutcome.Accepted (accepted, _, _), after) when not reference.Queue.IsEmpty ->
                         cover $"%s{flavourName} accept: a queued connection"
                         system <- dropAccepted accepted after
 
                         reference <-
                             { reference with
-                                Queued = reference.Queued - 1
+                                Queue = List.tail reference.Queue
+                                Clients = Map.add (List.head reference.Queue) ClientFate.Accepted reference.Clients
                             }
                     | Some _, Error (AcceptRefusal.DarwinDrainedListener _) when
-                        reference.Drained && reference.Queued = 0
+                        reference.Drained && reference.Queue.IsEmpty
                         ->
                         cover "Darwin accept: refused, the listener drained"
-                    | Some _, Ok (AcceptOutcome.WouldBlock _, after) when not reference.Drained && reference.Queued = 0 ->
+                    | Some _, Ok (AcceptOutcome.WouldBlock _, after) when
+                        not reference.Drained && reference.Queue.IsEmpty
+                        ->
                         cover $"%s{flavourName} accept: sleeps"
                         system <- after
 
@@ -1120,7 +1217,8 @@ module TestBlockingAccept =
                         reference <-
                             { reference with
                                 Fds = Map.add client false reference.Fds
-                                Queued = reference.Queued + 1
+                                Queue = reference.Queue @ [ client ]
+                                Clients = Map.add client ClientFate.Queued reference.Clients
                             }
                     | Ok (ConnectOutcome.Failed UnixError.ECONNREFUSED, after) when not reference.Alive ->
                         cover $"%s{flavourName} connect: refused, the listener gone"
@@ -1129,6 +1227,7 @@ module TestBlockingAccept =
                         reference <-
                             { reference with
                                 Fds = Map.add client false reference.Fds
+                                Clients = Map.add client ClientFate.Refused reference.Clients
                             }
                     | other -> failwith $"%s{where}: %A{other}"
                 | AcceptOp.Close fd ->
@@ -1162,11 +1261,10 @@ module TestBlockingAccept =
                     let dies = reference.Alive && not (listenerHeld after)
 
                     match UnixDescriptor.close fd system with
-                    | Error (CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) when
-                        dies && reference.Queued > 0
-                        ->
-                        cover $"%s{flavourName} close: refused, a connection left queued"
-                    | Ok (SyscallAnswer.Completed 0L, closed) when not (dies && reference.Queued > 0) ->
+                    | Ok (SyscallAnswer.Completed 0L, closed) ->
+                        if dies && not reference.Queue.IsEmpty then
+                            cover $"%s{flavourName} close: resets the queued clients"
+
                         if drains then
                             cover "Darwin close: ends every accept on the listener"
 
@@ -1185,11 +1283,7 @@ module TestBlockingAccept =
                             cover "Darwin close: a descriptor onto the listener while an ended accept is unfinished"
 
                         system <- closed
-
-                        reference <-
-                            { after with
-                                Alive = reference.Alive && not dies
-                            }
+                        reference <- releasedIfUnheld after
                     | other -> failwith $"%s{where}: dies %b{dies}, %A{other}"
                 | AcceptOp.Dup fd ->
                     let answer, after = Answered.dup fd system
@@ -1236,7 +1330,7 @@ module TestBlockingAccept =
                         reference.Parks |> Map.exists (fun _ park -> park.Woken && park.Through.IsSome)
 
                     let first =
-                        if reference.Queued = 0 || finishing then
+                        if reference.Queue.IsEmpty || finishing then
                             None
                         else
                             asleep
@@ -1281,42 +1375,35 @@ module TestBlockingAccept =
 
                     let settle (r : AcceptReference) (after : UnixSystem<int, string>) =
                         let r = answered task r
-                        let dies = r.Alive && not (listenerHeld r)
+
+                        if r.Alive && not (listenerHeld r) && not r.Queue.IsEmpty then
+                            cover $"%s{flavourName} finish: resets the clients left queued"
 
                         system <- returnToUser task after
-
-                        reference <-
-                            { r with
-                                Alive = r.Alive && not dies
-                            }
+                        reference <- releasedIfUnheld r
 
                     match park.Through, answer with
                     | None, Ok (AcceptOutcome.Failed UnixError.ECONNABORTED, after) ->
                         cover "Darwin finish: ECONNABORTED"
 
-                        if reference.Queued > 0 then
+                        if not reference.Queue.IsEmpty then
                             cover "Darwin finish: ECONNABORTED with a connection queued"
 
                         if signalled then
                             cover "Darwin finish: ECONNABORTED with a signal pending"
 
                         settle reference after
-                    | Some _, _ when reference.Queued > 0 ->
-                        let leftHeld = listenerHeld (answered task reference)
-
+                    | Some _, _ when not reference.Queue.IsEmpty ->
                         match answer with
                         | Error (AcceptRefusal.Interruption _) when signalled && not linux ->
                             cover "Darwin finish: refused, a connection and a signal"
-                        | Error (AcceptRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _)) when
-                            not leftHeld && reference.Queued > 1
-                            ->
-                            cover $"%s{flavourName} finish: refused, a connection left queued"
-                        | Ok (AcceptOutcome.Accepted (accepted, _, _), after) when leftHeld || reference.Queued = 1 ->
+                        | Ok (AcceptOutcome.Accepted (accepted, _, _), after) ->
                             cover $"%s{flavourName} finish: a connection"
 
                             settle
                                 { reference with
-                                    Queued = reference.Queued - 1
+                                    Queue = List.tail reference.Queue
+                                    Clients = Map.add (List.head reference.Queue) ClientFate.Accepted reference.Clients
                                 }
                                 (dropAccepted accepted after)
                         | other -> failwith $"%s{where}: %A{other}"
@@ -1375,18 +1462,40 @@ module TestBlockingAccept =
 
                 match socket with
                 | Some listenState when reference.Alive ->
-                    (List.length listenState.Queue, listenState.Drained)
-                    |> shouldEqual (reference.Queued, reference.Drained)
+                    (queuedClients listenState.Queue system, listenState.Drained)
+                    |> shouldEqual (reference.Queue, reference.Drained)
                 | None when not reference.Alive -> ()
                 | other -> failwith $"%s{where}: the listener is %A{other}, alive %b{reference.Alive}"
+
+                // Every client's connect has come to what the reference says.
+                for KeyValue (client, fate) in reference.Clients do
+                    let actual = clientFate client system
+
+                    if actual <> fate then
+                        failwith $"%s{where}: client fd %d{client} is %A{actual}, expected %A{fate}"
+
+        // An accept asleep on the listener's only descriptor, which closes;
+        // two connects; and the accept finished. Under Linux the finish takes
+        // one connection and releases the listener, which resets the other,
+        // a path random steps seldom line up.
+        let releasingOpening : AcceptOp list =
+            [
+                AcceptOp.Accept (0, 3)
+                AcceptOp.Close 3
+                AcceptOp.Connect
+                AcceptOp.Connect
+                AcceptOp.Wake
+                AcceptOp.Finish 0
+            ]
 
         let gen =
             gen {
                 let! platform = platformGen
                 let! restart = ArbMap.defaults |> ArbMap.generate<bool>
+                let! opening = Gen.frequency [ 3, Gen.constant [] ; 1, Gen.constant releasingOpening ]
                 let! length = Gen.choose (0, 60)
                 let! ops = Gen.listOfLength length acceptOpGen
-                return platform, restart, ops
+                return platform, restart, opening @ ops
             }
 
         let config = Config.QuickThrowOnFailure.WithMaxTest 1000
@@ -1408,8 +1517,8 @@ module TestBlockingAccept =
             [
                 "Linux accept: sleeps"
                 "Linux finish: a connection"
-                "Linux close: refused, a connection left queued"
-                "Linux finish: refused, a connection left queued"
+                "Linux close: resets the queued clients"
+                "Linux finish: resets the clients left queued"
                 "Linux connect: refused, the listener gone"
                 "Darwin accept: sleeps"
                 "Darwin accept: a queued connection"
@@ -1417,7 +1526,7 @@ module TestBlockingAccept =
                 "Darwin close: ends every accept on the listener"
                 "Darwin close: ends an accept made through another descriptor"
                 "Darwin close: a descriptor onto the listener while an ended accept is unfinished"
-                "Darwin close: refused, a connection left queued"
+                "Darwin close: resets the queued clients"
                 "Darwin connect: refused, the listener gone"
                 "Darwin dup: a number an ended accept was made through"
                 "Darwin finish: ECONNABORTED"

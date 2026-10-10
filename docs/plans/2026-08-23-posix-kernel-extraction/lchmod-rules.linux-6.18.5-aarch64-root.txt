@@ -1,0 +1,70 @@
+UNAME	Linux 6.18.5 aarch64	euid=0
+CONST	AT_FDCWD=-100	AT_SYMLINK_NOFOLLOW=0x100
+CALLS	caller=0	lchmod	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=EOPNOTSUPP l:0777>0777 s:0644>0644	ld=EOPNOTSUPP l:0777>0777 s:0755>0755	dang=EOPNOTSUPP l:0777>0777 s:->-	cyc=EOPNOTSUPP l:0777>0777 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EOPNOTSUPP l:0777>0777 s:0644>0644	theirs-file=ok l:0644>0640 s:0644>0640	theirs-dir=ok l:0755>0640 s:0755>0640
+CALLS	caller=0	fchmodat	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=EOPNOTSUPP l:0777>0777 s:0644>0644	ld=EOPNOTSUPP l:0777>0777 s:0755>0755	dang=EOPNOTSUPP l:0777>0777 s:->-	cyc=EOPNOTSUPP l:0777>0777 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EOPNOTSUPP l:0777>0777 s:0644>0644	theirs-file=ok l:0644>0640 s:0644>0640	theirs-dir=ok l:0755>0640 s:0755>0640
+CALLS	caller=0	fchmodat2	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=EOPNOTSUPP l:0777>0777 s:0644>0644	ld=EOPNOTSUPP l:0777>0777 s:0755>0755	dang=EOPNOTSUPP l:0777>0777 s:->-	cyc=EOPNOTSUPP l:0777>0777 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EOPNOTSUPP l:0777>0777 s:0644>0644	theirs-file=ok l:0644>0640 s:0644>0640	theirs-dir=ok l:0755>0640 s:0755>0640
+MODES	caller=0	link	in-group	group=0	EOPNOTSUPP=4096	differs=0	unexpected=0	kept-suid=0	kept-sgid=0	kept-svtx=0
+MODES	caller=0	link	out-of-group	group=2000	EOPNOTSUPP=4096	differs=0	unexpected=0	kept-suid=0	kept-sgid=0	kept-svtx=0
+MODES	caller=0	file	in-group	group=0	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=2048	kept-svtx=2048
+MODES	caller=0	file	out-of-group	group=2000	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=2048	kept-svtx=2048
+MODES	caller=0	dir	in-group	group=0	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=2048	kept-svtx=2048
+MODES	caller=0	dir	out-of-group	group=2000	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=2048	kept-svtx=2048
+TIMES	caller=0	lchmod	lf 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	lchmod	lf same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	lchmod	dang 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target -	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	lchmod	theirs-link same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	fchmodat	lf 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	fchmodat	lf same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	fchmodat	dang 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target -	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	fchmodat	theirs-link same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	fchmodat2	lf 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	fchmodat2	lf same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	fchmodat2	dang 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target -	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=0	fchmodat2	theirs-link same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+UMASK	caller=0	lchmod	077	EOPNOTSUPP 0777
+UMASK	caller=0	fchmodat	077	EOPNOTSUPP 0777
+UMASK	caller=0	fchmodat2	077	EOPNOTSUPP 0777
+HIGH	caller=0	lchmod	f	ok l:0640 s:0640
+HIGH	caller=0	lchmod	lf	EOPNOTSUPP l:0777 s:0644
+HIGH	caller=0	fchmodat	f	ok l:0640 s:0640
+HIGH	caller=0	fchmodat	lf	EOPNOTSUPP l:0777 s:0644
+HIGH	caller=0	fchmodat2	f	ok l:0640 s:0640
+HIGH	caller=0	fchmodat2	lf	EOPNOTSUPP l:0777 s:0644
+DIRFD	caller=0	fchmodat	AT_SYMLINK_NOFOLLOW	EOPNOTSUPP l:0777 f:0644
+DIRFD	caller=0	fchmodat	0	ok l:0777 f:0640
+DIRFD	caller=0	fchmodat2	AT_SYMLINK_NOFOLLOW	EOPNOTSUPP l:0777 f:0644
+DIRFD	caller=0	fchmodat2	0	ok l:0777 f:0640
+CALLS	caller=1000	lchmod	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=EOPNOTSUPP l:0777>0777 s:0644>0644	ld=EOPNOTSUPP l:0777>0777 s:0755>0755	dang=EOPNOTSUPP l:0777>0777 s:->-	cyc=EOPNOTSUPP l:0777>0777 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EOPNOTSUPP l:0777>0777 s:0644>0644	theirs-file=EPERM l:0644>0644 s:0644>0644	theirs-dir=EPERM l:0755>0755 s:0755>0755
+CALLS	caller=1000	fchmodat	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=EOPNOTSUPP l:0777>0777 s:0644>0644	ld=EOPNOTSUPP l:0777>0777 s:0755>0755	dang=EOPNOTSUPP l:0777>0777 s:->-	cyc=EOPNOTSUPP l:0777>0777 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EOPNOTSUPP l:0777>0777 s:0644>0644	theirs-file=EPERM l:0644>0644 s:0644>0644	theirs-dir=EPERM l:0755>0755 s:0755>0755
+CALLS	caller=1000	fchmodat2	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=EOPNOTSUPP l:0777>0777 s:0644>0644	ld=EOPNOTSUPP l:0777>0777 s:0755>0755	dang=EOPNOTSUPP l:0777>0777 s:->-	cyc=EOPNOTSUPP l:0777>0777 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EOPNOTSUPP l:0777>0777 s:0644>0644	theirs-file=EPERM l:0644>0644 s:0644>0644	theirs-dir=EPERM l:0755>0755 s:0755>0755
+MODES	caller=1000	link	in-group	group=1000	EOPNOTSUPP=4096	differs=0	unexpected=0	kept-suid=0	kept-sgid=0	kept-svtx=0
+MODES	caller=1000	link	out-of-group	group=2000	EOPNOTSUPP=4096	differs=0	unexpected=0	kept-suid=0	kept-sgid=0	kept-svtx=0
+MODES	caller=1000	file	in-group	group=1000	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=2048	kept-svtx=2048
+MODES	caller=1000	file	out-of-group	group=2000	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=0	kept-svtx=2048
+MODES	caller=1000	dir	in-group	group=1000	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=2048	kept-svtx=2048
+MODES	caller=1000	dir	out-of-group	group=2000	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=0	kept-svtx=2048
+TIMES	caller=1000	lchmod	lf 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	lchmod	lf same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	lchmod	dang 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target -	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	lchmod	theirs-link same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	fchmodat	lf 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	fchmodat	lf same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	fchmodat	dang 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target -	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	fchmodat	theirs-link same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	fchmodat2	lf 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	fchmodat2	lf same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	fchmodat2	dang 0700	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target -	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=1000	fchmodat2	theirs-link same	EOPNOTSUPP	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+UMASK	caller=1000	lchmod	077	EOPNOTSUPP 0777
+UMASK	caller=1000	fchmodat	077	EOPNOTSUPP 0777
+UMASK	caller=1000	fchmodat2	077	EOPNOTSUPP 0777
+HIGH	caller=1000	lchmod	f	ok l:0640 s:0640
+HIGH	caller=1000	lchmod	lf	EOPNOTSUPP l:0777 s:0644
+HIGH	caller=1000	fchmodat	f	ok l:0640 s:0640
+HIGH	caller=1000	fchmodat	lf	EOPNOTSUPP l:0777 s:0644
+HIGH	caller=1000	fchmodat2	f	ok l:0640 s:0640
+HIGH	caller=1000	fchmodat2	lf	EOPNOTSUPP l:0777 s:0644
+DIRFD	caller=1000	fchmodat	AT_SYMLINK_NOFOLLOW	EOPNOTSUPP l:0777 f:0644
+DIRFD	caller=1000	fchmodat	0	ok l:0777 f:0640
+DIRFD	caller=1000	fchmodat2	AT_SYMLINK_NOFOLLOW	EOPNOTSUPP l:0777 f:0644
+DIRFD	caller=1000	fchmodat2	0	ok l:0777 f:0640

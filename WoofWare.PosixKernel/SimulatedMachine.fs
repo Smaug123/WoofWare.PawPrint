@@ -95,10 +95,8 @@ module ProcessCreationRefusal =
 type ProcessEndRefusal =
     /// Closing the process's descriptors releases an open file description
     /// this library will not release (`DescriptionReleaseRefusal`): so far,
-    /// the last reference to a listener holding a connection another
-    /// process's open socket made, which a real kernel resets, or to a
-    /// connected socket whose `SO_LINGER` would make its close reset the
-    /// connection or wait.
+    /// the last reference to a connected socket whose `SO_LINGER` would make
+    /// its close reset the connection or wait.
     | Release of DescriptionReleaseRefusal
 
 [<RequireQualifiedAccess>]
@@ -410,18 +408,14 @@ module SimulatedMachine =
     /// of, the last first; Darwin drops them highest first, releasing each as
     /// it goes. Each release does everything a `close(2)` of the last
     /// descriptor onto the description does: a connected peer gets its FIN,
-    /// a lock is let go of, a pipe end closes, an epoll instance, a kqueue or a
-    /// listener goes, and every registration made through the descriptor with
-    /// it. A listener's release signals nothing, so it is made after every
-    /// other, whether a descriptor or a call held it last: a connection the
-    /// process's own socket left unaccepted in it has gone first, as it goes
-    /// with the process. The process ID, thread IDs and
-    /// current directory are let go of with the tasks.
+    /// a lock is let go of, a pipe end closes, an epoll instance or a kqueue
+    /// goes, a listener goes and resets each client still in its accept
+    /// queue, whichever process holds it, and every registration made through
+    /// the descriptor goes with it. The process ID, thread IDs and current
+    /// directory are let go of with the tasks.
     ///
-    /// Refuses (`ProcessEndRefusal`) where a close would be refused: a listener
-    /// holding a connection from another process's socket that is still open,
-    /// which a real kernel resets, is not released. The machine is then as it
-    /// was.
+    /// Refuses (`ProcessEndRefusal`) where a close would be refused. The
+    /// machine is then as it was.
     ///
     /// Fails loudly, as `unfocus` does, if the view the process ended in
     /// (`EndedProcess.endedIn`) is not a view of `machine` as it stands.
@@ -445,39 +439,6 @@ module SimulatedMachine =
                 Origin = FocusOrigin.NotFocused
             }
 
-        let isListener (description : OpenFileDescription) (machine : UnixMachineState) : bool =
-            match description.Target with
-            | OpenFileTarget.Socket socketId ->
-                match (UnixMachineState.socket socketId machine).Phase with
-                | SocketPhase.Listening _ -> true
-                | SocketPhase.Idle
-                | SocketPhase.Established _
-                | SocketPhase.EstablishedPendingReport _
-                | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> false
-            | OpenFileTarget.File _
-            | OpenFileTarget.Directory _
-            | OpenFileTarget.CharacterDevice _
-            | OpenFileTarget.Pipe _
-            | OpenFileTarget.Epoll _
-            | OpenFileTarget.Kqueue _ -> false
-
-        // A listener's release signals nothing, so it waits for every other
-        // release; any other goes at once.
-        let release
-            (state : Result<UnixSystem<'Task, 'Handler> * OpenFileDescription list, DescriptionReleaseRefusal>)
-            (destroyed : OpenFileDescription)
-            : Result<UnixSystem<'Task, 'Handler> * OpenFileDescription list, DescriptionReleaseRefusal>
-            =
-            match state with
-            | Error refusal -> Error refusal
-            | Ok (dead, listeners) ->
-                if isListener destroyed dead.Machine then
-                    Ok (dead, destroyed :: listeners)
-                else
-                    ObjectLifetime.releaseDestroyed destroyed dead
-                    |> Result.map (fun dead -> dead, listeners)
-
         // First what nothing references any more: what the process's calls in
         // flight held, whose holds went with its tasks, and what the call that
         // ended the process let go of as it returned. These go as the calls
@@ -494,18 +455,18 @@ module SimulatedMachine =
             |> Seq.toList
 
         let released =
-            ((Ok (dead, []) : Result<UnixSystem<'Task, 'Handler> * OpenFileDescription list, DescriptionReleaseRefusal>),
-             unreferenced)
+            ((Ok dead : Result<UnixSystem<'Task, 'Handler>, DescriptionReleaseRefusal>), unreferenced)
             ||> List.fold (fun state id ->
                 match state with
                 | Error refusal -> Error refusal
-                | Ok (dead, listeners) ->
+                | Ok dead ->
                     match OpenFileTable.destroyIfUnreferenced id dead.Machine.OpenFiles with
                     | _, None ->
                         failwith
                             $"SimulatedMachine.endProcess: open file description %O{id} was unreferenced a moment ago, and destroying it destroyed nothing (this is a bug in this library)."
                     | openFiles, Some destroyed ->
-                        release (Ok (UnixSystemState.mapOpenFiles (fun _ -> openFiles) dead, listeners)) destroyed
+                        UnixSystemState.mapOpenFiles (fun _ -> openFiles) dead
+                        |> ObjectLifetime.releaseDestroyed destroyed
             )
 
         // Then every descriptor. Measured on Linux 6.18.5 and Darwin 27.0.0
@@ -527,7 +488,7 @@ module SimulatedMachine =
         let closed =
             match released with
             | Error refusal -> Error refusal
-            | Ok (dead, listeners) ->
+            | Ok dead ->
                 let ascending =
                     FileDescriptorRegistry.fds (UnixSystemState.fileDescriptors dead)
                     |> Map.keys
@@ -545,32 +506,23 @@ module SimulatedMachine =
                             | dead, Some description -> dead, description :: destroyed
                         )
 
-                    (Ok (dead, listeners), destroyed) ||> List.fold release
+                    (Ok dead, destroyed)
+                    ||> List.fold (fun state destroyed ->
+                        state |> Result.bind (ObjectLifetime.releaseDestroyed destroyed)
+                    )
                 | SimulatedUnixFlavour.Darwin ->
-                    (Ok (dead, listeners), List.rev ascending)
+                    (Ok dead, List.rev ascending)
                     ||> List.fold (fun state fd ->
                         match state with
                         | Error refusal -> Error refusal
-                        | Ok (dead, listeners) ->
+                        | Ok dead ->
 
                         match drop fd dead with
-                        | dead, None -> Ok (dead, listeners)
-                        | dead, Some destroyed -> release (Ok (dead, listeners)) destroyed
+                        | dead, None -> Ok dead
+                        | dead, Some destroyed -> ObjectLifetime.releaseDestroyed destroyed dead
                     )
 
-        // Then the listeners, in the order they were let go of.
-        let finished =
-            match closed with
-            | Error refusal -> Error refusal
-            | Ok (dead, listeners) ->
-                (Ok dead, List.rev listeners)
-                ||> List.fold (fun state listener ->
-                    match state with
-                    | Error refusal -> Error refusal
-                    | Ok dead -> ObjectLifetime.releaseDestroyed listener dead
-                )
-
-        match finished with
+        match closed with
         | Error refusal -> Error (ProcessEndRefusal.Release refusal)
         | Ok dead ->
             Ok (

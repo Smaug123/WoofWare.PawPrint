@@ -157,8 +157,8 @@ type UnixSystemDefect<'Task> =
     /// way to make a socket — `UnixSocket.socket`, or `UnixConnection.accept`
     /// materialising a queued connection — hands back a descriptor at once,
     /// so an unreferenced socket means a close forgot to clean up. A
-    /// connection awaiting accept is a `TcpConnection`, not a socket, which
-    /// is what lets this rule stay strict.
+    /// connection awaiting accept is held on its listener's queue, not as a
+    /// socket, which is what lets this rule stay strict.
     | UnreferencedSocket of socket : SocketId
     /// A socket in the table has an identity at or above the next one to
     /// allocate, so a future `socket(2)` would mint a duplicate.
@@ -561,8 +561,10 @@ type UnixSystemDefect<'Task> =
     /// anything but `ProtectedFiles.off` on Darwin.
     | ProtectedFilesNotOfFlavour of protection : ProtectedFiles * flavour : SimulatedUnixFlavour
     /// The symbolic link at `inode` has permission bits no link of the
-    /// platform's flavour is created with, under any umask: anything but 0o777
-    /// on Linux, and anything outside 0o777 on Darwin.
+    /// platform's flavour can have: anything but 0o777 on Linux, which creates
+    /// every link with those bits and never changes them. A Darwin link can
+    /// have any bits, since `fchmodat(2)` changes them
+    /// (`SimulatedUnixPlatform.symlinkModeChange`).
     | SymlinkPermissionsNotOfFlavour of
         inode : InodeNumber *
         permissions : PermissionBits *
@@ -1723,9 +1725,15 @@ module UnixSystem =
                 ]
 
         // Every symbolic link's bits are ones its flavour creates a link with,
-        // under the umask that would leave exactly those bits.
+        // under the umask that would leave exactly those bits, unless the
+        // flavour changes a link's bits afterwards, which makes any bits ones a
+        // link can have.
         let symlinkPermissions =
             let platform = machine.UnixPlatform
+
+            match SimulatedUnixPlatform.symlinkModeChange platform with
+            | SymlinkModeChange.ChangesLink -> []
+            | SymlinkModeChange.NotSupported ->
 
             VirtualFileSystem.inodes machine.FileSystem
             |> Map.toList

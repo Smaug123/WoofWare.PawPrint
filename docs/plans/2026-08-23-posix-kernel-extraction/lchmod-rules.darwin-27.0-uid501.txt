@@ -1,0 +1,26 @@
+UNAME	Darwin 27.0.0 arm64	euid=501
+CONST	AT_FDCWD=-2	AT_SYMLINK_NOFOLLOW=0x20
+CALLS	caller=501	lchmod	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=ok l:0755>0640 s:0644>0644	ld=ok l:0755>0640 s:0755>0755	dang=ok l:0755>0640 s:->-	cyc=ok l:0755>0640 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EACCES l:0755>0755 s:0644>0644	theirs-file=EACCES l:0644>0644 s:0644>0644	theirs-dir=EACCES l:0750>0750 s:0750>0750
+CALLS	caller=501	fchmodat	f=ok l:0644>0640 s:0644>0640	d=ok l:0755>0640 s:0755>0640	lf=ok l:0755>0640 s:0644>0644	ld=ok l:0755>0640 s:0755>0755	dang=ok l:0755>0640 s:->-	cyc=ok l:0755>0640 s:->-	lf/=ENOTDIR l:->- s:->-	ld/=ok l:0755>0640 s:0755>0640	nx=ENOENT l:->- s:->-	=ENOENT l:->- s:->-	theirs-link=EPERM l:0755>0755 s:0644>0644	theirs-file=EPERM l:0644>0644 s:0644>0644	theirs-dir=EPERM l:0750>0750 s:0750>0750
+MODES	caller=501	link	in-group	group=20	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=2048	kept-svtx=2048
+MODES	caller=501	link	out-of-group	[differs 2000: EPERM 1777 against ok 0000] [differs 2001: EPERM 1777 against ok 0001] [differs 2002: EPERM 1777 against ok 0002] [differs 2003: EPERM 1777 against ok 0003] [differs 2004: EPERM 1777 against ok 0004] group=0	ok=2048	EPERM=2048	differs=2048	unexpected=0	kept-suid=1024	kept-sgid=0	kept-svtx=1024
+MODES	caller=501	file	in-group	group=20	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=2048	kept-svtx=2048
+MODES	caller=501	file	out-of-group	[differs 2000: EPERM 1777 against ok 0000] [differs 2001: EPERM 1777 against ok 0001] [differs 2002: EPERM 1777 against ok 0002] [differs 2003: EPERM 1777 against ok 0003] [differs 2004: EPERM 1777 against ok 0004] group=0	ok=2048	EPERM=2048	differs=2048	unexpected=0	kept-suid=1024	kept-sgid=0	kept-svtx=1024
+MODES	caller=501	dir	in-group	group=20	ok=4096	differs=0	unexpected=0	kept-suid=2048	kept-sgid=2048	kept-svtx=2048
+MODES	caller=501	dir	out-of-group	[differs 2000: EPERM 1777 against ok 0000] [differs 2001: EPERM 1777 against ok 0001] [differs 2002: EPERM 1777 against ok 0002] [differs 2003: EPERM 1777 against ok 0003] [differs 2004: EPERM 1777 against ok 0004] group=0	ok=2048	EPERM=2048	differs=2048	unexpected=0	kept-suid=1024	kept-sgid=0	kept-svtx=1024
+TIMES	caller=501	lchmod	lf 0700	ok	link atime=kept mtime=kept ctime=moved	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=501	lchmod	lf same	ok	link atime=kept mtime=kept ctime=moved	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=501	lchmod	dang 0700	ok	link atime=kept mtime=kept ctime=moved	target -	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=501	lchmod	theirs-link same	EACCES	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=501	fchmodat	lf 0700	ok	link atime=kept mtime=kept ctime=moved	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=501	fchmodat	lf same	ok	link atime=kept mtime=kept ctime=moved	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=501	fchmodat	dang 0700	ok	link atime=kept mtime=kept ctime=moved	target -	directory atime=kept mtime=kept ctime=kept
+TIMES	caller=501	fchmodat	theirs-link same	EPERM	link atime=kept mtime=kept ctime=kept	target atime=kept mtime=kept ctime=kept	directory atime=kept mtime=kept ctime=kept
+UMASK	caller=501	lchmod	077	ok 0777
+UMASK	caller=501	fchmodat	077	ok 0777
+HIGH	caller=501	lchmod	f	ok l:0640 s:0640
+HIGH	caller=501	lchmod	lf	ok l:0640 s:0644
+HIGH	caller=501	fchmodat	f	ok l:0640 s:0640
+HIGH	caller=501	fchmodat	lf	ok l:0640 s:0644
+DIRFD	caller=501	fchmodat	AT_SYMLINK_NOFOLLOW	ok l:0640 f:0644
+DIRFD	caller=501	fchmodat	0	ok l:0755 f:0640

@@ -20,7 +20,9 @@ open WoofWare.PosixKernel
 /// one process at a time, and each finish moves its own process's slot
 /// alone; a process's end removes its own). After a call, the calling
 /// process's new descriptors are the lowest its own table had free, whatever
-/// the other processes hold.
+/// the other processes hold. A client whose connection waited in a listener's
+/// queue is reset exactly when the step released the listener, by a close or
+/// its process's end, without first accepting the connection.
 ///
 /// Calls block: sockets are blocking or not, `accept`, `epoll_wait`, `kevent`,
 /// `poll`, `flock` and pipe transfers sleep, and a sleeping task makes no call
@@ -60,6 +62,13 @@ module TestMultiProcessFuzz =
         /// Set `O_NONBLOCK` on the description of the socket `ReceiveThrough`
         /// picks.
         | MakeNonBlockingThrough of port : int
+        /// A `Receive` on the process's end of the latest connection it
+        /// holds, if it holds one: the one its last connect made, which
+        /// `Receive`'s index seldom picks out.
+        | ReceiveNewest of size : int
+        /// A `close` of the process's listener at `ports.[port]`, if it holds
+        /// one.
+        | CloseListener of port : int
         | Pipe
         | PipeRead of fd : int
         | PipeWrite of fd : int * size : int
@@ -242,6 +251,8 @@ module TestMultiProcessFuzz =
             let! dir = small
 
             let byFirst (op : Op) : Step = Step.Call (first, firstTask, op)
+            let! closeListener = Gen.elements [ true ; false ]
+            let! status = Gen.choose (0, 3)
             let bySecond (op : Op) : Step = Step.Call (second, secondTask, op)
             // A prepared process holds the server end of the connection through
             // `ports.[first]`, and the process before it the client end.
@@ -352,6 +363,31 @@ module TestMultiProcessFuzz =
                                 byFirst (Op.BlockAndRaise first)
                                 byFirst (Op.Unblock first)
                             ]
+                        // The second connects to the first's listener, a
+                        // prepared one at `ports.[first]` or one an earlier
+                        // scenario made, and sleeps in a blocking read of the
+                        // connection, which waits unaccepted in the queue; the
+                        // first closes its listener, or ends, which resets the
+                        // queued client and wakes the read. A closing first
+                        // listens again, so that later scenarios find a
+                        // listener there.
+                        3,
+                        Gen.constant (
+                            [
+                                bySecond (Op.Socket false)
+                                bySecond (Op.Connect (0, first))
+                                bySecond (Op.ReceiveNewest 65536)
+                            ]
+                            @ (if closeListener then
+                                   [
+                                       byFirst (Op.CloseListener first)
+                                       byFirst (Op.Socket false)
+                                       byFirst (Op.Bind (0, first))
+                                       byFirst (Op.Listen 0)
+                                   ]
+                               else
+                                   [ byFirst (Op.Exit status) ])
+                        )
                         // The server end writes, the client end closes with that
                         // unread, a reset, and the server end's read meets it.
                         3,
@@ -456,6 +492,14 @@ module TestMultiProcessFuzz =
         | ConnectionWritePark
         /// A finished connection transfer that answered.
         | ConnectionFinish
+        /// A step that reset a client whose connection waited in a listener's
+        /// queue, by releasing the listener: a close, or its process's end.
+        | QueuedClientReset
+        /// A `QueuedClientReset` of a client another process holds.
+        | CrossQueuedClientReset
+        /// A `QueuedClientReset` that made a read asleep in the client's
+        /// process wakeable.
+        | QueuedClientResetWakesRead
         /// A step refused, which tested nothing.
         | Refusal
         | Call
@@ -581,6 +625,22 @@ module TestMultiProcessFuzz =
         )
         |> List.sort
         |> List.tryHead
+        |> Option.map snd
+
+    /// The descriptor of `view` naming its end of the latest connection it
+    /// holds, if it holds one.
+    let private newestConnected (view : UnixSystem<int, string>) : int option =
+        fdsOf view
+        |> Map.toList
+        |> List.choose (fun (fd, target) ->
+            match target with
+            | OpenFileTarget.Socket socket ->
+                SocketPhase.connectionEnd (UnixMachineState.socket socket view.Machine).Phase
+                |> Option.map (fun (connection, _) -> connection, fd)
+            | _ -> None
+        )
+        |> List.sort
+        |> List.tryLast
         |> Option.map snd
 
     /// The process whose descriptors name the socket at the other end of the
@@ -905,6 +965,20 @@ module TestMultiProcessFuzz =
             match connectedThrough port view with
             | None -> Made.Answered view
             | Some fd -> Made.Answered (UnixDescriptor.setNonBlocking fd true view |> snd)
+        | Op.ReceiveNewest size ->
+            match newestConnected view with
+            | None -> Made.Answered view
+            | Some fd -> receive fd size
+        | Op.CloseListener port ->
+            let port = ports.[port % ports.Length]
+
+            let listeningAt (socket : SocketDescription) : bool =
+                listening socket
+                && socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port = port)
+
+            match socketsWhere listeningAt view with
+            | [] -> Made.Answered view
+            | listener :: _ -> UnixDescriptor.close listener view |> answered
         | Op.Pipe -> UnixPipe.pipe2 0 UserBuffer.Mapped view |> answered
         | Op.PipeRead fd ->
             match pick fd (ofKind (isPipeEnd PipeEnd.Read) view) with
@@ -1489,6 +1563,123 @@ module TestMultiProcessFuzz =
             |> UnixBootImage.withTcpReceiveSpace (Some UnixMachineState.darwinLoopbackReceivePipe)
             |> Configured.expectOk TcpReceiveSpaceRefusal.describe
 
+    /// A connection waiting in a listener's accept queue, and which process
+    /// names each of its two sockets, if one does.
+    type private QueuedClient =
+        {
+            Listener : SocketId
+            ListenerOwner : ProcessId option
+            Connection : ConnectionId
+            Client : SocketId
+            ClientOwner : ProcessId option
+        }
+
+    /// Every connection waiting in a listener's queue on `machine`.
+    let private queuedClients (machine : SimulatedMachine<int, string>) : QueuedClient list =
+        let ownerOf (socket : SocketId) : ProcessId option =
+            machine.Processes
+            |> Map.toSeq
+            |> Seq.tryPick (fun (pid, _) ->
+                let names =
+                    fdsOf (SimulatedMachine.focus pid machine |> Option.get)
+                    |> Map.exists (fun _ target -> target = OpenFileTarget.Socket socket)
+
+                if names then Some pid else None
+            )
+
+        machine.Machine.Sockets
+        |> Map.toList
+        |> List.collect (fun (listener, socket) ->
+            match socket.Phase with
+            | SocketPhase.Listening listenState ->
+                // A connection whose client has closed has nothing left to
+                // reset, and is left out.
+                listenState.Queue
+                |> List.choose (fun connection ->
+                    UnixMachineState.socketHoldingEnd connection ConnectionEnd.Client machine.Machine
+                    |> Option.map (fun client ->
+                        {
+                            Listener = listener
+                            ListenerOwner = ownerOf listener
+                            Connection = connection
+                            Client = client
+                            ClientOwner = ownerOf client
+                        }
+                    )
+                )
+            | _ -> []
+        )
+
+    /// Each of `queued`, the connections waiting in a listener's queue before
+    /// a step, whose client is still open on `after`: reset if the step
+    /// released its listener, unless the step accepted it first, and not
+    /// reset while it is still queued.
+    ///
+    /// One step can accept a connection and then release its listener, as a
+    /// wake pass finishes an accept that held the listener's last reference,
+    /// and can then close the accepted socket, as the acceptor's process
+    /// ends. So a client the step did not reset must show that it was
+    /// accepted: its connection's server end has a socket, or has sent it a
+    /// FIN, which a queued server end never does.
+    ///
+    /// The clients the step reset.
+    let private checkQueuedClients
+        (cover : FuzzLabel -> unit)
+        (queued : QueuedClient list)
+        (after : SimulatedMachine<int, string>)
+        : QueuedClient list
+        =
+        queued
+        |> List.filter (fun queued ->
+            match Map.tryFind queued.Client after.Machine.Sockets with
+            | None -> false
+            | Some _ ->
+
+            let transfer =
+                (UnixMachineState.connection queued.Connection after.Machine).Transfer
+
+            let reset = TcpTransfer.hasBeenReset ConnectionEnd.Client transfer
+
+            let accepted =
+                (UnixMachineState.socketHoldingEnd queued.Connection ConnectionEnd.Server after.Machine).IsSome
+                || (
+                    match (TcpTransfer.towards ConnectionEnd.Client transfer).Receiver with
+                    | TcpEndState.FinQueued
+                    | TcpEndState.FinReceived -> true
+                    | TcpEndState.Open
+                    | TcpEndState.Reset _
+                    | TcpEndState.Closed -> false
+                )
+
+            let stillQueued =
+                match Map.tryFind queued.Listener after.Machine.Sockets with
+                | Some socket ->
+                    match socket.Phase with
+                    | SocketPhase.Listening listenState -> List.contains queued.Connection listenState.Queue
+                    | _ -> false
+                | None -> false
+
+            if stillQueued then
+                if reset then
+                    failwith
+                        $"client %O{queued.Client} was reset while its connection waited in listener %O{queued.Listener}'s queue"
+
+                false
+            elif Map.containsKey queued.Listener after.Machine.Sockets || accepted then
+                false
+            elif not reset then
+                failwith $"listener %O{queued.Listener} went, and client %O{queued.Client} it queued was not reset"
+            else
+                cover FuzzLabel.QueuedClientReset
+
+                match queued.ListenerOwner, queued.ClientOwner with
+                | Some listenerOwner, Some clientOwner when listenerOwner <> clientOwner ->
+                    cover FuzzLabel.CrossQueuedClientReset
+                | _ -> ()
+
+                true
+        )
+
     let private run (cover : FuzzLabel -> unit) (case : Case) : unit =
         let pids, machine =
             Machines.withTasksOn smallBuffers case.Platform case.Processes tasks
@@ -1539,9 +1730,38 @@ module TestMultiProcessFuzz =
             }
 
         (world, case.Steps)
-        ||> List.fold (fun world next ->
-            let world = step cover world next
+        ||> List.fold (fun before next ->
+            let queued = queuedClients before.Machine
+
+            let wakeableBefore =
+                if queued.IsEmpty then
+                    Set.empty
+                else
+                    wakeable before |> Map.keys |> Set.ofSeq
+
+            let world = step cover before next
             assertClean world.Machine
+
+            let reset = checkQueuedClients cover queued world.Machine
+            let owners = reset |> List.choose (fun queued -> queued.ClientOwner) |> Set.ofList
+
+            let wokenRead =
+                not reset.IsEmpty
+                && wakeable world
+                   |> Map.exists (fun (pid, _ as key) fired ->
+                       Set.contains pid owners
+                       && not (Set.contains key wakeableBefore)
+                       && fired
+                          |> Set.exists (fun primitive ->
+                              match primitive with
+                              | WakePrimitive.ConnectionReadable _ -> true
+                              | _ -> false
+                          )
+                   )
+
+            if wokenRead then
+                cover FuzzLabel.QueuedClientResetWakesRead
+
             world
         )
         |> ignore
@@ -1582,6 +1802,10 @@ module TestMultiProcessFuzz =
         coverage.Count FuzzLabel.ConnectionReadPark |> shouldBeGreaterThan 180
         coverage.Count FuzzLabel.ConnectionWritePark |> shouldBeGreaterThan 112
         coverage.Count FuzzLabel.ConnectionFinish |> shouldBeGreaterThan 68
+        // A third of what the fixed sample reached when these were added.
+        coverage.Count FuzzLabel.QueuedClientReset |> shouldBeGreaterThan 145
+        coverage.Count FuzzLabel.CrossQueuedClientReset |> shouldBeGreaterThan 136
+        coverage.Count FuzzLabel.QueuedClientResetWakesRead |> shouldBeGreaterThan 80
 
         let crossWakes (kind : string) : int =
             coverage.Count (FuzzLabel.CrossWakeKind kind)

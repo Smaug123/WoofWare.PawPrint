@@ -9,7 +9,7 @@ open System.Collections.Immutable
 /// reads back about the machine it is running on.
 ///
 /// Everything here is state any client of a POSIX simulator would have.
-type UnixMachineState =
+type internal UnixMachineState =
     internal
         {
             /// Every open file description on the machine, whichever process's

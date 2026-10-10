@@ -86,7 +86,7 @@ type internal TcpTransferRules =
 /// What travels over one TCP connection, in both directions, and the rules
 /// of the flavour the connection was made under.
 [<NoComparison>]
-type TcpTransfer =
+type internal TcpTransfer =
     internal
         {
             /// Bytes the server end has written towards the client end, and
