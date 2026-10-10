@@ -3271,7 +3271,27 @@ module NullaryIlOp =
 
             (state, WhatWeDid.Executed) |> ExecutionResult.stepped
         | Arglist -> failwith "TODO: Arglist unimplemented"
-        | Ckfinite -> failwith "TODO: Ckfinite unimplemented"
+        | Ckfinite ->
+            let popped, state = IlMachineState.popEvalStack currentThread state
+
+            let operand =
+                match popped with
+                | EvalStackValue.Float f -> f
+                | other -> failwith $"ckfinite takes a float (ECMA-335 III.3.19), but the stack held %O{other}"
+
+            if Double.IsFinite (EvalStackFloat.toDouble operand) then
+                // The operand stays at its own width: CoreCLR's importer gives the result the
+                // operand's type, so a float32 is not widened.
+                state
+                |> IlMachineState.pushToEvalStack' popped currentThread
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            else
+                // III.3.19 names ArithmeticException; CoreCLR raises its subclass OverflowException.
+                // Exception dispatch uses the faulting instruction's PC, so do not advance it.
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
+                |> ExecutionResult.stepped
         | Readonly ->
             // ECMA-335 III.2.2: `readonly.` precedes `ldelema`. The resulting controlled-
             // mutability managed pointer must not be used to write through, nor to call
