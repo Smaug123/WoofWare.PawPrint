@@ -78,7 +78,7 @@ public class TestArrayOperations
         return 0;
     }
     
-    // Test Ldelem_u1/Stelem_u1: Load/Store uint8 element
+    // Test Ldelem_u1/Stelem_i1: Load/Store uint8 element
     public static int TestArrayUInt8()
     {
         byte[] arr = new byte[] { 0, 1, 128, 255 };
@@ -89,7 +89,7 @@ public class TestArrayOperations
         if (arr[2] != 128) return 32;
         if (arr[3] != 255) return 33;
         
-        // Stelem_u1: Store uint8 element (if implemented)
+        // Stelem_i1: Store uint8 element (there is no stelem.u1)
         arr[1] = 200;
         if (arr[1] != 200) return 34;
         
@@ -121,7 +121,7 @@ public class TestArrayOperations
         return 0;
     }
     
-    // Test Ldelem_u2/Stelem_u2: Load/Store uint16 element
+    // Test Ldelem_u2/Stelem_i2: Load/Store uint16 element
     public static int TestArrayUInt16()
     {
         ushort[] arr = new ushort[] { 0, 100, 32768, 65535 };
@@ -132,7 +132,7 @@ public class TestArrayOperations
         if (arr[2] != 32768) return 52;
         if (arr[3] != 65535) return 53;
         
-        // Stelem_u2: Store uint16 element (if implemented)
+        // Stelem_i2: Store uint16 element (there is no stelem.u2)
         arr[1] = 50000;
         if (arr[1] != 50000) return 54;
         
@@ -175,7 +175,7 @@ public class TestArrayOperations
         return 0;
     }
     
-    // Test Ldelem_u4/Stelem_u4: Load/Store uint32 element
+    // Test Ldelem_u4/Stelem_i4: Load/Store uint32 element
     public static int TestArrayUInt32()
     {
         uint[] arr = new uint[] { 0, 1, 0x80000000, 0xFFFFFFFF };
@@ -186,7 +186,7 @@ public class TestArrayOperations
         if (arr[2] != 0x80000000) return 82;
         if (arr[3] != 0xFFFFFFFF) return 83;
         
-        // Stelem_u4: Store uint32 element (if implemented)
+        // Stelem_i4: Store uint32 element (there is no stelem.u4)
         arr[1] = 0xDEADBEEF;
         if (arr[1] != 0xDEADBEEF) return 84;
         
@@ -218,18 +218,18 @@ public class TestArrayOperations
         return 0;
     }
     
-    // Test Ldelem_u8/Stelem_u8: Load/Store uint64 element
+    // Test Ldelem_i8/Stelem_i8: Load/Store uint64 element
     public static int TestArrayUInt64()
     {
         ulong[] arr = new ulong[] { 0UL, 1UL, 0x8000000000000000UL, 0xFFFFFFFFFFFFFFFFUL };
         
-        // Ldelem_u8: Load uint64 element
+        // Ldelem_i8: Load uint64 element (ldelem.u8 is another name for it)
         if (arr[0] != 0UL) return 100;
         if (arr[1] != 1UL) return 101;
         if (arr[2] != 0x8000000000000000UL) return 102;
         if (arr[3] != 0xFFFFFFFFFFFFFFFFUL) return 103;
         
-        // Stelem_u8: Store uint64 element (if implemented)
+        // Stelem_i8: Store uint64 element (there is no stelem.u8)
         arr[1] = 0xDEADBEEFCAFEBABEUL;
         if (arr[1] != 0xDEADBEEFCAFEBABEUL) return 104;
         

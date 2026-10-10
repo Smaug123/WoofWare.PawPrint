@@ -308,8 +308,7 @@ module StackEffect =
         | NullaryIlOp.Ldind_u1
         | NullaryIlOp.Ldind_u2
         | NullaryIlOp.Ldind_u4 -> Ok (effect 1 (number StackNumber.Int32))
-        | NullaryIlOp.Ldind_i8
-        | NullaryIlOp.Ldind_u8 -> Ok (effect 1 (number StackNumber.Int64))
+        | NullaryIlOp.Ldind_i8 -> Ok (effect 1 (number StackNumber.Int64))
         | NullaryIlOp.Ldind_r4 -> Ok (effect 1 (number StackNumber.Float32))
         | NullaryIlOp.Ldind_r8 -> Ok (effect 1 (number StackNumber.Float64))
         | NullaryIlOp.Stind_ref
@@ -327,20 +326,15 @@ module StackEffect =
         | NullaryIlOp.Ldelem_u2
         | NullaryIlOp.Ldelem_i4
         | NullaryIlOp.Ldelem_u4 -> Ok (effect 2 (number StackNumber.Int32))
-        | NullaryIlOp.Ldelem_i8
-        | NullaryIlOp.Ldelem_u8 -> Ok (effect 2 (number StackNumber.Int64))
+        | NullaryIlOp.Ldelem_i8 -> Ok (effect 2 (number StackNumber.Int64))
         | NullaryIlOp.Ldelem_ref -> Ok (effect 2 [ Pushed.Element ])
         | NullaryIlOp.Ldelem_r4 -> Ok (effect 2 (number StackNumber.Float32))
         | NullaryIlOp.Ldelem_r8 -> Ok (effect 2 (number StackNumber.Float64))
         | NullaryIlOp.Stelem_i
         | NullaryIlOp.Stelem_i1
-        | NullaryIlOp.Stelem_u1
         | NullaryIlOp.Stelem_i2
-        | NullaryIlOp.Stelem_u2
         | NullaryIlOp.Stelem_i4
-        | NullaryIlOp.Stelem_u4
         | NullaryIlOp.Stelem_i8
-        | NullaryIlOp.Stelem_u8
         | NullaryIlOp.Stelem_r4
         | NullaryIlOp.Stelem_r8
         | NullaryIlOp.Stelem_ref

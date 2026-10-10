@@ -144,7 +144,6 @@ type NullaryIlOp =
     | Ldind_u1
     | Ldind_u2
     | Ldind_u4
-    | Ldind_u8
     | Ldind_r4
     | Ldind_r8
     | Volatile
@@ -167,7 +166,6 @@ type NullaryIlOp =
     | Ldelem_i4
     | Ldelem_u4
     | Ldelem_i8
-    | Ldelem_u8
     | Ldelem_r4
     | Ldelem_r8
     /// Loads the element containing an object reference at a specified array index onto the top of the evaluation stack as type O (object reference).
@@ -176,16 +174,12 @@ type NullaryIlOp =
     | Stelem_i
     /// Replaces the array element at a given index with the int8 value on the evaluation stack.
     | Stelem_i1
-    | Stelem_u1
     /// Replaces the array element at a given index with the int16 value on the evaluation stack.
     | Stelem_i2
-    | Stelem_u2
     /// Replaces the array element at a given index with the int32 value on the evaluation stack.
     | Stelem_i4
-    | Stelem_u4
     /// Replaces the array element at a given index with the int64 value on the evaluation stack.
     | Stelem_i8
-    | Stelem_u8
     | Stelem_r4
     | Stelem_r8
     /// Replaces the array element at a given index with the object ref value (type O) on the evaluation stack.
@@ -299,7 +293,6 @@ type NullaryIlOp =
         | NullaryIlOp.Ldind_u1 -> "Ldind_u1"
         | NullaryIlOp.Ldind_u2 -> "Ldind_u2"
         | NullaryIlOp.Ldind_u4 -> "Ldind_u4"
-        | NullaryIlOp.Ldind_u8 -> "Ldind_u8"
         | NullaryIlOp.Ldind_r4 -> "Ldind_r4"
         | NullaryIlOp.Ldind_r8 -> "Ldind_r8"
         | NullaryIlOp.Volatile -> "Volatile"
@@ -322,19 +315,14 @@ type NullaryIlOp =
         | NullaryIlOp.Ldelem_i4 -> "Ldelem_i4"
         | NullaryIlOp.Ldelem_u4 -> "Ldelem_u4"
         | NullaryIlOp.Ldelem_i8 -> "Ldelem_i8"
-        | NullaryIlOp.Ldelem_u8 -> "Ldelem_u8"
         | NullaryIlOp.Ldelem_r4 -> "Ldelem_r4"
         | NullaryIlOp.Ldelem_r8 -> "Ldelem_r8"
         | NullaryIlOp.Ldelem_ref -> "Ldelem_ref"
         | NullaryIlOp.Stelem_i -> "Stelem_i"
         | NullaryIlOp.Stelem_i1 -> "Stelem_i1"
-        | NullaryIlOp.Stelem_u1 -> "Stelem_u1"
         | NullaryIlOp.Stelem_i2 -> "Stelem_i2"
-        | NullaryIlOp.Stelem_u2 -> "Stelem_u2"
         | NullaryIlOp.Stelem_i4 -> "Stelem_i4"
-        | NullaryIlOp.Stelem_u4 -> "Stelem_u4"
         | NullaryIlOp.Stelem_i8 -> "Stelem_i8"
-        | NullaryIlOp.Stelem_u8 -> "Stelem_u8"
         | NullaryIlOp.Stelem_r4 -> "Stelem_r4"
         | NullaryIlOp.Stelem_r8 -> "Stelem_r8"
         | NullaryIlOp.Stelem_ref -> "Stelem_ref"

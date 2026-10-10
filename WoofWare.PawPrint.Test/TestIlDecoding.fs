@@ -60,23 +60,6 @@ module TestIlDecoding =
         ]
         |> readOnlyDict
 
-    /// Cases ECMA-335 defines as assembler aliases which share another instruction's
-    /// encoding: `ldind.u8` is `ldind.i8` (III.3.42), `ldelem.u8` is `ldelem.i8`
-    /// (III.4.7), and `stelem.u*` are the `stelem.i*` of the same width (III.4.26) —
-    /// a store of N bytes does not care about the sign of what it stores. No byte sequence
-    /// decodes to them, so they are unreachable from <c>decodeInstructions</c> by
-    /// construction; the interpreter nonetheless has arms for them.
-    let private aliasCases : Set<string> =
-        Set.ofList
-            [
-                "Ldind_u8"
-                "Ldelem_u8"
-                "Stelem_u1"
-                "Stelem_u2"
-                "Stelem_u4"
-                "Stelem_u8"
-            ]
-
     /// An instruction's inline operand, in the terms PawPrint's DUs carry them.
     [<RequireQualifiedAccess>]
     type private Operand =
@@ -285,7 +268,6 @@ module TestIlDecoding =
     let ``every instruction decodes back to the case that encodes it`` () =
         let failures =
             allCases
-            |> List.filter (fun case -> not (aliasCases.Contains case.Name))
             |> List.collect (fun case ->
                 let key =
                     match caseNameOverrides.TryGetValue case.Name with
@@ -295,7 +277,7 @@ module TestIlDecoding =
                 match opCodes.TryGetValue key with
                 | false, _ ->
                     [
-                        $"%s{case.Name}: no ECMA instruction is named %s{key}; either the case is misnamed or it is an alias that needs recording in aliasCases"
+                        $"%s{case.Name}: no ECMA instruction is named %s{key}; either the case is misnamed or no IL encodes it"
                     ]
                 | true, opCode ->
                     samplesFor opCode
