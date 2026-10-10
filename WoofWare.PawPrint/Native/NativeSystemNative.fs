@@ -522,8 +522,6 @@ module NativeSystemNative =
             match refusal with
             | CloseRefusal.DarwinFlockedDescriptorWithWaiter _ ->
                 "Model a close that sleeps until a blocked flock returns before closing a descriptor onto the description it waits on, or configure a Linux platform."
-            | CloseRefusal.Release (DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient _) ->
-                "Accept the connection or close the client before closing the listener."
             | CloseRefusal.Release (DescriptionReleaseRefusal.AbortiveClose _) ->
                 "Model the reset a zero-linger close sends, or close the peer first."
             | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
@@ -3374,7 +3372,6 @@ module NativeSystemNative =
                             | FChModAtRefusal.ChMod (ChModRefusal.UnmeasuredModeChange _) ->
                                 "Configure a user other than root (KernelConfig.UserId) or the Linux platform to run this guest."
                             | FChModAtRefusal.ChMod (ChModRefusal.Path _) -> ""
-                            | FChModAtRefusal.ChMod (ChModRefusal.SymlinkMode _)
                             | FChModAtRefusal.UnmodelledFlags _
                             | FChModAtRefusal.Descriptor _ ->
                                 "chmod(2) takes no flags and follows a final symbolic link, so this is a bug in the kernel library."
@@ -5249,7 +5246,6 @@ module NativeSystemNative =
                 | Error (AcceptRefusal.UnmeasuredKind _ as refusal)
                 | Error (AcceptRefusal.DescriptorLimit _ as refusal)
                 | Error (AcceptRefusal.Interruption _ as refusal)
-                | Error (AcceptRefusal.Release _ as refusal)
                 | Error (AcceptRefusal.DarwinDrainedListener _ as refusal)
                 | Error (AcceptRefusal.AbortiveDrop _ as refusal) ->
                     failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"

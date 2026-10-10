@@ -94,6 +94,12 @@ type ReturnToUserOutcome<'Task, 'Handler when 'Task : comparison and 'Handler : 
     /// one stays pending, as any other signal does, and `sigpending` reports
     /// it.
     ///
+    /// Such a signal is pending only if it was generated while the task it was
+    /// aimed at blocked it (for one sent to the process, every task that could
+    /// take it), and the task has since unblocked it. One generated otherwise
+    /// is discarded as it is sent, as an ignored signal is (see
+    /// `UnixSignal.kill`).
+    ///
     /// The task's return to user mode is not over: the client asks
     /// `onReturnToUser` again, and the task may take more signals, under the
     /// temporary mask of a `sigsuspend(2)` it is returning from. A client
@@ -162,9 +168,9 @@ module UnixSignal =
     ///     takes that default at once: it terminates the process
     ///     (`KillOutcome.ProcessEnded`, with the core flag set if its default
     ///     dumps core and the process's `CoreDumps` allows a dump), stops it
-    ///     (`KillOutcome.ProcessStopped`), or, if the default is to discard it,
-    ///     is discarded. One whose default is to continue the process is
-    ///     pending instead (see `ReturnToUserOutcome.ContinueDiscarded`);
+    ///     (`KillOutcome.ProcessStopped`), or, if the default is to discard it
+    ///     or to continue the process (SIGCONT, which has no stopped process to
+    ///     continue), is discarded;
     ///   * ignored, where some task could receive it, it is discarded;
     ///   * otherwise it is pending, including when every task that could
     ///     receive it blocks it, and a task takes it as it returns to user mode
@@ -179,8 +185,15 @@ module UnixSignal =
     /// pending SIGCONT, and SIGCONT discards every pending stop signal, on
     /// every task and on the process.
     ///
-    /// Refuses (`KillRefusal.Receiver`) a caught signal sent to the process
-    /// that only a task other than the leader could receive; and, under
+    /// For an ignored signal, whether some task "could receive" it is decided
+    /// by a mask: for one sent to a task, that task's; for one sent to the
+    /// process, any task's under Darwin's numbering, and the leader's alone
+    /// under Linux's, which leaves one the leader blocks pending on the
+    /// process until another task takes it and discards it.
+    ///
+    /// Refuses (`KillRefusal.Receiver`) a signal sent to the process that only
+    /// a task other than the leader could receive, where it is caught, or,
+    /// under Linux's numbering, ignored; and, under
     /// Darwin's numbering, a standard signal it would leave pending on the
     /// process while an instance is pending on the leader alone, or the other
     /// way round, which Darwin holds as one instance where this library holds
@@ -305,8 +318,10 @@ module UnixSignal =
     /// as one set.
     ///
     /// A pending signal whose default is to continue the process, at its
-    /// default, surfaces as `ReturnToUserOutcome.ContinueDiscarded` if `task` does not
-    /// block it, and stays pending if it does. The task's return is not over:
+    /// default, surfaces as `ReturnToUserOutcome.ContinueDiscarded` if `task`
+    /// does not block it, and stays pending if it does. Only one generated
+    /// while it was blocked is pending at all (see `kill`). The task's return
+    /// is not over:
     /// the client asks again before the task runs its own code, and that answer
     /// may take more signals.
     ///
@@ -842,11 +857,10 @@ module UnixSignal =
     /// that terminates the process ends the call the same way, and the return
     /// to user mode then terminates the process.
     ///
-    /// An ignored signal ends nothing. One sent during the call is discarded as
-    /// it is sent. Under Linux, one pending as the call is made, which `mask`
-    /// unblocks, is discarded then, as is a SIGCONT at its default, and the
-    /// call sleeps on; such a SIGCONT sent during the call is discarded as the
-    /// sleeping task is woken for it, and the call sleeps on, as Linux's does
+    /// An ignored signal ends nothing, and nor does a SIGCONT at its default.
+    /// One sent during the call that `mask` lets through is discarded as it is
+    /// sent. Under Linux, one pending as the call is made, which `mask`
+    /// unblocks, is discarded then, and the call sleeps on, as Linux's does
     /// after a stop and continue.
     ///
     /// Refuses (see `SigsuspendRefusal`): a signal whose default stops the

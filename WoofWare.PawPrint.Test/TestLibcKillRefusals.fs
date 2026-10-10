@@ -359,18 +359,14 @@ class Program
             runSource fromWorkerGuest platform signo |> exitsWith42
 
     [<Test>]
-    let ``SIGCONT with no handler, sent while the main thread sleeps in a read, is refused`` () : unit =
-        // The kernel keeps it pending for the main thread, and will not say
-        // what it does to the read the main thread is asleep in, which ends
-        // the run when the read finishes.
-        let exn =
-            Assert.Catch<exn> (fun () ->
-                runSource whileMainReadsGuest SimulatedUnixPlatform.linuxX64 18
-                |> ignore<RunOutcome>
-            )
-
-        exn.Message |> shouldContainText "would take is SIGCONT"
-        exn.Message |> shouldContainText "what that does to the syscall is unmeasured"
+    let ``SIGCONT with no handler, sent while the main thread sleeps in a read, is discarded and the read sleeps on``
+        ()
+        : unit
+        =
+        // The main thread does not block it, so the kernel discards it as it
+        // is sent, as Linux and Darwin do, and the read is not disturbed.
+        for platform, signo in [ SimulatedUnixPlatform.linuxX64, 18 ; SimulatedUnixPlatform.macOsArm64, 19 ] do
+            runSource whileMainReadsGuest platform signo |> exitsWith42
 
     [<Test>]
     let ``a signal System.Native catches before its signal handling is initialised is refused`` () : unit =
