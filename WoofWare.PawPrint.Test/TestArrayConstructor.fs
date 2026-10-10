@@ -335,13 +335,13 @@ module TestArrayConstructor =
 
     /// The property above is only as good as the outcomes its generator reaches, and most of the
     /// rules under test are reached by a narrow band of arguments. This asks the host what a large
-    /// sample of the generator's calls do, and requires every outcome to turn up. Measured over
-    /// 20000 draws, the rarest outcome (a jagged constructor's nested arrays) is 2.4% of them, so
-    /// a sample of 4000 misses one with probability below 1e-40.
+    /// sample of the generator's calls do, and requires every outcome to turn up. The sample is
+    /// drawn from a fixed seed, so a run cannot miss an outcome by chance; a change to the
+    /// generator that loses one fails on every run.
     [<Test>]
     let ``the generator reaches every outcome`` () : unit =
         let outcomes =
-            Gen.sample 4000 constructorCall
+            Gen.sampleWithSeed (Rnd 20261010UL) 50 4000 constructorCall
             |> Array.map (fun (shape, arguments) ->
                 match hostNewobj (hostType shape) arguments with
                 | Error (exceptionType, _) -> exceptionType
@@ -360,7 +360,12 @@ module TestArrayConstructor =
                     "non-empty multi-dimensional"
                 | Ok _ -> "other"
             )
-            |> Set.ofArray
+            |> Array.countBy id
+
+        for outcome, count in Array.sortBy fst outcomes do
+            System.Console.WriteLine $"fixed sample reached %s{outcome} %d{count} times"
+
+        let outcomes = outcomes |> Array.map fst |> Set.ofArray
 
         let expected =
             set

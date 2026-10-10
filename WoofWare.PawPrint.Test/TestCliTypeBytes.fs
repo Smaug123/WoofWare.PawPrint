@@ -9,6 +9,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// Property-based oracle for `CliType.ToBytes` / `CliType.OfBytesLike`:
 /// for every primitive CliType, serialising to bytes and back must be the
@@ -713,27 +714,30 @@ module TestCliTypeBytes =
             )
         )
 
+    /// Which of `CliByteAddressability`'s verdicts a value got.
+    [<RequireQualifiedAccess>]
+    type private ByteAddressabilityKind =
+        | ByteAddressable
+        | SymbolicallyAddressable
+        | Rejected
+
     [<Test>]
     let ``ByteAddressability accepted values render as bytes`` () : unit =
         // `ByteAddressability` is stricter than "contains references": tagged
         // numeric provenance can also make a value unsafe to render. The
         // invariant we need from accepted values is that byte helpers can
         // actually materialise their byte image.
-        let mutable byteAddressableCount = 0
-        let mutable symbolicCount = 0
-        let mutable rejectedCount = 0
-
-        let property (value : CliType) : unit =
+        let property (cover : ByteAddressabilityKind -> unit) (value : CliType) : unit =
             match CliType.ByteAddressability value with
             | CliByteAddressability.ByteAddressable ->
-                byteAddressableCount <- byteAddressableCount + 1
+                cover ByteAddressabilityKind.ByteAddressable
 
                 let bytes = CliType.ToBytes value
                 bytes.Length |> shouldEqual (CliType.SizeOf(value).Size)
 
                 CliType.BytesAt 0 bytes.Length value |> shouldEqual bytes
             | CliByteAddressability.SymbolicallyAddressable _ ->
-                symbolicCount <- symbolicCount + 1
+                cover ByteAddressabilityKind.SymbolicallyAddressable
 
                 // The corresponding invariant for a value whose bytes are only nameable: the
                 // named image exists and is the declared width, and the `byte[]` helpers still
@@ -742,12 +746,20 @@ module TestCliTypeBytes =
                 CliType.SymbolicBytesAt 0 size value |> Array.length |> shouldEqual size
 
                 (fun () -> CliType.BytesAt 0 size value |> ignore) |> shouldFail<exn>
-            | CliByteAddressability.Rejected _ -> rejectedCount <- rejectedCount + 1
+            | CliByteAddressability.Rejected _ -> cover ByteAddressabilityKind.Rejected
 
-        Check.One (config, Prop.forAll (Arb.fromGen genByteAddressabilityCliType) property)
-        byteAddressableCount > 0 |> shouldEqual true
-        symbolicCount > 0 |> shouldEqual true
-        rejectedCount > 0 |> shouldEqual true
+        let coverage =
+            CoverageSample.check config (Arb.fromGen genByteAddressabilityCliType) property
+
+        // Counted over a fixed sample: a run cannot miss one by chance.
+        for kind in
+            [
+                ByteAddressabilityKind.ByteAddressable
+                ByteAddressabilityKind.SymbolicallyAddressable
+                ByteAddressabilityKind.Rejected
+            ] do
+            if coverage.Count kind = 0 then
+                failwith $"the property never reached %A{kind}"
 
     /// `struct { long N; object B; }` with explicit layout, `B` holding a live reference: the
     /// bytes at [0, 8) have values and the bytes at [8, 16) do not.
@@ -798,14 +810,17 @@ module TestCliTypeBytes =
         | Ok bytes -> failwith $"expected a refusal, got the bytes %A{bytes}"
         | Error rejection -> rejection
 
+    /// Whether `ToBytes` renders a value.
+    [<RequireQualifiedAccess>]
+    type private Rendering =
+        | Renderable
+        | Unrenderable
+
     [<Test>]
     let ``TryBytesAt agrees with ToBytes wherever ToBytes answers`` () : unit =
         // `ToBytes` is the renderer of record, and the one that gives a null reference its
         // all-zero image. Where it renders a value, every slice of that value has bytes and
         // `TryBytesAt` must produce them; where it does not, the whole-value slice has none.
-        let mutable renderable = 0
-        let mutable unrenderable = 0
-
         let genValueAndSlice : Gen<CliType * int * int> =
             gen {
                 let! value = genByteAddressabilityCliType
@@ -813,7 +828,7 @@ module TestCliTypeBytes =
                 return value, offset, count
             }
 
-        let property (value : CliType, offset : int, count : int) : unit =
+        let property (cover : Rendering -> unit) (value : CliType, offset : int, count : int) : unit =
             let size = CliType.SizeOf(value).Size
 
             let rendered =
@@ -824,19 +839,21 @@ module TestCliTypeBytes =
 
             match rendered with
             | Some bytes ->
-                renderable <- renderable + 1
+                cover Rendering.Renderable
                 CliType.TryBytesAt 0 size value |> expectBytes |> shouldEqual bytes
 
                 CliType.TryBytesAt offset count value
                 |> expectBytes
                 |> shouldEqual (Array.sub bytes offset count)
             | None ->
-                unrenderable <- unrenderable + 1
+                cover Rendering.Unrenderable
                 CliType.TryBytesAt 0 size value |> expectRefusal |> ignore
 
-        Check.One (config, Prop.forAll (Arb.fromGen genValueAndSlice) property)
-        renderable > 0 |> shouldEqual true
-        unrenderable > 0 |> shouldEqual true
+        let coverage = CoverageSample.check config (Arb.fromGen genValueAndSlice) property
+
+        // Counted over a fixed sample: a run cannot miss one by chance.
+        coverage.Count Rendering.Renderable > 0 |> shouldEqual true
+        coverage.Count Rendering.Unrenderable > 0 |> shouldEqual true
 
     [<Test>]
     let ``TryBytesAt renders a null reference as zero and refuses a live one`` () : unit =

@@ -134,14 +134,18 @@ module TestUnixScheduling =
 
     // --- the run ---
 
-    /// What the generated runs reached, summed over every run of a property.
+    /// A path the generated runs must reach.
+    [<RequireQualifiedAccess>]
     type private Reached =
-        {
-            mutable DisplacedGetCpu : int
-            mutable WokenDispatched : int
-            mutable CrossProcessDisplacement : int
-            mutable BeyondDispatch : int
-        }
+        /// A Linux `getcpu`, refused, by a task not parked whose processor a
+        /// later dispatch has taken.
+        | DisplacedGetCpu
+        /// A dispatch of a task woken from a park.
+        | WokenDispatched
+        /// A dispatch onto a processor a task of another process is running on.
+        | CrossProcessDisplacement
+        /// A dispatch onto a processor the machine does not have, which throws.
+        | BeyondDispatch
 
     let private throws (f : unit -> 'a) : bool =
         try
@@ -257,7 +261,7 @@ module TestUnixScheduling =
     let private beyondCpus (count : int) : int list =
         [ -1 ; count ; count + 1 ; Int32.MinValue ; Int32.MaxValue ]
 
-    let rec private apply (reached : Reached) (op : SchedulingOp) (world : World) : World =
+    let rec private apply (cover : Reached -> unit) (op : SchedulingOp) (world : World) : World =
         match op with
         | SchedulingOp.Launch cpu -> launch cpu world
         | SchedulingOp.Spawn (proc, cpu) ->
@@ -303,7 +307,7 @@ module TestUnixScheduling =
                 | Some k ->
                     let cpus = beyondCpus world.Count
                     let cpu = CpuId (List.item (k % List.length cpus) cpus)
-                    reached.BeyondDispatch <- reached.BeyondDispatch + 1
+                    cover Reached.BeyondDispatch
 
                     throws (fun () -> UnixScheduling.dispatch task.Name cpu (viewOf task.Pid world))
                     |> shouldEqual true
@@ -313,7 +317,7 @@ module TestUnixScheduling =
                     let cpu = CpuId (cpu % world.Count)
 
                     if task.Woken then
-                        reached.WokenDispatched <- reached.WokenDispatched + 1
+                        cover Reached.WokenDispatched
 
                     let displacesAnotherProcess =
                         world.Live
@@ -322,7 +326,7 @@ module TestUnixScheduling =
                         )
 
                     if displacesAnotherProcess then
-                        reached.CrossProcessDisplacement <- reached.CrossProcessDisplacement + 1
+                        cover Reached.CrossProcessDisplacement
 
                     { world with
                         Machine = world.Machine |> Machines.doIn task.Pid (UnixScheduling.dispatch task.Name cpu)
@@ -331,7 +335,7 @@ module TestUnixScheduling =
         | SchedulingOp.DispatchWoken (index, cpu) ->
             match pick index (world.Live |> List.filter (fun live -> live.Woken)) with
             | None -> world
-            | Some task -> apply reached (SchedulingOp.Dispatch (List.findIndex ((=) task) world.Live, cpu, None)) world
+            | Some task -> apply cover (SchedulingOp.Dispatch (List.findIndex ((=) task) world.Live, cpu, None)) world
         | SchedulingOp.Park proc ->
             let candidates =
                 world.Live
@@ -482,7 +486,7 @@ module TestUnixScheduling =
                 |> ended pid
 
     /// Everything the reference says, asked of the library.
-    let private check (reached : Reached) (world : World) : unit =
+    let private check (cover : Reached -> unit) (world : World) : unit =
         Machines.assertClean world.Machine
 
         let linux =
@@ -523,7 +527,7 @@ module TestUnixScheduling =
                 | Some _
                 | None ->
                     if not parked && lastDispatched task.Serial world.Events then
-                        reached.DisplacedGetCpu <- reached.DisplacedGetCpu + 1
+                        cover Reached.DisplacedGetCpu
 
                     if not (throws (fun () -> UnixScheduling.getcpu task.Name view)) then
                         failwith $"getcpu answered for a task not running, or parked: %s{context}"
@@ -567,44 +571,39 @@ module TestUnixScheduling =
 
     [<Test>]
     let ``what runs where agrees with the history of dispatches, parks and exits`` () : unit =
-        let reached =
-            {
-                DisplacedGetCpu = 0
-                WokenDispatched = 0
-                CrossProcessDisplacement = 0
-                BeyondDispatch = 0
-            }
-
-        let property (platform : SimulatedUnixPlatform, count : int, leaderCpu : int, processes : int, ops) : unit =
+        let property
+            (cover : Reached -> unit)
+            (platform : SimulatedUnixPlatform, count : int, leaderCpu : int, processes : int, ops)
+            : unit
+            =
             let world =
                 (initialWorld platform count leaderCpu, [ 2..processes ])
                 ||> List.fold (fun world p -> launch (leaderCpu + p) world)
 
-            check reached world
+            check cover world
 
             (world, ops)
             ||> List.fold (fun world op ->
-                let world = apply reached op world
-                check reached world
+                let world = apply cover op world
+                check cover world
                 world
             )
             |> ignore<World>
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen run) property)
+        let reached = CoverageSample.check propertyConfig (Arb.fromGen run) property
 
-        printfn $"%A{reached}"
-
-        // Thirteen runs of 300 reached at least 3278 displaced getcpus, 91
-        // woken dispatches, 544 displacements across processes and 256
+        // Thirteen fresh runs of 300 reached at least 3278 displaced getcpus,
+        // 91 woken dispatches, 544 displacements across processes and 256
         // dispatches beyond the machine. Each floor is a third of that or less,
         // so a generator change that starves one fails here rather than
-        // passing on the others.
+        // passing on the others. The floors are counted over the fixed sample
+        // `CoverageSample.check` draws, so a run cannot miss one by chance.
         let floors =
             [
-                "a displaced task's getcpu", reached.DisplacedGetCpu, 1000
-                "a woken task dispatched while parked", reached.WokenDispatched, 30
-                "a displacement across processes", reached.CrossProcessDisplacement, 180
-                "a dispatch beyond the machine", reached.BeyondDispatch, 85
+                "a displaced task's getcpu", reached.Count Reached.DisplacedGetCpu, 1000
+                "a woken task dispatched while parked", reached.Count Reached.WokenDispatched, 30
+                "a displacement across processes", reached.Count Reached.CrossProcessDisplacement, 180
+                "a dispatch beyond the machine", reached.Count Reached.BeyondDispatch, 85
             ]
 
         for name, count, floor in floors do

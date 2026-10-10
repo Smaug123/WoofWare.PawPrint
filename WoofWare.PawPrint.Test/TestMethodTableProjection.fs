@@ -1,6 +1,5 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata
@@ -10,6 +9,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -413,6 +413,13 @@ public interface IOpenInterface<T>
     type private TaggedInt64Destination =
         | StackMemory
         | Int64ArrayElement
+
+    /// What a tagged-provenance store property must be seen to reach: each source, and each
+    /// destination, separately.
+    [<RequireQualifiedAccess>]
+    type private TaggedStoreCoverage<'source, 'destination> =
+        | Source of 'source
+        | Destination of 'destination
 
     let private rawDataPropertyConfig : Config =
         Config.QuickThrowOnFailure.WithMaxTest 200
@@ -2272,10 +2279,8 @@ public unsafe struct PointerWrapper
 
     [<Test>]
     let ``Array primitive signed-zero byte writes preserve written bytes`` () : unit =
-        let observed = HashSet<bool * bool> ()
-
-        let property (sample : SignedZeroWriteCase) : unit =
-            observed.Add ((sample.InitialNegative, sample.WrittenNegative)) |> ignore
+        let property (cover : bool * bool -> unit) (sample : SignedZeroWriteCase) : unit =
+            cover (sample.InitialNegative, sample.WrittenNegative)
 
             let state = state ()
 
@@ -2313,11 +2318,13 @@ public unsafe struct PointerWrapper
 
             CliType.ToBytes actual |> shouldEqual (CliType.ToBytes written)
 
-        Check.One (rawDataPropertyConfig, Prop.forAll (Arb.fromGen genSignedZeroWriteCase) property)
+        let coverage =
+            CoverageSample.check rawDataPropertyConfig (Arb.fromGen genSignedZeroWriteCase) property
 
+        // Counted over a fixed sample: a run cannot miss one by chance.
         for initialNegative in [ false ; true ] do
             for writtenNegative in [ false ; true ] do
-                observed.Contains ((initialNegative, writtenNegative)) |> shouldEqual true
+                coverage.Count ((initialNegative, writtenNegative)) > 0 |> shouldEqual true
 
     [<Test>]
     let ``String byte-identical byte-view writes preserve state identity`` () : unit =
@@ -3053,12 +3060,13 @@ public unsafe struct PointerWrapper
         // shape where the existing typed slot is native-int-sized, stind.i of
         // a tagged NativeIntSource must keep the tag instead of trying to
         // flatten it to bytes.
-        let observedSources = HashSet<NativeIntSource> ()
-        let observedDestinations = HashSet<TaggedNativeIntDestination> ()
-
-        let property (source : NativeIntSource, destination : TaggedNativeIntDestination) : unit =
-            observedSources.Add source |> ignore
-            observedDestinations.Add destination |> ignore
+        let property
+            (cover : TaggedStoreCoverage<NativeIntSource, TaggedNativeIntDestination> -> unit)
+            (source : NativeIntSource, destination : TaggedNativeIntDestination)
+            : unit
+            =
+            cover (TaggedStoreCoverage.Source source)
+            cover (TaggedStoreCoverage.Destination destination)
 
             let _, loggerFactory = LoggerFactory.makeTest ()
 
@@ -3110,16 +3118,28 @@ public unsafe struct PointerWrapper
             IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
             |> shouldEqual (CliType.Numeric (CliNumericType.NativeInt source))
 
-        Check.One (
-            rawDataPropertyConfig.WithMaxTest 500,
-            Prop.forAll (Arb.fromGen genTaggedNativeIntStindCase) property
-        )
+        let coverage =
+            CoverageSample.check
+                (rawDataPropertyConfig.WithMaxTest 500)
+                (Arb.fromGen genTaggedNativeIntStindCase)
+                property
 
-        // The expected-source helper mints a fresh MethodInfo for the
+        let reached = coverage.Reached |> List.map fst
+
+        let sources =
+            reached
+            |> List.filter (fun label ->
+                match label with
+                | TaggedStoreCoverage.Source _ -> true
+                | TaggedStoreCoverage.Destination _ -> false
+            )
+
+        // Counted over a fixed sample: a run cannot miss one by chance. The
+        // expected-source helper mints a fresh MethodInfo for the
         // FunctionPointer case each time. The count assertion is the coverage
         // check; it intentionally does not compare list membership.
-        observedSources.Count |> shouldEqual ((taggedNativeIntSources ()).Length)
-        observedDestinations.Count |> shouldEqual 3
+        sources.Length |> shouldEqual ((taggedNativeIntSources ()).Length)
+        (reached.Length - sources.Length) |> shouldEqual 3
 
     [<Test>]
     let ``readManagedByref through ReinterpretAs IntPtr preserves tagged native-int provenance`` () : unit =
@@ -3361,12 +3381,13 @@ public unsafe struct PointerWrapper
 
     [<Test>]
     let ``Stind_I8 preserves tagged int64 provenance for exact-width typed destinations`` () : unit =
-        let observedSources = HashSet<Int64Source> ()
-        let observedDestinations = HashSet<TaggedInt64Destination> ()
-
-        let property (source : Int64Source, destination : TaggedInt64Destination) : unit =
-            observedSources.Add source |> ignore
-            observedDestinations.Add destination |> ignore
+        let property
+            (cover : TaggedStoreCoverage<Int64Source, TaggedInt64Destination> -> unit)
+            (source : Int64Source, destination : TaggedInt64Destination)
+            : unit
+            =
+            cover (TaggedStoreCoverage.Source source)
+            cover (TaggedStoreCoverage.Destination destination)
 
             let _, loggerFactory = LoggerFactory.makeTest ()
 
@@ -3405,12 +3426,23 @@ public unsafe struct PointerWrapper
             IlMachineState.readManagedByref bct state (ManagedPointerSource.requireAddressed ptr)
             |> shouldEqual (CliType.Numeric (CliNumericType.Int64 source))
 
-        Check.One (rawDataPropertyConfig.WithMaxTest 500, Prop.forAll (Arb.fromGen genTaggedInt64StindCase) property)
+        let coverage =
+            CoverageSample.check (rawDataPropertyConfig.WithMaxTest 500) (Arb.fromGen genTaggedInt64StindCase) property
+
+        let reached = coverage.Reached |> List.map fst
+
+        let sources =
+            reached
+            |> List.filter (fun label ->
+                match label with
+                | TaggedStoreCoverage.Source _ -> true
+                | TaggedStoreCoverage.Destination _ -> false
+            )
 
         // See the NativeInt property above: source count, rather than source
         // list equality, is the stable coverage assertion here.
-        observedSources.Count |> shouldEqual ((taggedInt64Sources ()).Length)
-        observedDestinations.Count |> shouldEqual 2
+        sources.Length |> shouldEqual ((taggedInt64Sources ()).Length)
+        (reached.Length - sources.Length) |> shouldEqual 2
 
     [<Test>]
     let ``Exact-width provenance stind installs payload shape over same-width primitive slots`` () : unit =

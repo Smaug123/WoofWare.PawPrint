@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 /// Tests for `ControlFlow.mayExecute`: the offsets a run of a body can execute, with the
 /// conditional branches a known Boolean decides followed one way only.
@@ -254,19 +255,24 @@ module TestControlFlow =
         )
         |> Map.ofList
 
+    /// What `mayExecute` left out of a body, beyond what it gives with no known constants.
+    [<RequireQualifiedAccess>]
+    type private Pruning =
+        /// Some offset the unpruned answer gives.
+        | Pruned
+        /// Some exception region's handler.
+        | HandlerExcluded
+
     [<Test>]
     let ``every offset a run executes is one mayExecute gives`` () : unit =
-        let mutable pruned = 0
-        let mutable handlersExcluded = 0
-
-        let property (steps : Step list, regions : Region list) : bool =
+        let property (cover : Pruning -> unit) (steps : Step list, regions : Region list) : bool =
             let body, at = layOut steps regions
             let constants = pushedConstants steps at
             let may = ControlFlow.mayExecute body constants
             let run = executed steps regions |> Set.map (fun index -> at.[index])
 
             if Set.isProperSubset may (ControlFlow.mayExecute body Map.empty) then
-                pruned <- pruned + 1
+                cover Pruning.Pruned
 
             if
                 body.ExceptionRegions
@@ -278,15 +284,17 @@ module TestControlFlow =
                     | ExceptionRegion.Fault o -> not (may.Contains o.HandlerOffset)
                 )
             then
-                handlersExcluded <- handlersExcluded + 1
+                cover Pruning.HandlerExcluded
 
             Set.isSubset run may
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen genBody) property)
+        let coverage =
+            CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 2000) (Arb.fromGen genBody) property
 
-        // The property holds of any superset, so show that `mayExecute` does leave things out.
-        pruned |> shouldBeGreaterThan 130
-        handlersExcluded |> shouldBeGreaterThan 90
+        // The property holds of any superset, so show that `mayExecute` does leave things out,
+        // counted over a fixed sample: a run cannot fall short by chance.
+        coverage.Count Pruning.Pruned |> shouldBeGreaterThan 130
+        coverage.Count Pruning.HandlerExcluded |> shouldBeGreaterThan 90
 
     [<Test>]
     let ``a branch on a known Boolean goes one way`` () : unit =
