@@ -581,13 +581,10 @@ module TestSigsuspend =
     /// The rows this library refuses rather than answers, by flavour: Darwin
     /// leaves a pending SIGCONT that the temporary mask unblocks pending
     /// without ending the call, which no wake pulled from the state can say.
+    /// One sent during the call, as the stopcont rows' is, is discarded as it
+    /// is sent, and answered.
     let private refused : Map<SimulatedUnixFlavour * string, SigsuspendRefusal> =
-        [
-            "stale CONT SIG_DFL"
-            "stale CONT SIG_IGN"
-            "stopcont STOP cont-handler=0"
-            "pause-stopcont STOP cont-handler=0"
-        ]
+        [ "stale CONT SIG_DFL" ; "stale CONT SIG_IGN" ]
         |> List.map (fun tag -> (SimulatedUnixFlavour.Darwin, tag), SigsuspendRefusal.DarwinPendingContinue)
         |> Map.ofList
 

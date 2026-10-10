@@ -1093,9 +1093,13 @@ module TestSignalState =
         |> shouldEqual (Ok [ entry ])
 
     [<Test>]
-    let ``a default SIGCONT sent to the process that only a task but the leader could take is refused`` () : unit =
-        // Whichever task takes it discards it as it returns to user mode, and
-        // only the leader is asked.
+    let ``a default SIGCONT sent to the process that only a task but the leader could take is refused under Linux``
+        ()
+        : unit
+        =
+        // Linux leaves it pending on the process until whichever task takes it
+        // discards it as it returns to user mode, and only the leader is
+        // asked. Darwin hands it to that task, discarding it at once.
         let entry =
             {
                 Signal = Signal.SIGCONT
@@ -1120,6 +1124,18 @@ module TestSignalState =
         |> Result.map continuesWith
         |> Result.map SignalState.pending
         |> shouldEqual (Ok [ entry ])
+
+        let darwin =
+            initial SignalNumbering.Darwin
+            |> SignalState.changeMask
+                SignalMaskChange.Block
+                (SignalMask.ofSignals SignalNumbering.Darwin (Set.singleton Signal.SIGCONT))
+                t0
+
+        SignalState.generate CoreDumps.Suppressed t0 (Set.ofList [ t0 ; t1 ]) entry darwin
+        |> Result.map continuesWith
+        |> Result.map SignalState.pending
+        |> shouldEqual (Ok [])
 
     [<Test>]
     let ``onReturnToUser holds a signal every task blocks`` () : unit =
@@ -1789,14 +1805,17 @@ module TestSignalState =
             | ReferenceReceiver.Nobody, _, _ -> pend ()
             | ReferenceReceiver.BeyondLeader, SignalDisposition.Catch _, _ -> ReferenceGeneration.Refused entry.Signal
             | _, SignalDisposition.Catch _, _ -> pend ()
-            | _, SignalDisposition.Ignore, _ -> ReferenceGeneration.Continues r
             | _, SignalDisposition.Default, DefaultDisposition.Terminate ->
                 ReferenceGeneration.Terminated (entry.Signal, referenceCore numbering coreDumps entry.Signal)
             | _, SignalDisposition.Default, DefaultDisposition.Stop -> ReferenceGeneration.Stopped (entry.Signal, r)
-            | _, SignalDisposition.Default, DefaultDisposition.Ignore -> ReferenceGeneration.Continues r
-            | ReferenceReceiver.BeyondLeader, SignalDisposition.Default, DefaultDisposition.Continue ->
+            // What is left is ignored: SIG_IGN, or a default that discards the
+            // signal or continues the process. Linux leaves one the leader
+            // blocks pending on the process, for another task to take, which
+            // the model refuses; Darwin, and Linux where the receiver does not
+            // block it, discard it at once.
+            | ReferenceReceiver.BeyondLeader, _, _ when numbering = SignalNumbering.Linux ->
                 ReferenceGeneration.Refused entry.Signal
-            | _, SignalDisposition.Default, DefaultDisposition.Continue -> pend ()
+            | _, _, _ -> ReferenceGeneration.Continues r
 
     /// The reference's return to user mode: after every action, start again
     /// from the head of the task's candidates and take the first it can, where

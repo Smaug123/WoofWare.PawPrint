@@ -303,7 +303,8 @@ Either answer is the `EndedProcess`, killed by the signal (`ProcessTermination.S
 
 A signal whose default stops the process is reported (`KillOutcome.ProcessStopped`, `ReturnToUserOutcome.ProcessStopped`) for the client to act on.
 The library holds no stopped state, and nothing here continues a stopped process, so a client should refuse a stop rather than carry on as if the process were still running.
-A SIGCONT at its default, on the other hand, has nothing to resume: `ReturnToUserOutcome.ContinueDiscarded` says the kernel discarded it as the task took it, and the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
+A SIGCONT at its default, on the other hand, has nothing to resume, and the kernel discards it as it discards an ignored signal: as it is sent, unless the task it is aimed at blocks it (for one sent to the process, the leader under Linux, and every task under Darwin), so it never wakes a sleeping call.
+One sent while blocked stays pending, and once unblocked `ReturnToUserOutcome.ContinueDiscarded` says the kernel discarded it as the task took it; the client asks `onReturnToUser` again, since the return goes on, under a `sigsuspend`'s temporary mask if the task is returning from one.
 
 ### The alternate signal stack
 

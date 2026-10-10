@@ -512,11 +512,30 @@ module TestPthreadKill =
         | other -> failwith $"raise SIGTERM: %O{other}"
 
     [<Test>]
-    let ``Darwin's refusal covers SIGCONT at its default, which is left pending whoever can take it`` () : unit =
-        // A default SIGCONT is queued even when the leader does not block it,
-        // until the leader next returns to user mode, so a raise of it at the
-        // leader in between would be the second instance.
-        let darwin = systemOn SimulatedUnixFlavour.Darwin
+    let ``a default SIGCONT the leader does not block is discarded as it is sent, leaving nothing to merge with``
+        ()
+        : unit
+        =
+        // Measured by `docs/plans/2026-08-23-posix-kernel-extraction/sigcont-generation.c`
+        // on Linux 6.18.5 and Darwin 27.0.0: discarded at generation, as an
+        // ignored signal is.
+        for flavour in flavours do
+            let system = systemOn flavour
+            let sigcont = Signal.toRawSignoUnder (numberingOf flavour) Signal.SIGCONT
+
+            let sent = UnixSignal.kill (self system) sigcont system |> continues "kill SIGCONT"
+            SignalState.pending sent.Process.Signals |> shouldEqual []
+
+            UnixSignal.pthreadKill leader sigcont sent
+            |> continues "raise SIGCONT"
+            |> fun system -> SignalState.pending system.Process.Signals
+            |> shouldEqual []
+
+    [<Test>]
+    let ``Darwin's refusal covers SIGCONT at its default, which the leader blocks`` () : unit =
+        // Pending on the process, so a raise of it at the leader would be the
+        // second instance.
+        let darwin = systemOn SimulatedUnixFlavour.Darwin |> blocking Signal.SIGCONT leader
 
         let sigcont =
             Signal.toRawSignoUnder (numberingOf SimulatedUnixFlavour.Darwin) Signal.SIGCONT
@@ -529,7 +548,7 @@ module TestPthreadKill =
         )
 
         // Linux keeps the two apart, as Darwin does for another thread.
-        let linux = systemOn SimulatedUnixFlavour.Linux
+        let linux = systemOn SimulatedUnixFlavour.Linux |> blocking Signal.SIGCONT leader
 
         let sigcont =
             Signal.toRawSignoUnder (numberingOf SimulatedUnixFlavour.Linux) Signal.SIGCONT
