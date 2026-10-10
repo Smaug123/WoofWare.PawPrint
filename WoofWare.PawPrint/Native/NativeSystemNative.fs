@@ -5719,6 +5719,469 @@ module NativeSystemNative =
             state.MapKernel (EmulatedKernel.withUnix unix)
             |> writeBytesThrough ctx operation errorCell (ImmutableArray.CreateRange bytes)
             |> complete UnixErrorPal.palSuccess
+        // `int32_t SystemNative_Receive(intptr_t socket, void* buffer, int32_t
+        // bufferLen, int32_t flags, int32_t* received)` (pal_networking.c):
+        //
+        //     if (buffer == NULL || bufferLen < 0 || received == NULL) return Error_EFAULT;
+        //     if (!ConvertSocketFlagsPalToPlatform(flags, &socketFlags)) return Error_ENOTSUP;
+        //     while ((res = recv(fd, buffer, (size_t)bufferLen, socketFlags)) < 0 && errno == EINTR);
+        //     if (res != -1) { *received = (int32_t)res; return Error_SUCCESS; }
+        //     *received = 0;
+        //     return SystemNative_ConvertErrorPlatformToPal(errno);
+        //
+        // so both screens precede even the descriptor, and store nothing. The
+        // flags argument is CoreLib's `SocketFlags` enum, matched with a
+        // wildcard as `SystemNative_LSeek`'s `whence` is.
+        //
+        // CoreLib reaches this from an asynchronous receive, and from a
+        // receive on a socket whose `Blocking` is false; a synchronous receive
+        // on a blocking socket goes through `SystemNative_ReceiveMessage`.
+        | Some "SystemNative_Receive",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePointer _
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            _
+            ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_Receive"
+            let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+            let bufferLen = NativeCall.int32Argument operation instruction.Arguments.[2]
+            let palFlags = NativeCall.int32Argument operation instruction.Arguments.[3]
+
+            let receivedArgument =
+                bufferPointerArgument operation "received" instruction.Arguments.[4]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let storeReceived (count : int) (state : IlMachineState) : IlMachineState =
+                let bytes = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, count)
+
+                writeBytesThrough
+                    ctx
+                    operation
+                    (requireStorage operation "received" receivedArgument)
+                    (ImmutableArray.CreateRange bytes)
+                    state
+
+            // The library says why no answer exists; PawPrint says how a guest
+            // could have reached it.
+            let refused (fd : int) (description : string) (reachability : string) : 'a =
+                failwith $"%s{operation}: fd %d{fd}: %s{description} %s{reachability}"
+
+            // Answer the call from the library's outcome, which a first entry
+            // and a re-entry after a sleep reach alike.
+            let settle (fd : int) (outcome : ReadOutcome * UnixSystem<ThreadId, NativeSignalHandler>) =
+                match outcome with
+                | ReadOutcome.WouldBlock _, system ->
+                    // Park re-entrantly, as `SystemNative_Read` does: a wake
+                    // re-enters this handler, which finishes the call from the
+                    // task's park and writes through the caller's own pointers.
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> Scheduler.parkInSyscall ctx.Thread
+                    |> NativeHandlerResult.blockedRetainingFrame
+                    |> Some
+                // A signal ended the sleep: the shim calls `recv` again after
+                // EINTR, and a restart calls again with no EINTR.
+                | ReadOutcome.Restarts, system ->
+                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
+                | ReadOutcome.Answered (ReadFailed UnixError.EINTR), system ->
+                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
+                | ReadOutcome.Answered (ReadFailed error), system ->
+                    withErrno ctx error system state
+                    |> storeReceived 0
+                    |> complete (UnixErrorPal.toPal error)
+                | ReadOutcome.Answered (Moved bytes), system ->
+                    // Empty means the call touched no buffer, so the pointer is
+                    // not resolved.
+                    let state =
+                        if bytes.IsEmpty then
+                            withAnswered system state
+                        else
+                            let destination =
+                                match BufferPointer.dereferenceable buffer with
+                                | Some destination -> destination
+                                | None ->
+                                    failwith
+                                        $"%s{operation}: fd %d{fd}: the kernel produced %d{bytes.Length} bytes for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
+
+                            withAnswered system state |> writeBytesThrough ctx operation destination bytes
+
+                    state |> storeReceived bytes.Length |> complete UnixErrorPal.palSuccess
+
+            // A re-entry is told apart from a first entry by the record, as for
+            // `SystemNative_Read`: the kernel finishes the call from the park,
+            // into the buffer it was made with.
+            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            | Some (ParkedSyscall.ConnectionRead _) ->
+                let fd = fdArgument operation instruction.Arguments.[0]
+
+                match UnixReadWrite.finishRead ctx.Thread state.Kernel.System with
+                | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | Error (ReadRefusal.Interruption _ as refusal) ->
+                    refused
+                        fd
+                        (ReadRefusal.describe refusal)
+                        "A signal with a handler reached a receive asleep on a socket at the moment the socket had an answer for it, and under Darwin which of the two the kernel answers depends on which reached the sleeper first."
+                | Error (ReadRefusal.ConnectionBecameNonBlocking _ as refusal)
+                | Error (ReadRefusal.ConnectionFault _ as refusal) ->
+                    refused
+                        fd
+                        (ReadRefusal.describe refusal)
+                        "CoreLib's own receives make the socket non-blocking before they first wait, and pass a buffer they hold, so this is a hand-rolled P/Invoke."
+                | Error refusal ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: finishing a receive asleep on a connected socket was refused with %A{refusal}, which only a read of another object gives (this is an interpreter bug)."
+                | Ok outcome -> settle fd outcome
+            | Some other ->
+                // Unreachable: a task parked in another syscall is not running
+                // IL. Refused rather than treated as a first entry, which would
+                // park over the stale record and destroy the evidence.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered a receive while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
+            | None ->
+
+            match buffer, receivedArgument with
+            | BufferPointer.RawAddress 0UL, _
+            | _, BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ when bufferLen < 0 -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ ->
+
+            let platform = state.Kernel.UnixPlatform
+
+            match SocketFlagsPal.toPlatform (SimulatedUnixPlatform.flavour platform) palFlags with
+            | None -> complete (UnixErrorPal.toPal UnixError.ENOTSUP) state
+            | Some flags ->
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            match
+                UnixReadWrite.recv
+                    ctx.Thread
+                    fd
+                    (BufferPointer.toUserBuffer buffer)
+                    (uint64 bufferLen)
+                    flags
+                    state.Kernel.System
+            with
+            | Error (ReceiveRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Error (ReceiveRefusal.UnmodelledFlags _ as refusal) ->
+                refused
+                    fd
+                    (ReceiveRefusal.describe refusal)
+                    $"The guest passed SocketFlags 0x%x{palFlags}: CoreLib passes a caller's SocketFlags through, so a Socket.Receive given OutOfBand, DontRoute, Truncated or ControlDataTruncated reaches this."
+            | Error (ReceiveRefusal.UnmodelledSocketPhase _ as refusal) ->
+                refused
+                    fd
+                    (ReceiveRefusal.describe refusal)
+                    "A Socket.Receive on a socket that is not connected reaches this."
+            | Error (ReceiveRefusal.ConnectionFault _ as refusal) ->
+                refused
+                    fd
+                    (ReceiveRefusal.describe refusal)
+                    $"`buffer` is %O{buffer}: CoreLib passes a buffer it holds, so this is a hand-rolled P/Invoke."
+            | Error (ReceiveRefusal.UnmeasuredCount _ as refusal) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{ReceiveRefusal.describe refusal} The shim passes an int32_t it has screened for a negative, so no count above INT_MAX reaches the kernel (this is an interpreter bug)."
+            | Ok outcome -> settle fd outcome
+        // `int32_t SystemNative_Send(intptr_t socket, void* buffer, int32_t
+        // bufferLen, int32_t flags, int32_t* sent)` (pal_networking.c): the
+        // same screens as `SystemNative_Receive`, then
+        //
+        //     while ((res = send(fd, buffer, (size_t)bufferLen, socketFlags)) < 0 && errno == EINTR);
+        //
+        // (on Darwin also retrying EPROTOTYPE up to three times, which this
+        // kernel never answers), storing the count or 0 through `sent` as
+        // `Receive` stores through `received`. A blocking send with no room
+        // for the rest sleeps, and the kernel finishes it on a later re-entry,
+        // as `SystemNative_Write`'s. A send to a connection that was reset
+        // answers EPIPE and raises SIGPIPE, which the runtime ignores; CoreLib
+        // passes no MSG_NOSIGNAL, the shim admitting none.
+        | Some "SystemNative_Send",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes
+            ConcretePointer _
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            _
+            ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_Send"
+            let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+            let bufferLen = NativeCall.int32Argument operation instruction.Arguments.[2]
+            let palFlags = NativeCall.int32Argument operation instruction.Arguments.[3]
+            let sentArgument = bufferPointerArgument operation "sent" instruction.Arguments.[4]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let storeSent (count : int) (state : IlMachineState) : IlMachineState =
+                let bytes = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, count)
+
+                writeBytesThrough
+                    ctx
+                    operation
+                    (requireStorage operation "sent" sentArgument)
+                    (ImmutableArray.CreateRange bytes)
+                    state
+
+            let refused (fd : int) (description : string) (reachability : string) : 'a =
+                failwith $"%s{operation}: fd %d{fd}: %s{description} %s{reachability}"
+
+            // The library's reasons for a send asleep on a socket having no
+            // answer, with PawPrint's account of how a guest got there.
+            let refusedFinishing (fd : int) (refusal : WriteRefusal) : 'a =
+                match refusal with
+                | WriteRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | WriteRefusal.Interruption _ ->
+                    refused
+                        fd
+                        (WriteRefusal.describe refusal)
+                        "A signal with a handler reached a send asleep on a socket at the moment the socket had room for it, and under Darwin which of the two the kernel answers depends on which reached the sleeper first."
+                | WriteRefusal.ConnectionBecameNonBlocking _
+                | WriteRefusal.ConnectionFault _ ->
+                    refused
+                        fd
+                        (WriteRefusal.describe refusal)
+                        "CoreLib's own sends make the socket non-blocking before they first wait, and pass a buffer they hold, so this is a hand-rolled P/Invoke."
+                | WriteRefusal.SignalReceiver _ ->
+                    refused
+                        fd
+                        (WriteRefusal.describe refusal)
+                        "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
+                | WriteRefusal.InitProcess _ ->
+                    refused
+                        fd
+                        (WriteRefusal.describe refusal)
+                        "Configure a process ID other than 1 (KernelConfig.ProcessId)."
+                | WriteRefusal.UnmodelledSocketPhase _
+                | WriteRefusal.SendBuffer _
+                | WriteRefusal.Inet6Binding _
+                | WriteRefusal.EphemeralPortsExhausted _
+                | WriteRefusal.ExceedsRepresentableLength _
+                | WriteRefusal.UnmeasuredSetIdChange _
+                | WriteRefusal.SignalAtPageBoundary _ ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: finishing a send asleep on a connected socket was refused with %A{refusal}, which only a write to another object gives (this is an interpreter bug)."
+
+            let refusedSending (fd : int) (refusal : SendRefusal) : 'a =
+                match refusal with
+                | SendRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | SendRefusal.UnmodelledFlags _ ->
+                    refused
+                        fd
+                        (SendRefusal.describe refusal)
+                        $"The guest passed SocketFlags 0x%x{palFlags}: CoreLib passes a caller's SocketFlags through, so a Socket.Send given OutOfBand, Peek, DontRoute, Truncated or ControlDataTruncated reaches this."
+                | SendRefusal.UnmodelledSocketPhase _ ->
+                    refused
+                        fd
+                        (SendRefusal.describe refusal)
+                        "A Socket.Send on a socket that is not connected reaches this."
+                | SendRefusal.ConnectionFault _ ->
+                    refused
+                        fd
+                        (SendRefusal.describe refusal)
+                        $"`buffer` is %O{buffer}: CoreLib passes a buffer it holds, so this is a hand-rolled P/Invoke."
+                | SendRefusal.SignalReceiver _ ->
+                    refused
+                        fd
+                        (SendRefusal.describe refusal)
+                        "The guest catches SIGPIPE, and its main thread blocks it while another thread does not; PawPrint delivers a process's signals to its main thread only (SignalDispatch)."
+                | SendRefusal.InitProcess _ ->
+                    refused
+                        fd
+                        (SendRefusal.describe refusal)
+                        "Configure a process ID other than 1 (KernelConfig.ProcessId)."
+                | SendRefusal.UnmeasuredCount _ ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: %s{SendRefusal.describe refusal} The shim passes an int32_t it has screened for a negative, so no count above INT_MAX reaches the kernel (this is an interpreter bug)."
+
+            /// What `outcome` leaves the guest with, as `SystemNative_Write`'s
+            /// `finish` does, storing through `sent`.
+            let finish (fd : int) (outcome : WriteOutcome<WriteAnswer, ThreadId, NativeSignalHandler>) =
+                let answered (answer : WriteAnswer) (system : UnixSystem<ThreadId, NativeSignalHandler>) =
+                    match answer with
+                    | WriteAnswer.Failed error ->
+                        withErrno ctx error system state
+                        |> storeSent 0
+                        |> complete (UnixErrorPal.toPal error)
+                    | WriteAnswer.Completed written ->
+                        withAnswered system state
+                        |> storeSent (shimTransferCount operation bufferLen written)
+                        |> complete UnixErrorPal.palSuccess
+
+                match outcome with
+                | WriteOutcome.Returns (WriteAnswer.Failed UnixError.EINTR, system) ->
+                    callAgainAfterSignal ctx operation Interrupted.Eintr None system state
+                | WriteOutcome.Restarts system ->
+                    callAgainAfterSignal ctx operation Interrupted.Restarted None system state
+                | WriteOutcome.WouldBlock (_, system) ->
+                    state.MapKernel (EmulatedKernel.withUnix system)
+                    |> Scheduler.parkInSyscall ctx.Thread
+                    |> NativeHandlerResult.blockedRetainingFrame
+                    |> Some
+                | WriteOutcome.Returns (answer, system) -> answered answer system
+                | WriteOutcome.ReturnsRaising (answer, raised, system) ->
+                    // Delivered as `kill`'s are, through `SignalDispatch`,
+                    // which delivers only to the main thread.
+                    match
+                        NativeLibc.screenRaisedSignal
+                            state.Kernel.UnixPlatform
+                            ctx.Thread
+                            state.Kernel.Leader
+                            state.Kernel.PosixSignalShim
+                            state.Kernel.System
+                            raised
+                            system
+                    with
+                    | Some refusal ->
+                        failwith
+                            $"%s{operation}: fd %d{fd}: the send raised %O{raised.Signal}, which is not modelled: %s{UnmodelledSelfSignal.describe refusal}"
+                    | None -> answered answer system
+                | WriteOutcome.ProcessEnded ended ->
+                    match EndedProcess.termination ended with
+                    | ProcessTermination.Signaled _ ->
+                        ExecutionResult.SignalTerminated (state, ended)
+                        |> NativeHandlerResult.ofExecutionResult
+                        |> Some
+                    | ProcessTermination.Exited _ ->
+                        failwith
+                            $"%s{operation}: fd %d{fd}: a send ended the process with an exit status (%O{EndedProcess.termination ended}), which only an exit can"
+
+            // The bytes of the caller's buffer from `offset` on, `count` of
+            // them, which the kernel has said it will read.
+            let extract (fd : int) (offset : int) (count : int) : ImmutableArray<byte> =
+                let source =
+                    match BufferPointer.dereferenceable buffer with
+                    | Some source -> source
+                    | None ->
+                        failwith
+                            $"%s{operation}: fd %d{fd}: the kernel asked for %d{count} bytes from a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
+
+                readBytesThrough ctx operation (bufferFieldAt ctx operation source offset state) count state
+
+            // A re-entry is told apart from a first entry by the record, as for
+            // `SystemNative_Write`, which finishes a send as it finishes a write.
+            match UnixTaskState.parkedIn (EmulatedKernel.taskOf ctx.Thread state.Kernel.Tasks) with
+            | Some (ParkedSyscall.ConnectionWrite _) ->
+                let fd = fdArgument operation instruction.Arguments.[0]
+
+                match UnixReadWrite.admitFinishWrite ctx.Thread state.Kernel.System with
+                | Error refusal -> refusedFinishing fd refusal
+                | Ok (WriteOutcome.Returns (WriteResumption.Transfer (offset, count), admitted)) ->
+                    match UnixReadWrite.finishWrite ctx.Thread (extract fd offset count) admitted with
+                    | Error refusal -> refusedFinishing fd refusal
+                    | Ok outcome -> finish fd outcome
+                | Ok (WriteOutcome.Returns (WriteResumption.Answered answer, after)) ->
+                    finish fd (WriteOutcome.Returns (answer, after))
+                | Ok (WriteOutcome.ReturnsRaising (WriteResumption.Answered answer, raised, after)) ->
+                    finish fd (WriteOutcome.ReturnsRaising (answer, raised, after))
+                | Ok (WriteOutcome.ReturnsRaising (WriteResumption.Transfer (_, count), raised, _)) ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a send that raises a signal takes none (this is a bug in the kernel library)."
+                | Ok (WriteOutcome.ProcessEnded ended) -> finish fd (WriteOutcome.ProcessEnded ended)
+                | Ok (WriteOutcome.WouldBlock (condition, after)) ->
+                    finish fd (WriteOutcome.WouldBlock (condition, after))
+                | Ok (WriteOutcome.Restarts after) -> finish fd (WriteOutcome.Restarts after)
+            | Some other ->
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered a send while its task is parked in %A{other}. A task blocks in one syscall at a time, so that call's completion failed to clear its record (this is an interpreter bug)."
+            | None ->
+
+            match buffer, sentArgument with
+            | BufferPointer.RawAddress 0UL, _
+            | _, BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ when bufferLen < 0 -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ ->
+
+            match SocketFlagsPal.toPlatform (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform) palFlags with
+            | None -> complete (UnixErrorPal.toPal UnixError.ENOTSUP) state
+            | Some flags ->
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            match
+                UnixReadWrite.admitSend
+                    ctx.Thread
+                    fd
+                    (BufferPointer.toUserBuffer buffer)
+                    (uint64 bufferLen)
+                    flags
+                    state.Kernel.System
+            with
+            | Error refusal -> refusedSending fd refusal
+            | Ok (WriteOutcome.Returns (WriteAdmission.Answered answer, admitted)) ->
+                finish fd (WriteOutcome.Returns (answer, admitted))
+            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Answered answer, raised, admitted)) ->
+                finish fd (WriteOutcome.ReturnsRaising (answer, raised, admitted))
+            | Ok (WriteOutcome.ProcessEnded ended) -> finish fd (WriteOutcome.ProcessEnded ended)
+            | Ok (WriteOutcome.WouldBlock (condition, after)) -> finish fd (WriteOutcome.WouldBlock (condition, after))
+            | Ok (WriteOutcome.Restarts _ as outcome) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: a send that never slept answered %A{outcome}; only a finishing call restarts (this is a bug in the kernel library)."
+            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.Transfer count, raised, _))
+            | Ok (WriteOutcome.ReturnsRaising (WriteAdmission.TransferThenSleep (count, _), raised, _)) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: the kernel raised %O{raised.Signal} and still asked for %d{count} bytes; a send that raises a signal takes none (this is a bug in the kernel library)."
+            // A blocking send with room for part of it: the part is read now,
+            // and the rest only as the connection takes it.
+            | Ok (WriteOutcome.Returns (WriteAdmission.TransferThenSleep (count, total), admitted)) ->
+                UnixReadWrite.sendThenSleep ctx.Thread fd total (extract fd 0 count) flags admitted
+                |> finish fd
+            | Ok (WriteOutcome.Returns (WriteAdmission.Transfer count, admitted)) ->
+                match UnixReadWrite.send ctx.Thread fd (extract fd 0 count) flags admitted with
+                | Error refusal -> refusedSending fd refusal
+                | Ok outcome -> finish fd outcome
+        // `int32_t SystemNative_GetBytesAvailable(intptr_t socket, int32_t*
+        // available)` (pal_networking.c): `ioctl(FIONREAD)` into the shim's own
+        // `int`, with an EINTR retry, stored through `available`, or 0 there
+        // and the PAL error on failure. A null `available` is EFAULT before the
+        // descriptor is looked at. CoreLib's `Socket.Available` calls it.
+        | Some "SystemNative_GetBytesAvailable",
+          [ ConcreteIntPtr state.TypeSystem.ConcreteTypes ; ConcretePointer _ ],
+          MethodReturnType.Returns (PalErrorReturn state.TypeSystem.ConcreteTypes) ->
+            let operation = "SystemNative_GetBytesAvailable"
+
+            let availableArgument =
+                bufferPointerArgument operation "available" instruction.Arguments.[1]
+
+            let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim palError)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            let store (count : int) (state : IlMachineState) : IlMachineState =
+                let bytes = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, count)
+
+                writeBytesThrough
+                    ctx
+                    operation
+                    (requireStorage operation "available" availableArgument)
+                    (ImmutableArray.CreateRange bytes)
+                    state
+
+            match availableArgument with
+            | BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
+            | _ ->
+
+            let fd = fdArgument operation instruction.Arguments.[0]
+
+            // The ioctl writes the shim's own stack `int`, which is mapped.
+            match UnixDescriptor.bytesAvailable fd UserBuffer.Mapped state.Kernel.System with
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{BytesAvailableRefusal.describe refusal} CoreLib's Socket.Available asks this of the socket it holds; one that is not connected reaches this."
+            | Ok (BytesAvailableAnswer.Failed error) ->
+                withErrnoOnly ctx error state |> store 0 |> complete (UnixErrorPal.toPal error)
+            | Ok (BytesAvailableAnswer.Reported count) -> state |> store count |> complete UnixErrorPal.palSuccess
         // `int32_t SystemNative_SetSockOpt(intptr_t socket, int32_t socketOptionLevel,
         // int32_t socketOptionName, uint8_t* optionValue, int32_t optionLen)`
         // (pal_networking.c:2397): the shim's screens, its own handling of

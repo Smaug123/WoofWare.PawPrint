@@ -136,7 +136,7 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixDescriptor` | `dup`, `dup2`, `dup3`, `fcntl` (`F_DUPFD`, `F_DUPFD_CLOEXEC`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`), `lseek`, `flock`, `ftruncate`, `posix_fadvise`, `close`, `ioctl` (`FICLONE` and `FIONREAD`), `tcgetattr`, `geteuid`, `getegid`, `getgroups` |
 | `UnixPathResolution` | `stat`, `fstat`, `fstatat`, `chmod`, `fchmod`, `fchmodat`, `chown`, `lchown`, `fchown`, `fchownat`, `utimensat`, `statfs`, `fstatfs`, `getcwd`, `chdir`, `access`, `faccessat` |
 | `UnixNamespace` | `open`, `openat`, `readlink`, `readlinkat`, reading a directory, `mkdir`, `mkdirat`, `mknod` and `mknodat` (regular files only), `unlink`, `rmdir`, `unlinkat`, `rename`, `renameat`, `clonefile`, `symlink`, `symlinkat`, `link`, `linkat` |
-| `UnixReadWrite` | `read`, `pread`, `write`, `pwrite`, `copy_file_range` |
+| `UnixReadWrite` | `read`, `recv`, `pread`, `write`, `send`, `pwrite`, `copy_file_range` |
 | `UnixPipe` | `pipe2` |
 | `UnixSocket` | `socket`, `bind`, `listen`, `getsockname`, `getpeername`, `setsockopt`, `getsockopt` |
 | `UnixConnection` | `connect`, `accept` |
@@ -151,6 +151,8 @@ It takes its arguments as the kernel does, raw where the kernel validates them, 
 | `UnixSystem` | `getpid`, `umask` |
 
 A connected TCP socket's `read` and `write` move bytes through its connection (`TcpConnection.Transfer`), which holds each direction's bytes in the sender's send buffer and the receiver's receive buffer, sized from the machine's TCP sysctls, and each end's state: open, a FIN received, reset, or closed. A close over bytes left unread resets the peer; otherwise it sends a FIN behind what it had sent. `poll`, epoll and kqueue read a connected socket's readiness from the same state, and each transfer wakes the waiters each flavour wakes: every arrival of bytes, and room freed in a send buffer (on Linux once after a write ran out of room, when the buffer has drained to two thirds full; on Darwin as bytes leave it). `FIONREAD` reports what waits to be read, and `SO_ERROR` takes a reset's error. A blocking read with nothing to answer sleeps until bytes, a FIN or a reset arrive; a blocking write takes what fits and sleeps for the rest, woken on Linux once its send buffer has drained to two thirds full and on Darwin once there is room for it to take something, and it returns once every byte is taken. Every task asleep on a socket wakes for what it waits on.
+
+`recv` and `send` reach a connected TCP socket through the same transfer, sleep and wake as `read` and `write`, and take their flag word raw, in the flavour's numbering (`MessageFlag.number`). `MSG_PEEK` answers bytes without taking them, `MSG_DONTWAIT` makes a `recv`, and a Linux `send`, non-blocking (Darwin's `send` ignores it), and `MSG_NOSIGNAL` keeps an `EPIPE` from raising `SIGPIPE`; any other flag is refused, naming it. Where they part from `read` and `write` is measured: Linux screens their buffer before it looks up the descriptor, a Linux `recv` of nothing waits as a longer one would, and Darwin's `send` marks no description written.
 
 `UnixSystem.step` puts the syscalls whose answer is a single integer behind one entry point, as cases of the `Syscall` type, for a client that wants to log, replay or generate them.
 A syscall whose answer carries more than that, such as the bytes `read` returns, has no `Syscall` case, and is reached only through its own function.
