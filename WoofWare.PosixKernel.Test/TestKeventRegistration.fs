@@ -72,7 +72,8 @@ module TestKeventRegistration =
                 && (
                     match socket.Phase with
                     | SocketPhase.Established (c, _) -> c = connection
-                    | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
+                    | SocketPhase.Listening listenState ->
+                        List.contains connection (ListenState.connections listenState)
                     | _ -> false
                 )
             )

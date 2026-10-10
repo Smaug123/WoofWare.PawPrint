@@ -152,6 +152,78 @@ type SocketBinding =
         LockedPort : bool
     }
 
+/// `SO_LINGER` as a socket holds it.
+type SocketLinger =
+    {
+        /// `l_onoff`: whether a close lingers at all.
+        Enabled : bool
+        /// `l_linger`, in hundredths of a second, kept whether or not `Enabled`
+        /// is. Darwin keeps it at this resolution in sixteen bits, and a set
+        /// stores the low sixteen bits of what it computes (measured); Linux
+        /// keeps whole seconds, so its value here is always a multiple of 100.
+        Hundredths : int64
+    }
+
+/// The socket options `setsockopt(2)` sets and `getsockopt(2)` reads that this
+/// kernel stores and nothing else in it consults. The socket `accept(2)`
+/// returns has the listener's as they were when its connection completed: see
+/// `QueuedConnection`.
+type SocketOptions =
+    {
+        /// `TCP_NODELAY`, which turns Nagle's algorithm off. It has no
+        /// observable effect here: a loopback transfer is delivered at once
+        /// whatever its size, so there is nothing for the algorithm to hold
+        /// back.
+        NoDelay : bool
+        /// `SO_LINGER`. Stored only: what a close does with it belongs with
+        /// `close` and `shutdown`, which do not model it yet, and so refuse the
+        /// close of a connected socket where it would differ from the ordinary
+        /// close. With a linger time of zero that close is a reset instead of
+        /// an orderly shutdown, refused while the connection is still
+        /// referenced (`DescriptionReleaseRefusal.AbortiveClose`); with a
+        /// positive time it waits for bytes still in the send buffer, refused
+        /// where a real kernel waits (`DescriptionReleaseRefusal.LingeringClose`).
+        Linger : SocketLinger
+    }
+
+[<RequireQualifiedAccess>]
+module internal SocketOptions =
+    /// What a socket starts with on both kernels, measured: every option off,
+    /// and a linger time of zero. `IPV6_V6ONLY` is not here but in the
+    /// socket's `SocketAddressing`.
+    let initial : SocketOptions =
+        {
+            NoDelay = false
+            Linger =
+                {
+                    Enabled = false
+                    Hundredths = 0L
+                }
+        }
+
+/// A completed connection waiting in a listener's accept queue, with the options
+/// the socket `accept(2)` makes for it will hold.
+///
+/// Measured on both flavours, a connection's server end takes its copy of the
+/// listener's options when the connection completes, not at the accept
+/// (`docs/plans/2026-10-08-tcp-shutdown-linger/queued-options.c`): a change to
+/// the listener's options while the connection waits leaves this alone.
+///
+/// Holds no `IPV6_V6ONLY`: a listener cannot change it (EINVAL once a socket
+/// has an address), so the accepted socket takes the listener's at the accept.
+type QueuedConnection =
+    {
+        /// The connection.
+        Connection : ConnectionId
+        /// The `SO_REUSEADDR` the accepted socket will hold: the listener's when
+        /// the connection completed.
+        ReuseAddress : bool
+        /// The other options the accepted socket will hold: the listener's when
+        /// the connection completed, except that under Darwin a listener
+        /// lingering for no time gave it a linger of 120 seconds.
+        Options : SocketOptions
+    }
+
 /// What `listen(2)` gave a socket: the number it was called with, and the
 /// queue of completed connections `accept(2)` drains.
 type ListenState =
@@ -166,7 +238,7 @@ type ListenState =
         /// Completed connections not yet accepted, oldest first: `accept(2)`
         /// dequeues from the head. Measured on both flavours: accept returns
         /// connections in the order the connects completed.
-        Queue : ConnectionId list
+        Queue : QueuedConnection list
         /// Under Darwin, whether a close of the descriptor an `accept(2)` asleep
         /// on this listener was made through has ended every accept asleep on
         /// it. Never under Linux.
@@ -177,6 +249,12 @@ type ListenState =
         /// wakes it, a connection or a signal.
         Drained : bool
     }
+
+[<RequireQualifiedAccess>]
+module internal ListenState =
+    /// The connections the accept queue holds, oldest first.
+    let connections (listenState : ListenState) : ConnectionId list =
+        listenState.Queue |> List.map (fun queued -> queued.Connection)
 
 /// Whether a refused connection's error is still waiting to be reported. The
 /// kernels keep it in a slot of its own beside the socket's state (Linux's
@@ -264,54 +342,6 @@ module SocketPhase =
         | SocketPhase.Refused _
         | SocketPhase.DatagramPeer _ -> None
 
-/// `SO_LINGER` as a socket holds it.
-type SocketLinger =
-    {
-        /// `l_onoff`: whether a close lingers at all.
-        Enabled : bool
-        /// `l_linger`, in hundredths of a second, kept whether or not `Enabled`
-        /// is. Darwin keeps it at this resolution in sixteen bits, and a set
-        /// stores the low sixteen bits of what it computes (measured); Linux
-        /// keeps whole seconds, so its value here is always a multiple of 100.
-        Hundredths : int64
-    }
-
-/// The socket options `setsockopt(2)` sets and `getsockopt(2)` reads that this
-/// kernel stores and nothing else in it consults. `accept(2)` gives the socket
-/// it returns the listener's.
-type SocketOptions =
-    {
-        /// `TCP_NODELAY`, which turns Nagle's algorithm off. It has no
-        /// observable effect here: a loopback transfer is delivered at once
-        /// whatever its size, so there is nothing for the algorithm to hold
-        /// back.
-        NoDelay : bool
-        /// `SO_LINGER`. Stored only: what a close does with it belongs with
-        /// `close` and `shutdown`, which do not model it yet, and so refuse the
-        /// close of a connected socket where it would differ from the ordinary
-        /// close. With a linger time of zero that close is a reset instead of
-        /// an orderly shutdown, refused while the connection is still
-        /// referenced (`DescriptionReleaseRefusal.AbortiveClose`); with a
-        /// positive time it waits for bytes still in the send buffer, refused
-        /// where a real kernel waits (`DescriptionReleaseRefusal.LingeringClose`).
-        Linger : SocketLinger
-    }
-
-[<RequireQualifiedAccess>]
-module internal SocketOptions =
-    /// What a socket starts with on both kernels, measured: every option off,
-    /// and a linger time of zero. `IPV6_V6ONLY` is not here but in the
-    /// socket's `SocketAddressing`.
-    let initial : SocketOptions =
-        {
-            NoDelay = false
-            Linger =
-                {
-                    Enabled = false
-                    Hundredths = 0L
-                }
-        }
-
 /// A socket's domain, with its `IPV6_V6ONLY` where it is an IPv6 socket, and
 /// the local address it holds.
 ///
@@ -395,7 +425,7 @@ type SocketDescription =
         /// Whether `SO_REUSEADDR` is set on this socket. `setsockopt(2)` sets
         /// and clears it at any point in the socket's life, `getsockopt(2)`
         /// reads it back, and `accept(2)` gives the socket it returns the
-        /// listener's value.
+        /// listener's value as it was when its connection completed.
         ///
         /// Its effect is on which bindings conflict, which `bind(2)` and Linux's
         /// `listen(2)` decide from the value each socket holds at the time of

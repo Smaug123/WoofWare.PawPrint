@@ -255,7 +255,7 @@ module ObjectLifetime =
             match dying.Phase with
             | SocketPhase.Established (connection, _)
             | SocketPhase.EstablishedPendingReport connection -> [ connection ]
-            | SocketPhase.Listening listenState -> listenState.Queue
+            | SocketPhase.Listening listenState -> ListenState.connections listenState
             | SocketPhase.Idle
             | SocketPhase.Refused _
             | SocketPhase.DatagramPeer _ -> []
@@ -266,7 +266,7 @@ module ObjectLifetime =
                 match survivor.Phase with
                 | SocketPhase.Established (c, _)
                 | SocketPhase.EstablishedPendingReport c -> c = connection
-                | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
+                | SocketPhase.Listening listenState -> List.contains connection (ListenState.connections listenState)
                 | SocketPhase.Idle
                 | SocketPhase.Refused _
                 | SocketPhase.DatagramPeer _ -> false
@@ -289,7 +289,7 @@ module ObjectLifetime =
         let closing : Result<(ConnectionId * TcpWake list * TcpTransfer) list, DescriptionReleaseRefusal> =
             match dying.Phase with
             | SocketPhase.Listening listenState ->
-                listenState.Queue
+                ListenState.connections listenState
                 |> List.map (fun connection ->
                     let wakes, transfer =
                         TcpTransfer.abort

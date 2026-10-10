@@ -142,7 +142,7 @@ module TestAccept =
                 SocketPhase.Listening
                     {
                         Backlog = 8
-                        Queue = connections
+                        Queue = List.map ForgedConnection.queued connections
                         Drained = false
                     }
             )
@@ -163,7 +163,7 @@ module TestAccept =
 
     let private queueOf (socketId : SocketId) (system : UnixSystem<int, string>) : ConnectionId list =
         match (UnixMachineState.socket socketId system.Machine).Phase with
-        | SocketPhase.Listening listenState -> listenState.Queue
+        | SocketPhase.Listening listenState -> ListenState.connections listenState
         | other -> failwith $"expected Listening, got %A{other}"
 
     // ------------------------------------------------------------------
@@ -215,21 +215,32 @@ module TestAccept =
                 }
         )
 
+    /// The queue entry's, which is the listener's when the connection
+    /// completed, and not the listener's now.
     [<TestCaseSource(nameof platforms)>]
-    let ``the accepted socket inherits the listener's SO_REUSEADDR`` (platform : SimulatedUnixPlatform) : unit =
+    let ``the accepted socket holds the SO_REUSEADDR its connection completed with``
+        (platform : SimulatedUnixPlatform)
+        : unit
+        =
         let connections, system = withConnections 1 (systemOn platform)
 
         let listener =
-            { streamSocket (
-                  SocketPhase.Listening
-                      {
-                          Backlog = 8
-                          Queue = connections
-                          Drained = false
-                      }
-              ) with
-                ReuseAddress = true
-            }
+            streamSocket (
+                SocketPhase.Listening
+                    {
+                        Backlog = 8
+                        Queue =
+                            connections
+                            |> List.map (fun connection ->
+                                { ForgedConnection.queued connection with
+                                    ReuseAddress = true
+                                }
+                            )
+                        Drained = false
+                    }
+            )
+
+        listener.ReuseAddress |> shouldEqual false
 
         let fd, system = withSocket (SocketId 0L) listener system
 

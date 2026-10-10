@@ -200,7 +200,7 @@ module TestPoll =
                     (SocketPhase.Listening
                         {
                             Backlog = 8
-                            Queue = [ queued ]
+                            Queue = [ ForgedConnection.queued queued ]
                             Drained = false
                         }),
                 0x0041s
@@ -331,7 +331,7 @@ module TestPoll =
                 (SocketPhase.Listening
                     {
                         Backlog = 1
-                        Queue = [ ConnectionId 0L ]
+                        Queue = [ ForgedConnection.queued (ConnectionId 0L) ]
                         Drained = false
                     })
                 linux

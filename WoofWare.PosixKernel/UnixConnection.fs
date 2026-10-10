@@ -110,8 +110,8 @@ type AcceptRefusal =
     | DarwinDrainedListener of listener : SocketId
     /// The accept fails after taking `connection` off `listener`'s queue, which
     /// closes the connection's server end at once, and that end has the
-    /// listener's `SO_LINGER`, on with a time of zero, while the client is
-    /// still open. A real kernel resets the connection, and the client reads
+    /// `SO_LINGER` the listener had when the connection completed, on with a
+    /// time of zero, while the client is still open. A real kernel resets the connection, and the client reads
     /// ECONNRESET; this kernel models no abortive close. See
     /// `DescriptionReleaseRefusal.AbortiveClose`. Under a positive linger time
     /// the drop is the ordinary close, since the server end has written
@@ -135,7 +135,7 @@ module AcceptRefusal =
             $"socket %O{listener} has a connection to hand over, so this call takes it off the queue and copies the peer address out -- but the destination is unmapped, so that copy faults. Measured, Linux stores the untruncated length in the caller's length cell, answers EFAULT and loses the connection, while Darwin ignores the fault and succeeds; this kernel's accept has no outcome for either. (A NULL destination is not copied to at all, and neither is the length cell; that has no outcome here either.)"
         | AcceptRefusal.Interruption refusal -> SyscallInterruptionRefusal.describe refusal
         | AcceptRefusal.AbortiveDrop (listener, connection) ->
-            $"the accept fails having taken connection %O{connection} off socket %O{listener}'s queue, which closes its server end at once, and that end has the listener's SO_LINGER, on with a time of zero, while the client is open. A real kernel resets the connection, and the client reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless the client had written to the server end."
+            $"the accept fails having taken connection %O{connection} off socket %O{listener}'s queue, which closes its server end at once, and that end has the SO_LINGER the listener had when the connection completed, on with a time of zero, while the client is open. A real kernel resets the connection, and the client reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless the client had written to the server end."
         | AcceptRefusal.DarwinDrainedListener listener ->
             $"socket %O{listener} is a listener on which a close of the descriptor an accept was asleep through has ended every accept, and this accept would sleep on it. Measured on Darwin (close-ends-call.c section A7), such a sleep answers ECONNABORTED as soon as anything wakes it, a connection or a signal, and one connection wakes one such sleeper, the connection staying queued, so a second sleeper sleeps on through it. This kernel wakes a sleeping accept for as long as a connection is queued, so it would wake every such sleeper for one connection."
 
@@ -266,6 +266,42 @@ type internal ConnectAddress =
 
 [<RequireQualifiedAccess>]
 module UnixConnection =
+
+    /// `connection`, completing now on `listener`, as its accept queue holds
+    /// it: with the options the socket `accept(2)` makes for it will hold.
+    ///
+    /// Those are the listener's as they stand, copied now, as both kernels
+    /// copy them onto the connection's server end as it completes
+    /// (inet_csk_clone_lock; sonewconn). Darwin's `tcp_attach` then gives a
+    /// socket made lingering for no time `TCP_LINGERTIME`, 120 seconds.
+    /// Measured on both
+    /// (`docs/plans/2026-10-08-tcp-shutdown-linger/queued-options.c`).
+    let private queuedOn
+        (flavour : SimulatedUnixFlavour)
+        (listener : SocketDescription)
+        (connection : ConnectionId)
+        : QueuedConnection
+        =
+        let linger =
+            match flavour with
+            | SimulatedUnixFlavour.Darwin when
+                listener.Options.Linger.Enabled && listener.Options.Linger.Hundredths = 0L
+                ->
+                {
+                    Enabled = true
+                    Hundredths = 12000L
+                }
+            | SimulatedUnixFlavour.Darwin
+            | SimulatedUnixFlavour.Linux -> listener.Options.Linger
+
+        {
+            Connection = connection
+            ReuseAddress = listener.ReuseAddress
+            Options =
+                { listener.Options with
+                    Linger = linger
+                }
+        }
 
     /// `connect(2)` past the descriptor screens and the copy-in: the
     /// per-flavour ladder over the socket's phase, the declared length, the
@@ -655,7 +691,9 @@ module UnixConnection =
                                                     { listenState with
                                                         // Oldest first: accept(2)
                                                         // dequeues the head.
-                                                        Queue = listenState.Queue @ [ connectionId ]
+                                                        Queue =
+                                                            listenState.Queue
+                                                            @ [ queuedOn flavour listenerSocket connectionId ]
                                                     }
                                         }
                                 Connections = Map.add connectionId tcpConnection system.Machine.Connections
@@ -1533,8 +1571,9 @@ module UnixConnection =
 
         match listener.Phase with
         | SocketPhase.Listening ({
-                                     Queue = connectionId :: rest
+                                     Queue = queued :: rest
                                  } as listenState) ->
+            let connectionId = queued.Connection
             let tcpConnection = UnixMachineState.connection connectionId system.Machine
             let acceptedId = system.Machine.NextSocketId
             let (SocketId rawAcceptedId) = acceptedId
@@ -1559,15 +1598,8 @@ module UnixConnection =
                             listener.Addressing
                     Kind = SocketKind.Stream
                     Protocol = listener.Protocol
-                    // Both kernels copy the listener's socket options onto
-                    // the new socket when the connection completes
-                    // (inet_csk_clone_lock; sonewconn), not at accept.
-                    // Reading the listener now gives the same values because
-                    // `UnixSocket.setsockopt` refuses to change any of them
-                    // while connections are queued. Measured for every option
-                    // here (`docs/probes/sockopt-options/`, P and Q).
-                    ReuseAddress = listener.ReuseAddress
-                    Options = listener.Options
+                    ReuseAddress = queued.ReuseAddress
+                    Options = queued.Options
                     Phase = SocketPhase.Established (connectionId, ConnectionEnd.Server)
                 }
 
@@ -1615,9 +1647,9 @@ module UnixConnection =
         let connectionId, listenState =
             match listener.Phase with
             | SocketPhase.Listening ({
-                                         Queue = connectionId :: rest
+                                         Queue = queued :: rest
                                      } as listenState) ->
-                connectionId,
+                queued.Connection,
                 { listenState with
                     Queue = rest
                 }
@@ -1719,16 +1751,16 @@ module UnixConnection =
             SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
             && int declaredLength < 0
 
-        // The dropped server end has the listener's options, so with
-        // lingering on for no time it would reset a client still open.
+        // The dropped server end has the options its connection completed
+        // with, so with lingering on for no time it would reset a client still
+        // open. Measured (`queued-options.c`, section D): a change to the
+        // listener's linger after the connection completed does not reach it.
         let dropped () : Result<AcceptOutcome * UnixSystem<'Task, 'Handler>, AcceptRefusal> =
-            let listener = UnixMachineState.socket socketId system.Machine
-
             let head =
-                match listener.Phase with
+                match (UnixMachineState.socket socketId system.Machine).Phase with
                 | SocketPhase.Listening {
-                                            Queue = connectionId :: _
-                                        } -> connectionId
+                                            Queue = queued :: _
+                                        } -> queued
                 | phase ->
                     failwith
                         $"UnixConnection.handOver: socket %O{socketId} is in %A{phase}, not listening with a connection queued (this is a bug in this library)."
@@ -1738,16 +1770,12 @@ module UnixConnection =
                 |> Map.exists (fun _ socket ->
                     match socket.Phase with
                     | SocketPhase.Established (c, _)
-                    | SocketPhase.EstablishedPendingReport c -> c = head
+                    | SocketPhase.EstablishedPendingReport c -> c = head.Connection
                     | _ -> false
                 )
 
-            if
-                listener.Options.Linger.Enabled
-                && listener.Options.Linger.Hundredths = 0L
-                && clientOpen
-            then
-                Error (AcceptRefusal.AbortiveDrop (socketId, head))
+            if head.Options.Linger.Enabled && head.Options.Linger.Hundredths = 0L && clientOpen then
+                Error (AcceptRefusal.AbortiveDrop (socketId, head.Connection))
             else
                 Ok (AcceptOutcome.DroppedConnection UnixError.EINVAL, dropConnection socketId system)
 
