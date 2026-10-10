@@ -399,21 +399,20 @@ module TestUnixTaskLifecycle =
             Parked : Set<int>
         }
 
-    /// Coverage of the paths the property exists for, so that a generator change which
-    /// stops reaching one is noticed.
-    type private Coverage =
-        {
-            mutable ExitsDroppingAMask : int
-            mutable ExitsDroppingOwnPending : int
-            mutable ExitsKeepingProcessPending : int
-            mutable RefusedParked : int
-            mutable RefusedLeaderFirst : int
-            mutable SpawnsInheritingAMask : int
-            mutable RefusedLast : int
-            mutable EndedByLastExit : int
-            mutable EndedByExitGroup : int
-            mutable EndedWithParkedTask : int
-        }
+    /// The paths the property exists for, so that a generator change which stops
+    /// reaching one is noticed.
+    [<RequireQualifiedAccess>]
+    type private LifecycleLabel =
+        | ExitsDroppingAMask
+        | ExitsDroppingOwnPending
+        | ExitsKeepingProcessPending
+        | RefusedParked
+        | RefusedLeaderFirst
+        | SpawnsInheritingAMask
+        | RefusedLast
+        | EndedByLastExit
+        | EndedByExitGroup
+        | EndedWithParkedTask
 
     /// The per-task entries the system holds, each of which must name a task.
     let private orphans (system : UnixSystem<int, string>) : string list =
@@ -478,10 +477,15 @@ module TestUnixTaskLifecycle =
         }
         |> shouldEqual before.Process
 
-    let private runProperty (platform : SimulatedUnixPlatform) (coverage : Coverage) : unit =
+    let private runProperty (platform : SimulatedUnixPlatform) : Coverage<LifecycleLabel> =
         let initial, queue = world platform
 
-        let step ((system, model) : UnixSystem<int, string> * Model) (op : Op) : UnixSystem<int, string> * Model =
+        let step
+            (cover : LifecycleLabel -> unit)
+            ((system, model) : UnixSystem<int, string> * Model)
+            (op : Op)
+            : UnixSystem<int, string> * Model
+            =
             let live (task : int) = Set.contains task model.Live
 
             let after, model' =
@@ -507,7 +511,7 @@ module TestUnixTaskLifecycle =
                     SignalState.framesOf child after.Process.Signals |> shouldEqual []
 
                     if not (SignalMask.isEmpty parentMask) then
-                        coverage.SpawnsInheritingAMask <- coverage.SpawnsInheritingAMask + 1
+                        cover LifecycleLabel.SpawnsInheritingAMask
 
                     SignalState.pending after.Process.Signals
                     |> shouldEqual (SignalState.pending system.Process.Signals)
@@ -585,10 +589,10 @@ module TestUnixTaskLifecycle =
                     // from the one it ended in, as if the call had not been made.
                     let ended = UnixTaskLifecycle.exitGroup task status system
                     assertExited platform status system ended
-                    coverage.EndedByExitGroup <- coverage.EndedByExitGroup + 1
+                    cover LifecycleLabel.EndedByExitGroup
 
                     if not model.Parked.IsEmpty then
-                        coverage.EndedWithParkedTask <- coverage.EndedWithParkedTask + 1
+                        cover LifecycleLabel.EndedWithParkedTask
 
                     system, model
                 | Op.Exit (task, status) when live task ->
@@ -597,11 +601,11 @@ module TestUnixTaskLifecycle =
                     if Set.contains task model.Parked then
                         let park = UnixTaskTable.parkOf task system.Tasks |> Option.get
                         result |> shouldEqual (Error (ThreadExitRefusal.Parked (task, park)))
-                        coverage.RefusedParked <- coverage.RefusedParked + 1
+                        cover LifecycleLabel.RefusedParked
                         system, model
                     elif task = 0 && model.Live.Count > 1 then
                         result |> shouldEqual (Error (ThreadExitRefusal.LeaderBeforeOthers task))
-                        coverage.RefusedLeaderFirst <- coverage.RefusedLeaderFirst + 1
+                        cover LifecycleLabel.RefusedLeaderFirst
                         system, model
                     elif model.Live.Count = 1 then
                         match SimulatedUnixPlatform.flavour platform with
@@ -610,10 +614,10 @@ module TestUnixTaskLifecycle =
                             | Ok (TaskOutcome.ProcessEnded ended) -> assertExited platform status system ended
                             | other -> failwith $"expected the last task's exit to end the process, got %A{other}"
 
-                            coverage.EndedByLastExit <- coverage.EndedByLastExit + 1
+                            cover LifecycleLabel.EndedByLastExit
                         | SimulatedUnixFlavour.Darwin ->
                             result |> shouldEqual (Error (ThreadExitRefusal.LastTaskOnDarwin task))
-                            coverage.RefusedLast <- coverage.RefusedLast + 1
+                            cover LifecycleLabel.RefusedLast
 
                         // As for `ExitGroup`: the run goes on from the state before.
                         system, model
@@ -676,19 +680,19 @@ module TestUnixTaskLifecycle =
                         |> shouldEqual system.Process
 
                         if not (SignalMask.isEmpty (SignalState.maskOf task signalsBefore)) then
-                            coverage.ExitsDroppingAMask <- coverage.ExitsDroppingAMask + 1
+                            cover LifecycleLabel.ExitsDroppingAMask
 
                         if
                             SignalState.pending signalsBefore
                             |> List.exists (fun entry -> entry.Target = ValueSome task)
                         then
-                            coverage.ExitsDroppingOwnPending <- coverage.ExitsDroppingOwnPending + 1
+                            cover LifecycleLabel.ExitsDroppingOwnPending
 
                         if
                             SignalState.pending signalsBefore
                             |> List.exists (fun entry -> entry.Target = ValueNone)
                         then
-                            coverage.ExitsKeepingProcessPending <- coverage.ExitsKeepingProcessPending + 1
+                            cover LifecycleLabel.ExitsKeepingProcessPending
 
                         after,
                         { model with
@@ -713,58 +717,46 @@ module TestUnixTaskLifecycle =
 
             after, model'
 
-        let property =
-            Prop.forAll (Arb.fromGen (Gen.listOf opGen))
-            <| fun ops ->
-                ((initial,
-                  {
-                      Live = Set.singleton 0
-                      Parked = Set.empty
-                  }),
-                 ops)
-                ||> List.fold step
-                |> ignore<UnixSystem<int, string> * Model>
+        let property (cover : LifecycleLabel -> unit) (ops : Op list) : unit =
+            ((initial,
+              {
+                  Live = Set.singleton 0
+                  Parked = Set.empty
+              }),
+             ops)
+            ||> List.fold (step cover)
+            |> ignore<UnixSystem<int, string> * Model>
 
-        Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, property)
+        CoverageSample.check (Config.QuickThrowOnFailure.WithMaxTest 1000) (Arb.fromGen (Gen.listOf opGen)) property
 
     [<TestCaseSource(nameof platforms)>]
     let ``the task set follows spawns and exits, no per-task entry outlives its task, and the process ends as its flavour says``
         (platform : SimulatedUnixPlatform)
         : unit
         =
-        let coverage =
-            {
-                ExitsDroppingAMask = 0
-                ExitsDroppingOwnPending = 0
-                ExitsKeepingProcessPending = 0
-                RefusedParked = 0
-                RefusedLeaderFirst = 0
-                SpawnsInheritingAMask = 0
-                RefusedLast = 0
-                EndedByLastExit = 0
-                EndedByExitGroup = 0
-                EndedWithParkedTask = 0
-            }
+        let coverage = runProperty platform
 
-        runProperty platform coverage
+        // Counted over the fixed sample, so a floor fails when a generator change
+        // stops reaching the path, not by chance. Each sits at least four
+        // standard deviations below the count that 1000 cases reach: measured
+        // over 30 runs per flavour, the rarest is `EndedWithParkedTask`, at a
+        // mean of 30 and a standard deviation of 7.
+        coverage.Count LifecycleLabel.ExitsDroppingAMask |> shouldBeGreaterThan 20
+        coverage.Count LifecycleLabel.ExitsDroppingOwnPending |> shouldBeGreaterThan 20
 
-        // Each floor sits at least four standard deviations below the count that
-        // 1000 cases reach, so it fails when a generator change stops reaching the
-        // path, not by chance. Measured over 30 runs per flavour, the rarest are
-        // `EndedWithParkedTask`, at a mean of 30 and a standard deviation of 7.
-        coverage.ExitsDroppingAMask |> shouldBeGreaterThan 20
-        coverage.ExitsDroppingOwnPending |> shouldBeGreaterThan 20
-        coverage.ExitsKeepingProcessPending |> shouldBeGreaterThan 20
-        coverage.RefusedParked |> shouldBeGreaterThan 20
-        coverage.RefusedLeaderFirst |> shouldBeGreaterThan 20
-        coverage.SpawnsInheritingAMask |> shouldBeGreaterThan 20
-        coverage.EndedByExitGroup |> shouldBeGreaterThan 50
-        coverage.EndedWithParkedTask |> shouldBeGreaterThan 3
+        coverage.Count LifecycleLabel.ExitsKeepingProcessPending
+        |> shouldBeGreaterThan 20
+
+        coverage.Count LifecycleLabel.RefusedParked |> shouldBeGreaterThan 20
+        coverage.Count LifecycleLabel.RefusedLeaderFirst |> shouldBeGreaterThan 20
+        coverage.Count LifecycleLabel.SpawnsInheritingAMask |> shouldBeGreaterThan 20
+        coverage.Count LifecycleLabel.EndedByExitGroup |> shouldBeGreaterThan 50
+        coverage.Count LifecycleLabel.EndedWithParkedTask |> shouldBeGreaterThan 3
 
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux ->
-            coverage.EndedByLastExit |> shouldBeGreaterThan 20
-            coverage.RefusedLast |> shouldEqual 0
+            coverage.Count LifecycleLabel.EndedByLastExit |> shouldBeGreaterThan 20
+            coverage.Count LifecycleLabel.RefusedLast |> shouldEqual 0
         | SimulatedUnixFlavour.Darwin ->
-            coverage.RefusedLast |> shouldBeGreaterThan 20
-            coverage.EndedByLastExit |> shouldEqual 0
+            coverage.Count LifecycleLabel.RefusedLast |> shouldBeGreaterThan 20
+            coverage.Count LifecycleLabel.EndedByLastExit |> shouldEqual 0

@@ -54,21 +54,27 @@ module TestCpuRange =
         imageWith platform count
         |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
 
-    /// The cases a run of a property drew, so that a property whose generator
-    /// stopped reaching one side of the bound fails rather than passing on the
-    /// other side alone.
-    let private assertBothSides (inside : int) (outside : int) : unit =
-        // About half of the draws land in each, so 100 of 500 on either side
-        // is far below what a working generator gives.
+    /// Which side of the machine's range a drawn processor is on.
+    [<RequireQualifiedAccess>]
+    type private Side =
+        | Inside
+        | Outside
+
+    /// The sides a property's fixed sample drew, so that a property whose
+    /// generator stopped reaching one side of the bound fails rather than
+    /// passing on the other side alone.
+    let private assertBothSides (coverage : Coverage<Side>) : unit =
+        let inside = coverage.Count Side.Inside
+        let outside = coverage.Count Side.Outside
+
+        // The fixed sample draws 196 processors in range and 304 out of it, so
+        // 100 of 500 on either side is far below what a working generator gives.
         if inside < 100 || outside < 100 then
             failwith $"the generator drew %d{inside} processors in range and %d{outside} out of it, of 500"
 
     [<Test>]
     let ``spawn throws exactly when the processor is not the machine's`` () : unit =
-        let inside = ref 0
-        let outside = ref 0
-
-        let property (platform : SimulatedUnixPlatform, count : int, cpu : int) : unit =
+        let property (cover : Side -> unit) (platform : SimulatedUnixPlatform, count : int, cpu : int) : unit =
             let system = systemWith platform count
 
             let spawned =
@@ -79,66 +85,60 @@ module TestCpuRange =
 
             match spawned, inRange count cpu with
             | Ok (Ok (SpawnAnswer.Spawned _, after)), true ->
-                inside.Value <- inside.Value + 1
+                cover Side.Inside
                 (UnixTaskTable.get 1 after.Tasks).Cpu |> shouldEqual (CpuId cpu)
                 UnixSystem.checkInvariants after |> shouldEqual []
             | Error message, false ->
-                outside.Value <- outside.Value + 1
+                cover Side.Outside
                 message |> shouldContainText $"%O{CpuId cpu}"
                 message |> shouldContainText $"has %d{count} logical processors"
             | other, expected -> failwith $"%O{CpuId cpu} on %d{count} processors: got %A{other}, in range %b{expected}"
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen countAndCpu) property)
-        assertBothSides inside.Value outside.Value
+        CoverageSample.check propertyConfig (Arb.fromGen countAndCpu) property
+        |> assertBothSides
 
     [<Test>]
     let ``boot refuses exactly a leader on a processor the machine does not have`` () : unit =
-        let inside = ref 0
-        let outside = ref 0
-
-        let property (platform : SimulatedUnixPlatform, count : int, cpu : int) : unit =
+        let property (cover : Side -> unit) (platform : SimulatedUnixPlatform, count : int, cpu : int) : unit =
             let launch = Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId cpu)
 
             match UnixBootImage.boot launch (imageWith platform count), inRange count cpu with
             | Ok system, true ->
-                inside.Value <- inside.Value + 1
+                cover Side.Inside
                 (UnixTaskTable.get 0 system.Tasks).Cpu |> shouldEqual (CpuId cpu)
                 UnixSystem.checkInvariants system |> shouldEqual []
             | Error refusal, false ->
-                outside.Value <- outside.Value + 1
+                cover Side.Outside
                 refusal |> shouldEqual (LaunchRefusal.LeaderCpuBeyondMachine (CpuId cpu, count))
             | other, expected -> failwith $"%O{CpuId cpu} on %d{count} processors: got %A{other}, in range %b{expected}"
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen countAndCpu) property)
-        assertBothSides inside.Value outside.Value
+        CoverageSample.check propertyConfig (Arb.fromGen countAndCpu) property
+        |> assertBothSides
 
     [<Test>]
     let ``launch refuses exactly a leader on a processor the machine does not have`` () : unit =
-        let inside = ref 0
-        let outside = ref 0
-
-        let property (platform : SimulatedUnixPlatform, count : int, cpu : int) : unit =
+        let property (cover : Side -> unit) (platform : SimulatedUnixPlatform, count : int, cpu : int) : unit =
             let machine = SimulatedMachine.ofSystem (systemWith platform count)
 
             let launch = Launched.launch platform UnixSystem.pipedStandardStreams 0 (CpuId cpu)
 
             match SimulatedMachine.launch launch machine, inRange count cpu with
             | Ok (pid, after), true ->
-                inside.Value <- inside.Value + 1
+                cover Side.Inside
 
                 (UnixTaskTable.get 0 (Machines.viewOf pid after).Tasks).Cpu
                 |> shouldEqual (CpuId cpu)
 
                 SimulatedMachine.checkInvariants after |> shouldEqual []
             | Error refusal, false ->
-                outside.Value <- outside.Value + 1
+                cover Side.Outside
 
                 refusal
                 |> shouldEqual (ProcessCreationRefusal.Launch (LaunchRefusal.LeaderCpuBeyondMachine (CpuId cpu, count)))
             | other, expected -> failwith $"%O{CpuId cpu} on %d{count} processors: got %A{other}, in range %b{expected}"
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen countAndCpu) property)
-        assertBothSides inside.Value outside.Value
+        CoverageSample.check propertyConfig (Arb.fromGen countAndCpu) property
+        |> assertBothSides
 
     /// `system` with task `task`'s processor overwritten with `cpu`, as no
     /// public route can do.
@@ -155,10 +155,7 @@ module TestCpuRange =
 
     [<Test>]
     let ``checkInvariants reports exactly a task on a processor the machine does not have`` () : unit =
-        let inside = ref 0
-        let outside = ref 0
-
-        let property (platform : SimulatedUnixPlatform, count : int, cpu : int) : unit =
+        let property (cover : Side -> unit) (platform : SimulatedUnixPlatform, count : int, cpu : int) : unit =
             let system = systemWith platform count |> Tasks.spawn 1 |> forgeCpu 1 cpu
 
             let machine =
@@ -167,19 +164,19 @@ module TestCpuRange =
                 |> snd
 
             if inRange count cpu then
-                inside.Value <- inside.Value + 1
+                cover Side.Inside
                 UnixSystem.checkInvariants system |> shouldEqual []
                 SimulatedMachine.checkInvariants machine |> shouldEqual []
             else
-                outside.Value <- outside.Value + 1
+                cover Side.Outside
                 let defect = UnixSystemDefect.CpuBeyondMachine (1, CpuId cpu, count)
                 UnixSystem.checkInvariants system |> shouldEqual [ defect ]
 
                 SimulatedMachine.checkInvariants machine
                 |> shouldEqual [ SimulatedMachineDefect.View (UnixSystem.defaultProcessId, defect) ]
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen countAndCpu) property)
-        assertBothSides inside.Value outside.Value
+        CoverageSample.check propertyConfig (Arb.fromGen countAndCpu) property
+        |> assertBothSides
 
     [<Test>]
     let ``the refusal names the processor and the machine's count`` () : unit =

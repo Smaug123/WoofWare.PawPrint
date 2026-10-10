@@ -326,26 +326,30 @@ module TestWakeCondition =
 
             exn.Message |> shouldContainText "a park holds what it waits on"
 
+    /// What a condition's satisfied set can be.
+    [<RequireQualifiedAccess>]
+    type private SatisfiedLabel =
+        | Empty
+        | NonEmpty
+
     [<Test>]
     let ``satisfied agrees with the flattening oracle`` () : unit =
-        let mutable empty = 0
-        let mutable nonEmpty = 0
+        let property (cover : SatisfiedLabel -> unit) (waiter : int, clock : int64, condition : WakeCondition) : unit =
+            let actual = WakeCondition.satisfied waiter condition (at clock)
 
-        let property =
-            Prop.forAll (Arb.fromGen (Gen.zip3 waiterGen clockGen sizedCondition))
-            <| fun (waiter, clock, condition) ->
-                let actual = WakeCondition.satisfied waiter condition (at clock)
+            if Set.isEmpty actual then
+                cover SatisfiedLabel.Empty
+            else
+                cover SatisfiedLabel.NonEmpty
 
-                if Set.isEmpty actual then
-                    empty <- empty + 1
-                else
-                    nonEmpty <- nonEmpty + 1
+            actual |> shouldEqual (oracleSatisfied waiter clock condition)
 
-                actual |> shouldEqual (oracleSatisfied waiter clock condition)
+        let coverage =
+            CoverageSample.check (propertyConfig) (Arb.fromGen (Gen.zip3 waiterGen clockGen sizedCondition)) property
 
-        Check.One (propertyConfig, property)
-        empty |> shouldBeGreaterThan 50
-        nonEmpty |> shouldBeGreaterThan 50
+        // Counted over the fixed sample.
+        coverage.Count SatisfiedLabel.Empty |> shouldBeGreaterThan 50
+        coverage.Count SatisfiedLabel.NonEmpty |> shouldBeGreaterThan 50
 
     [<Test>]
     let ``AnyOf is the union of its members`` () : unit =
@@ -404,28 +408,33 @@ module TestWakeCondition =
 
         Check.One (propertyConfig, property)
 
+    /// Where a clock can stand against a deadline.
+    [<RequireQualifiedAccess>]
+    type private DeadlineLabel =
+        /// The clock exactly at the deadline.
+        | OnTheDeadline
+
     [<Test>]
     let ``a deadline holds exactly when the clock is at or past it`` () : unit =
-        let mutable onTheDeadline = 0
+        let property (cover : DeadlineLabel -> unit) (clock : int64, deadline : int64) : unit =
+            if clock = deadline then
+                cover DeadlineLabel.OnTheDeadline
 
-        let property =
-            Prop.forAll (Arb.fromGen (Gen.zip clockGen clockGen))
-            <| fun (clock, deadline) ->
-                if clock = deadline then
-                    onTheDeadline <- onTheDeadline + 1
+            let primitive = WakePrimitive.DeadlinePassed deadline
 
-                let primitive = WakePrimitive.DeadlinePassed deadline
+            WakeCondition.satisfied signalled (WakeCondition.Primitive primitive) (at clock)
+            |> shouldEqual (
+                if clock >= deadline then
+                    Set.singleton primitive
+                else
+                    Set.empty
+            )
 
-                WakeCondition.satisfied signalled (WakeCondition.Primitive primitive) (at clock)
-                |> shouldEqual (
-                    if clock >= deadline then
-                        Set.singleton primitive
-                    else
-                        Set.empty
-                )
+        let coverage =
+            CoverageSample.check (propertyConfig) (Arb.fromGen (Gen.zip clockGen clockGen)) property
 
-        Check.One (propertyConfig, property)
-        onTheDeadline |> shouldBeGreaterThan 5
+        // Counted over the fixed sample.
+        coverage.Count DeadlineLabel.OnTheDeadline |> shouldBeGreaterThan 5
 
     [<Test>]
     let ``deadlines are exactly the DeadlinePassed leaves`` () : unit =

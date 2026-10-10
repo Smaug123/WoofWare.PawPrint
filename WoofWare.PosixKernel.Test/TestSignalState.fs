@@ -2344,43 +2344,48 @@ module TestSignalState =
                 | [] -> Op.Spawn (pick (taskPool |> List.filter (fun task -> not (Set.contains task tasks))))
                 | others -> Op.Exit (pick others)
 
-    let private checkAgainstOracle (numbering : SignalNumbering) : unit =
-        let mutable observedHandlerDeliveries = 0
-        let mutable observedNonLeaderDeliveries = 0
-        let mutable observedDefaultTerminates = 0
-        let mutable observedCoreDumps = 0
-        let mutable observedDefaultStopsAndContinues = 0
-        let mutable observedIgnoredDiscards = 0
-        let mutable observedActionAfterSkip = 0
-        let mutable observedDrainOfEmpty = 0
-        let mutable observedDrainNoneNonEmpty = 0
-        let mutable observedUnmaskableInMasks = 0
-        let mutable observedNestedFrames = 0
-        let mutable observedSigreturns = 0
-        let mutable observedResetHands = 0
-        let mutable observedHeldByFrame = 0
-        let mutable observedGenerationDrops = 0
-        let mutable observedMergeRefusals = 0
-        let mutable observedCoalescedEnqueues = 0
-        let mutable observedQueuedRealTimeDuplicates = 0
-        let mutable observedGeneratedTerminations = 0
-        let mutable observedGeneratedStops = 0
-        let mutable observedGeneratedQueued = 0
-        let mutable observedGeneratedIgnoredDiscards = 0
-        let mutable observedGenerationRefusals = 0
-        let mutable observedDeliveryRefusals = 0
-        let mutable observedDiscardsWhenSet = 0
-        let mutable observedFlushes = 0
-        let mutable observedDefaultsStored = 0
-        let mutable observedOwnAndSharedCandidates = 0
-        let mutable observedOutOfGenerationOrder = 0
-        let mutable observedExits = 0
-        let mutable observedMaskChanges = 0
-        let mutable observedSuspends = 0
-        let mutable observedRestoresThroughFrames = 0
-        let mutable observedRestoresWithoutFrames = 0
+    /// The paths of the reference that the oracle walk must reach, each counted
+    /// once per step that reaches it (an ignored-signal discard, once per entry
+    /// discarded).
+    [<RequireQualifiedAccess>]
+    type private OracleLabel =
+        | HandlerDeliveries
+        | NonLeaderDeliveries
+        | DefaultTerminates
+        | CoreDumps
+        | DefaultStopsAndContinues
+        | IgnoredDiscards
+        | ActionAfterSkip
+        | DrainOfEmpty
+        | DrainNoneNonEmpty
+        | UnmaskableInMasks
+        | NestedFrames
+        | Sigreturns
+        | ResetHands
+        | HeldByFrame
+        | GenerationDrops
+        | MergeRefusals
+        | CoalescedEnqueues
+        | QueuedRealTimeDuplicates
+        | GeneratedTerminations
+        | GeneratedStops
+        | GeneratedQueued
+        | GeneratedIgnoredDiscards
+        | GenerationRefusals
+        | DeliveryRefusals
+        | DiscardsWhenSet
+        | Flushes
+        | DefaultsStored
+        | OwnAndSharedCandidates
+        | OutOfGenerationOrder
+        | Exits
+        | MaskChanges
+        | Suspends
+        | RestoresThroughFrames
+        | RestoresWithoutFrames
 
-        let property (seed : int) : unit =
+    let private checkAgainstOracle (numbering : SignalNumbering) : unit =
+        let property (cover : OracleLabel -> unit) (seed : int) : unit =
             let rng = System.Random seed
             let steps = rng.Next (10, 80)
 
@@ -2402,27 +2407,27 @@ module TestSignalState =
                         candidates |> List.exists (fun e -> e.Target.IsSome)
                         && candidates |> List.exists (fun e -> e.Target.IsNone)
                     then
-                        observedOwnAndSharedCandidates <- observedOwnAndSharedCandidates + 1
+                        cover OracleLabel.OwnAndSharedCandidates
 
                     if candidates <> (r.Pending |> List.filter (fun e -> List.contains e candidates)) then
-                        observedOutOfGenerationOrder <- observedOutOfGenerationOrder + 1
+                        cover OracleLabel.OutOfGenerationOrder
 
                     match referenceOnReturnToUser numbering coreDumps tasks task r with
-                    | Error _ -> observedDeliveryRefusals <- observedDeliveryRefusals + 1
+                    | Error _ -> cover OracleLabel.DeliveryRefusals
                     | Ok (expected, r') ->
 
                     if Map.containsKey task r.Restore then
                         if r'.NextFrame > r.NextFrame then
-                            observedRestoresThroughFrames <- observedRestoresThroughFrames + 1
+                            cover OracleLabel.RestoresThroughFrames
                         else
-                            observedRestoresWithoutFrames <- observedRestoresWithoutFrames + 1
+                            cover OracleLabel.RestoresWithoutFrames
 
                     match expected with
                     | Some (SignalDelivery.RunHandlers frames) ->
-                        observedHandlerDeliveries <- observedHandlerDeliveries + 1
+                        cover OracleLabel.HandlerDeliveries
 
                         if frames.Length > 1 then
-                            observedNestedFrames <- observedNestedFrames + 1
+                            cover OracleLabel.NestedFrames
 
                         if
                             frames
@@ -2431,20 +2436,19 @@ module TestSignalState =
                                 && referenceDisposition r' frame.Entry.Signal = SignalDisposition.Default
                             )
                         then
-                            observedResetHands <- observedResetHands + 1
+                            cover OracleLabel.ResetHands
 
                         if task <> referenceLeader then
-                            observedNonLeaderDeliveries <- observedNonLeaderDeliveries + 1
+                            cover OracleLabel.NonLeaderDeliveries
                     | Some (SignalDelivery.DefaultTerminate (_, cored)) ->
-                        observedDefaultTerminates <- observedDefaultTerminates + 1
+                        cover OracleLabel.DefaultTerminates
 
                         if cored then
-                            observedCoreDumps <- observedCoreDumps + 1
+                            cover OracleLabel.CoreDumps
                     | Some (SignalDelivery.DefaultStop _)
-                    | Some (SignalDelivery.DefaultContinue _) ->
-                        observedDefaultStopsAndContinues <- observedDefaultStopsAndContinues + 1
-                    | None when r.Pending.IsEmpty -> observedDrainOfEmpty <- observedDrainOfEmpty + 1
-                    | None -> observedDrainNoneNonEmpty <- observedDrainNoneNonEmpty + 1
+                    | Some (SignalDelivery.DefaultContinue _) -> cover OracleLabel.DefaultStopsAndContinues
+                    | None when r.Pending.IsEmpty -> cover OracleLabel.DrainOfEmpty
+                    | None -> cover OracleLabel.DrainNoneNonEmpty
 
                     // Entries the walk removed beyond the ones the action
                     // consumed are ignored-signal discards.
@@ -2454,14 +2458,12 @@ module TestSignalState =
                         | Some _ -> 1
                         | None -> 0
 
-                    observedIgnoredDiscards <-
-                        observedIgnoredDiscards
-                        + (List.length r.Pending - List.length r'.Pending - consumed)
+                    for _ in 1 .. List.length r.Pending - List.length r'.Pending - consumed do
+                        cover OracleLabel.IgnoredDiscards
 
                     // An action fired past a candidate the task blocks.
                     match expected, candidates with
-                    | Some _, head :: _ when List.contains head r'.Pending ->
-                        observedActionAfterSkip <- observedActionAfterSkip + 1
+                    | Some _, head :: _ when List.contains head r'.Pending -> cover OracleLabel.ActionAfterSkip
                     | _ -> ()
 
                     // A caught signal held back by a frame's mask.
@@ -2476,43 +2478,43 @@ module TestSignalState =
                             )
                         )
                     then
-                        observedHeldByFrame <- observedHeldByFrame + 1
+                        cover OracleLabel.HeldByFrame
                 | Op.Generate (coreDumps, e) ->
                     match referenceGenerate numbering coreDumps tasks e r with
                     | ReferenceGeneration.Terminated (_, cored) ->
-                        observedGeneratedTerminations <- observedGeneratedTerminations + 1
+                        cover OracleLabel.GeneratedTerminations
 
                         if cored then
-                            observedCoreDumps <- observedCoreDumps + 1
-                    | ReferenceGeneration.Stopped _ -> observedGeneratedStops <- observedGeneratedStops + 1
-                    | ReferenceGeneration.Refused _ -> observedGenerationRefusals <- observedGenerationRefusals + 1
-                    | ReferenceGeneration.RefusedAsMerged _ -> observedMergeRefusals <- observedMergeRefusals + 1
+                            cover OracleLabel.CoreDumps
+                    | ReferenceGeneration.Stopped _ -> cover OracleLabel.GeneratedStops
+                    | ReferenceGeneration.Refused _ -> cover OracleLabel.GenerationRefusals
+                    | ReferenceGeneration.RefusedAsMerged _ -> cover OracleLabel.MergeRefusals
                     | ReferenceGeneration.Continues r' ->
-                        observedGeneratedQueued <- observedGeneratedQueued + 1
+                        cover OracleLabel.GeneratedQueued
 
                         if r' = r && referenceIgnoredAtGeneration numbering r e.Signal then
-                            observedGeneratedIgnoredDiscards <- observedGeneratedIgnoredDiscards + 1
+                            cover OracleLabel.GeneratedIgnoredDiscards
                 | Op.SetDisposition (signal, disposition) ->
                     if disposition = SignalDisposition.Default then
-                        observedDefaultsStored <- observedDefaultsStored + 1
+                        cover OracleLabel.DefaultsStored
 
                     match disposition with
                     | SignalDisposition.Catch action when
                         action.Mask |> SignalMask.signals |> Set.exists (referenceUnmaskable numbering)
                         ->
-                        observedUnmaskableInMasks <- observedUnmaskableInMasks + 1
+                        cover OracleLabel.UnmaskableInMasks
                     | _ -> ()
 
                     if
                         referenceDiscardsWhenSet numbering disposition signal
                         && r.Pending |> List.exists (fun p -> p.Signal = signal)
                     then
-                        observedDiscardsWhenSet <- observedDiscardsWhenSet + 1
+                        cover OracleLabel.DiscardsWhenSet
                 | Op.Enqueue _ -> ()
-                | Op.ChangeMask _ -> observedMaskChanges <- observedMaskChanges + 1
-                | Op.Exit _ -> observedExits <- observedExits + 1
-                | Op.Sigreturn _ -> observedSigreturns <- observedSigreturns + 1
-                | Op.Suspend _ -> observedSuspends <- observedSuspends + 1
+                | Op.ChangeMask _ -> cover OracleLabel.MaskChanges
+                | Op.Exit _ -> cover OracleLabel.Exits
+                | Op.Sigreturn _ -> cover OracleLabel.Sigreturns
+                | Op.Suspend _ -> cover OracleLabel.Suspends
                 | Op.Spawn _ -> ()
 
                 match op with
@@ -2520,10 +2522,10 @@ module TestSignalState =
                 | Op.Generate (_, e) ->
 
                     match referenceBeginGeneration numbering e.Signal r with
-                    | None -> observedGenerationDrops <- observedGenerationDrops + 1
+                    | None -> cover OracleLabel.GenerationDrops
                     | Some flushed ->
                         if List.length flushed.Pending < List.length r.Pending then
-                            observedFlushes <- observedFlushes + 1
+                            cover OracleLabel.Flushes
 
                         match op with
                         | Op.Enqueue _ ->
@@ -2533,9 +2535,9 @@ module TestSignalState =
 
                             if alreadyPendingInSet then
                                 if Signal.isRealTimeUnder numbering e.Signal then
-                                    observedQueuedRealTimeDuplicates <- observedQueuedRealTimeDuplicates + 1
+                                    cover OracleLabel.QueuedRealTimeDuplicates
                                 else
-                                    observedCoalescedEnqueues <- observedCoalescedEnqueues + 1
+                                    cover OracleLabel.CoalescedEnqueues
                         | _ -> ()
                 | _ -> ()
 
@@ -2545,61 +2547,54 @@ module TestSignalState =
                 tasks <- tasks'
                 assertEquivalent numbering tasks s r
 
-        // The seed is drawn from the whole range, so that each run walks fresh
-        // sequences: FsCheck draws a size-bounded integer from 0 to 100 only.
-        // A seed has no meaningful shrink, so it is given no shrinker.
-        Check.One (
-            Config.QuickThrowOnFailure.WithMaxTest 1000,
-            Prop.forAll (Arb.fromGen (Gen.choose (0, System.Int32.MaxValue))) property
-        )
+        // The seed is drawn from the whole range, so that each fresh case walks
+        // a fresh sequence: FsCheck draws a size-bounded integer from 0 to 100
+        // only. A seed has no meaningful shrink, so it is given no shrinker.
+        let coverage =
+            CoverageSample.check
+                (Config.QuickThrowOnFailure.WithMaxTest 1000)
+                (Arb.fromGen (Gen.choose (0, System.Int32.MaxValue)))
+                property
 
-        // Distribution checks: the random walk must hit each of these
-        // paths frequently enough that a regression would actually surface.
-        // The thresholds are conservative: measured over 5000 runs per
-        // numbering, each resampling 500 walks from 5000, each sat at least
-        // four standard deviations below the mean, except for the
-        // rare paths, which are only required to be reached. For each of
-        // those (a frame holding back a caught signal, with means of 42 and
-        // 91; an action past a skipped candidate, 24 and 29; a queued
-        // real-time duplicate, 30; a merge refusal, 105), the chance that no
-        // walk in a run reaches it is below one in a hundred million.
-        //
-        // Since then the walk has grown operations (mask changes, `suspend`)
-        // that take a share of the others, and nested frames fell to a mean of
-        // about 20 in 500 walks, with a standard deviation of 5 (measured over
-        // 60 runs per numbering, 2026-10-08), which its floor of 15 no longer
-        // clears safely. So the walk now runs 1000 times, which doubles every
-        // mean, rather than any floor being lowered.
-        observedHandlerDeliveries |> shouldBeGreaterThan 30
-        observedNonLeaderDeliveries |> shouldBeGreaterThan 10
-        observedDefaultTerminates |> shouldBeGreaterThan 50
-        observedCoreDumps |> shouldBeGreaterThan 20
-        observedDefaultStopsAndContinues |> shouldBeGreaterThan 20
-        observedActionAfterSkip |> shouldBeGreaterThan 0
-        observedDrainOfEmpty |> shouldBeGreaterThan 20
-        observedDrainNoneNonEmpty |> shouldBeGreaterThan 20
-        observedUnmaskableInMasks |> shouldBeGreaterThan 20
-        observedNestedFrames |> shouldBeGreaterThan 15
-        observedSigreturns |> shouldBeGreaterThan 50
-        observedResetHands |> shouldBeGreaterThan 10
-        observedHeldByFrame |> shouldBeGreaterThan 0
-        observedCoalescedEnqueues |> shouldBeGreaterThan 20
-        observedGeneratedTerminations |> shouldBeGreaterThan 20
-        observedGeneratedStops |> shouldBeGreaterThan 5
-        observedGeneratedQueued |> shouldBeGreaterThan 20
-        observedGeneratedIgnoredDiscards |> shouldBeGreaterThan 20
-        observedGenerationRefusals |> shouldBeGreaterThan 3
-        observedDeliveryRefusals |> shouldBeGreaterThan 20
-        observedDiscardsWhenSet |> shouldBeGreaterThan 20
-        observedFlushes |> shouldBeGreaterThan 20
-        observedDefaultsStored |> shouldBeGreaterThan 100
-        observedOwnAndSharedCandidates |> shouldBeGreaterThan 20
-        observedOutOfGenerationOrder |> shouldBeGreaterThan 50
-        observedExits |> shouldBeGreaterThan 20
-        observedMaskChanges |> shouldBeGreaterThan 100
-        observedSuspends |> shouldBeGreaterThan 100
-        observedRestoresThroughFrames |> shouldBeGreaterThan 20
-        observedRestoresWithoutFrames |> shouldBeGreaterThan 20
+        // Distribution checks, counted over the fixed sample: the random walk
+        // must hit each of these paths often enough that a regression would
+        // actually surface. Each floor sits at least four standard deviations
+        // below what 1000 walks reach, except for the rare paths, which are
+        // only required to be reached: a frame holding back a caught signal, an
+        // action past a skipped candidate, a queued real-time duplicate, and a
+        // merge refusal. Nested frames, the nearest their floor of 15, reached a
+        // mean of about 20 in 500 walks with a standard deviation of 5 (measured
+        // over 60 runs per numbering), so 1000 walks clear it with room to spare.
+        coverage.Count OracleLabel.HandlerDeliveries |> shouldBeGreaterThan 30
+        coverage.Count OracleLabel.NonLeaderDeliveries |> shouldBeGreaterThan 10
+        coverage.Count OracleLabel.DefaultTerminates |> shouldBeGreaterThan 50
+        coverage.Count OracleLabel.CoreDumps |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.DefaultStopsAndContinues |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.ActionAfterSkip |> shouldBeGreaterThan 0
+        coverage.Count OracleLabel.DrainOfEmpty |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.DrainNoneNonEmpty |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.UnmaskableInMasks |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.NestedFrames |> shouldBeGreaterThan 15
+        coverage.Count OracleLabel.Sigreturns |> shouldBeGreaterThan 50
+        coverage.Count OracleLabel.ResetHands |> shouldBeGreaterThan 10
+        coverage.Count OracleLabel.HeldByFrame |> shouldBeGreaterThan 0
+        coverage.Count OracleLabel.CoalescedEnqueues |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.GeneratedTerminations |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.GeneratedStops |> shouldBeGreaterThan 5
+        coverage.Count OracleLabel.GeneratedQueued |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.GeneratedIgnoredDiscards |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.GenerationRefusals |> shouldBeGreaterThan 3
+        coverage.Count OracleLabel.DeliveryRefusals |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.DiscardsWhenSet |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.Flushes |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.DefaultsStored |> shouldBeGreaterThan 100
+        coverage.Count OracleLabel.OwnAndSharedCandidates |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.OutOfGenerationOrder |> shouldBeGreaterThan 50
+        coverage.Count OracleLabel.Exits |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.MaskChanges |> shouldBeGreaterThan 100
+        coverage.Count OracleLabel.Suspends |> shouldBeGreaterThan 100
+        coverage.Count OracleLabel.RestoresThroughFrames |> shouldBeGreaterThan 20
+        coverage.Count OracleLabel.RestoresWithoutFrames |> shouldBeGreaterThan 20
 
         // The generation-versus-delivery halves of the ignore rule are
         // flavour-divergent, so their counters are too: only Darwin drops at
@@ -2609,21 +2604,21 @@ module TestSignalState =
         // guaranteed to line those up, so its floor stays at zero.)
         match numbering with
         | SignalNumbering.Linux ->
-            observedIgnoredDiscards |> shouldBeGreaterThan 20
-            observedGenerationDrops |> shouldEqual 0
-        | SignalNumbering.Darwin -> observedGenerationDrops |> shouldBeGreaterThan 20
+            coverage.Count OracleLabel.IgnoredDiscards |> shouldBeGreaterThan 20
+            coverage.Count OracleLabel.GenerationDrops |> shouldEqual 0
+        | SignalNumbering.Darwin -> coverage.Count OracleLabel.GenerationDrops |> shouldBeGreaterThan 20
 
         // Only Darwin holds a signal pending on the process and one pending on
         // the leader as one, which this library refuses to leave pending.
         match numbering with
-        | SignalNumbering.Linux -> observedMergeRefusals |> shouldEqual 0
-        | SignalNumbering.Darwin -> observedMergeRefusals |> shouldBeGreaterThan 0
+        | SignalNumbering.Linux -> coverage.Count OracleLabel.MergeRefusals |> shouldEqual 0
+        | SignalNumbering.Darwin -> coverage.Count OracleLabel.MergeRefusals |> shouldBeGreaterThan 0
 
         // Only Linux numbering has real-time signals in the pool (`RealTime 8`),
         // so only there can the walk exercise the queue-not-coalesce arm.
         match numbering with
-        | SignalNumbering.Linux -> observedQueuedRealTimeDuplicates |> shouldBeGreaterThan 0
-        | SignalNumbering.Darwin -> observedQueuedRealTimeDuplicates |> shouldEqual 0
+        | SignalNumbering.Linux -> coverage.Count OracleLabel.QueuedRealTimeDuplicates |> shouldBeGreaterThan 0
+        | SignalNumbering.Darwin -> coverage.Count OracleLabel.QueuedRealTimeDuplicates |> shouldEqual 0
 
     [<Test>]
     let ``random op sequences agree with the reference oracle on every observable, under Linux numbering`` () : unit =
