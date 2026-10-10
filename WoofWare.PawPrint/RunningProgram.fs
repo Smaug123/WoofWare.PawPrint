@@ -627,6 +627,21 @@ module internal RunningProgram =
             failwith
                 "RunningProgram.stepDecided: the scheduler found no Runnable thread, but the driver chose this program because it had one (this is an interpreter bug)."
         | Some nextThread ->
+            // The kernel records which thread each processor is running, and
+            // `SystemNative_SchedGetCpu` reads that record, so report the thread about to run.
+            // Every instruction any thread runs goes through here, the signal dispatcher's
+            // included. A thread already running there leaves the kernel as it was, and then
+            // the program too, so that the common tick allocates nothing for this.
+            let program =
+                let kernel = EmulatedKernel.dispatch nextThread program.State.Kernel
+
+                if obj.ReferenceEquals (kernel, program.State.Kernel) then
+                    program
+                else
+                    { program with
+                        State = program.State.WithKernel kernel
+                    }
+
             // `nextThread` has now retired a step, and that is true of *every* outcome below —
             // including the ones that do not look like ordinary progress: a thread's final
             // `Ret` arrives as `Terminated`, and the entry thread's synthetic `onlyRet` frame
