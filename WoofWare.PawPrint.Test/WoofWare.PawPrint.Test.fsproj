@@ -127,7 +127,9 @@
     <Compile Include="TestRawRootFieldLayoutDisplacement.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestOpcodeFaults.fs" />
+    <Compile Include="HostFaultProbe.fs" />
     <Compile Include="TestOpcodeFaultsOnHost.fs" />
+    <Compile Include="TestOpcodeFaultsOnHostMemory.fs" />
     <Compile Include="TestStackEffect.fs" />
     <Compile Include="TestStackShape.fs" />
     <Compile Include="TestControlFlow.fs" />
