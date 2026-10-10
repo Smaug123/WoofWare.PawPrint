@@ -760,6 +760,61 @@ been rebased onto main (with #1790).
      P and E against the host's kernel, with the same exclusions, as `TestConnectedTransferAgainstHost`
      does, so that CI's x86-64 Linux checks the Linux column. B's rows go in
      kernel fixtures.
+
+   Done as described, with these findings and choices:
+
+   - `tcp-shutdown.c` gained rows, measured 2026-10-10 on both flavours
+     (twice each, identical): F's open rows (binds and `getpeername` before
+     either socket closes), E's `reset` and `bothfin` rows, and U's
+     `connect-unreported`, `fresh-then` and `udp-then` rows.
+   - **The passive closer's port, while both sockets are open** (section 5's
+     "still to measure"): an end whose FIN was made after the peer's had
+     arrived, and has itself arrived, frees its endpoint to a fresh bind
+     while its socket is still open, on both flavours. On Linux that is
+     `TCP_CLOSE` releasing the port, so an explicitly bound port stays held
+     until the socket closes (`open-p-first-c-locked`); an accepted socket's
+     is never locked, though the listener's was (`open-c-first-l-locked`).
+     An end whose FIN was made first holds it (`TIME_WAIT`), open or closed.
+     So the rule is `TcpTransfer.passiveFinArrived` of the end, whether or
+     not it is `Closed`: `UnixMachineState.releasedPort` for a socket's
+     binding (beside a reset, which it already released), and
+     `orphanedConnectionOccupies` for an end whose socket has gone.
+   - `getpeername`: Linux answers `ENOTCONN` once both FINs have arrived, at
+     both ends (`TCP_CLOSE`); Darwin `EINVAL` once the end is shut both ways,
+     whichever way each side was shut (`getpeername1`). Darwin's
+     `setsockopt` answers `EINVAL` there too, as section L's linger column
+     already showed.
+   - **Linux's `shutdown` of a socket with no connection answers `ENOTCONN`
+     but still sets the sides shut**, which persist through a later
+     `connect`: a fresh socket polls IN|RDHUP after `SHUT_RD`, and once
+     connected its writes answer `EPIPE` after `SHUT_WR` (U `fresh-then`).
+     Darwin changes nothing. This kernel keeps no shut sides on such a
+     socket, so it refuses the Linux call (`ShutdownRefusal.LinuxUnconnected`)
+     and answers Darwin's.
+   - Linux's `shutdown` of a completed connect not yet reported moves the
+     socket to connected, so the next `connect` answers `EISCONN`
+     (`connect-unreported`); the call is served there, and the socket leaves
+     `EstablishedPendingReport`.
+   - **Stage 3's unmeasured assumption is confirmed**: E's `reset` rows show
+     Linux's `shutdown` of a reset socket answering `ENOTCONN` and reporting
+     the shutter's edge-triggered registration again (0x201d), and the
+     `bothfin` rows show the same after a complete exchange (0x2015). Darwin
+     reports nothing in either.
+   - A listener's `shutdown` is refused on both flavours
+     (`ShutdownRefusal.Listener`), per section 5; so are a connected datagram
+     socket's and a Unix-domain socket's, which are unmeasured.
+   - Darwin's close behind its own queued FIN, once the peer's has arrived,
+     over unread bytes (`TcpTransfer.closeRefused`) is now reachable, and is
+     refused at the close (`DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin`).
+   - Darwin's endpoint release after a linger-zero close that is an
+     ordinary close is not decided here: no linger-zero close of a connected
+     socket is served yet (stage 1, `AbortiveClose`, still stands), and the
+     only one served, of a socket whose peer has gone, takes the connection
+     with it.
+   - This kernel's explicit `bind` still ignores an endpoint that a closed
+     socket's end holds (only an implicit bind avoids it), which predates
+     this stage; `TestShutdownAgainstHost` replays the lines that bind after
+     a close against the host only.
 5. **`shutdown(2)` on a listener.** Linux returns the socket to `Idle`
    through stage 2's step and wakes parked accepts with `EINVAL`. Darwin
    answers `ENOTCONN`. Kestrel and `HttpClient` never make this call, so the
@@ -770,6 +825,14 @@ been rebased onto main (with #1790).
      `SystemNative_Disconnect`.
    - `sourcesImpure` guests under both flavours, and then the Kestrel
      `StopAsync` and `HttpClient` disposal path between two processes.
+
+   The first part is done: `SystemNative_Shutdown` converts the PAL's
+   `SocketShutdown` in `SocketShutdownPal` (EINVAL for any other value,
+   before the descriptor, as `Common_Shutdown` does) and calls
+   `UnixConnection.shutdown`; `SystemNative_Disconnect` is refused by name;
+   and `sourcesImpure/SocketShutdown.cs` runs under both flavours,
+   differential on a host of the same flavour, asserting only what both
+   flavours' runtimes agree on.
 
 Stages 1 and 2 need nothing from 3, and either can go first. Stage 6 can merge
 with stage 4 if small.
@@ -790,13 +853,10 @@ with stage 4 if small.
   `Arrived true`, including later, when an orphan's queued passive FIN
   arrives. Not modelling it would answer `EADDRINUSE` to a `bind` that the
   kernel allows.
-  **Still to measure, in stage 4:** Codex found on Darwin 27 that after
-  `shutdown(p, SHUT_WR)` and then `shutdown(c, SHUT_WR)`, a fresh socket may
-  bind `c`'s endpoint while both descriptors are still open. So the release
-  may not need `Closed` at all, and may apply to a live socket's binding as
-  well as to an orphan's. Stage 4 adds that ordering to section F, before
-  either descriptor closes, measures it on both flavours, and states the rule
-  from what it finds.
+  Measured in stage 4 (F's open rows): the release does not need `Closed`.
+  It applies to a live socket's binding as well as to an orphan's, on both
+  flavours, except that Linux keeps an explicitly bound port until the
+  socket closes.
 - **Abortive close (3.2):** a function of the two FINs. It is an ordinary
   close once both have arrived, and otherwise a reset, except that Darwin's
   close after an active FIN that is still queued and the peer's FIN has

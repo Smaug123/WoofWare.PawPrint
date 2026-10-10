@@ -451,10 +451,12 @@ module internal DarwinReadiness =
         // written.
         | SocketPhase.Idle, _ -> None
         // A connected socket's rows are measured on Darwin 27.0.0
-        // (`tcp-transfer.c`, section S), and agree with `filt_soread` and
-        // `filt_sowrite`. A reset sets `SS_CANTRCVMORE` and `SS_CANTSENDMORE`,
-        // so both filters report EV_EOF with the pending error, whatever is
-        // waiting or free; a FIN sets only the first.
+        // (`tcp-transfer.c`, section S; `tcp-shutdown.c`, sections S and T),
+        // and agree with `filt_soread` and `filt_sowrite`. A reset sets
+        // `SS_CANTRCVMORE` and `SS_CANTSENDMORE`, so both filters report
+        // EV_EOF with the pending error, whatever is waiting or free. The
+        // peer's FIN or the socket's own `SHUT_RD` sets only the first, and
+        // its own `SHUT_WR` only the second.
         | SocketPhase.Established (connectionId, connectionEnd), _ ->
             let transfer = (UnixMachineState.connection connectionId machine).Transfer
             let inbound = TcpTransfer.towards connectionEnd transfer
@@ -464,29 +466,33 @@ module internal DarwinReadiness =
                 TcpTransfer.pendingError connectionEnd transfer
                 |> Option.map TcpError.toUnixError
 
-            match filter, inbound.Receiver, inbound.Fin with
-            | _, TcpEndState.Closed, _ ->
+            match filter, inbound.Receiver with
+            | _, TcpEndState.Closed ->
                 failwith
                     $"DarwinReadiness.ofSocket: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
-            // Ready with any byte unread (the receive low-water mark is 1),
-            // reporting how many.
-            | KqueueFilter.Read, TcpEndState.Open _, TcpFin.NotSent
-            | KqueueFilter.Read, TcpEndState.Open _, TcpFin.Queued _ ->
-                if unread > 0L then
+            // EV_EOF once the receive side is shut, reporting what is unread;
+            // otherwise ready with any byte unread (the receive low-water mark
+            // is 1), reporting how many.
+            | KqueueFilter.Read, TcpEndState.Open _ ->
+                if TcpTransfer.receiveShut connectionEnd transfer then
+                    Some (KqueueFilterReport.EndOfFile (unread, None))
+                elif unread > 0L then
                     Some (KqueueFilterReport.Ready unread)
                 else
                     None
-            | KqueueFilter.Read, TcpEndState.Open _, TcpFin.Arrived _ ->
-                Some (KqueueFilterReport.EndOfFile (unread, None))
-            | KqueueFilter.Read, TcpEndState.Reset _, _ -> Some (KqueueFilterReport.EndOfFile (unread, error))
-            | KqueueFilter.Write, TcpEndState.Reset _, _ ->
+            | KqueueFilter.Read, TcpEndState.Reset _ -> Some (KqueueFilterReport.EndOfFile (unread, error))
+            | KqueueFilter.Write, TcpEndState.Reset _ ->
                 Some (KqueueFilterReport.EndOfFile (sendBufferSpace socket machine, error))
-            // Ready while at least the send low-water mark is free, reporting
-            // how much is, and without EV_EOF after a FIN.
-            | KqueueFilter.Write, TcpEndState.Open _, _ ->
+            // EV_EOF once the send side is shut, reporting the free space
+            // however little it is (measured: 0 with the buffer full);
+            // otherwise ready while at least the send low-water mark is free,
+            // reporting how much is.
+            | KqueueFilter.Write, TcpEndState.Open _ ->
                 let space = sendBufferSpace socket machine
 
-                if space >= int64 TcpTransfer.darwinSendLowWater then
+                if TcpTransfer.sendShut connectionEnd transfer then
+                    Some (KqueueFilterReport.EndOfFile (space, None))
+                elif space >= int64 TcpTransfer.darwinSendLowWater then
                     Some (KqueueFilterReport.Ready space)
                 else
                     None
@@ -878,6 +884,10 @@ type internal SocketWake =
     | SendSpace
     /// The socket's connection was reset.
     | PeerReset
+    /// The socket's own `shutdown(2)` shut `how`: on Darwin the sides it
+    /// applied, and on Linux whatever it asked, even when that changed
+    /// nothing.
+    | ShutDown of how : TcpShutdownHow
 
 [<RequireQualifiedAccess>]
 module internal SocketWake =
@@ -905,10 +915,16 @@ module internal SocketWake =
         // and delivery's re-poll does the filtering (measured, `order8.c`,
         // `order9.c`). A reset's `sk_state_change` wakes unkeyed too, so its
         // `sk_error_report`'s keyed wake adds no registration to those.
+        // `inet_shutdown` ends in `sk_state_change` for every `how`, so a
+        // shutdown queues the shutter's registrations even where its level
+        // gained nothing (measured, `tcp-shutdown.c` section E: `SHUT_WR`
+        // reports OUT again, and so does a `shutdown` answering ENOTCONN on a
+        // reset socket or after both FINs).
         | SocketWake.ConnectResolved
         | SocketWake.RefusalReset
         | SocketWake.PeerFin
-        | SocketWake.PeerReset -> None
+        | SocketWake.PeerReset
+        | SocketWake.ShutDown _ -> None
 
     /// The kqueue filters `wake` activates, in the order it activates them.
     let kqueueFilters (wake : SocketWake) : KqueueFilter list =
@@ -922,11 +938,17 @@ module internal SocketWake =
         // Bytes arriving activate READ, and send space WRITE, by `sorwakeup`
         // and `sowwakeup` (`tcp-transfer.c`, section E). A reset goes through
         // `soisdisconnected`, which a refusal goes through too, so it
-        // activates the filters in the order measured for that.
+        // activates the filters in the order measured for that. A shutdown
+        // activates READ for the receive side it shut (`socantrcvmore`) and
+        // WRITE for the send side (`socantsendmore`), the receive side first
+        // (`tcp-shutdown.c`, section E).
         match wake with
         | SocketWake.AcceptQueuePush
         | SocketWake.DataArrived -> [ KqueueFilter.Read ]
         | SocketWake.SendSpace -> [ KqueueFilter.Write ]
+        | SocketWake.ShutDown TcpShutdownHow.Read -> [ KqueueFilter.Read ]
+        | SocketWake.ShutDown TcpShutdownHow.Write -> [ KqueueFilter.Write ]
+        | SocketWake.ShutDown TcpShutdownHow.Both -> [ KqueueFilter.Read ; KqueueFilter.Write ]
         | SocketWake.ConnectResolved
         | SocketWake.PeerReset -> [ KqueueFilter.Write ; KqueueFilter.Read ]
         | SocketWake.PeerFin -> [ KqueueFilter.Read ]
@@ -984,9 +1006,7 @@ module internal SocketWake =
                 | TcpWake.SendSpace sender -> sender, SocketWake.SendSpace
                 | TcpWake.PeerFinished receiver -> receiver, SocketWake.PeerFin
                 | TcpWake.PeerReset receiver -> receiver, SocketWake.PeerReset
-                | TcpWake.ShutDown (shutter, how) ->
-                    failwith
-                        $"SocketWake.signalTransfer: the %A{shutter} end of %O{connectionId} shut %A{how}, but only TcpTransfer.shutdown raises that wake, and no syscall here calls it yet, so this is a bug in this library."
+                | TcpWake.ShutDown (shutter, how) -> shutter, SocketWake.ShutDown how
 
             match UnixMachineState.socketHoldingEnd connectionId connectionEnd system.Machine with
             | None -> system

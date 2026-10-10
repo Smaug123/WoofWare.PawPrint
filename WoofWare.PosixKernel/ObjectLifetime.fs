@@ -28,6 +28,17 @@ type DescriptionReleaseRefusal =
     /// would do. With nothing unsent, or through a non-blocking description
     /// under Darwin, the close is the ordinary one.
     | LingeringClose of socket : SocketId * connection : ConnectionId * unsent : int
+    /// The description is the last reference to the connected stream socket
+    /// `socket`, under Darwin: the socket shut its send side while bytes it
+    /// wrote to `connection` were still unsent, so its FIN waits behind them,
+    /// the peer's FIN has arrived, and bytes are left unread.
+    ///
+    /// Measured (`tcp-shutdown-exchange.c` in
+    /// docs/plans/2026-10-08-tcp-shutdown-linger, section G), the close then
+    /// sends no reset, and neither the rest of the bytes nor the FIN reach the
+    /// peer, which reads what it holds and then EAGAIN, still 2 s later: only
+    /// a TCP timer ends that, and this kernel keeps none.
+    | DarwinCloseBehindQueuedFin of socket : SocketId * connection : ConnectionId
 
 [<RequireQualifiedAccess>]
 module DescriptionReleaseRefusal =
@@ -37,6 +48,8 @@ module DescriptionReleaseRefusal =
         match refusal with
         | DescriptionReleaseRefusal.AbortiveClose (socket, connection) ->
             $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time of zero, while its connection %O{connection} is still referenced. A real kernel resets the connection rather than shutting it down in order, and the peer reads ECONNRESET; this kernel models no abortive close, and its close would deliver an orderly end of stream instead unless bytes were left unread."
+        | DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin (socket, connection) ->
+            $"releasing the last reference destroys socket %O{socket}, which shut its send side while bytes it wrote to connection %O{connection} were unsent, so its FIN still waits behind them; the peer's FIN has arrived, and bytes are left unread. Measured on Darwin, the close then sends no reset, and neither the remaining bytes nor the FIN reach the peer, which reads what it holds and then EAGAIN for at least 2 s: only a TCP timer ends that, and this kernel keeps none."
         | DescriptionReleaseRefusal.LingeringClose (socket, connection, unsent) ->
             $"releasing the last reference destroys socket %O{socket}, whose SO_LINGER is on with a time greater than zero, while %d{unsent} bytes it wrote to connection %O{connection} are still in its send buffer. Measured with the peer open and nothing unread, a real kernel's close then waits, for up to the linger time, for them to reach the peer -- on Linux whatever the description's O_NONBLOCK, on Darwin when the description is blocking -- and this kernel does not model that wait."
 
@@ -175,7 +188,9 @@ module ObjectLifetime =
     /// unread, and its waiters the wake that raises. A close that `SO_LINGER`
     /// would make reset the connection or wait is refused
     /// (`DescriptionReleaseRefusal.AbortiveClose`,
-    /// `DescriptionReleaseRefusal.LingeringClose`).
+    /// `DescriptionReleaseRefusal.LingeringClose`), and so is a Darwin close
+    /// whose outcome waits on a timer
+    /// (`DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin`).
     ///
     /// Destroying a listener's description resets every connection still in
     /// its accept queue, oldest first (`TcpTransfer.abort` of the server
@@ -334,6 +349,8 @@ module ObjectLifetime =
 
                 if waits then
                     Error (DescriptionReleaseRefusal.LingeringClose (socketId, connection, unsent))
+                elif TcpTransfer.closeRefused connectionEnd transfer then
+                    Error (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin (socketId, connection))
                 else
                     let wakes, transfer = TcpTransfer.close connectionEnd transfer
                     Ok [ connection, wakes, transfer ]
@@ -417,7 +434,10 @@ module ObjectLifetime =
     /// refused: failing loudly, naming `caller`, if one is.
     ///
     /// A socket's release is refused only under `SO_LINGER`, which no
-    /// description only calls hold has (`UnixSystemDefect.LingeringSocketHeldOnlyByCalls`).
+    /// description only calls hold has (`UnixSystemDefect.LingeringSocketHeldOnlyByCalls`),
+    /// and under Darwin behind a queued FIN, where a close of the descriptor
+    /// a read or write was made through ends the call, so no call holds a
+    /// socket nothing names.
     let internal releaseUnreferencedUnrefusable<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (caller : string)
         (descriptions : OpenFileDescriptionId list)

@@ -140,6 +140,12 @@ module TestConnectedTransfer =
     let private assertClean (system : UnixSystem<int, string>) : unit =
         UnixSystem.checkInvariants system |> shouldEqual []
 
+    /// `shutdown(fd, how)`, which must answer 0.
+    let private shut (fd : int) (how : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixConnection.shutdown fd how system with
+        | Ok (ShutdownAnswer.Shut, after) -> after
+        | other -> failwith $"shutdown(%d{fd}, %d{how}): %A{other}"
+
     // ------------------------------------------------------------------
     // A connect whose completion is unreported
     // ------------------------------------------------------------------
@@ -1177,6 +1183,64 @@ module TestConnectedTransfer =
 
                 assertClean system
             | other -> failwith $"%O{platform}: %A{other}"
+
+    /// The endpoint of a socket closed after a FIN is held, unless the
+    /// closer's FIN was made after the peer's had arrived and has itself
+    /// arrived (measured, `tcp-shutdown.c` section F in
+    /// docs/plans/2026-10-08-tcp-shutdown-linger). With one ephemeral port,
+    /// which the client holds, a bind to port 0 finds it free exactly then:
+    /// at once after a passive close; never after an active one; and after a
+    /// passive one whose FIN waited behind bytes, once the peer's reads let
+    /// the bytes and the FIN through.
+    [<Test>]
+    let ``a closed end's port is free to the next implicit bind once its passive FIN has arrived`` () : unit =
+        for platform in Machines.platforms do
+            for order in [ "passive" ; "active" ; "passive-queued" ] do
+                let system =
+                    systemOn
+                        (small
+                         >> UnixBootImage.withEphemeralPortRange (40000us, 40000us)
+                         >> Configured.expectOk EphemeralPortRangeRefusal.describe)
+                        platform
+
+                let client, server, system = pair true system
+
+                let system =
+                    match order with
+                    | "passive" ->
+                        let system = shut server 1 system
+                        KeventWorld.close client system
+                    | "active" ->
+                        let system = KeventWorld.close client system
+                        shut server 1 system
+                    | _ ->
+                        let system = shut server 1 system
+                        let _, system = fill client system
+                        KeventWorld.close client system
+
+                let bindAny (system : UnixSystem<int, string>) =
+                    let fresh, system = KeventWorld.stream false system
+
+                    match
+                        CopyIn.bind fresh UserBuffer.Mapped 16u (CopyIn.inet platform (KeventWorld.loopback 0us)) system
+                    with
+                    | Ok (BindAnswer.Bound endpoint, system) ->
+                        assertClean system
+                        Some endpoint.Port
+                    | Error (BindRefusal.EphemeralPortsExhausted _) -> None
+                    | other -> failwith $"%O{platform} %s{order}: %A{other}"
+
+                let expectedAtOnce = if order = "passive" then Some 40000us else None
+                bindAny system |> shouldEqual expectedAtOnce
+
+                if order = "passive-queued" then
+                    let rec drain (system : UnixSystem<int, string>) =
+                        match received server 1048576 system with
+                        | ReadAnswer.Completed bytes, system when bytes.Length > 0 -> drain system
+                        | ReadAnswer.Completed _, system -> system
+                        | other, _ -> failwith $"draining: %A{other}"
+
+                    bindAny (drain system) |> shouldEqual (Some 40000us)
 
     /// A Linux socket whose connect has not reported its completion, reset
     /// before it does: what Linux's retry then does to the socket is

@@ -107,19 +107,43 @@ L	nolinger	pfin-cqueued	p-drained=2254296 last=0	~counts
 L	nolinger	pfin-cqueued	closers-endpoint after p acted bind-ok
 F	p-first-close	closers-endpoint at once bind-ok, 30 ms later bind-ok	rdy(p)	poll=0x13 kq-read=0/EOF/0 kq-write=146988/EOF/0 fionread=0
 F	p-first-wr	closers-endpoint at once bind-ok, 30 ms later bind-ok	rdy(p)	poll=0x13 kq-read=0/EOF/0 kq-write=146988/EOF/0 fionread=0
-#	filled 1562332
-F	p-first-queued-close	before p drains: closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x11 kq-read=1169532/0 kq-write=146988/EOF/0 fionread=1169532	~counts
-F	p-first-queued-close	p-drained=1562332 last=0	~counts
+#	filled 1514740
+F	p-first-queued-close	before p drains: closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x11 kq-read=1162900/0 kq-write=146988/EOF/0 fionread=1162900	~counts
+F	p-first-queued-close	p-drained=1514740 last=0	~counts
 F	p-first-queued-close	closers-endpoint at once bind-ok, 30 ms later bind-ok	rdy(p)	poll=0x13 kq-read=0/EOF/0 kq-write=146988/EOF/0 fionread=0
-#	filled 1979864
-F	p-first-queued-wr	before p drains: closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x11 kq-read=1562540/0 kq-write=146988/EOF/0 fionread=1562540	~counts
-F	p-first-queued-wr	p-drained=1979864 last=0	~counts
+#	filled 1668776
+F	p-first-queued-wr	before p drains: closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x11 kq-read=1161340/0 kq-write=146988/EOF/0 fionread=1161340	~counts
+F	p-first-queued-wr	p-drained=1668776 last=0	~counts
 F	p-first-queued-wr	closers-endpoint at once bind-ok, 30 ms later bind-ok	rdy(p)	poll=0x13 kq-read=0/EOF/0 kq-write=146988/EOF/0 fionread=0
 F	c-first-close	closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x13 kq-read=0/EOF/0 kq-write=146988/EOF/0 fionread=0
 F	c-first-wr	closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x13 kq-read=0/EOF/0 kq-write=146988/EOF/0 fionread=0
-#	filled 1537860
-F	c-queued	p-drained=1537860 last=0	~counts
+#	filled 1644408
+F	c-queued	p-drained=1644408 last=0	~counts
 F	c-queued	closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x13 kq-read=0/EOF/0 kq-write=146988/EOF/0 fionread=0
+F	open-p-first	both open: c-endpoint at once bind-ok, 30 ms later bind-ok; p-endpoint bind-EADDRINUSE; getpeername(c)=EINVAL getpeername(p)=EINVAL
+F	open-p-first	c closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE getpeername(p)=EINVAL
+F	open-p-first	both closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE
+F	open-c-first	both open: c-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE; p-endpoint bind-ok; getpeername(c)=EINVAL getpeername(p)=EINVAL
+F	open-c-first	c closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok getpeername(p)=EINVAL
+F	open-c-first	both closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok
+#	filled 1979812
+F	open-p-first-queued	before p drains: c-endpoint bind-EADDRINUSE p-endpoint bind-EADDRINUSE getpeername(c)=EINVAL getpeername(p)=ok
+F	open-p-first-queued	p-drained=1979812 last=0	~counts
+F	open-p-first-queued	both open: c-endpoint at once bind-ok, 30 ms later bind-ok; p-endpoint bind-EADDRINUSE; getpeername(c)=EINVAL getpeername(p)=EINVAL
+F	open-p-first-queued	c closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE getpeername(p)=EINVAL
+F	open-p-first-queued	both closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE
+F	open-p-first-c-locked	both open: c-endpoint at once bind-ok, 30 ms later bind-ok; p-endpoint bind-EADDRINUSE; getpeername(c)=EINVAL getpeername(p)=EINVAL
+F	open-p-first-c-locked	c closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE getpeername(p)=EINVAL
+F	open-p-first-c-locked	both closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE
+F	open-c-first-l-locked	both open: c-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE; p-endpoint bind-ok; getpeername(c)=EINVAL getpeername(p)=EINVAL
+F	open-c-first-l-locked	c closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok getpeername(p)=EINVAL
+F	open-c-first-l-locked	both closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok
+F	open-p-only	both open: c-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE; p-endpoint bind-EADDRINUSE; getpeername(c)=ok getpeername(p)=ok
+F	open-p-only	c closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE getpeername(p)=EINVAL
+F	open-p-only	both closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE
+F	open-c-rdwr	both open: c-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE; p-endpoint bind-EADDRINUSE; getpeername(c)=EINVAL getpeername(p)=ok
+F	open-c-rdwr	c closed: c-endpoint bind-EADDRINUSE p-endpoint bind-EADDRINUSE getpeername(p)=ok
+F	open-c-rdwr	both closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok
 #	filled 2266012
 X	c-shut-wr=0 p-shut-rdwr=0	rdy(c)	poll=0x13 kq-read=0/EOF/0 kq-write=0/EOF/0 fionread=0	rdy(p)	poll=0x13 kq-read=0/EOF/0 kq-write=146988/EOF/0 fionread=0	~timing
 X	p-drained=0 last=0	rdy(c)	poll=0x13 kq-read=0/EOF/0 kq-write=0/EOF/0 fionread=0	rdy(p)	poll=0x13 kq-read=0/EOF/0 kq-write=146988/EOF/0 fionread=0	~timing
@@ -264,6 +288,19 @@ U	fresh	how=3	-1 EINVAL
 U	not-socket	how=3	-1 ENOTSOCK
 U	fresh	how=-1	-1 EINVAL
 U	not-socket	how=-1	-1 ENOTSOCK
+U	connect-unreported(-1 EINPROGRESS)	none	shutdown=- connect=-1 EISCONN
+U	connect-unreported(-1 EINPROGRESS)	RD	shutdown=0 connect=-1 EISCONN
+U	connect-unreported(-1 EINPROGRESS)	WR	shutdown=0 connect=-1 EISCONN
+U	connect-unreported(-1 EINPROGRESS)	RDWR	shutdown=0 connect=-1 EISCONN
+U	fresh-then	RD	shutdown=-1 ENOTCONN	rdy before	poll=0x0 kq-read=- kq-write=- fionread=0	rdy after	poll=0x0 kq-read=- kq-write=- fionread=0
+U	fresh-then	RD	connect=0 write1=1 read(after p wrote 1)=1	rdy	poll=0x4 kq-read=- kq-write=146988/0 fionread=0
+U	udp-then	RD	shutdown=-1 ENOTCONN	rdy before	poll=0x4 kq-read=- kq-write=9216/0 fionread=0	rdy after	poll=0x4 kq-read=- kq-write=9216/0 fionread=0
+U	fresh-then	WR	shutdown=-1 ENOTCONN	rdy before	poll=0x0 kq-read=- kq-write=- fionread=0	rdy after	poll=0x0 kq-read=- kq-write=- fionread=0
+U	fresh-then	WR	connect=0 write1=1 read(after p wrote 1)=1	rdy	poll=0x4 kq-read=- kq-write=146988/0 fionread=0
+U	udp-then	WR	shutdown=-1 ENOTCONN	rdy before	poll=0x4 kq-read=- kq-write=9216/0 fionread=0	rdy after	poll=0x4 kq-read=- kq-write=9216/0 fionread=0
+U	fresh-then	RDWR	shutdown=-1 ENOTCONN	rdy before	poll=0x0 kq-read=- kq-write=- fionread=0	rdy after	poll=0x0 kq-read=- kq-write=- fionread=0
+U	fresh-then	RDWR	connect=0 write1=1 read(after p wrote 1)=1	rdy	poll=0x4 kq-read=- kq-write=146988/0 fionread=0
+U	udp-then	RDWR	shutdown=-1 ENOTCONN	rdy before	poll=0x4 kq-read=- kq-write=9216/0 fionread=0	rdy after	poll=0x4 kq-read=- kq-write=9216/0 fionread=0
 U	connected	how=3	-1 EINVAL
 U	connected	how=-1	-1 EINVAL
 P	unread-rdwr	shutdown=0 fionread(c)=0
@@ -326,18 +363,36 @@ E	cunread	WR	after	c-write=146988/EOF/0 p-read=0/EOF/0
 E	cunread	RDWR	drain	c-read=1000/0 c-write=146988/0 p-write=146988/0
 E	cunread	RDWR	again	-
 E	cunread	RDWR	after	c-read=0/EOF/0 c-write=146988/EOF/0 p-read=0/EOF/0
-#	filled 1866684
-E	cunsent	RD	drain	p-read=1490320/0 p-write=146988/0	~counts
+#	filled 1505612
+E	cunsent	RD	drain	p-read=1162016/0 p-write=146988/0	~counts
 E	cunsent	RD	again	-	~counts
 E	cunsent	RD	after	c-read=0/EOF/0	~counts
-#	filled 2152988
-E	cunsent	WR	drain	p-read=1752048/0 p-write=146988/0	~counts
+#	filled 1505404
+E	cunsent	WR	drain	p-read=1161808/0 p-write=146988/0	~counts
 E	cunsent	WR	again	-	~counts
 E	cunsent	WR	after	c-write=0/EOF/0	~counts
-#	filled 1367336
-E	cunsent	RDWR	drain	p-read=1130236/0 p-write=146988/0	~counts
+#	filled 1505196
+E	cunsent	RDWR	drain	p-read=1161600/0 p-write=146988/0	~counts
 E	cunsent	RDWR	again	-	~counts
 E	cunsent	RDWR	after	c-read=0/EOF/0 c-write=0/EOF/0	~counts
+E	reset	RD	drain	c-read=0/EOF/54 c-write=146988/EOF/54
+E	reset	RD	again	-
+E	reset	RD	after shutdown=-1 ENOTCONN	-
+E	reset	WR	drain	c-read=0/EOF/54 c-write=146988/EOF/54
+E	reset	WR	again	-
+E	reset	WR	after shutdown=-1 ENOTCONN	-
+E	reset	RDWR	drain	c-read=0/EOF/54 c-write=146988/EOF/54
+E	reset	RDWR	again	-
+E	reset	RDWR	after shutdown=-1 ENOTCONN	-
+E	bothfin	RD	drain	c-read=0/EOF/0 c-write=146988/EOF/0 p-read=0/EOF/0 p-write=146988/EOF/0
+E	bothfin	RD	again	-
+E	bothfin	RD	after shutdown=-1 ENOTCONN	-
+E	bothfin	WR	drain	c-read=0/EOF/0 c-write=146988/EOF/0 p-read=0/EOF/0 p-write=146988/EOF/0
+E	bothfin	WR	again	-
+E	bothfin	WR	after shutdown=-1 ENOTCONN	-
+E	bothfin	RDWR	drain	c-read=0/EOF/0 c-write=146988/EOF/0 p-read=0/EOF/0 p-write=146988/EOF/0
+E	bothfin	RDWR	again	-
+E	bothfin	RDWR	after shutdown=-1 ENOTCONN	-
 E	listener	RD	drain n=0 shutdown=-1 ENOTCONN after=-
 E	listener	WR	drain n=0 shutdown=-1 ENOTCONN after=-
 E	listener	RDWR	drain n=0 shutdown=-1 ENOTCONN after=-

@@ -351,11 +351,23 @@ module internal TcpTransfer =
         | TcpFin.NotSent
         | TcpFin.Queued _ -> false
 
-    /// Whether both FINs have arrived.
-    let private exchangeComplete (transfer : TcpTransfer) : bool =
+    /// Whether both FINs have arrived: on Linux both ends are then in
+    /// `TCP_CLOSE`, whether or not their sockets are open.
+    let exchangeComplete (transfer : TcpTransfer) : bool =
         match transfer.ToClient.Fin, transfer.ToServer.Fin with
         | TcpFin.Arrived _, TcpFin.Arrived _ -> true
         | _ -> false
+
+    /// Whether `sender`'s FIN was made after the peer's had arrived and has
+    /// itself arrived: its end is done with the connection, and holds no
+    /// `TIME_WAIT` (Linux's `LAST_ACK` ends in `TCP_CLOSE`). One made first
+    /// waits in `TIME_WAIT` instead, and one still queued is not done.
+    let passiveFinArrived (sender : ConnectionEnd) (transfer : TcpTransfer) : bool =
+        match (towards (otherEnd sender) transfer).Fin with
+        | TcpFin.Arrived true -> true
+        | TcpFin.Arrived false
+        | TcpFin.Queued _
+        | TcpFin.NotSent -> false
 
     /// Every way `transfer` breaks the rules the functions here keep, as text;
     /// empty when it breaks none.

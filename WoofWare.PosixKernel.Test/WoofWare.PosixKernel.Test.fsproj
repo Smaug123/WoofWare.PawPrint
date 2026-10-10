@@ -173,6 +173,7 @@
     <Compile Include="TestPeerName.fs" />
     <Compile Include="TestPeerNameAgainstHost.fs" />
     <Compile Include="TestUnconnectedSocketTransfer.fs" />
+    <Compile Include="ShutdownProbe.fs" />
     <Compile Include="TestConnectedTransferAgainstHost.fs" />
     <Compile Include="TestTcpTransfer.fs" />
     <Compile Include="TestTcpTransferMeasured.fs" />
@@ -212,6 +213,7 @@
     <Compile Include="TestCrossProcess.fs" />
     <Compile Include="TestConnectedTransfer.fs" />
     <Compile Include="TestListenerTeardown.fs" />
+    <Compile Include="TestShutdownAgainstHost.fs" />
     <Compile Include="TestKeventWriteData.fs" />
     <Compile Include="TestDarwinPoll.fs" />
     <Compile Include="TestPipeBuffer.fs" />

@@ -731,26 +731,26 @@ module UnixMachineState =
             let inbound = TcpTransfer.towards connectionEnd transfer
             let unread = ByteQueue.length inbound.Receiving > 0
 
-            // `tcp_poll`, every row measured (`tcp-transfer.c`, section S, on
-            // Linux 6.18.5): IN with bytes unread, OUT while the send buffer
-            // is at most two thirds full, RDHUP once the peer's FIN has
-            // arrived (`order3.c` row Q), and a reset adds HUP, and ERR while
-            // its error is pending, and makes the socket writable whatever its
-            // buffer holds, since a write then fails at once.
-            match inbound.Receiver, inbound.Fin with
-            | TcpEndState.Open _, TcpFin.NotSent
-            | TcpEndState.Open _, TcpFin.Queued _ ->
+            // `tcp_poll`, every row measured (`tcp-transfer.c`, section S, and
+            // `tcp-shutdown.c`, sections S and T, on Linux 6.18.5): IN with
+            // bytes unread, OUT while the send buffer is at most two thirds
+            // full. A receive side shut by the peer's FIN (`order3.c` row Q)
+            // or the socket's own `SHUT_RD` adds IN and RDHUP; a send side
+            // shut adds OUT whatever the buffer holds, since a write then
+            // fails at once; and both shut add HUP. A reset adds all of
+            // those, and ERR while its error is pending.
+            match inbound.Receiver with
+            | TcpEndState.Open _ ->
+                let receiveShut = TcpTransfer.receiveShut connectionEnd transfer
+                let sendShut = TcpTransfer.sendShut connectionEnd transfer
+
                 { ReadinessLevel.none with
-                    In = unread
-                    Out = TcpTransfer.linuxSendable connectionEnd transfer
+                    In = unread || receiveShut
+                    Out = sendShut || TcpTransfer.linuxSendable connectionEnd transfer
+                    RdHup = receiveShut
+                    Hup = receiveShut && sendShut
                 }
-            | TcpEndState.Open _, TcpFin.Arrived _ ->
-                { ReadinessLevel.none with
-                    In = true
-                    Out = TcpTransfer.linuxSendable connectionEnd transfer
-                    RdHup = true
-                }
-            | TcpEndState.Reset errorPending, _ ->
+            | TcpEndState.Reset errorPending ->
                 {
                     In = true
                     Out = true
@@ -758,7 +758,7 @@ module UnixMachineState =
                     Hup = true
                     Err = errorPending
                 }
-            | TcpEndState.Closed, _ ->
+            | TcpEndState.Closed ->
                 failwith
                     $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
 
@@ -795,29 +795,44 @@ module UnixMachineState =
             | TcpEndState.Closed -> false
         )
 
-    /// Whether the connected socket `socket`'s binding stopped reserving its
-    /// port when its connection was reset: on Darwin always, and on Linux
-    /// unless the port was bound explicitly (`SocketBinding.LockedPort`).
-    /// Measured on both (`reset-binding.c` in
-    /// docs/plans/2026-10-07-tcp-byte-transfer): a fresh socket binds the
-    /// survivor's exact endpoint once a reset has reached it, at either end,
-    /// though `getsockname` still reports the port; after a FIN it cannot.
-    let internal resetReleasedPort (socket : SocketDescription) (machine : UnixMachineState) : bool =
+    /// Whether the connected socket `socket`'s binding has stopped reserving
+    /// its port because its end of the connection is done with it: a reset
+    /// has reached it, or its FIN, made after the peer's had arrived, has
+    /// itself arrived (`TcpTransfer.passiveFinArrived`). On Darwin always, and
+    /// on Linux unless the port was bound explicitly
+    /// (`SocketBinding.LockedPort`), whose port the socket's close releases.
+    /// `getsockname` still reports the port.
+    ///
+    /// Measured on both: a fresh socket binds the survivor's exact endpoint
+    /// once a reset has reached it, at either end (`reset-binding.c` in
+    /// docs/plans/2026-10-07-tcp-byte-transfer), and binds the endpoint of an
+    /// end whose passive FIN has arrived while both sockets are open
+    /// (`tcp-shutdown.c` in docs/plans/2026-10-08-tcp-shutdown-linger,
+    /// section F's open rows). After a FIN made first, or one still queued, it
+    /// cannot.
+    let internal releasedPort (socket : SocketDescription) (machine : UnixMachineState) : bool =
         match SocketPhase.connectionEnd socket.Phase with
         | None -> false
         | Some (connectionId, connectionEnd) ->
-            match (TcpTransfer.towards connectionEnd (connection connectionId machine).Transfer).Receiver with
-            | TcpEndState.Reset _ ->
+            let transfer = (connection connectionId machine).Transfer
+
+            let finished =
+                match (TcpTransfer.towards connectionEnd transfer).Receiver with
+                | TcpEndState.Reset _ -> true
+                | TcpEndState.Open _ -> TcpTransfer.passiveFinArrived connectionEnd transfer
+                | TcpEndState.Closed -> false
+
+            finished
+            && (
                 match SimulatedUnixPlatform.flavour machine.UnixPlatform, socket.Binding with
                 | SimulatedUnixFlavour.Darwin, _ -> true
                 | SimulatedUnixFlavour.Linux, Some binding -> not binding.LockedPort
                 | SimulatedUnixFlavour.Linux, None -> true
-            | TcpEndState.Open _
-            | TcpEndState.Closed -> false
+            )
 
     /// Whether any *other* socket's binding conflicts with `candidate`, taken
-    /// on behalf of `socket`. A binding a reset released
-    /// (`resetReleasedPort`) conflicts with nothing.
+    /// on behalf of `socket`. A binding its connection released
+    /// (`releasedPort`) conflicts with nothing.
     ///
     /// The relation `bind(2)` decides admission with, `listen(2)` asks again
     /// on the flavour that re-screens an already-bound socket, and every
@@ -831,7 +846,7 @@ module UnixMachineState =
         =
         machine.Sockets
         |> Map.exists (fun otherId (other : SocketDescription) ->
-            if otherId = socketId || resetReleasedPort other machine then
+            if otherId = socketId || releasedPort other machine then
                 false
             else
 
@@ -868,7 +883,11 @@ module UnixMachineState =
     /// has gone: measured on both (`reset-closer.c` in
     /// docs/plans/2026-10-07-tcp-byte-transfer), the endpoint of a socket
     /// that closed over unread bytes is free to a fresh bind, where after a
-    /// FIN it is not.
+    /// FIN it is not. Nor does an end whose FIN, made after the peer's had
+    /// arrived, has itself arrived (`TcpTransfer.passiveFinArrived`), which
+    /// may happen after its socket has gone, at the read by the peer that
+    /// lets the FIN through (measured on both, `tcp-shutdown.c` in
+    /// docs/plans/2026-10-08-tcp-shutdown-linger, section F).
     let private orphanedConnectionOccupies (endpoint : InternetEndpoint) (machine : UnixMachineState) : bool =
         let heldFrom (connectionId : ConnectionId) (held : InternetEndpoint) (isServerEnd : bool) : bool =
             machine.Sockets
@@ -887,11 +906,15 @@ module UnixMachineState =
         machine.Connections
         |> Map.exists (fun connectionId connection ->
             not (resetReleasedTuple connection)
-            && [ connection.ClientAddress, false ; connection.ServerAddress, true ]
-               |> List.exists (fun (held, isServerEnd) ->
+            && [
+                connection.ClientAddress, ConnectionEnd.Client
+                connection.ServerAddress, ConnectionEnd.Server
+               ]
+               |> List.exists (fun (held, connectionEnd) ->
                    held.Port = endpoint.Port
                    && addressesOverlap held endpoint
-                   && not (heldFrom connectionId held isServerEnd)
+                   && not (heldFrom connectionId held (connectionEnd = ConnectionEnd.Server))
+                   && not (TcpTransfer.passiveFinArrived connectionEnd connection.Transfer)
                )
         )
 

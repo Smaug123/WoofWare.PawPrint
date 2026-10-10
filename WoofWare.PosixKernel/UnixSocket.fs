@@ -1820,17 +1820,37 @@ module UnixSocket =
 
             let connection = UnixMachineState.connection connectionId system.Machine
 
+            let transfer = connection.Transfer
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+            let darwinNoPeer = Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
+
             // A reset leaves no peer, whether or not its error has been taken:
-            // the measured rows T8 and T9. A FIN leaves the peer (T6, T7).
-            match (TcpTransfer.towards connectionEnd connection.Transfer).Receiver with
+            // the measured rows T8 and T9. A FIN leaves the peer (T6, T7). On
+            // Linux so does an exchange of FINs once both have arrived, which
+            // leaves both ends in `TCP_CLOSE` (`inet_getname`); on Darwin an
+            // end that can neither send nor receive any more answers EINVAL,
+            // as after a reset (`getpeername1`), whichever way each side was
+            // shut. Measured on both (`tcp-shutdown.c` in
+            // docs/plans/2026-10-08-tcp-shutdown-linger, section F's open
+            // rows).
+            match (TcpTransfer.towards connectionEnd transfer).Receiver with
             | TcpEndState.Reset _ ->
-                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                match flavour with
                 | SimulatedUnixFlavour.Linux -> notConnected
-                | SimulatedUnixFlavour.Darwin -> Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
+                | SimulatedUnixFlavour.Darwin -> darwinNoPeer
             | TcpEndState.Open _ ->
-                match connectionEnd with
-                | ConnectionEnd.Client -> reportPeer connection.ServerAddress
-                | ConnectionEnd.Server -> reportPeer connection.ClientAddress
+                match flavour with
+                | SimulatedUnixFlavour.Linux when TcpTransfer.exchangeComplete transfer -> notConnected
+                | SimulatedUnixFlavour.Darwin when
+                    TcpTransfer.receiveShut connectionEnd transfer
+                    && TcpTransfer.sendShut connectionEnd transfer
+                    ->
+                    darwinNoPeer
+                | SimulatedUnixFlavour.Linux
+                | SimulatedUnixFlavour.Darwin ->
+                    match connectionEnd with
+                    | ConnectionEnd.Client -> reportPeer connection.ServerAddress
+                    | ConnectionEnd.Server -> reportPeer connection.ClientAddress
             | TcpEndState.Closed ->
                 failwith
                     $"UnixSocket.getpeername: socket %O{socketId} is the %A{connectionEnd} end of %O{connectionId}, which the connection records as closed (this is a bug in this library: UnixSystem.checkInvariants reports it as ConnectionEndClosedUnderSocket)."
@@ -2046,21 +2066,22 @@ module UnixSocket =
         // measured EINVAL after a refused connect, whether or not the refusal
         // is still pending, even through an unmapped value, and after a reset
         // reached a connected socket, but not after a FIN, which shuts only
-        // the receive side (`reset-binding.c`). Linux takes the option in
-        // every phase.
+        // the receive side (`reset-binding.c`); and once the socket has shut
+        // its send side as well (`tcp-shutdown.c`, section L, where
+        // `SO_LINGER` answers EINVAL once both ends have shut writing). Linux
+        // takes the option in every phase.
         let darwinShutDown =
             flavour = SimulatedUnixFlavour.Darwin
             && match socket.Phase with
                | SocketPhase.Refused _ -> true
                | SocketPhase.Established (connectionId, connectionEnd) ->
-                   match
-                       (TcpTransfer.towards
-                           connectionEnd
-                           (UnixMachineState.connection connectionId system.Machine).Transfer)
-                           .Receiver
-                   with
+                   let transfer = (UnixMachineState.connection connectionId system.Machine).Transfer
+
+                   match (TcpTransfer.towards connectionEnd transfer).Receiver with
                    | TcpEndState.Reset _ -> true
-                   | TcpEndState.Open _
+                   | TcpEndState.Open _ ->
+                       TcpTransfer.receiveShut connectionEnd transfer
+                       && TcpTransfer.sendShut connectionEnd transfer
                    | TcpEndState.Closed -> false
                | SocketPhase.Idle
                | SocketPhase.Listening _
@@ -2136,7 +2157,7 @@ module UnixSocket =
     ///
     /// `TCP_NODELAY` has no observable effect, since a loopback transfer is
     /// delivered at once whatever its size. `SO_LINGER`'s effect on `close`
-    /// belongs with `close` and `shutdown`, which do not model it yet. A close
+    /// belongs with `close`, which does not model it yet. A close
     /// of a connected socket that it changes is refused: with a time of zero,
     /// a reset rather than an orderly shutdown
     /// (`DescriptionReleaseRefusal.AbortiveClose`); with a positive time, a

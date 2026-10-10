@@ -28,6 +28,9 @@ type BlockingConnectionOp =
     | SetNonBlocking of fd : int * value : bool
     /// `SO_LINGER` on `fd`: on or off, with a time of `seconds`.
     | Linger of fd : int * on : bool * seconds : int
+    /// `shutdown(2)` of `fd`, `how` raw: 0 (`SHUT_RD`), 1 (`SHUT_WR`) or 2
+    /// (`SHUT_RDWR`).
+    | Shutdown of fd : int * how : int
     /// A caught `SIGUSR1` is sent to a task in a call.
     | Signal of task : int
     /// The client asks which sleepers the system wakes.
@@ -57,6 +60,16 @@ type BlockingConnectionOp =
 /// of nothing sleeps: sections P and Z), `MSG_DONTWAIT` makes a `recv` and a
 /// Linux `send` non-blocking (D), `MSG_NOSIGNAL` keeps an `EPIPE` from raising
 /// `SIGPIPE` (N), and only a Darwin `write` marks its description written (W).
+///
+/// `shutdown(2)` answers by `TcpTransferReference`'s rules, and its effect on
+/// sleepers is `tcp-shutdown.c`'s section B
+/// (docs/plans/2026-10-08-tcp-shutdown-linger): a sleeping read wakes once its
+/// receive side is shut, and answers end of file; a sleeping write wakes once
+/// its send side is, and answers as a reset ends it, Linux's with the count
+/// it took and otherwise `EPIPE` and `SIGPIPE`. Under Darwin a close behind
+/// the socket's own queued FIN, once the peer's has arrived, over bytes left
+/// unread, is refused, and so is setting `SO_LINGER` once both sides are
+/// shut.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestBlockingConnection =
@@ -82,6 +95,11 @@ module TestBlockingConnection =
         | RefusedNonBlocking
         /// A Darwin close of the descriptor a woken call was made through.
         | RefusedClose
+        /// `shutdown(2)` answered 0.
+        | Shut
+        /// The library refuses a `shutdown`: what a real kernel does next
+        /// waits on a timer.
+        | RefusedShutdown
 
     // --- the reference ---
 
@@ -177,7 +195,12 @@ module TestBlockingConnection =
         let flow = r.Model.Flows.[other connectionEnd]
         let sendFree = flow.SendCap - List.length flow.InFlight
 
-        if r.Model.Ends.[other connectionEnd].Closed then
+        // A peer that has gone, or that answers an arrival with a reset,
+        // drains nothing.
+        if
+            r.Model.Ends.[other connectionEnd].Closed
+            || TcpTransferReference.resetsOnArrival r.Model (other connectionEnd)
+        then
             sendFree
         else
             sendFree + flow.RecvCap - List.length flow.Arrived
@@ -333,6 +356,12 @@ module TestBlockingConnection =
                 Model = model
             }
 
+    /// Whether `connectionEnd` can send no more: a reset reached it, or it
+    /// shut its send side.
+    let private cannotSend (connectionEnd : ConnectionEnd) (r : Reference) : bool =
+        r.Model.Ends.[connectionEnd].GotReset
+        || TcpTransferReference.writeShut r.Model connectionEnd
+
     /// Whether the sleeping `task`'s call is woken.
     let private wakesNow (task : int) (r : Reference) : bool =
         let park = r.Parks.[task]
@@ -343,7 +372,7 @@ module TestBlockingConnection =
             match park.Call with
             | Call.Reading (connectionEnd, _, _) -> readable connectionEnd r
             | Call.Writing (connectionEnd, payload, written, _) ->
-                r.Model.Ends.[connectionEnd].GotReset
+                cannotSend connectionEnd r
                 || roomWakes connectionEnd (List.length payload - written) r
         )
 
@@ -406,7 +435,7 @@ module TestBlockingConnection =
             // A call that returns having moved bytes, whatever it answers.
             let movedSome = marking connectionEnd call (written > 0)
 
-            if r.Model.Ends.[connectionEnd].GotReset then
+            if cannotSend connectionEnd r then
                 if signalled && not r.Linux then
                     Seen.RefusedSignal, r
                 elif r.Linux && written > 0 then
@@ -588,6 +617,7 @@ module TestBlockingConnection =
                 closes, Gen.map BlockingConnectionOp.Close fd
                 1, Gen.map BlockingConnectionOp.Dup fd
                 2, Gen.map2 (fun f v -> BlockingConnectionOp.SetNonBlocking (f, v)) fd (Gen.elements [ true ; false ])
+                2, Gen.map2 (fun f how -> BlockingConnectionOp.Shutdown (f, how)) fd (Gen.elements [ 0 ; 1 ; 2 ])
                 1,
                 Gen.map3
                     (fun f on seconds -> BlockingConnectionOp.Linger (f, on, seconds))
@@ -656,6 +686,22 @@ module TestBlockingConnection =
         /// and is the socket's own close: with a time of 0 that would reset
         /// the connection, and is refused, ending the case; with 1 it closes.
         | LingerUnderReceive of seconds : int
+        /// Task 0 sleeps reading through the calls' end, which then shuts its
+        /// receive side with `how` (0 or 2), waking the read to end of file.
+        | ShutdownUnderReader of how : int
+        /// Task 0 writes through the calls' end, having taken some of a
+        /// write that fills the buffers if `tookSome`, and otherwise having
+        /// filled them through a non-blocking description first; it sleeps,
+        /// and the calls' end shuts its send side with `how` (1 or 2), which
+        /// wakes it: Linux's returns the count it took, or answers `EPIPE`
+        /// having taken nothing, and Darwin's answers `EPIPE`.
+        | ShutdownUnderWriter of how : int * tookSome : bool
+        /// The peer writes 100 bytes the calls' end leaves unread; the calls'
+        /// end fills the buffers through a non-blocking description and shuts
+        /// its send side, so that its FIN waits behind its bytes; the peer
+        /// shuts its send side; and the calls' end closes. Darwin's close is
+        /// refused, ending the case; Linux's resets.
+        | CloseBehindQueuedFin
 
     /// A prefix of the property's steps that, from the connected pair the
     /// property starts on, reaches paths random steps reach too rarely to
@@ -809,6 +855,31 @@ module TestBlockingConnection =
                 BlockingConnectionOp.Close readEnd
                 BlockingConnectionOp.Wake
                 BlockingConnectionOp.Finish 0
+            | ScenarioEnding.ShutdownUnderReader how ->
+                sleeper 0 TcpReceiveCall.Read
+                BlockingConnectionOp.Shutdown (readEnd, how)
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.Finish 0
+            | ScenarioEnding.ShutdownUnderWriter (how, tookSome) ->
+                if tookSome then
+                    BlockingConnectionOp.Write (0, readEnd, filling)
+                else
+                    BlockingConnectionOp.SetNonBlocking (readEnd, true)
+                    BlockingConnectionOp.Write (0, readEnd, filling)
+                    BlockingConnectionOp.Write (0, readEnd, filling)
+                    BlockingConnectionOp.SetNonBlocking (readEnd, false)
+                    BlockingConnectionOp.Write (0, readEnd, 1000)
+
+                BlockingConnectionOp.Shutdown (readEnd, how)
+                BlockingConnectionOp.Wake
+                BlockingConnectionOp.Finish 0
+            | ScenarioEnding.CloseBehindQueuedFin ->
+                BlockingConnectionOp.Write (0, writeEnd, 100)
+                BlockingConnectionOp.SetNonBlocking (readEnd, true)
+                BlockingConnectionOp.Write (0, readEnd, filling)
+                BlockingConnectionOp.Shutdown (readEnd, 1)
+                BlockingConnectionOp.Shutdown (writeEnd, 1)
+                BlockingConnectionOp.Close readEnd
         ]
 
     let private scenarioGen : Gen<Scenario> =
@@ -830,6 +901,12 @@ module TestBlockingConnection =
                         Gen.constant ScenarioEnding.NonBlockingWriter
                         Gen.constant ScenarioEnding.ResetWriters
                         Gen.elements [ 0 ; 1 ] |> Gen.map ScenarioEnding.LingerUnderReceive
+                        Gen.elements [ 0 ; 2 ] |> Gen.map ScenarioEnding.ShutdownUnderReader
+                        Gen.map2
+                            (fun how tookSome -> ScenarioEnding.ShutdownUnderWriter (how, tookSome))
+                            (Gen.elements [ 1 ; 2 ])
+                            (Gen.elements [ true ; false ])
+                        Gen.constant ScenarioEnding.CloseBehindQueuedFin
                     ]
 
             return
@@ -961,6 +1038,8 @@ module TestBlockingConnection =
             | Seen.RefusedSignal -> "refused beside a signal"
             | Seen.RefusedNonBlocking -> "refused, non-blocking now"
             | Seen.RefusedClose -> "close refused"
+            | Seen.Shut -> "0"
+            | Seen.RefusedShutdown -> "refused, waits on a timer"
 
         $"%s{flavour} %s{what}: %s{kind}"
 
@@ -1013,9 +1092,11 @@ module TestBlockingConnection =
                 | Seen.Wrote _
                 | Seen.Failed _
                 | Seen.Restarts -> returnToUser task after
+                | Seen.Shut -> after
                 | Seen.RefusedSignal
                 | Seen.RefusedNonBlocking
-                | Seen.RefusedClose -> failwith "a refusal leaves no system"
+                | Seen.RefusedClose
+                | Seen.RefusedShutdown -> failwith "a refusal leaves no system"
 
             for i, op in List.indexed ops |> Seq.takeWhile (fun _ -> not stopped) do
                 let pick (eligible : int -> bool) (index : int) : int option =
@@ -1059,6 +1140,8 @@ module TestBlockingConnection =
                         |> Option.map (fun fd -> BlockingConnectionOp.SetNonBlocking (fd, value))
                     | BlockingConnectionOp.Linger (fd, on, seconds) ->
                         fdAt fd |> Option.map (fun fd -> BlockingConnectionOp.Linger (fd, on, seconds))
+                    | BlockingConnectionOp.Shutdown (fd, how) ->
+                        fdAt fd |> Option.map (fun fd -> BlockingConnectionOp.Shutdown (fd, how))
                     | BlockingConnectionOp.Signal index -> pick inCall index |> Option.map BlockingConnectionOp.Signal
                     | BlockingConnectionOp.Finish index -> pick woken index |> Option.map BlockingConnectionOp.Finish
                     | BlockingConnectionOp.Wake -> Some op
@@ -1242,6 +1325,36 @@ module TestBlockingConnection =
                         | Some _
                         | None -> None
 
+                    // Darwin's close of the socket behind its own queued FIN,
+                    // once the peer's has arrived, over bytes left unread.
+                    let lingerRefusal =
+                        match lingerRefusal with
+                        | Some _ -> lingerRefusal
+                        | None when
+                            refusedFor.IsNone
+                            && not (
+                                Set.contains
+                                    closing
+                                    (live
+                                        { reference with
+                                            Fds = Map.remove fd reference.Fds
+                                            Parks =
+                                                reference.Parks
+                                                |> Map.filter (fun task _ -> not (List.contains task through))
+                                        })
+                            )
+                            && TcpTransferReference.closeRefused closing reference.Model
+                            ->
+                            Some (
+                                CloseRefusal.Release (
+                                    DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin (
+                                        socket,
+                                        connectionOf fd system
+                                    )
+                                )
+                            )
+                        | None -> None
+
                     match refusedFor, lingerRefusal, UnixDescriptor.close fd system with
                     | Some task, _, Error (CloseRefusal.DarwinWokenTransfer (_, refused)) ->
                         refused |> shouldEqual task
@@ -1256,6 +1369,8 @@ module TestBlockingConnection =
                             cover $"%s{flavourName} close: refused, abortive"
                         | CloseRefusal.Release (DescriptionReleaseRefusal.LingeringClose _) ->
                             cover $"%s{flavourName} close: refused, lingering"
+                        | CloseRefusal.Release (DescriptionReleaseRefusal.DarwinCloseBehindQueuedFin _) ->
+                            cover $"%s{flavourName} close: refused, behind its queued FIN"
                         | _ -> ()
 
                         // A refusal: the client goes no further.
@@ -1329,8 +1444,24 @@ module TestBlockingConnection =
                             Fds = Map.add copy reference.Fds.[fd] reference.Fds
                         }
                 | BlockingConnectionOp.Linger (fd, on, seconds) ->
+                    // Darwin refuses every option on a socket that can neither
+                    // send nor receive any more: reset, or shut both ways.
+                    let connectionEnd = reference.Fds.[fd]
+                    let model = reference.Model
+
+                    let fails =
+                        not linux
+                        && (model.Ends.[connectionEnd].GotReset
+                            || (TcpTransferReference.readShut model connectionEnd
+                                && TcpTransferReference.writeShut model connectionEnd))
+
                     match tryLinger fd (if on then 1 else 0) seconds system with
-                    | None -> cover $"%s{flavourName} SO_LINGER: fails"
+                    | None ->
+                        if not fails then
+                            failwith $"%s{where}: setting SO_LINGER failed"
+
+                        cover $"%s{flavourName} SO_LINGER: fails"
+                    | Some _ when fails -> failwith $"%s{where}: setting SO_LINGER succeeded"
                     | Some after ->
 
                     system <- after
@@ -1343,6 +1474,40 @@ module TestBlockingConnection =
                                 else
                                     Map.remove reference.Fds.[fd] reference.Linger
                         }
+                | BlockingConnectionOp.Shutdown (fd, how) ->
+                    let connectionEnd = reference.Fds.[fd]
+
+                    let tcpHow, howName =
+                        match how with
+                        | 0 -> TcpShutdownHow.Read, "SHUT_RD"
+                        | 1 -> TcpShutdownHow.Write, "SHUT_WR"
+                        | _ -> TcpShutdownHow.Both, "SHUT_RDWR"
+
+                    let expected, model =
+                        match TcpTransferReference.shutdown connectionEnd tcpHow reference.Model with
+                        | None -> Seen.RefusedShutdown, reference.Model
+                        | Some (TcpShutdownAnswer.Shut, _, model) -> Seen.Shut, model
+                        | Some (TcpShutdownAnswer.NotConnected, _, model) -> Seen.Failed UnixError.ENOTCONN, model
+
+                    let seen, actual =
+                        match UnixConnection.shutdown fd how system with
+                        | Ok (ShutdownAnswer.Shut, after) -> Seen.Shut, Some after
+                        | Ok (ShutdownAnswer.Failed error, after) -> Seen.Failed error, Some after
+                        | Error (ShutdownRefusal.ReceiveShutBeforeUnsentBytes _) -> Seen.RefusedShutdown, None
+                        | Error refusal -> failwith $"%s{where}: shutdown refused: %s{ShutdownRefusal.describe refusal}"
+
+                    compare expected seen
+                    cover (label flavourName $"shutdown(%s{howName})" seen)
+
+                    match actual with
+                    | None -> stopped <- true
+                    | Some after ->
+                        system <- after
+
+                        reference <-
+                            { reference with
+                                Model = model
+                            }
                 | BlockingConnectionOp.SetNonBlocking (fd, value) ->
                     let _, after = UnixDescriptor.setNonBlocking fd value system
                     system <- after
@@ -1403,8 +1568,15 @@ module TestBlockingConnection =
                             && not reference.Model.Ends.[connectionEnd].GotReset
                             && reference.Parks.[task].Through.IsSome
                             ->
-                            if (takes connectionEnd (List.length payload - written) reference).IsSome then
+                            if TcpTransferReference.writeShut reference.Model connectionEnd then
+                                cover $"%s{flavourName} wake: a writer, by its own shutdown"
+                            elif (takes connectionEnd (List.length payload - written) reference).IsSome then
                                 cover $"%s{flavourName} wake: a writer, by room"
+                        | Call.Reading (connectionEnd, _, _) when
+                            reference.Model.Ends.[connectionEnd].ShutRead
+                            && not reference.Model.Ends.[connectionEnd].FinArrived
+                            ->
+                            cover $"%s{flavourName} wake: a reader, by its own shutdown"
                         | _ -> ()
 
                     // A Linux writer with room that is not yet woken: the queue
@@ -1466,6 +1638,12 @@ module TestBlockingConnection =
                     let what =
                         match park.Call, seen with
                         | _, _ when park.Through.IsNone -> $"%s{finishing} ended by a close"
+                        | Call.Writing (connectionEnd, _, written, _), _ when
+                            TcpTransferReference.writeShut reference.Model connectionEnd
+                            && not reference.Model.Ends.[connectionEnd].GotReset
+                            ->
+                            let took = if written > 0 then ", having taken some" else ""
+                            $"%s{finishing} after its own shutdown%s{took}"
                         | Call.Writing (_, payload, written, _), Seen.Wrote n when
                             int n < List.length payload && int n = written
                             ->
@@ -1640,6 +1818,27 @@ module TestBlockingConnection =
                 "Linux send, MSG_DONTWAIT: EAGAIN"
                 "Darwin send, MSG_DONTWAIT: sleeps"
                 "Darwin: a description marked written"
+                // shutdown(2): what it answers, and the sleepers it ends.
+                "Linux shutdown(SHUT_RD): 0"
+                "Linux shutdown(SHUT_WR): 0"
+                "Linux shutdown(SHUT_RDWR): 0"
+                "Linux shutdown(SHUT_RDWR): ENOTCONN"
+                "Darwin shutdown(SHUT_RD): 0"
+                "Darwin shutdown(SHUT_WR): 0"
+                "Darwin shutdown(SHUT_RDWR): 0"
+                "Darwin shutdown(SHUT_RD): ENOTCONN"
+                "Darwin shutdown(SHUT_WR): ENOTCONN"
+                "Linux wake: a reader, by its own shutdown"
+                "Darwin wake: a reader, by its own shutdown"
+                "Linux wake: a writer, by its own shutdown"
+                "Darwin wake: a writer, by its own shutdown"
+                "Linux finish read: end of file"
+                "Linux finish write after its own shutdown, having taken some: wrote"
+                "Linux finish write after its own shutdown: EPIPE"
+                "Darwin finish write after its own shutdown, having taken some: EPIPE"
+                "Darwin finish write after its own shutdown: EPIPE"
+                "Darwin close: refused, behind its queued FIN"
+                "Darwin SO_LINGER: fails"
             ] do
             if coverage.Count label = 0 then
                 failwith $"never reached: %s{label}"
@@ -2147,6 +2346,150 @@ module TestBlockingConnection =
                     pendingError connection ConnectionEnd.Client after
                     |> shouldEqual (Some TcpError.ConnectionReset)
                 | other, _ -> failwith $"%O{platform}, took some %b{tookSome}: %A{other}"
+
+    /// `shutdown(fd, how)`, which must answer 0.
+    let private shut (fd : int) (how : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixConnection.shutdown fd how system with
+        | Ok (ShutdownAnswer.Shut, after) -> after
+        | other -> failwith $"shutdown(%d{fd}, %d{how}): %A{other}"
+
+    /// Section B of `tcp-shutdown.c` (docs/plans/2026-10-08-tcp-shutdown-linger),
+    /// the reads: a read asleep on `c` wakes when `c` shuts its receive side,
+    /// and answers end of file, and sleeps on through `SHUT_WR` until the
+    /// peer's byte; a read asleep on `p` wakes for `c`'s FIN, and sleeps on
+    /// through `c`'s `SHUT_RD` until `c`'s byte. Both flavours agree.
+    [<Test>]
+    let ``a shutdown ends a sleeping read as section B measured`` () : unit =
+        for platform in Machines.platforms do
+            for asleepOnC in [ true ; false ] do
+                for how in [ 0 ; 1 ; 2 ] do
+                    let row = if asleepOnC then "rd" else "prd"
+                    let where = $"%O{platform} %s{row}-%d{how}"
+                    let client, server, system = pair (systemOn platform false)
+                    let reader, other = if asleepOnC then client, server else server, client
+                    let system = asleepReading 1 reader 4096 system
+                    let system = shut client how system
+
+                    // The read's own end shut its receive side, or the other
+                    // end made its FIN.
+                    let answers = if asleepOnC then how <> 1 else how <> 0
+
+                    let system =
+                        if answers then
+                            system
+                        else
+                            wokenAmong [ 1 ] system |> shouldEqual []
+                            wrote other 1 system |> snd
+
+                    wokenAmong [ 1 ] system |> shouldEqual [ 1 ]
+
+                    let expected = if answers then 0 else 1
+
+                    match UnixReadWrite.finishRead 1 system with
+                    | Ok (ReadOutcome.Answered (ReadAnswer.Completed bytes), after) ->
+                        bytes.Length |> shouldEqual expected
+                        UnixSystem.checkInvariants after |> shouldEqual []
+                    | other -> failwith $"%s{where}: %A{other}"
+
+    /// Section B, the writes: a write asleep on `c`, having taken nothing
+    /// (`wr`) or some (`wrpart`), sleeps on through `c`'s `SHUT_RD`, and wakes
+    /// once `c` shuts its send side. Linux's then returns the count it took,
+    /// raising nothing, or having taken nothing answers `EPIPE` and raises
+    /// `SIGPIPE`; Darwin's answers `EPIPE` and raises `SIGPIPE` whatever it
+    /// took. No error is left pending, and the bytes taken reach `p`, then
+    /// the FIN.
+    [<Test>]
+    let ``a shutdown ends a sleeping write as section B measured`` () : unit =
+        for platform in Machines.platforms do
+            let linux = SimulatedUnixFlavour.Linux = SimulatedUnixPlatform.flavour platform
+
+            for tookSome in [ false ; true ] do
+                for how in [ 0 ; 1 ; 2 ] do
+                    let row = if tookSome then "wrpart" else "wr"
+                    let where = $"%O{platform} %s{row}-%d{how}"
+                    let client, server, system = pair (systemOn platform false)
+                    let connection = connectionOf client system
+
+                    let system =
+                        if tookSome then
+                            system
+                        else
+                            let _, system = UnixDescriptor.setNonBlocking client true system
+
+                            let rec fill (system : UnixSystem<int, string>) =
+                                match
+                                    WriteOutcomes.admitThenWrite
+                                        0
+                                        client
+                                        UserBuffer.Mapped
+                                        (ImmutableArray.CreateRange (payload 1 65536))
+                                        system
+                                with
+                                | Ok (WriteOutcome.Returns (WriteAnswer.Completed _, system)) -> fill system
+                                | Ok (WriteOutcome.Returns (WriteAnswer.Failed UnixError.EAGAIN, system)) -> system
+                                | other -> failwith $"filling: %A{other}"
+
+                            UnixDescriptor.setNonBlocking client false (fill system) |> snd
+
+                    let bytes = payload 6 (if tookSome then 600000 else 1000)
+                    let system = asleepWriting 1 client bytes system
+
+                    let taken =
+                        match UnixTaskTable.parkedFor 1 system.Tasks with
+                        | Some (ParkedSyscall.ConnectionWrite write) -> write.Written
+                        | other -> failwith $"%s{where}: %A{other}"
+
+                    (taken > 0) |> shouldEqual tookSome
+                    let system = shut client how system
+
+                    if how = 0 then
+                        wokenAmong [ 1 ] system |> shouldEqual []
+                    else
+                        wokenAmong [ 1 ] system |> shouldEqual [ 1 ]
+
+                        let after =
+                            match finishedWrite 1 bytes system with
+                            | Ok (WriteOutcome.Returns (WriteAnswer.Completed n, after)) when linux && tookSome ->
+                                n |> shouldEqual (int64 taken)
+                                after
+                            | Ok (WriteOutcome.ReturnsRaising (WriteAnswer.Failed UnixError.EPIPE, raised, after)) when
+                                not (linux && tookSome)
+                                ->
+                                raised.Signal |> shouldEqual Signal.SIGPIPE
+                                after
+                            | other -> failwith $"%s{where}: %A{other}"
+
+                        UnixSystem.checkInvariants after |> shouldEqual []
+                        pendingError connection ConnectionEnd.Client after |> shouldEqual None
+
+                        // What the write took reaches the peer, then the FIN:
+                        // the peer's reads end at end of file.
+                        let rec drain (total : int) (system : UnixSystem<int, string>) =
+                            match readNow server 1048576 system with
+                            | ReadAnswer.Completed got, system when got.Length > 0 -> drain (total + got.Length) system
+                            | ReadAnswer.Completed _, _ -> total
+                            | other, _ -> failwith $"%s{where}: draining: %A{other}"
+
+                        let drained = drain 0 after
+
+                        if tookSome then
+                            drained |> shouldEqual taken
+
+    /// Darwin refuses every option on a socket that can neither send nor
+    /// receive any more, so setting `SO_LINGER` answers EINVAL once both
+    /// ends have shut writing (`tcp-shutdown.c`, section L, `bothfin`); Linux
+    /// takes it. One shut side is not enough on either.
+    [<Test>]
+    let ``Darwin refuses SO_LINGER once a socket has shut both sides, and Linux takes it`` () : unit =
+        for platform in Machines.platforms do
+            let linux = SimulatedUnixFlavour.Linux = SimulatedUnixPlatform.flavour platform
+
+            for peerShuts in [ false ; true ] do
+                let client, server, system = pair (systemOn platform false)
+                let system = shut client 1 system
+                let system = if peerShuts then shut server 1 system else system
+
+                (tryLinger client 1 0 system).IsSome |> shouldEqual (linux || not peerShuts)
 
     /// R-close and W-close: closing the descriptor a sleeping read or write
     /// was made through. Darwin's close ends it with EBADF, whatever a write
