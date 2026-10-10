@@ -89,6 +89,17 @@ The answer is an over-approximation: whatever a run can let escape is in it, nam
 "unknown". Resource exhaustion is in it too, so almost every method can escape
 `StackOverflowException`.
 
+The runtime makes most of the exceptions it raises by itself (a null dereference's, a bounds
+check's, a failed cast's, an overflow's) by running the exception's parameterless constructor,
+which looks up its message, so what that constructor can raise is in the answer too:
+`ThreadInterruptedException`, for one, from the lookup's lock. `OutOfMemoryException` and
+`StackOverflowException` it allocated in advance, and makes without running anything. What the
+runtime runs to make an exception with arguments is not followed: a failed binding's, a
+multidimensional array constructor's `ArgumentOutOfRangeException`, and a
+`TypeInitializationException`. For the last, that leaves something out: should its constructor
+fail, the runtime raises the type initializer's own exception instead, and the answer does not
+include what a type initializer raises.
+
 `EscapeAnalysis.unknownSources` says why an answer is "unknown". It lists the places (`OpaqueSite`)
 where something the analysis cannot name may arise and then escape the method, past every handler
 and through every `rethrow` on the way. Each gives the method the place is in, and the IL offset of
