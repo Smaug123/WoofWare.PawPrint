@@ -284,15 +284,10 @@ module TestListenerTeardown =
         )
 
     /// Section Q's row `mode` made on the kernel: q0 idle, q1 having written
-    /// 100 bytes and q2 closed, all three queued; the listener closed; then
-    /// what q0 and q1 see, and whether the listener's port binds. The lines
-    /// are printed as the probe prints them.
-    ///
-    /// The probe sets the listener's linger after the three connects, which
-    /// this kernel refuses (`ListenerWithQueuedConnections`, which
-    /// `the measured order of the linger's set is refused` pins), so the
-    /// linger row sets it before them: the listener's linger is what its close
-    /// sees either way, and nothing is accepted.
+    /// 100 bytes and q2 closed, all three queued; the listener's linger set to
+    /// {1, 0} on the linger row, as the probe sets it, with all three queued;
+    /// the listener closed; then what q0 and q1 see, and whether the
+    /// listener's port binds. The lines are printed as the probe prints them.
     let private kernelQ (flavour : SimulatedUnixFlavour) (lingering : bool) : string list =
         let system = systemOn (platformOf flavour)
 
@@ -306,7 +301,6 @@ module TestListenerTeardown =
             }
 
         let listener, system = listenerAt system
-        let system = if lingering then lingerZero listener system else system
         let q0, system = connectTo system
         let q1, system = connectTo system
         let q2, system = connectTo system
@@ -319,6 +313,7 @@ module TestListenerTeardown =
             | other, _ -> failwith $"q1's write of 100: %s{other}"
 
         let system = KeventWorld.close q2 system
+        let system = if lingering then lingerZero listener system else system
 
         let closed, system =
             match UnixDescriptor.close listener system with
@@ -368,24 +363,6 @@ module TestListenerTeardown =
         for flavour in flavours do
             kernelQ flavour true |> shouldEqual (measuredQ flavour "close-linger0")
 
-    /// Section Q sets the listener's `SO_LINGER` after its connections have
-    /// queued, which this kernel refuses, as it refuses any option's change on
-    /// such a listener: the change would have to be kept apart from the
-    /// options each queued connection completed with, which this kernel does
-    /// not record. When it does, the linger row above follows the probe's own
-    /// order, and this test goes.
-    [<Test>]
-    let ``the measured order of the linger's set is refused`` () : unit =
-        for flavour in flavours do
-            let system = systemOn (platformOf flavour)
-            let listener, system = listenerAt system
-            let _, system = connectTo system
-
-            match setLinger listener 1 0 system with
-            | Error (SocketOptionRefusal.ListenerWithQueuedConnections socket) ->
-                socket |> shouldEqual (socketOf listener system)
-            | other -> failwith $"%A{flavour}: expected the set to be refused, got %A{other}"
-
     /// What Kestrel's stop makes of its listener when nothing is queued: the
     /// linger set, then the close, both answered, and the port free.
     [<Test>]
@@ -406,14 +383,12 @@ module TestListenerTeardown =
     // ------------------------------------------------------------------
 
     /// `listener-reset-order.c` made on the kernel: four clients queued, each
-    /// registered edge-triggered in `order`, the queue drained, the listener
-    /// closed (under `SO_LINGER` {1, 0} if `lingering`), and the queue read,
-    /// printed as the probe prints it.
+    /// registered edge-triggered in `order`, the queue drained, the listener's
+    /// linger set to {1, 0} if `lingering`, the listener closed, and the queue
+    /// read, printed as the probe prints it.
     let private kernelOrder (flavour : SimulatedUnixFlavour) (order : int list) (lingering : bool) : string =
         let system = systemOn (platformOf flavour)
         let listener, system = listenerAt system
-        // As in section Q, the linger is set before the connects.
-        let system = if lingering then lingerZero listener system else system
 
         let clients, system =
             (([], system), [ 0..3 ])
@@ -457,6 +432,7 @@ module TestListenerTeardown =
                     | other -> failwith $"epoll_wait: %A{other}"
 
                 let _, system = wait system
+                let system = if lingering then lingerZero listener system else system
                 let system = KeventWorld.close listener system
                 let events, system = wait system
 
@@ -482,6 +458,7 @@ module TestListenerTeardown =
                     | other, _ -> failwith $"kevent: %A{other}"
 
                 let _, system = wait system
+                let system = if lingering then lingerZero listener system else system
                 let system = KeventWorld.close listener system
                 let events, system = wait system
 

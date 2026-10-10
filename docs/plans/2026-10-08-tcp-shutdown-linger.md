@@ -32,14 +32,16 @@ the kernel.
 
 - `SO_LINGER` is stored (#1790): `SocketOptions.Linger`, a `SocketLinger` of
   `Enabled` and `Hundredths`. `accept` copies the listener's options onto the
-  socket it returns. PawPrint handles `SystemNative_SetLingerOption` and
+  socket it returns; after stage 2, the options the listener had when the
+  connection completed. PawPrint handles `SystemNative_SetLingerOption` and
   `SystemNative_GetLingerOption` (`SocketOptionPal`).
 - Two refusals stand in for a reset. Releasing the last reference to a
   connected socket whose linger is {1, 0}, while its connection is still
   referenced, is refused (`DescriptionReleaseRefusal.AbortiveClose`). So is an
   `accept` that would drop a dequeued connection (Linux, negative address
-  length) while the listener's linger is {1, 0} and the client is open
-  (`AcceptRefusal.AbortiveDrop`).
+  length) while its linger is {1, 0} and the client is open
+  (`AcceptRefusal.AbortiveDrop`): after stage 2, the linger the listener had
+  when the connection completed.
 - Releasing the last reference to a listener whose accept queue holds a
   connection with an open client was refused
   (`DescriptionReleaseRefusal.ListenerWouldResetUnacceptedClient`), whatever
@@ -700,13 +702,17 @@ been rebased onto main (with #1790).
    left queued, so `AcceptRefusal.Release` went too; and a process's end no
    longer holds its listeners back until its other releases are made, since a
    listener's release now raises wakes, in the order its descriptors close.
-   Not done: section Q sets the listener's linger after its connections have
-   queued, and `setsockopt` still refuses any option's change on a listener
-   with connections queued (`SocketOptionRefusal.ListenerWithQueuedConnections`),
-   because an accepted socket takes the options the listener had when its
-   connection completed, and this kernel does not record them per
-   connection. So Kestrel's {1, 0} close succeeds whatever is queued, but the
-   `setsockopt` before it is refused when something is.
+   Section Q sets the listener's linger after its connections have queued.
+   An accepted socket takes the options the listener had when its connection
+   completed, not those it has at the accept (`queued-options.c` beside the
+   probe, both flavours), so each entry of the accept queue
+   (`QueuedConnection`) records the options the accepted socket will hold,
+   and `setsockopt` takes any change on a listener, whatever is queued:
+   Kestrel's {1, 0} set and the close after it both succeed. The same probe
+   found that Darwin gives a connection completing while its listener
+   lingers for no time a linger of 120 seconds (`tcp_attach`), and that a
+   Linux accept that drops its connection closes it with the linger it
+   completed with; both are modelled.
 3. **Half-close in `TcpTransfer`, as pure functions** (3.1 (D)).
    - First commit: the split of `TcpEndState`, with behaviour unchanged.
    - Then the read, write and arrival rules, `shutdown`'s answer function,

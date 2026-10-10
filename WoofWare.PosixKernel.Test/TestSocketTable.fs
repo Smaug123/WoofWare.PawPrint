@@ -593,7 +593,7 @@ module TestSocketTable =
                             SocketPhase.Listening
                                 {
                                     Backlog = 8
-                                    Queue = queue
+                                    Queue = List.map ForgedConnection.queued queue
                                     Drained = false
                                 }
                     }
@@ -813,7 +813,7 @@ module TestSocketTable =
             | other -> failwith $"expected Established, got %A{other}"
 
         match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase with
-        | SocketPhase.Listening listenState -> listenState.Queue |> shouldEqual [ connectionId ]
+        | SocketPhase.Listening listenState -> ListenState.connections listenState |> shouldEqual [ connectionId ]
         | other -> failwith $"expected Listening, got %A{other}"
 
         let tcpConnection = UnixMachineState.connection connectionId kernel.Machine
@@ -846,7 +846,9 @@ module TestSocketTable =
             | other -> failwith $"expected Established, got %A{other}"
 
         match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase with
-        | SocketPhase.Listening listenState -> listenState.Queue |> shouldEqual [ connectionOf 1L ; connectionOf 2L ]
+        | SocketPhase.Listening listenState ->
+            ListenState.connections listenState
+            |> shouldEqual [ connectionOf 1L ; connectionOf 2L ]
         | other -> failwith $"expected Listening, got %A{other}"
 
     /// Linux's completion report is deferred to the first retry, and the
@@ -1178,7 +1180,7 @@ module TestSocketTable =
         accepted.ReuseAddress |> shouldEqual true
 
         match (UnixMachineState.socket (SocketId 0L) kernel.Machine).Phase with
-        | SocketPhase.Listening listenState -> listenState.Queue |> shouldEqual [ connectionOf 2L ]
+        | SocketPhase.Listening listenState -> ListenState.connections listenState |> shouldEqual [ connectionOf 2L ]
         | other -> failwith $"expected Listening, got %A{other}"
 
         UnixSystem.checkInvariants kernel |> shouldEqual []
@@ -1380,7 +1382,7 @@ module TestSocketTable =
                             SocketPhase.Listening
                                 {
                                     Backlog = 8
-                                    Queue = [ ConnectionId 5L ]
+                                    Queue = [ ForgedConnection.queued (ConnectionId 5L) ]
                                     Drained = false
                                 }
                     }
@@ -1465,7 +1467,7 @@ module TestSocketTable =
                             SocketPhase.Listening
                                 {
                                     Backlog = 8
-                                    Queue = [ ConnectionId 0L ; ConnectionId 0L ]
+                                    Queue = List.map ForgedConnection.queued [ ConnectionId 0L ; ConnectionId 0L ]
                                     Drained = false
                                 }
                     }
@@ -1563,7 +1565,7 @@ module TestSocketTable =
         SocketPhase.Listening
             {
                 Backlog = 8
-                Queue = connections
+                Queue = List.map ForgedConnection.queued connections
                 Drained = false
             }
 

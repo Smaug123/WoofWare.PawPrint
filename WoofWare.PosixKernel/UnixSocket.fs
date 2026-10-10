@@ -253,15 +253,6 @@ type SocketOptionRefusal =
     | UnmodelledOption of socket : SocketId * level : int * optionName : int
     /// A buffer the call reaches has no answer at the step it is reached.
     | Buffer of BufferRefusal
-    /// The call would change an option of a listening socket whose accept
-    /// queue holds completed connections.
-    ///
-    /// A real kernel gives each of those connections its own copy of the
-    /// listener's options when the connection completes, so the socket a later
-    /// `accept(2)` returns keeps the values from then. This kernel copies the
-    /// listener's values at `accept(2)` instead, which agrees only while they
-    /// have not changed since.
-    | ListenerWithQueuedConnections of socket : SocketId
     /// A Linux `SO_LINGER` set turning lingering on with a negative `l_linger`.
     ///
     /// Linux reads `l_linger` as unsigned, so a negative one is more than its
@@ -278,8 +269,6 @@ module SocketOptionRefusal =
     let describe (refusal : SocketOptionRefusal) : string =
         match refusal with
         | SocketOptionRefusal.Buffer refusal -> BufferRefusal.describe refusal
-        | SocketOptionRefusal.ListenerWithQueuedConnections socket ->
-            $"socket %O{socket} is listening with completed connections in its accept queue, and the call would change one of its options. Measured on both flavours, each queued connection keeps the options the listener had when that connection completed, so an accept after the change returns a socket carrying the old values. This kernel does not record that per-connection copy: it gives the accepted socket the listener's options at accept time. Record them with each queued connection before allowing the change."
         | SocketOptionRefusal.UnmodelledOption (socket, level, optionName) ->
             $"socket %O{socket} was asked about option %d{optionName} at level %d{level}. This kernel models SO_REUSEADDR, SO_LINGER (and Darwin's SO_LINGER_SEC) at SOL_SOCKET, TCP_NODELAY at IPPROTO_TCP and IPV6_V6ONLY at IPPROTO_IPV6 for setsockopt(2) and getsockopt(2), and SO_ERROR at SOL_SOCKET for getsockopt(2) alone. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. Model the option before asking for it."
         | SocketOptionRefusal.NegativeLingerTime (socket, seconds) ->
@@ -2149,9 +2138,10 @@ module UnixSocket =
     /// bytes were left unread.
     ///
     /// An option persists until the next `setsockopt` of it, and no later
-    /// failure of another call undoes it. A change on a listener with
-    /// connections waiting to be accepted is refused; see
-    /// `SocketOptionRefusal.ListenerWithQueuedConnections`.
+    /// failure of another call undoes it. A change on a listener does not reach
+    /// a connection already waiting to be accepted: the socket `accept(2)`
+    /// makes for one holds the options the listener had when it completed (see
+    /// `QueuedConnection`).
     let setsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
@@ -2298,21 +2288,6 @@ module UnixSocket =
             | Error (Ok error) -> Ok (SetSockOptAnswer.Failed error, system)
             | Error (Error refusal) -> Error refusal
             | Ok updated ->
-
-            let hasQueuedConnections =
-                match socket.Phase with
-                | SocketPhase.Listening listenState -> not (List.isEmpty listenState.Queue)
-                | SocketPhase.Idle
-                | SocketPhase.EstablishedPendingReport _
-                | SocketPhase.Established _
-                | SocketPhase.Refused _
-                | SocketPhase.DatagramPeer _ -> false
-
-            // Setting the value it already has changes nothing a queued
-            // connection could have copied, so only a change is refused.
-            if hasQueuedConnections && updated <> socket then
-                Error (SocketOptionRefusal.ListenerWithQueuedConnections socketId)
-            else
 
             let system =
                 { system with

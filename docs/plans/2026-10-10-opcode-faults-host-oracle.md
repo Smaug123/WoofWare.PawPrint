@@ -72,6 +72,50 @@ Each stage is one PR.
    A test requires every token-bearing instruction except the `constrained.`
    prefix to be checked here or in stage 2.
 
+## The interpreter against the same inputs
+
+The stages above show that the table agrees with the host. The interpreter
+checks, on every fault it raises, that the table lists that fault
+(`IlMachineStateExecution.raiseOpcodeFaultWithMessage`). Nothing checks the
+other direction: that the interpreter raises a fault wherever the host does.
+Before #1839, `ckfinite` was an example: the interpreter refused it outright.
+
+So each stage's inputs also run under PawPrint. For each instruction, the probe
+bodies are emitted into a fabricated assembly (`PersistedAssemblyBuilder`), as
+static methods with exactly the IL of the host probes. A C# driver calls each
+one on every input the stage uses, in the order the stage enumerates them, and
+prints the index and exception type of every input that raised. The test runs
+the driver under PawPrint and compares those lines with what the in-process
+probes raised for the same inputs. The in-process probes remain the oracle; the
+driver never runs on the real runtime.
+
+There is one guest per instruction, so that one refusal stops only its own
+instruction, and the guests run in parallel. Measured on stage 1's grid, a call
+that raises nothing costs about 0.3 ms under PawPrint and one that raises about
+10 ms, so stage 1, about 110,000 calls with 5,000 faults, costs about 1.5
+minutes of CPU, which is about 1.3 minutes of the default suite's wall time.
+Since each case runs a guest, the fixture is in the `Guest` category.
+
+An instruction whose first run disagrees with the host is parked
+(`TestCaseData.Explicit`) with the disagreement as the reason. The fix to the
+interpreter is a change of its own, which unparks it.
+
+Stage 1 comes first (`TestOpcodeFaultsOnPawPrint`). On its first run, 46 of the
+60 instructions raised exactly what the host raised on every input. The other
+14 are parked, and every disagreement is a refusal rather than a wrong
+exception:
+
+- `add.ovf.un` and `sub.ovf.un` are unimplemented.
+- `CliType.zeroOfPrimitive` makes a native int's zero a null managed pointer,
+  which is what a C# array initialiser leaves in an element it does not store.
+  `add`, `sub` and `mul` compute with it as 0, but `div`, `div.un`, `rem`,
+  `rem.un`, `and`, `or`, `xor`, `shl`, `shr`, `shr.un` and `mul.ovf.un` refuse
+  it. CoreCLR raises `DivideByZeroException` for the divisions and computes
+  the rest.
+- `conv.r.un` refuses a float operand, which CoreCLR converts without raising.
+
+Stages 2 and 3 do not yet run under PawPrint.
+
 ## Not checkable in process
 
 These are listed in the tests with the reason, rather than silently skipped.
