@@ -347,46 +347,28 @@ module TestOpcodeFaultsOnHostMemory =
             Arguments = [ [ (null : obj) ] ]
         }
 
-    let private probes : Probe list = arrayProbes @ addressProbes @ [ throwProbe ]
+    let private probes : HostProbe list =
+        arrayProbes @ addressProbes @ [ throwProbe ]
+        |> List.map (fun probe ->
+            {
+                Instruction = probe.Instruction.Name
+                Entry = probe.Instruction.Entry
+                OpCode = probe.Instruction.OpCode
+                Shape =
+                    match probe.Instruction.Token with
+                    | Some token -> token.Name
+                    | None -> ""
+                Method = probe.Method
+                Arguments = probe.Arguments
+            }
+        )
 
-    /// A pairing of an instruction with the wrong `OpCodes` field would check one instruction's
-    /// entry against another's behaviour.
     [<Test>]
     let ``each instruction is paired with its own encoding`` () : unit =
-        let spelling (name : string) : string =
-            name.Replace("_", "").Replace(".", "").ToLowerInvariant ()
-
-        for probe in probes do
-            spelling probe.Instruction.OpCode.Name
-            |> shouldEqual (spelling probe.Instruction.Name)
+        HostFaultProbe.misencoded probes |> shouldEqual []
 
     [<Test>]
     let ``each instruction raises exactly what the table lists`` () : unit =
-        let mismatches =
-            probes
-            |> List.groupBy (fun probe -> probe.Instruction.Name)
-            |> List.collect (fun (name, probes) ->
-                let observed =
-                    [
-                        for probe in probes do
-                            for arguments in probe.Arguments do
-                                match HostFaultProbe.raised probe.Method arguments with
-                                | Some raised ->
-                                    let token =
-                                        probe.Instruction.Token
-                                        |> Option.map (fun t -> $"%s{t.Name} ")
-                                        |> Option.defaultValue ""
-
-                                    raised, $"%s{token}%A{arguments}"
-                                | None -> ()
-                    ]
-                    |> List.groupBy fst
-                    |> List.map (fun (raised, witnesses) -> raised, snd (List.head witnesses))
-                    |> Map.ofList
-
-                HostFaultProbe.mismatches name (List.head probes).Instruction.Entry observed
-            )
-
-        match mismatches with
+        match HostFaultProbe.check [] probes with
         | [] -> ()
         | mismatches -> failwith (String.concat Environment.NewLine mismatches)
