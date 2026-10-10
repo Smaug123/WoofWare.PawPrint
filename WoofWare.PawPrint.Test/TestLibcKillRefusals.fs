@@ -182,6 +182,55 @@ class Program
 }
 """
 
+    /// Sends the signal its argument names from a thread other than the main
+    /// thread, while the main thread sleeps in a read of an empty pipe, and
+    /// then writes the byte that ends the read.
+    let private whileMainReadsGuest : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class Program
+{
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    static extern int Kill(int pid, int sig);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Pipe", SetLastError = true)]
+    static extern unsafe int Pipe(int* pipeFds, int flags);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Read", SetLastError = true)]
+    static extern unsafe int Read(IntPtr fd, byte* buffer, int bufferSize);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Write", SetLastError = true)]
+    static extern unsafe int Write(IntPtr fd, byte* buffer, int bufferSize);
+
+    static unsafe int Main(string[] args)
+    {
+        int signo = int.Parse(args[0]);
+        int* fds = stackalloc int[2];
+        if (Pipe(fds, 0) != 0) return 1;
+        IntPtr readEnd = (IntPtr)fds[0];
+        IntPtr writeEnd = (IntPtr)fds[1];
+
+        int result = -1;
+        var worker = new Thread(() =>
+        {
+            Thread.Sleep(100);
+            result = Kill(Environment.ProcessId, signo);
+            byte x = (byte)'x';
+            Write(writeEnd, &x, 1);
+        });
+        worker.Start();
+
+        byte* buffer = stackalloc byte[1];
+        if (Read(readEnd, buffer, 1) != 1) return 2;
+        worker.Join();
+        return result == 0 ? 42 : 3;
+    }
+}
+"""
+
     let private runSourceWith (source : string) (platform : SimulatedUnixPlatform) (argv : string list) : RunOutcome =
         let arguments = String.concat " " argv
         let description = $"kill(self, %s{arguments})"
@@ -219,6 +268,11 @@ class Program
         let exn = Assert.Catch<exn> (fun () -> run platform signo |> ignore<RunOutcome>)
         exn.Message |> shouldContainText "is not modelled"
         exn.Message |> shouldContainText reason
+
+    let private exitsWith42 (outcome : RunOutcome) : unit =
+        match outcome with
+        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 42
+        | other -> failwith $"expected the guest to exit 42, got %O{other}"
 
     [<Test>]
     let ``SIGPIPE, which the runtime ignores from startup, is discarded under either flavour`` () : unit =
@@ -297,8 +351,26 @@ class Program
         | other -> failwith $"expected termination by signal 30, got %O{other}"
 
     [<Test>]
-    let ``SIGCONT with no handler is refused`` () : unit =
-        refused SimulatedUnixPlatform.linuxX64 18 "has no stopped state"
+    let ``SIGCONT with no handler is consumed, and the process carries on, under either flavour`` () : unit =
+        // SIGCONT is 18 under Linux's numbering and 19 under Darwin's. The
+        // worker's is taken by the main thread, waiting in Join.
+        for platform, signo in [ SimulatedUnixPlatform.linuxX64, 18 ; SimulatedUnixPlatform.macOsArm64, 19 ] do
+            run platform signo |> exitsWith42
+            runSource fromWorkerGuest platform signo |> exitsWith42
+
+    [<Test>]
+    let ``SIGCONT with no handler, sent while the main thread sleeps in a read, is refused`` () : unit =
+        // The kernel keeps it pending for the main thread, and will not say
+        // what it does to the read the main thread is asleep in, which ends
+        // the run when the read finishes.
+        let exn =
+            Assert.Catch<exn> (fun () ->
+                runSource whileMainReadsGuest SimulatedUnixPlatform.linuxX64 18
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message |> shouldContainText "would take is SIGCONT"
+        exn.Message |> shouldContainText "what that does to the syscall is unmeasured"
 
     [<Test>]
     let ``a signal System.Native catches before its signal handling is initialised is refused`` () : unit =
@@ -312,11 +384,6 @@ class Program
             )
 
         exn.Message |> shouldContainText "never initialised"
-
-    let private exitsWith42 (outcome : RunOutcome) : unit =
-        match outcome with
-        | RunOutcome.NormalExit (state, _, _) -> state.LatchedExitCode |> shouldEqual 42
-        | other -> failwith $"expected the guest to exit 42, got %O{other}"
 
     [<Test>]
     let ``SIGCONT sent after a stop signal the native handler has already taken is answered`` () : unit =
