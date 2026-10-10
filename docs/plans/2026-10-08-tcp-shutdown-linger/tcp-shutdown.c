@@ -68,6 +68,20 @@
 //                         everything; c closes.
 //       The bind is tried at once and 30 ms later, then rdy(p) (in the
 //       queued rows, both before and after p drains).
+//       Then the open rows, in which neither descriptor has closed when the
+//       binds are tried: c's endpoint and p's, and getpeername at both ends
+//       ("ok" or the errno), then again once c has closed, and once p has:
+//         open-p-first    p shutdown(WR); c shutdown(WR);
+//         open-c-first    c shutdown(WR); p shutdown(WR);
+//         open-p-first-queued  p shutdown(WR); c fills; c shutdown(WR), so
+//                         its FIN waits behind its bytes (tried before and
+//                         after p drains them);
+//         open-p-first-c-locked  open-p-first, with c bound explicitly to a
+//                         port before it connected;
+//         open-c-first-l-locked  open-c-first, with the listener bound
+//                         explicitly to a port, which p shares;
+//         open-p-only     p shutdown(WR) alone;
+//         open-c-rdwr     c shutdown(RDWR) alone.
 //   X   c fills; c shutdown(WR), so its FIN is queued; p shutdown(RDWR);
 //       rdy of both; p drains everything, so c's bytes can arrive at a
 //       socket shut both ways; rdy of both; then soerr(c), c reads, c
@@ -92,7 +106,13 @@
 //       (each how; then whether accept answers, whether a new client
 //       connects, and whether listen succeeds again), connect refused, a
 //       datagram socket, a non-socket, a closed descriptor, and how = 3 and
-//       -1 on a fresh socket, a non-socket and a connected socket.
+//       -1 on a fresh socket, a non-socket and a connected socket. Then a
+//       non-blocking connect that has completed but that no later connect
+//       has reported: shutdown(how) or nothing, then connect again. Then
+//       what a shutdown that answers ENOTCONN leaves behind: on a fresh
+//       stream socket, rdy before and after, then whether it connects, a
+//       write of 1, a read once p has written 1, and rdy; and on a fresh
+//       datagram socket, rdy before and after.
 //   P   what the peer reads when c has unread bytes from p and then calls
 //       shutdown(RDWR) and close; and SHUT_RD followed by p writing until
 //       EAGAIN (capped at 16 MiB), with c's FIONREAD after.
@@ -104,7 +124,10 @@
 //       writes 100, soerr of both; after RD, 5 s later, rdy and soerr of both.
 //   E   edges: c and p registered edge-triggered (EPOLLET with
 //       IN|OUT|RDHUP; EV_CLEAR on both kqueue filters), drained, then
-//       shutdown(c, how): what each registration then reports.
+//       shutdown(c, how): what each registration then reports. Also on a
+//       reset c (p closed over 100 unread bytes from c, so c alone is
+//       registered), and after both FINs have arrived (c shutdown(WR), then
+//       p), where shutdown answers ENOTCONN.
 //   B   a thread asleep, blocking, 100 ms in:
 //         B-rd-<how>   read(c), and main calls shutdown(c, how);
 //         B-prd-<how>  read(p), and main calls shutdown(c, how);
@@ -136,7 +159,11 @@
 //
 // Measured 2026-10-08 on Linux 6.18.5 aarch64 (Apple's container VM, root,
 // default sysctls) and Darwin 27.0.0 arm64 (uid 501), the whole probe twice
-// on each, and L, F and X three more times each. One run of each is
+// on each, and L, F and X three more times each. F's open rows, E's reset
+// and bothfin rows, and U's connect-unreported, fresh-then and udp-then rows
+// were added on 2026-10-10, and measured by running those sections twice on
+// each, with the same answers each time; sections F, E and U of the files
+// are from one of those runs. One run of each is
 // tcp-shutdown.linux-6.18.5-aarch64.txt and tcp-shutdown.darwin-27.0.txt.
 // docs/plans/2026-10-08-tcp-shutdown-linger.md, section 2, says what they
 // mean.
@@ -706,6 +733,65 @@ static void section_u(void)
         printf("U\tnot-socket\thow=%d\t%s\n", bh, r);
         close(f);
     }
+    // A non-blocking connect that has completed but that no later connect
+    // has reported: shutdown(how), or nothing (the control), and then what
+    // connect answers again.
+    for (int h = -1; h < 3; h++) {
+        int l = listener(4);
+        int port = port_of(l);
+        int f = socket(AF_INET, SOCK_STREAM, 0);
+        set_nb(f, 1);
+        struct sockaddr_in a = loop_at(port);
+        int r = connect(f, (struct sockaddr *)&a, sizeof a);
+        int e = errno;
+        settle();
+        const char *first = ans(r, e);
+        const char *sh = h < 0 ? "-" : do_shutdown(f, hows[h]);
+        r = connect(f, (struct sockaddr *)&a, sizeof a);
+        e = errno;
+        settle();
+        const char *again = ans(r, e);
+        printf("U\tconnect-unreported(%s)\t%s\tshutdown=%s connect=%s\n", first, h < 0 ? "none" : how_name(hows[h]), sh,
+               again);
+        discard(f);
+        close(l);
+    }
+    // What a shutdown answering ENOTCONN leaves on a fresh socket: its
+    // readiness after, then whether it connects, writes, and reads what the
+    // peer wrote; and on a datagram socket, its readiness after.
+    for (int h = 0; h < 3; h++) {
+        int l = listener(4);
+        int port = port_of(l);
+        int f = socket(AF_INET, SOCK_STREAM, 0);
+        set_nb(f, 1);
+        const char *before = rdy(f);
+        const char *sh = do_shutdown(f, hows[h]);
+        const char *after = rdy(f);
+        printf("U\tfresh-then\t%s\tshutdown=%s\trdy before\t%s\trdy after\t%s\n", how_name(hows[h]), sh, before, after);
+        set_nb(f, 0);
+        struct sockaddr_in a = loop_at(port);
+        int r = connect(f, (struct sockaddr *)&a, sizeof a);
+        int e = errno;
+        settle();
+        const char *cs = ans(r, e);
+        set_nb(f, 1);
+        int p = accept(l, NULL, NULL);
+        const char *w = do_write(f, 1);
+        write(p, buf, 1);
+        settle();
+        const char *rd = do_read(f);
+        const char *rc = rdy(f);
+        printf("U\tfresh-then\t%s\tconnect=%s write1=%s read(after p wrote 1)=%s\trdy\t%s\n", how_name(hows[h]), cs, w, rd, rc);
+        discard(f);
+        discard(p);
+        close(l);
+        int u = socket(AF_INET, SOCK_DGRAM, 0);
+        const char *ub = rdy(u);
+        const char *us = do_shutdown(u, hows[h]);
+        const char *ua = rdy(u);
+        printf("U\tudp-then\t%s\tshutdown=%s\trdy before\t%s\trdy after\t%s\n", how_name(hows[h]), us, ub, ua);
+        close(u);
+    }
     // A bad how on a connected socket.
     int bad[2] = { 3, -1 };
     for (int k = 0; k < 2; k++) {
@@ -943,6 +1029,56 @@ static void section_e(void)
             close(ep);
             discard(c);
             discard(p);
+        }
+    // A socket shutdown answers ENOTCONN on: reset (p closed over 100
+    // bytes from c it had not read), and, with both ends open, both FINs
+    // arrived (c shut writing, then p). c alone is registered in the reset
+    // row, since p has closed.
+    for (int r = 0; r < 2; r++)
+        for (int h = 0; h < 3; h++) {
+            const char *st = r == 0 ? "reset" : "bothfin";
+            int c, p;
+            pair(&c, &p);
+            if (r == 0) {
+                write(c, buf, 100);
+                settle();
+                do_close(p);
+                p = -1;
+            } else {
+                do_shutdown(c, SHUT_WR);
+                do_shutdown(p, SHUT_WR);
+            }
+#ifdef __linux__
+            int ep = epoll_create1(0);
+            struct epoll_event ev = { .events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET };
+            ev.data.fd = c;
+            epoll_ctl(ep, EPOLL_CTL_ADD, c, &ev);
+            if (p >= 0) {
+                ev.data.fd = p;
+                epoll_ctl(ep, EPOLL_CTL_ADD, p, &ev);
+            }
+#else
+            int ep = kqueue();
+            struct kevent ch[4];
+            EV_SET(&ch[0], c, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+            EV_SET(&ch[1], c, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, NULL);
+            if (p >= 0) {
+                EV_SET(&ch[2], p, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+                EV_SET(&ch[3], p, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, NULL);
+            }
+            kevent(ep, ch, p >= 0 ? 4 : 2, NULL, 0, NULL);
+#endif
+            char tag[64];
+            snprintf(tag, sizeof tag, "%s\t%s\tdrain", st, how_name(hows[h]));
+            edges(tag, c, p, ep, "");
+            snprintf(tag, sizeof tag, "%s\t%s\tagain", st, how_name(hows[h]));
+            edges(tag, c, p, ep, "");
+            const char *sh = do_shutdown(c, hows[h]);
+            snprintf(tag, sizeof tag, "%s\t%s\tafter shutdown=%s", st, how_name(hows[h]), sh);
+            edges(tag, c, p, ep, "");
+            close(ep);
+            discard(c);
+            if (p >= 0) discard(p);
         }
     // Listener: an edge registration on l, then shutdown(l, how).
     for (int h = 0; h < 3; h++) {
@@ -1252,6 +1388,136 @@ static void section_l(void)
 
 // ---- F ----
 
+// getpeername(fd): "ok" or the errno's name.
+static const char *peer_name(int fd)
+{
+    struct sockaddr_in a;
+    socklen_t l = sizeof a;
+    int r = getpeername(fd, (struct sockaddr *)&a, &l);
+    int e = errno;
+    if (r == 0) return "ok";
+    return ename(e);
+}
+
+// A port no socket holds now: bound to port 0 by a socket closed at once,
+// which leaves nothing behind since it never connected.
+static int free_port(void)
+{
+    int t = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a = loop_at(0);
+    if (bind(t, (struct sockaddr *)&a, sizeof a) < 0) die("bind");
+    int port = port_of(t);
+    close(t);
+    return port;
+}
+
+// A connected pair, as `pair` makes one, but with c bound explicitly to a
+// port before it connects (`lock_c`), or the listener bound explicitly to
+// one (`lock_l`), rather than either taking port 0.
+static void pair_locked(int *c, int *p, int lock_c, int lock_l)
+{
+    int l = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in la = loop_at(lock_l ? free_port() : 0);
+    if (bind(l, (struct sockaddr *)&la, sizeof la) < 0) die("bind");
+    if (listen(l, 4) < 0) die("listen");
+    int port = port_of(l);
+    *c = socket(AF_INET, SOCK_STREAM, 0);
+    if (lock_c) {
+        struct sockaddr_in ca = loop_at(free_port());
+        if (bind(*c, (struct sockaddr *)&ca, sizeof ca) < 0) die("bind");
+    }
+    struct sockaddr_in a = loop_at(port);
+    if (connect(*c, (struct sockaddr *)&a, sizeof a) < 0) die("connect");
+    settle();
+    *p = accept(l, NULL, NULL);
+    if (*p < 0) die("accept");
+    close(l);
+    set_nb(*c, 1);
+    set_nb(*p, 1);
+}
+
+enum fopen {
+    FO_P_FIRST,
+    FO_C_FIRST,
+    FO_P_FIRST_QUEUED,
+    FO_P_FIRST_C_LOCKED,
+    FO_C_FIRST_L_LOCKED,
+    FO_P_ONLY,
+    FO_C_RDWR,
+};
+static const char *fopen_name[] = { "open-p-first",          "open-c-first", "open-p-first-queued", "open-p-first-c-locked",
+                                    "open-c-first-l-locked", "open-p-only",  "open-c-rdwr" };
+
+// Both ends shut writing (only p, in open-p-only; c both ways, in
+// open-c-rdwr) and neither has closed:
+// whether a fresh socket binds c's endpoint and p's, and what getpeername
+// answers at each end. Then c closes, and then p, each followed by the binds.
+// In open-p-first-queued, c's FIN is made after p's has arrived, but waits
+// behind c's bytes until p drains them. In the locked rows, c (or the
+// listener, whose port p shares) was bound explicitly to a port.
+static void section_f_open(void)
+{
+    for (int o = FO_P_FIRST; o <= FO_C_RDWR; o++) {
+        int c, p;
+        pair_locked(&c, &p, o == FO_P_FIRST_C_LOCKED, o == FO_C_FIRST_L_LOCKED);
+        int cport = port_of(c);
+        int pport = port_of(p);
+        const char *tag = fopen_name[o];
+        switch (o) {
+        case FO_P_FIRST:
+        case FO_P_FIRST_C_LOCKED:
+            do_shutdown(p, SHUT_WR);
+            do_shutdown(c, SHUT_WR);
+            break;
+        case FO_C_FIRST:
+        case FO_C_FIRST_L_LOCKED:
+            do_shutdown(c, SHUT_WR);
+            do_shutdown(p, SHUT_WR);
+            break;
+        case FO_P_ONLY:
+            do_shutdown(p, SHUT_WR);
+            break;
+        case FO_C_RDWR:
+            do_shutdown(c, SHUT_RDWR);
+            break;
+        case FO_P_FIRST_QUEUED: {
+            do_shutdown(p, SHUT_WR);
+            long n = fill(c);
+            printf("#\tfilled %ld\n", n);
+            do_shutdown(c, SHUT_WR);
+            const char *q1 = bind_free(cport);
+            const char *qp = bind_free(pport);
+            const char *g1 = peer_name(c);
+            const char *g2 = peer_name(p);
+            printf("F\t%s\tbefore p drains: c-endpoint %s p-endpoint %s getpeername(c)=%s getpeername(p)=%s\n", tag, q1,
+                   qp, g1, g2);
+            const char *last = "";
+            long d = drain(p, &last);
+            printf("F\t%s\tp-drained=%ld last=%s\t~counts\n", tag, d, last);
+            break;
+        }
+        }
+        const char *b1 = bind_free(cport);
+        settle();
+        const char *b2 = bind_free(cport);
+        const char *bp = bind_free(pport);
+        const char *g1 = peer_name(c);
+        const char *g2 = peer_name(p);
+        printf("F\t%s\tboth open: c-endpoint at once %s, 30 ms later %s; p-endpoint %s; getpeername(c)=%s "
+               "getpeername(p)=%s\n",
+               tag, b1, b2, bp, g1, g2);
+        do_close(c);
+        const char *b3 = bind_free(cport);
+        const char *b4 = bind_free(pport);
+        const char *g3 = peer_name(p);
+        printf("F\t%s\tc closed: c-endpoint %s p-endpoint %s getpeername(p)=%s\n", tag, b3, b4, g3);
+        do_close(p);
+        const char *b5 = bind_free(cport);
+        const char *b6 = bind_free(pport);
+        printf("F\t%s\tboth closed: c-endpoint %s p-endpoint %s\n", tag, b5, b6);
+    }
+}
+
 enum forder {
     F_P_FIRST_CLOSE,
     F_P_FIRST_WR,
@@ -1329,6 +1595,7 @@ static void section_f(void)
         printf("F\t%s\tclosers-endpoint at once %s, 30 ms later %s\trdy(p)\t%s\n", tag, b1, b2, rp);
         discard(p);
     }
+    section_f_open();
 }
 
 // ---- X ----

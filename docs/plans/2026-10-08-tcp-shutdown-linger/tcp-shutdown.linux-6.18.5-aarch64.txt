@@ -120,6 +120,30 @@ F	c-first-wr	closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINU
 #	filled 4290155
 F	c-queued	p-drained=4290155 last=0	~counts
 F	c-queued	closers-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0
+F	open-p-first	both open: c-endpoint at once bind-ok, 30 ms later bind-ok; p-endpoint bind-EADDRINUSE; getpeername(c)=ENOTCONN getpeername(p)=ENOTCONN
+F	open-p-first	c closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE getpeername(p)=ENOTCONN
+F	open-p-first	both closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE
+F	open-c-first	both open: c-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE; p-endpoint bind-ok; getpeername(c)=ENOTCONN getpeername(p)=ENOTCONN
+F	open-c-first	c closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok getpeername(p)=ENOTCONN
+F	open-c-first	both closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok
+#	filled 4290560
+F	open-p-first-queued	before p drains: c-endpoint bind-EADDRINUSE p-endpoint bind-EADDRINUSE getpeername(c)=ok getpeername(p)=ok
+F	open-p-first-queued	p-drained=4290560 last=0	~counts
+F	open-p-first-queued	both open: c-endpoint at once bind-ok, 30 ms later bind-ok; p-endpoint bind-EADDRINUSE; getpeername(c)=ENOTCONN getpeername(p)=ENOTCONN
+F	open-p-first-queued	c closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE getpeername(p)=ENOTCONN
+F	open-p-first-queued	both closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE
+F	open-p-first-c-locked	both open: c-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE; p-endpoint bind-EADDRINUSE; getpeername(c)=ENOTCONN getpeername(p)=ENOTCONN
+F	open-p-first-c-locked	c closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE getpeername(p)=ENOTCONN
+F	open-p-first-c-locked	both closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE
+F	open-c-first-l-locked	both open: c-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE; p-endpoint bind-ok; getpeername(c)=ENOTCONN getpeername(p)=ENOTCONN
+F	open-c-first-l-locked	c closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok getpeername(p)=ENOTCONN
+F	open-c-first-l-locked	both closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok
+F	open-p-only	both open: c-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE; p-endpoint bind-EADDRINUSE; getpeername(c)=ok getpeername(p)=ok
+F	open-p-only	c closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE getpeername(p)=ENOTCONN
+F	open-p-only	both closed: c-endpoint bind-ok p-endpoint bind-EADDRINUSE
+F	open-c-rdwr	both open: c-endpoint at once bind-EADDRINUSE, 30 ms later bind-EADDRINUSE; p-endpoint bind-EADDRINUSE; getpeername(c)=ok getpeername(p)=ok
+F	open-c-rdwr	c closed: c-endpoint bind-EADDRINUSE p-endpoint bind-EADDRINUSE getpeername(p)=ok
+F	open-c-rdwr	both closed: c-endpoint bind-EADDRINUSE p-endpoint bind-ok
 #	filled 4290155
 X	c-shut-wr=0 p-shut-rdwr=0	rdy(c)	poll=0x2015 epoll=0x2015 fionread=0	rdy(p)	poll=0x2015 epoll=0x2015 fionread=127717	~counts
 X	p-drained=127717 last=0	rdy(c)	poll=0x2015 epoll=0x2015 fionread=0	rdy(p)	poll=0x2015 epoll=0x2015 fionread=0	~timing
@@ -264,6 +288,19 @@ U	fresh	how=3	-1 EINVAL
 U	not-socket	how=3	-1 ENOTSOCK
 U	fresh	how=-1	-1 EINVAL
 U	not-socket	how=-1	-1 ENOTSOCK
+U	connect-unreported(-1 EINPROGRESS)	none	shutdown=- connect=0
+U	connect-unreported(-1 EINPROGRESS)	RD	shutdown=0 connect=-1 EISCONN
+U	connect-unreported(-1 EINPROGRESS)	WR	shutdown=0 connect=-1 EISCONN
+U	connect-unreported(-1 EINPROGRESS)	RDWR	shutdown=0 connect=-1 EISCONN
+U	fresh-then	RD	shutdown=-1 ENOTCONN	rdy before	poll=0x14 epoll=0x14 fionread=0	rdy after	poll=0x2015 epoll=0x2015 fionread=0
+U	fresh-then	RD	connect=0 write1=1 read(after p wrote 1)=1	rdy	poll=0x2005 epoll=0x2005 fionread=0
+U	udp-then	RD	shutdown=-1 ENOTCONN	rdy before	poll=0x4 epoll=0x4 fionread=0	rdy after	poll=0x2005 epoll=0x2005 fionread=0
+U	fresh-then	WR	shutdown=-1 ENOTCONN	rdy before	poll=0x14 epoll=0x14 fionread=0	rdy after	poll=0x14 epoll=0x14 fionread=0
+U	fresh-then	WR	connect=0 write1=-1 EPIPE+SIGPIPE read(after p wrote 1)=1	rdy	poll=0x4 epoll=0x4 fionread=0
+U	udp-then	WR	shutdown=-1 ENOTCONN	rdy before	poll=0x4 epoll=0x4 fionread=0	rdy after	poll=0x4 epoll=0x4 fionread=0
+U	fresh-then	RDWR	shutdown=-1 ENOTCONN	rdy before	poll=0x14 epoll=0x14 fionread=0	rdy after	poll=0x2015 epoll=0x2015 fionread=0
+U	fresh-then	RDWR	connect=0 write1=-1 EPIPE+SIGPIPE read(after p wrote 1)=1	rdy	poll=0x2015 epoll=0x2015 fionread=0
+U	udp-then	RDWR	shutdown=-1 ENOTCONN	rdy before	poll=0x4 epoll=0x4 fionread=0	rdy after	poll=0x2015 epoll=0x2015 fionread=0
 U	connected	how=3	-1 EINVAL
 U	connected	how=-1	-1 EINVAL
 P	unread-rdwr	shutdown=0 fionread(c)=1000
@@ -337,6 +374,24 @@ E	cunsent	WR	after	c=0x4 p=-	~counts
 E	cunsent	RDWR	drain	c=- p=0x5	~counts
 E	cunsent	RDWR	again	c=- p=-	~counts
 E	cunsent	RDWR	after	c=0x2015 p=-	~counts
+E	reset	RD	drain	c=0x201d p=-
+E	reset	RD	again	c=- p=-
+E	reset	RD	after shutdown=-1 ENOTCONN	c=0x201d p=-
+E	reset	WR	drain	c=0x201d p=-
+E	reset	WR	again	c=- p=-
+E	reset	WR	after shutdown=-1 ENOTCONN	c=0x201d p=-
+E	reset	RDWR	drain	c=0x201d p=-
+E	reset	RDWR	again	c=- p=-
+E	reset	RDWR	after shutdown=-1 ENOTCONN	c=0x201d p=-
+E	bothfin	RD	drain	c=0x2015 p=0x2015
+E	bothfin	RD	again	c=- p=-
+E	bothfin	RD	after shutdown=-1 ENOTCONN	c=0x2015 p=-
+E	bothfin	WR	drain	c=0x2015 p=0x2015
+E	bothfin	WR	again	c=- p=-
+E	bothfin	WR	after shutdown=-1 ENOTCONN	c=0x2015 p=-
+E	bothfin	RDWR	drain	c=0x2015 p=0x2015
+E	bothfin	RDWR	again	c=- p=-
+E	bothfin	RDWR	after shutdown=-1 ENOTCONN	c=0x2015 p=-
 E	listener	RD	drain n=0 shutdown=0 after=0x14
 E	listener	WR	drain n=0 shutdown=0 after=0x0
 E	listener	RDWR	drain n=0 shutdown=0 after=0x14
