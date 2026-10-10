@@ -2,7 +2,6 @@ namespace WoofWare.PawPrint.Test
 
 open System
 open System.Collections.Concurrent
-open System.Reflection
 open System.Reflection.Emit
 open FsCheck
 open FsCheck.FSharp
@@ -287,30 +286,6 @@ module TestOpcodeFaultsOnHost =
                 method
         )
 
-    /// The full name of what the host raises running `method` on `arguments`, if it raises.
-    let private raised (method : DynamicMethod) (arguments : obj list) : string option =
-        try
-            method.Invoke ((null : obj), Array.ofList arguments) |> ignore<obj>
-            None
-        with :? TargetInvocationException as e ->
-            Some (e.InnerException.GetType().FullName)
-
-    let private listed (op : NullaryIlOp) : Set<string> =
-        match OpcodeFaults.ofNullary op with
-        | OpcodeFaults.Unmodelled -> failwith $"%O{op} is unmodelled, so the host cannot contradict it"
-        | OpcodeFaults.Raises faults -> faults |> List.map OpcodeFault.typeName |> Set.ofList
-
-    let rec private cartesian (lists : 'a list list) : 'a list list =
-        match lists with
-        | [] -> [ [] ]
-        | first :: rest ->
-            let tails = cartesian rest
-
-            [
-                for x in first do
-                    for tail in tails -> x :: tail
-            ]
-
     /// A pairing of an instruction with the wrong `OpCodes` field would check one instruction's
     /// entry against another's behaviour.
     [<Test>]
@@ -337,27 +312,21 @@ module TestOpcodeFaultsOnHost =
                             for operands, result in signatures typing do
                                 let method = probe opcode operands result
 
-                                for arguments in cartesian (List.map boundaries operands) do
-                                    match raised method arguments with
-                                    | Some name -> name, (operands, arguments)
+                                for arguments in HostFaultProbe.cartesian (List.map boundaries operands) do
+                                    match HostFaultProbe.raised method arguments with
+                                    | Some name -> name, $"%A{operands} %A{arguments}"
                                     | None -> ()
                         ]
                         |> List.groupBy fst
                         |> List.map (fun (name, witnesses) -> name, snd (List.head witnesses))
                         |> Map.ofList
 
-                    let expected = listed op
-
-                    for KeyValue (name, (operands, arguments)) in observed do
-                        if not (expected.Contains name) then
-                            $"%O{op} raised %s{name}, which the table omits, on %A{operands} %A{arguments}"
-
-                    for name in expected do
-                        if not (observed.ContainsKey name) then
-                            $"%O{op} never raised %s{name}, which the table lists"
+                    yield! HostFaultProbe.mismatches $"%O{op}" (OpcodeFaults.ofNullary op) observed
             ]
 
-        mismatches |> shouldEqual []
+        match mismatches with
+        | [] -> ()
+        | mismatches -> failwith (String.concat Environment.NewLine mismatches)
 
     /// Any value of the operand's host type, weighted towards the boundaries.
     let private operandValue (operand : Operand) : Gen<obj> =
@@ -403,8 +372,8 @@ module TestOpcodeFaultsOnHost =
             (op : NullaryIlOp, opcode : OpCode, operands : Operand list, result : Operand, arguments : obj list)
             : bool
             =
-            match raised (probe opcode operands result) arguments with
+            match HostFaultProbe.raised (probe opcode operands result) arguments with
             | None -> true
-            | Some name -> (listed op).Contains name
+            | Some name -> (HostFaultProbe.listed (OpcodeFaults.ofNullary op)).Contains name
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 20000, Prop.forAll (Arb.fromGen case) property)

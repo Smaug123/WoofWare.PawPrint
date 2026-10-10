@@ -190,11 +190,14 @@ module OpcodeFaults =
 
     let private overflow = OpcodeFaults.Raises [ OpcodeFault.Overflow ]
 
-    let private arrayLoad =
+    /// An access to an array element that takes no covariance check: a load, or a store of a
+    /// primitive.
+    let private uncheckedElementAccess =
         OpcodeFaults.Raises [ OpcodeFault.NullReference ; OpcodeFault.IndexOutOfRange ]
 
-    /// An array *store* can additionally fail the covariance check that a load cannot.
-    let private arrayStore =
+    /// An access to an array element that can also fail the covariance check: a store that may be
+    /// of a reference, or the writable address of an element that may be one.
+    let private covariantElementAccess =
         OpcodeFaults.Raises
             [
                 OpcodeFault.NullReference
@@ -273,7 +276,11 @@ module OpcodeFaults =
         | NullaryIlOp.Ldelem_u8
         | NullaryIlOp.Ldelem_r4
         | NullaryIlOp.Ldelem_r8
-        | NullaryIlOp.Ldelem_ref -> arrayLoad
+        | NullaryIlOp.Ldelem_ref
+        // A store of a primitive takes no covariance check. ECMA-335 III.4.27 lists
+        // `ArrayTypeMismatchException` against every `stelem.<type>`, but its correctness rule
+        // requires the instruction's type to be array-element-compatible with the array's own
+        // element type, which leaves correct CIL nothing to mismatch; and CoreCLR checks nothing.
         | NullaryIlOp.Stelem_i
         | NullaryIlOp.Stelem_i1
         | NullaryIlOp.Stelem_u1
@@ -284,8 +291,8 @@ module OpcodeFaults =
         | NullaryIlOp.Stelem_i8
         | NullaryIlOp.Stelem_u8
         | NullaryIlOp.Stelem_r4
-        | NullaryIlOp.Stelem_r8
-        | NullaryIlOp.Stelem_ref -> arrayStore
+        | NullaryIlOp.Stelem_r8 -> uncheckedElementAccess
+        | NullaryIlOp.Stelem_ref -> covariantElementAccess
         // A null operand makes `throw` raise instead of throwing what it was handed. What it
         // throws when the operand is *not* null is a fact about the operand, which a consumer
         // reads off the evaluation stack; it is not a fact about the opcode.
@@ -442,12 +449,12 @@ module OpcodeFaults =
                     OpcodeFault.StackOverflow
                     OpcodeFault.TypeInitialization
                 ]
-        | UnaryMetadataTokenIlOp.Ldelem -> arrayLoad
+        | UnaryMetadataTokenIlOp.Ldelem -> uncheckedElementAccess
         // `ldelema` takes the covariance check too: handing out a writable address to an element
         // of an array whose element type is not the one named would defeat the check `stelem`
         // makes.
         | UnaryMetadataTokenIlOp.Stelem
-        | UnaryMetadataTokenIlOp.Ldelema -> arrayStore
+        | UnaryMetadataTokenIlOp.Ldelema -> covariantElementAccess
         // A static-field access runs the declaring type's `.cctor`, and a `.cctor` that threw
         // surfaces here on this and every later access.
         | UnaryMetadataTokenIlOp.Ldsfld
