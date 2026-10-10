@@ -2668,8 +2668,15 @@ namespace Provider;
 
 static class Init
 {
+    // Of no class the analysis can tell, so that what its `ToString` raises is unknown.
+    static object s_value;
+
     [System.Runtime.CompilerServices.ModuleInitializer]
-    internal static void Run() => throw new System.InvalidOperationException();
+    internal static void Run()
+    {
+        s_value?.ToString();
+        throw new System.InvalidOperationException();
+    }
 }
 
 public static class P
@@ -2743,12 +2750,16 @@ public static class Uses
                 [ clientAssembly ; providerAssembly ]
                 (fun loaded -> fst (loaded.WithBoundReference providerReference providerAssembly))
 
-        let reportsInitialisation (assembly : DumpedAssembly) (typeName : string) (methodName : string) : bool =
+        // What of a failed module initializer the method's answer has: the wrapper, and what the
+        // initializer raises, which escapes in its place should making the wrapper fail.
+        let reportsInitialisation (assembly : DumpedAssembly) (typeName : string) (methodName : string) : bool * bool =
             let next, escapes =
                 EscapeAnalysis.escapes analysis (methodNamed assembly typeName methodName)
 
             analysis <- next
-            render analysis escapes |> Set.contains "=System.TypeInitializationException"
+            let shown = render analysis escapes
+
+            shown.Contains "=System.TypeInitializationException", shown.Contains "=System.InvalidOperationException"
 
         // Each in a context of its own, since a module initializer that failed fails every later
         // binding the same way.
@@ -2785,14 +2796,29 @@ public static class Uses
             ] do
             escapesOnRealRuntime methodName |> shouldEqual true
 
-            if not (reportsInitialisation clientAssembly "Client.Uses" methodName) then
+            // Binding happens before the body runs, so `CaughtCallM`'s handler catches neither.
+            if reportsInitialisation clientAssembly "Client.Uses" methodName <> (true, true) then
                 failwith $"%s{methodName} binds into Provider, whose module initializer throws"
 
+        // What the module initializer cannot see through is where answers binding into it are
+        // unknown from.
+        let next, sources =
+            EscapeAnalysis.unknownSources analysis (methodNamed clientAssembly "Client.Uses" "CallM")
+
+        analysis <- next
+
+        sources
+        |> Seq.map (renderSite analysis)
+        |> Set.ofSeq
+        |> shouldEqual (Set.singleton "Provider.Init::Run IL VirtualCall System.Object::ToString")
+
         escapesOnRealRuntime "Local" |> shouldEqual false
-        reportsInitialisation clientAssembly "Client.Uses" "Local" |> shouldEqual false
+
+        reportsInitialisation clientAssembly "Client.Uses" "Local"
+        |> shouldEqual (false, false)
         // A module's own code runs only once its initializer has.
         reportsInitialisation providerAssembly "Provider.P" "CallsM"
-        |> shouldEqual false
+        |> shouldEqual (false, false)
 
     /// Types whose initializers fail, and the ways a body can reach them, which CoreCLR's
     /// `CEEInfo::initClass` decides between: a static field's access runs its type's initializer,
@@ -5484,11 +5510,141 @@ public static class Runners
                     if summary.Unknown || shown.Contains ("=" + initialization) <> escapes then
                         yield
                             $"%s{methodName}: %A{Set.toList shown}, unknown %b{summary.Unknown}; expected %s{initialization} to escape: %b{escapes}, and nothing unknown"
+
+                    // Should making the wrapper fail, the initializer's own exception escapes in its
+                    // place, past a handler for the wrapper.
+                    if not (shown.Contains "=System.InvalidOperationException") then
+                        yield $"%s{methodName}: %A{Set.toList shown} lacks what the module initializer raises"
             ]
 
         match failures with
         | [] -> ()
         | failures -> failures |> String.concat Environment.NewLine |> failwith
+
+    [<Test>]
+    let ``a module initializer's failure is thrown again where it runs, through binding or dispatch`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let contracts =
+            """
+namespace Contracts;
+
+public interface IStatic { static abstract int Probe(int a, int b); }
+"""
+
+        // Its initializer can fail only by running out of memory, whose exception is made in
+        // advance, so that nothing it runs reaches the preservation of a stack trace: only the
+        // runtime's throwing that exception again does.
+        let allocating =
+            """
+namespace Allocating;
+
+static class Init
+{
+    static object s_value;
+
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Run() { s_value = new object(); }
+}
+
+public static class P
+{
+    public static void M() { }
+}
+
+public interface IStaticDefault : Contracts.IStatic { static int Contracts.IStatic.Probe(int a, int b) => a; }
+"""
+
+        // `Binds` binds a token into Allocating; `Lands` names nothing of it, and only dispatch
+        // reaches it.
+        let client =
+            """
+namespace Client;
+
+public struct StaticUser : Allocating.IStaticDefault { }
+
+public static class Shapes
+{
+    public static int Static<T>(int a, int b) where T : Contracts.IStatic => T.Probe(a, b);
+}
+
+public static class Runners
+{
+    public static void Binds() => Allocating.P.M();
+    public static int Lands() => Shapes.Static<StaticUser>(1, 2);
+}
+"""
+
+        let compile (name : string) (references : byte[] list) (text : string) : byte[] =
+            Roslyn.compileAssembly
+                name
+                OutputKind.DynamicallyLinkedLibrary
+                (references
+                 |> List.map (fun image -> MetadataReference.CreateFromImage (ImmutableArray.CreateRange image)))
+                [ text ]
+
+        let contractsImage = compile "Contracts" [] contracts
+        let allocatingImage = compile "Allocating" [ contractsImage ] allocating
+        let clientImage = compile "Client" [ contractsImage ; allocatingImage ] client
+
+        let read (name : string) (image : byte[]) : DumpedAssembly =
+            Assembly.read loggerFactory (Some $"%s{name}.dll") (new MemoryStream (image))
+
+        let assemblies =
+            [
+                read "Contracts" contractsImage
+                read "Allocating" allocatingImage
+                read "Client" clientImage
+            ]
+
+        let clientAssembly = List.last assemblies
+
+        let bind (loaded : LoadedAssemblies) : LoadedAssemblies =
+            (loaded, clientAssembly.AssemblyReferences.Values)
+            ||> Seq.fold (fun loaded reference ->
+                match assemblies |> List.tryFind (fun a -> a.Name.Name = reference.Name.Name) with
+                | Some target -> fst (loaded.WithBoundReference reference target)
+                | None -> loaded
+            )
+
+        let analysisAllowed (assumptions : Set<Assumption>) : EscapeAnalysisState =
+            analysisOf
+                (hostCoreLib ())
+                (FrameworkUnderTest.runtimeDirs ())
+                (hostTarget ())
+                HardwareIntrinsicsProfile.ScalarOnly
+                assumptions
+                assemblies
+                bind
+
+        let mutable unassuming =
+            analysisAllowed (Set.remove Assumption.StackTracePreserved Assumption.all)
+
+        let next, preserving = preservingStackTrace unassuming (hostCoreLib ())
+        unassuming <- next
+        let mutable assuming = analysisAllowed Assumption.all
+
+        for runner in [ "Binds" ; "Lands" ] do
+            let key = methodNamed clientAssembly "Client.Runners" runner
+            let next, escapes = EscapeAnalysis.escapes unassuming key
+            escapes.Unknown |> shouldEqual true
+            let next, sources = EscapeAnalysis.unknownSources next key
+            unassuming <- next
+
+            sources
+            |> Seq.map (renderSite unassuming)
+            |> Set.ofSeq
+            |> shouldEqual preserving
+
+            let next, escapes = EscapeAnalysis.escapes assuming key
+            assuming <- next
+            escapes.Unknown |> shouldEqual false
+
+            render assuming escapes
+            |> Set.contains "=System.TypeInitializationException"
+            |> shouldEqual true
+
+            escapes.Assumes.Contains Assumption.StackTracePreserved |> shouldEqual true
 
     /// `Run.Call(int, int)`, a non-generic method whose `constrained. Dyn callvirt IProbe::Probe`
     /// names a sealed class that does not implement `IProbe`, though `IProbe` gives `Probe` a
