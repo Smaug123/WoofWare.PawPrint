@@ -88,6 +88,17 @@ truthful reading**:
 - **`Map<ThreadId, _>` on the kernel** when it does — `SignalState`'s handler
   frames (no frame, so an empty mask), the last-error slots (errno 0).
 
+CPU placement has both, as Linux does. A task's processor (`UnixTaskState.Cpu`,
+the one it last ran on) is a field, because every task has one. Which task each
+processor is running (`UnixMachineState.Occupants`) is a `Map<CpuId, OsThreadId>`
+on the *machine*, because an idle processor is a truthful reading of an absent
+key, and because a machine's processes share its processors. Keying it by
+processor makes two tasks on one processor unrepresentable, and "is T running" is
+derived from it (`UnixScheduling.runningOn`), never stored beside it. Every way a
+task stops running (a dispatch elsewhere, a park in `UnixWait.park`, an exit, a
+process ending) must take it out of the map; `TestUnixScheduling` holds that to a
+reference that reads it off the event history.
+
 The map form carries an obligation that is easy to miss: **remove the entry when
 the value returns to the default.** `EmulatedKernel` is compared for equality to
 decide whether a step changed anything, so a stored default is a state that looks
