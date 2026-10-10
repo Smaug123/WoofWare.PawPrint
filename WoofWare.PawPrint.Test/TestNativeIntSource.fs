@@ -5,6 +5,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel.Test
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -97,33 +98,37 @@ module TestNativeIntSource =
                 1, Gen.choose64 (-((1L <<< 40) - 1L), 0L)
             ]
 
+    [<RequireQualifiedAccess>]
+    type private ComparandSign =
+        | Nonnegative
+        | Negative
+
     [<Test>]
     let ``cltUnVerbatim places the delta by the comparand's sign`` () : unit =
         // Track buckets to confirm both signs actually arrive.
-        let mutable nonnegativeComparands = 0
-        let mutable negativeComparands = 0
-
-        let property (s : SyntheticCrossArrayOffset) (comparand : int64) : unit =
+        let property (cover : ComparandSign -> unit) (s : SyntheticCrossArrayOffset) (comparand : int64) : unit =
             if comparand >= 0L then
-                nonnegativeComparands <- nonnegativeComparands + 1
+                cover ComparandSign.Nonnegative
             else
-                negativeComparands <- negativeComparands + 1
+                cover ComparandSign.Negative
 
             // A nonnegative comparand's unsigned image is below the delta's band, so the delta
             // is not unsigned-less than it; a negative comparand's is above the band.
             SyntheticCrossArrayOffset.cltUnVerbatim s comparand
             |> shouldEqual (comparand < 0L)
 
-        Check.One (
-            propertyConfig,
-            Prop.forAll
+        let coverage =
+            CoverageSample.check
+                propertyConfig
                 (Gen.zip genSyntheticCrossArrayOffset allowedComparandGen |> Arb.fromGen)
-                (fun (s, c) -> property s c)
-        )
+                (fun cover (s, c) -> property cover s c)
 
-        // Each sign carries at least a third of the generator's weight, so with 500 cases the
-        // probability of either bucket being empty is far below 2^-200. Asserting both buckets
-        // fire guards against a future generator change silently dropping a sign.
+        let nonnegativeComparands = coverage.Count ComparandSign.Nonnegative
+        let negativeComparands = coverage.Count ComparandSign.Negative
+
+        // Counted over a fixed sample, so a run cannot miss a sign by chance; each sign carries at
+        // least a third of the generator's weight, so the sample reaches both many times. Asserting
+        // both buckets fire guards against a future generator change silently dropping a sign.
         if nonnegativeComparands = 0 || negativeComparands = 0 then
             failwith $"generator missed a sign: nonnegative=%d{nonnegativeComparands}, negative=%d{negativeComparands}"
 
