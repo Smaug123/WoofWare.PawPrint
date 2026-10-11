@@ -232,6 +232,7 @@ module internal AccessRules =
             | InodeContent.Directory _ -> Ok (PermissionBits.deniedTo standing AccessRequest.SearchDirectory bits)
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> PermissionBits.executionDenied rule standing bits
 

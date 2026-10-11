@@ -355,9 +355,9 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 `UnixNamespace.openPath` and `UnixNamespace.openat` take the task because an open can sleep: a blocking open of one end of a FIFO waits until the other end is opened.
 Nothing makes a FIFO yet, so both always answer `SyscallOutcome.Answered`.
 
-An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`.
-Nothing produces one yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, and a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`.
-The cases exist so that a client's matches already handle them when pathname sockets arrive.
+An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`, or a FIFO (`InodeContent.Fifo`), which a directory entry reports as `DirectoryEntryKind.Fifo`.
+Nothing produces either yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`, and `mknod` of `S_IFIFO` answers `MkNodRefusal.Fifo`.
+The cases exist so that a client's matches already handle them when pathname sockets and FIFOs arrive.
 
 #### Reading and writing
 

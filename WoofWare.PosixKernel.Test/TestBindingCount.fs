@@ -58,6 +58,7 @@ module TestBindingCount =
                 |> Seq.length
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> 0
         )
@@ -111,6 +112,7 @@ module TestBindingCount =
         | None -> failwith $"test bug: inode %O{inode} is not in the graph"
         | Some (InodeContent.RegularFile _)
         | Some (InodeContent.Socket _)
+        | Some (InodeContent.Fifo _)
         | Some (InodeContent.CharacterDevice _)
         | Some (InodeContent.Symlink _) -> Some (int64 (scannedBindingCount inode vfs))
         | Some (InodeContent.Directory _) ->
@@ -334,6 +336,7 @@ module TestBindingCount =
             | InodeContent.Directory content -> Some (inode, content)
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> None
         )
@@ -419,6 +422,7 @@ module TestBindingCount =
             | InodeContent.Directory directory -> go true directory.Parent vfs
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ -> vfs
 
@@ -555,6 +559,7 @@ module TestBindingCount =
                         | InodeContent.Directory content -> Map.tryFind destinationName content.Entries
                         | InodeContent.RegularFile _
                         | InodeContent.Socket _
+                        | InodeContent.Fifo _
                         | InodeContent.CharacterDevice _
                         | InodeContent.Symlink _ -> None
                     )
@@ -622,6 +627,7 @@ module TestBindingCount =
                     | InodeContent.Symlink _ -> None
                     | InodeContent.RegularFile _
                     | InodeContent.Socket _
+                    | InodeContent.Fifo _
                     | InodeContent.CharacterDevice _
                     | InodeContent.Directory _ -> Some inode
                 )

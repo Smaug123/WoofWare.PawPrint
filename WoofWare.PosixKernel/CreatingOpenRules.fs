@@ -137,6 +137,7 @@ module internal CreatingOpenRules =
             | Some (InodeContent.Directory _) -> true
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None -> false

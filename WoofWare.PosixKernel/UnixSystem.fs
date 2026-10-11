@@ -1296,7 +1296,8 @@ module UnixSystem =
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.Directory _)
                     | Some (InodeContent.CharacterDevice _)
-                    | Some (InodeContent.Socket _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
+                    | Some (InodeContent.Socket _)
+                    | Some (InodeContent.Fifo _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> None
                 | OpenFileTarget.Directory (inode, _) ->
@@ -1306,6 +1307,7 @@ module UnixSystem =
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.CharacterDevice _)
                     | Some (InodeContent.Socket _)
+                    | Some (InodeContent.Fifo _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.CharacterDevice (inode, device) ->
                     match VirtualFileSystem.tryGetContent inode machine.FileSystem with
@@ -1315,6 +1317,7 @@ module UnixSystem =
                     | Some (InodeContent.Directory _)
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Socket _)
+                    | Some (InodeContent.Fifo _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
@@ -1809,6 +1812,7 @@ module UnixSystem =
                 | InodeContent.RegularFile _
                 | InodeContent.Directory _
                 | InodeContent.Socket _
+                | InodeContent.Fifo _
                 | InodeContent.CharacterDevice _ -> None
             )
 
@@ -2175,6 +2179,7 @@ module UnixSystem =
             | Some (InodeContent.Directory _) -> []
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None ->
