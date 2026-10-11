@@ -147,6 +147,7 @@ module internal LinuxReadiness =
         | OpenFileTarget.Kqueue _ ->
             failwith
                 $"LinuxReadiness.ofDescription: %O{targetId} is a kqueue, which only Darwin has, and Linux's readiness is asked only of a Linux-flavoured kernel (this is a bug in the caller's state construction)."
+        | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "LinuxReadiness.ofDescription" inode
 
     /// What a Linux waiter's poll of the description `targetId` does besides
     /// reading its mask (`ofDescription`): a connected TCP socket it finds
@@ -241,6 +242,7 @@ module internal EpollReadyList =
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
@@ -284,6 +286,7 @@ module internal EpollReadyList =
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _ ->
             failwith
@@ -733,6 +736,7 @@ module internal KqueueQueue =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> openFiles
             )
 

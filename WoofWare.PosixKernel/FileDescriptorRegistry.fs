@@ -747,6 +747,19 @@ type KqueueState =
         Active : (int * KqueueFilter) list
     }
 
+/// What an open FIFO's description holds besides the FIFO's inode: how it
+/// reaches the channel that carries the FIFO's bytes, and whatever state of the
+/// description's own its reads, writes and polls consult.
+///
+/// Its representation is private, so a later version may change what it holds
+/// without breaking a client; a client compares one, and builds none. Nothing in
+/// this version makes one: see `OpenFileTarget.Fifo`.
+[<RequireQualifiedAccess>]
+type FifoAttachment =
+    internal
+    // No channel exists to attach to until FIFOs are modelled.
+    | Unattached
+
 /// What an open file description refers to, together with the state that only
 /// that kind of object carries.
 ///
@@ -837,6 +850,36 @@ type OpenFileTarget =
     /// here so that an operation on the descriptor answers without consulting
     /// the filesystem; `UnixSystem.checkInvariants` holds the two in step.
     | CharacterDevice of inode : InodeNumber * device : CharacterDevice
+    /// A FIFO (a named pipe), opened through its inode.
+    ///
+    /// Reserved: nothing in this version makes one, since nothing makes a FIFO
+    /// inode to open (`mknodat` of `S_IFIFO` answers `MkNodRefusal.Fifo`).
+    /// `FileDescriptorRegistry.checkInvariants` reports a description naming
+    /// one as `FileDescriptorRegistryDefect.ReservedTarget`. The case exists so
+    /// that a client's matches already handle it when FIFOs arrive.
+    ///
+    /// `inode` is the FIFO's identity: what `fstat` reports through any end,
+    /// and what `fchmod` changes. Which ends the
+    /// description holds is its `AccessMode`; a FIFO, unlike a pipe, may be
+    /// opened for both. `attachment` is the rest, which a client does not see
+    /// into.
+    ///
+    /// No offset: `lseek` on a FIFO is ESPIPE on both flavours.
+    ///
+    /// Not a `Pipe`: a FIFO's description differs from an anonymous pipe's on
+    /// both flavours (its `fstat`, its access mode, and, on Darwin, the
+    /// capacity of its channel).
+    | Fifo of inode : InodeNumber * attachment : FifoAttachment
+
+/// The loud failure of a call that meets `OpenFileTarget.Fifo`, which is
+/// reserved, where what the call does through a FIFO is behaviour this library
+/// does not model.
+[<RequireQualifiedAccess>]
+module internal ReservedFifo =
+    /// `call` met a description of the FIFO at `inode`.
+    let fail (call : string) (inode : InodeNumber) : 'a =
+        failwith
+            $"%s{call}: a description names the FIFO at inode %O{inode}, and what this call does through a FIFO is not modelled. Nothing in this version makes one: OpenFileTarget.Fifo is reserved until FIFOs are modelled (under Darwin, until AF_UNIX stream sockets are), and FileDescriptorRegistry.checkInvariants reports a description naming one as ReservedTarget (this is a bug in this library, or in a caller that assembled the state by hand)."
 
 /// Which transfers `open(2)`'s access mode permits: `O_RDONLY`, `O_WRONLY` or
 /// `O_RDWR`.
@@ -977,7 +1020,10 @@ module OpenFileDescription =
         | OpenFileTarget.Directory (inode, _)
         // A device's node too: measured, two descriptions of `/dev/null`
         // contend under `flock`, as two of one regular file do.
-        | OpenFileTarget.CharacterDevice (inode, _) -> OpenFileObject.File inode
+        | OpenFileTarget.CharacterDevice (inode, _)
+        // A FIFO's identity is its inode: measured on both flavours, `fstat`
+        // through either end reports the path's inode.
+        | OpenFileTarget.Fifo (inode, _) -> OpenFileObject.File inode
         // Every epoll instance collapses to one object, because on Linux every
         // anon-inode file shares one inode and so they all contend under
         // `flock`. See `OpenFileObject.AnonymousInode`.
@@ -1280,6 +1326,10 @@ type FileDescriptorRegistryDefect =
     /// An activated registration keeps its place when activated again, so a
     /// duplicate would report one event twice.
     | KqueueActiveEntryDuplicated of kqueue : OpenFileDescriptionId * fd : int * filter : KqueueFilter
+    /// A description names a kind of object that nothing in this version
+    /// opens, such as `OpenFileTarget.Fifo`: a case reserved for behaviour not
+    /// yet modelled.
+    | ReservedTarget of description : OpenFileDescriptionId
 
 
 [<RequireQualifiedAccess>]
@@ -1506,6 +1556,7 @@ module OpenFileTable =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> entry
             )
 
@@ -1708,6 +1759,7 @@ module OpenFileTable =
         | OpenFileTarget.Directory _
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _ ->
             failwith
                 $"%s{operation}: %O{epollId} is not an epoll instance; the caller resolved it as one moments ago, so this is a bug in the caller of OpenFileTable.%s{operation}."
@@ -1911,6 +1963,7 @@ module OpenFileTable =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> entry
                 | OpenFileTarget.Epoll epollState ->
                     let entering =
@@ -1995,6 +2048,7 @@ module OpenFileTable =
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.File (_, offset) ->
                     if offset < 0L then
@@ -2021,6 +2075,7 @@ module OpenFileTable =
                 | OpenFileTarget.Epoll _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _
                 | OpenFileTarget.File _ -> None
             )
@@ -2061,6 +2116,7 @@ module OpenFileTable =
                 | OpenFileTarget.File _
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> None
                 | OpenFileTarget.Socket socketId -> Some (id, socketId)
             )
@@ -2090,6 +2146,7 @@ module OpenFileTable =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Epoll epollState ->
                     epollState.Registrations
@@ -2112,6 +2169,7 @@ module OpenFileTable =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Epoll epollState ->
                     let unregistered =
@@ -2148,6 +2206,7 @@ module OpenFileTable =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Kqueue state ->
                     let unregistered =
@@ -2172,6 +2231,21 @@ module OpenFileTable =
                     unregistered @ duplicated
             )
 
+        let reservedTargets =
+            descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.Fifo _ -> Some (FileDescriptorRegistryDefect.ReservedTarget id)
+                | OpenFileTarget.File _
+                | OpenFileTarget.Directory _
+                | OpenFileTarget.Epoll _
+                | OpenFileTarget.Kqueue _
+                | OpenFileTarget.Socket _
+                | OpenFileTarget.Pipe _
+                | OpenFileTarget.CharacterDevice _ -> None
+            )
+
         counts
         @ freshness
         @ negativeOffsets
@@ -2181,6 +2255,7 @@ module OpenFileTable =
         @ deadRegistrations
         @ readyEntries
         @ kqueueEntries
+        @ reservedTargets
 
     /// Every way in which `table` fails to be the open file descriptions of a
     /// machine whose descriptor tables are `descriptorTables`, all of them:
@@ -2616,6 +2691,7 @@ module FileDescriptorRegistry =
                     | OpenFileTarget.Directory _
                     | OpenFileTarget.Socket _
                     | OpenFileTarget.CharacterDevice _
+                    | OpenFileTarget.Fifo _
                     | OpenFileTarget.Pipe _ -> openFiles
                 )
 
@@ -2967,6 +3043,9 @@ module FileDescriptorRegistry =
         | OpenFileTarget.CharacterDevice (inode, device) ->
             failwith
                 $"setOffset: fd %d{fd} names %O{device} at inode %O{inode}, which keeps no offset: its `lseek` answers 0 and moves nothing (this is a bug in the caller of FileDescriptorRegistry.setOffset)."
+        | OpenFileTarget.Fifo (inode, _) ->
+            failwith
+                $"setOffset: fd %d{fd} names the FIFO at inode %O{inode}, which holds no file offset: `lseek` on a FIFO is ESPIPE on both flavours (this is a bug in the caller of FileDescriptorRegistry.setOffset, which should have answered ESPIPE)."
         | OpenFileTarget.File (inode, _) ->
 
         registry
@@ -3013,6 +3092,7 @@ module FileDescriptorRegistry =
         | OpenFileTarget.Epoll _
         | OpenFileTarget.Socket _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _ ->
             failwith
                 $"setDirectoryPosition: fd %d{fd} names %O{description.Target}, which is not a directory (this is a bug in the caller of FileDescriptorRegistry.setDirectoryPosition)."
@@ -3072,6 +3152,7 @@ module FileDescriptorRegistry =
                 | OpenFileTarget.Directory _
                 | OpenFileTarget.Socket _
                 | OpenFileTarget.CharacterDevice _
+                | OpenFileTarget.Fifo _
                 | OpenFileTarget.Pipe _ -> []
                 | OpenFileTarget.Kqueue state when not (ownsKqueue state) -> []
                 | OpenFileTarget.Kqueue state ->

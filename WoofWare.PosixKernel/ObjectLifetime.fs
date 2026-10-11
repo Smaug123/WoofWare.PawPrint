@@ -203,6 +203,7 @@ module ObjectLifetime =
             // last name went away earlier, which is what keeps `read` on an
             // unlinked descriptor working right up until the descriptor goes.
             Ok (forgetIfUnheld inode system)
+        | OpenFileTarget.Fifo (inode, _) -> ReservedFifo.fail "ObjectLifetime.releaseDestroyed" inode
         | OpenFileTarget.Pipe (pipeId, _) when
             not (Map.containsKey pipeId system.Machine.Pipes)
             && Set.isEmpty (UnixMachineState.descriptionsNamingPipeEnd pipeId PipeEnd.Read system.Machine)

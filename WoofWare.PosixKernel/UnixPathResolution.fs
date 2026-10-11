@@ -550,6 +550,7 @@ module UnixPathResolution =
             | OpenFileTarget.Directory (inode, _) -> Ok inode
             | OpenFileTarget.File _
             | OpenFileTarget.CharacterDevice _
+            | OpenFileTarget.Fifo _
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Epoll _
@@ -592,7 +593,8 @@ module UnixPathResolution =
             match description.Target with
             | OpenFileTarget.Directory (inode, _)
             | OpenFileTarget.File (inode, _)
-            | OpenFileTarget.CharacterDevice (inode, _) -> Ok (PathStart.StartingObject inode)
+            | OpenFileTarget.CharacterDevice (inode, _)
+            | OpenFileTarget.Fifo (inode, _) -> Ok (PathStart.StartingObject inode)
             | OpenFileTarget.Pipe _
             | OpenFileTarget.Socket _
             | OpenFileTarget.Epoll _
@@ -972,7 +974,10 @@ module UnixPathResolution =
             |> Ok
         | Some (OpenFileTarget.File (inode, _))
         | Some (OpenFileTarget.Directory (inode, _))
-        | Some (OpenFileTarget.CharacterDevice (inode, _)) ->
+        | Some (OpenFileTarget.CharacterDevice (inode, _))
+        // Measured on both flavours: `fstat` through either end of a FIFO, or
+        // through an `O_RDWR` description, reports what `stat` of its path does.
+        | Some (OpenFileTarget.Fifo (inode, _)) ->
 
         match statOf inode system with
         | Some (Ok status) -> Ok (FileStatusAnswer.Reported status)
