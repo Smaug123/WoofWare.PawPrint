@@ -246,7 +246,10 @@ module UnixWait =
             | WakePrimitive.DescriptorReady _
             | WakePrimitive.DeadlinePassed _
             | WakePrimitive.SignalDeliverable
-            | WakePrimitive.EndedByClose -> None
+            | WakePrimitive.EndedByClose
+            // A partner's open wakes every opener asleep on the FIFO, on both
+            // flavours (measured, two sleepers of two).
+            | WakePrimitive.FifoPartnerOpened _ -> None
 
         let finishing : Set<ExclusiveWaitQueue> =
             views
@@ -307,6 +310,9 @@ module UnixWait =
                        }
                 | Some {
                            Syscall = ParkedSyscall.Sleep _
+                       }
+                | Some {
+                           Syscall = ParkedSyscall.FifoOpen _
                        }
                 | None -> None
             )
