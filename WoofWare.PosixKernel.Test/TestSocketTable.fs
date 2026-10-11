@@ -449,6 +449,7 @@ module TestSocketTable =
                             match VirtualFileSystem.tryGetContent target filesystem with
                             | Some (InodeContent.Directory content) -> Map.isEmpty content.Entries
                             | Some (InodeContent.RegularFile _)
+                            | Some (InodeContent.Socket _)
                             | Some (InodeContent.CharacterDevice _)
                             | Some (InodeContent.Symlink _) -> true
                             | None -> false
@@ -463,6 +464,7 @@ module TestSocketTable =
                                 |> List.filter (fun (_, target) -> isRemovable target)
                                 |> List.map (fun (entry, _) -> holder, entry)
                             | InodeContent.RegularFile _
+                            | InodeContent.Socket _
                             | InodeContent.CharacterDevice _
                             | InodeContent.Symlink _ -> []
                         )
@@ -502,6 +504,7 @@ module TestSocketTable =
                             match VirtualFileSystem.tryGetContent inode kernel.Machine.FileSystem with
                             | Some (InodeContent.Directory _) -> cover LifetimeMixLabel.HeldOrphanDirectory
                             | Some (InodeContent.RegularFile _)
+                            | Some (InodeContent.Socket _)
                             | Some (InodeContent.CharacterDevice _)
                             | Some (InodeContent.Symlink _)
                             | None -> ()

@@ -132,8 +132,7 @@ let mkdir (system : UnixSystem<int, unit>) : UnixSystem<int, unit> =
         let numbering = SimulatedUnixPlatform.rawErrnoNumbering (UnixSystem.platform system)
         printfn "mkdir failed with errno %d" (UnixError.toRawErrnoUnder numbering error)
         system
-    | Ok (SyscallOutcome.WouldBlock _, _)
-    | Ok (SyscallOutcome.Restarts, _) -> failwith "mkdir never sleeps"
+    | Ok (outcome, _) -> failwith $"unexpected from mkdir: %A{outcome}"
 
 system |> mkdir |> mkdir |> ignore
 
@@ -251,6 +250,29 @@ Each one that can refuse a value returns a `Result`, with a refusal type of its 
 A call that a real kernel would not let happen at all is a bug in the client, and throws: a task making a syscall while it is asleep in another, a name that is no task, or `UnixScheduling.getcpu` of a task that is not running.
 A value no `parse` could have produced, such as one built with `Unchecked.defaultof`, is a bug in the client too, and throws.
 
+### Unions that gain cases
+
+From version 1.0, a minor version may add a case to a union.
+The model grows: a refusal becomes an answer once its behaviour is measured, each newly measured difference between Linux and Darwin adds a refusal case, and each call newly modelled as sleeping adds a case to `ParkedSyscall` and `WakePrimitive`.
+So a client must not rely on matching a union exhaustively.
+F# cannot mark a union as open, so the compiler accepts an exhaustive match today, and a client built against an older version fails to match a new case at run time.
+Give each match a wildcard arm instead.
+For a refusal, the arm reports the refusal's `describe`.
+For any other union, the arm treats a case the client has no code for as a refusal of its own: it fails the call loudly, and never guesses an answer.
+The examples in this document do this.
+
+A few unions are closed, and gain a case only in a major version, so a client may match them exhaustively:
+
+* `SyscallAnswer`: a call returns a number or fails with an errno, and nothing else.
+* `UnixError` and `Signal`: each already has a case for every name in either flavour's `<errno.h>` or `<signal.h>`.
+* `SimulatedUnixFlavour`, `SimulatedUnixKernel`, `RawErrnoNumbering`, `RawErrnoPortability` and `SignalNumbering`: a client converts raw numbers by these, so it must handle every case. A new flavour would also bring errnos and signals of its own.
+* `ProcessTermination`: a process exits, or a signal kills it.
+
+Every other union may gain cases, including `Syscall` and the defects that the `checkInvariants` functions report, such as `UnixSystemDefect`.
+That includes `SimulatedUnixArchitecture`, `SimulatedPageSize`, `EmulatedFileSystemType` and `EmulatedMount`, but a client only meets a new one of those if it builds one.
+Removing a case, changing a case's fields, or changing the shape of any other type is a breaking change, and comes only in a major version.
+Before 1.0, any version may change anything.
+
 ### The syscalls
 
 In each table, the function's last argument, the system, is left out, and so are the type arguments `'Task` and `'Handler`: `UnixSystem` is `UnixSystem<'Task, 'Handler>`, and `WriteOutcome<WriteAnswer>` is `WriteOutcome<WriteAnswer, 'Task, 'Handler>`.
@@ -334,6 +356,10 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 | `symlinkat(2)` | `UnixNamespace.symlinkat (target : PathArgumentBytes) (dirfd : int) (path : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, SymlinkRefusal>` |
 | `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes) (newpath : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
 | `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes) (flags : int)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
+
+An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`.
+Nothing produces one yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, and a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`.
+The cases exist so that a client's matches already handle them when pathname sockets arrive.
 
 #### Reading and writing
 
@@ -562,13 +588,13 @@ let resume (task : int) (system : UnixSystem<int, unit>) : UnixSystem<int, unit>
 let readFd, writeFd, piped =
     match UnixPipe.pipe2 0 UserBuffer.Mapped booted |> orFail Pipe2Refusal.describe with
     | Pipe2Answer.Created (readFd, writeFd), system -> readFd, writeFd, resume 0 system
-    | Pipe2Answer.Failed error, _ -> failwith $"pipe2 failed: %O{error}"
+    | answer, _ -> failwith $"unexpected from pipe2: %A{answer}"
 
 // Task 0 starts a thread, which this client names 1, on processor 0.
 let spawned =
     match UnixTaskLifecycle.spawn 0 1 (CpuId 0) piped |> orFail SpawnRefusal.describe with
     | SpawnAnswer.Spawned _, system -> resume 0 system
-    | SpawnAnswer.Failed error, _ -> failwith $"spawn failed: %O{error}"
+    | answer, _ -> failwith $"unexpected from spawn: %A{answer}"
 
 // Task 1 reads the empty pipe, and sleeps. The client holds it asleep.
 let asleep, parked =
@@ -608,7 +634,7 @@ let woken =
 let ended =
     match UnixTaskLifecycle.exitThread 1 0 woken |> orFail ThreadExitRefusal.describe with
     | TaskOutcome.Continues system -> UnixTaskLifecycle.exitGroup 0 3 system
-    | TaskOutcome.ProcessEnded _ -> failwith "task 0 is still running"
+    | other -> failwith $"task 0 is still running, so expected the process to continue: %A{other}"
 
 // The client ends the process on its machine, which closes its descriptors.
 match SimulatedMachine.ofSystem (EndedProcess.endedIn ended) |> SimulatedMachine.endProcess ended with

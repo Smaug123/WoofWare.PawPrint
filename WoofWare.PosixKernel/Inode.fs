@@ -183,12 +183,19 @@ type InodeContent =
     /// A character special file: what `stat(2)` reports as `S_IFCHR`, standing
     /// for `device` rather than holding any contents of its own.
     | CharacterDevice of device : CharacterDevice * permissions : PermissionBits
+    /// A socket special file: what `stat(2)` reports as `S_IFSOCK`, which a
+    /// pathname `bind(2)` of a Unix-domain socket makes.
+    ///
+    /// Nothing in this version makes one: `mknodat` of `S_IFSOCK` answers
+    /// `MkNodRefusal.Socket`, and a Unix-domain `bind` answers
+    /// `SockaddrCopyRefusal.UnmodelledDomain`.
+    | Socket of permissions : PermissionBits
 
 [<RequireQualifiedAccess>]
 module InodeContent =
     /// <summary>
-    /// The <c>S_IFMT</c> band of <c>st_mode</c>, indicating which kind of thing (directory, regular file, symlink, character device)
-    /// lives at an inode.
+    /// The <c>S_IFMT</c> band of <c>st_mode</c>, indicating which kind of thing (directory, regular file, symlink, character device,
+    /// socket) lives at an inode.
     /// </summary>
     let fileTypeBits (content : InodeContent) : int =
         match content with
@@ -196,6 +203,8 @@ module InodeContent =
         | InodeContent.Directory _ -> 0o40000
         | InodeContent.Symlink _ -> 0o120000
         | InodeContent.CharacterDevice _ -> 0o020000
+        // `S_IFSOCK`, `0140000` in both flavours' `<sys/stat.h>`.
+        | InodeContent.Socket _ -> 0o140000
 
 /// Who owns an inode: the `st_uid` and `st_gid` that `stat(2)` reports for it.
 [<Struct>]
@@ -308,3 +317,4 @@ module Inode =
         | InodeContent.Directory directory -> directory.Permissions
         | InodeContent.Symlink (_, permissions) -> permissions
         | InodeContent.CharacterDevice (_, permissions) -> permissions
+        | InodeContent.Socket permissions -> permissions

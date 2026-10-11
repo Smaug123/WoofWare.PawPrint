@@ -175,6 +175,9 @@ module TestFileStatusPal =
         )
         |> shouldEqual (ofName "S_IFLNK")
 
+        InodeContent.fileTypeBits (InodeContent.Socket (PermissionBits.parseOrFail "test" 0o755))
+        |> shouldEqual (ofName "S_IFSOCK")
+
         // ...and each of them really is inside the band, so that a value that
         // happened to match a typo'd constant still could not be a plausible
         // file type.
@@ -184,6 +187,7 @@ module TestFileStatusPal =
             [
                 InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
                 InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x", (PermissionBits.parseOrFail "test" 0o777))
+                InodeContent.Socket (PermissionBits.parseOrFail "test" 0o755)
             ] do
             let bits = InodeContent.fileTypeBits content
             bits &&& mask |> shouldEqual bits

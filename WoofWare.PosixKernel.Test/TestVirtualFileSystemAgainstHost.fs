@@ -1880,6 +1880,7 @@ module TestVirtualFileSystemAgainstHost =
                     relative :: walk relative child
                 )
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Socket _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None -> []

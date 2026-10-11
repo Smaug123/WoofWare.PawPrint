@@ -1291,8 +1291,8 @@ module UnixSystem =
                     match VirtualFileSystem.tryGetContent inode machine.FileSystem with
                     | None -> Some (UnixSystemDefect.DanglingOpenInode (id, inode))
                     | Some (InodeContent.Directory _)
-                    | Some (InodeContent.CharacterDevice _) ->
-                        Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
+                    | Some (InodeContent.CharacterDevice _)
+                    | Some (InodeContent.Socket _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.Symlink _) -> None
                 | OpenFileTarget.Directory (inode, _) ->
@@ -1301,6 +1301,7 @@ module UnixSystem =
                     | Some (InodeContent.Directory _) -> None
                     | Some (InodeContent.RegularFile _)
                     | Some (InodeContent.CharacterDevice _)
+                    | Some (InodeContent.Socket _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.CharacterDevice (inode, device) ->
                     match VirtualFileSystem.tryGetContent inode machine.FileSystem with
@@ -1309,6 +1310,7 @@ module UnixSystem =
                     | Some (InodeContent.CharacterDevice _)
                     | Some (InodeContent.Directory _)
                     | Some (InodeContent.RegularFile _)
+                    | Some (InodeContent.Socket _)
                     | Some (InodeContent.Symlink _) -> Some (UnixSystemDefect.DescriptionKindMismatch (id, inode))
                 | OpenFileTarget.Kqueue _
                 | OpenFileTarget.Epoll _
@@ -1802,6 +1804,7 @@ module UnixSystem =
                         )
                 | InodeContent.RegularFile _
                 | InodeContent.Directory _
+                | InodeContent.Socket _
                 | InodeContent.CharacterDevice _ -> None
             )
 
@@ -2167,6 +2170,7 @@ module UnixSystem =
             match VirtualFileSystem.tryGetContent system.Process.CurrentDirectoryInode system.Machine.FileSystem with
             | Some (InodeContent.Directory _) -> []
             | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Socket _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _)
             | None ->

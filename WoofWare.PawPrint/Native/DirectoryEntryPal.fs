@@ -32,3 +32,15 @@ module DirectoryEntryPal =
         match SimulatedUnixPlatform.flavour platform with
         | SimulatedUnixFlavour.Linux -> DirectoryEntryNameLength.WalkToTerminator
         | SimulatedUnixFlavour.Darwin -> DirectoryEntryNameLength.Reported
+
+    /// `DirectoryEntry.InodeType`: the PAL's `DT_*` numbering of `kind`
+    /// (`Interop.Sys.NodeType`), which `pal_io.c` asserts equal to the
+    /// platform's own `DT_*` and which is the same on Linux and Darwin. Not the
+    /// `S_IFMT` numbering `stat` reports.
+    let nodeType (kind : DirectoryEntryKind) : int =
+        match kind with
+        | DirectoryEntryKind.CharacterDevice -> 2
+        | DirectoryEntryKind.Directory -> 4
+        | DirectoryEntryKind.RegularFile -> 8
+        | DirectoryEntryKind.Symlink -> 10
+        | DirectoryEntryKind.Socket -> 12

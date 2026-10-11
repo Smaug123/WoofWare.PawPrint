@@ -70,6 +70,10 @@ type internal OutsideBodyFact =
     /// What happens turns on something the analysis cannot see, such as how a type variable of the
     /// method is instantiated when the JIT binds a member of it.
     | Opaque of Opacity
+    /// The runtime runs this method, which has no type variables: another module's initializer,
+    /// as binding a token first activates the module, or what the runtime runs to throw that
+    /// initializer's own exception again.
+    | Runs of MethodKey
 
 /// How a call's token instantiates the method it names, as the calling body spells it.
 [<RequireQualifiedAccess>]
@@ -135,8 +139,9 @@ type internal LocalFacts =
         /// What happens outside the body, so that none of its own handlers can catch it: what
         /// binding the tokens the body names and the types of its locals and `catch` clauses
         /// throws before it runs (a member or type the assembly it is looked for in does not have,
-        /// a module initializer that fails, or a member of a type variable, which turns on the
-        /// instantiation), and what taking and releasing a synchronized method's monitor throws.
+        /// another module's initializer, which it runs, or a member of a type variable, which turns
+        /// on the instantiation), and what taking and releasing a synchronized method's monitor
+        /// throws.
         /// A method with no IL the analysis follows is opaque here, as a whole.
         OutsideBody : Set<OutsideBodyFact>
         /// The types the body spells for the objects on its evaluation stack, which a
@@ -247,6 +252,8 @@ type internal InstanceCalls =
         Raises : (int * ThrownType) list
         /// Each call whose target the instance does not decide, and the method its token names.
         Undecided : (int * Opacity * MethodKey option) list
+        /// What the runtime runs outside the body (`OutsideBodyFact.Runs`), past all its handlers.
+        Outside : MethodInstance list
     }
 
 /// An escape analysis in progress: the assemblies loaded so far and every answer computed so far.
@@ -308,9 +315,9 @@ type EscapeAnalysisState =
 /// <c>TypeInitializationException</c>, or the initializer's own exception should making that fail,
 /// which it throws again, running <c>Exception.InternalPreserveStackTrace</c> on it. So the answer
 /// has the wrapper, what the initializer raises, and what that method raises. A module's
-/// initializer, which runs as code first binds into its module, is followed no further than the
-/// <c>TypeInitializationException</c>: what it raises, and what throwing that again raises, are left
-/// out.
+/// initializer is a type initializer too, which runs as code first binds into its module: before
+/// the body that binds into it runs, so past all its handlers, or where a call that dispatch lands
+/// in the module is made.
 ///
 /// An interface cast or an array store calls <c>IDynamicInterfaceCastable.IsInterfaceImplemented</c>
 /// on an object whose class implements it. That is assumed to throw nothing but the
@@ -1246,14 +1253,13 @@ module EscapeAnalysis =
         | TypeDefn.FunctionPointer _
         | TypeDefn.Void -> state, []
 
-    /// Does this assembly have a module initializer, the type initializer of `<Module>`?
-    let private hasModuleInitializer (state : EscapeAnalysisState) (assemblyFullName : string) : bool =
+    /// This assembly's module initializer, the type initializer of `<Module>`, if it has one.
+    let private moduleInitializer (state : EscapeAnalysisState) (assemblyFullName : string) : MethodKey option =
         let assembly = assemblyOf state assemblyFullName
 
         match assembly.TypeDefs.TryGetValue (MetadataTokens.TypeDefinitionHandle 1) with
-        | true, globalType when globalType.Name = "<Module>" ->
-            globalType.Methods |> List.exists (fun m -> m.Name = ".cctor" && m.IsStatic)
-        | _ -> false
+        | true, globalType when globalType.Name = "<Module>" -> typeInitializer state globalType.Identity
+        | _ -> None
 
     /// Whether binding a token with this opcode activates the modules of what it names, running
     /// each one's module initializer first if it has not run: CoreCLR's `CEEInfo::resolveToken`
@@ -2137,28 +2143,31 @@ module EscapeAnalysis =
                             target, Set.add index unbound
 
                     // Binding also runs the module initializer of every other module it activates;
-                    // this module's has run, since its code is running.
-                    let state, initializes =
+                    // this module's has run, since its code is running. Should one fail, the
+                    // runtime raises what any type initializer's failure does (`initializerFailure`).
+                    let state, initializers =
                         if activatesModules tokenOp then
                             let state, activated = activatedTypes state assembly token.Token
 
                             state,
                             activated
-                            |> List.exists (fun identity ->
-                                identity.AssemblyFullName <> assembly.DefinitionFullName
-                                && hasModuleInitializer state identity.AssemblyFullName
-                            )
+                            |> List.map _.AssemblyFullName
+                            |> List.distinct
+                            |> List.filter (fun activated -> activated <> assembly.DefinitionFullName)
+                            |> List.choose (moduleInitializer state)
                         else
-                            state, false
+                            state, []
 
                     let failures =
-                        if initializes then
-                            OutsideBodyFact.Raises (
-                                ThrownType.Exactly (corelibException state "TypeInitializationException")
-                            )
-                            :: failures
-                        else
+                        if initializers.IsEmpty then
                             failures
+                        else
+                            let wrapper, preserve = initializerFailure state
+
+                            OutsideBodyFact.Raises wrapper
+                            :: OutsideBodyFact.Runs preserve
+                            :: (initializers |> List.map OutsideBodyFact.Runs)
+                            @ failures
 
                     state, target, unbound, Set.union bindingFailures (Set.ofList failures)
                 | _ -> state, None, unbound, bindingFailures
@@ -3396,18 +3405,29 @@ module EscapeAnalysis =
         =
         let assembly = assemblyOf state instance.Definition.AssemblyFullName
 
-        // What a dispatched call raises by landing on `reached` rather than on what the body names.
-        // No token of this body names the method dispatch lands on, so binding none of them runs
-        // its module's initializer: that runs when the method first binds into its own module, out
-        // of this call.
-        let landingRaises (state : EscapeAnalysisState) (reached : MethodInstance) : ThrownType list =
-            if
-                reached.Definition.AssemblyFullName <> instance.Definition.AssemblyFullName
-                && hasModuleInitializer state reached.Definition.AssemblyFullName
-            then
-                [ ThrownType.Exactly (corelibException state "TypeInitializationException") ]
+        // What a dispatched call at `offset` runs by landing on `reached` rather than on what the
+        // body names, and what that raises besides (`initializerFailure`). No token of this body
+        // names the method dispatch lands on, so binding none of them runs its module's
+        // initializer: that runs when the method first binds into its own module, out of this call.
+        let landing
+            (state : EscapeAnalysisState)
+            (offset : int)
+            (reached : MethodInstance)
+            : (int * MethodInstance) list * (int * ThrownType) list
+            =
+            if reached.Definition.AssemblyFullName = instance.Definition.AssemblyFullName then
+                [], []
             else
-                []
+                match moduleInitializer state reached.Definition.AssemblyFullName with
+                | None -> [], []
+                | Some initializer ->
+                    let wrapper, preserve = initializerFailure state
+
+                    [
+                        offset, instanceOf state initializer [] []
+                        offset, instanceOf state preserve [] []
+                    ],
+                    [ offset, wrapper ]
 
         // What a call at `offset` that reaches `reached` runs first: the type initializer CoreCLR
         // runs on calling it (`initializerOnCall`), as `reached`'s type arguments instantiate it,
@@ -3460,11 +3480,8 @@ module EscapeAnalysis =
                 ||> List.fold (fun (state, callees, raises, undecided) outcome ->
                     match outcome with
                     | DispatchOutcome.Reaches reached ->
-                        let raises =
-                            (landingRaises state reached |> List.map (fun thrown -> offset, thrown))
-                            @ raises
-
-                        reaching offset reached (state, callees, raises, undecided)
+                        let ran, raised = landing state offset reached
+                        reaching offset reached (state, ran @ callees, raised @ raises, undecided)
                     | DispatchOutcome.Raises thrown -> state, callees, (offset, thrown) :: raises, undecided
                     | DispatchOutcome.Undecided ->
                         state, callees, raises, (offset, Opacity.VirtualCall, Some callee.Callee) :: undecided
@@ -3505,6 +3522,15 @@ module EscapeAnalysis =
             Callees = List.rev callees
             Raises = List.rev raises
             Undecided = List.rev undecided
+            Outside =
+                facts.OutsideBody
+                |> Seq.choose (fun fact ->
+                    match fact with
+                    | OutsideBodyFact.Runs method -> Some (instanceOf state method [] [])
+                    | OutsideBodyFact.Raises _
+                    | OutsideBodyFact.Opaque _ -> None
+                )
+                |> List.ofSeq
         }
 
     /// The full name of a type the analysis has loaded, for reporting.
@@ -3570,7 +3596,7 @@ module EscapeAnalysis =
                         InstanceCalls = state.InstanceCalls.Add (key, calls)
                     }
 
-                discover state ((calls.Callees |> List.map snd) @ rest) (key :: found)
+                discover state ((calls.Callees |> List.map snd) @ calls.Outside @ rest) (key :: found)
 
         let state, reachable = discover state [ root ] []
 
@@ -3689,7 +3715,8 @@ module EscapeAnalysis =
                 |> Seq.choose (fun fact ->
                     match fact with
                     | OutsideBodyFact.Raises thrown -> Some thrown
-                    | OutsideBodyFact.Opaque _ -> None
+                    | OutsideBodyFact.Opaque _
+                    | OutsideBodyFact.Runs _ -> None
                 )
                 |> Set.ofSeq
 
@@ -3697,7 +3724,8 @@ module EscapeAnalysis =
                 facts.OutsideBody
                 |> Set.exists (fun fact ->
                     match fact with
-                    | OutsideBodyFact.Raises _ -> false
+                    | OutsideBodyFact.Raises _
+                    | OutsideBodyFact.Runs _ -> false
                     | OutsideBodyFact.Opaque _ -> true
                 )
 
@@ -3796,6 +3824,11 @@ module EscapeAnalysis =
                                 Assumes = assumes
                             }
                         )
+
+                    // What runs outside the body is past all its handlers.
+                    let escaping =
+                        (escaping, calls.Outside)
+                        ||> List.fold (fun acc callee -> Escapes.union acc (summaryOf callee))
 
                     let state, rethrows = rethrown state key summaryOf
 
@@ -3953,12 +3986,14 @@ module EscapeAnalysis =
                         |> Seq.choose (fun fact ->
                             match fact with
                             | OutsideBodyFact.Opaque reason -> Some (site key None reason None)
-                            | OutsideBodyFact.Raises _ -> None
+                            | OutsideBodyFact.Raises _
+                            | OutsideBodyFact.Runs _ -> None
                         )
                         |> List.ofSeq
 
+                    let ranOutside = (instanceCalls key).Outside |> List.map UnnamedAt.Escaping
                     let state, sites, onward = reaching state key facts.Regions (fun _ -> true)
-                    state, outside @ sites, onward
+                    state, outside @ sites, ranOutside @ onward
                 | UnnamedAt.Rethrown (key, offset) ->
                     let facts = state.Facts.[key.Definition]
                     let assembly = assemblyOf state key.Definition.AssemblyFullName
