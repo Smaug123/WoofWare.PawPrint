@@ -142,14 +142,27 @@ type DirectoryContent =
         Permissions : PermissionBits
     }
 
-/// A character device this kernel has a driver for, which an inode of kind
-/// `InodeContent.CharacterDevice` stands for.
+/// A character device, which an inode of kind `InodeContent.CharacterDevice`
+/// stands for. `CharacterDevice.all` lists the ones this kernel has a driver
+/// for.
 [<RequireQualifiedAccess>]
 type CharacterDevice =
     /// `/dev/null`.
     | Null
     /// `/dev/urandom`.
     | URandom
+    /// `/dev/zero`.
+    ///
+    /// Nothing in this version makes a node for it. This kernel has no driver
+    /// for it, so `/dev` holds no `zero`, and `mknod` makes no character
+    /// device node at all: it fails or is refused.
+    | Zero
+    /// `/dev/random`.
+    ///
+    /// Nothing in this version makes a node for it. This kernel has no driver
+    /// for it, so `/dev` holds no `random`, and `mknod` makes no character
+    /// device node at all: it fails or is refused.
+    | Random
 
 /// <summary>
 /// What lives at an inode.
