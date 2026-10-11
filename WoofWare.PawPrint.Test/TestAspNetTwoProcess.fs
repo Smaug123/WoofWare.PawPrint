@@ -14,17 +14,28 @@ open WoofWare.PawPrint.Test.LinuxCoreLibFlavour
 /// An ASP.NET Core server and an `HttpClient` client, each its own process on one simulated
 /// machine, talking over loopback TCP; and the same two images as two real .NET processes.
 ///
-/// The server (`sourcesAspNet/AspNetTwoProcessServer.cs`) is a minimal-API app on Kestrel's
-/// socket transport, listening on a port the kernel chooses. It hands its address to the client
-/// through a file it renames into place, and the client (`AspNetTwoProcessClient.cs`) waits for
-/// that file. The client makes a GET with a query, a POST with a JSON body and a request that
-/// must 404, then asks the server to stop; the server stops and checks it served both item
-/// requests. Each guest exits 42 only if its own checks held.
+/// Each server (in `sourcesAspNet/`) is a minimal-API app on Kestrel's socket transport,
+/// listening on a port the kernel chooses. It hands its address to its client through a file it
+/// renames into place, and the client waits for that file. Two pairs of guests:
+/// - `AspNetTwoProcessServer.cs` and `AspNetTwoProcessClient.cs`: the client makes a GET with a
+///   query, a POST with a JSON body and a request that must 404, then asks the server to stop;
+///   the server stops and checks it served both item requests. The client ends while its
+///   keep-alive connection is open, and the server then stops.
+/// - `AspNetIdleCloseServer.cs` and `AspNetIdleCloseClient.cs`: the server closes a keep-alive
+///   connection that the client leaves idle in its pool, and the client then makes another
+///   request. The client waits for its own socket to become readable, which on an idle
+///   connection is the server's FIN, so on both sides the server's close comes first, and the
+///   pool reads end of file from the connection as it takes it out, discards it and connects
+///   afresh. Kestrel shuts its end down and closes it while the client's end is open; the client
+///   closes its end afterwards. The client checks, by a peek, that what made its socket
+///   readable was end of file rather than a reset, and both guests check that the second
+///   request reached the server over a second connection, accepted after the first had ended.
+/// Each guest exits 42 only if its own checks held.
 ///
-/// What this claims: under PawPrint both guests exit 42; under the real runtime both exit 42 too
-/// (a precondition, so that two failing runs cannot pass as agreement); each guest wrote the same
-/// standard output on both sides, which names no port; and once both processes have ended the
-/// machine holds no process and its invariants hold.
+/// What each test claims: under PawPrint both guests exit 42; under the real runtime both exit
+/// 42 too (a precondition, so that two failing runs cannot pass as agreement); each guest wrote
+/// the same standard output on both sides, which names no port; and once both processes have
+/// ended the machine holds no process and its invariants hold.
 ///
 /// What it does not claim:
 /// - **The Linux CoreLib only.** PawPrint runs the pinned linux-x64 framework
@@ -38,9 +49,13 @@ open WoofWare.PawPrint.Test.LinuxCoreLibFlavour
 ///   watcher uses otherwise.
 /// - **A proxy.** Both sides run with every proxy variable `HttpClient` reads set empty, so
 ///   that the real client cannot inherit one from the host.
-/// - **One interleaving.** The two programs take turns round robin. In it the client ends while
-///   its keep-alive connection is open, and the server then stops; the reverse order, the
-///   server closing an idle connection under a live client, is not exercised.
+/// - **One interleaving.** The two programs take turns round robin. The idle-close pair forces
+///   the order of the server's close and the client's next request by waiting, not by the
+///   schedule, but nothing else about the interleaving is explored.
+/// - **That the pool never sent a request over the closed connection.** `HttpClient` retries,
+///   on a new connection, a request that failed on a reused one before any of the response
+///   arrived, and neither guest can see such a retry. The client's wait makes that path
+///   unreachable rather than the test detecting it.
 /// - **No refused connection.** The client connects only once the server has written its
 ///   address. `TestSeveralPrograms` covers a connector retrying on refusal.
 /// - **A Roslyn compilation, not a Web SDK publish.** Both sides get PawPrint's own AppContext
@@ -96,8 +111,28 @@ module TestAspNetTwoProcess =
 
         Roslyn.compileAssembly assemblyName OutputKind.ConsoleApplication (aspNetCoreReferences.Force ()) [ source ]
 
-    let private server : Lazy<byte[]> = lazy (compile "AspNetTwoProcessServer")
-    let private client : Lazy<byte[]> = lazy (compile "AspNetTwoProcessClient")
+    /// A server guest and a client guest, each by its assembly name, compiled on first use.
+    type private GuestPair =
+        {
+            ServerName : string
+            Server : Lazy<byte[]>
+            ClientName : string
+            Client : Lazy<byte[]>
+        }
+
+    let private guestPair (serverName : string) (clientName : string) : GuestPair =
+        {
+            ServerName = serverName
+            Server = lazy (compile serverName)
+            ClientName = clientName
+            Client = lazy (compile clientName)
+        }
+
+    let private requests : GuestPair =
+        guestPair "AspNetTwoProcessServer" "AspNetTwoProcessClient"
+
+    let private idleClose : GuestPair =
+        guestPair "AspNetIdleCloseServer" "AspNetIdleCloseClient"
 
     /// How one guest ended on one side: its exit code, or how it failed to exit; and what it wrote.
     type private Ending =
@@ -156,7 +191,7 @@ module TestAspNetTwoProcess =
 
     /// Both guests under PawPrint, on the Linux CoreLib in `linuxFramework`, as two processes of
     /// one machine; failing unless the machine is left with no process and its invariants hold.
-    let private runUnderPawPrint (linuxFramework : string) : Ending * Ending =
+    let private runUnderPawPrint (guests : GuestPair) (linuxFramework : string) : Ending * Ending =
         let _messages, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestAspNetTwoProcess"
@@ -205,8 +240,8 @@ module TestAspNetTwoProcess =
                     ProgramChoice = ProgramChoice.RoundRobin
                 }
                 [
-                    launch "AspNetTwoProcessServer" (server.Force ())
-                    launch "AspNetTwoProcessClient" (client.Force ())
+                    launch guests.ServerName (guests.Server.Force ())
+                    launch guests.ClientName (guests.Client.Force ())
                 ]
 
         match go driver with
@@ -223,7 +258,7 @@ module TestAspNetTwoProcess =
         | other -> failwith $"PawPrint: expected the server's and the client's ends, got %d{other.Length}"
 
     /// Both guests as two concurrent processes on the real runtime.
-    let private runUnderRealRuntime () : Ending * Ending =
+    let private runUnderRealRuntime (guests : GuestPair) : Ending * Ending =
         let runs =
             RealRuntime.executeConcurrently
                 OracleFrameworks.NetCoreAppAndAspNetCoreApp
@@ -231,11 +266,11 @@ module TestAspNetTwoProcess =
                 environment
                 [
                     {
-                        Image = server.Force ()
+                        Image = guests.Server.Force ()
                         Args = [ handoff ]
                     }
                     {
-                        Image = client.Force ()
+                        Image = guests.Client.Force ()
                         Args = [ handoff ]
                     }
                 ]
@@ -254,12 +289,15 @@ module TestAspNetTwoProcess =
     let private failures (server : Ending) (client : Ending) : string list =
         List.choose id [ failure "server" server ; failure "client" client ]
 
-    [<Test>]
-    let ``Kestrel and HttpClient as two processes on one machine agree with two real processes`` () : unit =
+    /// Run `guests` on both sides, and fail unless each half exited 42 on both and wrote the same
+    /// standard output on both, which must be `serverStdout` and `clientStdout`.
+    let private agree (guests : GuestPair) (serverStdout : string) (clientStdout : string) : unit =
         let linuxFramework = requireLinuxFramework ()
 
         let (realServer, realClient), (pawPrintServer, pawPrintClient) =
-            DifferentialOracle.alongsideInterpreted runUnderRealRuntime (fun () -> runUnderPawPrint linuxFramework)
+            DifferentialOracle.alongsideInterpreted
+                (fun () -> runUnderRealRuntime guests)
+                (fun () -> runUnderPawPrint guests linuxFramework)
 
         // Every half that failed is named, rather than the first: one half's failure usually
         // makes the other fail too (a client that gives up never asks the server to stop), and
@@ -290,9 +328,15 @@ module TestAspNetTwoProcess =
 
         // Each guest's own checks wrote to standard output as they passed, so agreement means
         // every one of them ran on both sides.
-        pawPrintClient.Stdout
-        |> shouldEqual (
-            String.concat
+        pawPrintClient.Stdout |> shouldEqual clientStdout
+        pawPrintServer.Stdout |> shouldEqual serverStdout
+
+    [<Test>]
+    let ``Kestrel and HttpClient as two processes on one machine agree with two real processes`` () : unit =
+        agree
+            requests
+            "server: listening\nserver: stopped after serving both item requests\n"
+            (String.concat
                 ""
                 [
                     "client: found the server\n"
@@ -300,8 +344,21 @@ module TestAspNetTwoProcess =
                     "client: POST answered\n"
                     "client: missing item answered 404\n"
                     "client: asked the server to stop\n"
-                ]
-        )
+                ])
 
-        pawPrintServer.Stdout
-        |> shouldEqual "server: listening\nserver: stopped after serving both item requests\n"
+    /// The server closes a keep-alive connection while the client still holds it in its pool, and
+    /// the client's next request goes over a new connection; see the module's docstring.
+    [<Test>]
+    let ``Kestrel closing an idle connection under a live HttpClient agrees with two real processes`` () : unit =
+        agree
+            idleClose
+            "server: listening\nserver: stopped after accepting a second connection once the first had ended\n"
+            (String.concat
+                ""
+                [
+                    "client: found the server\n"
+                    "client: the server has accepted one connection\n"
+                    "client: the server closed the idle connection\n"
+                    "client: the second request went over a new connection\n"
+                    "client: asked the server to stop\n"
+                ])
