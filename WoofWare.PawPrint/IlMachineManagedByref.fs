@@ -3658,9 +3658,39 @@ module IlMachineManagedByref =
         | ValueSome result -> result
         | ValueNone ->
 
-        let storageBytes = reinterpretStorageBytes state operation storageValue
         let reinterpretZero = zeroOfHandleWithoutLoading baseClassTypes state reinterpretTy
         let reinterpretSize = CliType.sizeOf reinterpretZero
+
+        if CliType.HasUndefinedLeaf storageValue || CliType.HasUndefinedLeaf newValue then
+            // An undefined value is only moved by a store, so its bytes travel as undefined ones:
+            // the same splice as below, over each byte as a number or undefined.
+            let storageBytes = CliType.ValueBytesOf storageValue
+
+            if byteOffset < 0 || reinterpretSize > storageBytes.Length - byteOffset then
+                failwith
+                    $"TODO: %s{operation} requires %d{reinterpretSize} bytes at offset %d{byteOffset}, but storage has %d{storageBytes.Length} bytes. Storage layout:\n%s{describeCliStorage state storageValue}"
+
+            let reinterpretBytes = storageBytes.[byteOffset .. byteOffset + reinterpretSize - 1]
+            let reinterpretTemplate = CliType.OfValueBytesLike reinterpretZero reinterpretBytes
+
+            match
+                writeProjectedValueIfChanged (Some baseClassTypes) state reinterpretTemplate reinterpretProjs newValue
+            with
+            | None -> None
+            | Some updatedReinterpret ->
+                let updatedBytes = CliType.ValueBytesOf updatedReinterpret
+
+                if updatedBytes.Length <> reinterpretSize then
+                    failwith
+                        $"TODO: %s{operation} produced %d{updatedBytes.Length} bytes for reinterpret type %O{reinterpretTy}, expected %d{reinterpretSize}. Storage layout:\n%s{describeCliStorage state storageValue}"
+
+                if updatedBytes = reinterpretBytes then
+                    None
+                else
+                    CliType.WithValueBytesAtIfChanged byteOffset updatedBytes storageValue
+        else
+
+        let storageBytes = reinterpretStorageBytes state operation storageValue
 
         if byteOffset < 0 || reinterpretSize > storageBytes.Length - byteOffset then
             failwith
