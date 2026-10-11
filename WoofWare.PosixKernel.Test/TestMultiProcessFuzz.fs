@@ -1255,6 +1255,9 @@ module TestMultiProcessFuzz =
         | Some (ParkedSyscall.Sleep _ as parked) ->
             failwith
                 $"task %d{task} is woken in %A{parked}, but nothing parks a task in a sleep yet, so there is no finishSleep to finish it with"
+        | Some (ParkedSyscall.FifoOpen _ as parked) ->
+            failwith
+                $"task %d{task} is woken in %A{parked}, but nothing parks a task in a FIFO open yet, so there is no finishOpen to finish it with"
         | None -> failwith $"task %d{task} is woken, and parked in nothing"
 
     /// Everything the run tracks besides the machine.

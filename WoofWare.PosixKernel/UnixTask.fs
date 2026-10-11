@@ -451,6 +451,30 @@ type ParkedSleep =
         Remainder : SleepRemainder
     }
 
+/// One task's in-flight blocking `open(2)` or `openat(2)` of one end of a
+/// FIFO, asleep until the other end is opened.
+///
+/// Reserved: nothing parks a task in a FIFO open yet (`ParkedSyscall.FifoOpen`).
+type ParkedFifoOpen =
+    {
+        /// The open file description the call made before it slept, and holds
+        /// while it sleeps. Through it the sleeping call counts as an open end
+        /// of the kind its access mode names, as it does on both flavours: a
+        /// partner's non-blocking open succeeds against it, and a signal that
+        /// ends the call releases it.
+        Opener : OpenFileDescriptionId
+        /// The descriptor number the call took before it slept, at which it
+        /// installs the description once it completes. Meanwhile no other call
+        /// is given that number, and `fcntl(2)` and `close(2)` of it answer
+        /// `EBADF`, on both flavours; a `dup2(2)` onto it answers `EBUSY` under
+        /// Linux, and under Darwin waits for the open to complete.
+        Descriptor : int
+        /// How many opens of the partner end the FIFO had seen when the call
+        /// slept. The call completes once the FIFO has seen more, even if every
+        /// partner has closed again by then, on both flavours.
+        PartnerOpens : int64
+    }
+
 /// <summary>
 /// The syscall a task is blocked in, if it is blocked in one.
 /// </summary>
@@ -488,6 +512,14 @@ type ParkedSyscall =
     /// one. `UnixSystem.checkInvariants` reports a task parked in it as
     /// `UnixSystemDefect.ReservedPark`.
     | Sleep of ParkedSleep
+    /// A blocking `open(2)` or `openat(2)` of one end of a FIFO, waiting for
+    /// the other end to be opened or for a signal with a handler. Holds the
+    /// open file description it made (`ParkedFifoOpen.Opener`).
+    ///
+    /// Reserved: nothing parks a task in it yet, and no finishing call answers
+    /// one. `UnixSystem.checkInvariants` reports a task parked in it as
+    /// `UnixSystemDefect.ReservedPark`.
+    | FifoOpen of ParkedFifoOpen
 
 [<RequireQualifiedAccess>]
 module ParkedSyscall =
@@ -529,6 +561,7 @@ module ParkedSyscall =
         | ParkedSyscall.ConnectionWrite write -> SleepTarget.description write.Socket |> Option.toList
         | ParkedSyscall.SigSuspend
         | ParkedSyscall.Sleep _ -> []
+        | ParkedSyscall.FifoOpen fifoOpen -> [ fifoOpen.Opener ]
 
 /// Where one park stands in the order every park on this machine was made in.
 ///
@@ -751,6 +784,7 @@ module UnixTaskTable =
             | ParkedSyscall.ConnectionWrite _ -> 9
             | ParkedSyscall.SigSuspend -> 10
             | ParkedSyscall.Sleep _ -> 11
+            | ParkedSyscall.FifoOpen _ -> 12
 
         let sameSyscall =
             match existing.Parked with

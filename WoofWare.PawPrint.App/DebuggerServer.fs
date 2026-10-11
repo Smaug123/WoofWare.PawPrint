@@ -336,6 +336,11 @@ module DebuggerServer =
             | Some (ParkedSyscall.Sleep parked) ->
                 writer.WriteString ("kind", "blockedInSleep")
                 writer.WriteNumber ("deadlineTicks", ClockPal.firstTickAtOrAfter parked.Deadline)
+            | Some (ParkedSyscall.FifoOpen parked) ->
+                writer.WriteString ("kind", "blockedInFifoOpen")
+                let (OpenFileDescriptionId opener) = parked.Opener
+                writer.WriteNumber ("description", opener)
+                writer.WriteNumber ("fd", parked.Descriptor)
             | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()
