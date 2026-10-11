@@ -93,10 +93,14 @@ module SockaddrCopyRefusal =
 /// What a `bind(2)` answered.
 [<RequireQualifiedAccess>]
 type BindAnswer =
-    /// The socket is bound. `endpoint` is where -- which is not necessarily what
-    /// the caller asked for: a request for port 0 asks for any free port, and
-    /// this is the one allocated.
-    | Bound of endpoint : Ipv4Endpoint
+    /// The socket is bound. `address` is where, as `getsockname(2)` would
+    /// report it at once, and so in the socket's own family: a dual-mode IPv6
+    /// socket bound to an IPv4 address answers it v4-mapped
+    /// (`::ffff:a.b.c.d`), as a `SocketAddress.Inet6`.
+    ///
+    /// Not necessarily what the caller asked for: a request for port 0 asks
+    /// for any free port, and this is the one allocated.
+    | Bound of address : SocketAddress
     /// The call failed with this errno. Nothing changed: the socket is bound,
     /// or not, exactly as it was.
     | Failed of error : UnixError
@@ -145,9 +149,11 @@ module BindRefusal =
 /// What a `listen(2)` answered.
 [<RequireQualifiedAccess>]
 type ListenAnswer =
-    /// The socket is listening. `endpoint` is where it is bound, which for a
-    /// socket that had no address is the one this call gave it.
-    | Listening of endpoint : Ipv4Endpoint
+    /// The socket is listening. `address` is where it is bound, which for a
+    /// socket that had no address is the one this call gave it, as
+    /// `getsockname(2)` would report it at once, and so in the socket's own
+    /// family, as for `BindAnswer.Bound`.
+    | Listening of address : SocketAddress
     /// The call failed with this errno, and nothing changed.
     | Failed of error : UnixError
 
@@ -198,10 +204,12 @@ type GetSockNameAnswer =
     /// The call succeeded: the kernel wrote `copiedOut` to the start of the
     /// caller's buffer and `reportedLength` to its length cell.
     ///
-    /// `copiedOut` is the address as this platform's
-    /// `struct sockaddr_in`, cut to the length the caller declared, and so
-    /// possibly empty; `reportedLength` is that structure's *untruncated* size,
-    /// which the declared length does not bound -- see the entry point.
+    /// `copiedOut` is the address as this platform's socket address structure
+    /// for the socket's family (a `struct sockaddr_in` for an IPv4 socket, a
+    /// `struct sockaddr_in6` for an IPv6 one), cut to the length the caller
+    /// declared, and so possibly empty; `reportedLength` is that structure's
+    /// *untruncated* size, which the declared length does not bound -- see the
+    /// entry point.
     | Reported of copiedOut : ImmutableArray<byte> * reportedLength : int
     /// The entry point returns -1, the caller stores `error` wherever its libc
     /// keeps errno, and `lengthOverwritten` is what the kernel had already put
@@ -542,6 +550,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> answered (UnixError.ENOTSOCK)
@@ -1033,12 +1042,87 @@ module UnixSocket =
         | BindFault.AddressInUse -> UnixError.EADDRINUSE
         | BindFault.Ipv6Only -> SimulatedUnixPlatform.ipv6OnlyBindError platform
 
+    /// An address `getsockname(2)` or `getpeername(2)` reports for a socket
+    /// whose transport is IPv4: the IPv4 endpoint itself, or that endpoint as
+    /// an IPv6 socket presents it.
+    [<RequireQualifiedAccess>]
+    type private PresentedName =
+        | Ipv4 of Ipv4Endpoint
+        | Ipv6 of Ipv6Endpoint
+
+    /// The address `getsockname(2)` or `getpeername(2)` on `socket` reports
+    /// for the IPv4 transport `endpoint`, in the socket's own family: the
+    /// endpoint from an IPv4 socket, and from an IPv6 stream socket the
+    /// endpoint's address as `SimulatedUnixPlatform.presentedIpv6Address`
+    /// presents it, which depends on whether the socket's connection failed.
+    /// A refusal for a socket whose addresses this kernel does not model.
+    let private presentedName
+        (machine : UnixMachineState)
+        (socketId : SocketId)
+        (socket : SocketDescription)
+        (endpoint : Ipv4Endpoint)
+        : Result<PresentedName, GetSockNameRefusal>
+        =
+        match socket.Domain, socket.Kind with
+        | SocketDomain.Unix, _ -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketDomain.Inet, _ -> Ok (PresentedName.Ipv4 endpoint)
+        | SocketDomain.Inet6, SocketKind.Stream ->
+            let resetReached (connection : ConnectionId) (connectionEnd : ConnectionEnd) : bool =
+                TcpTransfer.hasBeenReset connectionEnd (UnixMachineState.connection connection machine).Transfer
+
+            let connectionFailed =
+                match socket.Phase with
+                | SocketPhase.Refused _ -> true
+                | SocketPhase.Established (connection, connectionEnd) -> resetReached connection connectionEnd
+                | SocketPhase.EstablishedPendingReport connection -> resetReached connection ConnectionEnd.Client
+                | SocketPhase.Idle
+                | SocketPhase.Listening _
+                | SocketPhase.DatagramPeer _ -> false
+
+            // A socket whose transport is IPv4 reports a zero flow info and
+            // scope id: measured for `getpeername` on both, after a connect
+            // that passed a non-zero one of each
+            // (`docs/probes/dual-mode/dual-mode.c`, A11 and A12).
+            Ok (
+                PresentedName.Ipv6
+                    {
+                        Address =
+                            SimulatedUnixPlatform.presentedIpv6Address
+                                machine.UnixPlatform
+                                connectionFailed
+                                endpoint.Address
+                        Port = endpoint.Port
+                        FlowInfo = 0u
+                        ScopeId = 0u
+                    }
+            )
+        | SocketDomain.Inet6, (SocketKind.Datagram | SocketKind.SeqPacket) ->
+            Error (GetSockNameRefusal.UnmodelledInet6Kind (socketId, socket.Kind))
+
+    /// The address a `bind(2)` or `listen(2)` answers once it has bound the
+    /// socket `socketId` at the IPv4 `endpoint`: `getsockname(2)`'s, so that an
+    /// answer is in the socket's own family. `machine` holds the socket as the
+    /// call leaves it.
+    let private answeredAddress
+        (call : string)
+        (machine : UnixMachineState)
+        (socketId : SocketId)
+        (endpoint : Ipv4Endpoint)
+        : SocketAddress
+        =
+        match presentedName machine socketId (UnixMachineState.socket socketId machine) endpoint with
+        | Ok (PresentedName.Ipv4 endpoint) -> SocketAddress.Inet endpoint
+        | Ok (PresentedName.Ipv6 endpoint) -> SocketAddress.Inet6 endpoint
+        | Error refusal ->
+            failwith
+                $"UnixSocket.%s{call}: socket %O{socketId} is bound, and yet getsockname would not report its address: %s{GetSockNameRefusal.describe refusal} %s{call} refuses every such socket before binding it, so this is a bug in this library."
+
     /// `bind(2)` once every fault has been ruled out: give `socketId` the IPv4
     /// `binding`, choosing a port for it if it asks for port 0.
     let private bindAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (socket : SocketDescription)
-        (binding : SocketBinding)
+        (binding : Ipv4Binding)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
         =
@@ -1046,7 +1130,7 @@ module UnixSocket =
             (if binding.Endpoint.Port > 0us then
                  Some (binding, system.Machine)
              else
-                 let candidate (port : uint16) : SocketBinding =
+                 let candidate (port : uint16) : Ipv4Binding =
                      { binding with
                          Endpoint =
                              { binding.Endpoint with
@@ -1084,7 +1168,7 @@ module UnixSocket =
                         }
                 }
 
-        Ok (BindAnswer.Bound bound.Endpoint, system)
+        Ok (BindAnswer.Bound (answeredAddress "bind" system.Machine socketId bound.Endpoint), system)
 
     /// `bind(2)` past the copy: what it answers for the sockaddr `copied`
     /// decodes to, on `fd`, which `admitSockaddrCopy` has taken as far as the
@@ -1204,7 +1288,7 @@ module UnixSocket =
                 && endpoint.Port < SimulatedUnixPlatform.privilegedPortCeiling
                 && UnixProcessState.callerPrivilege system.Process = CallerPrivilege.Unprivileged
 
-        let conflictsWith (binding : SocketBinding) : bool =
+        let conflictsWith (binding : Ipv4Binding) : bool =
             UnixMachineState.bindingConflicts socketId socket binding system.Machine
 
         // A request for port 0 conflicts with nothing here: the allocator's
@@ -1227,7 +1311,9 @@ module UnixSocket =
                 // the address: a datagram socket whose dissolve left it
                 // half-bound (`127.0.0.1:0`) rebinds -- measured, on both
                 // addresses and both kinds of port.
-                BindFault.AlreadyBound, (socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us))
+                BindFault.AlreadyBound,
+                (socket.Ipv4Binding
+                 |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us))
                 BindFault.AddressInUse, addressInUseFault
             ]
             |> List.choose (fun (fault, holds) -> if holds then Some fault else None)
@@ -1308,10 +1394,15 @@ module UnixSocket =
             | None -> false
 
         let ipv6OnlyFault =
-            socket.Addressing = SocketAddressing.Inet6V6Only && mapped.IsSome
+            match socket.Addressing with
+            | SocketAddressing.Inet6V6Only _ -> mapped.IsSome
+            | SocketAddressing.Inet _
+            | SocketAddressing.Inet6DualMode _
+            | SocketAddressing.Unix _ -> false
 
         let alreadyBoundFault =
-            socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us)
+            socket.Ipv4Binding
+            |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us)
 
         let addressNotLocalFault =
             match mapped with
@@ -1480,6 +1571,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (ListenAnswer.Failed UnixError.ENOTSOCK, system)
@@ -1487,10 +1579,11 @@ module UnixSocket =
 
         let socket = UnixMachineState.socket socketId system.Machine
 
-        match socket.Domain with
-        | SocketDomain.Inet6 -> Error (ListenRefusal.Ipv6Listener socketId)
-        | SocketDomain.Unix -> Error (ListenRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.Inet ->
+        match socket.Addressing with
+        | SocketAddressing.Inet6DualMode _
+        | SocketAddressing.Inet6V6Only _ -> Error (ListenRefusal.Ipv6Listener socketId)
+        | SocketAddressing.Unix _ -> Error (ListenRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketAddressing.Inet binding ->
 
         match socket.Kind with
         | SocketKind.Datagram -> Ok (ListenAnswer.Failed UnixError.EOPNOTSUPP, system)
@@ -1515,7 +1608,7 @@ module UnixSocket =
         // Darwin asks nothing of a socket that already has a port; see
         // `listenRescreensBinding` for why that is not a strictness difference
         // to round in the safe direction.
-        match socket.Binding with
+        match binding with
         | Some binding when
             SimulatedUnixPlatform.listenRescreensBinding system.Machine.UnixPlatform
             && UnixMachineState.bindingConflicts socketId socket binding system.Machine
@@ -1524,12 +1617,12 @@ module UnixSocket =
         | _ ->
 
         match
-            (match socket.Binding with
+            (match binding with
              | Some binding -> Some (binding, system.Machine)
              | None ->
                  // `listen(2)` on an unbound socket binds it to the wildcard and
                  // an ephemeral port. Measured on both.
-                 let candidate (port : uint16) : SocketBinding =
+                 let candidate (port : uint16) : Ipv4Binding =
                      {
                          Endpoint = Ipv4Endpoint.ofParts Ipv4Address.any port
                          // This implicit bind runs no `bind(2)`, so nothing is
@@ -1571,14 +1664,14 @@ module UnixSocket =
                             Map.add
                                 socketId
                                 { socket with
-                                    Addressing = SocketAddressing.replaceBinding (Some bound) socket.Addressing
+                                    Addressing = SocketAddressing.Inet (Some bound)
                                     Phase = listenPhase
                                 }
                                 machine.Sockets
                     }
             }
 
-        Ok (ListenAnswer.Listening bound.Endpoint, system)
+        Ok (ListenAnswer.Listening (answeredAddress "listen" system.Machine socketId bound.Endpoint), system)
 
     /// The tail `getsockname(2)` and `getpeername(2)` share, once the call has
     /// an address to report, `whole` being its whole `struct sockaddr_in` or
@@ -1637,10 +1730,8 @@ module UnixSocket =
         | UserBuffer.Mapped -> reported ()
 
     /// The whole socket address a `getsockname(2)` or `getpeername(2)` on
-    /// `socket` reports for the IPv4 `endpoint`: a `struct sockaddr_in` from an
-    /// IPv4 socket, and from an IPv6 stream socket a `struct sockaddr_in6`
-    /// holding the address as `SimulatedUnixPlatform.presentedIpv6Address`
-    /// presents it.
+    /// `socket` reports for the IPv4 `endpoint`: `presentedName`'s address,
+    /// laid out as this platform's `struct sockaddr_in` or `struct sockaddr_in6`.
     let private encodeName
         (machine : UnixMachineState)
         (socketId : SocketId)
@@ -1648,40 +1739,12 @@ module UnixSocket =
         (endpoint : Ipv4Endpoint)
         : Result<byte[], GetSockNameRefusal>
         =
-        let platform = machine.UnixPlatform
-
-        match socket.Domain, socket.Kind with
-        | SocketDomain.Unix, _ -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
-        | SocketDomain.Inet, _ -> Ok (SimulatedUnixPlatform.encodeInternetSockaddr platform endpoint)
-        | SocketDomain.Inet6, SocketKind.Stream ->
-            let resetReached (connection : ConnectionId) (connectionEnd : ConnectionEnd) : bool =
-                TcpTransfer.hasBeenReset connectionEnd (UnixMachineState.connection connection machine).Transfer
-
-            let connectionFailed =
-                match socket.Phase with
-                | SocketPhase.Refused _ -> true
-                | SocketPhase.Established (connection, connectionEnd) -> resetReached connection connectionEnd
-                | SocketPhase.EstablishedPendingReport connection -> resetReached connection ConnectionEnd.Client
-                | SocketPhase.Idle
-                | SocketPhase.Listening _
-                | SocketPhase.DatagramPeer _ -> false
-
-            // A socket whose transport is IPv4 reports a zero flow info and
-            // scope id: measured for `getpeername` on both, after a connect
-            // that passed a non-zero one of each
-            // (`docs/probes/dual-mode/dual-mode.c`, A11 and A12).
-            Ok (
-                SimulatedUnixPlatform.encodeInternetV6Sockaddr
-                    platform
-                    {
-                        Address = SimulatedUnixPlatform.presentedIpv6Address platform connectionFailed endpoint.Address
-                        Port = endpoint.Port
-                        FlowInfo = 0u
-                        ScopeId = 0u
-                    }
-            )
-        | SocketDomain.Inet6, (SocketKind.Datagram | SocketKind.SeqPacket) ->
-            Error (GetSockNameRefusal.UnmodelledInet6Kind (socketId, socket.Kind))
+        match presentedName machine socketId socket endpoint with
+        | Error refusal -> Error refusal
+        | Ok (PresentedName.Ipv4 endpoint) ->
+            Ok (SimulatedUnixPlatform.encodeInternetSockaddr machine.UnixPlatform endpoint)
+        | Ok (PresentedName.Ipv6 endpoint) ->
+            Ok (SimulatedUnixPlatform.encodeInternetV6Sockaddr machine.UnixPlatform endpoint)
 
     /// `getsockname(2)`: report the local address the socket `fd` names.
     ///
@@ -1720,6 +1783,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
@@ -1733,7 +1797,7 @@ module UnixSocket =
         // on Darwin the `sa_len` byte its layout puts in front of it, and a
         // fresh AF_INET6 one twenty-eight (`docs/probes/dual-mode/`, A1).
         let endpoint =
-            match socket.Binding with
+            match socket.Ipv4Binding with
             | Some binding -> binding.Endpoint
             | None -> Ipv4Endpoint.ofParts Ipv4Address.any 0us
 
@@ -1780,6 +1844,7 @@ module UnixSocket =
         | OpenFileTarget.File _
         | OpenFileTarget.Directory _
         | OpenFileTarget.CharacterDevice _
+        | OpenFileTarget.Fifo _
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
@@ -1803,8 +1868,11 @@ module UnixSocket =
             | SimulatedUnixFlavour.Darwin -> Ok (GetSockNameAnswer.Failed (UnixError.EINVAL, None))
         // Linux's `inet_getname` reports no peer whose port is 0, and Darwin
         // never connects a datagram socket to one.
-        | SocketPhase.DatagramPeer peer when peer.Port = 0us -> notConnected
-        | SocketPhase.DatagramPeer peer -> reportPeer peer
+        | SocketPhase.DatagramPeer (SocketAddress.Inet peer) when peer.Port = 0us -> notConnected
+        | SocketPhase.DatagramPeer (SocketAddress.Inet peer) -> reportPeer peer
+        | SocketPhase.DatagramPeer (SocketAddress.Inet6 _ | SocketAddress.Unix _) ->
+            failwith
+                $"UnixSocket.getpeername: socket %O{socketId} holds the datagram peer %A{socket.Phase}, which is not an IPv4 one, but this kernel connects only an IPv4 datagram socket: the sockaddr screen refuses an IPv6 or Unix-domain one first (this is a bug in this library)."
         | SocketPhase.EstablishedPendingReport _
         | SocketPhase.Established _ ->
             let connectionId, connectionEnd =
@@ -1982,6 +2050,7 @@ module UnixSocket =
         | Some (OpenFileTarget.File _)
         | Some (OpenFileTarget.Directory _)
         | Some (OpenFileTarget.CharacterDevice _)
+        | Some (OpenFileTarget.Fifo _)
         | Some (OpenFileTarget.Pipe _)
         | Some (OpenFileTarget.Kqueue _)
         | Some (OpenFileTarget.Epoll _) -> Error UnixError.ENOTSOCK
@@ -2237,7 +2306,7 @@ module UnixSocket =
                         }
                 | ModelledOption.Ipv6Only ->
                     let hasAddress =
-                        socket.Binding.IsSome
+                        SocketAddressing.isBound socket.Addressing
                         || match socket.Phase with
                            | SocketPhase.Idle -> false
                            | SocketPhase.Listening _
@@ -2248,19 +2317,21 @@ module UnixSocket =
 
                     match socket.Addressing with
                     | SocketAddressing.Inet6DualMode _
-                    | SocketAddressing.Inet6V6Only when hasAddress -> Error (Ok UnixError.EINVAL)
+                    | SocketAddressing.Inet6V6Only _ when hasAddress -> Error (Ok UnixError.EINVAL)
+                    // Unbound, so the move between the two cases carries no
+                    // binding.
                     | SocketAddressing.Inet6DualMode _
-                    | SocketAddressing.Inet6V6Only ->
+                    | SocketAddressing.Inet6V6Only _ ->
                         Ok
                             { socket with
                                 Addressing =
                                     if field 0 <> 0 then
-                                        SocketAddressing.Inet6V6Only
+                                        SocketAddressing.Inet6V6Only None
                                     else
                                         SocketAddressing.Inet6DualMode None
                             }
                     | SocketAddressing.Inet _
-                    | SocketAddressing.Unix ->
+                    | SocketAddressing.Unix _ ->
                         failwith
                             $"UnixSocket.setsockopt: IPV6_V6ONLY reached socket %O{socketId}, which is %A{socket.Addressing}, though the option applies to no such socket and its errno is answered first (this is a bug in this library)."
                 | ModelledOption.Linger
@@ -2525,7 +2596,15 @@ module UnixSocket =
                         | SimulatedUnixFlavour.Darwin -> 4
 
                     ints [ flag socket.Options.NoDelay whenSet ], system
-                | ModelledOption.Ipv6Only -> ints [ flag (socket.Addressing = SocketAddressing.Inet6V6Only) 1 ], system
+                | ModelledOption.Ipv6Only ->
+                    let ipv6Only =
+                        match socket.Addressing with
+                        | SocketAddressing.Inet6V6Only _ -> true
+                        | SocketAddressing.Inet _
+                        | SocketAddressing.Inet6DualMode _
+                        | SocketAddressing.Unix _ -> false
+
+                    ints [ flag ipv6Only 1 ], system
                 | ModelledOption.Linger ->
                     match flavour with
                     | SimulatedUnixFlavour.Linux -> ints [ enabled ; int (linger.Hundredths / 100L) ], system

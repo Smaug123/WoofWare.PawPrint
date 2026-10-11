@@ -191,15 +191,25 @@ module TestProtectedFiles =
             |> ok
             |> snd
 
-        match VirtualFileSystem.tryGetContent root vfs with
-        | Some (InodeContent.Directory content) ->
-            [ "f" ; "l" ; "d" ]
-            |> List.map (fun entry ->
-                match VirtualFileSystem.tryGet content.Entries.[name entry] vfs with
-                | Some inode -> entry, inode
-                | None -> failwith $"%s{entry} is missing"
-            )
-        | _ -> failwith "the root is not a directory"
+        let made =
+            match VirtualFileSystem.tryGetContent root vfs with
+            | Some (InodeContent.Directory content) ->
+                [ "f" ; "l" ; "d" ]
+                |> List.map (fun entry ->
+                    match VirtualFileSystem.tryGet content.Entries.[name entry] vfs with
+                    | Some inode -> entry, inode
+                    | None -> failwith $"%s{entry} is missing"
+                )
+            | _ -> failwith "the root is not a directory"
+
+        // Nothing in this version makes a FIFO inode, so this one is the
+        // regular file's with its content swapped.
+        let fifo =
+            { snd (made |> List.find (fun (kind, _) -> kind = "f")) with
+                Content = InodeContent.Fifo (mode 0o666)
+            }
+
+        made @ [ "p", fifo ]
 
     [<Test>]
     let ``refusesCreatingOpen is the probe's prediction, over every mode, kind, owner and creator`` () =
@@ -223,6 +233,7 @@ module TestProtectedFiles =
                                     let knob =
                                         match kind with
                                         | "f" -> Some (creationKnob regular)
+                                        | "p" -> Some (creationKnob fifos)
                                         | _ -> None
 
                                     let actual =
@@ -338,8 +349,8 @@ module TestProtectedFiles =
 
     [<Test>]
     let ``a FIFO is screened exactly as a regular file is, value for value`` () =
-        // No inode this library models is a FIFO, so `ProtectedFiles.Fifos`
-        // decides nothing; this holds its documented meaning to the probe.
+        // Nothing in this version makes a FIFO inode, so `ProtectedFiles.Fifos`
+        // decides nothing yet; this holds its documented meaning to the probe.
         let shared =
             [
                 "open"
@@ -865,8 +876,8 @@ module TestProtectedFiles =
                     | Ok (FileSystemStatisticsAnswer.Failed error) -> WalkOutcome.Answered (Some error)
                     | Error refusal -> WalkOutcome.Refused refusal
                 )
-                "open", (fun p -> UnixNamespace.openPath 0 (bytes p) 0 system |> ofOpen)
-                "openat", (fun p -> UnixNamespace.openat atFdCwd (bytes p) 0 0 system |> ofOpen)
+                "open", (fun p -> OpenOutcomes.openPath 0 (bytes p) 0 system |> ofOpen)
+                "openat", (fun p -> OpenOutcomes.openat atFdCwd (bytes p) 0 0 system |> ofOpen)
                 "chdir", (fun p -> UnixSystem.step 0 (Syscall.ChDir (bytes p)) system |> ofStep)
                 "chmod",
                 (fun p ->

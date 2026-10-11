@@ -39,8 +39,8 @@ module TestDatagramDissolve =
         | Some (OpenFileTarget.Socket socketId) -> socketId
         | other -> failwith $"fd %d{fd} is %A{other}"
 
-    let private bound (fd : int) (system : UnixSystem<int, string>) : SocketBinding option =
-        (UnixMachineState.socket (socketOf fd system) system.Machine).Binding
+    let private bound (fd : int) (system : UnixSystem<int, string>) : Ipv4Binding option =
+        (UnixMachineState.socket (socketOf fd system) system.Machine).Ipv4Binding
 
     let private phase (fd : int) (system : UnixSystem<int, string>) : SocketPhase =
         (UnixMachineState.socket (socketOf fd system) system.Machine).Phase
@@ -215,7 +215,7 @@ module TestDatagramDissolve =
             let fd, system = halfBound ()
 
             match CopyIn.bind fd UserBuffer.Mapped 16u (CopyIn.inet (UnixSystem.platform system) rebind) system with
-            | Ok (BindAnswer.Bound actual, after) ->
+            | Ok (BindAnswer.Bound (SocketAddress.Inet actual), after) ->
                 actual.Address |> shouldEqual rebind.Address
 
                 if rebind.Port <> 0us then
@@ -248,7 +248,7 @@ module TestDatagramDissolve =
     /// a socket still holding a peer, is the defect it always was.
     [<Test>]
     let ``the port-0 exception is exactly Linux's idle half-bound datagram`` () : unit =
-        let halfBound : SocketBinding =
+        let halfBound : Ipv4Binding =
             {
                 Endpoint = endpoint loopback 0us
                 LockedAddress = Some loopback
@@ -285,7 +285,9 @@ module TestDatagramDissolve =
         |> shouldEqual [ UnixSystemDefect.BoundToPortZero (SocketId 0L) ]
 
         UnixSystem.checkInvariants (
-            forge SimulatedUnixPlatform.linuxX64 (SocketPhase.DatagramPeer (endpoint loopback 9000us))
+            forge
+                SimulatedUnixPlatform.linuxX64
+                (SocketPhase.DatagramPeer (SocketAddress.Inet (endpoint loopback 9000us)))
         )
         |> shouldEqual [ UnixSystemDefect.BoundToPortZero (SocketId 0L) ]
 
@@ -307,7 +309,7 @@ module TestDatagramDissolve =
                 (CopyIn.inet (UnixSystem.platform system) (endpoint loopback 0us))
                 system
         with
-        | Ok (BindAnswer.Bound actual, after) ->
+        | Ok (BindAnswer.Bound (SocketAddress.Inet actual), after) ->
             actual.Address |> shouldEqual loopback
             actual.Port |> shouldNotEqual 0us
             UnixSystem.checkInvariants after |> shouldEqual []

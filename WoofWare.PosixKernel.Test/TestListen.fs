@@ -34,7 +34,7 @@ module TestListen =
 
     let private socketWith
         (kind : SocketKind)
-        (binding : SocketBinding option)
+        (binding : Ipv4Binding option)
         (reuse : bool)
         (phase : SocketPhase)
         : SocketDescription
@@ -74,7 +74,7 @@ module TestListen =
         }
         |> UnixSystemState.withFileDescriptors registry
 
-    let private boundAt (endpoint : Ipv4Endpoint) : SocketBinding option =
+    let private boundAt (endpoint : Ipv4Endpoint) : Ipv4Binding option =
         Some
             {
                 Endpoint = endpoint
@@ -103,7 +103,9 @@ module TestListen =
                 (systemOn platform)
 
         let answer, system = listenOrFail fd 8 system
-        answer |> shouldEqual (ListenAnswer.Listening (loopback 5000us))
+
+        answer
+        |> shouldEqual (ListenAnswer.Listening (SocketAddress.Inet (loopback 5000us)))
 
         match phaseOf (SocketId 0L) system with
         | SocketPhase.Listening listenState ->
@@ -124,8 +126,8 @@ module TestListen =
 
         let where =
             match answer with
-            | ListenAnswer.Listening where -> where
-            | ListenAnswer.Failed error -> failwith $"expected a listen, got %O{error}"
+            | ListenAnswer.Listening (SocketAddress.Inet where) -> where
+            | other -> failwith $"expected an IPv4 listen, got %A{other}"
 
         where.Address |> shouldEqual Ipv4Address.any
 
@@ -134,7 +136,7 @@ module TestListen =
 
         let socket = UnixMachineState.socket (SocketId 0L) system.Machine
 
-        socket.Binding
+        socket.Ipv4Binding
         |> shouldEqual (
             Some
                 {
@@ -280,7 +282,7 @@ module TestListen =
 
             match listenOrFail second 8 system |> fst, expected with
             | ListenAnswer.Failed error, Some expected -> error |> shouldEqual expected
-            | ListenAnswer.Listening where, None -> where |> shouldEqual (loopback 5000us)
+            | ListenAnswer.Listening (SocketAddress.Inet where), None -> where |> shouldEqual (loopback 5000us)
             | answer, expected -> failwith $"platform %O{platform}: got %A{answer}, expected %A{expected}"
 
     /// ...and the re-screen is not "any second listener": a socket alone at its
@@ -298,7 +300,7 @@ module TestListen =
 
         listenOrFail fd 8 system
         |> fst
-        |> shouldEqual (ListenAnswer.Listening (loopback 5000us))
+        |> shouldEqual (ListenAnswer.Listening (SocketAddress.Inet (loopback 5000us)))
 
     /// The other half of Linux's rule: while *neither* socket listens, two
     /// reuse-carrying bindings at one endpoint coexist, and the first `listen`
@@ -321,7 +323,7 @@ module TestListen =
 
             listenOrFail first 8 system
             |> fst
-            |> shouldEqual (ListenAnswer.Listening (loopback 5000us))
+            |> shouldEqual (ListenAnswer.Listening (SocketAddress.Inet (loopback 5000us)))
 
     // ------------------------------------------------------------------
     // Refusals
@@ -364,7 +366,7 @@ module TestListen =
                 SocketPhase.Established (ConnectionId 7L, ConnectionEnd.Server)
                 SocketPhase.Refused RefusalError.Pending
                 SocketPhase.Refused RefusalError.Reported
-                SocketPhase.DatagramPeer (loopback 9000us)
+                SocketPhase.DatagramPeer (SocketAddress.Inet (loopback 9000us))
             ]
 
         for phase in phases do
@@ -386,7 +388,11 @@ module TestListen =
         let fd, system =
             withSocket
                 (SocketId 0L)
-                (socketWith SocketKind.Datagram None false (SocketPhase.DatagramPeer (loopback 9000us)))
+                (socketWith
+                    SocketKind.Datagram
+                    None
+                    false
+                    (SocketPhase.DatagramPeer (SocketAddress.Inet (loopback 9000us))))
                 (systemOn platform)
 
         listenOrFail fd 8 system

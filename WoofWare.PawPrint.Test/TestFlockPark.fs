@@ -123,6 +123,7 @@ class Program
                 | Some (ParkedSyscall.PipeRead _)
                 | Some ParkedSyscall.SigSuspend
                 | Some (ParkedSyscall.Sleep _)
+                | Some (ParkedSyscall.FifoOpen _)
                 | Some (ParkedSyscall.PipeWrite _)
                 | Some (ParkedSyscall.ConnectionRead _)
                 | Some (ParkedSyscall.ConnectionWrite _)

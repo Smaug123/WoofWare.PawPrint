@@ -231,7 +231,7 @@ module TestMkNod =
             | SimulatedUnixFlavour.Linux -> 0x1 ||| 0x40 ||| 0x80
             | SimulatedUnixFlavour.Darwin -> 0x1 ||| 0x200 ||| 0x800
 
-        UnixNamespace.openPath flags path mode system
+        OpenOutcomes.openPath flags path mode system
 
     // ------------------------------------------------------------ rendering
 
@@ -347,6 +347,7 @@ module TestMkNod =
                 | InodeContent.Symlink _ -> "lnk"
                 | InodeContent.CharacterDevice _ -> "chr"
                 | InodeContent.Socket _ -> "sock"
+                | InodeContent.Fifo _ -> "fifo"
 
             let parent = holder path after
             let egid = after.Process.Credentials.EffectiveGroup

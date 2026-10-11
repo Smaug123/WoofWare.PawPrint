@@ -65,7 +65,8 @@ type ProtectedFiles =
         RegularFiles : CreationProtection
         /// `fs.protected_fifos`.
         ///
-        /// No inode this library models is a FIFO, so this decides nothing yet.
+        /// Nothing in this version makes a FIFO inode, so this decides nothing
+        /// yet.
         Fifos : CreationProtection
         /// `fs.protected_hardlinks`, which `link(2)` consults.
         Hardlinks : HardlinkProtection
@@ -120,9 +121,10 @@ module ProtectedFiles =
     /// refused because of who owns them: Linux's screen of a sticky
     /// directory's entries.
     ///
-    /// A regular file is screened as `protection.RegularFiles` says. Any other
-    /// inode (a symbolic link, which only `O_NOFOLLOW` leaves unfollowed, or a
-    /// directory) is screened whatever the sysctls say, as
+    /// A regular file is screened as `protection.RegularFiles` says, and a FIFO
+    /// as `protection.Fifos` says. Any other inode (a symbolic link, which only
+    /// `O_NOFOLLOW` leaves unfollowed, or a directory) is screened whatever the
+    /// sysctls say, as
     /// `CreationProtection.InWorldWritableStickyDirectories` would screen it.
     /// The effective user decides it, and privilege does not exempt a caller.
     let internal refusesCreatingOpen
@@ -144,6 +146,7 @@ module ProtectedFiles =
         let governing =
             match existing.Content with
             | InodeContent.RegularFile _ -> Some protection.RegularFiles
+            | InodeContent.Fifo _ -> Some protection.Fifos
             | InodeContent.Socket _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _
@@ -196,4 +199,5 @@ module ProtectedFiles =
         | InodeContent.Directory _
         | InodeContent.Symlink _
         | InodeContent.Socket _
+        | InodeContent.Fifo _
         | InodeContent.CharacterDevice _ -> true

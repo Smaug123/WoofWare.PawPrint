@@ -190,6 +190,9 @@ type DirectoryEntryKind =
     /// `DT_SOCK`: an entry naming an `InodeContent.Socket`, which nothing in
     /// this version makes.
     | Socket
+    /// `DT_FIFO`: an entry naming an `InodeContent.Fifo`, which nothing in
+    /// this version makes.
+    | Fifo
 
 [<RequireQualifiedAccess>]
 module DirectoryEntryKind =
@@ -201,6 +204,7 @@ module DirectoryEntryKind =
         | InodeContent.Symlink _ -> DirectoryEntryKind.Symlink
         | InodeContent.CharacterDevice _ -> DirectoryEntryKind.CharacterDevice
         | InodeContent.Socket _ -> DirectoryEntryKind.Socket
+        | InodeContent.Fifo _ -> DirectoryEntryKind.Fifo
 
 /// One entry of a directory, as `getdents(2)` reports it: the facts in a
 /// `struct linux_dirent64` or a Darwin `struct direntry`, without either's
@@ -860,6 +864,9 @@ module UnixNamespace =
                 | Some (InodeContent.Socket _) ->
                     failwith
                         $"UnixNamespace.openPath: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+                | Some (InodeContent.Fifo _) ->
+                    failwith
+                        $"UnixNamespace.openPath: inode %O{inode} is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
                 | None -> FileDescriptorRegistry.openFile inode flags.Access (UnixSystemState.fileDescriptors system)
@@ -1055,6 +1062,9 @@ module UnixNamespace =
         | InodeContent.Socket _ ->
             failwith
                 $"UnixNamespace.openPath: resolution returned inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+        | InodeContent.Fifo _ ->
+            failwith
+                $"UnixNamespace.openPath: resolution returned inode %O{inode}, which is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
         | InodeContent.RegularFile _
         | InodeContent.Directory _
         | InodeContent.CharacterDevice _ ->
@@ -1134,18 +1144,39 @@ module UnixNamespace =
             | InodeContent.Socket _ ->
                 failwith
                     $"UnixNamespace.openPath: inode %O{inode} is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+            | InodeContent.Fifo _ ->
+                failwith
+                    $"UnixNamespace.openPath: inode %O{inode} is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
 
         truncated
         |> Result.bind (fun (truncatedExisting, system) -> opened truncatedExisting inode system)
 
     let private openFrom<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (operation : string)
+        (task : 'Task)
         (directory : AtDirectory)
         (flags : int)
         (path : PathArgumentBytes)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
+        // Loudly partial in an unregistered or parked task, before anything is
+        // answered, as every call that can sleep is.
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some parked ->
+            failwith
+                $"UnixNamespace.%s{operation}: task %O{task} is parked in %A{parked}, and is issuing an open. A task blocks in one syscall at a time, so that call's completion must clear its record first (this is a bug in the client)."
+        | None ->
+
+        // No open sleeps yet: nothing can make an object whose open waits.
+        let answered
+            (result : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>)
+            : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, OpenRefusal>
+            =
+            result
+            |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
+
         // Before the path is copied in: measured (`open-flags.c`), each
         // kernel screens the word whatever the path pointer is.
         // Measured (`fcntl-dup.c`, LIMIT rows): Darwin allocates the
@@ -1166,15 +1197,23 @@ module UnixNamespace =
 
         match OpenFlagWord.decode system.Machine.UnixPlatform flags with
         | OpenFlagWord.Decoding.Refused refusal -> Error refusal
-        | OpenFlagWord.Decoding.Fails error -> Ok (SyscallAnswer.Failed error, system)
+        | OpenFlagWord.Decoding.Fails error -> Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system)
         | OpenFlagWord.Decoding.Decoded flags ->
 
         match UnixPathResolution.copyIn path system with
-        | Error error -> Ok (SyscallAnswer.Failed error, system)
-        | Ok path -> openPathParsed directory flags path mode system
+        | Error error -> Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system)
+        | Ok path -> openPathParsed directory flags path mode system |> answered
 
-    /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
-    /// descriptor onto what it names. It is `openat` from `AT_FDCWD`.
+    /// `open(2)`, made by `task`: resolve `path`, apply every check a kernel
+    /// makes, and return a descriptor onto what it names. It is `openat` from
+    /// `AT_FDCWD`.
+    ///
+    /// The answer is a `SyscallOutcome` because an open can sleep on a real
+    /// kernel: a blocking open of one end of a FIFO waits until the other end
+    /// is opened. Nothing in this version makes a FIFO, so every open is
+    /// answered at once (`SyscallOutcome.Answered`), and never `WouldBlock` or
+    /// `Restarts`. `task` must be registered in `Tasks`, and must not already
+    /// be parked: a task blocks in one syscall at a time.
     ///
     /// `flags` is raw, in the simulated flavour's own `<fcntl.h>` numbering,
     /// which differs between Linux's architectures as well as between
@@ -1208,16 +1247,17 @@ module UnixNamespace =
     /// empty path's ENOENT among them) and before the walk's. Every other
     /// outcome is a descriptor or an errno.
     let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (flags : int)
         (path : PathArgumentBytes)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
-        openFrom AtDirectory.CurrentDirectory flags path mode system
+        openFrom "openPath" task AtDirectory.CurrentDirectory flags path mode system
 
-    /// `openat(2)`: `openPath` of `path`, starting from `dirfd` if it is
-    /// relative; `openPath` is this from `AT_FDCWD`.
+    /// `openat(2)`, made by `task`: `openPath` of `path`, starting from `dirfd`
+    /// if it is relative; `openPath` is this from `AT_FDCWD`.
     ///
     /// `dirfd` is raw, in this platform's own numbering. Everything `openPath`
     /// says holds, with one more step: once the path is copied in, and once
@@ -1228,15 +1268,16 @@ module UnixNamespace =
     /// Linux an unreadable, over-long or empty path is answered ahead of that
     /// refusal, while on Darwin the refusal comes first.
     let openat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (dirfd : int)
         (path : PathArgumentBytes)
         (flags : int)
         (mode : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, OpenRefusal>
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, OpenRefusal>
         =
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
-        openFrom (AtDirectory.decode flavour dirfd) flags path mode system
+        openFrom "openat" task (AtDirectory.decode flavour dirfd) flags path mode system
 
     /// `readlinkat`, of a path this kernel has already copied in, starting
     /// from `directory` if it is relative.
@@ -1271,7 +1312,8 @@ module UnixNamespace =
                     match description.Target with
                     | OpenFileTarget.File (inode, _)
                     | OpenFileTarget.Directory (inode, _)
-                    | OpenFileTarget.CharacterDevice (inode, _) -> Ok inode
+                    | OpenFileTarget.CharacterDevice (inode, _)
+                    | OpenFileTarget.Fifo (inode, _) -> Ok inode
                     | OpenFileTarget.Pipe _
                     | OpenFileTarget.Socket _
                     | OpenFileTarget.Epoll _
@@ -1313,6 +1355,7 @@ module UnixNamespace =
         | InodeContent.Directory _
         | InodeContent.RegularFile _
         | InodeContent.Socket _
+        | InodeContent.Fifo _
         | InodeContent.CharacterDevice _ ->
             // Not a link: EINVAL for a path, which is what distinguishes "not a
             // link" from a failure to read one, and ENOENT for an empty path
@@ -1502,6 +1545,13 @@ module UnixNamespace =
         | OpenFileTarget.Socket _
         | OpenFileTarget.Kqueue _
         | OpenFileTarget.Epoll _ -> Ok (ReadDirectoryAnswer.Failed (notADirectory true false), system)
+        | OpenFileTarget.Fifo (inode, _) ->
+            match flavour with
+            // Every kind measured above is ENOTDIR on Linux, whose
+            // `iterate_dir` answers it for any file without an `iterate_shared`.
+            | SimulatedUnixFlavour.Linux -> Ok (ReadDirectoryAnswer.Failed UnixError.ENOTDIR, system)
+            // Unmeasured: a Darwin FIFO is a vnode, so not the pipe's ENOTSUP.
+            | SimulatedUnixFlavour.Darwin -> ReservedFifo.fail "UnixNamespace.getdents" inode
         | OpenFileTarget.Directory (inode, position) ->
 
         match VirtualFileSystem.mountedRootOf inode system.Machine.FileSystem with
@@ -2519,6 +2569,9 @@ module UnixNamespace =
         | Some (InodeContent.Socket _) ->
             failwith
                 $"UnixNamespace.cloneFileSourcePhase: the source resolved to inode %O{inode}, which is a socket. Nothing in this version makes one: InodeContent.Socket is unreachable until pathname sockets are modelled (this is a bug in this library)."
+        | Some (InodeContent.Fifo _) ->
+            failwith
+                $"UnixNamespace.cloneFileSourcePhase: the source resolved to inode %O{inode}, which is a FIFO. Nothing in this version makes one: InodeContent.Fifo is unreachable until FIFOs are modelled (this is a bug in this library)."
         | Some (InodeContent.Symlink _)
         | None ->
             failwith
@@ -2611,6 +2664,7 @@ module UnixNamespace =
             | InodeContent.RegularFile (_, bits) -> bits
             | InodeContent.Directory _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ ->
                 failwith

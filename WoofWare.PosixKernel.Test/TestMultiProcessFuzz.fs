@@ -561,10 +561,10 @@ module TestMultiProcessFuzz =
         |> Map.keys
         |> List.ofSeq
 
-    let private unbound (socket : SocketDescription) : bool = socket.Binding.IsNone
+    let private unbound (socket : SocketDescription) : bool = socket.Ipv4Binding.IsNone
 
     let private boundIdle (socket : SocketDescription) : bool =
-        socket.Binding.IsSome
+        socket.Ipv4Binding.IsSome
         && (
             match socket.Phase with
             | SocketPhase.Idle -> true
@@ -685,7 +685,7 @@ module TestMultiProcessFuzz =
                 | OpenFileTarget.Socket socket ->
                     let description = UnixMachineState.socket socket view.Machine
 
-                    match description.Phase, description.Binding with
+                    match description.Phase, description.Ipv4Binding with
                     | SocketPhase.Listening _, Some binding -> binding.Endpoint.Port = port
                     | _ -> false
                 | _ -> false
@@ -699,7 +699,7 @@ module TestMultiProcessFuzz =
         |> Map.exists (fun _ target ->
             match target with
             | OpenFileTarget.Socket socket ->
-                match (UnixMachineState.socket socket view.Machine).Binding with
+                match (UnixMachineState.socket socket view.Machine).Ipv4Binding with
                 | Some binding -> binding.Endpoint.Port = port
                 | None -> false
             | _ -> false
@@ -974,7 +974,8 @@ module TestMultiProcessFuzz =
 
             let listeningAt (socket : SocketDescription) : bool =
                 listening socket
-                && socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port = port)
+                && socket.Ipv4Binding
+                   |> Option.exists (fun binding -> binding.Endpoint.Port = port)
 
             match socketsWhere listeningAt view with
             | [] -> Made.Answered view
@@ -1000,7 +1001,15 @@ module TestMultiProcessFuzz =
                     view
                 |> ofWrite
         | Op.Open path ->
-            OpenFlagWords.openPath openCreating (PathArg.ofText files.[path % files.Length]) 0o644 view
+            // `OpenOutcomes.answered` fails the run if the open sleeps: nothing
+            // makes a FIFO, so none can.
+            UnixNamespace.openPath
+                task
+                (OpenFlagWords.encode (UnixSystem.platform view) openCreating)
+                (PathArg.ofText files.[path % files.Length])
+                0o644
+                view
+            |> OpenOutcomes.answered
             |> answered
         | Op.Close fd ->
             match pick fd any with
@@ -1143,7 +1152,8 @@ module TestMultiProcessFuzz =
 
             let listeningAt (socket : SocketDescription) : bool =
                 listening socket
-                && socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port = port)
+                && socket.Ipv4Binding
+                   |> Option.exists (fun binding -> binding.Endpoint.Port = port)
 
             match socketsWhere listeningAt view with
             | [] -> Made.Answered view
@@ -1247,6 +1257,9 @@ module TestMultiProcessFuzz =
         | Some (ParkedSyscall.Sleep _ as parked) ->
             failwith
                 $"task %d{task} is woken in %A{parked}, but nothing parks a task in a sleep yet, so there is no finishSleep to finish it with"
+        | Some (ParkedSyscall.FifoOpen _ as parked) ->
+            failwith
+                $"task %d{task} is woken in %A{parked}, but nothing parks a task in a FIFO open yet, so there is no finishOpen to finish it with"
         | None -> failwith $"task %d{task} is woken, and parked in nothing"
 
     /// Everything the run tracks besides the machine.

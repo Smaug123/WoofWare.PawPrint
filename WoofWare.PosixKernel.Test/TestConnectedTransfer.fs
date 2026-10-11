@@ -970,7 +970,7 @@ module TestConnectedTransfer =
                 let system = KeventWorld.listen listener system
 
                 let port =
-                    match (UnixMachineState.socket (socketOf listener system) system.Machine).Binding with
+                    match (UnixMachineState.socket (socketOf listener system) system.Machine).Ipv4Binding with
                     | Some binding -> binding.Endpoint.Port
                     | None -> failwith "the listener is unbound"
 
@@ -1000,7 +1000,7 @@ module TestConnectedTransfer =
                 let system = KeventWorld.close gone system
 
                 let endpoint =
-                    match (UnixMachineState.socket (socketOf keep system) system.Machine).Binding with
+                    match (UnixMachineState.socket (socketOf keep system) system.Machine).Ipv4Binding with
                     | Some binding -> binding.Endpoint
                     | None -> failwith "the survivor is unbound"
 
@@ -1051,7 +1051,7 @@ module TestConnectedTransfer =
                 let bindReuse, system = bindFresh true system
 
                 let portSame =
-                    (UnixMachineState.socket (socketOf keep system) system.Machine).Binding
+                    (UnixMachineState.socket (socketOf keep system) system.Machine).Ipv4Binding
                     |> Option.map (fun binding -> binding.Endpoint)
                     |> (=) (Some endpoint)
 
@@ -1102,7 +1102,7 @@ module TestConnectedTransfer =
                     let system = KeventWorld.close accepted system
 
                     let source =
-                        match (UnixMachineState.socket (socketOf client system) system.Machine).Binding with
+                        match (UnixMachineState.socket (socketOf client system) system.Machine).Ipv4Binding with
                         | Some binding -> binding.Endpoint
                         | None -> failwith "the client is unbound"
 
@@ -1149,7 +1149,7 @@ module TestConnectedTransfer =
                 CopyIn.connect second UserBuffer.Mapped 16u (CopyIn.inet platform (KeventWorld.loopback port)) system
             with
             | Ok (ConnectOutcome.Completed, system) ->
-                (UnixMachineState.socket (socketOf second system) system.Machine).Binding
+                (UnixMachineState.socket (socketOf second system) system.Machine).Ipv4Binding
                 |> Option.map (fun binding -> binding.Endpoint.Port)
                 |> shouldEqual (Some 40000us)
 
@@ -1177,7 +1177,7 @@ module TestConnectedTransfer =
 
             match CopyIn.bind fresh UserBuffer.Mapped 16u (CopyIn.inet platform (KeventWorld.loopback 0us)) system with
             | Ok (BindAnswer.Bound _, system) ->
-                (UnixMachineState.socket (socketOf fresh system) system.Machine).Binding
+                (UnixMachineState.socket (socketOf fresh system) system.Machine).Ipv4Binding
                 |> Option.map (fun binding -> binding.Endpoint.Port)
                 |> shouldEqual (Some 40000us)
 
@@ -1224,7 +1224,7 @@ module TestConnectedTransfer =
                     match
                         CopyIn.bind fresh UserBuffer.Mapped 16u (CopyIn.inet platform (KeventWorld.loopback 0us)) system
                     with
-                    | Ok (BindAnswer.Bound endpoint, system) ->
+                    | Ok (BindAnswer.Bound (SocketAddress.Inet endpoint), system) ->
                         assertClean system
                         Some endpoint.Port
                     | Error (BindRefusal.EphemeralPortsExhausted _) -> None

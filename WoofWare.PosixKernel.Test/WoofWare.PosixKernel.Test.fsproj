@@ -15,6 +15,7 @@
     <Compile Include="Launched.fs" />
     <Compile Include="WriteAdmissions.fs" />
     <Compile Include="ReadOutcomes.fs" />
+    <Compile Include="OpenOutcomes.fs" />
     <Compile Include="NewSocket.fs" />
     <Compile Include="CopyIn.fs" />
     <Compile Include="OptionValue.fs" />
@@ -84,6 +85,7 @@
     <Compile Include="TestIpv4Address.fs" />
     <Compile Include="TestIpv4Prefix.fs" />
     <Compile Include="TestIpv6Address.fs" />
+    <Compile Include="TestSocketAddress.fs" />
     <Compile Include="TestUnixSystemInvariants.fs" />
     <Compile Include="TestSocketTable.fs" />
     <Compile Include="TestSocketEventDelivery.fs" />
@@ -136,6 +138,7 @@
     <Compile Include="TestSigprocmask.fs" />
     <Compile Include="TestSigsuspend.fs" />
     <Compile Include="TestSleepPark.fs" />
+    <Compile Include="TestFifoOpenPark.fs" />
     <Compile Include="TestSigcontGeneration.fs" />
     <Compile Include="TestUnblockForAnotherTask.fs" />
     <Compile Include="TestSignalPickOrder.fs" />

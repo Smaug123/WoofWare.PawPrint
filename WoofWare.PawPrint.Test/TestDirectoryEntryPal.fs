@@ -29,6 +29,7 @@ module TestDirectoryEntryPal =
         | DirectoryEntryKind.Symlink -> "DT_LNK"
         | DirectoryEntryKind.CharacterDevice -> "DT_CHR"
         | DirectoryEntryKind.Socket -> "DT_SOCK"
+        | DirectoryEntryKind.Fifo -> "DT_FIFO"
 
     [<Test>]
     let ``every DirectoryEntryKind is numbered as the pinned Interop.ReadDir.cs numbers it`` () : unit =
@@ -70,7 +71,7 @@ module TestDirectoryEntryPal =
             FSharpType.GetUnionCases typeof<DirectoryEntryKind>
             |> Array.map (fun case -> FSharpValue.MakeUnion (case, [||]) :?> DirectoryEntryKind)
 
-        kinds |> Array.length |> shouldEqual 5
+        kinds |> Array.length |> shouldEqual 6
 
         for kind in kinds do
             match Map.tryFind (upstreamName kind) pinned with

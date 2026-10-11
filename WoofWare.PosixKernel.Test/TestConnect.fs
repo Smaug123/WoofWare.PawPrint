@@ -71,7 +71,7 @@ module TestConnect =
         }
         |> UnixSystemState.withFileDescriptors registry
 
-    let private streamSocket (binding : SocketBinding option) (phase : SocketPhase) : SocketDescription =
+    let private streamSocket (binding : Ipv4Binding option) (phase : SocketPhase) : SocketDescription =
         {
             Addressing = SocketAddressing.Inet binding
             Kind = SocketKind.Stream
@@ -81,7 +81,7 @@ module TestConnect =
             Phase = phase
         }
 
-    let private boundAt (endpoint : Ipv4Endpoint) : SocketBinding option =
+    let private boundAt (endpoint : Ipv4Endpoint) : Ipv4Binding option =
         Some
             {
                 Endpoint = endpoint
@@ -172,7 +172,7 @@ module TestConnect =
     let ``a socket in an unmodelled domain is refused`` (platform : SimulatedUnixPlatform) : unit =
         let socket =
             { streamSocket None SocketPhase.Idle with
-                Addressing = SocketAddressing.Unix
+                Addressing = SocketAddressing.Unix None
             }
 
         let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
@@ -229,7 +229,7 @@ module TestConnect =
             withSocket
                 (SocketId 9L)
                 ({ streamSocket None SocketPhase.Idle with
-                    Addressing = SocketAddressing.Unix
+                    Addressing = SocketAddressing.Unix None
                 })
                 system
 
@@ -525,7 +525,7 @@ module TestConnect =
         let other = Ipv4Endpoint.ofParts (Ipv4Address 0x7F000002u) 5000us
 
         refusedBy fd other system
-        |> shouldEqual (ConnectRefusal.SourceForNonLoopbackDestination (SocketId 0L, other, false))
+        |> shouldEqual (ConnectRefusal.SourceForNonLoopbackDestination (SocketId 0L, SocketAddress.Inet other, false))
 
     [<TestCaseSource(nameof platforms)>]
     let ``an implicit bind with no port left is refused, naming the range`` (platform : SimulatedUnixPlatform) : unit =
@@ -601,7 +601,8 @@ module TestConnect =
 
         match connectTo second (Ipv4Endpoint.ofParts (Ipv4Address 0u) 6000us) system with
         | Error (ConnectRefusal.DuplicateFourTuple (source, destination)) ->
-            (source, destination) |> shouldEqual (loopback 5000us, loopback 6000us)
+            (source, destination)
+            |> shouldEqual (SocketAddress.Inet (loopback 5000us), SocketAddress.Inet (loopback 6000us))
         | other -> failwith $"expected the duplicate to be refused, got %A{other}"
 
     /// Linux lets two datagram sockets share a four-tuple: both set

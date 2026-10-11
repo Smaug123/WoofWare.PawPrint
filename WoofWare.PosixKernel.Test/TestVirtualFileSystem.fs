@@ -1059,6 +1059,7 @@ module TestVirtualFileSystem =
                     |> shouldEqual (Ok inode)
             | InodeContent.RegularFile _
             | InodeContent.Socket _
+            | InodeContent.Fifo _
             | InodeContent.CharacterDevice _
             | InodeContent.Symlink _ ->
                 // Not a directory, so deliberately unanswerable: a hard-linked
@@ -1161,6 +1162,53 @@ module TestVirtualFileSystem =
             one
             three
         |> shouldHaveDefects [ VirtualFileSystemDefect.ReservedContent two ]
+
+    [<Test>]
+    let ``ReservedContent: a FIFO inode, which nothing in this version makes`` () : unit =
+        VirtualFileSystem.Unchecked.ofParts
+            (Map.ofList
+                [
+                    one, dir one [ "f", two ]
+                    two, inodeOf (InodeContent.Fifo (PermissionBits.parseOrFail "test" 0o644))
+                ])
+            one
+            three
+        |> shouldHaveDefects [ VirtualFileSystemDefect.ReservedContent two ]
+
+    [<Test>]
+    let ``ReservedContent: the node of a device this kernel has no driver for`` () : unit =
+        // Every case, by reflection, so that a device added later is checked
+        // here whether or not it joins `CharacterDevice.all`.
+        let everyDevice =
+            Microsoft.FSharp.Reflection.FSharpType.GetUnionCases typeof<CharacterDevice>
+            |> Array.map (fun case ->
+                Microsoft.FSharp.Reflection.FSharpValue.MakeUnion (case, [||])
+                |> unbox<CharacterDevice>
+            )
+            |> List.ofArray
+
+        let withoutDriver =
+            everyDevice
+            |> List.filter (fun device -> not (List.contains device CharacterDevice.all))
+
+        withoutDriver |> shouldEqual [ CharacterDevice.Zero ; CharacterDevice.Random ]
+
+        for device in everyDevice do
+            let expected =
+                if List.contains device withoutDriver then
+                    [ VirtualFileSystemDefect.ReservedContent two ]
+                else
+                    []
+
+            VirtualFileSystem.Unchecked.ofParts
+                (Map.ofList
+                    [
+                        one, dir one [ "d", two ]
+                        two, inodeOf (InodeContent.CharacterDevice (device, CharacterDevice.permissions device))
+                    ])
+                one
+                three
+            |> shouldHaveDefects expected
 
     [<Test>]
     let ``ParentMismatch`` () : unit =
@@ -3645,6 +3693,7 @@ module TestVirtualFileSystem =
                     | false, Some _ -> ()
                 | InodeContent.RegularFile _
                 | InodeContent.Socket _
+                | InodeContent.Fifo _
                 | InodeContent.CharacterDevice _
                 | InodeContent.Symlink _ -> ()
 
@@ -3747,6 +3796,7 @@ module TestVirtualFileSystem =
             | None -> ()
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Socket _)
+            | Some (InodeContent.Fifo _)
             | Some (InodeContent.CharacterDevice _)
             | Some (InodeContent.Symlink _) ->
 

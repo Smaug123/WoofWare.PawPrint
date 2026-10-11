@@ -90,8 +90,8 @@ module TestEphemeralPorts =
         : Result<uint16, BindRefusal> * UnixSystem<int, string>
         =
         match bindTo fd (wildcard 0us) system with
-        | Ok (BindAnswer.Bound endpoint), system -> Ok endpoint.Port, system
-        | Ok (BindAnswer.Failed error), _ -> failwith $"bind(0.0.0.0:0) failed with %A{error}"
+        | Ok (BindAnswer.Bound (SocketAddress.Inet endpoint)), system -> Ok endpoint.Port, system
+        | Ok answer, _ -> failwith $"bind(0.0.0.0:0) answered %A{answer}"
         | Error refusal, system -> Error refusal, system
 
     let private listenOn (fd : int) (system : UnixSystem<int, string>) : ListenAnswer * UnixSystem<int, string> =
@@ -141,7 +141,7 @@ module TestEphemeralPorts =
     let private localPort (fd : int) (system : UnixSystem<int, string>) : uint16 =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors system) with
         | Some (OpenFileTarget.Socket socketId) ->
-            match (UnixMachineState.socket socketId system.Machine).Binding with
+            match (UnixMachineState.socket socketId system.Machine).Ipv4Binding with
             | Some binding -> binding.Endpoint.Port
             | None -> failwith $"fd %d{fd} is unbound"
         | other -> failwith $"fd %d{fd} is %A{other}, not a socket"
@@ -231,10 +231,10 @@ module TestEphemeralPorts =
         let fd, system = newStream system
 
         match listenOn fd system with
-        | ListenAnswer.Listening endpoint, system ->
+        | ListenAnswer.Listening (SocketAddress.Inet endpoint), system ->
             endpoint.Port |> shouldEqual 40001us
             noDefects system
-        | ListenAnswer.Failed error, _ -> failwith $"listen failed with %A{error}"
+        | answer, _ -> failwith $"listen answered %A{answer}"
 
     /// The client's port is the one the cursor has come back round to, so
     /// the connect-time choice is between reusing it and skipping it.
@@ -303,7 +303,7 @@ module TestEphemeralPorts =
 
         let system =
             match bindWithReuse true listenerFd (wildcard 0us) system with
-            | Ok (BindAnswer.Bound endpoint), system ->
+            | Ok (BindAnswer.Bound (SocketAddress.Inet endpoint)), system ->
                 endpoint.Port |> shouldEqual 40000us
                 system
             | other, _ -> failwith $"binding the wildcard listener: %A{other}"
@@ -335,7 +335,7 @@ module TestEphemeralPorts =
             let fd, system = newStream system
 
             match bindWithReuse true fd (loopback 0us) system with
-            | Ok (BindAnswer.Bound endpoint), _ -> endpoint.Port
+            | Ok (BindAnswer.Bound (SocketAddress.Inet endpoint)), _ -> endpoint.Port
             | other, _ -> failwith $"binding beside the listener: %A{other}"
 
         // Not yet accepted: the connection sits in the listener's queue.
@@ -384,7 +384,7 @@ module TestEphemeralPorts =
         match FileDescriptorRegistry.tryFindTarget fd (UnixSystemState.fileDescriptors run.System) with
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId run.System.Machine
-            socket.Phase, socket.Binding.IsSome
+            socket.Phase, socket.Ipv4Binding.IsSome
         | other -> failwith $"slot fd %d{fd} is %A{other}"
 
     /// Whether `connect` from the unbound socket behind `fd` towards
@@ -394,7 +394,7 @@ module TestEphemeralPorts =
         | Some (OpenFileTarget.Socket socketId) ->
             let socket = UnixMachineState.socket socketId run.System.Machine
 
-            let candidate (port : uint16) : SocketBinding =
+            let candidate (port : uint16) : Ipv4Binding =
                 {
                     Endpoint = loopback port
                     LockedAddress = None
@@ -522,7 +522,7 @@ module TestEphemeralPorts =
         let boundEndpoints =
             system.Machine.Sockets
             |> Map.toSeq
-            |> Seq.choose (fun (_, socket) -> socket.Binding |> Option.map (fun binding -> binding.Endpoint))
+            |> Seq.choose (fun (_, socket) -> socket.Ipv4Binding |> Option.map (fun binding -> binding.Endpoint))
             |> Set.ofSeq
 
         system.Machine.Connections
@@ -572,7 +572,7 @@ module TestEphemeralPorts =
                     run'.System.Machine.Sockets
                     |> Map.toList
                     |> List.choose (fun (socketId, socket) ->
-                        match socket.Binding, socket.Phase with
+                        match socket.Ipv4Binding, socket.Phase with
                         | Some binding, (SocketPhase.Idle | SocketPhase.Listening _) when
                             binding.Endpoint.Port <> listenerPort 0
                             && binding.Endpoint.Port <> listenerPort 1

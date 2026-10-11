@@ -95,6 +95,15 @@ module internal StartingPointRules =
                 $"StartingPointRules.nonDirectoryAnswer: the descriptor names directory inode %O{inode}, which is where a walk starts rather than a failure (this is a bug in this library)."
         | OpenFileTarget.File _
         | OpenFileTarget.CharacterDevice _ -> UnixError.ENOTDIR
+        | OpenFileTarget.Fifo (inode, _) ->
+            match rules.NonDirectory with
+            // Linux's `path_init` answers ENOTDIR for a starting point of any
+            // kind that is not a directory.
+            | NonDirectoryDescriptorRule.NotADirectory -> UnixError.ENOTDIR
+            | NonDirectoryDescriptorRule.NotSupportedOffTheFileSystem ->
+                // Unmeasured: a Darwin FIFO is on the file system, but Darwin
+                // builds its channel from a socket pair.
+                ReservedFifo.fail "StartingPointRules.nonDirectoryAnswer" inode
         | OpenFileTarget.Pipe _
         | OpenFileTarget.Socket _
         | OpenFileTarget.Epoll _

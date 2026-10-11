@@ -63,7 +63,7 @@ module TestDualMode =
 
         let port, system =
             match CopyIn.bind listener UserBuffer.Mapped 16u (CopyIn.inet platform (loopback 0us)) system with
-            | Ok (BindAnswer.Bound endpoint, system) -> endpoint.Port, system
+            | Ok (BindAnswer.Bound (SocketAddress.Inet endpoint), system) -> endpoint.Port, system
             | other -> failwith $"listener bind answered %A{other}"
 
         let system =
@@ -75,6 +75,35 @@ module TestDualMode =
             NewSocket.create SocketDomain.Inet6 SocketKind.Stream SocketProtocol.Tcp system
 
         port, client, ipv6Only system client v6only
+
+    /// The socket holds the IPv4 transport, and its bind answers the address
+    /// as `getsockname` reports it: v4-mapped, in the socket's own family.
+    [<TestCaseSource(nameof platforms)>]
+    let ``a dual-mode bind answers the v4-mapped address`` (platform : SimulatedUnixPlatform) : unit =
+        let fd, system =
+            NewSocket.create SocketDomain.Inet6 SocketKind.Stream SocketProtocol.Tcp (fresh platform)
+
+        let system = ipv6Only system fd 0
+
+        match CopyIn.bind fd UserBuffer.Mapped 28u (CopyIn.inet6Mapped platform (loopback 5000us)) system with
+        | Ok (BindAnswer.Bound address, system) ->
+            address
+            |> shouldEqual (
+                SocketAddress.Inet6
+                    {
+                        Address = Ipv6Address.v4Mapped Ipv4Address.loopback
+                        Port = 5000us
+                        FlowInfo = 0u
+                        ScopeId = 0u
+                    }
+            )
+
+            SocketAddress.toString address |> shouldEqual "[::ffff:127.0.0.1]:5000"
+
+            (UnixMachineState.socket (socketIdOf fd system) system.Machine).Ipv4Binding
+            |> Option.map (fun binding -> binding.Endpoint)
+            |> shouldEqual (Some (loopback 5000us))
+        | other -> failwith $"bind answered %A{other}"
 
     [<TestCaseSource(nameof platforms)>]
     let ``connectSocket connects a dual-mode socket over IPv4, as connect does``
@@ -96,7 +125,8 @@ module TestDualMode =
             let socket = UnixMachineState.socket socketId system.Machine
 
             match socket.Addressing, socket.Phase with
-            | SocketAddressing.Inet6DualMode (Some binding), SocketPhase.Established (connection, ConnectionEnd.Client) ->
+            | SocketAddressing.Inet6DualMode (Some (DualModeBinding.Mapped binding)),
+              SocketPhase.Established (connection, ConnectionEnd.Client) ->
                 binding.Endpoint.Address |> shouldEqual Ipv4Address.loopback
                 let connection = UnixMachineState.connection connection system.Machine
                 connection.ServerAddress |> shouldEqual (loopback port)

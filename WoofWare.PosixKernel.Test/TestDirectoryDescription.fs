@@ -640,7 +640,7 @@ module TestDirectoryDescription =
             for flags in unmodelled do
                 let word = OpenFlagWords.encode platform flags
 
-                match UnixNamespace.openPath word (PathArg.ofPath (rooted "d")) 0 system with
+                match OpenOutcomes.openPath word (PathArg.ofPath (rooted "d")) 0 system with
                 | Error (OpenRefusal.UnmodelledDirectoryOpen refused) -> refused |> shouldEqual word
                 | other -> failwith $"%O{platform} %A{flags}: %A{other}"
 
@@ -667,7 +667,7 @@ module TestDirectoryDescription =
                     PathArg.ofText "nx"
                     PathArgumentBytes.Unreadable
                 ] do
-                match UnixNamespace.openPath word path 0 system with
+                match OpenOutcomes.openPath word path 0 system with
                 | Ok (SyscallAnswer.Failed UnixError.EINVAL, after) -> after |> shouldEqual system
                 | other -> failwith $"%O{platform}: %A{other}"
 
@@ -733,6 +733,43 @@ module TestDirectoryDescription =
             | _ -> false
         )
         |> shouldEqual true
+
+    [<Test>]
+    let ``a FIFO description must name a FIFO inode`` () : unit =
+        let system : UnixSystem<int, string> =
+            UnixSystem.initial SimulatedUnixPlatform.linuxX64
+            |> Launched.boot UnixSystem.pipedStandardStreams 0 (CpuId 0)
+            |> createFile "f"
+
+        let fd, system = openAt reading "f" system
+        let inode = inodeOf "f" system
+
+        let asFifo =
+            forgeTarget fd (OpenFileTarget.Fifo (inode, FifoAttachment.Unattached)) system
+
+        let mismatched (system : UnixSystem<int, string>) : bool =
+            UnixSystem.checkInvariants system
+            |> List.exists (fun defect ->
+                match defect with
+                | UnixSystemDefect.DescriptionKindMismatch (_, named) -> named = inode
+                | _ -> false
+            )
+
+        mismatched asFifo |> shouldEqual true
+
+        let overFifoInode =
+            { asFifo with
+                Machine =
+                    { asFifo.Machine with
+                        FileSystem =
+                            VirtualFileSystem.Unchecked.setContent
+                                inode
+                                (InodeContent.Fifo (PermissionBits.parseOrFail "test" 0o644))
+                                asFifo.Machine.FileSystem
+                    }
+            }
+
+        mismatched overFifoInode |> shouldEqual false
 
     let private someInode : InodeNumber = InodeNumber 5L
 

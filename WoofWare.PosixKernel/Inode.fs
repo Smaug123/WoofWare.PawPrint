@@ -142,14 +142,27 @@ type DirectoryContent =
         Permissions : PermissionBits
     }
 
-/// A character device this kernel has a driver for, which an inode of kind
-/// `InodeContent.CharacterDevice` stands for.
+/// A character device, which an inode of kind `InodeContent.CharacterDevice`
+/// stands for. `CharacterDevice.all` lists the ones this kernel has a driver
+/// for.
 [<RequireQualifiedAccess>]
 type CharacterDevice =
     /// `/dev/null`.
     | Null
     /// `/dev/urandom`.
     | URandom
+    /// `/dev/zero`.
+    ///
+    /// Nothing in this version makes a node for it. This kernel has no driver
+    /// for it, so `/dev` holds no `zero`, and `mknod` makes no character
+    /// device node at all: it fails or is refused.
+    | Zero
+    /// `/dev/random`.
+    ///
+    /// Nothing in this version makes a node for it. This kernel has no driver
+    /// for it, so `/dev` holds no `random`, and `mknod` makes no character
+    /// device node at all: it fails or is refused.
+    | Random
 
 /// <summary>
 /// What lives at an inode.
@@ -190,12 +203,21 @@ type InodeContent =
     /// `MkNodRefusal.Socket`, and a Unix-domain `bind` answers
     /// `SockaddrCopyRefusal.UnmodelledDomain`.
     | Socket of permissions : PermissionBits
+    /// A FIFO special file, or named pipe: what `stat(2)` reports as
+    /// `S_IFIFO`, which `mkfifo` or `mknod(2)` of `S_IFIFO` makes.
+    ///
+    /// The bytes in transit are not part of the content: they live only while
+    /// some end of the FIFO is open, and go at the last close.
+    ///
+    /// Nothing in this version makes one: `mknodat` of `S_IFIFO` answers
+    /// `MkNodRefusal.Fifo`.
+    | Fifo of permissions : PermissionBits
 
 [<RequireQualifiedAccess>]
 module InodeContent =
     /// <summary>
     /// The <c>S_IFMT</c> band of <c>st_mode</c>, indicating which kind of thing (directory, regular file, symlink, character device,
-    /// socket) lives at an inode.
+    /// socket, FIFO) lives at an inode.
     /// </summary>
     let fileTypeBits (content : InodeContent) : int =
         match content with
@@ -205,6 +227,8 @@ module InodeContent =
         | InodeContent.CharacterDevice _ -> 0o020000
         // `S_IFSOCK`, `0140000` in both flavours' `<sys/stat.h>`.
         | InodeContent.Socket _ -> 0o140000
+        // `S_IFIFO`, `0010000` in both flavours' `<sys/stat.h>`.
+        | InodeContent.Fifo _ -> 0o010000
 
 /// Who owns an inode: the `st_uid` and `st_gid` that `stat(2)` reports for it.
 [<Struct>]
@@ -318,3 +342,4 @@ module Inode =
         | InodeContent.Symlink (_, permissions) -> permissions
         | InodeContent.CharacterDevice (_, permissions) -> permissions
         | InodeContent.Socket permissions -> permissions
+        | InodeContent.Fifo permissions -> permissions

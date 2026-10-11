@@ -409,6 +409,9 @@ module GuestLocation =
                         | Some ParkedSyscall.SigSuspend -> Some "in sigsuspend, for a signal"
                         | Some (ParkedSyscall.Sleep sleep) ->
                             Some $"in nanosleep or clock_nanosleep, until %d{sleep.Deadline} ns since boot"
+                        | Some (ParkedSyscall.FifoOpen parked) ->
+                            Some
+                                $"in an open of a FIFO, for its other end to be opened, holding open file description %O{parked.Opener} for fd %d{parked.Descriptor}"
                         | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }

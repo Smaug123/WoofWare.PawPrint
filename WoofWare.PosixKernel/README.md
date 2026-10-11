@@ -55,6 +55,7 @@ The whole kernel is one value, a `UnixSystem<'Task, 'Handler>`, made of three pa
 
 Those records are opaque outside the library.
 A client reads a system through `UnixSystem`'s queries, such as `UnixSystem.leader`, `UnixSystem.tasks`, `UnixSystem.signals`, `UnixSystem.credentials`, `UnixSystem.fileDescriptors`, `UnixSystem.openFiles`, `UnixSystem.delivered` and `UnixSystem.descriptorTarget`, and changes a running one only through the syscalls and the two operations of the outside world described under "When time passes".
+`UnixSystem.descriptorTarget` answers what a descriptor's description refers to, an `OpenFileTarget`, of which `OpenFileTarget.Fifo` (a FIFO's inode and an opaque `FifoAttachment`) is reserved: nothing opens a FIFO yet, `FileDescriptorRegistry.checkInvariants` reports a description naming one as `FileDescriptorRegistryDefect.ReservedTarget`, and the case exists so that a client's matches already handle it when FIFOs arrive.
 
 `'Task` is whatever the client calls a thread, and `'Handler` whatever it calls a signal handler.
 The library never looks inside either; it only compares them.
@@ -196,14 +197,15 @@ let path (text : string) : PathArgumentBytes =
     | Ok bytes -> PathArgumentBytes.Bytes bytes
     | Error defect -> failwith $"not a path: %O{defect}"
 
-// open("/etc/hostname", O_RDONLY), and read(fd, buf, 64). O_RDONLY is 0 on every flavour.
-match UnixNamespace.openPath 0 (path "/etc/hostname") 0 system |> orFail OpenRefusal.describe with
-| SyscallAnswer.Completed fd, system ->
+// Task 0, the process's leader, calls open("/etc/hostname", O_RDONLY), and read(fd, buf, 64).
+// O_RDONLY is 0 on every flavour.
+match UnixNamespace.openPath 0 0 (path "/etc/hostname") 0 system |> orFail OpenRefusal.describe with
+| SyscallOutcome.Answered (SyscallAnswer.Completed fd), system ->
     match UnixReadWrite.read 0 (int fd) UserBuffer.Mapped 64UL system |> orFail ReadRefusal.describe with
     | ReadOutcome.Answered (ReadAnswer.Completed bytes), _ ->
         printf "%s" (System.Text.Encoding.ASCII.GetString (bytes.AsSpan ()))
     | outcome, _ -> failwith $"unexpected read: %A{outcome}"
-| SyscallAnswer.Failed error, _ -> failwith $"open failed: %O{error}"
+| outcome, _ -> failwith $"unexpected open: %A{outcome}"
 
 // Prints:
 // sim
@@ -331,8 +333,8 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 
 | Call | Function | Answers |
 | --- | --- | --- |
-| `open(2)` | `UnixNamespace.openPath (flags : int) (path : PathArgumentBytes) (mode : int)` | `Result<SyscallAnswer * UnixSystem, OpenRefusal>` |
-| `openat(2)` | `UnixNamespace.openat (dirfd : int) (path : PathArgumentBytes) (flags : int) (mode : int)` | `Result<SyscallAnswer * UnixSystem, OpenRefusal>` |
+| `open(2)` | `UnixNamespace.openPath (task : 'Task) (flags : int) (path : PathArgumentBytes) (mode : int)` | `Result<SyscallOutcome * UnixSystem, OpenRefusal>` |
+| `openat(2)` | `UnixNamespace.openat (task : 'Task) (dirfd : int) (path : PathArgumentBytes) (flags : int) (mode : int)` | `Result<SyscallOutcome * UnixSystem, OpenRefusal>` |
 | `readlink(2)` | `UnixNamespace.readlink (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `Result<ReadLinkAnswer, ReadLinkRefusal>` |
 | `readlinkat(2)` | `UnixNamespace.readlinkat (dirfd : int) (path : PathArgumentBytes) (destination : UserBuffer) (capacity : int)` | `Result<ReadLinkAnswer, ReadLinkRefusal>` |
 | one entry of `getdents(2)` or `getdirentries(2)`, without its byte layout | `UnixNamespace.readDirectoryEntry (fd : int)` | `Result<ReadDirectoryAnswer * UnixSystem, ReadDirectoryRefusal>` |
@@ -351,9 +353,12 @@ Darwin's C library implements it with `setattrlist(2)` instead, which answers a 
 | `link(2)` | `UnixNamespace.link (oldpath : PathArgumentBytes) (newpath : PathArgumentBytes)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
 | `linkat(2)` | `UnixNamespace.linkat (olddirfd : int) (oldpath : PathArgumentBytes) (newdirfd : int) (newpath : PathArgumentBytes) (flags : int)` | `Result<SyscallAnswer * UnixSystem, LinkRefusal>` |
 
-An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`.
-Nothing produces one yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, and a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`.
-The cases exist so that a client's matches already handle them when pathname sockets arrive.
+`UnixNamespace.openPath` and `UnixNamespace.openat` take the task because an open can sleep: a blocking open of one end of a FIFO waits until the other end is opened.
+Nothing makes a FIFO yet, so both always answer `SyscallOutcome.Answered`.
+
+An inode may be a socket file (`InodeContent.Socket`), which a directory entry reports as `DirectoryEntryKind.Socket`, or a FIFO (`InodeContent.Fifo`), which a directory entry reports as `DirectoryEntryKind.Fifo`.
+Nothing produces either yet: `mknod` of `S_IFSOCK` answers `MkNodRefusal.Socket`, a Unix-domain `bind` answers `SockaddrCopyRefusal.UnmodelledDomain`, and `mknod` of `S_IFIFO` answers `MkNodRefusal.Fifo`.
+The cases exist so that a client's matches already handle them when pathname sockets and FIFOs arrive.
 
 #### Reading and writing
 
@@ -390,6 +395,15 @@ The cases exist so that a client's matches already handle them when pathname soc
 | `setsockopt(2)`, given the bytes | `UnixSocket.setsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (optionLength : uint32) (supplied : ImmutableArray<byte> option)` | `Result<SetSockOptAnswer * UnixSystem, SocketOptionRefusal>` |
 | `getsockopt(2)`, before the length is read | `UnixSocket.admitGetSockOpt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer)` | `Result<GetSockOptAdmission, SocketOptionRefusal>` |
 | `getsockopt(2)`, given the length | `UnixSocket.getsockopt (fd : int) (level : int) (optionName : int) (value : UserBuffer) (length : UserBuffer) (declaredLength : uint32 option)` | `Result<GetSockOptAnswer * UnixSystem, SocketOptionRefusal>` |
+
+An address crosses the syscall boundary as bytes, laid out as the platform's `struct sockaddr`: `bind` and `connect` take them, and `getsockname`, `getpeername` and `accept` answer them.
+Where the kernel hands out an address already decoded, in an answer, a refusal or a socket's `SocketPhase.DatagramPeer`, it is a `SocketAddress`: an `Ipv4Endpoint`, an `Ipv6Endpoint`, or a `UnixSocketName`, whose representation is hidden and which `UnixSocketName.view` reads as a path or a Linux abstract name (`UnixSocketNameView`).
+`BindAnswer.Bound` and `ListenAnswer.Listening` carry the address as `getsockname` would report it at once, and so in the socket's own family: a dual-mode IPv6 socket (`IPV6_V6ONLY` off) bound to an IPv4 address answers it v4-mapped, `::ffff:a.b.c.d`.
+This kernel's IPv6 sockets reach only IPv4 peers, through v4-mapped addresses, so a `ConnectRefusal` names the IPv4 endpoint the connect resolved, even from an IPv6 socket.
+It binds no Unix-domain socket yet, so nothing it hands out holds a `UnixSocketName`.
+A socket's own state, which `UnixSystem.socket` reads, keeps its local address in its domain's own types: `SocketAddressing.Inet` holds an IPv4 binding, `SocketAddressing.Inet6DualMode` a `DualModeBinding`, `SocketAddressing.Inet6V6Only` an IPv6 binding, and `SocketAddressing.Unix` a `UnixSocketName`, each as an option that is `None` while the socket is unbound. An IP binding is an `InetBinding` over the family's endpoint and address types, so an IPv4 socket cannot hold an IPv6 address.
+A dual-mode socket bound to an IPv4 address holds it as `DualModeBinding.Mapped`, the IPv4 transport, and presents it v4-mapped.
+Only IPv4 bindings are made yet: `UnixSystem.checkInvariants` reports an IPv6 binding or a Unix-domain name as `UnixSystemDefect.UnmodelledBindingHeld`, and a datagram peer outside its socket's family as `UnixSystemDefect.DatagramPeerOfAnotherFamily`.
 
 A connected TCP socket's `read` and `write` move bytes through its connection, which holds each direction's bytes in the sender's send buffer and the receiver's receive buffer, sized from the machine's TCP sysctls, each direction's FIN (not sent, queued behind unsent bytes, or arrived), and each end's state: open, reset, or closed. A close over bytes left unread resets the peer; otherwise it sends a FIN behind what it had sent. A listener's last close resets every client still in its accept queue, oldest first, whatever the listener's `SO_LINGER`. Each queued connection keeps the options the listener held when it completed (`QueuedConnection`), so a change to a listener's options does not reach the connections already queued, and the socket `accept` makes for one holds them; under Darwin a listener lingering for no time gives it a linger of 120 seconds. `poll`, epoll and kqueue read a connected socket's readiness from the same state, and each transfer wakes the waiters each flavour wakes: every arrival of bytes, and room freed in a send buffer (on Linux once after a write ran out of room, when the buffer has drained to two thirds full; on Darwin as bytes leave it). `FIONREAD` reports what waits to be read, and `SO_ERROR` takes a reset's error. A blocking read with nothing to answer sleeps until bytes, a FIN or a reset arrive; a blocking write takes what fits and sleeps for the rest, woken on Linux once its send buffer has drained to two thirds full and on Darwin once there is room for it to take something, and it returns once every byte is taken. Every task asleep on a socket wakes for what it waits on.
 
@@ -546,8 +560,9 @@ A woken task finishes its call through its family's finishing function, which ma
 
 Each answers what the call that parked answered, as in the tables above.
 
-`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`) is reserved: nothing parks a task in it yet, and it has no finishing function, so `UnixSystem.checkInvariants` reports a task parked in it as `UnixSystemDefect.ReservedPark`.
-The case exists so that a client's matches already handle it when sleeps arrive.
+`ParkedSyscall.Sleep` (a `nanosleep` or `clock_nanosleep`, carrying a `ParkedSleep`) and `ParkedSyscall.FifoOpen` (a blocking `open` of one end of a FIFO, carrying a `ParkedFifoOpen`) are reserved: nothing parks a task in either yet, and neither has a finishing function, so `UnixSystem.checkInvariants` reports a task parked in one as `UnixSystemDefect.ReservedPark`.
+So is the primitive a FIFO open waits for, `WakePrimitive.FifoPartnerOpened`, which no condition contains yet.
+The cases exist so that a client's matches already handle them when sleeps and FIFOs arrive.
 
 A call that waits with a timeout (`poll`, `epoll_wait`, `kevent`) wakes once its deadline passes.
 With nothing runnable, the client asks `UnixWait.deadlines asleep`, which answers each deadline as an instant, in nanoseconds since boot.
@@ -926,6 +941,7 @@ The filesystem type is chosen separately (see "Giving the machine files"), from 
 The kernel mounts a device filesystem over `/dev` at boot, as a real one does.
 On Linux it is a devtmpfs holding a node for each device the kernel has a driver for (`/dev/null` and `/dev/urandom`); since a real devtmpfs holds hundreds, any other name in it is refused rather than answered ENOENT, and so are listing it and adding or removing a name in it.
 Opening a node gives a descriptor whose syscalls are the driver's: `/dev/null` reads nothing and swallows every write, and `/dev/urandom` reads from the same entropy pool `getrandom` draws on.
+`CharacterDevice.Zero` and `CharacterDevice.Random` exist too, so that a client's matches already handle them when their drivers arrive, but nothing produces them yet: `CharacterDevice.all` does not list them, so no node names either.
 On Darwin it is devfs, which is not modelled, so any path that reaches `/dev` is refused.
 
 WoofWare.PosixKernel is intended to be fully POSIX-compliant eventually.

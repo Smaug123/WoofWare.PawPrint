@@ -550,7 +550,7 @@ module TestEpollCtl =
                 "IPv4 UDP, idle", withSocket SocketDomain.Inet SocketKind.Datagram SocketPhase.Idle, 0x0304u
                 "IPv6 UDP, idle", withSocket SocketDomain.Inet6 SocketKind.Datagram SocketPhase.Idle, 0x0304u
                 "IPv4 UDP, peer set",
-                withSocket SocketDomain.Inet SocketKind.Datagram (SocketPhase.DatagramPeer peer),
+                withSocket SocketDomain.Inet SocketKind.Datagram (SocketPhase.DatagramPeer (SocketAddress.Inet peer)),
                 0x0304u
                 "Unix stream, idle", withSocket SocketDomain.Unix SocketKind.Stream SocketPhase.Idle, 0x0314u
                 "Unix datagram, idle", withSocket SocketDomain.Unix SocketKind.Datagram SocketPhase.Idle, 0x0304u
