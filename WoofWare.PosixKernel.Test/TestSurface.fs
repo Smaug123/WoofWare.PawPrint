@@ -1,7 +1,10 @@
 namespace WoofWare.PosixKernel.Test
 
+open System
 open System.IO
+open System.Reflection
 open ApiSurface
+open Microsoft.FSharp.Reflection
 open NUnit.Framework
 open WoofWare.PosixKernel
 
@@ -10,6 +13,8 @@ open WoofWare.PosixKernel
 /// by `Update API surface` and committed, so every API change shows up in review as a diff of
 /// that file. The baseline also records the tag of each case of each public union, and a union
 /// that gains a case anywhere but at its end, or loses or reorders cases, fails a second test.
+/// A public record that is new since the baseline, or a field a committed record gains, may not
+/// reuse a field label that another committed record has, which a third test checks.
 [<TestFixture>]
 module TestSurface =
 
@@ -45,6 +50,56 @@ module TestSurface =
                 + "deliberately: regenerate the baseline with `nix develop -c dotnet test "
                 + "WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj --filter "
                 + "\"FullyQualifiedName~TestSurface&Name~Update\"` and commit it with the change."
+            )
+
+    /// Every public record in the built assembly, with its field labels.
+    let internal publicRecords (built : Assembly) : Map<string, Set<string>> =
+        built.GetExportedTypes ()
+        |> Array.filter (fun (t : Type) -> FSharpType.IsRecord (t, BindingFlags.Public))
+        |> Array.map (fun (t : Type) ->
+            let labels =
+                FSharpType.GetRecordFields (t, BindingFlags.Public)
+                |> Array.map (fun (p : PropertyInfo) -> p.Name)
+                |> Set.ofArray
+
+            t.FullName, labels
+        )
+        |> Map.ofArray
+
+    [<Test>]
+    let ``No record newly reuses a field label that a committed record has`` () : unit =
+        let baseline = ApiSurface.ofAssemblyBaseline assembly |> ApiSurface.toString
+        let current = publicRecords assembly
+
+        // An ApiSurface listing tells neither a record from a class nor a field from a property
+        // declared as a member. So a committed record is a record of the built assembly that the
+        // baseline lists, and its committed labels are those of its labels now that the baseline
+        // lists as its properties. A record deleted since the baseline constrains nothing, since
+        // no client code compiled against this version can mean it.
+        let committed =
+            current
+            |> Map.filter (fun (record : string) _ -> RecordLabels.listsType baseline record)
+            |> Map.map (fun (record : string) (labels : Set<string>) ->
+                Set.intersect labels (RecordLabels.listedProperties baseline record)
+            )
+
+        match RecordLabels.collisions committed current with
+        | [] -> ()
+        | collisions ->
+            let listed =
+                collisions
+                |> List.map (fun (c : LabelCollision) -> "  " + RecordLabels.describe c)
+                |> String.concat "\n"
+
+            Assert.Fail (
+                "Public records newly use field labels that other records in SurfaceBaseline.txt have:\n"
+                + listed
+                + "\nF# resolves a label that several records share to the most recently declared of them, "
+                + "in a record pattern, in an `x.Label` access on a value whose type is not yet inferred, "
+                + "and in a record expression whose labels do not single out one record, so client code "
+                + "that meant the committed record may now mean this one and stop compiling. Before 1.0, "
+                + "rename the field. Regenerating the baseline instead grandfathers the collision, so "
+                + "that is a deliberate choice."
             )
 
     /// Rewrites the source tree's baseline from the built assembly, and touches nothing else.

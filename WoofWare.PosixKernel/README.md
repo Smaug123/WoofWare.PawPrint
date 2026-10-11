@@ -1035,6 +1035,12 @@ The file also records the order of each union's cases: F# numbers the cases of a
 A second test fails if a union has gained a case anywhere but at its end, or has lost or reordered cases, since the version the file records (see "Unions that gain cases" above).
 Before 1.0 such a change may still be made deliberately, by the same command.
 
+A third test fails if a public record that the file does not list, or a field that a listed record has gained, uses a field label that another listed record already has.
+F# resolves a label that several records share to the most recently declared of them, in a record pattern, in a `x.Label` access on a value whose type is not yet inferred, and in a record expression whose labels do not single out one record.
+So a reused label can change which record a client's existing code means, and that code can stop compiling.
+Labels that listed records already share, such as `Address` in `Ipv4Endpoint` and `Ipv6Endpoint`, are allowed.
+Before 1.0 the fix is to rename the field; regenerating the file instead allows the collision from then on, and is a deliberate choice.
+
 ## Licence
 
 MIT.

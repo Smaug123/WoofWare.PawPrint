@@ -101,7 +101,9 @@
     <Compile Include="TestOpenRefusals.fs" />
     <Compile Include="UnionCaseOrder.fs" />
     <Compile Include="TestUnionCaseOrder.fs" />
+    <Compile Include="RecordLabels.fs" />
     <Compile Include="TestSurface.fs" />
+    <Compile Include="TestRecordLabels.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestPathCopyIn.fs" />
     <Compile Include="TestOpenFlagWord.fs" />
